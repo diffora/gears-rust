@@ -385,6 +385,7 @@ const VALUE_TOKENS: &[(&str, &str)] = &[
     // the refusal they produce is `PLAN_SKU_TYPE_INVALID`.
     ("ROLE_OFFER", "offer"),
     ("ROLE_BUNDLE", "bundle"),
+    ("ROLE_COMPONENT", "component"),
     // The filler the canonical scope-key rendering writes for an absent axis. It
     // is a rendered value, and the two free-form axes refuse it as a value of
     // their own so the rendering stays injective.

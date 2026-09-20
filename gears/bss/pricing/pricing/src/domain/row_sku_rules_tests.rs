@@ -24,7 +24,7 @@ use crate::domain::ports::CatalogSku;
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
 use crate::domain::registry_view::SkuIndex;
 use crate::domain::rules::{
-    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_DEPRECATED, ROW_SKU_SELLABLE,
+    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_DEPRECATED, ROW_SKU_TYPE_INVALID,
     SKU_NOT_PUBLISHED, USAGE_ROW_SKU_UNMETERED, price_row_rules,
 };
 use crate::domain::scope_key::{ChargeKind, SkuId};
@@ -148,10 +148,10 @@ fn a_stored_meter_that_disagrees_with_the_sku_is_refused() {
 }
 
 #[test]
-fn a_foreign_sellable_sku_is_refused_but_the_plans_own_is_admitted() {
+fn a_foreign_offer_is_refused_but_the_plans_own_is_admitted() {
     assert_eq!(
         first_code(&row(0x3, ChargeKind::Usage, Some("GB-hour"))).as_deref(),
-        Some(ROW_SKU_SELLABLE)
+        Some(ROW_SKU_TYPE_INVALID)
     );
 
     let own = row(0x1, ChargeKind::Recurring, None);
@@ -257,7 +257,7 @@ fn every_row_sku_refusal_is_judged_at_the_authoring_write() {
         (row(0x9, ChargeKind::Usage, None), SKU_NOT_PUBLISHED),
         (
             row(0x3, ChargeKind::Usage, Some("GB-hour")),
-            ROW_SKU_SELLABLE,
+            ROW_SKU_TYPE_INVALID,
         ),
         (row(0x4, ChargeKind::Usage, None), USAGE_ROW_SKU_UNMETERED),
         (row(0x2, ChargeKind::Recurring, None), FEE_ROW_SKU_METERED),
@@ -363,4 +363,89 @@ fn republishing_an_already_published_row_that_names_a_since_deprecated_sku_is_ad
         Vec::<String>::new(),
         "an already-published row is not an introduction"
     );
+}
+
+/// A foreign **offer** is not a component, and closing its sales does not make
+/// it one.
+///
+/// This is the whole of what the role split changes down here. The rule used to
+/// read `sellable`, so "may this be sold" and "may this sit in someone else's
+/// plan" were one flag: an operator who closed sales on an offer silently made
+/// it eligible as a constituent of every other plan in the catalogue, and an
+/// operator who wanted a constituent had to declare it unsellable to get one.
+/// The role says it outright, and the flag goes back to meaning only what its
+/// name says.
+#[test]
+fn a_foreign_offer_is_not_a_component_when_sales_are_closed() {
+    let mut foreign = sku(0x4, None, false);
+    foreign.sku_type = "offer".to_owned();
+    let context = RowSkuContext {
+        plan_sku: SkuId::new(Uuid::from_u128(0x1)),
+        index: Arc::new(SkuIndex::from_listing(vec![foreign])),
+        introducing: true,
+    };
+    assert_eq!(
+        codes_against(context, &row(0x4, ChargeKind::Recurring, None)),
+        vec!["ROW_SKU_TYPE_INVALID".to_owned()]
+    );
+}
+
+/// The converse, and the case the old rule refused: a **component** open for
+/// sale on its own is still a legitimate row reference.
+///
+/// Under `sellable` this was impossible — a `sellable = true` SKU that was not
+/// the plan's own was refused outright — so a constituent that a tenant also
+/// sells separately could not be priced into a plan at all. Both flags are
+/// admitted now, because the flag was never the right operand for this question.
+#[test]
+fn a_component_is_a_legitimate_row_reference_under_either_sale_flag() {
+    for sellable in [true, false] {
+        let mut component = sku(0x4, None, sellable);
+        component.sku_type = "component".to_owned();
+        let context = RowSkuContext {
+            plan_sku: SkuId::new(Uuid::from_u128(0x1)),
+            index: Arc::new(SkuIndex::from_listing(vec![component])),
+            introducing: true,
+        };
+        assert!(
+            codes_against(context, &row(0x4, ChargeKind::Recurring, None)).is_empty(),
+            "a component with sellable={sellable} may be priced by a row"
+        );
+    }
+}
+
+/// A foreign **bundle** is refused for the same reason an offer is: a plan
+/// prices constituents, and a bundle is somebody else's composition.
+#[test]
+fn a_foreign_bundle_is_not_a_component_either() {
+    let mut foreign = sku(0x4, None, false);
+    foreign.sku_type = "bundle".to_owned();
+    let context = RowSkuContext {
+        plan_sku: SkuId::new(Uuid::from_u128(0x1)),
+        index: Arc::new(SkuIndex::from_listing(vec![foreign])),
+        introducing: true,
+    };
+    assert_eq!(
+        codes_against(context, &row(0x4, ChargeKind::Recurring, None)),
+        vec!["ROW_SKU_TYPE_INVALID".to_owned()]
+    );
+}
+
+/// The plan's own SKU keeps its exemption, whatever role it carries and whatever
+/// its flag says. Its own role is `plan_sku_rules`' question, one level up.
+#[test]
+fn the_plans_own_sku_is_exempt_from_the_role_rule() {
+    for (role, sellable) in [("offer", true), ("offer", false), ("bundle", true)] {
+        let mut own = sku(0x1, None, sellable);
+        own.sku_type = role.to_owned();
+        let context = RowSkuContext {
+            plan_sku: SkuId::new(Uuid::from_u128(0x1)),
+            index: Arc::new(SkuIndex::from_listing(vec![own])),
+            introducing: true,
+        };
+        assert!(
+            codes_against(context, &row(0x1, ChargeKind::Recurring, None)).is_empty(),
+            "the plan's own {role}/{sellable} SKU is priceable by its own rows"
+        );
+    }
 }

@@ -105,7 +105,7 @@ fn the_registry_pipeline_is_the_four_row_sku_rules_and_then_the_roster() {
     let mut expected = vec![
         "inst-pr-sku-published",
         "inst-pr-sku-deprecated",
-        "inst-pr-sku-sellability",
+        "inst-pr-sku-role",
         "inst-pr-sku-metered",
         "inst-pr-meter-derived",
     ];

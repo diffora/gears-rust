@@ -29,7 +29,7 @@
 //!
 //! ## The instruction ids
 //!
-//! `inst-pr-sku-published`, `inst-pr-sku-deprecated`, `inst-pr-sku-sellability`,
+//! `inst-pr-sku-published`, `inst-pr-sku-deprecated`, `inst-pr-sku-role`,
 //! `inst-pr-sku-metered` and `inst-pr-meter-derived` are declared by
 //! `docs/design/03-price-structure.md` §3, and the codes they report by that
 //! document's §5.
@@ -78,7 +78,7 @@ use toolkit_macros::domain_model;
 use crate::domain::price_row::PriceRow;
 use crate::domain::registry_view::SkuIndex;
 use crate::domain::rules::{
-    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_DEPRECATED, ROW_SKU_SELLABLE,
+    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_DEPRECATED, ROW_SKU_TYPE_INVALID,
     SKU_NOT_PUBLISHED, USAGE_ROW_SKU_UNMETERED,
 };
 use crate::domain::scope_key::SkuId;
@@ -129,10 +129,22 @@ pub struct RowSkuPublished(pub RowSkuContext);
 #[derive(Clone, Debug)]
 pub struct RowSkuDeprecated(pub RowSkuContext);
 
-/// I5 — the plan's own SKU, or a `sellable = false` SKU.
+/// I5 — the plan's own SKU, or a SKU whose **role** is `component`.
+///
+/// The predicate was `sellable = false` until the roles landed, and the two are
+/// not the same question. A sale flag says whether a SKU may be sold; a role
+/// says where it may be used. Reading the first as the second made an operator's
+/// decision to stop selling an offer into a decision to make it available as
+/// every other plan's constituent, and made "I want a constituent" spell itself
+/// "declare this unsellable".
+///
+/// The plan's own SKU keeps its exemption by identity, whatever role it carries:
+/// what role *that* SKU may carry is
+/// [`plan_sku_rules`](crate::domain::plan_sku_rules)' question, one level up, and
+/// asking it here would report the same fault twice.
 #[domain_model]
 #[derive(Clone, Debug)]
-pub struct RowSkuSellability(pub RowSkuContext);
+pub struct RowSkuRole(pub RowSkuContext);
 
 /// I3 — `usage` if and only if the SKU declares a metering unit.
 #[domain_model]
@@ -208,22 +220,24 @@ impl ValidationRule<PriceRow> for RowSkuDeprecated {
     }
 }
 
-impl ValidationRule<PriceRow> for RowSkuSellability {
+impl ValidationRule<PriceRow> for RowSkuRole {
     fn name(&self) -> &'static str {
-        "inst-pr-sku-sellability"
+        "inst-pr-sku-role"
     }
 
     fn evaluate(&self, subject: &PriceRow, report: &mut ValidationReport) {
         let Some(sku) = self.0.index.get(subject.sku_id) else {
             return;
         };
-        if subject.sku_id != self.0.plan_sku && sku.sellable {
+        if subject.sku_id != self.0.plan_sku
+            && sku.sku_type != crate::domain::plan_sku_rules::ROLE_COMPONENT
+        {
             report.violate_at_write(
-                ROW_SKU_SELLABLE,
+                ROW_SKU_TYPE_INVALID,
                 "sku_id",
                 format!(
-                    "SKU {} is sellable on its own; a plan that sells it is a bundle, not a row",
-                    subject.sku_id
+                    "SKU {} is a {}; a row must reference its plan's own SKU or a component SKU",
+                    subject.sku_id, sku.sku_type
                 ),
             );
         }

@@ -2820,12 +2820,18 @@ async fn authored_meter_including_null_is_refused() {
 }
 
 #[tokio::test]
-async fn a_foreign_sellable_sku_is_refused() {
+async fn a_foreign_offer_is_refused_as_a_row_sku() {
     let foreign = Uuid::from_u128(0x3723);
+    // Another plan's offer, open for sale. Its **role** is what refuses it: the
+    // rule read `sellable` until the roles landed, and under that reading this
+    // same SKU became a legitimate constituent the moment its owner stopped
+    // selling it.
+    let mut foreign_offer = rest_support::catalog_sku(foreign, Some("GB-hour"), true);
+    foreign_offer.sku_type = "offer".to_owned();
     let harness =
         Harness::new_with_catalog(std::sync::Arc::new(rest_support::FixtureCatalog(vec![
             rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
-            rest_support::catalog_sku(foreign, Some("GB-hour"), true),
+            foreign_offer,
         ])))
         .await;
     let plan_id = seeded_plan(&harness).await;
@@ -2839,7 +2845,7 @@ async fn a_foreign_sellable_sku_is_refused() {
         &keyed("foreign-offer"),
     )
     .await;
-    assert_eq!(problem_code(response).await, "ROW_SKU_SELLABLE");
+    assert_eq!(problem_code(response).await, "ROW_SKU_TYPE_INVALID");
     assert!(price_rows(&harness, plan_id).await.is_empty());
 }
 

@@ -39,6 +39,12 @@ pub const ROLE_OFFER: &str = "offer";
 /// The role a plan that carries a bundle composition must carry.
 pub const ROLE_BUNDLE: &str = "bundle";
 
+/// The role a SKU must carry to be priced by a charge line that is not its
+/// plan's own. Declared here beside its two siblings so the closed set reads in
+/// one place; the rule that spends it is
+/// [`RowSkuRole`](crate::domain::row_sku_rules::RowSkuRole).
+pub const ROLE_COMPONENT: &str = "component";
+
 /// The registry `status` a plan's own SKU must be in.
 const PUBLISHED: &str = "published";
 

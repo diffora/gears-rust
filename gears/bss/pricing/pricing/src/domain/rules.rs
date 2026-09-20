@@ -142,8 +142,15 @@ pub const FEE_ROW_SKU_METERED: &str = "FEE_ROW_SKU_METERED";
 /// D-372 I4 — the stored `meter` no longer equals the SKU's declaration.
 pub const METER_SKU_MISMATCH: &str = "METER_SKU_MISMATCH";
 
-/// D-372 I5 — a `sellable = true` SKU that is not the plan's own.
-pub const ROW_SKU_SELLABLE: &str = "ROW_SKU_SELLABLE";
+/// D-372 I5, re-founded on the role — a row SKU that is neither the plan's own
+/// nor a `component`.
+///
+/// It replaces `ROW_SKU_SELLABLE`, which asked `sellable` and so made "may this
+/// be sold" and "may this sit in someone else's plan" one flag: closing sales on
+/// an offer silently made it eligible as a constituent everywhere, and getting a
+/// constituent meant declaring it unsellable. Both readings were wrong about the
+/// catalogue and neither was a thing an operator meant to say.
+pub const ROW_SKU_TYPE_INVALID: &str = "ROW_SKU_TYPE_INVALID";
 
 /// D-372 I6 — the row's SKU is not in the registry read model, or is in it under
 /// a `status` other than `published`.
@@ -281,7 +288,7 @@ pub fn registry_row_rules(ctx: RowSkuContext) -> ValidationPipeline<PriceRow> {
     ValidationPipeline::new()
         .with_rule(Box::new(row_sku_rules::RowSkuPublished(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::RowSkuDeprecated(ctx.clone())))
-        .with_rule(Box::new(row_sku_rules::RowSkuSellability(ctx.clone())))
+        .with_rule(Box::new(row_sku_rules::RowSkuRole(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::UsageRowSkuMetered(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::MeterMatchesSku(ctx)))
 }
