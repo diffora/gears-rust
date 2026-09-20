@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain::sellability::Predicate;
 
 fn satisfied() -> PredicateAnswer {
     PredicateAnswer::Satisfied
@@ -26,14 +27,22 @@ fn component(id: u128, verdict: PlanMarketVerdict) -> ComponentSellability {
 }
 
 // ---------------------------------------------------------------------------
-// Predicate (6) is excluded from a component reference.
+// Predicate (6) is folded into a component reference. The exclusion below this
+// line was withdrawn with the SKU roles; see the module doc for the argument.
 // ---------------------------------------------------------------------------
 
-/// D-46's flag applies to the bundle SKU, never to a component reference:
-/// `sellable = false` components are exactly the composition-only SKUs bundles
-/// exist to package.
+/// A component closed for new sales closes the bundle that includes it.
+///
+/// **This case asserted the opposite until the SKU roles landed**, and the
+/// reasoning it carried was sound at the time: `sellable = false` was the only
+/// way to mark a SKU as composition-only, so reading it as a sale gate would
+/// have closed every bundle built out of exactly the SKUs bundles exist to
+/// package. Eligibility is now the **role** — a `component` is eligible because
+/// it is a component — which frees the flag to mean only what it says. What it
+/// says is that a closed SKU closes every sale that includes it, and a bundle
+/// member is included.
 #[test]
-fn a_component_failing_the_registry_flag_still_passes() {
+fn a_component_closed_for_sale_closes_the_bundle() {
     let verdict = component_verdict(&[
         outcome(Predicate::ActiveWindowWithHorizon, satisfied()),
         outcome(Predicate::CommittedVersion, satisfied()),
@@ -48,7 +57,19 @@ fn a_component_failing_the_registry_flag_still_passes() {
         ),
     ]);
 
-    assert_eq!(verdict, PlanMarketVerdict::Sellable);
+    assert_eq!(verdict, PlanMarketVerdict::NotSellable);
+
+    // The positive control: the same component with (6) satisfied sells, so the
+    // case is about the flag and not about the five predicates beside it.
+    let open = component_verdict(&[
+        outcome(Predicate::ActiveWindowWithHorizon, satisfied()),
+        outcome(Predicate::CommittedVersion, satisfied()),
+        outcome(Predicate::AvailabilityDates, satisfied()),
+        outcome(Predicate::PlanLifecycleState, satisfied()),
+        outcome(Predicate::GaGateFlags, satisfied()),
+        outcome(Predicate::RegistrySellable, satisfied()),
+    ]);
+    assert_eq!(open, PlanMarketVerdict::Sellable);
 }
 
 /// And every other failing predicate still refuses.

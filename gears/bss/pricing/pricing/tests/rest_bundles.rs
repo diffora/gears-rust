@@ -23,7 +23,7 @@ use bss_pricing::api::rest::bundles::BUNDLES;
 use rest_support::{
     Harness, approval_row, approval_rows, body_json, etag_of, location_of, problem_code,
     seed_current_plan, seed_draft_bundle_plan, seed_draft_plan, seed_foreign_bundle_plan,
-    seed_foreign_current_plan, seed_foreign_plan, seed_price, with_headers,
+    seed_foreign_current_plan, seed_price, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;

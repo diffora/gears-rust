@@ -1142,11 +1142,45 @@ async fn project_plan_subject(
     //
     // A component priced in a phase the buyer has not reached yet is still part
     // of the sale: they bought the plan, and the plan includes it.
-    let sale_sku_ids: Vec<Uuid> = std::iter::once(current.sku_id)
+    let mut sale_skus: std::collections::BTreeSet<Uuid> = std::iter::once(current.sku_id)
         .chain(prices.iter().map(|row| row.scope_key.sku_id().as_uuid()))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
         .collect();
+
+    // A bundle sells its members too, so its roster is its own plus theirs.
+    //
+    // **One level, and no cycle detection, because there is nothing to detect.**
+    // Composition is flat at launch: `COMPONENT_IS_BUNDLE` refuses a component
+    // plan that carries a bundle of its own, so the graph is a bundle and its
+    // members and cannot be deeper. Nesting is a named Future gate, and the walk
+    // grows a level when that gate opens — writing the recursion now would be
+    // machinery for a shape the publish rules refuse, and it would be untestable
+    // against this gear.
+    //
+    // `included_sku_id` rides the member row and is the SKU the bundle actually
+    // includes, so it is a member of the sale in its own right.
+    let composition = crate::infra::storage::repo::bundle_repo::load_composition_on(
+        runner, scope, tenant_id, plan_id, revision,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    for component in &composition.components {
+        sale_skus.insert(component.included_sku_id);
+        let member = PlanId::new(component.component_plan_id);
+        if let Some(member_revision) = plan_repo::load_current(runner, scope, tenant_id, member)
+            .await
+            .map_err(|e| repo_failure(&e))?
+        {
+            sale_skus.insert(member_revision.sku_id);
+            for row in
+                price_repo::load_for_plan(runner, scope, tenant_id, member, PROJECTED_ROW_STATES)
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+            {
+                sale_skus.insert(row.scope_key.sku_id().as_uuid());
+            }
+        }
+    }
+    let sale_sku_ids: Vec<Uuid> = sale_skus.into_iter().collect();
 
     Ok(PlanSubjectDelta {
         plan_id,

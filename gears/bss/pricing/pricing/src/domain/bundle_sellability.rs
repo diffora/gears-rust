@@ -6,18 +6,26 @@
 //! `availableFrom`/`availableTo`. One unsellable component makes the bundle
 //! unsellable, never partially sellable — which is D-94 applied one level up.
 //!
-//! # Predicate (6) is excluded, and excluding it is the point
+//! # Predicate (6) was excluded, and the exclusion is withdrawn
 //!
-//! The registry `sellable` flag (D-46) applies to the **bundle SKU itself**, not
-//! to component references: `sellable = false` components are exactly the
-//! composition-only SKUs bundles exist to package, so folding (6) into the
-//! component conjunction would make every such bundle permanently unsellable —
-//! the flag would refuse the one use it was introduced to enable.
+//! It read: *the registry `sellable` flag (D-46) applies to the bundle SKU
+//! itself, not to component references; `sellable = false` components are
+//! exactly the composition-only SKUs bundles exist to package, so folding (6)
+//! into the component conjunction would make every such bundle permanently
+//! unsellable.*
 //!
-//! The exclusion lives in [`component_verdict`] rather than in the callers,
-//! because a caller that simply "did not pass predicate 6" and a caller that
-//! forgot to look it up are indistinguishable from here. Passing the whole
-//! outcome list and filtering it in one place makes the exemption a fact of this
+//! That was true of the flag as it then stood, and it is the reasoning the SKU
+//! roles were introduced to retire. "May be sold" and "may sit inside something
+//! sold" were one flag, so a composition-only SKU had to be `sellable = false`
+//! to be usable at all, and reading that flag as a sale gate would indeed have
+//! closed every bundle. Eligibility is now the **role**: a `component` is
+//! eligible because it is a component, whatever its flag says. The flag is free
+//! to mean only what it says, and what it says is that a closed SKU closes every
+//! sale that includes it — the bundle's members included.
+//!
+//! So (6) is folded in like every other predicate, and the roster it is asked
+//! over is the frozen `saleSkuIds` the projection now carries, which walks the
+//! composition. The old filter lived in [`component_verdict`] rather than in the
 //! module that a probe can reach.
 //!
 //! # `sum_of_parts` and `own_price` differ in exactly one input
@@ -88,7 +96,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::bundle::PriceBasis;
-use crate::domain::sellability::{PlanMarketVerdict, Predicate, PredicateAnswer, PredicateOutcome};
+use crate::domain::sellability::{PlanMarketVerdict, PredicateAnswer, PredicateOutcome};
 
 /// One component's contribution to the conjunction.
 #[domain_model]
@@ -107,12 +115,7 @@ pub struct ComponentSellability {
 /// that is not the caller's job.
 #[must_use]
 pub fn component_verdict(outcomes: &[PredicateOutcome]) -> PlanMarketVerdict {
-    fold(
-        outcomes
-            .iter()
-            .filter(|outcome| outcome.predicate != Predicate::RegistrySellable)
-            .map(|outcome| &outcome.answer),
-    )
+    fold(outcomes.iter().map(|outcome| &outcome.answer))
 }
 
 /// Fold a set of predicate answers into one verdict.

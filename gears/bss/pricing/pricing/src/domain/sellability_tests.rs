@@ -1295,7 +1295,9 @@ fn the_gates_facts_carry_no_bundle_operand() {
         plan_id,
         catalog_version,
         lifecycle_state,
-        sale_sku_ids,
+        // Predicate (6)'s roster is read by the gate, not by this census of
+        // what a payload member maps onto.
+        sale_sku_ids: _,
         available_from,
         available_to,
         frequency,
