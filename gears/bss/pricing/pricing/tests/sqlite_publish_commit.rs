@@ -4512,3 +4512,143 @@ async fn a_second_market_with_no_window_is_the_coverage_rules_finding_alone() {
 
     assert_commit_wrote_nothing(&h, revision, version).await;
 }
+
+// ---------------------------------------------------------------------------
+// A successor keeps the structure its predecessor was priced against.
+// ---------------------------------------------------------------------------
+
+/// A line introduced by a **later** revision, published, and then repriced
+/// through the successor door while no draft is open.
+///
+/// The successor changes money only, so it must be priced against the very
+/// structure version its predecessor names: a monetary reprice that minted a
+/// structure of its own would leave this market on one version and its siblings
+/// on another — the state `inst-sc-simultaneous` refuses at the next publish.
+#[tokio::test]
+async fn a_monetary_successor_keeps_its_predecessors_structure_version() {
+    use bss_pricing::infra::storage::repo::price_repo;
+
+    let h = harness().await;
+    let (rev0, version0, _) = seed_publishable(&h).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), rev0),
+            version0,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the first publish commits");
+
+    // Revision 1 introduces a second line (its own eligibility class), so that
+    // line's first structure version belongs to revision 1, not revision 0.
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
+        .await
+        .expect("open the successor");
+    let late_key = scope_key(PriceEligibility::NewSubscriptionsOnly);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: LATE_PRICE,
+                line_version_id: None,
+                market_price_id: None,
+                scope_key: late_key.clone(),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(13),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the late line's row");
+    let covered = author_covering(
+        &h,
+        opened.revision,
+        current_draft_version(&h).await,
+        LATE_PRICE,
+        LATE_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp_of(ACTOR, at(13)),
+    )
+    .await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), opened.revision),
+            covered,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(14),
+        )
+        .await
+        .expect("the second publish commits");
+
+    // No draft is open. Reprice the late line through the successor door.
+    let successor_id = Uuid::from_u128(0xb_00f1);
+    let mut repriced = flat_row();
+    repriced.row.amount_minor = Some(MinorAmount::new(10_500).expect("non-negative"));
+    repriced.supersedes_price_id = Some(LATE_PRICE);
+    let scope = h.scope.clone();
+    let (_, outcome) = h
+        .provider
+        .db()
+        .in_transaction::<(), bss_pricing::infra::storage::RepoError, _>(move |txn| {
+            Box::pin(async move {
+                Box::pin(price_repo::insert_successor_draft_on(
+                    txn,
+                    &scope,
+                    TENANT,
+                    NewPriceDraft {
+                        price_id: successor_id,
+                        line_version_id: None,
+                        market_price_id: None,
+                        scope_key: late_key,
+                        content: repriced,
+                        created_by: ACTOR,
+                        created_at_utc: at(15),
+                        correlation_id: TEST_CORRELATION,
+                    },
+                ))
+                .await
+                .map(|_| ())
+            })
+        })
+        .await;
+    outcome.expect("stage the successor");
+
+    let conn = h.provider.conn().expect("conn");
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(Condition::all().add(price::Column::TenantId.eq(TENANT)))
+        .all(&conn)
+        .await
+        .expect("read the rows");
+    let predecessor = rows
+        .iter()
+        .find(|row| row.price_id == LATE_PRICE)
+        .expect("the predecessor");
+    let successor = rows
+        .iter()
+        .find(|row| row.price_id == successor_id)
+        .expect("the successor");
+    assert_eq!(successor.charge_line_id, predecessor.charge_line_id);
+    assert_eq!(successor.market_price_id, predecessor.market_price_id);
+    assert_eq!(
+        successor.line_version_id, predecessor.line_version_id,
+        "a monetary reprice keeps the structure reference"
+    );
+}

@@ -51,10 +51,36 @@ pub async fn ensure_draft_graph(
     created_at_utc: time::OffsetDateTime,
 ) -> Result<ChargeGraph, RepoError> {
     let plan_id = key.plan_id().get();
-    let plan_revision = open_plan_revision(runner, scope, tenant_id, plan_id)
-        .await?
-        .unwrap_or(0);
+    let open_revision = open_plan_revision(runner, scope, tenant_id, plan_id).await?;
     let charge_line_id = find_or_insert_line(runner, scope, tenant_id, key).await?;
+    // **No draft is open: the money keeps the structure it is already priced
+    // against.** The callers that reach here on a published plan are the
+    // successor doors — a supersession, a repricing run, a cutover's successor —
+    // and what they change is money. Keying the version on a revision number
+    // cannot find it: a line introduced by revision 2 has no version at revision
+    // 0, so the lookup below would *mint* a second structure for a reprice that
+    // changed none, leaving this market on one version and its siblings on
+    // another — the state `inst-sc-simultaneous` refuses at the next publish.
+    // Measured, not argued: `sqlite_publish_commit::
+    // a_monetary_successor_keeps_its_predecessors_structure_version`.
+    //
+    // Reused only when the submitted shared half **is** the latest version's.
+    // A successor that really does carry a different structure falls through to
+    // the revision-keyed path exactly as before; that case is a structural
+    // cutover in one market, and what it should answer is recorded as an open
+    // question rather than decided by this lookup.
+    if open_revision.is_none()
+        && let Some(version) =
+            latest_version_holding(runner, scope, tenant_id, charge_line_id, content).await?
+    {
+        return Ok(ChargeGraph {
+            charge_line_id,
+            line_version_id: version.line_version_id,
+            plan_id,
+            plan_revision: version.plan_revision,
+        });
+    }
+    let plan_revision = open_revision.unwrap_or(0);
     let line_version_id = find_or_insert_version(
         runner,
         scope,
@@ -98,6 +124,78 @@ pub async fn ensure_draft_graph(
         plan_id,
         plan_revision,
     })
+}
+
+/// The line's **latest** version, when it is frozen and its shared content is
+/// exactly what `content` submits.
+///
+/// Equality is asked of the stored form — the same column assignments
+/// [`update_draft_structure`] would write, and the geometry rows — so "the same
+/// structure" means "would store the same", not a second, looser comparison that
+/// could drift from the writer.
+async fn latest_version_holding(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    charge_line_id: Uuid,
+    content: &PriceContent,
+) -> Result<Option<charge_line_version::Model>, RepoError> {
+    let Some(latest) = charge_line_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::TenantId.eq(tenant_id))
+                .add(charge_line_version::Column::ChargeLineId.eq(charge_line_id)),
+        )
+        .order_by(
+            charge_line_version::Column::PlanRevision,
+            sea_orm::Order::Desc,
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read latest pricing_charge_line_version: {e}")))?
+    else {
+        return Ok(None);
+    };
+    if latest.lifecycle_state == LifecycleState::Draft.as_str() {
+        return Ok(None);
+    }
+    let submitted = version_content_assignments(version_model(
+        tenant_id,
+        latest.line_version_id,
+        charge_line_id,
+        latest.plan_revision,
+        content,
+        latest.created_by,
+        latest.created_at_utc,
+    )?);
+    let stored = version_content_assignments(latest.clone().into());
+    // `Column` carries no `PartialEq`; both lists come off one function in one
+    // order, so the values alone are the comparison.
+    let values = |pairs: Vec<(charge_line_version::Column, sea_orm::Value)>| {
+        pairs
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+    };
+    if values(submitted) != values(stored) {
+        return Ok(None);
+    }
+    let geometry = load_geometry(runner, scope, tenant_id, latest.line_version_id).await?;
+    let mut submitted_bounds = Vec::new();
+    for (_, band) in crate::domain::price_row::bands_in_ordinal_order(&content.row.bands) {
+        let top = match band.to_qty {
+            BandTop::Open => None,
+            BandTop::Closed(top) => Some(stored_bound("band to_qty", top)?),
+        };
+        submitted_bounds.push((stored_bound("band from_qty", band.from_qty)?, top));
+    }
+    let stored_bounds: Vec<(i64, Option<i64>)> = geometry
+        .iter()
+        .map(|tier| (tier.from_qty, tier.to_qty))
+        .collect();
+    Ok((submitted_bounds == stored_bounds).then_some(latest))
 }
 
 /// Load a version that must already exist (exact-reference door).

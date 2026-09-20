@@ -90,6 +90,18 @@ pub const IMPORT_PLAN_NOT_FOUND: &str = "IMPORT_PLAN_NOT_FOUND";
 /// **repricing run**, the sibling that was explicitly built on those units.
 pub const IMPORT_TARGETS_PUBLISHED: &str = "IMPORT_TARGETS_PUBLISHED";
 
+/// The wire code for two rows of **one logical line** that disagree about what
+/// the line's markets share.
+///
+/// A batch names a line once per market, so the shared half — model, tier
+/// geometry, package size, the usage policy, the descriptor, billing timing and
+/// the proration contract — arrives once per row and has to say the same thing
+/// every time. Left to the store, the second row's structure silently
+/// **overwrites** the first's on the draft line version, and the first market
+/// then reads a model nobody submitted for it. Refused here, before any write,
+/// naming both sides.
+pub const IMPORT_LINE_DEFINITION_CONFLICT: &str = "IMPORT_LINE_DEFINITION_CONFLICT";
+
 /// One row an operator submitted.
 ///
 /// `if_match` is `None` for a row claiming a **new** scope key and `Some` for a
@@ -229,6 +241,9 @@ impl BatchReport {
 pub fn classify(rows: &[ImportRow]) -> BatchReport {
     let mut report = BatchReport::default();
     for (row, found) in duplicate_scope_keys(rows) {
+        report.add(row, found);
+    }
+    for (row, found) in conflicting_line_definitions(rows) {
         report.add(row, found);
     }
     for (row, found) in unbuilt_primitives(rows) {
@@ -385,6 +400,79 @@ fn duplicate_scope_keys(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
             ));
         }
     }
+    found
+}
+
+/// Rows of one logical line whose **shared** halves differ, each told which
+/// other rows it disagrees with.
+///
+/// The comparison is over exactly what the store files on the line version:
+/// the non-monetary half [`split_row`](crate::domain::market_price::split_row)
+/// yields, plus the two contracts that may not vary by market. Money, tax and
+/// rounding are the market's own and are free to differ.
+///
+/// Every row of a disagreeing line is named, not only the later ones: the batch
+/// does not say which definition the operator meant, and naming one side would
+/// be this function deciding it.
+fn conflicting_line_definitions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
+    use crate::domain::market_price::split_row;
+
+    let mut lines: HashMap<_, Vec<usize>> = HashMap::new();
+    for (index, row) in rows.iter().enumerate() {
+        lines
+            .entry(row.scope_key.line().clone())
+            .or_default()
+            .push(index);
+    }
+
+    let shared = |row: &ImportRow| {
+        (
+            split_row(row.content.row.clone()).0,
+            row.content.billing_timing.clone(),
+            row.content.proration_contract,
+        )
+    };
+
+    let mut found = Vec::new();
+    for group in lines.into_values() {
+        if group.len() < 2 {
+            continue;
+        }
+        for &index in &group {
+            let mine = shared(&rows[index]);
+            // Rows on the **same market** are `DUPLICATE_SCOPE_KEY`'s, whatever
+            // their content says: that rule already refuses both, and a second
+            // code for one collision would send the operator round twice.
+            let others: Vec<String> = group
+                .iter()
+                .filter(|&&other| {
+                    other != index
+                        && rows[other].scope_key != rows[index].scope_key
+                        && shared(&rows[other]) != mine
+                })
+                .map(ToString::to_string)
+                .collect();
+            if others.is_empty() {
+                continue;
+            }
+            found.push((
+                index,
+                RowViolation {
+                    code: IMPORT_LINE_DEFINITION_CONFLICT.to_owned(),
+                    detail: format!(
+                        "this row and row(s) {} are markets of one charge line ({}) and \
+                         disagree about what the line's markets share — model, tier geometry, \
+                         package size, usage policy, descriptor, billing timing or proration \
+                         contract. A line has one structure; amounts, tax and rounding are what \
+                         may differ per market.",
+                        others.join(", "),
+                        rows[index].scope_key.line()
+                    ),
+                },
+            ));
+        }
+    }
+    found.sort_by_key(|(index, _)| *index);
     found
 }
 

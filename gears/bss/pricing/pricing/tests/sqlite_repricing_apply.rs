@@ -913,6 +913,39 @@ async fn the_same_ladder_under_an_ordinary_markup_applies() {
         "and none of it lands in `amount_minor`: a tiered row's money is its bands, and a \
          second priced column would be two competing prices"
     );
+
+    // **And the structure reference, which a markup does not own.** A repricing
+    // run changes money; the successor is priced against the very line version
+    // its predecessor names, on the same logical line and the same market
+    // variant. A run that minted a structure of its own would leave this market
+    // on one version and its siblings on another.
+    let conn = h.provider.conn().expect("conn");
+    let identities = bss_pricing::infra::storage::repo::price_repo::load_row_identities_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        PlanId::new(plan),
+    )
+    .await
+    .expect("read the identities");
+    let of = |price_id: Uuid| {
+        identities
+            .iter()
+            .find(|identity| identity.price_id == price_id)
+            .copied()
+            .unwrap_or_else(|| panic!("row {price_id} is on the plan"))
+    };
+    let (before, after) = (of(ladder), of(successor));
+    assert_eq!(after.charge_line_id, before.charge_line_id);
+    assert_eq!(after.market_price_id, before.market_price_id);
+    assert_eq!(
+        after.line_version_id, before.line_version_id,
+        "amount-only repricing keeps the line-version identity"
+    );
+    assert_ne!(
+        after.price_id, before.price_id,
+        "and mints a monetary version"
+    );
 }
 
 #[tokio::test]

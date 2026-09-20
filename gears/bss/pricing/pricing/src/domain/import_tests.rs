@@ -444,7 +444,22 @@ fn a_row_contradicting_its_own_frozen_key_is_refused_before_the_batch_commits() 
     // arrives and no later call adds anything that legalises it. Before this arm
     // existed the batch imported clean and was refused at publish — after the rows
     // were committed, which is the one thing all-or-nothing exists to prevent.
-    let report = classify(&[usage_row(metered("eu")), row(metered("us"))]);
+    //
+    // The well-formed sibling stands on **another line** (its own eligibility
+    // class): two markets of one line carrying a usage structure and a flat one
+    // are also `IMPORT_LINE_DEFINITION_CONFLICT`, which would name row 0 too and
+    // make this case about two rules instead of the one it is for.
+    let sibling = key(
+        "eu",
+        PriceEligibility::NewSubscriptionsOnly,
+        ChargeKind::Usage,
+    )
+    .with_usage_line(
+        Some(&Meter::new("api-calls").expect("a meter")),
+        DimensionKey::new("region=eu"),
+    )
+    .expect("a usage line on a usage key");
+    let report = classify(&[usage_row(sibling), row(metered("us"))]);
 
     assert_eq!(failed_rows(&report), vec![1]);
     assert_eq!(
@@ -530,4 +545,73 @@ fn a_content_against_content_fault_is_left_where_publish_can_still_see_it() {
 
     assert_eq!(failed_rows(&report), Vec::<usize>::new());
     assert!(!report.blocks_the_batch());
+}
+
+// ---------------------------------------------------------------------------
+// One line, several markets: the shared half is said once per row and has to
+// say the same thing every time.
+// ---------------------------------------------------------------------------
+
+/// Two markets of one line that agree about the structure author, whatever
+/// their money says — the world in which the refusal below is observable.
+#[test]
+fn two_markets_of_one_line_with_one_structure_and_different_money_pass() {
+    let mut us = row(key(
+        "us",
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+    ));
+    us.content.row.amount_minor = Some(MinorAmount::new(12_500).expect("non-negative"));
+    us.content.tax_inclusive = true;
+
+    let report = classify(&[row(base()), us]);
+
+    assert!(!report.blocks_the_batch(), "{report:?}");
+}
+
+/// The same two markets disagreeing about the **shared** half are refused, and
+/// both sides are named: the batch does not say which definition was meant.
+#[test]
+fn two_markets_of_one_line_that_disagree_about_its_structure_are_both_refused() {
+    let mut us = row(key(
+        "us",
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+    ));
+    us.content.row.gl_code_ref = Some("4999".to_owned());
+
+    let report = classify(&[row(base()), us]);
+
+    assert!(report.blocks_the_batch());
+    assert_eq!(failed_rows(&report), vec![0, 1]);
+    assert_eq!(
+        codes(&report, 0),
+        vec![super::IMPORT_LINE_DEFINITION_CONFLICT.to_owned()]
+    );
+    assert_eq!(
+        codes(&report, 1),
+        vec![super::IMPORT_LINE_DEFINITION_CONFLICT.to_owned()]
+    );
+}
+
+/// Billing timing is filed on the line version too, so two markets stating two
+/// timings are the same conflict — and a third row on **another** line is left
+/// alone.
+#[test]
+fn a_timing_disagreement_is_the_same_conflict_and_does_not_taint_another_line() {
+    let mut us = row(key(
+        "us",
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+    ));
+    us.content.billing_timing = Some("arrears".to_owned());
+    let other_line = row(key(
+        "eu",
+        PriceEligibility::NewSubscriptionsOnly,
+        ChargeKind::Recurring,
+    ));
+
+    let report = classify(&[row(base()), us, other_line]);
+
+    assert_eq!(failed_rows(&report), vec![0, 1]);
 }

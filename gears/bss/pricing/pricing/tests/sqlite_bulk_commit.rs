@@ -229,6 +229,36 @@ async fn new_keys_are_authored_and_the_run_completes() {
         receipt.committed[0].price_id, receipt.committed[1].price_id,
         "two keys are two rows"
     );
+
+    // **Two markets of one line, imported in one batch, are one line and one
+    // structure.** A bulk import accepts the shared half once per row, and a
+    // commit that wrote it once per *market* would be two independently editable
+    // copies of a structure that may not vary by currency.
+    let conn = h.provider.conn().expect("conn");
+    let identities = bss_pricing::infra::storage::repo::price_repo::load_row_identities_for_plan(
+        &conn,
+        &scope(),
+        TENANT,
+        plan(),
+    )
+    .await
+    .expect("read the identities");
+    let of = |price_id: Uuid| {
+        identities
+            .iter()
+            .find(|identity| identity.price_id == price_id)
+            .copied()
+            .unwrap_or_else(|| panic!("row {price_id} is on the plan"))
+    };
+    let (eu, us) = (
+        of(receipt.committed[0].price_id),
+        of(receipt.committed[1].price_id),
+    );
+    assert_eq!(key("eu").line(), key("us").line());
+    assert_eq!(us.charge_line_id, eu.charge_line_id);
+    assert_eq!(us.line_version_id, eu.line_version_id);
+    assert_ne!(us.market_price_id, eu.market_price_id);
+    assert_ne!(us.price_id, eu.price_id);
 }
 
 #[tokio::test]

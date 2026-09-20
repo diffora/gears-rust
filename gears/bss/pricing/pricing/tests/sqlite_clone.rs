@@ -2089,3 +2089,113 @@ async fn a_bundle_clone_is_a_bundle_under_its_own_identity() {
         "an ordinary plan is not a bundle, and its clone must not become one"
     );
 }
+
+/// **A cloned plan gets a graph of its own, and keeps the graph's shape.**
+///
+/// The source sells one line in two markets. In the clone the two markets are
+/// still two variants of **one** line priced against **one** structure version —
+/// the clone does not write an independent shared copy per currency — and every
+/// identity is new and filed under the destination plan, because a new plan is a
+/// new logical scope.
+#[tokio::test]
+async fn a_cloned_line_keeps_one_structure_across_its_markets_under_new_identities() {
+    use bss_pricing::infra::storage::repo::price_repo;
+
+    let h = harness().await;
+    seed_source(&h).await;
+    let second_market = Uuid::from_u128(0xb_0006);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: second_market,
+                line_version_id: None,
+                market_price_id: None,
+                scope_key: key_in(
+                    source_plan(),
+                    terminal_phase(),
+                    PriceEligibility::AllSubscriptions,
+                    Cohort::None,
+                    "us",
+                ),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author the line's second market");
+    common::publish_row_directly(&h.provider, &h.scope, second_market).await;
+
+    clone_it(&h).await.expect("the clone runs");
+
+    let conn = h.provider.conn().expect("conn");
+    let graph_of = |plan: PlanId| {
+        let conn = &conn;
+        let scope = &h.scope;
+        async move {
+            let identities = price_repo::load_row_identities_for_plan(conn, scope, TENANT, plan)
+                .await
+                .expect("read the identities");
+            let keys: std::collections::HashMap<Uuid, MarketPriceScopeKey> =
+                price_repo::load_scope_keys_for_plan(conn, scope, TENANT, plan)
+                    .await
+                    .expect("read the keys")
+                    .into_iter()
+                    .collect();
+            identities
+                .into_iter()
+                .map(|identity| (keys[&identity.price_id].clone(), identity))
+                .filter(|(key, _)| key.phase() == terminal_phase() || plan == target_plan())
+                .collect::<Vec<_>>()
+        }
+    };
+
+    let source: Vec<_> = graph_of(source_plan())
+        .await
+        .into_iter()
+        .filter(|(key, _)| {
+            key.phase() == terminal_phase()
+                && key.price_eligibility() == PriceEligibility::AllSubscriptions
+        })
+        .collect();
+    assert_eq!(source.len(), 2, "the source line sells in two markets");
+
+    let cloned = graph_of(target_plan()).await;
+    // The clone may remap the phase; the two markets of one line still share one.
+    let mut by_line: std::collections::BTreeMap<_, Vec<_>> = std::collections::BTreeMap::new();
+    for (key, identity) in &cloned {
+        by_line
+            .entry(key.line().clone())
+            .or_default()
+            .push((key, identity));
+    }
+    let (_, markets) = by_line
+        .iter()
+        .find(|(_, markets)| markets.len() == 2)
+        .expect("one cloned line carries both markets");
+    let (eur_key, eur) = markets[0];
+    let (usd_key, usd) = markets[1];
+
+    assert_eq!(usd_key.line(), eur_key.line());
+    assert_eq!(usd.line_version_id, eur.line_version_id);
+    assert_eq!(usd.charge_line_id, eur.charge_line_id);
+    assert_ne!(usd.market_price_id, eur.market_price_id);
+    assert_ne!(usd.price_id, eur.price_id);
+
+    assert_eq!(
+        eur_key.plan_id(),
+        target_plan(),
+        "filed under the destination"
+    );
+    for (_, original) in &source {
+        for identity in [eur, usd] {
+            assert_ne!(identity.charge_line_id, original.charge_line_id);
+            assert_ne!(identity.line_version_id, original.line_version_id);
+            assert_ne!(identity.market_price_id, original.market_price_id);
+            assert_ne!(identity.price_id, original.price_id);
+        }
+    }
+}
