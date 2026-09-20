@@ -53,23 +53,39 @@ pub async fn ensure_draft_graph(
     let plan_id = key.plan_id().get();
     let open_revision = open_plan_revision(runner, scope, tenant_id, plan_id).await?;
     let charge_line_id = find_or_insert_line(runner, scope, tenant_id, key).await?;
-    // **No draft is open: the money keeps the structure it is already priced
-    // against.** The callers that reach here on a published plan are the
-    // successor doors — a supersession, a repricing run, a cutover's successor —
-    // and what they change is money. Keying the version on a revision number
-    // cannot find it: a line introduced by revision 2 has no version at revision
-    // 0, so the lookup below would *mint* a second structure for a reprice that
-    // changed none, leaving this market on one version and its siblings on
-    // another — the state `inst-sc-simultaneous` refuses at the next publish.
-    // Measured, not argued: `sqlite_publish_commit::
-    // a_monetary_successor_keeps_its_predecessors_structure_version`.
+    // **A structure version is minted only for a structure that changed.** Two
+    // callers reach here holding content whose shared half is exactly what the
+    // line's latest, frozen version already stores, and neither may mint a second
+    // one:
     //
-    // Reused only when the submitted shared half **is** the latest version's.
-    // A successor that really does carry a different structure falls through to
-    // the revision-keyed path exactly as before; that case is a structural
-    // cutover in one market, and what it should answer is recorded as an open
-    // question rather than decided by this lookup.
-    if open_revision.is_none()
+    // - **no draft is open** — the successor doors (a supersession, a repricing
+    //   run, a cutover's successor) change money. Keying the lookup on a revision
+    //   number cannot find the version: a line introduced by revision 2 has none
+    //   at revision 0, so a reprice that changed no structure minted one;
+    // - **a draft is open and has no version of this line yet** — a later
+    //   revision starts selling a published line in a new market. The new market
+    //   is priced against the structure the old ones already name.
+    //
+    // Either way the mint leaves one market on one version and its siblings on
+    // another, identical in content and different in identity, which
+    // `inst-sc-simultaneous` refuses at the next publish with no door that could
+    // repair it. Both were measured rather than argued:
+    // `sqlite_publish_commit::a_monetary_successor_keeps_its_predecessors_structure_version`
+    // and `::a_later_revision_adds_a_market_to_a_published_line_and_publishes`.
+    //
+    // An open draft that **already has** its own version of the line keeps the
+    // path below — that version is the draft's working structure and the
+    // submitted content lands on it. And content that really differs from the
+    // latest version falls through too: that is a structural change, the new
+    // version is what carries it, and `inst-sc-simultaneous` is what then
+    // requires every market of the line to move with it.
+    let draft_has_its_own = match open_revision {
+        Some(revision) => version_at(runner, scope, tenant_id, charge_line_id, revision)
+            .await?
+            .is_some(),
+        None => false,
+    };
+    if !draft_has_its_own
         && let Some(version) =
             latest_version_holding(runner, scope, tenant_id, charge_line_id, content).await?
     {
@@ -124,6 +140,28 @@ pub async fn ensure_draft_graph(
         plan_id,
         plan_revision,
     })
+}
+
+/// The line's version at one plan revision, if that revision authored one.
+async fn version_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    charge_line_id: Uuid,
+    plan_revision: i64,
+) -> Result<Option<charge_line_version::Model>, RepoError> {
+    charge_line_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::TenantId.eq(tenant_id))
+                .add(charge_line_version::Column::ChargeLineId.eq(charge_line_id))
+                .add(charge_line_version::Column::PlanRevision.eq(plan_revision)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_charge_line_version at revision: {e}")))
 }
 
 /// The line's **latest** version, when it is frozen and its shared content is

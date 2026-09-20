@@ -4652,3 +4652,88 @@ async fn a_monetary_successor_keeps_its_predecessors_structure_version() {
         "a monetary reprice keeps the structure reference"
     );
 }
+
+/// **A later revision adds a market to a line that is already published.**
+///
+/// The ordinary way a catalogue grows: EUR/eu is live, and revision 1 starts
+/// selling the same line in USD/us. Nothing about the line's structure changes,
+/// so the new market is priced against the structure the old one already names,
+/// and the revision publishes.
+///
+/// It is here because the alternative is quiet and total: minting a structure
+/// version for the new market — identical in content, different in identity —
+/// leaves the two markets of one line on two versions, which
+/// `inst-sc-simultaneous` refuses at publish with no door that could repair it.
+#[tokio::test]
+async fn a_later_revision_adds_a_market_to_a_published_line_and_publishes() {
+    let h = harness().await;
+    let (rev0, version0, first_price) = seed_publishable(&h).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), rev0),
+            version0,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the first publish commits");
+
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
+        .await
+        .expect("open the successor");
+    author_second_market(&h, None).await;
+    let covered = author_covering(
+        &h,
+        opened.revision,
+        current_draft_version(&h).await,
+        SECOND_MARKET_PRICE,
+        SECOND_MARKET_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp_of(ACTOR, at(13)),
+    )
+    .await;
+
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), opened.revision),
+            covered,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(14),
+        )
+        .await
+        .expect("a new market on an unchanged line publishes");
+
+    let conn = h.provider.conn().expect("conn");
+    let stored = price::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(Condition::all().add(price::Column::TenantId.eq(TENANT)))
+        .all(&conn)
+        .await
+        .expect("read the rows");
+    let version_of = |price_id: Uuid| {
+        stored
+            .iter()
+            .find(|row| row.price_id == price_id)
+            .map(|row| row.line_version_id)
+            .expect("the row")
+    };
+    assert_eq!(
+        version_of(SECOND_MARKET_PRICE),
+        version_of(first_price),
+        "the new market is priced against the structure the line already has"
+    );
+}
