@@ -19,7 +19,7 @@ pub fn catalog_sku(
         metering_unit: meter.map(str::to_owned),
         status: "published".into(),
         plan_tier: None,
-        sku_type: "service".into(),
+        sku_type: "component".into(),
         sellable,
         usage_type_ref: None,
         deprecated: false,

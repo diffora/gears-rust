@@ -155,7 +155,7 @@ impl LocalDevStaticProductCatalog {
                 Some("vCPU-hour"),
                 Some("Pro"),
                 "published",
-                "service",
+                "component",
             ),
             sku(
                 2,
@@ -164,7 +164,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GiB-hour"),
                 Some("Pro"),
                 "published",
-                "service",
+                "component",
             ),
             sku(
                 3,
@@ -173,7 +173,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GiB-month"),
                 Some("Standard"),
                 "published",
-                "service",
+                "component",
             ),
             sku(
                 4,
@@ -182,7 +182,7 @@ impl LocalDevStaticProductCatalog {
                 Some("1k-ops"),
                 Some("Standard"),
                 "published",
-                "service",
+                "component",
             ),
             sku(
                 5,
@@ -191,7 +191,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GiB-egress"),
                 Some("Pro"),
                 "published",
-                "service",
+                "component",
             ),
             sku(
                 6,
@@ -200,7 +200,7 @@ impl LocalDevStaticProductCatalog {
                 Some("cloudlet-hour"),
                 Some("Pro"),
                 "published",
-                "service",
+                "component",
             ),
             // No unit: priced per period, never as usage.
             sku(
@@ -210,7 +210,7 @@ impl LocalDevStaticProductCatalog {
                 None,
                 Some("Pro"),
                 "published",
-                "product",
+                "offer",
             ),
             sku(
                 8,
@@ -219,7 +219,7 @@ impl LocalDevStaticProductCatalog {
                 None,
                 Some("Pro"),
                 "published",
-                "product",
+                "component",
             ),
             // A draft and a deprecated one, because a pick-list that only ever
             // shows publishable entries never teaches an operator that the
@@ -231,7 +231,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GPU-hour"),
                 Some("Pro"),
                 "draft",
-                "service",
+                "component",
             ),
             sku(
                 10,
@@ -240,7 +240,7 @@ impl LocalDevStaticProductCatalog {
                 Some("instance-hour"),
                 Some("Legacy"),
                 "deprecated",
-                "service",
+                "component",
             ),
         ]
     }

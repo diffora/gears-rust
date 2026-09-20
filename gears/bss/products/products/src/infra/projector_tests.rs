@@ -591,7 +591,7 @@ async fn announce_sku(
             created_at: now,
             cloned_from: None,
             cloned_from_version: None,
-            sku_type: "product".to_owned(),
+            sku_type: "offer".to_owned(),
             sellable: true,
             plan_tier: "standard".to_owned(),
             metering_unit: usage_type_ref.map(|_| "gib_month".to_owned()),
@@ -602,7 +602,7 @@ async fn announce_sku(
     .expect("insert the sku");
     let mut content = json!({
         "sku_code": sku_code,
-        "sku_type": "product",
+        "sku_type": "offer",
         "region_scope": "eu",
         "brand_scope": "",
     });

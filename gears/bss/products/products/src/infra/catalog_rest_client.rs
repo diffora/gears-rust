@@ -305,7 +305,7 @@ mod tests {
             replaced_by_sku_id: None,
             region_scope: String::new(),
             brand_scope: String::new(),
-            sku_type: Some("service".to_owned()),
+            sku_type: Some("offer".to_owned()),
             plan_tier_label: Some("Pro".to_owned()),
             metering_unit: Some("vCPU-hour".to_owned()),
             usage_type_ref: Some("cf.usage.vcpu-hour".to_owned()),

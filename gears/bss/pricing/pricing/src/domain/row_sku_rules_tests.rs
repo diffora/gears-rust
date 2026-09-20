@@ -37,7 +37,8 @@ fn sku(id: u128, unit: Option<&str>, sellable: bool) -> CatalogSku {
         metering_unit: unit.map(str::to_owned),
         status: "published".to_owned(),
         plan_tier: None,
-        sku_type: "service".to_owned(),
+        // A row SKU is a component; `ctx` overrides the two that are not.
+        sku_type: "component".to_owned(),
         sellable,
         usage_type_ref: unit.map(|unit| format!("gts.cf.usage.{unit}.v1~")),
         deprecated: false,
@@ -46,11 +47,16 @@ fn sku(id: u128, unit: Option<&str>, sellable: bool) -> CatalogSku {
 
 /// The registry read model these rules judge against, and the plan's own SKU.
 fn ctx() -> RowSkuContext {
+    let offer = |id: u128, unit: Option<&str>, sellable: bool| {
+        let mut sku = sku(id, unit, sellable);
+        sku.sku_type = "offer".to_owned();
+        sku
+    };
     let index = SkuIndex::from_listing(vec![
-        sku(0x1, None, true),             // the plan's own SKU
-        sku(0x2, Some("GB-hour"), false), // a resource
-        sku(0x3, Some("GB-hour"), true),  // sellable elsewhere -- refused as a row SKU
-        sku(0x4, None, false),            // a fee SKU without a meter
+        offer(0x1, None, true),            // the plan's own SKU -- an offer by role
+        sku(0x2, Some("GB-hour"), false),  // a resource
+        offer(0x3, Some("GB-hour"), true), // another plan's offer -- refused as a row SKU
+        sku(0x4, None, false),             // a fee SKU without a meter
     ]);
     RowSkuContext {
         plan_sku: SkuId::new(Uuid::from_u128(0x1)),

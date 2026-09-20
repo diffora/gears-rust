@@ -2,8 +2,8 @@
 //! ship the defect its instruction names.
 
 use super::{
-    MemberOp, MemberState, SetKind, UsageTypeAnswer, declaration_is_new, declaration_verdict,
-    judge_usage_type, member_edge, meter_pair_complete,
+    MemberOp, MemberState, SetKind, SkuType, UsageTypeAnswer, declaration_is_new,
+    declaration_verdict, judge_usage_type, member_edge, meter_pair_complete, type_profile,
 };
 use crate::domain::error::DomainError;
 
@@ -212,4 +212,22 @@ fn a_token_outside_the_roster_declares_no_op() {
     ] {
         assert_eq!(MemberOp::parse(outside), None, "`{outside}` parsed");
     }
+}
+
+/// The same closed set the SDK pins, proved on this crate's own enum: the two
+/// definitions are independent, so one may be ported while the other is not,
+/// and `type_profile`'s refusal is what an unported writer actually meets.
+#[test]
+fn sku_role_vocabulary_is_closed() {
+    for token in ["offer", "component", "bundle"] {
+        assert_eq!(SkuType::parse(token).map(SkuType::as_str), Some(token));
+    }
+    for token in ["product", "service", "resource", "", "Offer"] {
+        assert_eq!(SkuType::parse(token), None, "`{token}` parsed");
+    }
+    assert_eq!(SkuType::ALL.len(), 3);
+    assert!(matches!(
+        type_profile(Some("product")),
+        Err(DomainError::SkuTypeUnknown(_))
+    ));
 }

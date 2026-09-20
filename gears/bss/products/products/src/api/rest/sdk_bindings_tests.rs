@@ -244,7 +244,7 @@ async fn the_authoring_binding_runs_the_doors_with_both_preconditions() {
                 sku_code: "CP-VCPU".to_owned(),
                 region_scope: None,
                 brand_scope: None,
-                sku_type: Some("product".to_owned()),
+                sku_type: Some("offer".to_owned()),
                 sellable: None,
                 plan_tier: None,
             },
@@ -276,7 +276,7 @@ async fn the_authoring_binding_runs_the_doors_with_both_preconditions() {
         .get_sku(&ctx, TENANT, sku.entity_id)
         .await
         .expect("the SKU head reads back");
-    assert_eq!(sku_row.sku_type, SkuType::Product);
+    assert_eq!(sku_row.sku_type, SkuType::Offer);
     assert!(!sku_row.sellable, "the save landed");
     assert!(
         !sku_row.composition_pending,

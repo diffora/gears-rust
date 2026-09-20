@@ -465,7 +465,7 @@ mod key_contradictions {
             metering_unit: charge_kind.is_usage().then(|| "egress.gb".into()),
             status: "published".into(),
             plan_tier: None,
-            sku_type: "service".into(),
+            sku_type: "component".into(),
             sellable: false,
             usage_type_ref: None,
             deprecated: false,

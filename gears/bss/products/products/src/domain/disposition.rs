@@ -136,7 +136,7 @@ impl SkuCloneSource {
     pub fn classification(&self) -> SourceClassification {
         SourceClassification {
             sku_type: self.sku_type.clone().unwrap_or_else(|| {
-                crate::domain::recognized::SkuType::Product
+                crate::domain::recognized::SkuType::Offer
                     .as_str()
                     .to_owned()
             }),

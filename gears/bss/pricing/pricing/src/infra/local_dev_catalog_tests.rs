@@ -116,7 +116,7 @@ fn the_contract_members_are_consistent_with_the_unit() {
             );
         }
         assert!(
-            ["product", "service", "bundle"].contains(&sku.sku_type.as_str()),
+            ["offer", "component", "bundle"].contains(&sku.sku_type.as_str()),
             "{} carries a type outside the registry's vocabulary: {}",
             sku.sku_code,
             sku.sku_type

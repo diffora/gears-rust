@@ -1407,7 +1407,7 @@ fn fixture_sku_index() -> std::sync::Arc<crate::domain::registry_view::SkuIndex>
             metering_unit: None,
             status: "published".to_owned(),
             plan_tier: None,
-            sku_type: "service".to_owned(),
+            sku_type: "offer".to_owned(),
             sellable: false,
             usage_type_ref: None,
             deprecated: false,

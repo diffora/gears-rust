@@ -384,8 +384,11 @@ mod recognized_tests;
 /// each type carries at publish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkuType {
-    Product,
-    Service,
+    /// A commercial offer, realized by a plan. The only role a plan's own SKU
+    /// may carry.
+    Offer,
+    /// A billable constituent of an offer, priced by a charge line.
+    Component,
     /// Composition is pricing's; a bundle is commercially incomplete by
     /// design.
     Bundle,
@@ -393,13 +396,13 @@ pub enum SkuType {
 
 impl SkuType {
     /// The wire tokens, in the order the design lists them.
-    pub const ALL: [Self; 3] = [Self::Product, Self::Service, Self::Bundle];
+    pub const ALL: [Self; 3] = [Self::Offer, Self::Component, Self::Bundle];
 
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Product => "product",
-            Self::Service => "service",
+            Self::Offer => "offer",
+            Self::Component => "component",
             Self::Bundle => "bundle",
         }
     }
@@ -423,11 +426,11 @@ pub fn type_profile(raw: Option<&str>) -> Result<SkuType, DomainError> {
     match raw {
         Some(value) => SkuType::parse(value).ok_or_else(|| {
             DomainError::SkuTypeUnknown(format!(
-                "sku_type `{value}` is outside the closed set (product, service, bundle)"
+                "sku_type `{value}` is outside the closed set (offer, component, bundle)"
             ))
         }),
         None => Err(DomainError::SkuTypeUnknown(
-            "sku_type is absent: a SKU publishes under one of product, service or bundle"
+            "sku_type is absent: a SKU publishes under one of offer, component or bundle"
                 .to_owned(),
         )),
     }

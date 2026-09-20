@@ -147,19 +147,33 @@ pub struct Product {
     pub published_version: i64,
 }
 
-/// A SKU's commercial type — `design/03`'s closed set (`inst-cl-type`).
+/// A SKU's commercial **role** — `design/03`'s closed set (`inst-cl-type`).
 ///
-/// Three members, closed: a fourth type is a design change, not a value. A
+/// Three members, closed: a fourth role is a design change, not a value. A
 /// consumer that treats the wire field as an open string is choosing display
 /// tolerance over the pin's guard, as with [`LifecycleState`].
+///
+/// # A role, not a kind of thing
+///
+/// The set this replaced — `product` / `service` / `bundle` — said what a SKU
+/// *was*, and no rule keyed on the distinction: with accounting codes out of
+/// the registry (P-D-169) the profile constrained the token alone. Eligibility
+/// was left to be inferred from `sellable`, so a foreign SKU could be priced
+/// into a plan only by declaring it unsellable, and "may this be sold" and
+/// "may this sit in a plan" were one flag. These three say where a SKU may be
+/// used; [`SkuRead::sellable`] says whether it may be sold. The two are
+/// independent, and every combination of them is a legal authoring state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SkuType {
-    /// A sellable good with both accounting codes required at publish.
-    Product,
-    /// A sellable service, the same code profile as a product.
-    Service,
-    /// Commercially incomplete by design: no codes required, and its publish
-    /// carries plan-price's composition state (`composition_pending`).
+    /// A commercial offer, realized by a plan. The only role a plan's own SKU
+    /// may carry.
+    Offer,
+    /// A billable constituent of an offer: what a charge line prices when it
+    /// prices something other than the plan's own SKU.
+    Component,
+    /// A commercial bundle, realized by composition. Commercially incomplete by
+    /// design: its publish carries plan-price's composition state
+    /// (`composition_pending`).
     Bundle,
 }
 
@@ -168,8 +182,8 @@ impl SkuType {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Product => "product",
-            Self::Service => "service",
+            Self::Offer => "offer",
+            Self::Component => "component",
             Self::Bundle => "bundle",
         }
     }
@@ -178,8 +192,8 @@ impl SkuType {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "product" => Some(Self::Product),
-            "service" => Some(Self::Service),
+            "offer" => Some(Self::Offer),
+            "component" => Some(Self::Component),
             "bundle" => Some(Self::Bundle),
             _ => None,
         }
@@ -241,4 +255,26 @@ pub struct Sku {
     pub metering_unit: Option<String>,
     /// The usage-collector type the meter binds to — the other half.
     pub usage_type_ref: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkuType;
+
+    /// The closed set is a **role**, not a kind of thing: `offer` is what a plan
+    /// realizes, `component` is what an offer is billed out of, `bundle` is what
+    /// composition packages. The set it replaced — `product`/`service`/`bundle` —
+    /// said what a SKU *was*, which no rule keyed on, and left eligibility to be
+    /// inferred from `sellable`. Old tokens must fail rather than map: a consumer
+    /// still sending `product` has not been ported, and silently reading it as
+    /// `offer` would let an unported writer bind a component to a plan.
+    #[test]
+    fn sku_role_vocabulary_is_closed() {
+        for token in ["offer", "component", "bundle"] {
+            assert_eq!(SkuType::parse(token).map(SkuType::as_str), Some(token));
+        }
+        for token in ["product", "service", "resource", "", "Offer"] {
+            assert_eq!(SkuType::parse(token), None, "`{token}` parsed");
+        }
+    }
 }

@@ -74,7 +74,7 @@ fn the_code_suggestion_is_unflavored_and_absent_where_the_source_has_none() {
 #[test]
 fn the_sku_code_suggestion_has_no_flavored_arm() {
     let source = SkuCloneSource {
-        sku_type: Some("product".to_owned()),
+        sku_type: Some("offer".to_owned()),
         sellable: true,
         plan_tier: Some("standard".to_owned()),
         product_id: Uuid::new_v4(),

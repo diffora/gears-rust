@@ -320,10 +320,12 @@ async fn stage_sku(
         cloned_from: None,
         cloned_from_version: None,
         // 03's classification (P-D-145) as the row carries it; a row naming
-        // none is a `product` on the `standard` tier — the row shape that
-        // carries these by contract is 09's (group 6).
+        // none falls back on the `standard` tier — the row shape that carries
+        // these by contract is 09's (group 6). The role's own fallback is
+        // retokenised here and **removed** by the next task: a role is not a
+        // thing a bulk row may leave to a default.
         sku_type: field(payload, "sku_type").unwrap_or_else(|| {
-            crate::domain::recognized::SkuType::Product
+            crate::domain::recognized::SkuType::Offer
                 .as_str()
                 .to_owned()
         }),

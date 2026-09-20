@@ -154,7 +154,7 @@ fn two_rows() -> serde_json::Value {
         },
         {
             "row_key": "r-2", "entity_kind": "sku",
-            "content": { "product_id": Uuid::from_u128(0xb0_03), "sku_code": "IMP-1", "sku_type": "product" },
+            "content": { "product_id": Uuid::from_u128(0xb0_03), "sku_code": "IMP-1", "sku_type": "offer" },
         },
     ])
 }

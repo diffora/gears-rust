@@ -476,7 +476,7 @@ async fn a_well_formed_create_under_a_live_parent_persists_a_draft_sku() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -524,7 +524,7 @@ async fn exactly_one_sku_created_row_is_enqueued_and_no_audit_row_is_written() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -569,7 +569,7 @@ async fn an_unresolvable_parent_is_refused_validation() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": nonexistent_parent, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": nonexistent_parent, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -609,7 +609,7 @@ async fn a_parent_belonging_to_another_tenant_is_not_resolvable() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": foreign_parent, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": foreign_parent, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -649,7 +649,7 @@ async fn a_retired_parent_is_refused_parent_terminal() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -686,7 +686,7 @@ async fn a_discarded_parent_is_refused_parent_terminal() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -712,7 +712,7 @@ async fn a_scope_not_contained_in_a_restricted_parent_is_refused() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "region_scope": "eu,us" }),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "offer", "region_scope": "eu,us" }),
     )
     .await;
 
@@ -753,7 +753,7 @@ async fn an_omitted_scope_inherits_the_parents_value() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -789,7 +789,7 @@ async fn an_explicit_unrestricted_scope_against_a_restricted_parent_is_refused()
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "region_scope": "" }),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "offer", "region_scope": "" }),
     )
     .await;
 
@@ -823,7 +823,7 @@ async fn a_duplicate_sku_code_is_refused_and_audited() {
     let first = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(
@@ -835,7 +835,7 @@ async fn a_duplicate_sku_code_is_refused_and_audited() {
     let second = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(
@@ -878,7 +878,7 @@ async fn an_unwritable_refusal_audit_answers_audit_unavailable_not_the_domain_re
     let first = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(
@@ -892,7 +892,7 @@ async fn an_unwritable_refusal_audit_answers_audit_unavailable_not_the_domain_re
     let second = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -925,7 +925,7 @@ async fn a_caller_supplied_id_is_refused_validation() {
         &json!({
             "id": caller_supplied_id,
             "product_id": parent_id,
-            "sku_code": "SKU-500", "sku_type": "product",
+            "sku_code": "SKU-500", "sku_type": "offer",
         }),
     )
     .await;
@@ -965,7 +965,7 @@ async fn a_scope_with_an_empty_token_is_refused_validation() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "region_scope": "," }),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "offer", "region_scope": "," }),
     )
     .await;
 
@@ -1005,7 +1005,7 @@ async fn a_keyed_create_persists_the_sku_and_an_answered_row_under_this_doors_en
     let response = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
         "author-retry-1",
     )
     .await;
@@ -1056,7 +1056,7 @@ async fn a_keyless_sku_create_succeeds_and_claims_nothing() {
     let response = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -1094,7 +1094,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
     let setup = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(setup.status(), StatusCode::CREATED);
@@ -1102,7 +1102,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
     let refused = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
         "author-retry-2",
     )
     .await;
@@ -1120,7 +1120,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
     let retry = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "offer"}),
         "author-retry-2",
     )
     .await;
@@ -1165,7 +1165,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
 async fn a_second_keyed_sku_create_on_a_live_key_is_refused_in_flight_and_audited() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    let body = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product"});
+    let body = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "offer"});
     seed_live_claim(&harness, "author-retry-3", &digest_of(&body)).await;
 
     let second =
@@ -1207,13 +1207,13 @@ async fn a_second_keyed_sku_create_on_a_live_key_is_refused_in_flight_and_audite
 async fn a_second_keyed_sku_create_on_a_live_key_under_a_different_payload_is_refused_conflict() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    let held = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product"});
+    let held = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "offer"});
     seed_live_claim(&harness, "author-retry-3b", &digest_of(&held)).await;
 
     let second = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-901" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-901" , "sku_type": "offer"}),
         "author-retry-3b",
     )
     .await;
@@ -1251,7 +1251,7 @@ async fn a_second_keyed_sku_create_on_a_live_key_under_a_different_payload_is_re
 async fn a_retry_after_a_committed_sku_create_replays_the_original_response() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    let body = json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"});
+    let body = json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"});
 
     let first =
         post_create_sku_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-4").await;
@@ -1362,7 +1362,7 @@ async fn seed_draft_sku(harness: &TestHarness, parent_id: Uuid, sku_code: &str) 
     let response = post_create_sku(
         app_for(harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": sku_code , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": sku_code , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(
@@ -2104,7 +2104,7 @@ async fn a_discarded_skus_code_is_free_for_the_next_holder() {
     let response = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
 
@@ -2388,7 +2388,7 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         // version content, and a bare `None` could not prove the builder
         // leaves it out.
         correction_ref: Some(Uuid::from_u128(0xd1_15)),
-        sku_type: Some("product".to_owned()),
+        sku_type: Some("offer".to_owned()),
         sellable: false,
         plan_tier: Some("standard".to_owned()),
     };
@@ -4295,7 +4295,7 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -5433,7 +5433,7 @@ async fn changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create() {
         json!({
             "product_id": parent,
             "sku_code": code,
-            "sku_type": "product",
+            "sku_type": "offer",
         })
     };
     let (first, etag) = created_sku(&harness, &body("SKU-MOVE-A")).await;
@@ -6331,7 +6331,7 @@ async fn creating_a_sku_under_a_retiring_parent_is_retirement_pending() {
     let refused = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-RT-CREATE" , "sku_type": "product"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-RT-CREATE" , "sku_type": "offer"}),
     )
     .await;
     assert_eq!(refused.status(), StatusCode::CONFLICT);
@@ -6611,7 +6611,7 @@ fn typed_body(product_id: Uuid, code: &str) -> serde_json::Value {
     json!({
         "product_id": product_id,
         "sku_code": code,
-        "sku_type": "product",
+        "sku_type": "offer",
     })
 }
 
@@ -6793,7 +6793,7 @@ async fn a_sku_type_outside_the_closed_set_is_refused_and_one_inside_is_admitted
         "the positive control on SKU_TYPE_UNKNOWN"
     );
     let view = body_json(admitted).await;
-    assert_eq!(view["sku_type"], "product");
+    assert_eq!(view["sku_type"], "offer");
     assert_eq!(view["sellable"], true, "inst-cl-sellable's default");
     assert_eq!(
         view["plan_tier"], "standard",
@@ -7183,7 +7183,7 @@ async fn a_type_change_after_first_publish_is_refused_and_a_sellable_flip_is_fro
         .expect("ASCII")
         .to_owned();
 
-    let refused = save_sku_at(&harness, sku_id, &etag, &json!({ "sku_type": "service" })).await;
+    let refused = save_sku_at(&harness, sku_id, &etag, &json!({ "sku_type": "offer" })).await;
     assert_eq!(refused.status(), StatusCode::CONFLICT);
     assert_eq!(
         body_json(refused).await["context"]["reason"],
@@ -7366,7 +7366,7 @@ mod correction_door_tests {
     }
 
     fn type_correction(lane: &str, reason: Option<&str>) -> serde_json::Value {
-        let mut body = json!({ "field": "sku_type", "sku_type": "service", "lane": lane });
+        let mut body = json!({ "field": "sku_type", "sku_type": "component", "lane": lane });
         if let Some(reason) = reason {
             body["reason"] = json!(reason);
         }
@@ -7416,7 +7416,7 @@ mod correction_door_tests {
         );
         assert_eq!(
             head(&harness, sku_id).await.sku_type.as_deref(),
-            Some("product")
+            Some("offer")
         );
 
         // pricing posts a newer set omitting the SKU: fresh-zero.
@@ -7429,7 +7429,7 @@ mod correction_door_tests {
             body_json(corrected).await
         );
         let after = head(&harness, sku_id).await;
-        assert_eq!(after.sku_type.as_deref(), Some("service"));
+        assert_eq!(after.sku_type.as_deref(), Some("component"));
         assert_eq!(after.published_version, 2, "re-published as N+1");
         assert!(
             after.correction_ref.is_some(),
@@ -7446,7 +7446,7 @@ mod correction_door_tests {
         .await
         .expect("version 2 is frozen");
         assert!(
-            frozen.contains("\"sku_type\":\"service\""),
+            frozen.contains("\"sku_type\":\"component\""),
             "the frozen content is the corrected one: {frozen}"
         );
         assert_eq!(
@@ -7689,7 +7689,7 @@ mod correction_door_tests {
             body_json(admitted).await
         );
         let after = head(&harness, sku_id).await;
-        assert_eq!(after.sku_type.as_deref(), Some("service"));
+        assert_eq!(after.sku_type.as_deref(), Some("component"));
         assert_eq!(after.published_version, 2);
         assert_eq!(
             crate::test_support::raw_i64(
@@ -8721,7 +8721,7 @@ async fn the_sku_code_ceiling_refuses_one_over_and_admits_the_cap() {
     let over = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap + 1), "sku_type": "product" }),
+        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap + 1), "sku_type": "offer" }),
     )
     .await;
     assert_eq!(over.status(), StatusCode::BAD_REQUEST);
@@ -8741,7 +8741,7 @@ async fn the_sku_code_ceiling_refuses_one_over_and_admits_the_cap() {
     let at_cap = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap), "sku_type": "product" }),
+        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap), "sku_type": "offer" }),
     )
     .await;
     assert_eq!(at_cap.status(), StatusCode::CREATED, "the cap is admitted");

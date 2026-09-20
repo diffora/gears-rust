@@ -358,7 +358,7 @@ async fn enqueue_one(
             crate::infra::events::CorrectionEventBody {
                 core: &core,
                 field: "sku_type",
-                value: Some("service"),
+                value: Some("component"),
                 lane: "producer_unavailable",
                 quorum_reduced: false,
                 correction_ref: ceremony,
