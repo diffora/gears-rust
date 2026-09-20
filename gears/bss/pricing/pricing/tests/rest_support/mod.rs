@@ -1649,6 +1649,19 @@ pub fn at(hour: u32) -> OffsetDateTime {
 
 /// A draft plan carrying enough shape to be recognizable, seeded straight
 /// through the repository.
+/// A draft plan sold as a **bundle** SKU: the only shape a composition may be
+/// attached to. `seed_draft_plan`'s offer binding is refused at the attach.
+pub async fn seed_draft_bundle_plan(harness: &Harness, plan_id: Uuid) {
+    let mut draft = new_draft(plan_id, harness.tenant);
+    draft.sku_id = BUNDLE_SKU;
+    harness
+        .state
+        .plans
+        .create_draft(&harness.scope(), draft)
+        .await
+        .expect("seed the draft bundle plan");
+}
+
 pub async fn seed_draft_plan(harness: &Harness, plan_id: Uuid) {
     harness
         .state
@@ -1751,6 +1764,19 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
 }
 
 /// The same, in the **other** tenant, for the cross-tenant probes.
+/// [`seed_foreign_plan`] whose plan is sold as a **bundle** SKU, for a case that
+/// goes on to bundle it from the owning tenant.
+pub async fn seed_foreign_bundle_plan(harness: &Harness, plan_id: Uuid) {
+    let mut draft = new_draft(plan_id, harness.other);
+    draft.sku_id = BUNDLE_SKU;
+    harness
+        .state
+        .plans
+        .create_draft(&harness.other_scope(), draft)
+        .await
+        .expect("seed the foreign draft bundle plan");
+}
+
 pub async fn seed_foreign_plan(harness: &Harness, plan_id: Uuid) {
     harness
         .state
@@ -3486,6 +3512,13 @@ pub async fn foreign_is_indistinguishable(
 /// Stable offer identity shared by authored plan fixtures.
 pub const OFFER_SKU: Uuid = Uuid::from_u128(0x5_c1);
 
+/// The SKU a plan that **composes a bundle** is sold as; the same value
+/// `common::catalog` declares, because both fixtures feed one catalog.
+pub const BUNDLE_SKU: Uuid = Uuid::from_u128(0x5_c2);
+
+/// A second offer; see `common::catalog` for why.
+pub const OTHER_OFFER_SKU: Uuid = Uuid::from_u128(0x5_c3);
+
 pub fn resource_sku(meter: &str) -> Uuid {
     Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())
 }
@@ -3502,7 +3535,15 @@ pub fn catalog_sku(
         metering_unit: meter.map(str::to_owned),
         status: "published".into(),
         plan_tier: None,
-        sku_type: "component".into(),
+        // The plan's own SKU is the offer the plan realizes; everything
+        // else this builder makes is a constituent a charge line prices.
+        // A case that needs another plan's offer overrides the field.
+        sku_type: match id {
+            OFFER_SKU | OTHER_OFFER_SKU => "offer",
+            BUNDLE_SKU => "bundle",
+            _ => "component",
+        }
+        .into(),
         sellable,
         usage_type_ref: None,
         deprecated: false,

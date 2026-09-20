@@ -132,7 +132,9 @@ async fn names_nulls_and_equal_sort_keys_are_not_lost_between_pages() {
 async fn sku_id_and_plan_tier_predicates_select_the_plan_that_carries_the_value() {
     let h = Harness::new().await;
     let (gold, silver) = (Uuid::now_v7(), Uuid::now_v7());
-    let sku = Uuid::now_v7();
+    // A SKU the registry serves: re-pointing a plan is a new binding, and the
+    // role rule reads the registry before it lands.
+    let sku = crate::rest_support::OTHER_OFFER_SKU;
     seed_draft_plan(&h, gold).await;
     seed_draft_plan(&h, silver).await;
 

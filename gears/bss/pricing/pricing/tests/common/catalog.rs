@@ -3,6 +3,15 @@ use uuid::Uuid;
 
 pub const OFFER_SKU: Uuid = Uuid::from_u128(0x5_c1);
 
+/// The SKU a plan that **composes a bundle** is sold as. A composition may only
+/// be attached to a plan whose own SKU carries the `bundle` role, so a bundle
+/// fixture cannot share [`OFFER_SKU`].
+pub const BUNDLE_SKU: Uuid = Uuid::from_u128(0x5_c2);
+
+/// A second offer, for a case that needs two plans on two different offers —
+/// a list predicate, say, which a one-SKU fixture could not tell apart.
+pub const OTHER_OFFER_SKU: Uuid = Uuid::from_u128(0x5_c3);
+
 pub fn resource_sku(meter: &str) -> Uuid {
     Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())
 }
@@ -19,7 +28,15 @@ pub fn catalog_sku(
         metering_unit: meter.map(str::to_owned),
         status: "published".into(),
         plan_tier: None,
-        sku_type: "component".into(),
+        // The plan's own SKU is the offer the plan realizes; everything
+        // else this builder makes is a constituent a charge line prices.
+        // A case that needs another plan's offer overrides the field.
+        sku_type: match id {
+            OFFER_SKU | OTHER_OFFER_SKU => "offer",
+            BUNDLE_SKU => "bundle",
+            _ => "component",
+        }
+        .into(),
         sellable,
         usage_type_ref: None,
         deprecated: false,
@@ -36,6 +53,8 @@ impl Default for FixtureCatalog {
     fn default() -> Self {
         let mut skus = vec![
             catalog_sku(OFFER_SKU, None, true),
+            catalog_sku(BUNDLE_SKU, None, true),
+            catalog_sku(OTHER_OFFER_SKU, None, true),
             catalog_sku(Uuid::from_u128(5), None, false),
             catalog_sku(Uuid::from_u128(1), None, true),
         ];

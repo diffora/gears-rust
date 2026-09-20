@@ -36,6 +36,7 @@ pub mod overlay_rules;
 pub mod plan;
 pub mod plan_rules;
 pub mod plan_shape;
+pub mod plan_sku_rules;
 pub mod ports;
 pub mod price_record;
 pub mod price_row;

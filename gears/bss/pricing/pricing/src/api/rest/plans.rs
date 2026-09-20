@@ -2117,6 +2117,24 @@ async fn create_plan(
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash = preconditions::request_digest(&body)?;
     let draft_shape = shape_of(&body)?;
+    // The plan's own SKU, judged before the transaction opens.
+    //
+    // Nothing else judges it. `inst-pr-sku-sellability` exempts the plan SKU by
+    // identity so a row may name it, and that exemption means the row rules
+    // never look at the binding itself — a plan with no rows, or one whose rows
+    // all price components, reaches publish with this unasked. Either
+    // plan-owning role is admitted here: a bundle is staged as an ordinary draft
+    // and gets its composition afterwards, so which of the two this is cannot be
+    // known yet. A `component` can never become either and is refused now rather
+    // than after the author has built a phase chain on it.
+    crate::infra::row_sku::require_plan_sku_role(
+        state.catalog.as_ref(),
+        &ctx,
+        draft_shape.sku_id,
+        None,
+        /* introducing */ true,
+    )
+    .await?;
     let now = OffsetDateTime::now_utc();
 
     let guard = GuardedRequest {
@@ -2272,6 +2290,26 @@ async fn patch_plan(
             patch,
         )
         .await?;
+        // A patch that re-points the plan at another SKU is a new binding, and
+        // is judged here for the same reason the create is: before the
+        // transaction, so a registry outage leaves the plan where it was. A
+        // patch that leaves `sku_id` alone says nothing about the binding and
+        // asks the registry nothing.
+        //
+        // Either plan-owning role is admitted, as at create. Which one this plan
+        // must end up carrying depends on whether it composes a bundle, and that
+        // is answered where the composition is visible: the attach door and
+        // publish.
+        if let Some(sku_id) = patch.sku_id {
+            crate::infra::row_sku::require_plan_sku_role(
+                state.catalog.as_ref(),
+                &ctx,
+                sku_id,
+                None,
+                /* introducing */ true,
+            )
+            .await?;
+        }
     }
 
     // The revision the patch lands on, and the version the store will match.

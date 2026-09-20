@@ -22,8 +22,8 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::bundles::BUNDLES;
 use rest_support::{
     Harness, approval_row, approval_rows, body_json, etag_of, location_of, problem_code,
-    seed_current_plan, seed_draft_plan, seed_foreign_current_plan, seed_foreign_plan, seed_price,
-    with_headers,
+    seed_current_plan, seed_draft_bundle_plan, seed_draft_plan, seed_foreign_bundle_plan,
+    seed_foreign_current_plan, seed_foreign_plan, seed_price, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -53,7 +53,7 @@ async fn seed_bundle(harness: &Harness) -> (Uuid, Uuid) {
 /// The same, on a named basis.
 async fn seed_bundle_with(harness: &Harness, basis: &str) -> (Uuid, Uuid) {
     let plan_id = Uuid::now_v7();
-    seed_draft_plan(harness, plan_id).await;
+    seed_draft_bundle_plan(harness, plan_id).await;
     harness.attach_shape(plan_id, 0).await;
 
     let response = harness
@@ -95,7 +95,7 @@ async fn seed_bundle_with(harness: &Harness, basis: &str) -> (Uuid, Uuid) {
 async fn a_bundle_is_created_on_its_plan() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    seed_draft_plan(&harness, plan_id).await;
+    seed_draft_bundle_plan(&harness, plan_id).await;
     harness.attach_shape(plan_id, 0).await;
 
     let created = harness
@@ -170,7 +170,8 @@ async fn a_bundle_on_a_foreign_tenants_plan_is_a_404_and_leaves_the_plan_bundlea
     let harness = Harness::new().await;
     let foreign = Uuid::now_v7();
     let absent = Uuid::now_v7();
-    seed_foreign_plan(&harness, foreign).await;
+    // The owning tenant bundles this plan below, so it is sold as a bundle.
+    seed_foreign_bundle_plan(&harness, foreign).await;
 
     let foreign_answer = harness
         .allowed()
@@ -249,7 +250,7 @@ async fn a_bundle_on_a_foreign_tenants_plan_is_a_404_and_leaves_the_plan_bundlea
 async fn a_bundle_with_no_declared_basis_is_refused_by_code() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    seed_draft_plan(&harness, plan_id).await;
+    seed_draft_bundle_plan(&harness, plan_id).await;
 
     let response = harness
         .allowed()
@@ -305,7 +306,7 @@ async fn a_bundle_with_no_declared_basis_is_refused_by_code() {
 async fn a_retried_create_replays_the_first_answer_and_creates_one_bundle() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    seed_draft_plan(&harness, plan_id).await;
+    seed_draft_bundle_plan(&harness, plan_id).await;
     harness.attach_shape(plan_id, 0).await;
     let key = Uuid::now_v7().to_string();
     let request = serde_json::json!({
@@ -379,7 +380,7 @@ async fn a_retried_create_replays_the_first_answer_and_creates_one_bundle() {
 async fn a_different_create_under_a_spent_key_is_refused_as_a_payload_mismatch() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    seed_draft_plan(&harness, plan_id).await;
+    seed_draft_bundle_plan(&harness, plan_id).await;
     harness.attach_shape(plan_id, 0).await;
     let key = Uuid::now_v7().to_string();
 

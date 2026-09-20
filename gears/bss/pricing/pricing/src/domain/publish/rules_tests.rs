@@ -88,6 +88,15 @@ fn declared(regions: &[&str]) -> std::collections::BTreeSet<Region> {
 }
 
 /// The base parameters, before a region universe is attached.
+/// `params`, with the registry snapshot replaced. For the cases that are about
+/// what the registry says rather than about what the plan holds.
+fn params_with_index(
+    default_rounding_policy: Option<&str>,
+    index: std::sync::Arc<crate::domain::registry_view::SkuIndex>,
+) -> PublishRuleParams {
+    params(default_rounding_policy).with_sku_index(index)
+}
+
 fn base_params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
     PublishRuleParams::new(
         // The ratified launch caps, not zeros: a zero cap rejects every custom
@@ -180,6 +189,12 @@ fn a_row_shape_fault_and_a_plan_shape_fault_appear_in_one_report_in_the_fixed_or
     // row findings come first because a malformed row is malformed regardless
     // of the plan it sits in.
     let mut shape = PlanShape::new(plan(), 1, now());
+    // The plan's own SKU, and the one `fixture_sku_index` serves as an `offer`.
+    // `PlanShape::new` leaves it nil, which was harmless while nothing judged
+    // the binding: the row rules exempt the plan SKU by identity and so never
+    // looked at it. `inst-pl-sku-role` does, and a nil id is a SKU the registry
+    // has never heard of.
+    shape.sku_id = Uuid::from_u128(5);
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -221,6 +236,12 @@ fn one_awful_plan_produces_every_expected_violation_rather_than_the_first() {
     // pass. A run that stopped at the first would still block the publish and
     // would still look correct from outside.
     let mut shape = PlanShape::new(plan(), 1, now());
+    // The plan's own SKU, and the one `fixture_sku_index` serves as an `offer`.
+    // `PlanShape::new` leaves it nil, which was harmless while nothing judged
+    // the binding: the row rules exempt the plan SKU by identity and so never
+    // looked at it. `inst-pl-sku-role` does, and a nil id is a SKU the registry
+    // has never heard of.
+    shape.sku_id = Uuid::from_u128(5);
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -670,6 +691,12 @@ fn clean_plan() -> PlanShape {
 
     let terminal = PhaseId::new(Uuid::from_u128(0xf1));
     let mut shape = PlanShape::new(plan(), 1, now());
+    // The plan's own SKU, and the one `fixture_sku_index` serves as an `offer`.
+    // `PlanShape::new` leaves it nil, which was harmless while nothing judged
+    // the binding: the row rules exempt the plan SKU by identity and so never
+    // looked at it. `inst-pl-sku-role` does, and a nil id is a SKU the registry
+    // has never heard of.
+    shape.sku_id = Uuid::from_u128(5);
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -1194,6 +1221,67 @@ fn referencing(
         Region::new(region).expect("non-blank"),
         tax_inclusive,
     )
+}
+
+/// The plan's own binding is judged where the row rules are blind.
+///
+/// `inst-pr-sku-sellability` exempts the plan SKU by identity so a row may name
+/// it, and that exemption is why nothing looked at the binding itself. Two
+/// shapes reach publish straight through it: a plan with **no rows at all**,
+/// which the row loop never enters, and a plan whose every row prices a
+/// component, where the plan SKU is never a subject. Both would have published
+/// a plan sold as a component.
+///
+/// The sale flag is not consulted. The offer below is closed for new sales and
+/// still publishes — closing sales is how an operator takes a plan off the
+/// market to rework it, and refusing to publish the rework would make the two
+/// mutually exclusive.
+#[test]
+fn the_plan_sku_role_is_judged_with_no_rows_and_with_component_rows_only() {
+    use crate::domain::registry_view::SkuIndex;
+
+    let offer_closed = |role: &str| {
+        std::sync::Arc::new(SkuIndex::from_listing(vec![
+            crate::domain::ports::CatalogSku {
+                sku_id: Uuid::from_u128(5),
+                sku_code: "the-plan".to_owned(),
+                name: "The plan".to_owned(),
+                metering_unit: None,
+                status: "published".to_owned(),
+                plan_tier: None,
+                sku_type: role.to_owned(),
+                sellable: false,
+                usage_type_ref: None,
+                deprecated: false,
+            },
+        ]))
+    };
+
+    // No rows at all: the row loop never runs, so this is the rule's own answer.
+    let mut empty = clean_plan();
+    empty.rows.clear();
+    let refused = run_publish_rules(
+        &empty,
+        &params_with_index(Some("bankers"), offer_closed("component")),
+    );
+    assert!(
+        codes(&refused).iter().any(|c| c == "PLAN_SKU_TYPE_INVALID"),
+        "a plan sold as a component is refused even with nothing priced: {:?}",
+        codes(&refused)
+    );
+
+    // The same plan, bound to a closed offer, publishes.
+    let admitted = run_publish_rules(
+        &empty,
+        &params_with_index(Some("bankers"), offer_closed("offer")),
+    );
+    assert!(
+        !codes(&admitted)
+            .iter()
+            .any(|c| c == "PLAN_SKU_TYPE_INVALID"),
+        "an offer closed for new sales is still a plan an author may publish: {:?}",
+        codes(&admitted)
+    );
 }
 
 /// `clean_plan` whose one row declares `tax_inclusive`.

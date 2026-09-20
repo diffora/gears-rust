@@ -1038,6 +1038,20 @@ pub(crate) async fn rule_params(
     let referencing = crate::infra::bundle::referencing_markets(runner, scope, tenant_id, plan_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+    // Which role this plan's own SKU must carry, read from the composition and
+    // never from the author. Resolved in this same pass for the reason the two
+    // above are: the rule set runs twice on one publish, and a rule that reached
+    // for storage itself could answer differently in the two runs.
+    //
+    // A plan a bundle *composes* is a bundle publication; a plan that is merely
+    // *referenced as a component by* some other bundle is not, which is what
+    // `referencing_markets` above answers and why the two cannot share a probe.
+    let composes_a_bundle = crate::infra::storage::repo::bundle_repo::find_by_plan_on(
+        runner, scope, tenant_id, plan_id,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?
+    .is_some();
     // `inst-tx-region`: the tenant's **active** region universe. Resolved here,
     // in the same pass as everything else, for the reason this function exists —
     // the rule set runs twice on one publish and a rule reaching for storage
@@ -1111,7 +1125,7 @@ pub(crate) async fn rule_params(
     )
     .await
     .map_err(|e| repo_failure(&e))?;
-    Ok(PublishRuleParams::new(
+    let params = PublishRuleParams::new(
         policy.interval_bounds(),
         policy.descriptor_rule(),
         policy.default_rounding_policy_ref().map(ToOwned::to_owned),
@@ -1134,7 +1148,12 @@ pub(crate) async fn rule_params(
     .with_declared_gl_codes(declared_gl_codes)
     .with_tax_display(tax_display_policy, readiness)
     .with_addon_coverage(addon_coverage)
-    .with_change_targets(change_targets))
+    .with_change_targets(change_targets);
+    Ok(if composes_a_bundle {
+        params.as_bundle_publication()
+    } else {
+        params
+    })
 }
 
 /// The registry request id of one publish unit.

@@ -260,6 +260,13 @@ pub const PRIMITIVE_RULES_UNBUILT: &str = "PRIMITIVE_RULES_UNBUILT";
 #[derive(Clone, Debug)]
 pub struct PublishRuleParams {
     sku_index: Option<std::sync::Arc<crate::domain::registry_view::SkuIndex>>,
+    /// The role this plan's own SKU must carry, read from whether a bundle
+    /// composition references the plan — never from a field the author wrote.
+    ///
+    /// Defaults to [`ROLE_OFFER`](crate::domain::plan_sku_rules::ROLE_OFFER):
+    /// an ordinary publish is the common case, and a caller that forgets to
+    /// say otherwise gets the stricter reading rather than a silent pass.
+    plan_sku_role: &'static str,
     interval_bounds: CustomIntervalBounds,
     descriptors: DescriptorSetComplete,
     default_rounding_policy: Option<String>,
@@ -338,6 +345,18 @@ impl PublishRuleParams {
         self
     }
 
+    /// Judge the plan's own SKU as a bundle's rather than an ordinary plan's.
+    ///
+    /// The caller passes this when a composition references the plan. It is the
+    /// composition itself that decides, which is why there is no setter for the
+    /// ordinary case: `false` is not a thing a caller asserts, it is what not
+    /// having a composition means.
+    #[must_use]
+    pub fn as_bundle_publication(mut self) -> Self {
+        self.plan_sku_role = crate::domain::plan_sku_rules::ROLE_BUNDLE;
+        self
+    }
+
     /// Use the registry snapshot resolved for this publish request.
     #[must_use]
     pub fn with_sku_index(
@@ -357,6 +376,7 @@ impl PublishRuleParams {
     ) -> Self {
         Self {
             sku_index: None,
+            plan_sku_role: crate::domain::plan_sku_rules::ROLE_OFFER,
             interval_bounds,
             descriptors,
             default_rounding_policy,
@@ -569,6 +589,18 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     // published row in an earlier revision is not (D-370).
     let plan_sku = crate::domain::scope_key::SkuId::new(shape.sku_id);
     let index = params.sku_index.clone().unwrap_or_default();
+    // The plan's own binding, first, because every row rule below exempts it by
+    // identity and so none of them looks at it. A plan with no rows at all, or
+    // one whose rows all price components, would otherwise publish sold as a
+    // component or as a bundle SKU with nothing composed. `introducing` is false
+    // here: a publish re-judges a binding the create already admitted, and
+    // D-370's deprecation arm refuses the introduction rather than the holding.
+    report.absorb(crate::domain::plan_sku_rules::validate_plan_sku(
+        plan_sku,
+        &index,
+        params.plan_sku_role,
+        /* introducing */ false,
+    ));
     for record in &shape.rows {
         let row_rules = price_row_rules(crate::domain::row_sku_rules::RowSkuContext {
             plan_sku,

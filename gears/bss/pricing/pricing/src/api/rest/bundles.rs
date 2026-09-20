@@ -427,6 +427,39 @@ async fn create_bundle(
 
     let plan_id = PlanId::new(body.plan_id);
     let wire_plan_id = body.plan_id;
+    // Attaching a composition is what makes this plan a bundle, so from here on
+    // its own SKU must carry the `bundle` role. The create door admitted either
+    // plan-owning role because the composition did not exist yet; this is the
+    // moment it does, and an offer-bound draft is refused here rather than at a
+    // publish the author would reach with more built on top.
+    //
+    // Before the transaction: a registry outage must leave no half-attached
+    // composition behind.
+    //
+    // Read through `find_open_draft`, not `find_current`: a plan whose current
+    // revision is published cannot acquire a composition at all, and that is
+    // `LIFECYCLE_FORBIDDEN`'s refusal further down. Answering
+    // `PLAN_SKU_TYPE_INVALID` there would send the author to change a registry
+    // SKU when the thing stopping them is the plan's state — one fault, the code
+    // that names the edit that would actually help.
+    let plan_sku = state
+        .plans
+        .find_open_draft(&scope, tenant, plan_id)
+        .await
+        .map_err(|e| CanonicalError::from(crate::infra::storage::repo_failure(&e)))?
+        .map(|revision| revision.sku_id);
+    // No open draft means the plan is absent or not in a state that admits a
+    // composition; both are refusals this door already makes by their own names.
+    if let Some(plan_sku) = plan_sku {
+        crate::infra::row_sku::require_plan_sku_role(
+            state.catalog.as_ref(),
+            &ctx,
+            plan_sku,
+            Some(crate::domain::plan_sku_rules::ROLE_BUNDLE),
+            /* introducing */ true,
+        )
+        .await?;
+    }
     let now = OffsetDateTime::now_utc();
     let stamp = audit_stamp(&ctx, now, correlation);
     let mutation_scope = scope.clone();

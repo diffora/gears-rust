@@ -306,6 +306,14 @@ fn every_write_stamping_site_is_accounted_for() {
         // the one that did not, which also made `price_basis` being `Option` on
         // the wire — done precisely to keep the code reachable — buy nothing.
         "bundles",
+        // The plan's own SKU binding. Its operands are in the request and the
+        // registry read that answers it, and nothing later can complete them: a
+        // plan sold as a component is not a draft on its way to being valid, and
+        // the binding cannot be re-pointed after publish. It stamps at write for
+        // the same reason `row_sku_rules` does one level down — and it exists
+        // because that rule exempts the plan's own SKU by identity, so the
+        // binding itself was judged by nothing.
+        "plan_sku_rules",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -372,6 +380,11 @@ const VALUE_TOKENS: &[(&str, &str)] = &[
     // §6's two `billing_timing` column values.
     ("BILLING_TIMING_ADVANCE", "advance"),
     ("BILLING_TIMING_ARREARS", "arrears"),
+    // The two plan-owning registry roles, as `products_sku.sku_type` spells
+    // them. They are values this gear compares against, never codes it reports:
+    // the refusal they produce is `PLAN_SKU_TYPE_INVALID`.
+    ("ROLE_OFFER", "offer"),
+    ("ROLE_BUNDLE", "bundle"),
     // The filler the canonical scope-key rendering writes for an absent axis. It
     // is a rendered value, and the two free-form axes refuse it as a value of
     // their own so the rendering stays injective.

@@ -169,6 +169,27 @@ pub const SKU_NOT_PUBLISHED: &str = "SKU_NOT_PUBLISHED";
 /// SKU is admitted.
 pub const ROW_SKU_DEPRECATED: &str = "ROW_SKU_DEPRECATED";
 
+/// The plan's own SKU carries the wrong **role** for the context it is bound in.
+///
+/// An ordinary plan is an offer's realization, so its SKU must be an `offer`; a
+/// bundle's must be a `bundle`. The context is the actual composition, never an
+/// authored plan-type field — that token was removed by D-375 and reintroducing
+/// it as a discriminator would be the same mistake under another name.
+///
+/// The role is read on its own. A closed offer is a perfectly good plan SKU:
+/// whether the plan may be **sold** is the registry's permission flag and a
+/// different question, asked by a different rule at a different moment.
+pub const PLAN_SKU_TYPE_INVALID: &str = "PLAN_SKU_TYPE_INVALID";
+
+/// D-370, one level up: a deprecated registry SKU may not be **newly** bound as
+/// a plan's own.
+///
+/// The row-level sibling is [`ROW_SKU_DEPRECATED`] and the reading is the same —
+/// a deprecated SKU is served as `published` plus `deprecated`, so publication
+/// is not the fault, and an *already bound* plan keeps its binding. Only an
+/// introduction is refused.
+pub const PLAN_SKU_DEPRECATED: &str = "PLAN_SKU_DEPRECATED";
+
 /// Every Slice-3 row-local rule, in report order.
 ///
 /// Ordered by theme — kind, then bands, then package, then level aggregation —
