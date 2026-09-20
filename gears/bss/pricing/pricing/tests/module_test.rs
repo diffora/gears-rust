@@ -1148,6 +1148,14 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
             "HistoryQuery",
             vec!["cursor", "limit"],
         ),
+        // The line list pages by **logical line** on the same two parameters and
+        // takes no `$filter`: a plan's lines are a bounded authoring set.
+        (
+            "GET",
+            bss_pricing::api::rest::charge_lines::PLAN_CHARGE_LINES,
+            "LineListQuery",
+            vec!["cursor", "limit"],
+        ),
         (
             "GET",
             AUDIT,

@@ -19,6 +19,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod charge_line_support;
 mod common;
 mod rest_support;
 

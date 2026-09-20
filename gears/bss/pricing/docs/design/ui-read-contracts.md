@@ -504,3 +504,31 @@ The **published** plan payload (read model / `pricingSnapshotRef`) gains, on eve
 `prices[]` member, `chargeLineId`, `lineVersionId` and `marketPriceId` beside `priceId`, and on
 every `windows[].intervals[]` member, `windowId` and `priceId`. All five are `null` only on a
 delta built off the publish path; a published read always carries them.
+
+## Derived charge kinds and the paged line list (2026-09-20)
+
+**`charge_kinds` replaces the plan type.** `GET /plans` items and `GET /plans/{planId}` carry
+`charge_kinds`: the distinct kinds of the plan's **logical charge lines**, a subset of
+`["one_time", "recurring", "usage"]`, sorted by wire token. There is no `billing_cycle`, no
+`hybrid`, and nothing reduces the set to one category — a plan that recurs and meters lists both.
+
+- Read off the lines, not the price rows: three markets of one line are **one** member, and a
+  line drafted ahead of its market prices already counts.
+- An empty draft answers `[]`.
+- Mutation responses (`POST`/`PATCH /plans…`) carry `[]`, exactly as they do for
+  `pending_approvals`; follow with a GET.
+- Filter with `$filter=charge_kind eq 'recurring'` (membership). `ne` means "holds no line of
+  this kind", so a plan with no line at all matches it. A token outside the three kinds, and
+  the removed `billing_cycle` field, answer **400** rather than matching everything.
+
+**`GET /plans/{planId}/charge-lines` is paged by logical line** (D-125 keyset walk):
+`?limit=` (default 100, max 1,000; `0` is refused) and `?cursor=`, answering
+
+```json
+{ "items": [ { "charge_line_id": "…", "line_version_id": "…", "prices": [ … ] } ],
+  "page_info": { "next_cursor": "…", "prev_cursor": null, "limit": 100 } }
+```
+
+One item per line however many markets are nested under it, so a page boundary never cuts a
+line's `prices`. `next_cursor` is `null` on the last page, not on the page after it. Price
+**history** pagination is unchanged and still counts immutable monetary versions.

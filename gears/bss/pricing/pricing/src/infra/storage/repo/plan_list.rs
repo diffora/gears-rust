@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::{PlanRevision, to_domain};
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{charge_line_version, market_price, plan, price};
+use crate::infra::storage::entity::{charge_line, charge_line_version, market_price, plan, price};
 use crate::infra::storage::odata_mapping::{
     LIST_LIMIT_CFG, OdataPageError, lifecycle_token, query_with_default_order,
     query_with_unique_order,
@@ -296,6 +296,45 @@ fn predicate(
             exists
         });
     }
+    if field == Field::ChargeKind {
+        // Membership over the plan's **logical lines**, not its rows: a kind is
+        // an axis of the line, so three markets of one line are one member, and
+        // a line drafted ahead of its prices already counts. `ne` is "holds no
+        // line of this kind", the reading `model_kind` and `currency` take.
+        let ODataValue::String(token) = value else {
+            return Err(bad_filter("charge_kind requires a string token"));
+        };
+        if crate::domain::scope_key::ChargeKind::parse(token).is_none() {
+            return Err(bad_filter(format!(
+                "unknown charge kind `{token}`; the kinds are one_time, recurring and usage"
+            )));
+        }
+        let comparison = scalar(
+            Expr::col((charge_line::Entity, charge_line::Column::ChargeKind)),
+            if op == FilterOp::Ne { FilterOp::Eq } else { op },
+            value,
+        )?;
+        let exists = Condition::all().add(Expr::exists(
+            Query::select()
+                .expr(Expr::val(1))
+                .from(charge_line::Entity)
+                .and_where(
+                    Expr::col((charge_line::Entity, charge_line::Column::TenantId))
+                        .eq(col(plan::Column::TenantId)),
+                )
+                .and_where(
+                    Expr::col((charge_line::Entity, charge_line::Column::PlanId))
+                        .eq(col(plan::Column::PlanId)),
+                )
+                .cond_where(comparison)
+                .to_owned(),
+        ));
+        return Ok(if op == FilterOp::Ne {
+            exists.not()
+        } else {
+            exists
+        });
+    }
     if field == Field::LifecycleState {
         lifecycle_token(value).map_err(bad_filter)?;
     }
@@ -306,7 +345,7 @@ fn predicate(
         Field::SkuId => col(plan::Column::SkuId),
         Field::PlanTier => col(plan::Column::PlanTier),
         Field::CreatedAt => created_at_expr(),
-        Field::ModelKind | Field::Currency | Field::HasPendingApprovals => {
+        Field::ModelKind | Field::Currency | Field::ChargeKind | Field::HasPendingApprovals => {
             return Err(bad_filter("invalid scalar field"));
         }
     };

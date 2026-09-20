@@ -863,3 +863,116 @@ async fn a_line_with_no_market_price_blocks_the_publish() {
         "the refusal names the line that sells in no market: {problem}"
     );
 }
+
+/// The line list pages by **logical line**: a page of two is two lines however
+/// many markets hang under them, the walk visits every line exactly once, and a
+/// page that ends on the last line says so rather than sending the client for an
+/// empty one.
+#[tokio::test]
+async fn the_line_list_pages_by_logical_line_and_stops_at_the_exact_boundary() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&h, plan_id).await;
+
+    // Three lines; the first carries two markets, so a row-counting page of two
+    // would end inside it.
+    let mut versions = Vec::new();
+    // Three distinct lines: two kinds, and a second eligibility class of one of
+    // them — an axis of the line key, so it is a line of its own.
+    for (nth, (kind, eligibility)) in [
+        ("one_time", "all_subscriptions"),
+        ("recurring", "all_subscriptions"),
+        ("recurring", "new_subscriptions_only"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut body = flat_line_body(kind);
+        body["scope_key"]["price_eligibility"] = serde_json::json!(eligibility);
+        let created = post_line(&h, plan_id, body, &format!("page-{nth}")).await;
+        let status = created.status();
+        let body = body_json(created).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        versions.push(body["line_version_id"].as_str().expect("id").to_owned());
+    }
+    for (nth, (currency, region)) in [("EUR", "EU"), ("USD", "US")].into_iter().enumerate() {
+        let priced = post_price(
+            &h,
+            plan_id,
+            &versions[0],
+            flat_price_body(currency, region, 1_000),
+            &format!("page-price-{nth}"),
+        )
+        .await;
+        assert_eq!(priced.status(), StatusCode::CREATED);
+    }
+
+    let read = |query: String| {
+        let h = &h;
+        async move {
+            let response = h
+                .allowed()
+                .send(request(
+                    "GET",
+                    &format!("{}?{query}", lines_path(plan_id)),
+                    None,
+                ))
+                .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            body_json(response).await
+        }
+    };
+
+    let first = read("limit=2".to_owned()).await;
+    assert_eq!(first["items"].as_array().unwrap().len(), 2, "{first}");
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("a third line is still ahead")
+        .to_owned();
+    let second = read(format!("limit=2&cursor={cursor}")).await;
+    assert_eq!(second["items"].as_array().unwrap().len(), 1, "{second}");
+    assert!(
+        second["page_info"]["next_cursor"].is_null(),
+        "the last page names no successor: {second}"
+    );
+
+    let mut seen: Vec<String> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .map(|item| item["line_version_id"].as_str().unwrap().to_owned())
+        .collect();
+    seen.sort();
+    let mut expected = versions.clone();
+    expected.sort();
+    assert_eq!(seen, expected, "every line exactly once");
+    let two_market_line = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(second["items"].as_array().unwrap())
+        .find(|item| item["line_version_id"] == versions[0])
+        .expect("the priced line");
+    assert_eq!(
+        two_market_line["prices"].as_array().unwrap().len(),
+        2,
+        "a page boundary never cuts a line's markets"
+    );
+
+    // The exact boundary: a page of three over three lines is the last page.
+    let exact = read("limit=3".to_owned()).await;
+    assert_eq!(exact["items"].as_array().unwrap().len(), 3);
+    assert!(exact["page_info"]["next_cursor"].is_null(), "{exact}");
+
+    // And a page of zero never advances, so it is refused.
+    let zero = h
+        .allowed()
+        .send(request(
+            "GET",
+            &format!("{}?limit=0", lines_path(plan_id)),
+            None,
+        ))
+        .await;
+    assert_eq!(zero.status(), StatusCode::BAD_REQUEST);
+}

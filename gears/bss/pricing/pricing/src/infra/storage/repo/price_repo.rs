@@ -2118,6 +2118,15 @@ pub struct PlanRowAggregate {
     pub model_kinds: Vec<String>,
     /// The distinct currencies of those rows, sorted.
     pub currencies: Vec<String>,
+    /// The distinct charge kinds of the plan's **logical lines**, sorted by wire
+    /// token.
+    ///
+    /// Read off `pricing_charge_line` and not off the rows, on purpose: a kind is
+    /// an axis of the line, three markets of one line are one kind, and a line
+    /// drafted ahead of its market prices already says what the plan charges
+    /// for. It replaces the authored plan type — nothing infers a single
+    /// category from this set.
+    pub charge_kinds: Vec<String>,
 }
 
 /// [`PlanRowAggregate`] for each of `plan_ids` that holds at least one authoring
@@ -2294,9 +2303,31 @@ pub async fn aggregate_authoring_rows_for_plans(
             aggregate.currencies.push(currency);
         }
     }
+    // The kinds, from the lines. One small read per chunk: a plan's lines are
+    // bounded by its phases x SKUs x kinds, never by its rows or markets.
+    for chunk in ids.chunks(MAX_IN_BINDS) {
+        let lines = charge_line::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(charge_line::Column::TenantId.eq(tenant_id))
+                    .add(charge_line::Column::PlanId.is_in(chunk.to_vec())),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read charge lines for plan aggregate: {e}")))?;
+        for line in lines {
+            let aggregate = out.entry(PlanId::new(line.plan_id)).or_default();
+            if !aggregate.charge_kinds.contains(&line.charge_kind) {
+                aggregate.charge_kinds.push(line.charge_kind);
+            }
+        }
+    }
     for aggregate in out.values_mut() {
         aggregate.model_kinds.sort();
         aggregate.currencies.sort();
+        aggregate.charge_kinds.sort();
     }
     Ok(out)
 }
@@ -5084,15 +5115,43 @@ pub async fn list_line_records(
     tenant_id: Uuid,
     plan_id: PlanId,
 ) -> Result<Vec<LineRecord>, RepoError> {
-    let lines = charge_line::Entity::find()
+    list_line_records_page(runner, scope, tenant_id, plan_id, None, None).await
+}
+
+/// One **page** of a plan's lines, in `charge_line_id` order, resuming strictly
+/// after `after`.
+///
+/// The keyset is the **logical line**, so a page of `limit` is `limit` lines
+/// however many markets and monetary versions each carries: the limit is applied
+/// to `pricing_charge_line` and the prices are read per line afterwards, never
+/// the other way round. A limit applied to price rows would cut a line in half
+/// at a page boundary and count one line once per market.
+///
+/// # Errors
+/// As [`load_line_record`].
+pub async fn list_line_records_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    after: Option<Uuid>,
+    limit: Option<u64>,
+) -> Result<Vec<LineRecord>, RepoError> {
+    let mut filter = Condition::all()
+        .add(charge_line::Column::TenantId.eq(tenant_id))
+        .add(charge_line::Column::PlanId.eq(plan_id.get()));
+    if let Some(cursor) = after {
+        filter = filter.add(charge_line::Column::ChargeLineId.gt(cursor));
+    }
+    let mut query = charge_line::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(charge_line::Column::TenantId.eq(tenant_id))
-                .add(charge_line::Column::PlanId.eq(plan_id.get())),
-        )
-        .order_by(charge_line::Column::ChargeLineId, sea_orm::Order::Asc)
+        .filter(filter)
+        .order_by(charge_line::Column::ChargeLineId, sea_orm::Order::Asc);
+    if let Some(limit) = limit {
+        query = query.limit(limit);
+    }
+    let lines = query
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("list pricing_charge_line: {e}")))?;

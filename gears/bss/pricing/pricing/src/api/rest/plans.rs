@@ -597,6 +597,17 @@ pub struct PlanView {
     /// (`PENDING_CHANGE_UNIT_EXISTS` on a second submit,
     /// `APPROVAL_NOT_PENDING` on a stale decision).
     pub pending_approvals: Vec<PendingApprovalView>,
+    /// The distinct charge kinds of the plan's **logical lines** — a subset of
+    /// `one_time`, `recurring`, `usage`, sorted by wire token.
+    ///
+    /// Derived, never authored, and it is what replaced the plan type: nothing
+    /// reduces it to one category, because a plan that recurs and meters is
+    /// both. Read off the lines rather than the price rows, so three markets of
+    /// one line are one member and a line drafted ahead of its prices already
+    /// counts. **Filled by `GET /plans/{planId}` and `GET /plans`**; a mutation
+    /// response carries the empty list, exactly as it does for
+    /// [`Self::pending_approvals`] — follow with a GET.
+    pub charge_kinds: Vec<String>,
 }
 
 /// One submitted approval belonging directly to a plan's aggregate.
@@ -671,6 +682,7 @@ impl PlanView {
             // Filled by the read handler, which is the only caller that has a
             // connection to ask the approval store with (D-359).
             pending_approvals: Vec::new(),
+            charge_kinds: Vec::new(),
         }
     }
 }
@@ -729,6 +741,9 @@ pub struct PlanSummaryView {
     pub model_kinds: Vec<String>,
     /// Distinct currencies of those rows, sorted (D-360).
     pub currencies: Vec<String>,
+    /// Distinct charge kinds of the plan's logical lines, sorted by wire token;
+    /// see [`PlanView::charge_kinds`]. Filter on membership with `charge_kind`.
+    pub charge_kinds: Vec<String>,
 }
 
 /// The tenant's plans counted by **authoring** state — what the list's rows
@@ -771,6 +786,7 @@ impl From<&plan_repo::PlanListEntry> for PlanSummaryView {
             price_row_count: 0,
             model_kinds: Vec::new(),
             currencies: Vec::new(),
+            charge_kinds: Vec::new(),
         }
     }
 }
@@ -1469,6 +1485,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              Query-only model_kind and currency predicates independently match draft/published \
              price rows (possibly different rows); response arrays stay model_kinds/currencies. \
              Example: $filter=model_kind eq 'flat' and currency in ('EUR','USD'). \
+             charge_kind tests membership of the plan's logical charge lines (one_time, recurring, \
+             usage); the response array is charge_kinds. There is no plan-type or billing_cycle field. \
              has_pending_approvals eq true tests the same direct submitted units as pending_approvals. \
              created_at is the original plan creation time; revision_created_at is the shown \
              revision's creation time. No created_at_utc alias. Full shape remains on GET /plans/{planId}. \
@@ -1817,6 +1835,25 @@ async fn get_plan(
         })
         .collect();
 
+    // The derived kinds, from the plan's lines — `list_plans`' aggregate asked of
+    // one id, so the two reads cannot disagree about what a plan charges for.
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::from(repo_failure(&RepoError::Db(format!(
+            "plan kinds conn: {e}"
+        ))))
+    })?;
+    view.charge_kinds =
+        crate::infra::storage::repo::price_repo::aggregate_rows_for_authorized_plans(
+            &conn,
+            tenant,
+            &[plan_id],
+        )
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?
+        .remove(&plan_id)
+        .map(|aggregate| aggregate.charge_kinds)
+        .unwrap_or_default();
+
     Ok(preconditions::fresh_read(([(ETAG, tag)], Json(view))))
 }
 
@@ -1910,6 +1947,7 @@ async fn list_plans(
                     item.price_row_count = aggregate.price_row_count;
                     item.model_kinds.clone_from(&aggregate.model_kinds);
                     item.currencies.clone_from(&aggregate.currencies);
+                    item.charge_kinds.clone_from(&aggregate.charge_kinds);
                 }
                 item
             })

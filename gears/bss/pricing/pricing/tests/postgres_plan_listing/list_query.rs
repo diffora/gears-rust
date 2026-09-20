@@ -182,3 +182,68 @@ async fn creation_date_seek_and_resource_scope_on_postgres() {
     assert_eq!(page.items[0].created_at, at(10));
     assert!(page.page_info.next_cursor.is_none());
 }
+
+/// `charge_kind` membership runs as a correlated `EXISTS` over
+/// `pricing_charge_line`, and that statement has to be one Postgres accepts —
+/// `plan_id` is `uuid` there and `text` on the mirror, which is exactly the kind
+/// of difference a suite that only ran `SQLite` would not see.
+///
+/// Three plans: one recurring line, one one-time line, no line. Both polarities,
+/// and `ne` includes the plan that holds no line at all.
+#[tokio::test]
+#[ignore = "requires Postgres; run with --ignored"]
+async fn charge_kind_membership_runs_on_postgres() {
+    let pg = Pg::applied().await;
+    let provider = DBProvider::<DbError>::new(pg.db().await);
+    let plans = PlanRepo::new(provider.clone());
+    let ids: Vec<_> = (1..=3).map(Uuid::from_u128).collect();
+    for id in &ids {
+        draft_at(&plans, *id, at(10)).await;
+    }
+    let conn = provider.conn().expect("conn");
+    for (plan, kind) in [(ids[0], "recurring"), (ids[1], "one_time")] {
+        super::common::seed_charge_graph(
+            &conn,
+            &scope(),
+            &super::common::ChargeGraphSeed {
+                tenant_id: TENANT,
+                plan_id: plan,
+                plan_revision: 0,
+                phase: Uuid::from_u128(0xf1),
+                sku_id: Uuid::from_u128(5),
+                charge_kind: kind.to_owned(),
+                lifecycle_state: "draft".to_owned(),
+                model_kind: Some("flat".to_owned()),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+
+    let matching = |filter: &'static str| {
+        let plans = &plans;
+        async move {
+            let query =
+                ODataQuery::new().with_filter(parse_filter_string(filter).unwrap().into_expr());
+            let mut found: Vec<Uuid> = plans
+                .list_authoring_odata(&scope(), TENANT, &query)
+                .await
+                .expect("the membership statement runs on Postgres")
+                .items
+                .iter()
+                .map(|entry| entry.revision.plan_id.get())
+                .collect();
+            found.sort_unstable();
+            found
+        }
+    };
+    assert_eq!(matching("charge_kind eq 'recurring'").await, vec![ids[0]]);
+    assert_eq!(matching("charge_kind eq 'one_time'").await, vec![ids[1]]);
+    assert_eq!(
+        matching("charge_kind ne 'recurring'").await,
+        vec![ids[1], ids[2]],
+        "`ne` is \"holds no line of this kind\", so the lineless plan matches"
+    );
+}

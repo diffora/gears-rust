@@ -28,6 +28,10 @@ struct PlanListQuery {
     /// Query-only predicate over authoring price rows; response is `currencies`.
     #[odata(filter(kind = "String"))]
     pub currency: String,
+    /// Query-only membership over the plan's logical charge lines; response is
+    /// `charge_kinds`. Replaces the removed plan-type filter.
+    #[odata(filter(kind = "String"))]
+    pub charge_kind: String,
     #[odata(filter(kind = "Bool"))]
     pub has_pending_approvals: bool,
 }

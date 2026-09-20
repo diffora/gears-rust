@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Extension, Path};
+use axum::extract::{Extension, Path, Query};
 use axum::http::header::{ETAG, LOCATION};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
@@ -416,12 +416,26 @@ impl ChargeLineView {
     }
 }
 
-/// The lines of one plan.
+/// One page of a plan's lines.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct ChargeLineListView {
-    /// Every line of the plan at its latest version, in line-id order.
+    /// The page's lines at their latest version, in line-id order. One item per
+    /// **logical line**, however many markets are nested under it.
     pub items: Vec<ChargeLineView>,
+    /// D-125's page envelope. `next_cursor` is absent on the last page rather
+    /// than on the page after it.
+    pub page_info: toolkit_odata::PageInfo,
+}
+
+/// D-125's two query parameters, both optional.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct LineListQuery {
+    /// Page size in **lines**. Absent means the server default; above the cap
+    /// it clamps.
+    pub limit: Option<String>,
+    /// The opaque token the previous page handed back.
+    pub cursor: Option<String>,
 }
 
 fn structure_view(line: &LineRecord) -> StructureView {
@@ -841,13 +855,22 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.list_charge_lines")
         .summary("List a plan's charge lines with their market prices")
         .description(
-            "Returns every line of the plan at its latest version, each with the market prices \
-             filed under that version. This is the authoring read (`plan` x `read`).",
+            "Returns the plan's lines at their latest version, each with the market prices \
+             filed under that version. Paged by **logical line** (D-125 keyset walk on the line \
+             id): a line with three markets is one item. This is the authoring read \
+             (`plan` x `read`).",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
         .path_param("planId", "The plan whose lines to list.")
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size in logical lines; default 100, max 1,000",
+            "integer",
+        )
+        .query_param("cursor", false, "Opaque base64url pagination cursor")
         .handler(list_lines)
         .json_response_with_schema::<ChargeLineListView>(
             openapi,
@@ -1116,18 +1139,37 @@ async fn list_lines(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(plan_id): Path<Uuid>,
+    Query(query): Query<LineListQuery>,
 ) -> Result<Json<ChargeLineListView>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant = ctx.subject_tenant_id();
     let plan_id = PlanId::new(plan_id);
     let scope = read_scope(&enforcer, &ctx, plan_id.get()).await?;
+    let page = crate::api::rest::cursor::PageRequest::parse(
+        crate::api::rest::cursor::parse_limit(query.limit.as_deref())?,
+        query.cursor.as_deref(),
+    )?;
     let conn = state
         .db
         .conn()
         .map_err(|e| DomainError::Internal(format!("line read connection: {e}")))?;
-    let lines = price_repo::list_line_records(&conn, &scope, tenant, plan_id)
-        .await
-        .map_err(|e| repo_failure(&e))?;
+    // One line past the page, to learn whether the walk continues without a
+    // second round trip and without an empty last page.
+    let mut lines = price_repo::list_line_records_page(
+        &conn,
+        &scope,
+        tenant,
+        plan_id,
+        page.after,
+        Some(page.limit + 1),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    let more = u64::try_from(lines.len()).unwrap_or(u64::MAX) > page.limit;
+    lines.truncate(usize::try_from(page.limit).unwrap_or(usize::MAX));
+    let next = more
+        .then(|| lines.last().map(|line| line.charge_line_id))
+        .flatten();
     let mut items = Vec::with_capacity(lines.len());
     for line in &lines {
         let prices =
@@ -1136,7 +1178,10 @@ async fn list_lines(
                 .map_err(|e| repo_failure(&e))?;
         items.push(ChargeLineView::of(line, &prices));
     }
-    Ok(Json(ChargeLineListView { items }))
+    Ok(Json(ChargeLineListView {
+        items,
+        page_info: crate::api::rest::cursor::page_info(next, page.limit),
+    }))
 }
 
 async fn get_line(

@@ -491,3 +491,152 @@ async fn resource_pinned_plan_reads_keep_child_aggregates_without_leaking_other_
         assert_eq!(item["pending_approvals"][0]["approval_id"], json!(pending));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Derived charge kinds — what replaced the authored plan type.
+// ---------------------------------------------------------------------------
+
+/// Draft one flat line of `kind` through the real route and hand back its
+/// `line_version_id`.
+async fn draft_line(h: &Harness, plan: Uuid, kind: &str, key: &str) -> String {
+    use crate::charge_line_support::{flat_line_body, post_line};
+
+    let response = post_line(h, plan, flat_line_body(kind), key).await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::CREATED, "the line must draft: {body}");
+    body["line_version_id"]
+        .as_str()
+        .expect("the line version")
+        .to_owned()
+}
+
+/// The kinds are read off the plan's **logical lines**: three markets of one
+/// line are one member, a plan with two kinds lists both in **wire-token**
+/// order, a plan with no line lists none, and nothing anywhere reduces the set
+/// to one category or carries the removed cycle.
+#[tokio::test]
+async fn charge_kinds_are_derived_from_logical_lines_and_filter_by_membership() {
+    use crate::charge_line_support::{flat_price_body, lines_path, post_price};
+
+    let h = Harness::new().await;
+    let one_kind = Uuid::from_u128(0x71);
+    let two_kinds = Uuid::from_u128(0x72);
+    let empty = Uuid::from_u128(0x73);
+    for id in [one_kind, two_kinds, empty] {
+        seed_draft_plan(&h, id).await;
+    }
+
+    // One line, three markets.
+    let version = draft_line(&h, one_kind, "one_time", "kinds-a").await;
+    for (nth, (currency, region)) in [("EUR", "EU"), ("USD", "US"), ("USD", "us-east")]
+        .into_iter()
+        .enumerate()
+    {
+        let priced = post_price(
+            &h,
+            one_kind,
+            &version,
+            flat_price_body(currency, region, 1_000),
+            &format!("kinds-a-price-{nth}"),
+        )
+        .await;
+        assert_eq!(
+            priced.status(),
+            StatusCode::CREATED,
+            "{}",
+            body_json(priced).await
+        );
+    }
+    // Two kinds, declared recurring-first so a sort by declaration order and a
+    // sort by wire token disagree.
+    draft_line(&h, two_kinds, "recurring", "kinds-b-1").await;
+    draft_line(&h, two_kinds, "one_time", "kinds-b-2").await;
+
+    let listed = page(&h, "$orderby=plan_id").await;
+    let by_id = |id: Uuid| -> Value {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["plan_id"] == id.to_string())
+            .cloned()
+            .unwrap_or_else(|| panic!("plan {id} is on the page: {listed}"))
+    };
+    assert_eq!(by_id(one_kind)["charge_kinds"], json!(["one_time"]));
+    assert_eq!(
+        by_id(two_kinds)["charge_kinds"],
+        json!(["one_time", "recurring"]),
+        "wire-token order, not enum declaration order"
+    );
+    assert_eq!(by_id(empty)["charge_kinds"], json!([]));
+    assert!(by_id(one_kind).get("billing_cycle").is_none());
+
+    // The single read agrees with the page, and carries no plan type either.
+    let single = body_json(
+        h.allowed()
+            .send(request("GET", &plan_path(one_kind), None))
+            .await,
+    )
+    .await;
+    assert_eq!(single["charge_kinds"], json!(["one_time"]));
+    assert!(single.get("billing_cycle").is_none());
+
+    // The line list counts logical lines: one item, three nested prices.
+    let lines = body_json(
+        h.allowed()
+            .send(request("GET", &lines_path(one_kind), None))
+            .await,
+    )
+    .await;
+    assert_eq!(lines["items"].as_array().unwrap().len(), 1, "{lines}");
+    assert_eq!(
+        lines["items"][0]["prices"].as_array().unwrap().len(),
+        3,
+        "{lines}"
+    );
+
+    // Membership, both polarities.
+    let recurring = page(&h, "$filter=charge_kind%20eq%20'recurring'").await;
+    let ids = |result: &Value| -> Vec<String> {
+        result["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["plan_id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&recurring), vec![two_kinds.to_string()]);
+    let no_one_time = page(&h, "$filter=charge_kind%20ne%20'one_time'").await;
+    assert_eq!(
+        ids(&no_one_time),
+        vec![empty.to_string()],
+        "`ne` is \"holds no line of this kind\", so the plan with no line at all matches"
+    );
+}
+
+/// A token outside the three kinds, and the removed cycle filter, are **refused**
+/// rather than ignored: a filter that silently matched everything would hand a
+/// caller the whole catalogue as the answer to a question it did not ask.
+#[tokio::test]
+async fn an_unknown_charge_kind_and_the_removed_cycle_filter_are_refused() {
+    let h = Harness::new().await;
+    seed_draft_plan(&h, Uuid::from_u128(0x74)).await;
+
+    for query in [
+        "$filter=charge_kind%20eq%20'one_time_setup'",
+        "$filter=charge_kind%20eq%20'hybrid'",
+        "$filter=billing_cycle%20eq%20'monthly'",
+    ] {
+        let response = h
+            .allowed()
+            .send(request("GET", &format!("{PLANS}?{query}"), None))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`{query}` must be refused: {}",
+            body_json(response).await
+        );
+    }
+}
