@@ -4285,6 +4285,64 @@ async fn clone_line_version(h: &Harness) -> Uuid {
     clone_id
 }
 
+/// Point one price row's money at another structure version, in the store.
+///
+/// No door performs this edit; it is what a repair script or a future route
+/// would do, and the state the normalized pin (v21) exists to tell apart.
+async fn rebind_price(h: &Harness, price_id: Uuid, line_version_id: Uuid) {
+    use sea_orm::sea_query::Expr;
+    use toolkit_db::secure::SecureUpdateExt;
+
+    let conn = h.provider.conn().expect("conn");
+    let moved = price::Entity::update_many()
+        .secure()
+        .scope_with(&h.scope)
+        .col_expr(price::Column::LineVersionId, Expr::value(line_version_id))
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .exec(&conn)
+        .await
+        .expect("re-bind the money");
+    assert_eq!(moved.rows_affected, 1);
+}
+
+/// **The in-transaction half of the normalized pin.** After the approve, the
+/// row's money is re-bound to a twin structure version of identical content.
+/// Every resolved row, the row's version and the revision's version are exactly
+/// what the reviewer signed for — and the commit still refuses, because the
+/// digest it re-derives inside its own transaction frames `line_version_id`.
+///
+/// Under the v20 preimage this commit froze a structure no reviewer was shown.
+#[tokio::test]
+async fn a_market_rebound_after_the_approve_is_refused_inside_the_commit() {
+    let h = harness().await;
+    let (revision, version, price_id) = seed_publishable(&h).await;
+    let record = approve_unit(&h, Uuid::from_u128(0xa9_21)).await;
+
+    let twin = clone_line_version(&h).await;
+    rebind_price(&h, price_id, twin).await;
+
+    let refused = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            authorization_of(&record),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("the structure approved is not the structure this would freeze");
+    assert!(
+        matches!(refused, DomainError::ApprovalContentMismatch(_)),
+        "got {refused:?}"
+    );
+    assert_commit_wrote_nothing(&h, revision, version).await;
+}
+
 /// Two markets of one line publish together, and the store binds both to **one**
 /// charge-line version — which is what makes the simultaneity rule satisfiable
 /// inside a revision rather than merely unviolated.

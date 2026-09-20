@@ -2872,6 +2872,8 @@ fn delta_of(
             row_version: RowVersion::new(0),
         }],
         tax_projection: BTreeMap::new(),
+        row_graph: std::collections::BTreeMap::new(),
+        window_bindings: std::collections::BTreeMap::new(),
         windows: vec![KeyWindows {
             scope_key: key,
             intervals,

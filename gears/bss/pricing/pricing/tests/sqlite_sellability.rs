@@ -148,6 +148,8 @@ fn delta_covering_for(plan_id: PlanId, coverage_to: Option<OffsetDateTime>) -> P
         change_contract: PlanChangeContract::default(),
         prices: vec![row()],
         tax_projection: BTreeMap::new(),
+        row_graph: std::collections::BTreeMap::new(),
+        window_bindings: std::collections::BTreeMap::new(),
         windows: vec![KeyWindows {
             scope_key: recurring_key(),
             intervals: vec![WindowInterval::new(at(0), coverage_to, WindowState::Active)],

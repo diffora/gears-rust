@@ -982,6 +982,182 @@ async fn a_row_edited_after_the_approve_does_not_publish_under_the_stale_decisio
     );
 }
 
+/// **(a′) The same window, for the one edit only the normalized pin can see.**
+///
+/// After the approve, the row's money is re-bound to a **second structure
+/// version of identical content**. Every resolved row reads exactly as it did —
+/// the same amount, the same model, the same key — the row's own version does
+/// not move and neither does the revision's, so under the v20 preimage this
+/// re-derived to the approved digest and published. v21 frames
+/// `line_version_id` on the monetary version, so the reviewer's signature does
+/// not cover it and a second person has to look.
+///
+/// Staged in the store rather than through a route on purpose: no door performs
+/// this edit today, and the pin is the guard that has to hold on the day one
+/// does — or on the day a repair script does it by hand.
+#[tokio::test]
+async fn a_market_rebound_to_another_structure_version_does_not_publish_under_the_stale_decision() {
+    use bss_pricing::infra::storage::entity::{charge_line_version, price};
+    use sea_orm::ActiveValue::Set;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{ColumnTrait, Condition, EntityTrait};
+    use toolkit_db::secure::{SecureEntityExt, SecureInsertExt, SecureUpdateExt};
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+    let approval_id = only_unit(&h).await;
+    approve_through_the_route(&h, approval_id).await;
+
+    let conn = h.state.db.conn().expect("conn");
+    let scope = h.scope();
+    let stored = price::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(price::Column::PriceId.eq(seeded.price_id)))
+        .one(&conn)
+        .await
+        .expect("read the price row")
+        .expect("the seeded row");
+    let original = charge_line_version::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::LineVersionId.eq(stored.line_version_id)),
+        )
+        .one(&conn)
+        .await
+        .expect("read the line version")
+        .expect("the row's structure");
+    let twin_id = Uuid::now_v7();
+    let mut twin: charge_line_version::ActiveModel = original.into();
+    twin.line_version_id = Set(twin_id);
+    twin.plan_revision = Set(99);
+    charge_line_version::Entity::insert(twin.clone())
+        .secure()
+        .scope_with_model(&scope, &twin)
+        .expect("scope the twin")
+        .exec(&conn)
+        .await
+        .expect("a second version of the line, identical in content");
+    let moved = price::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(price::Column::LineVersionId, Expr::value(twin_id))
+        .filter(Condition::all().add(price::Column::PriceId.eq(seeded.price_id)))
+        .exec(&conn)
+        .await
+        .expect("re-bind the money to the twin");
+    assert_eq!(moved.rows_affected, 1);
+
+    let after = price_rows(&h, plan_id).await;
+    assert_eq!(
+        i64::try_from(after[0].row_version.get()).expect("a small version"),
+        stored.row_version,
+        "the row's own version must not move, or its tag answers instead of the pin"
+    );
+    assert_eq!(
+        plan_row_version(&h, plan_id, seeded.revision).await,
+        seeded.version.get(),
+        "the revision's version must not have moved, or a compare-and-swap answers"
+    );
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert_ne!(
+        body["approval"]["approval_id"]
+            .as_str()
+            .expect("the fresh unit"),
+        approval_id.to_string(),
+        "the stale decision must not be re-used for a structure it was not over"
+    );
+    assert_eq!(
+        plan_state(&h, plan_id, seeded.revision).await.as_deref(),
+        Some("draft")
+    );
+}
+
+/// **(a″) A shared-structure edit after the approve, through the real door.**
+///
+/// The line's structure is the plan's content, so `PATCH …/charge-lines/{id}`
+/// takes the plan revision's tag and moves it. The route still answers the way
+/// the module doc of `api::rest::publish` argues it must: a moved subject simply
+/// **has no approval**, so the call opens a fresh unit over what is actually
+/// there rather than refusing forever. What is asserted is the property — the
+/// restructured line does not publish under the standing decision — and that the
+/// tag really did move, so the case is about a shared edit and not a no-op.
+#[tokio::test]
+async fn a_line_restructured_after_the_approve_does_not_publish_under_the_stale_decision() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+    let approval_id = only_unit(&h).await;
+    approve_through_the_route(&h, approval_id).await;
+
+    let lines_path = format!("/bss-pricing/v1/plans/{plan_id}/charge-lines");
+    let listed = body_json(
+        h.allowed()
+            .send(with_headers("GET", &lines_path, None, &[]))
+            .await,
+    )
+    .await;
+    let line = &listed["items"][0];
+    let line_version_id = line["line_version_id"].as_str().expect("the seeded line");
+    let mut structure = line["structure"].clone();
+    // Derived, never accepted on write.
+    structure
+        .as_object_mut()
+        .expect("an object")
+        .remove("meter");
+    structure["gl_code_ref"] = serde_json::json!("4100");
+
+    let patched = h
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &format!("{lines_path}/{line_version_id}"),
+            Some(serde_json::json!({ "structure": structure })),
+            &[
+                ("if-match", h.plan_etag(plan_id).await.as_str()),
+                ("idempotency-key", "restructure-after-approve"),
+            ],
+        ))
+        .await;
+    assert_eq!(
+        patched.status(),
+        axum::http::StatusCode::OK,
+        "the shared edit must land for the publish under test to mean anything"
+    );
+
+    let fresh_tag = h.plan_etag(plan_id).await;
+    assert_ne!(
+        fresh_tag,
+        seeded.etag(),
+        "a structural write moves the plan revision's tag"
+    );
+    let response = publish_as(&h, SUBMITTER, plan_id, &fresh_tag).await;
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert_ne!(
+        body["approval"]["approval_id"]
+            .as_str()
+            .expect("the fresh unit"),
+        approval_id.to_string(),
+        "the stale decision must not be re-used for a structure it was not over"
+    );
+    assert_eq!(
+        plan_state(&h, plan_id, seeded.revision).await.as_deref(),
+        Some("draft")
+    );
+}
+
 /// **(d) The publish accounts for the units it did not consume.**
 ///
 /// A unit still `submitted` over the revision a commit freezes is an orphan: the

@@ -880,7 +880,51 @@ pub(crate) struct MarketPriceScopeKeyParts<'a> {
     pub dimension_key: &'a DimensionKey,
 }
 
+/// Every axis of a [`ChargeLineScopeKey`], borrowed — [`MarketPriceScopeKeyParts`]
+/// for the key that has no market.
+///
+/// For the approval pin's line frame, and for that type's reason: the fields
+/// are private, so a site outside this module that reached in one accessor at a
+/// time would keep compiling when the key grew and quietly stop framing the new
+/// axis.
+pub(crate) struct ChargeLineScopeKeyParts<'a> {
+    pub plan_id: PlanId,
+    pub price_overlay: PriceOverlay,
+    pub phase: PhaseId,
+    pub price_eligibility: PriceEligibility,
+    pub charge_kind: ChargeKind,
+    pub cohort: Cohort,
+    pub sku_id: SkuId,
+    pub dimension_key: &'a DimensionKey,
+}
+
 impl ChargeLineScopeKey {
+    /// Borrow every axis at once. No rest pattern, so a ninth axis is a compile
+    /// error here and at every site that destructures the result.
+    #[must_use]
+    pub(crate) fn parts(&self) -> ChargeLineScopeKeyParts<'_> {
+        let Self {
+            plan_id,
+            phase,
+            price_overlay,
+            price_eligibility,
+            charge_kind,
+            cohort,
+            sku_id,
+            dimension_key,
+        } = self;
+        ChargeLineScopeKeyParts {
+            plan_id: *plan_id,
+            price_overlay: *price_overlay,
+            phase: *phase,
+            price_eligibility: *price_eligibility,
+            charge_kind: *charge_kind,
+            cohort: *cohort,
+            sku_id: *sku_id,
+            dimension_key,
+        }
+    }
+
     /// Build a validated logical charge line.
     ///
     /// `price_overlay` is not a parameter: rows authored here always carry

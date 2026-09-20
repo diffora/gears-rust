@@ -263,6 +263,7 @@ use aws_lc_rs::digest::{SHA256, digest as sha256};
 
 use uuid::Uuid;
 
+use crate::domain::charge_line::{ChargeLineVersion, ChargeStructure, TierGeometry};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract,
@@ -272,6 +273,7 @@ use crate::domain::draft_window::{
     DraftStart, DraftWindowAction, DraftWindowEntry, WindowBaseline,
 };
 use crate::domain::instant::timestamp_micros;
+use crate::domain::market_price::{MarketPriceTerms, MarketPriceVersion};
 use crate::domain::materiality::{
     ThresholdBasis, ThresholdEntry, ThresholdVersion, ThresholdVersionParts,
 };
@@ -290,7 +292,10 @@ use crate::domain::price_row::{
     MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
     TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{MarketPriceScopeKey, MarketPriceScopeKeyParts, PhaseId, PlanId};
+use crate::domain::scope_key::{
+    ChargeLineScopeKey, ChargeLineScopeKeyParts, MarketPriceScopeKey, MarketPriceScopeKeyParts,
+    PhaseId, PlanId,
+};
 use crate::domain::taxonomy::{RegionTaxMarkers, TaxonomyEntry, TaxonomyValueChange};
 use time::OffsetDateTime;
 
@@ -626,7 +631,23 @@ use time::OffsetDateTime;
 /// **Drain-fail.** Every open `pricing_approval` unit answers
 /// `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and resubmitted under v20.
 /// There is no pin-rewrite path: a stored v19 digest cannot be translated.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v20\x1f";
+///
+/// # `v21`: the normalized graph joins the preimage
+///
+/// [`PlanShape::charge_lines`] and [`PlanShape::market_prices`] are framed:
+/// `charge_line_id`, `line_version_id`, the eight line axes and the shared
+/// structure per line version; `market_price_id`, `price_id`,
+/// `line_version_id`, the full market key and the money per monetary version.
+/// `rows` stays framed beside them — it is the resolved join a reviewer reads,
+/// and it drops exactly the identities these two carry. Two things become
+/// distinguishable that v20 pinned alike: a market re-bound to a **different
+/// line version of identical content**, and a line drafted with **no market
+/// price at all**, which has no row.
+///
+/// **Drain-fail**, as every generation before it. Every open `pricing_approval`
+/// unit answers `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and
+/// resubmitted under v21; a stored v20 digest cannot be translated.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v21\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1202,8 +1223,8 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         descriptor_ext,
         period_floor_caps,
         rows,
-        charge_lines: _,
-        market_prices: _,
+        charge_lines,
+        market_prices,
         entitlement_grants,
         composites,
         change_contract,
@@ -1289,6 +1310,25 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_u64(buf, count_of(ordered_rows.len()));
     for record in ordered_rows {
         put_price_record(buf, record);
+    }
+
+    // The normalized planes (v21). `rows` above is the *resolved* join: it says
+    // what each market's row reads as and drops which line, which immutable
+    // structure version and which market variant it was joined through — and it
+    // cannot mention a line no market prices yet. A reviewer signs for the graph,
+    // so the graph is framed: sets, ordered by their own identities.
+    let mut ordered_lines: Vec<&ChargeLineVersion> = charge_lines.iter().collect();
+    ordered_lines.sort_unstable_by_key(|line| line.line_version_id);
+    put_u64(buf, count_of(ordered_lines.len()));
+    for line in ordered_lines {
+        put_charge_line_version(buf, line);
+    }
+
+    let mut ordered_prices: Vec<&MarketPriceVersion> = market_prices.iter().collect();
+    ordered_prices.sort_unstable_by_key(|price| price.price_id);
+    put_u64(buf, count_of(ordered_prices.len()));
+    for price in ordered_prices {
+        put_market_price_version(buf, price);
     }
 
     let mut ordered_entries: Vec<&DraftWindowEntry> = draft_window_entries.iter().collect();
@@ -1460,6 +1500,196 @@ fn put_uuid_set(buf: &mut Vec<u8>, ids: &[Uuid]) {
     for id in ordered {
         put_uuid(buf, id);
     }
+}
+
+/// One immutable structure version of one logical line: both identities, the
+/// eight axes, the shared shape, and the two contracts that may not vary by
+/// market.
+fn put_charge_line_version(buf: &mut Vec<u8>, line: &ChargeLineVersion) {
+    let ChargeLineVersion {
+        charge_line_id,
+        line_version_id,
+        scope_key,
+        structure,
+        billing_timing,
+        proration_contract,
+    } = line;
+    put_uuid(buf, *charge_line_id);
+    put_uuid(buf, *line_version_id);
+    put_line_scope_key(buf, scope_key);
+    put_charge_structure(buf, structure);
+    put_opt_str(buf, billing_timing.as_deref());
+    // [`put_price_record`]'s framing of the same contract, for its reason: an
+    // unconditional member count, so an absent contract and one anchoring
+    // `calendar_month` on day 0 cannot collide.
+    let (billing_anchor_policy, proration_basis, credit_on_downgrade) = match proration_contract {
+        None => (None, None, false),
+        Some(ProrationContract {
+            billing_anchor_policy,
+            proration_basis,
+            credit_on_downgrade,
+        }) => (
+            Some(*billing_anchor_policy),
+            Some(*proration_basis),
+            *credit_on_downgrade,
+        ),
+    };
+    put_str(
+        buf,
+        billing_anchor_policy.map_or("", BillingAnchorPolicy::as_str),
+    );
+    put_u64(
+        buf,
+        u64::from(
+            billing_anchor_policy
+                .and_then(BillingAnchorPolicy::anchor_day)
+                .map_or(0, AnchorDay::get),
+        ),
+    );
+    put_str(buf, proration_basis.map_or("", ProrationBasis::as_str));
+    put_bool(buf, credit_on_downgrade);
+}
+
+/// The eight line axes, through [`ChargeLineScopeKeyParts`] for
+/// [`put_scope_key`]'s reason: a ninth axis stops this compiling.
+fn put_line_scope_key(buf: &mut Vec<u8>, key: &ChargeLineScopeKey) {
+    let ChargeLineScopeKeyParts {
+        plan_id,
+        price_overlay,
+        phase,
+        price_eligibility,
+        charge_kind,
+        cohort,
+        sku_id,
+        dimension_key,
+    } = key.parts();
+    put_uuid(buf, plan_id.get());
+    put_str(buf, price_overlay.as_str());
+    put_uuid(buf, phase.get());
+    put_str(buf, price_eligibility.as_str());
+    put_str(buf, charge_kind.as_str());
+    put_opt_instant(buf, cohort.generation());
+    put_uuid(buf, sku_id.as_uuid());
+    put_str(buf, dimension_key.as_str());
+}
+
+/// The shared, non-monetary shape. Exhaustive, so a field added to
+/// [`ChargeStructure`] is a compile-time decision about the pin.
+fn put_charge_structure(buf: &mut Vec<u8>, structure: &ChargeStructure) {
+    let ChargeStructure {
+        invoice_line_template,
+        gl_code_ref,
+        charge_kind,
+        model_kind,
+        bands,
+        package_size,
+        quantity_source,
+        manual_quantity,
+        sku_id,
+        meter,
+        dimension_key,
+        billing_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        aggregation_function,
+        aggregation_granularity,
+        max_hold_granules,
+        included_allowance,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
+    } = structure;
+    put_opt_str(buf, invoice_line_template.as_deref());
+    put_opt_str(buf, gl_code_ref.as_deref());
+    put_str(buf, charge_kind.as_str());
+    put_opt_str(buf, model_kind.map(model_kind_wire));
+
+    // Geometry is a set of bounds; the rate inside each band is the market's.
+    let mut ordered: Vec<&TierGeometry> = bands.iter().collect();
+    ordered.sort_unstable_by_key(|band| (band.from_qty, band.to_qty.closed_at()));
+    put_u64(buf, count_of(ordered.len()));
+    for band in ordered {
+        let TierGeometry { from_qty, to_qty } = band;
+        put_u64(buf, *from_qty);
+        put_opt_u64(buf, to_qty.closed_at());
+    }
+
+    put_opt_u64(buf, *package_size);
+    put_opt_str(buf, quantity_source.map(QuantitySource::as_str));
+    put_opt_u64(buf, *manual_quantity);
+    put_uuid(buf, sku_id.as_uuid());
+    put_opt_str(buf, meter.as_deref());
+    put_str(buf, dimension_key);
+    put_opt_str(buf, billing_granularity.map(BillingGranularity::as_str));
+    put_opt_str(
+        buf,
+        tier_aggregation_window.map(TierAggregationWindow::as_str),
+    );
+    put_opt_str(
+        buf,
+        tier_qualification_window.map(TierQualificationWindow::as_str),
+    );
+    put_opt_str(buf, aggregation_function.map(AggregationFunction::as_str));
+    put_opt_str(
+        buf,
+        aggregation_granularity.map(AggregationGranularity::as_str),
+    );
+    put_opt_u64(buf, *max_hold_granules);
+    match included_allowance {
+        None => put_bool(buf, false),
+        Some(allowance) => {
+            put_bool(buf, true);
+            let IncludedAllowance {
+                quantity,
+                rollover_policy,
+            } = allowance;
+            put_u64(buf, *quantity);
+            put_str(buf, rollover_policy.as_str());
+        }
+    }
+    put_opt_str(buf, reservation_flavor.map(ReservationFlavor::as_str));
+    put_opt_u64(buf, *min_qty_purchase);
+    put_opt_u64(buf, *min_qty_usage);
+    put_opt_str(buf, min_qty_usage_fallback.map(MinQtyUsageFallback::as_str));
+    put_opt_str(buf, discount_ref.as_deref());
+}
+
+/// One monetary version of one market: its three identities, the full market
+/// key, and the money.
+///
+/// **`tier_rates` is a sequence, not a set**, and is framed in authored order:
+/// a rate is positional — the n-th rate prices the n-th band of the structure
+/// version this row names — so sorting would let two ladders that swapped two
+/// rates pin alike.
+fn put_market_price_version(buf: &mut Vec<u8>, price: &MarketPriceVersion) {
+    let MarketPriceVersion {
+        market_price_id,
+        price_id,
+        line_version_id,
+        scope_key,
+        money,
+    } = price;
+    put_uuid(buf, *market_price_id);
+    put_uuid(buf, *price_id);
+    put_uuid(buf, *line_version_id);
+    put_scope_key(buf, scope_key);
+    let MarketPriceTerms {
+        amount_minor,
+        unit_rate,
+        tier_rates,
+        package_price_minor,
+        reserved_rate,
+    } = money;
+    put_opt_i64(buf, amount_minor.map(MinorAmount::get));
+    put_opt_i64(buf, unit_rate.map(RateMinor::nano_minor));
+    put_u64(buf, count_of(tier_rates.len()));
+    for rate in tier_rates {
+        put_i64(buf, rate.nano_minor());
+    }
+    put_opt_i64(buf, package_price_minor.map(MinorAmount::get));
+    put_opt_i64(buf, reserved_rate.map(RateMinor::nano_minor));
 }
 
 fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {

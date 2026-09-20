@@ -2899,6 +2899,111 @@ async fn a_version_freezes_the_revision_its_own_publish_judged() {
     );
 }
 
+/// **A pinned read is frozen with every identity it needs, and a later
+/// publication does not move it.**
+///
+/// `before` is a consumer's read at the first version. A changed revision then
+/// publishes into a second version, and both reads are taken **fresh from the
+/// store** afterwards — not compared against a retained object, which would
+/// prove only that a local value equals itself.
+///
+/// The five identities are asserted on the frozen read because a consumer
+/// holding it has nothing else: `priceId` and `windowId` are what it selected,
+/// and `chargeLineId` / `lineVersionId` / `marketPriceId` are how it names the
+/// structure and the market variant that money was priced against without
+/// following a mutable "latest version of the line".
+#[tokio::test]
+async fn a_pinned_read_keeps_its_identities_and_content_after_a_later_publication() {
+    let h = harness().await;
+    let plan_id = PlanId::new(Uuid::new_v4());
+    let (rev0, version0) = seed_publishable(&h, plan_id, "gold").await;
+    let pending_v5 = publish(&h, plan_id, rev0, version0, at_min(12, 0)).await;
+    h.registry.commit(&pending_v5, 5);
+    sweep(&h, at(13)).await;
+
+    let read_at = |rows: &[read_model::Model], version: i64| -> serde_json::Value {
+        rows.iter()
+            .find(|row| row.catalog_version == version)
+            .unwrap_or_else(|| panic!("the delta of version {version}"))
+            .payload
+            .clone()
+    };
+    let before = read_at(&deltas(&h).await, 5);
+
+    let price = &before["prices"][0];
+    for identity in ["priceId", "chargeLineId", "lineVersionId", "marketPriceId"] {
+        assert!(
+            price[identity].as_str().is_some_and(|id| id.len() == 36),
+            "the frozen row carries `{identity}`: {price}"
+        );
+    }
+    for axis in ["currency", "region", "phase", "chargeKind", "skuId"] {
+        assert!(
+            !price["scopeKey"][axis].is_null(),
+            "and the full market scope, `{axis}` included: {price}"
+        );
+    }
+    let interval = &before["windows"][0]["intervals"][0];
+    assert!(
+        interval["windowId"]
+            .as_str()
+            .is_some_and(|id| id.len() == 36),
+        "the frozen interval names its window: {interval}"
+    );
+    assert_eq!(
+        interval["priceId"], price["priceId"],
+        "and the monetary version it schedules"
+    );
+
+    // A changed revision becomes current.
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id, stamp_of(ACTOR, at_min(13, 1)))
+        .await
+        .expect("open a successor");
+    let edited = h
+        .plans
+        .update_draft(
+            &h.scope,
+            TENANT,
+            plan_id,
+            opened.revision,
+            opened.row_version,
+            PlanShapePatch {
+                plan_tier: Some("platinum".to_owned()),
+                ..PlanShapePatch::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect("edit the successor");
+    let pending_v6 = publish(
+        &h,
+        plan_id,
+        opened.revision,
+        edited.row_version,
+        at_min(13, 2),
+    )
+    .await;
+    h.registry.commit(&pending_v6, 6);
+    sweep(&h, at(14)).await;
+
+    let after = deltas(&h).await;
+    let pinned_after = read_at(&after, 5);
+    let current_after = read_at(&after, 6);
+    assert_eq!(pinned_after, before);
+    assert_ne!(current_after, before);
+
+    // The row was carried, not re-authored: the successor version freezes the
+    // same monetary version against the same structure version.
+    for identity in ["priceId", "chargeLineId", "lineVersionId", "marketPriceId"] {
+        assert_eq!(
+            current_after["prices"][0][identity], before["prices"][0][identity],
+            "`{identity}` is stable across a revision that did not touch the row"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 10. The degraded observation, and the instant that separates it from the
 //     overdue one (D-166).

@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bss_pricing::config::LimitsConfig;
+use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
@@ -41,6 +42,7 @@ use bss_pricing::domain::scope_key::{
     Region, SkuId,
 };
 use bss_pricing::domain::structural_schedule::STRUCTURE_CUTOVER_MISMATCH;
+use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::publish::PublishService;
@@ -53,7 +55,7 @@ use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, Pendin
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use time::OffsetDateTime;
 use toolkit_canonical_errors::CanonicalError;
-use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -62,6 +64,7 @@ use pg_support::Pg;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const ACTOR: Uuid = Uuid::from_u128(0xac_01);
+const APPROVER: Uuid = Uuid::from_u128(0xac_02);
 const PLAN: Uuid = Uuid::from_u128(0x91_a1);
 const PHASE: Uuid = Uuid::from_u128(0x40_a5);
 const OFFER_SKU: Uuid = Uuid::from_u128(0x5_c1);
@@ -516,4 +519,107 @@ async fn two_markets_on_two_structure_versions_roll_the_whole_commit_back() {
         .expect("it is there");
     assert_eq!(still.lifecycle_state, LifecycleState::Draft);
     assert_eq!(still.row_version, version, "its tag did not move either");
+}
+
+/// **The publish-versus-edit window, for the one edit only the normalized pin
+/// sees, on the engine that runs in production.**
+///
+/// A unit is approved; the row's money is then re-bound to a twin structure
+/// version of identical content; the commit presents the approved digest. No
+/// resolved row, no row version and no revision version has moved, so nothing
+/// but the pin re-derived **inside the commit's transaction** can refuse — and
+/// it does, leaving the revision open and nothing published. No mixed content
+/// commits under the old approval.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_market_rebound_after_the_approve_cannot_commit_under_the_old_pin() {
+    let (store, version) = seeded_plan().await;
+
+    let approvals = ApprovalService::new(store.db.clone());
+    let approval_id = Uuid::from_u128(0xa9_21);
+    approvals
+        .submit(
+            &scope(),
+            TENANT,
+            PlanId::new(PLAN),
+            approval_id,
+            serde_json::json!({ "material": true, "reason": "noConfiguredThreshold" }),
+            stamp(),
+        )
+        .await
+        .expect("open the pending unit");
+    let record = approvals
+        .decide(
+            &scope(),
+            TENANT,
+            DecideRequest {
+                approval_id,
+                decision: DecisionBy::Approve(APPROVER),
+                reason: None,
+                approver_regions: RegionGrant::Explicit(BTreeSet::from([
+                    Region::new("eu").expect("a non-blank region")
+                ])),
+                stamp: AuditStamp {
+                    actor_principal_id: APPROVER,
+                    recorded_at: now(),
+                    correlation_id: TEST_CORRELATION,
+                },
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
+            },
+        )
+        .await
+        .expect("an independent principal approves it");
+
+    let twin = clone_line_version(&store).await;
+    let conn = store.db.conn().expect("conn");
+    let moved = price::Entity::update_many()
+        .secure()
+        .scope_with(&scope())
+        .col_expr(
+            price::Column::LineVersionId,
+            sea_orm::sea_query::Expr::value(twin),
+        )
+        .filter(Condition::all().add(price::Column::PriceId.eq(HOME_PRICE)))
+        .exec(&conn)
+        .await
+        .expect("re-bind the money");
+    assert_eq!(moved.rows_affected, 1);
+
+    let refused = store
+        .publish
+        .commit(
+            &ctx(),
+            &scope(),
+            TENANT,
+            PlanPublishUnit::plan_content(PlanId::new(PLAN), 0),
+            version,
+            PublishAuthorization::approved(
+                record.approval_id,
+                record.submitter_principal,
+                record.approver_principal.expect("an approved record"),
+                record
+                    .content_hash
+                    .as_slice()
+                    .try_into()
+                    .expect("a 32-byte digest"),
+            ),
+            ACTOR,
+            TEST_CORRELATION,
+            now(),
+        )
+        .await
+        .expect_err("the structure approved is not the structure this would freeze");
+    assert!(
+        matches!(refused, DomainError::ApprovalContentMismatch(_)),
+        "got {refused:?}"
+    );
+
+    let still = store
+        .plans
+        .find_revision(&scope(), TENANT, PlanId::new(PLAN), 0)
+        .await
+        .expect("read the revision")
+        .expect("it is there");
+    assert_eq!(still.lifecycle_state, LifecycleState::Draft);
+    assert_eq!(commit_events(&store).await, 0, "no event left the gear");
 }

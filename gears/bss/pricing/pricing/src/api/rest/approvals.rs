@@ -619,6 +619,17 @@ pub struct PinnedContentView {
     /// The billing descriptor set.
     /// The candidate row set this publish would produce.
     pub rows: Vec<PriceRowView>,
+    /// The logical lines this revision holds, one entry per immutable structure
+    /// version (pin v21).
+    ///
+    /// **Shown because it is pinned**, and it is the only place two things a
+    /// reviewer signs for appear at all: a line drafted with **no market price**,
+    /// which has no row above, and **which** structure version each line stands
+    /// on — two versions of identical content render identical rows.
+    pub charge_lines: Vec<PinnedChargeLineView>,
+    /// The monetary versions, each with the market variant and the structure
+    /// version it is priced against (pin v21).
+    pub market_prices: Vec<PinnedMarketPriceView>,
     /// The plan-change contract this revision would publish (Slice 6, §6).
     ///
     /// **Shown because it is pinned.** The pin's module doc argues that showing
@@ -662,6 +673,62 @@ pub struct PinnedContentView {
     /// cancelled marker. Clock-derived active/expired state is not a field of
     /// the baseline and is not shown here.
     pub window_baseline: Vec<PinnedWindowBaselineView>,
+}
+
+/// One immutable structure version of one logical line, as the pin frames it.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedChargeLineView {
+    /// The stable logical line.
+    pub charge_line_id: Uuid,
+    /// This version of its shared content.
+    pub line_version_id: Uuid,
+    /// The eight structural axes.
+    pub scope_key: crate::api::rest::charge_lines::LineScopeKeyView,
+    /// What every market of the line shares.
+    pub structure: crate::api::rest::charge_lines::StructureView,
+}
+
+impl From<&crate::domain::charge_line::ChargeLineVersion> for PinnedChargeLineView {
+    fn from(line: &crate::domain::charge_line::ChargeLineVersion) -> Self {
+        Self {
+            charge_line_id: line.charge_line_id,
+            line_version_id: line.line_version_id,
+            scope_key: (&line.scope_key).into(),
+            structure: crate::api::rest::charge_lines::structure_view_of(line),
+        }
+    }
+}
+
+/// One monetary version of one market, as the pin frames it.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedMarketPriceView {
+    /// The stable currency/region variant.
+    pub market_price_id: Uuid,
+    /// The monetary version.
+    pub price_id: Uuid,
+    /// The structure version this money is priced against.
+    pub line_version_id: Uuid,
+    /// ISO 4217.
+    pub currency: String,
+    /// The market's region.
+    pub region: String,
+    /// The amounts and rates.
+    pub money: crate::api::rest::charge_lines::MoneyView,
+}
+
+impl From<&crate::domain::market_price::MarketPriceVersion> for PinnedMarketPriceView {
+    fn from(price: &crate::domain::market_price::MarketPriceVersion) -> Self {
+        Self {
+            market_price_id: price.market_price_id,
+            price_id: price.price_id,
+            line_version_id: price.line_version_id,
+            currency: price.scope_key.currency().as_str().to_owned(),
+            region: price.scope_key.region().as_str().to_owned(),
+            money: crate::api::rest::charge_lines::money_view_of(&price.money),
+        }
+    }
 }
 
 /// One hashed draft-window operation, as the pinned document renders it.
@@ -819,8 +886,8 @@ impl From<&PlanShape> for PinnedContentView {
             addon_rules,
             period_floor_caps,
             rows,
-            charge_lines: _,
-            market_prices: _,
+            charge_lines,
+            market_prices,
             entitlement_grants,
             composites,
             change_contract,
@@ -862,6 +929,14 @@ impl From<&PlanShape> for PinnedContentView {
                 .map(AddonRuleView::from)
                 .collect(),
             rows: rows.iter().map(PriceRowView::from).collect(),
+            charge_lines: charge_lines
+                .iter()
+                .map(PinnedChargeLineView::from)
+                .collect(),
+            market_prices: market_prices
+                .iter()
+                .map(PinnedMarketPriceView::from)
+                .collect(),
             change_contract: PlanChangeContractView::from(change_contract),
             entitlement_grants: EntitlementGrantsView::from(entitlement_grants),
             composites: composites.iter().map(CompositeMeterView::from).collect(),

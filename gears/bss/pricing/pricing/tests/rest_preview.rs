@@ -118,6 +118,8 @@ fn delta_of(
         period_floor_caps: Vec::new(),
         prices: Vec::new(),
         tax_projection: BTreeMap::new(),
+        row_graph: std::collections::BTreeMap::new(),
+        window_bindings: std::collections::BTreeMap::new(),
         windows: Vec::new(),
     };
     delta.prices = vec![PriceRecord {

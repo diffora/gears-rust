@@ -1196,3 +1196,52 @@ fn a_pure_amount_change_on_unchanged_geometry_is_no_trigger_at_all() {
         "and nothing about the row itself is registered"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Shared structure vs market money (charge-line split)
+// ---------------------------------------------------------------------------
+
+/// **A structural edit is material in every market of its line; a monetary
+/// edit is judged in its own market alone.**
+///
+/// Nothing new is computed to get there, and that is the point: the evaluator
+/// reads *resolved* rows, a line's structure is folded into every one of its
+/// markets' rows, and so an edit of the shared half moves each of them into
+/// D-115's no-computable-delta case at once — while an amount moved in one
+/// market leaves its sibling's row equal to what is published. The split did
+/// not need a second, line-level materiality rule, and adding one would have
+/// been a second answer to what a structural edit costs.
+#[test]
+fn a_structural_edit_is_material_in_every_market_and_a_monetary_one_only_in_its_own() {
+    let published = [row("EUR", 1_000), row("USD", 1_100)];
+
+    // The shared half moves: both markets' resolved rows carry the new model.
+    let restructured = published.clone().map(|mut record| {
+        record.row.model_kind = Some(ModelKind::PerUnit);
+        record
+    });
+    for (current, was) in restructured.iter().zip(&published) {
+        assert_eq!(
+            triggered_by_row(current, was),
+            Some(Trigger::NoComputableRowDelta),
+            "{} is a market of the restructured line",
+            current.scope_key
+        );
+    }
+
+    // Only EUR's money moves: USD's row is what is published, so it answers no
+    // trigger and carries a zero delta into the threshold comparison.
+    let mut repriced = published.clone();
+    repriced[0].row.amount_minor = Some(MinorAmount::new(1_050).expect("non-negative"));
+    assert_eq!(
+        triggered_by_row(&repriced[0], &published[0]),
+        None,
+        "a computable amount move is the threshold's question, not a trigger"
+    );
+    assert_ne!(repriced[0].row, published[0].row);
+    assert_eq!(triggered_by_row(&repriced[1], &published[1]), None);
+    assert_eq!(
+        repriced[1], published[1],
+        "the sibling market is untouched by another market's reprice"
+    );
+}

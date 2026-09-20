@@ -703,6 +703,20 @@ pub struct PlanSubjectDelta {
     /// the publish path holds the readiness to coalesce against, so a delta built
     /// by any other caller carries none and renders the authored column alone.
     pub tax_projection: BTreeMap<Uuid, RowResolutionProjection>,
+    /// The graph identities of each projected row, keyed by `price_id`.
+    ///
+    /// A side table for [`Self::tax_projection`]'s reason: [`PriceRecord`] is the
+    /// resolved truth row and does not carry the references it was joined
+    /// through. Empty is legitimate — a delta built off the publish path renders
+    /// the three members `null` — and means *not supplied*, never *no graph*.
+    pub row_graph: BTreeMap<Uuid, RowGraphRef>,
+    /// The identity of each projected window interval, keyed by the market it
+    /// occupies and the instant it starts at.
+    ///
+    /// That pair is unique on the frozen plane: non-overlap holds per market and
+    /// D-121 keeps cancelled windows out of it, so no two projected intervals of
+    /// one market share a start.
+    pub window_bindings: BTreeMap<(MarketPriceScopeKey, OffsetDateTime), WindowBindingRef>,
     /// The plan's window facts, grouped per canonical scope key, drawn from
     /// [`PROJECTED_WINDOW_STATES`] (D-99, D-121).
     ///
@@ -815,6 +829,8 @@ impl PlanSubjectDelta {
             change_contract,
             prices,
             tax_projection,
+            row_graph,
+            window_bindings,
             windows,
         } = self;
 
@@ -885,9 +901,18 @@ impl PlanSubjectDelta {
             "usageCounterOnPlanChange": change_contract.usage_counter_on_plan_change.as_str(),
             "prices": prices
                 .iter()
-                .map(|record| price_value(record, tax_projection.get(&record.price_id)))
+                .map(|record| {
+                    price_value(
+                        record,
+                        tax_projection.get(&record.price_id),
+                        row_graph.get(&record.price_id),
+                    )
+                })
                 .collect::<Vec<_>>(),
-            "windows": windows.iter().map(key_windows_value).collect::<Vec<_>>(),
+            "windows": windows
+                .iter()
+                .map(|group| key_windows_value(group, window_bindings))
+                .collect::<Vec<_>>(),
             "evaluationPolicyVersion": EVALUATION_POLICY_GENERATION,
                     // Read from the constant for `evaluationPolicyVersion`'s reason: it
                     // is a property of the gear that projected, not of the projection,
@@ -1050,6 +1075,45 @@ pub(crate) fn period_floor_cap_value(bound: &PeriodFloorCap) -> JsonValue {
     })
 }
 
+/// Where one frozen price row sits in the normalized graph: the stable logical
+/// line, the **immutable** structure version its money is priced against, and
+/// the stable currency/region variant.
+///
+/// Frozen beside the row for the pin's reason (v21): a consumer holding a
+/// pinned `priceId` has to be able to say *which structure* that money was
+/// priced against without following a mutable "latest version of the line", and
+/// two versions of identical content render identical rows.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is an id because the struct is nothing but references"
+)]
+pub struct RowGraphRef {
+    /// The stable logical line.
+    pub charge_line_id: Uuid,
+    /// The immutable structure version.
+    pub line_version_id: Uuid,
+    /// The stable market variant.
+    pub market_price_id: Uuid,
+}
+
+/// Which window an interval of the frozen plane **is**, and which monetary
+/// version it schedules.
+///
+/// One market legitimately holds several rows — a `superseded` predecessor
+/// beside its `published` successor — and their windows are one coverage run, so
+/// the interval alone cannot say which row prices an instant inside it. These two
+/// ids can.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowBindingRef {
+    /// The window's own identity.
+    pub window_id: Uuid,
+    /// The monetary version it schedules.
+    pub price_id: Uuid,
+}
+
 /// One row's **frozen resolutions** and the GA gate derived beside them.
 ///
 /// Not named for tax, though it began as the tax projection alone: the rounding
@@ -1081,7 +1145,11 @@ pub struct RowResolutionProjection {
 /// [`PriceRecord`] meets this renderer **and**
 /// [`partition_row_fields`](crate::domain::evaluation_policy::partition_row_fields)'s
 /// D-162 classification, which is the pair of questions a new row field owes.
-fn price_value(record: &PriceRecord, tax: Option<&RowResolutionProjection>) -> JsonValue {
+fn price_value(
+    record: &PriceRecord,
+    tax: Option<&RowResolutionProjection>,
+    graph: Option<&RowGraphRef>,
+) -> JsonValue {
     let PriceRecord {
         resolved_invoice_line_template,
         resolved_gl_code,
@@ -1105,6 +1173,12 @@ fn price_value(record: &PriceRecord, tax: Option<&RowResolutionProjection>) -> J
         "invoiceLineTemplate": resolved_invoice_line_template,
         "glCode": resolved_gl_code,
         "priceId": price_id,
+            // The normalized identities, `null` when the builder supplied none —
+            // `resolvedTaxCategory`'s convention, so a consumer can tell "not
+            // supplied" from "not part of the contract".
+        "chargeLineId": graph.map(|g| g.charge_line_id),
+        "lineVersionId": graph.map(|g| g.line_version_id),
+        "marketPriceId": graph.map(|g| g.market_price_id),
         "scopeKey": scope_key_value(scope_key),
         "lifecycleState": lifecycle_state.as_str(),
         "taxInclusive": tax_inclusive,
@@ -1315,7 +1389,10 @@ fn row_value(row: &PriceRow) -> JsonValue {
 ///
 /// Destructured without a rest pattern for [`PlanSubjectDelta::to_value`]'s
 /// reason.
-fn key_windows_value(group: &KeyWindows) -> JsonValue {
+fn key_windows_value(
+    group: &KeyWindows,
+    bindings: &BTreeMap<(MarketPriceScopeKey, OffsetDateTime), WindowBindingRef>,
+) -> JsonValue {
     let KeyWindows {
         scope_key,
         intervals,
@@ -1323,18 +1400,30 @@ fn key_windows_value(group: &KeyWindows) -> JsonValue {
     json!({
         "scopeKey": scope_key_value(scope_key),
         "coverageEnd": coverage_end_value(group.coverage_end()),
-        "intervals": intervals.iter().map(interval_value).collect::<Vec<_>>(),
+        "intervals": intervals
+            .iter()
+            .map(|interval| {
+                interval_value(
+                    interval,
+                    bindings.get(&(scope_key.clone(), interval.effective_from)),
+                )
+            })
+            .collect::<Vec<_>>(),
     })
 }
 
 /// One window interval and the state it is held under.
-fn interval_value(interval: &WindowInterval) -> JsonValue {
+fn interval_value(interval: &WindowInterval, binding: Option<&WindowBindingRef>) -> JsonValue {
     let WindowInterval {
         effective_from,
         effective_to,
         state,
     } = interval;
     json!({
+            // Which window this is and which monetary version it schedules; `null`
+            // on a delta whose builder supplied no bindings.
+        "windowId": binding.map(|b| b.window_id),
+        "priceId": binding.map(|b| b.price_id),
         "effectiveFrom": format_rfc3339(*effective_from),
         "effectiveTo": effective_to.map(format_rfc3339),
         "state": state.as_str(),
@@ -1509,6 +1598,8 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         change_contract,
         prices,
         tax_projection,
+        row_graph,
+        window_bindings,
         windows,
     } = delta;
 
@@ -1559,6 +1650,10 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         named("composites", composites),
         named("entitlement_grants", entitlement_grants),
         named("tax_projection", tax_projection),
+        // Identities select no rate and derive no quantity: they say *which*
+        // frozen line version, market variant and window a consumer is holding.
+        named("row_graph", row_graph),
+        named("window_bindings", window_bindings),
         named("windows", windows),
     ];
     (reached, not_reached)

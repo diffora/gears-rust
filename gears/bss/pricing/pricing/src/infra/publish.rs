@@ -1370,12 +1370,25 @@ pub(crate) async fn assemble_from(
     // priced against. `PriceRecord` carries the structure's *content* and not
     // the identity of the version it came from, so the map is read rather than
     // derived from `shape.rows`.
-    let line_versions: BTreeMap<Uuid, Uuid> =
-        price_repo::load_line_versions_for_plan(runner, scope, tenant_id, plan_id)
-            .await
-            .map_err(|e| repo_failure(&e))?
-            .into_iter()
-            .collect();
+    let identities = price_repo::load_row_identities_for_plan(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    let line_versions: BTreeMap<Uuid, Uuid> = identities
+        .iter()
+        .map(|row| (row.price_id, row.line_version_id))
+        .collect();
+    // The normalized planes: which lines this revision holds and which monetary
+    // version of which market is priced against which of their versions. The
+    // resolved `rows` cannot say either — a row folds its line's structure in and
+    // drops the three references it was joined through — and a line drafted
+    // ahead of its market prices has no row at all.
+    let line_records = price_repo::list_line_records(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    let (charge_lines, market_prices) =
+        normalized_planes(&shape.rows, &identities, &line_records, revision)?;
+    shape.charge_lines = charge_lines;
+    shape.market_prices = market_prices;
     let (windows, structure_bindings) = compose_validation_plane(
         &shape.rows,
         &shape.window_baseline,
@@ -1387,6 +1400,104 @@ pub(crate) async fn assemble_from(
     shape.structure_bindings = structure_bindings;
     shape.baseline = published_baseline(runner, scope, tenant_id, plan_id).await?;
     Ok(shape)
+}
+
+/// The revision's logical lines and market monetary versions, with the
+/// identities the resolved rows drop.
+///
+/// - One [`MarketPriceVersion`] per candidate row, carrying the row's own
+///   `market_price_id` and `line_version_id`.
+/// - One [`ChargeLineVersion`] per **distinct line version a candidate row is
+///   priced against** — a published predecessor's and its draft successor's are
+///   two entries of one logical line, because they are two structures — plus
+///   every line version this revision owns that **no row prices yet**. The
+///   second group is the one `rows` cannot reach: `POST …/charge-lines` drafts a
+///   line ahead of its market prices, and a publish that could not see it would
+///   freeze a line that sells in no market.
+///
+/// Both in canonical key order, then by version id, so the planes — and the pin
+/// framed over them — do not depend on the order the store answered in.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] when a candidate row has no identity entry.
+/// Unreachable while both are read off `pricing_price` inside one transaction;
+/// loud rather than skipped, because a row silently missing from the monetary
+/// plane is a market the missing-price rule then cannot see.
+fn normalized_planes(
+    rows: &[PriceRecord],
+    identities: &[price_repo::RowIdentity],
+    line_records: &[price_repo::LineRecord],
+    revision: u64,
+) -> Result<
+    (
+        Vec<crate::domain::charge_line::ChargeLineVersion>,
+        Vec<crate::domain::market_price::MarketPriceVersion>,
+    ),
+    DomainError,
+> {
+    use crate::domain::charge_line::ChargeLineVersion;
+    use crate::domain::market_price::{MarketPriceVersion, split_row};
+
+    let by_price: BTreeMap<Uuid, &price_repo::RowIdentity> =
+        identities.iter().map(|row| (row.price_id, row)).collect();
+    let mut lines: BTreeMap<Uuid, ChargeLineVersion> = BTreeMap::new();
+    let mut prices = Vec::with_capacity(rows.len());
+    for record in rows {
+        let identity = by_price.get(&record.price_id).ok_or_else(|| {
+            DomainError::InvalidRequest(format!(
+                "price row {} names no charge-line graph",
+                record.price_id
+            ))
+        })?;
+        let (structure, money) = split_row(record.row.clone());
+        lines
+            .entry(identity.line_version_id)
+            .or_insert_with(|| ChargeLineVersion {
+                charge_line_id: identity.charge_line_id,
+                line_version_id: identity.line_version_id,
+                scope_key: record.scope_key.line().clone(),
+                structure,
+                billing_timing: record.billing_timing.clone(),
+                proration_contract: record.proration_contract,
+            });
+        prices.push(MarketPriceVersion {
+            market_price_id: identity.market_price_id,
+            price_id: record.price_id,
+            line_version_id: identity.line_version_id,
+            scope_key: record.scope_key.clone(),
+            money,
+        });
+    }
+    for record in line_records {
+        if record.plan_revision != revision || lines.contains_key(&record.line_version_id) {
+            continue;
+        }
+        let (mut structure, _) = split_row(record.content.row.clone());
+        structure.bands.clone_from(&record.tiers);
+        lines.insert(
+            record.line_version_id,
+            ChargeLineVersion {
+                charge_line_id: record.charge_line_id,
+                line_version_id: record.line_version_id,
+                scope_key: record.scope_key.clone(),
+                structure,
+                billing_timing: record.content.billing_timing.clone(),
+                proration_contract: record.content.proration_contract,
+            },
+        );
+    }
+    let mut lines: Vec<ChargeLineVersion> = lines.into_values().collect();
+    lines.sort_by(|a, b| {
+        a.scope_key
+            .cmp(&b.scope_key)
+            .then(a.line_version_id.cmp(&b.line_version_id))
+    });
+    prices.sort_by(|a, b| {
+        a.scope_key
+            .cmp(&b.scope_key)
+            .then(a.price_id.cmp(&b.price_id))
+    });
+    Ok((lines, prices))
 }
 
 /// Truncate to the millisecond quantum every authored instant is held to (D-144).

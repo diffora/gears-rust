@@ -143,6 +143,8 @@ fn shape_only() -> PlanSubjectDelta {
         change_contract: PlanChangeContract::default(),
         prices: Vec::new(),
         tax_projection: BTreeMap::new(),
+        row_graph: BTreeMap::new(),
+        window_bindings: BTreeMap::new(),
         windows: Vec::new(),
     }
 }
@@ -1166,11 +1168,15 @@ fn the_payload_carries_intervals_and_a_coverage_end_and_no_active_flag() {
         group.get("intervals"),
         Some(&json!([
             {
+                "windowId": null,
+                "priceId": null,
                 "effectiveFrom": format_rfc3339(at(10)),
                 "effectiveTo": format_rfc3339(at(20)),
                 "state": "expired",
             },
             {
+                "windowId": null,
+                "priceId": null,
                 "effectiveFrom": format_rfc3339(at(20)),
                 "effectiveTo": format_rfc3339(at(30)),
                 "state": "active",
@@ -1583,7 +1589,9 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
     // D-309): a forgotten member left the total one short and passed, while
     // classifying it correctly raised it and failed — it fired on the fix and was
     // silent on the omission. The total moved from 23 to 22 when `billing_cycle`
-    // left `PlanSubjectDelta`, which is the kind of move it is meant to track.
+    // left `PlanSubjectDelta`, which is the kind of move it is meant to track, and
+    // from 22 to 24 when `row_graph` and `window_bindings` joined it (pin v21's
+    // identities, frozen for consumers).
     let (reached, not_reached) = super::partition_delta_members(&shape_only());
 
     let mut all: Vec<&str> = reached.iter().chain(not_reached.iter()).copied().collect();
@@ -1596,7 +1604,7 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
         "no member is classified on both sides: {all:?}"
     );
     assert_eq!(
-        named, 22,
+        named, 24,
         "the payload's member count, read back: it moves with the payload on purpose, and a \
          member left unclassified is caught by the compiler before it reaches here"
     );
@@ -1636,4 +1644,68 @@ fn billing_projects_derived_itemization_and_frozen_row_descriptors() {
         json!("{sku}, {unit}")
     );
     assert_eq!(value["prices"][0]["glCode"], json!("4000"));
+}
+
+/// The normalized identities reach the payload: three on each frozen row, two on
+/// each frozen interval — and an interval's `priceId` is what tells a
+/// predecessor's stretch of one market's coverage run from its successor's.
+#[test]
+fn the_graph_identities_reach_the_frozen_row_and_the_frozen_interval() {
+    use super::{RowGraphRef, WindowBindingRef};
+
+    let mut delta = shape_only();
+    let record = graduated_row();
+    delta.prices = vec![record.clone()];
+    let graph = RowGraphRef {
+        charge_line_id: Uuid::from_u128(0xc1),
+        line_version_id: Uuid::from_u128(0xc2),
+        market_price_id: Uuid::from_u128(0xc3),
+    };
+    delta.row_graph = [(record.price_id, graph)].into_iter().collect();
+    delta.windows = vec![KeyWindows {
+        scope_key: record.scope_key.clone(),
+        intervals: vec![
+            WindowInterval::new(at(10), Some(at(20)), WindowState::Expired),
+            WindowInterval::new(at(20), None, WindowState::Active),
+        ],
+    }];
+    let predecessor = Uuid::from_u128(0xb0_01);
+    delta.window_bindings = [
+        (
+            (record.scope_key.clone(), at(10)),
+            WindowBindingRef {
+                window_id: Uuid::from_u128(0xd1),
+                price_id: predecessor,
+            },
+        ),
+        (
+            (record.scope_key.clone(), at(20)),
+            WindowBindingRef {
+                window_id: Uuid::from_u128(0xd2),
+                price_id: record.price_id,
+            },
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let value = delta.to_value();
+    let price = &value["prices"][0];
+    assert_eq!(price["priceId"], json!(record.price_id));
+    assert_eq!(price["chargeLineId"], json!(graph.charge_line_id));
+    assert_eq!(price["lineVersionId"], json!(graph.line_version_id));
+    assert_eq!(price["marketPriceId"], json!(graph.market_price_id));
+    assert_eq!(
+        price["scopeKey"]["currency"],
+        json!(record.scope_key.currency().as_str()),
+        "and the full market scope rides beside them"
+    );
+
+    let intervals = value["windows"][0]["intervals"]
+        .as_array()
+        .expect("the interval list");
+    assert_eq!(intervals[0]["windowId"], json!(Uuid::from_u128(0xd1)));
+    assert_eq!(intervals[0]["priceId"], json!(predecessor));
+    assert_eq!(intervals[1]["windowId"], json!(Uuid::from_u128(0xd2)));
+    assert_eq!(intervals[1]["priceId"], json!(record.price_id));
 }

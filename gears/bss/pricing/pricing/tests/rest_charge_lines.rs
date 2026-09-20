@@ -821,3 +821,45 @@ async fn a_priced_line_is_not_deletable_until_its_prices_are_gone() {
     let again = post_line(&h, plan_id, flat_line_body("one_time"), "after-delete").await;
     assert_eq!(again.status(), StatusCode::CREATED);
 }
+
+/// A line drafted ahead of its market prices is **seen by publish**, and a
+/// publish that would freeze it unpriced is refused.
+///
+/// The case the line-first door made possible and the resolved row plane cannot
+/// reach: a line with no monetary version has no `pricing_price` row at all, so
+/// a publish subject assembled from rows alone would freeze a line that sells in
+/// no market and say nothing. `infra::publish::assemble` reads the revision's
+/// line versions beside its rows for exactly this.
+#[tokio::test]
+async fn a_line_with_no_market_price_blocks_the_publish() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&h, plan_id).await;
+
+    let mut body = flat_line_body("one_time");
+    body["scope_key"]["phase"] = serde_json::json!(seeded.phase.get());
+    let created = post_line(&h, plan_id, body, "unpriced-line").await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+
+    let etag = h.plan_etag(plan_id).await;
+    let response = h
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", etag.as_str())],
+        ))
+        .await;
+
+    assert!(
+        response.status().is_client_error(),
+        "an unpriced line cannot publish: {}",
+        response.status()
+    );
+    let problem = body_json(response).await;
+    assert!(
+        problem.to_string().contains("LINE_MARKET_PRICE_MISSING"),
+        "the refusal names the line that sells in no market: {problem}"
+    );
+}

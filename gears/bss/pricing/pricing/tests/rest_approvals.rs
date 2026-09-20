@@ -890,6 +890,36 @@ async fn the_record_carries_the_content_its_pin_covers() {
         seeded.price_id.to_string()
     );
     assert_eq!(pinned["window_baseline"], serde_json::json!([]));
+
+    // The normalized graph (pin v21): every identity the rows above drop, and
+    // they agree with each other — the monetary version is priced against the
+    // line version the document shows, in the market its row is filed under.
+    let lines = pinned["charge_lines"].as_array().expect("the line plane");
+    let prices = pinned["market_prices"]
+        .as_array()
+        .expect("the market plane");
+    assert_eq!(lines.len(), 1, "one line version: {pinned}");
+    assert_eq!(prices.len(), 1, "one monetary version: {pinned}");
+    for identity in ["charge_line_id", "line_version_id"] {
+        assert!(
+            lines[0][identity].as_str().is_some_and(|id| id.len() == 36),
+            "the line carries its `{identity}`: {pinned}"
+        );
+    }
+    assert!(
+        prices[0]["market_price_id"]
+            .as_str()
+            .is_some_and(|id| id.len() == 36),
+        "the monetary version names its market variant: {pinned}"
+    );
+    assert_eq!(prices[0]["price_id"], seeded.price_id.to_string());
+    assert_eq!(prices[0]["line_version_id"], lines[0]["line_version_id"]);
+    assert_eq!(prices[0]["currency"], "EUR");
+    assert_eq!(prices[0]["region"], "eu");
+    assert_eq!(prices[0]["money"]["amount_minor"], 9_900);
+    assert_eq!(lines[0]["scope_key"]["charge_kind"], "recurring");
+    assert_eq!(lines[0]["structure"]["model_kind"], "flat");
+    assert_eq!(lines[0]["structure"]["gl_code_ref"], "4000");
     assert_eq!(body["content_matches_pin"], true);
 }
 

@@ -46,6 +46,7 @@ use uuid::Uuid;
 use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
 use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
+use crate::domain::charge_line::{ChargeLineVersion, TierGeometry};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, GrantSet, ProrationBasis, ProrationContract,
@@ -56,6 +57,7 @@ use crate::domain::draft_window::{
 };
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::market_price::{MarketPriceVersion, split_row};
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
@@ -212,6 +214,37 @@ fn maximal_record(seed: u128) -> PriceRecord {
     }
 }
 
+/// The structure version `record`'s money is priced against, with **every**
+/// member authored — the shared half of [`maximal_row`], split the way the store
+/// splits it, plus a proration contract so its three members move from a value.
+fn maximal_line(seed: u128, record: &PriceRecord) -> ChargeLineVersion {
+    let (structure, _) = split_row(record.row.clone());
+    ChargeLineVersion {
+        charge_line_id: Uuid::from_u128(0xc1_0000 + seed),
+        line_version_id: Uuid::from_u128(0xc2_0000 + seed),
+        scope_key: record.scope_key.line().clone(),
+        structure,
+        billing_timing: Some("advance".to_owned()),
+        proration_contract: Some(contract(
+            BillingAnchorPolicy::CalendarMonth,
+            ProrationBasis::CalendarDaysActual,
+            false,
+        )),
+    }
+}
+
+/// `record`'s monetary version, bound to [`maximal_line`]'s version of it.
+fn maximal_market_price(seed: u128, record: &PriceRecord) -> MarketPriceVersion {
+    let (_, money) = split_row(record.row.clone());
+    MarketPriceVersion {
+        market_price_id: Uuid::from_u128(0xc3_0000 + seed),
+        price_id: record.price_id,
+        line_version_id: Uuid::from_u128(0xc2_0000 + seed),
+        scope_key: record.scope_key.clone(),
+        money,
+    }
+}
+
 /// One key's window set with **every** field of both structs authored: an
 /// interval with a closed end, one with an open end, and two distinct states.
 ///
@@ -330,6 +363,21 @@ fn base() -> PlanShape {
         ("segment".to_owned(), "smb".to_owned()),
     ]);
     shape.rows = vec![maximal_record(0xb001), maximal_record(0xb002)];
+    // The normalized planes (v21), one line version and one monetary version per
+    // row, so every indexed mutator below has a member to move and the frozen
+    // digest covers two non-empty sets.
+    shape.charge_lines = shape
+        .rows
+        .iter()
+        .zip([0xb001_u128, 0xb002])
+        .map(|(record, seed)| maximal_line(seed, record))
+        .collect();
+    shape.market_prices = shape
+        .rows
+        .iter()
+        .zip([0xb001_u128, 0xb002])
+        .map(|(record, seed)| maximal_market_price(seed, record))
+        .collect();
     shape.windows = vec![
         maximal_window_group(phase_id(0x11), "EU"),
         maximal_window_group(phase_id(0x12), "EU"),
@@ -438,7 +486,210 @@ fn mutators() -> Vec<Mutator> {
     all.extend(slice10_row_mutators());
     all.extend(plan_contract_mutators());
     all.extend(period_floor_cap_mutators());
+    all.extend(line_version_mutators());
+    all.extend(market_price_mutators());
     all
+}
+
+/// v21's line-version frame, member by member.
+///
+/// One entry per field `put_charge_line_version`, `put_line_scope_key` and
+/// `put_charge_structure` frame. The structure's members are the ones `rows`
+/// frames too, and they are repeated here on purpose: a line **no market prices
+/// yet** has no row, so on that line this frame is the only thing standing
+/// between a reviewer and a structure they never saw.
+#[allow(
+    clippy::too_many_lines,
+    reason = "a table of one entry per framed member is as long as the frame"
+)]
+fn line_version_mutators() -> Vec<Mutator> {
+    vec![
+        ("charge_lines: one dropped", |s| {
+            s.charge_lines.truncate(1);
+        }),
+        ("line.charge_line_id", |s| {
+            s.charge_lines[0].charge_line_id = Uuid::from_u128(0xc1_ffff);
+        }),
+        // The case v20 pinned alike: the same content under another version.
+        ("line.line_version_id", |s| {
+            s.charge_lines[0].line_version_id = Uuid::from_u128(0xc2_ffff);
+        }),
+        ("line.scope_key.phase", |s| {
+            s.charge_lines[0].scope_key = key(ChargeKind::Usage, "USD", "EU", phase_id(0x12))
+                .line()
+                .clone();
+        }),
+        ("line.scope_key.charge_kind", |s| {
+            s.charge_lines[0].scope_key = key(ChargeKind::Recurring, "USD", "EU", phase_id(0x11))
+                .line()
+                .clone();
+        }),
+        ("line.billing_timing", |s| {
+            s.charge_lines[0].billing_timing = Some("arrears".to_owned());
+        }),
+        ("line.billing_timing -> None", |s| {
+            s.charge_lines[0].billing_timing = None;
+        }),
+        ("line.proration_contract -> None", |s| {
+            s.charge_lines[0].proration_contract = None;
+        }),
+        ("line.proration_contract.billing_anchor_policy", |s| {
+            s.charge_lines[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::SubscriptionStart,
+                ProrationBasis::CalendarDaysActual,
+                false,
+            ));
+        }),
+        ("line.proration_contract.proration_basis", |s| {
+            s.charge_lines[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::BySecond,
+                false,
+            ));
+        }),
+        ("line.proration_contract.credit_on_downgrade", |s| {
+            s.charge_lines[0].proration_contract = Some(contract(
+                BillingAnchorPolicy::CalendarMonth,
+                ProrationBasis::CalendarDaysActual,
+                true,
+            ));
+        }),
+        // ChargeStructure
+        ("structure.invoice_line_template", |s| {
+            s.charge_lines[0].structure.invoice_line_template = Some("{plan}".to_owned());
+        }),
+        ("structure.gl_code_ref", |s| {
+            s.charge_lines[0].structure.gl_code_ref = Some("4100".to_owned());
+        }),
+        ("structure.charge_kind", |s| {
+            s.charge_lines[0].structure.charge_kind = ChargeKind::Recurring;
+        }),
+        ("structure.model_kind", |s| {
+            s.charge_lines[0].structure.model_kind = Some(ModelKind::Volume);
+        }),
+        ("structure.bands: one dropped", |s| {
+            s.charge_lines[0].structure.bands.truncate(1);
+        }),
+        ("structure.bands[0].from_qty", |s| {
+            s.charge_lines[0].structure.bands[0].from_qty = 1;
+        }),
+        ("structure.bands[0].to_qty", |s| {
+            s.charge_lines[0].structure.bands[0] = TierGeometry::closed(0, 90);
+        }),
+        ("structure.package_size", |s| {
+            s.charge_lines[0].structure.package_size = Some(51);
+        }),
+        ("structure.quantity_source", |s| {
+            s.charge_lines[0].structure.quantity_source =
+                Some(QuantitySource::SubscriptionSeatCount);
+        }),
+        ("structure.manual_quantity", |s| {
+            s.charge_lines[0].structure.manual_quantity = Some(8);
+        }),
+        ("structure.sku_id", |s| {
+            s.charge_lines[0].structure.sku_id = SkuId::new(Uuid::from_u128(6));
+        }),
+        ("structure.meter", |s| {
+            s.charge_lines[0].structure.meter = Some("api.bytes".to_owned());
+        }),
+        ("structure.dimension_key", |s| {
+            s.charge_lines[0].structure.dimension_key = "region:us".to_owned();
+        }),
+        ("structure.billing_granularity", |s| {
+            s.charge_lines[0].structure.billing_granularity = Some(BillingGranularity::PerDay);
+        }),
+        ("structure.tier_aggregation_window", |s| {
+            s.charge_lines[0].structure.tier_aggregation_window =
+                Some(TierAggregationWindow::InvoicePeriod);
+        }),
+        ("structure.tier_qualification_window", |s| {
+            s.charge_lines[0].structure.tier_qualification_window =
+                Some(TierQualificationWindow::TrailingPeriod);
+        }),
+        ("structure.aggregation_function", |s| {
+            s.charge_lines[0].structure.aggregation_function = Some(AggregationFunction::Sum);
+        }),
+        ("structure.aggregation_granularity", |s| {
+            s.charge_lines[0].structure.aggregation_granularity = Some(AggregationGranularity::Day);
+        }),
+        ("structure.max_hold_granules", |s| {
+            s.charge_lines[0].structure.max_hold_granules = Some(4);
+        }),
+        ("structure.included_allowance -> None", |s| {
+            s.charge_lines[0].structure.included_allowance = None;
+        }),
+        ("structure.included_allowance.quantity", |s| {
+            s.charge_lines[0].structure.included_allowance = Some(IncludedAllowance {
+                quantity: 1_001,
+                rollover_policy: RolloverPolicy::Carry,
+            });
+        }),
+        ("structure.included_allowance.rollover_policy", |s| {
+            s.charge_lines[0].structure.included_allowance = Some(IncludedAllowance {
+                quantity: 1_000,
+                rollover_policy: RolloverPolicy::None,
+            });
+        }),
+        ("structure.reservation_flavor", |s| {
+            s.charge_lines[0].structure.reservation_flavor = Some(ReservationFlavor::Consumption);
+        }),
+        ("structure.min_qty_purchase", |s| {
+            s.charge_lines[0].structure.min_qty_purchase = Some(11);
+        }),
+        ("structure.min_qty_usage", |s| {
+            s.charge_lines[0].structure.min_qty_usage = Some(21);
+        }),
+        ("structure.min_qty_usage_fallback", |s| {
+            s.charge_lines[0].structure.min_qty_usage_fallback = None;
+        }),
+        ("structure.discount_ref", |s| {
+            s.charge_lines[0].structure.discount_ref = Some("promo/summer".to_owned());
+        }),
+    ]
+}
+
+/// v21's monetary-version frame, member by member.
+fn market_price_mutators() -> Vec<Mutator> {
+    vec![
+        ("market_prices: one dropped", |s| {
+            s.market_prices.truncate(1);
+        }),
+        ("price.market_price_id", |s| {
+            s.market_prices[0].market_price_id = Uuid::from_u128(0xc3_ffff);
+        }),
+        ("price.price_id", |s| {
+            s.market_prices[0].price_id = Uuid::from_u128(0xb0ff);
+        }),
+        // A market re-bound to another structure version, its money untouched.
+        ("price.line_version_id", |s| {
+            s.market_prices[0].line_version_id = Uuid::from_u128(0xc2_fffe);
+        }),
+        ("price.scope_key.region", |s| {
+            s.market_prices[0].scope_key = key(ChargeKind::Usage, "USD", "US", phase_id(0x11));
+        }),
+        ("price.scope_key.currency", |s| {
+            s.market_prices[0].scope_key = key(ChargeKind::Usage, "EUR", "EU", phase_id(0x11));
+        }),
+        ("money.amount_minor", |s| {
+            s.market_prices[0].money.amount_minor = Some(money(501));
+        }),
+        ("money.unit_rate", |s| {
+            s.market_prices[0].money.unit_rate = Some(rate(7));
+        }),
+        ("money.tier_rates: one dropped", |s| {
+            s.market_prices[0].money.tier_rates.truncate(1);
+        }),
+        ("money.tier_rates[0]", |s| {
+            s.market_prices[0].money.tier_rates[0] = rate(11);
+        }),
+        ("money.package_price_minor", |s| {
+            s.market_prices[0].money.package_price_minor = Some(money(401));
+        }),
+        ("money.reserved_rate", |s| {
+            s.market_prices[0].money.reserved_rate =
+                Some(RateMinor::from_minor_units(251).expect("a non-negative rate"));
+        }),
+    ]
 }
 
 /// D-319's plan-level period floor/cap, member by member.
@@ -1291,6 +1542,35 @@ fn the_other_collections_are_sets_too() {
     let mut captured = base();
     captured.window_baseline.reverse();
     assert_eq!(content_hash(&straight), content_hash(&captured));
+
+    let mut lines = base();
+    lines.charge_lines.reverse();
+    assert_ne!(straight.charge_lines, lines.charge_lines);
+    assert_eq!(content_hash(&straight), content_hash(&lines));
+
+    let mut geometry = base();
+    geometry.charge_lines[0].structure.bands.reverse();
+    assert_eq!(content_hash(&straight), content_hash(&geometry));
+
+    let mut prices = base();
+    prices.market_prices.reverse();
+    assert_ne!(straight.market_prices, prices.market_prices);
+    assert_eq!(content_hash(&straight), content_hash(&prices));
+}
+
+/// A market's tier rates are a **sequence**: the n-th rate prices the n-th band
+/// of the structure version the row names. Swapping two of them is a different
+/// tariff, so — unlike every collection above — their order is content.
+#[test]
+fn a_markets_tier_rates_are_positional() {
+    let straight = base();
+    let mut swapped = base();
+    swapped.market_prices[0].money.tier_rates.reverse();
+    assert_ne!(
+        straight.market_prices[0].money.tier_rates, swapped.market_prices[0].money.tier_rates,
+        "the fixture carries two distinct rates"
+    );
+    assert_ne!(content_hash(&straight), content_hash(&swapped));
 }
 
 /// Two shapes built independently, field for field, pin identically.
@@ -1545,12 +1825,18 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// constant moved to `v20`.** Charge-line collections stay `_` until Task 8
 /// (`v21`). Every open unit drain-fails `APPROVAL_CONTENT_MISMATCH`. There is no
 /// pin-rewrite path.
+///
+/// **2026-09-20 (Task 8): the normalized graph joined the preimage and the
+/// constant moved to `v21`.** `charge_lines` and `market_prices` are framed —
+/// both identities and the shared structure per line version; three identities,
+/// the full market key and the money per monetary version — and `base()` grew one
+/// of each per row so the vector covers two non-empty sets. Drain-fail, as before.
 #[test]
-// v20 re-freezes the plan preimage after billing_cycle left put_plan_shape.
+// v21 re-freezes the plan preimage with the line and market planes framed.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "2f93d1cb67b722bff38e3c0af9927f0293039ae62f081478d1906a1706fc0aec"
+        "98b0f1a1037a21d205f1b3a1cfbd94b354f65bd2b6301e27aa08e9a4272a2f4c"
     );
 }
 
@@ -1710,7 +1996,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v20\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v21\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

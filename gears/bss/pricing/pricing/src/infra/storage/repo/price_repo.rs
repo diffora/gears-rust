@@ -2817,17 +2817,36 @@ pub async fn load_scope_key(
     to_scope_key(&graph).map(Some)
 }
 
-/// Every row of one plan paired with the **immutable charge-line version** its
-/// money is priced against, in `price_id` order.
+/// Where one monetary row sits in the normalized graph: the three references
+/// [`PriceRecord`] resolves through and then drops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is an id because the struct is nothing but references"
+)]
+pub struct RowIdentity {
+    /// The monetary version.
+    pub price_id: Uuid,
+    /// The stable logical line.
+    pub charge_line_id: Uuid,
+    /// The immutable structure version the money is priced against.
+    pub line_version_id: Uuid,
+    /// The stable currency/region variant.
+    pub market_price_id: Uuid,
+}
+
+/// Every row of one plan with the **identities** of the line, the immutable
+/// charge-line version and the market its money belongs to, in `price_id` order.
 ///
-/// The structure half of [`load_scope_keys_for_plan`]'s question, and the reason
-/// it is a query of its own rather than a field of [`PriceRecord`]: the record is
-/// the *resolved* row — it carries the structure's content, folded into
-/// [`PriceRow`], and not the identity of the version that content came from.
-/// Which version a market is bound to over an interval is what
+/// The identity half of [`load_scope_keys_for_plan`]'s question, and the reason
+/// it is a query of its own rather than three fields of [`PriceRecord`]: the
+/// record is the *resolved* row — it carries the structure's content, folded
+/// into [`PriceRow`], and not the identity of the version that content came from.
+/// Which version a market is bound to is what
 /// [`StructureBinding`](crate::domain::structural_schedule::StructureBinding)
-/// asks, and two markets carrying identical content off two different versions
-/// is exactly the state that question exists to catch.
+/// asks and what the approval pin has to frame, and two markets carrying
+/// identical content off two different versions is exactly the state both exist
+/// to tell apart.
 ///
 /// **No lifecycle filter**, for [`load_scope_keys_for_plan`]'s reason verbatim: a
 /// window belongs to whatever row it names, in whatever state that row stands,
@@ -2836,12 +2855,12 @@ pub async fn load_scope_key(
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
-pub async fn load_line_versions_for_plan(
+pub async fn load_row_identities_for_plan(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-) -> Result<Vec<(Uuid, Uuid)>, RepoError> {
+) -> Result<Vec<RowIdentity>, RepoError> {
     let rows = price::Entity::find()
         .secure()
         .scope_with(scope)
@@ -2853,10 +2872,15 @@ pub async fn load_line_versions_for_plan(
         .order_by(price::Column::PriceId, Order::Asc)
         .all(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("read the line versions of plan {plan_id}: {e}")))?;
+        .map_err(|e| RepoError::Db(format!("read the row identities of plan {plan_id}: {e}")))?;
     Ok(rows
         .into_iter()
-        .map(|row| (row.price_id, row.line_version_id))
+        .map(|row| RowIdentity {
+            price_id: row.price_id,
+            charge_line_id: row.charge_line_id,
+            line_version_id: row.line_version_id,
+            market_price_id: row.market_price_id,
+        })
         .collect())
 }
 

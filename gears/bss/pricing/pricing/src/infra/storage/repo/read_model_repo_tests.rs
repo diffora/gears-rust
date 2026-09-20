@@ -178,6 +178,8 @@ fn populated() -> PlanSubjectDelta {
             row_on(metered),
         ],
         tax_projection: BTreeMap::new(),
+        row_graph: BTreeMap::new(),
+        window_bindings: BTreeMap::new(),
         windows: vec![
             KeyWindows {
                 scope_key: everyone,

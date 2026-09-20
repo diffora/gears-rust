@@ -471,6 +471,110 @@ fn structure_view(line: &LineRecord) -> StructureView {
     }
 }
 
+/// [`structure_view`] off the **domain** line version rather than the stored
+/// record — the approval document's reader, which holds a [`PlanShape`] and not a
+/// repository row.
+///
+/// Destructured with no rest pattern, so a member added to [`ChargeStructure`]
+/// stops this compiling: the pin frames the structure exhaustively, and a
+/// reviewer's document that quietly rendered one member fewer would be a
+/// signature over content they were not shown. `charge_kind`, `sku_id` and
+/// `dimension_key` are rendered by the line's key beside this view.
+///
+/// [`PlanShape`]: crate::domain::plan_shape::PlanShape
+/// [`ChargeStructure`]: crate::domain::charge_line::ChargeStructure
+pub(crate) fn structure_view_of(
+    line: &crate::domain::charge_line::ChargeLineVersion,
+) -> StructureView {
+    let crate::domain::charge_line::ChargeStructure {
+        invoice_line_template,
+        gl_code_ref,
+        charge_kind: _,
+        model_kind,
+        bands,
+        package_size,
+        quantity_source,
+        manual_quantity,
+        sku_id: _,
+        meter,
+        dimension_key: _,
+        billing_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        aggregation_function,
+        aggregation_granularity,
+        max_hold_granules,
+        included_allowance,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
+    } = &line.structure;
+    let contract = line.proration_contract;
+    StructureView {
+        model_kind: model_kind.map(model_kind_wire).map(str::to_owned),
+        tiers: (!bands.is_empty()).then(|| {
+            bands
+                .iter()
+                .map(|tier| TierView {
+                    from_qty: tier.from_qty,
+                    to_qty: tier.to_qty.closed_at(),
+                })
+                .collect()
+        }),
+        package_size: *package_size,
+        quantity_source: quantity_source.map(|q| q.as_str().to_owned()),
+        manual_quantity: *manual_quantity,
+        meter: meter.clone(),
+        billing_granularity: billing_granularity.map(|g| g.as_str().to_owned()),
+        tier_aggregation_window: tier_aggregation_window.map(|w| w.as_str().to_owned()),
+        tier_qualification_window: tier_qualification_window.map(|w| w.as_str().to_owned()),
+        aggregation_function: aggregation_function.map(|f| f.as_str().to_owned()),
+        aggregation_granularity: aggregation_granularity.map(|g| g.as_str().to_owned()),
+        max_hold_granules: *max_hold_granules,
+        included_allowance: included_allowance
+            .as_ref()
+            .map(|allowance| IncludedAllowanceView {
+                quantity: allowance.quantity,
+                rollover_policy: allowance.rollover_policy.as_str().to_owned(),
+            }),
+        reservation_flavor: reservation_flavor.map(|f| f.as_str().to_owned()),
+        min_qty_purchase: *min_qty_purchase,
+        min_qty_usage: *min_qty_usage,
+        min_qty_usage_fallback: min_qty_usage_fallback.map(|f| f.as_str().to_owned()),
+        discount_ref: discount_ref.clone(),
+        invoice_line_template: invoice_line_template.clone(),
+        gl_code_ref: gl_code_ref.clone(),
+        billing_timing: line.billing_timing.clone(),
+        billing_anchor_policy: contract.map(|c| c.billing_anchor_policy.as_str().to_owned()),
+        anchor_day: contract
+            .and_then(|c| c.billing_anchor_policy.anchor_day())
+            .map(AnchorDay::get),
+        proration_basis: contract.map(|c| c.proration_basis.as_str().to_owned()),
+        credit_on_downgrade: contract.map(|c| c.credit_on_downgrade),
+    }
+}
+
+/// A market's money, off the domain terms.
+pub(crate) fn money_view_of(money: &crate::domain::market_price::MarketPriceTerms) -> MoneyView {
+    let crate::domain::market_price::MarketPriceTerms {
+        amount_minor,
+        unit_rate,
+        tier_rates,
+        package_price_minor,
+        reserved_rate,
+    } = money;
+    MoneyView {
+        amount_minor: amount_minor.map(crate::domain::money::MinorAmount::get),
+        unit_rate_nano_minor: unit_rate.map(RateMinor::nano_minor),
+        tier_rates_nano_minor: (!tier_rates.is_empty())
+            .then(|| tier_rates.iter().map(|rate| rate.nano_minor()).collect()),
+        package_price_minor: package_price_minor.map(crate::domain::money::MinorAmount::get),
+        reserved_rate_nano_minor: reserved_rate.map(RateMinor::nano_minor),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Wire -> domain.
 // ---------------------------------------------------------------------------

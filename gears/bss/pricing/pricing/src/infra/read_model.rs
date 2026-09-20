@@ -234,6 +234,8 @@
 //! client can reach — it is driven by a background sweep — so a refusal has
 //! nobody to report to, which is D-146's own line about the pin frontier.
 
+use std::collections::BTreeMap;
+
 use bss_pricing_sdk::CatalogVersion;
 
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -247,8 +249,9 @@ use crate::domain::projection::{
     MembershipSubjectDelta, OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta,
     PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowResolutionProjection,
 };
+use crate::domain::projection::{RowGraphRef, WindowBindingRef};
 use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
-use crate::domain::scope_key::PlanId;
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
 use crate::domain::window::{self, KeyWindows, WindowInterval};
 use crate::infra::storage::repo::catalog_version_ref_repo::RefIdentity;
@@ -1064,7 +1067,29 @@ async fn project_plan_subject(
     let prices = price_repo::load_for_plan(runner, scope, tenant_id, plan_id, PROJECTED_ROW_STATES)
         .await
         .map_err(|e| repo_failure(&e))?;
-    let windows = project_windows(runner, scope, tenant_id, plan_id, &prices).await?;
+    let (windows, window_bindings) =
+        project_windows(runner, scope, tenant_id, plan_id, &prices).await?;
+    // The graph identities of the projected rows, off the same table in the same
+    // transaction. Frozen so a consumer holding a pinned `priceId` can name the
+    // structure version and the market variant without following anything
+    // mutable.
+    let row_graph: BTreeMap<Uuid, RowGraphRef> =
+        price_repo::load_row_identities_for_plan(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .into_iter()
+            .filter(|identity| prices.iter().any(|row| row.price_id == identity.price_id))
+            .map(|identity| {
+                (
+                    identity.price_id,
+                    RowGraphRef {
+                        charge_line_id: identity.charge_line_id,
+                        line_version_id: identity.line_version_id,
+                        market_price_id: identity.market_price_id,
+                    },
+                )
+            })
+            .collect();
 
     // C3's GA gate, derived here — it is a function of the row and a launch
     // constant, so there is nothing to freeze.
@@ -1160,6 +1185,8 @@ async fn project_plan_subject(
         change_contract: current.change_contract,
         prices,
         tax_projection,
+        row_graph,
+        window_bindings,
         windows,
     })
 }
@@ -1345,25 +1372,44 @@ async fn project_windows(
     tenant_id: Uuid,
     plan_id: PlanId,
     projected: &[PriceRecord],
-) -> Result<Vec<KeyWindows>, DomainError> {
-    let records = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
+) -> Result<
+    (
+        Vec<KeyWindows>,
+        BTreeMap<(MarketPriceScopeKey, OffsetDateTime), WindowBindingRef>,
+    ),
+    DomainError,
+> {
+    let records: Vec<_> = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
         .await
-        .map_err(|e| repo_failure(&e))?;
-    Ok(window::group_by_key_seeded(
+        .map_err(|e| repo_failure(&e))?
+        .into_iter()
+        .filter(|w| {
+            PROJECTED_WINDOW_STATES.contains(&w.state)
+                && projected.iter().any(|row| row.price_id == w.price_id)
+        })
+        .collect();
+    let bindings = records
+        .iter()
+        .map(|w| {
+            (
+                (w.scope_key.clone(), w.effective_from),
+                WindowBindingRef {
+                    window_id: w.window_id,
+                    price_id: w.price_id,
+                },
+            )
+        })
+        .collect();
+    let windows = window::group_by_key_seeded(
         projected.iter().map(|row| row.scope_key.clone()),
-        records
-            .into_iter()
-            .filter(|w| {
-                PROJECTED_WINDOW_STATES.contains(&w.state)
-                    && projected.iter().any(|row| row.price_id == w.price_id)
-            })
-            .map(|w| {
-                (
-                    w.scope_key,
-                    WindowInterval::new(w.effective_from, w.effective_to, w.state),
-                )
-            }),
-    ))
+        records.into_iter().map(|w| {
+            (
+                w.scope_key,
+                WindowInterval::new(w.effective_from, w.effective_to, w.state),
+            )
+        }),
+    );
+    Ok((windows, bindings))
 }
 
 /// Is every subject of `catalog_version` warm?

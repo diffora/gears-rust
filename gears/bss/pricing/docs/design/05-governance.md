@@ -362,6 +362,21 @@ live baseline references, every authored operation, row versions and symbolic st
 **Task 3 (2026-09-19):** `put_plan_shape` dropped `billing_cycle`; the separator
 bumps `v19` → `v20` and open units drain-fail `APPROVAL_CONTENT_MISMATCH` again.
 Charge-line collections stay unframed until Task 8 (`v21`).
+**The normalized graph joined the pin (2026-09-20):** `v20` → `v21`. The preimage frames, per
+line version, `chargeLineId`, `lineVersionId`, the eight line axes and the shared structure, and,
+per monetary version, `marketPriceId`, `priceId`, `lineVersionId`, the full market key and the
+money — beside the resolved `rows`, which remain. Two states v20 pinned alike become
+distinguishable: a market **re-bound to another line version of identical content** (every
+resolved row reads the same, no row version and no revision version moves, so under v20 the
+stale approval published), and a line drafted with **no market price**, which has no row at all.
+Collections are sets ordered by their own identities; a market's `tierRates` are a **sequence**,
+because the n-th rate prices the n-th band of the version the row names. The reviewer's document
+gains `charge_lines` and `market_prices` for the rule stated above — what the digest covers, the
+document shows. Open units drain-fail `APPROVAL_CONTENT_MISMATCH`; there is no pin-rewrite path.
+**Materiality needs no line-level rule:** the evaluator reads resolved rows and a line's structure
+is folded into every one of its markets' rows, so a structural edit lands each of them in D-115's
+no-computable-delta case at once, while a monetary edit moves one market's row and leaves its
+siblings equal to what is published.
 
 ### Audit Trail and Retention
 

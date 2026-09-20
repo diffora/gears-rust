@@ -473,3 +473,34 @@ publish pre-check, not refused at save.
 `DELETE` of a line version a market price still references is
 `409 CHARGE_LINE_IN_USE`, naming a row to delete first. Deleting a line's only
 version deletes the logical line and its markets, and frees the axes for a new one.
+
+## Approval document and published reads carry the normalized graph (2026-09-20)
+
+`GET /approvals/{id}` → `pinned_content` gains two arrays, shown because the content pin
+(generation `v21`) now covers them:
+
+```json
+"charge_lines": [
+  { "charge_line_id": "…", "line_version_id": "…",
+    "scope_key": { "phase": "…", "sku_id": "…", "price_eligibility": "all_subscriptions",
+                   "charge_kind": "recurring", "cohort": null, "dimension_key": "" },
+    "structure": { "model_kind": "flat", "gl_code_ref": "4000", "billing_timing": "advance" } }
+],
+"market_prices": [
+  { "market_price_id": "…", "price_id": "…", "line_version_id": "…",
+    "currency": "EUR", "region": "eu", "money": { "amount_minor": 9900 } }
+]
+```
+
+`structure` and `money` are the same shapes the charge-line routes use. `rows` is unchanged and
+still the resolved join; the two arrays are what it drops. A reviewer UI should render a
+**line with no entry in `market_prices`** prominently — it is a line that sells in no market,
+and publish refuses it (`LINE_MARKET_PRICE_MISSING`).
+
+Every approval opened before this deploy answers `APPROVAL_CONTENT_MISMATCH` on its next
+decision (the pin generation moved) and has to be withdrawn and resubmitted.
+
+The **published** plan payload (read model / `pricingSnapshotRef`) gains, on every
+`prices[]` member, `chargeLineId`, `lineVersionId` and `marketPriceId` beside `priceId`, and on
+every `windows[].intervals[]` member, `windowId` and `priceId`. All five are `null` only on a
+delta built off the publish path; a published read always carries them.
