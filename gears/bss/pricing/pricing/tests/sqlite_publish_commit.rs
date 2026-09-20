@@ -367,7 +367,6 @@ async fn seed_publishable(h: &Harness) -> (u64, RowVersion, Uuid) {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )
@@ -1066,7 +1065,6 @@ async fn an_elapsed_exact_start_after_approval_rolls_back_and_leaves_intentions(
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )
@@ -3846,7 +3844,6 @@ async fn make_two_phased(h: &Harness) {
                     ordinal: 0,
                     converts_to_phase_id: Some(terminal_phase()),
                     phase_duration_days: Some(14),
-                    display_trial_days: Some(14),
                 },
                 PlanPhase {
                     phase_id: terminal_phase(),
@@ -3855,7 +3852,6 @@ async fn make_two_phased(h: &Harness) {
                     ordinal: 1,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
-                    display_trial_days: None,
                 },
             ],
             stamp(),

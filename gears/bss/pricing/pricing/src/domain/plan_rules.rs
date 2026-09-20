@@ -225,38 +225,6 @@ pub const TERMINAL_PHASE_KIND_INVALID: &str = "TERMINAL_PHASE_KIND_INVALID";
 /// one (`inst-ph-duration`).
 pub const PHASE_DURATION_INVALID: &str = "PHASE_DURATION_INVALID";
 
-/// `displayTrialDays` on a phase that is not a `trial`, or on one carrying no
-/// `phaseDurationDays` to project (`inst-ph-trial`, D-151).
-///
-/// **§6's `CHECK` cannot carry either half, and is deliberately not tightened.**
-/// `CHECK (display_trial_days IS NULL OR display_trial_days = phase_duration_days)`
-/// is silent on `kind` altogether, and SQL's NULL propagation makes it
-/// *satisfied* whenever `phase_duration_days` is NULL while `display_trial_days`
-/// is set — both engines count a NULL comparison as passing. So the shape it
-/// exists to forbid, a phase publishing a trial length it does not have, passed
-/// it.
-///
-/// The `evergreen` **terminal** phase is where nothing else caught it either:
-/// `inst-ph-duration` is correct to find no duration on a terminal phase and
-/// `inst-ph-graph`'s terminal-`kind` rule is correct to find `evergreen`. Both
-/// pass, and `displayTrialDays` is the single source Subscriptions enforces trial
-/// runtime from and preview quotes — so a plan with **no trial phase at all**
-/// could publish a trial length.
-///
-/// D-151 keeps the `CHECK` as written, NULL propagation and all: a phase graph is
-/// authored across successive `PATCH`es, and a `phase_duration_days IS NOT NULL`
-/// conjunct would make the half-authored draft unsavable. The schema stands
-/// **behind** this rule rather than in front of it.
-///
-/// **A third fault, and the one the `CHECK` stands in front of** (
-/// review, H8): two numbers set and disagreeing. The rule reported only the two
-/// faults above, so the `CHECK` was the first thing to read the pair and the author
-/// was answered `500 … please retry later` about two numbers they had typed. That
-/// arm is `violate_at_write` and runs at the `phases` facet's door as well as at
-/// publish, where it can have no subject at all; its two siblings stay at publish
-/// for D-151's reason, being states the store accepts.
-pub const DISPLAY_TRIAL_DAYS_INVALID: &str = "DISPLAY_TRIAL_DAYS_INVALID";
-
 /// A price row whose `phase` scope-key axis names a phase the revision does not
 /// attach (`inst-ph-row-attached`, D-337).
 ///
@@ -462,7 +430,6 @@ pub fn plan_shape_rules(
         .with_rule(Box::new(phase_graph::PhaseChainLinear))
         .with_rule(Box::new(phase_graph::TerminalPhaseKind))
         .with_rule(Box::new(phase_graph::PhaseDuration))
-        .with_rule(Box::new(phase_graph::DisplayTrialDaysOnTrialPhase))
         // Immediately before `PhaseCoverage`, and the adjacency is D-337's: the
         // two are exact inverses over one relation — a row with no phase, a phase
         // with no rows — so a report carrying both names them together, and an

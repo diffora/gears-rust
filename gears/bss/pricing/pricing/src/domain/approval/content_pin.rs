@@ -632,6 +632,15 @@ use time::OffsetDateTime;
 /// `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and resubmitted under v20.
 /// There is no pin-rewrite path: a stored v19 digest cannot be translated.
 ///
+/// # `v22`: the trial-length projection leaves the preimage
+///
+/// `display_trial_days` was framed on every phase and is gone: a trial's length
+/// is `phase_duration_days` on a phase whose `kind` is `trial`, and the phase
+/// frame already carries both. Removing a framed member changes the preimage of
+/// every plan, so the generation moves and every open unit drain-fails
+/// `APPROVAL_CONTENT_MISMATCH`. A stored v21 digest cannot be translated: the
+/// bytes it was taken over no longer exist to re-derive.
+///
 /// # `v21`: the normalized graph joins the preimage
 ///
 /// [`PlanShape::charge_lines`] and [`PlanShape::market_prices`] are framed:
@@ -647,7 +656,7 @@ use time::OffsetDateTime;
 /// **Drain-fail**, as every generation before it. Every open `pricing_approval`
 /// unit answers `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and
 /// resubmitted under v21; a stored v20 digest cannot be translated.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v21\x1f";
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v22\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1454,7 +1463,6 @@ fn put_plan_phase(buf: &mut Vec<u8>, phase: &PlanPhase) {
         ordinal,
         converts_to_phase_id,
         phase_duration_days,
-        display_trial_days,
     } = phase;
     put_uuid(buf, phase_id.get());
     put_str(buf, kind.as_str());
@@ -1463,7 +1471,6 @@ fn put_plan_phase(buf: &mut Vec<u8>, phase: &PlanPhase) {
     put_i64(buf, i64::from(*ordinal));
     put_opt_uuid(buf, converts_to_phase_id.map(PhaseId::get));
     put_opt_u64(buf, phase_duration_days.map(u64::from));
-    put_opt_u64(buf, display_trial_days.map(u64::from));
 }
 
 fn put_addon_rule(buf: &mut Vec<u8>, rule: &AddonRule) {

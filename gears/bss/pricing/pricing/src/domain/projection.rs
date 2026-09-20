@@ -990,7 +990,6 @@ fn phase_value(phase: &PlanPhase) -> JsonValue {
         ordinal,
         converts_to_phase_id,
         phase_duration_days,
-        display_trial_days,
     } = phase;
     json!({
         "phaseId": phase_id.get(),
@@ -1003,7 +1002,6 @@ fn phase_value(phase: &PlanPhase) -> JsonValue {
         "ordinal": ordinal,
         "convertsToPhaseId": converts_to_phase_id.map(super::scope_key::PhaseId::get),
         "phaseDurationDays": phase_duration_days,
-        "displayTrialDays": display_trial_days,
     })
 }
 

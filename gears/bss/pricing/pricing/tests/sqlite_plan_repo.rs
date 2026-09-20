@@ -1670,7 +1670,6 @@ fn three_phases() -> Vec<PlanPhase> {
             phase_duration_days: Some(14),
             // The projection, equal to its source: the table's CHECK is what
             // stops the two persisted columns drifting.
-            display_trial_days: Some(14),
         },
         PlanPhase {
             phase_id: intro,
@@ -1685,7 +1684,6 @@ fn three_phases() -> Vec<PlanPhase> {
             ordinal: 1,
             converts_to_phase_id: Some(evergreen),
             phase_duration_days: Some(30),
-            display_trial_days: None,
         },
         PlanPhase {
             phase_id: evergreen,
@@ -1695,7 +1693,6 @@ fn three_phases() -> Vec<PlanPhase> {
             // Terminality is the absent successor, never the kind.
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         },
     ]
 }
@@ -3151,7 +3148,6 @@ async fn the_child_shape_rows_are_untouched_by_the_flip_and_freeze_with_the_revi
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )

@@ -371,10 +371,6 @@ pub struct PlanPhase {
     /// `PHASE_DURATION_INVALID`): `convertsToPhaseId` says *where* a phase
     /// converts and this says *when*.
     pub phase_duration_days: Option<u32>,
-    /// The PRD-named projection of [`PlanPhase::phase_duration_days`] on a
-    /// `trial` phase (`inst-ph-trial`) — one value, two projections, with a
-    /// `CHECK` on the table guarding drift between the two persisted columns.
-    pub display_trial_days: Option<u32>,
 }
 
 impl PlanPhase {

@@ -109,7 +109,6 @@ fn shape_only() -> PlanSubjectDelta {
             ordinal: 0,
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         }],
         // **Fully specified, every one of the eight members carrying a value that
         // is not its `Default`.** `addon_rule_value`'s four wire keys —
@@ -229,7 +228,7 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
             "ordinal": 0,
             "convertsToPhaseId": null,
             "phaseDurationDays": null,
-            "displayTrialDays": null,
+
         }]))
     );
 
@@ -246,7 +245,6 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
             ordinal: 0,
             converts_to_phase_id: Some(terminal_phase()),
             phase_duration_days: Some(30),
-            display_trial_days: None,
         },
         PlanPhase {
             phase_id: terminal_phase(),
@@ -255,7 +253,6 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
             ordinal: 1,
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         },
     ];
     let phases = labelled.to_value()["phases"].clone();

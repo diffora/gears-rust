@@ -661,7 +661,6 @@ TABLE pricing_plan_period_floor_cap
 TABLE pricing_plan_phase
   COLUMN converts_to_phase_id TEXT NULL DEFAULT - PK 0
   COLUMN display_name TEXT NULL DEFAULT - PK 0
-  COLUMN display_trial_days INT NULL DEFAULT - PK 0
   COLUMN kind TEXT NOT NULL DEFAULT - PK 0
   COLUMN ordinal INT NOT NULL DEFAULT - PK 0
   COLUMN phase_duration_days INT NULL DEFAULT - PK 0
@@ -669,10 +668,8 @@ TABLE pricing_plan_phase
   COLUMN plan_id TEXT NOT NULL DEFAULT - PK 2
   COLUMN plan_revision bigint NOT NULL DEFAULT - PK 3
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
-  CONSTRAINT chk_pricing_plan_phase_display_trial_days CHECK (display_trial_days IS NULL OR display_trial_days = phase_duration_days)
   CONSTRAINT chk_pricing_plan_phase_duration_non_negative CHECK (phase_duration_days IS NULL OR phase_duration_days >= 0)
   CONSTRAINT chk_pricing_plan_phase_kind CHECK (kind IN ('trial','interim','evergreen'))
-  CONSTRAINT chk_pricing_plan_phase_trial_projection_non_negative CHECK (display_trial_days IS NULL OR display_trial_days >= 0)
   CONSTRAINT fk_pricing_plan_phase_revision FOREIGN KEY (plan_id, plan_revision)
   FK plan_id -> pricing_plan.plan_id
   FK plan_revision -> pricing_plan.revision

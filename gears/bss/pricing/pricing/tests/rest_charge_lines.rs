@@ -1010,7 +1010,6 @@ async fn author_two_phases_two_markets(h: &Harness) -> (Uuid, Vec<String>, Vec<S
                     ordinal: 0,
                     converts_to_phase_id: Some(paid),
                     phase_duration_days: Some(14),
-                    display_trial_days: None,
                 },
                 PlanPhase {
                     phase_id: paid,
@@ -1019,7 +1018,6 @@ async fn author_two_phases_two_markets(h: &Harness) -> (Uuid, Vec<String>, Vec<S
                     ordinal: 1,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
-                    display_trial_days: None,
                 },
             ],
             rest_support::seed_stamp(),

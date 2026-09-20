@@ -409,7 +409,6 @@ async fn a_created_plan_carries_one_terminal_evergreen_phase() {
     assert_eq!(phases[0]["kind"], serde_json::json!("evergreen"));
     assert_eq!(phases[0]["converts_to_phase_id"], serde_json::Value::Null);
     assert_eq!(phases[0]["phase_duration_days"], serde_json::Value::Null);
-    assert_eq!(phases[0]["display_trial_days"], serde_json::Value::Null);
 
     // The seed is part of creation, not an edit of it: a bumped version would
     // mean the plan was born carrying a change nobody made, and the next
@@ -3807,74 +3806,12 @@ async fn a_period_floor_cap_authoring_neither_bound_is_refused_at_the_write() {
     assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(0));
 }
 
-/// A trial phase whose `displayTrialDays` drifts from its `phaseDurationDays` is
-/// refused at the write (H8).
+/// The drift refusal is retired with `displayTrialDays`.
 ///
-/// `chk_pricing_plan_phase_display_trial_days` is `display_trial_days IS NULL OR
-/// display_trial_days = phase_duration_days`, and `inst-ph-trial` reported only
-/// the two faults that `CHECK` **cannot** see — a non-trial kind, and a trial with
-/// no duration to project, which NULL propagation leaves satisfied. The one it can
-/// see was the one nothing refused before the insert, so the author was told to
-/// retry later about two numbers they had typed themselves.
-///
-/// Both numbers are named, because either is the one to move.
-#[tokio::test]
-async fn a_trial_phase_whose_display_days_drift_from_its_duration_is_refused_at_the_write() {
-    let harness = Harness::new().await;
-    let plan_id = Uuid::now_v7();
-    let trial = Uuid::now_v7();
-    let terminal = Uuid::now_v7();
-    seed_draft_plan(&harness, plan_id).await;
-
-    let refused = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &plan_path(plan_id),
-            Some(serde_json::json!({
-                "phases": [
-                    {
-                        "phase_id": trial,
-                        "kind": "trial",
-                        "ordinal": 0,
-                        "converts_to_phase_id": terminal,
-                        "phase_duration_days": 14,
-                        "display_trial_days": 30
-                    },
-                    { "phase_id": terminal, "kind": "evergreen", "ordinal": 1 }
-                ]
-            })),
-            &[("if-match", "\"0-0\"")],
-        ))
-        .await;
-
-    assert_eq!(
-        refused.status(),
-        StatusCode::BAD_REQUEST,
-        "a caller-fixable payload fault is not a storage failure"
-    );
-    let body = body_json(refused).await;
-    assert_eq!(code_in(&body), "DISPLAY_TRIAL_DAYS_INVALID", "{body}");
-    // Bound to the phase, and to the field each number was authored under. `14`
-    // and `30` are two-character needles over a document carrying two
-    // client-minted UUIDs rendered as hex, so an unrelated pair satisfies them —
-    // and neither tells `14` from `140`.
-    // Bound to the phase: `inst-ph-trial` stamps `{shape}|{phase_id}`, and the
-    // phase pass runs over the patched shape's real identity, so
-    // `without_placeholder_plan` finds no nil prefix to strip. The facet rules
-    // one screen up run over a nil-plan candidate and keep the other spelling.
-    let violation = violation_for(&body, &format!("{plan_id}/0|{trial}"))
-        .unwrap_or_else(|| panic!("the refusal carries a violation for the trial phase: {body}"));
-    assert!(
-        violation.contains("carries displayTrialDays 30 and phaseDurationDays 14"),
-        "the refusal names both numbers under the names they were authored by: {violation}"
-    );
-    assert_eq!(
-        plan_row_version(&harness, plan_id, 0).await,
-        Some(0),
-        "nothing landed"
-    );
-}
+/// It stood for a real fault — two numbers set and disagreeing, which reached
+/// the section 6 CHECK and came back a 500 advising a retry. With one number
+/// there is nothing to disagree with, and the door's remaining write-stage
+/// filter is probed by its neighbours above.
 
 /// The positive control: a trial phase projecting the duration it has still
 /// lands.
@@ -3902,7 +3839,6 @@ async fn a_trial_phase_projecting_the_duration_it_has_still_lands() {
                         "ordinal": 0,
                         "converts_to_phase_id": terminal,
                         "phase_duration_days": 14,
-                        "display_trial_days": 14
                     },
                     { "phase_id": terminal, "kind": "evergreen", "ordinal": 1 }
                 ]

@@ -709,7 +709,6 @@ fn clean_plan() -> PlanShape {
         ordinal: 0,
         converts_to_phase_id: None,
         phase_duration_days: None,
-        display_trial_days: None,
     }]);
     shape.rows = vec![record(0xb001, Some(ModelKind::Flat), Some("half_up"))];
     // `inst-wc-required`: a billable row whose canonical scope key holds no

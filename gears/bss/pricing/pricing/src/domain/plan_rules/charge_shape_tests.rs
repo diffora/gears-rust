@@ -143,7 +143,6 @@ fn terminal_graph() -> PhaseGraph {
         ordinal: 1,
         converts_to_phase_id: None,
         phase_duration_days: None,
-        display_trial_days: None,
     }])
 }
 
@@ -156,7 +155,6 @@ fn trial_then_terminal_graph() -> PhaseGraph {
             ordinal: 0,
             converts_to_phase_id: Some(phase_id(TERMINAL)),
             phase_duration_days: Some(14),
-            display_trial_days: Some(14),
         },
         PlanPhase {
             phase_id: phase_id(TERMINAL),
@@ -165,7 +163,6 @@ fn trial_then_terminal_graph() -> PhaseGraph {
             ordinal: 1,
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         },
     ])
 }

@@ -202,7 +202,6 @@ async fn seed(provider: &DBProvider<DbError>) {
                     ordinal: 0,
                     converts_to_phase_id: Some(terminal_phase()),
                     phase_duration_days: Some(14),
-                    display_trial_days: Some(14),
                 },
                 PlanPhase {
                     phase_id: terminal_phase(),
@@ -211,7 +210,6 @@ async fn seed(provider: &DBProvider<DbError>) {
                     ordinal: 1,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
-                    display_trial_days: None,
                 },
             ],
             stamp(),

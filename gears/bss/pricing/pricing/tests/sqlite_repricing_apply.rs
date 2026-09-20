@@ -345,7 +345,6 @@ async fn seed_plan(h: &Harness, plan_id: Uuid, phase_id: Uuid) {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )

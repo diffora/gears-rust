@@ -819,7 +819,6 @@ pub(super) async fn copy_phases(
             // the copy of the same phase.
             converts_to_phase_id: Set(row.converts_to_phase_id),
             phase_duration_days: Set(row.phase_duration_days),
-            display_trial_days: Set(row.display_trial_days),
         })
         .collect();
     insert_phases(runner, scope, copies).await
@@ -1420,7 +1419,6 @@ fn phase_model_for(
             "phaseDurationDays",
             phase.phase_duration_days,
         )?),
-        display_trial_days: Set(stored_count("displayTrialDays", phase.display_trial_days)?),
     })
 }
 
@@ -1504,10 +1502,6 @@ fn to_domain(row: &plan_phase::Model) -> Result<PlanPhase, RepoError> {
         phase_duration_days: read_count(
             "pricing_plan_phase.phase_duration_days",
             row.phase_duration_days,
-        )?,
-        display_trial_days: read_count(
-            "pricing_plan_phase.display_trial_days",
-            row.display_trial_days,
         )?,
     })
 }

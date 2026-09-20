@@ -146,6 +146,9 @@ pub struct PreviewView {
     /// unanswerable for exactly the plans whose pricing is most worth previewing.
     pub tier_band_count: Option<u32>,
     /// The trial days a consumer surface shows, when the plan declares any.
+    ///
+    /// The trial phase's `phaseDurationDays`. It had a frozen member of its own
+    /// until that member was found to be a second name for this one.
     pub display_trial_days: Option<i64>,
     /// §2's required disclaimer.
     pub disclaimer: String,
@@ -360,9 +363,18 @@ async fn preview_plan_price(
         )
         .ok()
         .filter(|count| *count > 0),
-        display_trial_days: delta.payload["phases"]
-            .as_array()
-            .and_then(|phases| phases.iter().find_map(|p| p["displayTrialDays"].as_i64())),
+        // Derived from the trial phase rather than read from a member of its
+        // own. The payload carried `displayTrialDays` beside
+        // `phaseDurationDays` until they were found to be one value under two
+        // names; the projection stopped freezing the second, and this surface
+        // keeps publishing the number because the trial length is the one
+        // figure a purchaser reads off a trial offer.
+        display_trial_days: delta.payload["phases"].as_array().and_then(|phases| {
+            phases
+                .iter()
+                .find(|p| p["kind"].as_str() == Some("trial"))
+                .and_then(|p| p["phaseDurationDays"].as_i64())
+        }),
         disclaimer: OVERLAY_DISCLAIMER.to_owned(),
     })
     .into_response())

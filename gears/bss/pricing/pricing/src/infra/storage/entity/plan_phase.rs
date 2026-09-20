@@ -72,10 +72,6 @@ pub struct Model {
     /// forbidden on the terminal one — a pipeline rule
     /// (`inst-ph-duration`, `PHASE_DURATION_INVALID`), never a CHECK here.
     pub phase_duration_days: Option<i32>,
-    /// The PRD-named projection of [`Model::phase_duration_days`] on a `trial`
-    /// phase (`inst-ph-trial`). `chk_pricing_plan_phase_display_trial_days`
-    /// guards drift between the two persisted columns.
-    pub display_trial_days: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

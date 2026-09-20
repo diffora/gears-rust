@@ -293,7 +293,6 @@ async fn a_floor_above_its_cap_is_refused_and_equality_is_not() {
 /// the comparison NULL — which both engines count as **satisfied** — so a
 /// floor-only bound and a cap-only bound would pass a constraint that had
 /// stopped being evaluated at all. That is the exact shape
-/// `chk_pricing_plan_phase_display_trial_days` fell into (D-151), and the only
 /// way to tell the two spellings apart is to assert that the one-sided rows are
 /// accepted *and* that the two-sided contradiction is still refused. Both are
 /// above; what this case adds is the pair on one revision, so the constraint is

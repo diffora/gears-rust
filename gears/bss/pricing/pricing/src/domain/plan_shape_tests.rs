@@ -58,7 +58,6 @@ fn phase(seed: u128, kind: PhaseKind, ordinal: i32, converts_to: Option<PhaseId>
         ordinal,
         converts_to_phase_id: converts_to,
         phase_duration_days: converts_to.is_some().then_some(14),
-        display_trial_days: None,
     }
 }
 

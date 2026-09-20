@@ -526,15 +526,18 @@ async fn a_market_with_a_trial_phase_quotes_the_terminal_phases_row() {
         "the steady state is what a purchaser is charged first; the trial row's \
          id sorts ahead of it and used to win"
     );
-    // **`displayTrialDays` reaches the wire**, and this fixture is the only one
+    // **The trial length reaches the wire**, and this fixture is the only one
     // that seeds it. A crate-wide grep on 2026-08-20 found no test reading this
-    // member at all, so `preview.rs`'s `display_trial_days` mapping could be dropped,
-    // mis-keyed or
-    // made permanently `None` with the whole preview suite green — and the trial
-    // length is the one number a purchaser reads off a trial offer.
+    // member at all, so `preview.rs`'s mapping could be dropped, mis-keyed or made
+    // permanently `None` with the whole preview suite green — and the trial length
+    // is the one number a purchaser reads off a trial offer.
+    //
+    // It is now **derived** from the trial phase's `phaseDurationDays`: the frozen
+    // member it used to read was a second name for that number, and removing the
+    // duplicate must not remove the figure.
     assert_eq!(
         body["display_trial_days"], 14,
-        "the trial phase's own `displayTrialDays`, not the terminal phase's null: {body}"
+        "the trial phase's own duration, not the terminal phase's null: {body}"
     );
 }
 
@@ -573,7 +576,6 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
             ordinal: 0,
             converts_to_phase_id: Some(rest_support::seeded_phase()),
             phase_duration_days: Some(14),
-            display_trial_days: Some(14),
         },
         PlanPhase {
             phase_id: rest_support::seeded_phase(),
@@ -582,7 +584,6 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
             ordinal: 1,
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         },
     ];
 

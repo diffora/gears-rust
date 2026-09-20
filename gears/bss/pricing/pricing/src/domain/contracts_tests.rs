@@ -856,7 +856,6 @@ fn phase(n: u128, ordinal: i32, converts_to: Option<u128>) -> PlanPhase {
         ordinal,
         converts_to_phase_id: converts_to.map(|c| PhaseId::new(Uuid::from_u128(c))),
         phase_duration_days: converts_to.map(|_| 14),
-        display_trial_days: None,
     }
 }
 

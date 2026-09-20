@@ -263,7 +263,6 @@ async fn seed(pg: &Pg) {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )

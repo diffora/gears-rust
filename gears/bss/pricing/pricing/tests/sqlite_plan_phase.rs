@@ -134,7 +134,6 @@ struct Phase {
     /// `None` is terminality.
     converts_to: Option<&'static str>,
     duration: Option<i32>,
-    display_trial: Option<i32>,
 }
 
 const TERMINAL: Phase = Phase {
@@ -144,7 +143,6 @@ const TERMINAL: Phase = Phase {
     ordinal: 1,
     converts_to: None,
     duration: None,
-    display_trial: None,
 };
 
 fn nullable(value: Option<&str>) -> String {
@@ -159,15 +157,14 @@ fn insert_phase(phase: &Phase) -> String {
     format!(
         "INSERT INTO pricing_plan_phase (
             phase_id, plan_revision, tenant_id, plan_id, kind, ordinal,
-            converts_to_phase_id, phase_duration_days, display_trial_days)
-         VALUES ('{}', {}, '{TENANT}', '{PLAN}', '{}', {}, {}, {}, {})",
+            converts_to_phase_id, phase_duration_days)
+         VALUES ('{}', {}, '{TENANT}', '{PLAN}', '{}', {}, {}, {})",
         phase.id,
         phase.revision,
         phase.kind,
         phase.ordinal,
         nullable(phase.converts_to),
         number(phase.duration),
-        number(phase.display_trial),
     )
 }
 
@@ -241,46 +238,13 @@ async fn two_revisions_of_one_plan_each_carry_their_own_terminal_phase() {
     assert_eq!(count_phases(&conn, 1).await, "1");
 }
 
-#[tokio::test]
-async fn the_trial_projection_may_not_drift_from_its_source() {
-    let conn = migrated_db().await;
-    insert_revision(&conn, 0).await;
-
-    let trial = Phase {
-        id: "66666666-6666-6666-6666-666666666666",
-        revision: 0,
-        kind: "trial",
-        ordinal: 0,
-        converts_to: Some(TERMINAL.id),
-        duration: Some(14),
-        display_trial: Some(14),
-    };
-
-    // Subscriptions reads the published projection as its single source for
-    // trial runtime, so a drift here is a trial that ends on a different day
-    // than the catalog says it does.
-    must_be_rejected(
-        &conn,
-        &insert_phase(&Phase {
-            display_trial: Some(15),
-            ..trial
-        }),
-        "chk_pricing_plan_phase_display_trial_days",
-    )
-    .await;
-
-    // NULL is an untaken projection, not a drift: only `trial` phases publish
-    // the alias at all.
-    must_succeed(
-        &conn,
-        &insert_phase(&Phase {
-            display_trial: None,
-            ..trial
-        }),
-    )
-    .await;
-    assert_eq!(count_phases(&conn, 0).await, "1");
-}
+/// The trial-length projection is gone, and with it this table's drift guard.
+///
+/// What stood here probed `chk_pricing_plan_phase_display_trial_days`, the CHECK
+/// over two persisted columns holding one value. A trial's length is now
+/// `phase_duration_days` on a phase whose `kind` is `trial`; there is no second
+/// column to drift from, and the shape the CHECK could not catch — a projection
+/// set over a NULL duration — is unrepresentable.
 
 /// Neither day-count column admits a negative.
 ///
@@ -288,14 +252,11 @@ async fn the_trial_projection_may_not_drift_from_its_source() {
 /// and answer `CorruptRow` for anything else, so a poisoned row is a revision no
 /// typed path can read back at all.
 ///
-/// **Each is reachable on its own**, which is what makes this two cases rather
-/// than one ambiguous one. `chk_pricing_plan_phase_display_trial_days` is
-/// satisfied whenever either side is NULL, so a duration of `-1` under an
-/// untaken projection, and a projection of `-1` over an absent duration, each
-/// leave exactly one constraint able to answer. The second of those is the row
-/// the migration's own doc names as the shape the drift rule lets through.
+/// The projection half of this case went with `display_trial_days`: it probed a
+/// second day-count column that no longer exists. What remains is the duration's
+/// own non-negative guard, which is the half that was never about the drift.
 #[tokio::test]
-async fn neither_day_count_column_admits_a_negative() {
+async fn the_duration_column_admits_no_negative() {
     let conn = migrated_db().await;
     insert_revision(&conn, 0).await;
 
@@ -306,7 +267,6 @@ async fn neither_day_count_column_admits_a_negative() {
         ordinal: 0,
         converts_to: Some(TERMINAL.id),
         duration: None,
-        display_trial: None,
     };
 
     must_be_rejected(
@@ -318,15 +278,6 @@ async fn neither_day_count_column_admits_a_negative() {
         "chk_pricing_plan_phase_duration_non_negative",
     )
     .await;
-    must_be_rejected(
-        &conn,
-        &insert_phase(&Phase {
-            display_trial: Some(-1),
-            ..phase
-        }),
-        "chk_pricing_plan_phase_trial_projection_non_negative",
-    )
-    .await;
 
     // The admitted side of both steps. `0` is a real day count — an intro phase
     // that converts the moment it opens — so the bound is `>= 0` and not `> 0`,
@@ -335,7 +286,6 @@ async fn neither_day_count_column_admits_a_negative() {
         &conn,
         &insert_phase(&Phase {
             duration: Some(0),
-            display_trial: Some(0),
             ..phase
         }),
     )
@@ -449,8 +399,8 @@ fn insert_phase_of(
     format!(
         "INSERT INTO pricing_plan_phase (
             phase_id, plan_revision, tenant_id, plan_id, kind, ordinal,
-            converts_to_phase_id, phase_duration_days, display_trial_days)
-         VALUES ('{phase}', 0, '{tenant}', '{plan}', 'evergreen', {ordinal}, {}, NULL, NULL)",
+            converts_to_phase_id, phase_duration_days)
+         VALUES ('{phase}', 0, '{tenant}', '{plan}', 'evergreen', {ordinal}, {}, NULL)",
         nullable(converts_to),
     )
 }
@@ -921,7 +871,6 @@ fn chain() -> Vec<PlanPhase> {
             ordinal: 0,
             converts_to_phase_id: Some(PhaseId::new(Uuid::from_u128(0xf1b))),
             phase_duration_days: Some(14),
-            display_trial_days: Some(14),
         },
         PlanPhase {
             phase_id: PhaseId::new(Uuid::from_u128(0xf1b)),
@@ -930,7 +879,6 @@ fn chain() -> Vec<PlanPhase> {
             ordinal: 1,
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         },
     ]
 }
@@ -955,7 +903,6 @@ async fn a_shared_ordinal_still_reads_back_in_one_fixed_order() {
         ordinal: 0,
         converts_to_phase_id: Some(terminal),
         phase_duration_days: Some(7),
-        display_trial_days: None,
     };
     let earlier = PlanPhase {
         phase_id: PhaseId::new(Uuid::from_u128(0xf1a)),
@@ -968,7 +915,6 @@ async fn a_shared_ordinal_still_reads_back_in_one_fixed_order() {
         ordinal: 1,
         converts_to_phase_id: None,
         phase_duration_days: None,
-        display_trial_days: None,
     };
 
     repo.create_draft(&scope, draft_of(plan_id, tenant))
@@ -1089,7 +1035,6 @@ async fn a_stale_version_replaces_nothing_and_leaves_the_chain_standing() {
         ordinal: 0,
         converts_to_phase_id: None,
         phase_duration_days: None,
-        display_trial_days: None,
     }];
     let err = shapes
         .replace_phases(
@@ -1261,7 +1206,6 @@ async fn seeding_the_terminal_phase_does_not_bump_the_revision_or_record_an_edit
         ordinal: 0,
         converts_to_phase_id: None,
         phase_duration_days: None,
-        display_trial_days: None,
     };
     {
         // On a transaction, because the entry point's own doc requires "the
@@ -1397,7 +1341,6 @@ async fn the_stored_grant_set_and_phase_chain_map_to_the_analyzers_totals() {
                     ordinal: 0,
                     converts_to_phase_id: Some(terminal),
                     phase_duration_days: Some(14),
-                    display_trial_days: None,
                 },
                 PlanPhase {
                     phase_id: terminal,
@@ -1406,7 +1349,6 @@ async fn the_stored_grant_set_and_phase_chain_map_to_the_analyzers_totals() {
                     ordinal: 1,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
-                    display_trial_days: None,
                 },
             ],
             stamp(),

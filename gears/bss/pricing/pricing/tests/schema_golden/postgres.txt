@@ -285,7 +285,6 @@ COLUMN bss.pricing_plan_period_floor_cap region text NOT NULL DEFAULT -
 COLUMN bss.pricing_plan_period_floor_cap tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_plan_phase converts_to_phase_id uuid NULL DEFAULT -
 COLUMN bss.pricing_plan_phase display_name text NULL DEFAULT -
-COLUMN bss.pricing_plan_phase display_trial_days integer NULL DEFAULT -
 COLUMN bss.pricing_plan_phase kind text NOT NULL DEFAULT -
 COLUMN bss.pricing_plan_phase ordinal integer NOT NULL DEFAULT -
 COLUMN bss.pricing_plan_phase phase_duration_days integer NULL DEFAULT -
@@ -598,10 +597,8 @@ CONSTRAINT bss.pricing_plan_period_floor_cap chk_pricing_plan_period_floor_cap_o
 CONSTRAINT bss.pricing_plan_period_floor_cap chk_pricing_plan_period_floor_cap_present CHECK (((floor_minor IS NOT NULL) OR (cap_minor IS NOT NULL)))
 CONSTRAINT bss.pricing_plan_period_floor_cap fk_pricing_plan_period_floor_cap_revision FOREIGN KEY (plan_id, plan_revision) REFERENCES bss.pricing_plan(plan_id, revision)
 CONSTRAINT bss.pricing_plan_period_floor_cap pricing_plan_period_floor_cap_pkey PRIMARY KEY (plan_id, plan_revision, currency, region)
-CONSTRAINT bss.pricing_plan_phase chk_pricing_plan_phase_display_trial_days CHECK (((display_trial_days IS NULL) OR (display_trial_days = phase_duration_days)))
 CONSTRAINT bss.pricing_plan_phase chk_pricing_plan_phase_duration_non_negative CHECK (((phase_duration_days IS NULL) OR (phase_duration_days >= 0)))
 CONSTRAINT bss.pricing_plan_phase chk_pricing_plan_phase_kind CHECK ((kind = ANY (ARRAY['trial'::text, 'interim'::text, 'evergreen'::text])))
-CONSTRAINT bss.pricing_plan_phase chk_pricing_plan_phase_trial_projection_non_negative CHECK (((display_trial_days IS NULL) OR (display_trial_days >= 0)))
 CONSTRAINT bss.pricing_plan_phase fk_pricing_plan_phase_revision FOREIGN KEY (plan_id, plan_revision) REFERENCES bss.pricing_plan(plan_id, revision)
 CONSTRAINT bss.pricing_plan_phase pricing_plan_phase_pkey PRIMARY KEY (tenant_id, plan_id, plan_revision, phase_id)
 CONSTRAINT bss.pricing_policy_object chk_pricing_policy_line_templates CHECK (((jsonb_typeof(default_line_templates) = 'object'::text) AND ((default_line_templates - ARRAY['recurring'::text, 'usage'::text, 'one_time'::text]) = '{}'::jsonb) AND COALESCE((jsonb_typeof((default_line_templates -> 'recurring'::text)) = 'string'::text), false) AND COALESCE((jsonb_typeof((default_line_templates -> 'usage'::text)) = 'string'::text), false) AND COALESCE((jsonb_typeof((default_line_templates -> 'one_time'::text)) = 'string'::text), false)))

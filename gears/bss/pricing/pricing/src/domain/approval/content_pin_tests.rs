@@ -271,7 +271,6 @@ fn maximal_phase(seed: u128, ordinal: i32, converts_to: Option<PhaseId>) -> Plan
         ordinal,
         converts_to_phase_id: converts_to,
         phase_duration_days: Some(14),
-        display_trial_days: Some(14),
     }
 }
 
@@ -809,11 +808,6 @@ fn child_mutators() -> Vec<Mutator> {
         ("phase.phase_duration_days", |s| {
             let mut phases = s.phases.phases().to_vec();
             phases[0].phase_duration_days = Some(90);
-            s.phases = PhaseGraph::new(phases);
-        }),
-        ("phase.display_trial_days", |s| {
-            let mut phases = s.phases.phases().to_vec();
-            phases[0].display_trial_days = Some(30);
             s.phases = PhaseGraph::new(phases);
         }),
         // D-357: the label is framed, and all three transitions move the pin —
@@ -1832,11 +1826,13 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// the full market key and the money per monetary version — and `base()` grew one
 /// of each per row so the vector covers two non-empty sets. Drain-fail, as before.
 #[test]
-// v21 re-freezes the plan preimage with the line and market planes framed.
+// v22 re-freezes the plan preimage with the trial-length projection removed: the
+// member was a second name for `phase_duration_days` and framed on every phase,
+// so every plan's preimage moves.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "98b0f1a1037a21d205f1b3a1cfbd94b354f65bd2b6301e27aa08e9a4272a2f4c"
+        "52cdd25479662d9d74fd13595730427a05218d26dd1b839c7ed890604b12e3aa"
     );
 }
 
@@ -1996,7 +1992,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v21\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v22\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

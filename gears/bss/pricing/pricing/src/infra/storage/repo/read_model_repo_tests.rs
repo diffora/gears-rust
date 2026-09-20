@@ -146,7 +146,6 @@ fn populated() -> PlanSubjectDelta {
             ordinal: 0,
             converts_to_phase_id: None,
             phase_duration_days: None,
-            display_trial_days: None,
         }],
         addon_rules: Vec::new(),
         descriptor_ext: BTreeMap::default(),

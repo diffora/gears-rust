@@ -282,8 +282,6 @@ pub struct PlanPhaseView {
     pub converts_to_phase_id: Option<Uuid>,
     /// How long the phase lasts; `null` on the terminal phase.
     pub phase_duration_days: Option<u32>,
-    /// The trial length a storefront displays, on a `trial` phase.
-    pub display_trial_days: Option<u32>,
 }
 
 impl From<PlanPhase> for PlanPhaseView {
@@ -297,7 +295,6 @@ impl From<PlanPhase> for PlanPhaseView {
                 .converts_to_phase_id
                 .map(crate::domain::scope_key::PhaseId::get),
             phase_duration_days: phase.phase_duration_days,
-            display_trial_days: phase.display_trial_days,
         }
     }
 }
@@ -2190,7 +2187,6 @@ async fn create_plan(
                     ordinal: 0,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
-                    display_trial_days: None,
                 };
                 plan_shape_repo::seed_terminal_phase_on(
                     txn,
@@ -3332,19 +3328,6 @@ async fn require_no_stranded_rows(
         &subject,
         &mut report,
     );
-    // `inst-ph-trial`. Its drift arm — two numbers
-    // set and disagreeing — was reaching `chk_pricing_plan_phase_display_trial_days`
-    // and coming back a `500` advising a retry, the same class as the terminal-count
-    // fault above. It needs no stage parameter, and that is the difference from its
-    // two neighbours here: only the drift arm is `violate_at_write`, so the filter
-    // below keeps exactly the fault the store would have refused and leaves the
-    // rule's two publish-stage arms — both of them legitimate intermediate drafts —
-    // where D-151 put them.
-    crate::domain::validation::ValidationRule::evaluate(
-        &crate::domain::plan_rules::phase_graph::DisplayTrialDaysOnTrialPhase,
-        &subject,
-        &mut report,
-    );
     // The third caller of `write_stage_only()`, after the price-row write and the
     // bulk import. It is not decorative on a report this door built: it is the
     // guarantee that only a write-judgeable finding can refuse a write, so a
@@ -3562,7 +3545,6 @@ fn phase_of(view: &PlanPhaseView) -> Result<PlanPhase, DomainError> {
         ordinal: view.ordinal,
         converts_to_phase_id: view.converts_to_phase_id.map(PhaseId::new),
         phase_duration_days: view.phase_duration_days,
-        display_trial_days: view.display_trial_days,
     })
 }
 

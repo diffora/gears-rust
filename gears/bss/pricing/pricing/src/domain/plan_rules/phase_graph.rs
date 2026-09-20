@@ -1,7 +1,7 @@
 //! The **phase-schedule rules** (`cpt-cf-bss-pricing-algo-phases`).
 //!
 //! Ten rules over a [`PlanShape`], each one an instruction of the slice:
-//! `inst-ph-graph` (in three halves), `inst-ph-duration`, `inst-ph-trial`,
+//! `inst-ph-graph` (in three halves), `inst-ph-duration`,
 //! `inst-ph-row-attached`, `inst-ph-coverage`, `inst-ph-usage-invariant`,
 //! `inst-ph-override-units` and `inst-ph-terminal-stable`. They append and never
 //! short-circuit, so a plan with a broken chain *and* an uncovered phase reports
@@ -117,9 +117,9 @@ use std::collections::BTreeSet;
 use toolkit_macros::domain_model;
 
 use crate::domain::plan_rules::{
-    DISPLAY_TRIAL_DAYS_INVALID, PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID,
-    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED,
-    PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
+    PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID, PHASE_IN_USE,
+    PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED,
+    TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanShape};
 use crate::domain::price_record::PriceRecord;
@@ -806,128 +806,3 @@ fn has_recurring_part(subject: &PlanShape) -> bool {
 #[cfg(test)]
 #[path = "phase_graph_tests.rs"]
 mod phase_graph_tests;
-
-// ---------------------------------------------------------------------------
-// inst-ph-trial (D-151)
-// ---------------------------------------------------------------------------
-
-/// `displayTrialDays` is authorable only on a `trial` phase that has a duration
-/// to project.
-///
-/// **The case nothing caught, stated because the rule reads as redundant without
-/// it.** `displayTrialDays` is the PRD-named alias of `phaseDurationDays` on a
-/// trial phase — one value, two projections — and it is the single source
-/// Subscriptions enforces trial runtime from and preview quotes. A plan with **no
-/// trial phase at all** could publish a trial length:
-///
-/// - §6's `CHECK (display_trial_days IS NULL OR display_trial_days =
-///   phase_duration_days)` is silent on `kind`, and NULL propagation makes it
-///   *satisfied* whenever `phase_duration_days` is NULL while
-///   `display_trial_days` is set;
-/// - [`PhaseDuration`] is **correct** to find no duration on a terminal phase;
-/// - [`TerminalPhaseKind`] is **correct** to find `evergreen` there.
-///
-/// Three guards, each right, and the shape they exist to forbid passed all of
-/// them. That is the same arithmetic [`RecurringFrequencyRequired`](super::charge_shape::RecurringFrequencyRequired)
-/// closes one step over.
-///
-/// The `CHECK` is deliberately **not** tightened (D-151): a phase graph is
-/// authored across successive `PATCH`es, and a `phase_duration_days IS NOT NULL`
-/// conjunct would make the half-authored draft unsavable. The schema stands
-/// behind this rule rather than in front of it, exactly as it does for
-/// `inst-ph-duration` and the terminal `kind`.
-///
-/// # The third fault, and why it is the only one stamped at the write
-///
-/// The two arms above are the ones the `CHECK` **cannot** see. The one it can —
-/// two numbers set and disagreeing — this rule did not report at all, so
-/// `chk_pricing_plan_phase_display_trial_days` was the first thing to read the
-/// pair and the author was answered `500 … please retry later` about a payload
-/// they had typed themselves. It is the class the three commits before it
-/// closed on sibling tables.
-///
-/// It is `violate_at_write` and its two siblings are not, and the asymmetry is
-/// the whole point:
-///
-/// - the drift is read from the submitted phase alone, the `phases` facet is a
-///   wholesale replace so the resolving call retracts what was just sent, and
-///   **no stored row can ever carry it** — the `CHECK` guarantees that — so at
-///   publish this arm has no subject and nothing is lost by judging it earlier;
-/// - a non-trial `kind` and a missing `phaseDurationDays` are both states the
-///   store accepts, which is exactly what makes them legitimate intermediate
-///   drafts (D-151 above). Stamping them would refuse a half-authored trial
-///   phase, and D-312's safe direction is to leave a fault at publish rather
-///   than refuse an author's intermediate state.
-///
-/// The drift check runs **before** the `kind` arm's `continue`, because a
-/// non-trial phase can drift too and the `CHECK` is silent on `kind`: a payload
-/// that is both faults reports both, and the door — which takes
-/// `write_stage_only()` — keeps the one it can act on.
-///
-/// **The phase is named in the report**, because a plan may carry many and the
-/// author has to know which one to edit.
-#[domain_model]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct DisplayTrialDaysOnTrialPhase;
-
-impl ValidationRule<PlanShape> for DisplayTrialDaysOnTrialPhase {
-    fn name(&self) -> &'static str {
-        "inst-ph-trial"
-    }
-
-    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
-        for phase in subject.phases.in_ordinal_order() {
-            let Some(days) = phase.display_trial_days else {
-                continue;
-            };
-            let subject_ref = format!("{}|{}", subject.subject(), phase.phase_id);
-            // The section 6 CHECK's own predicate, and the only arm of this rule
-            // the store refuses — so the only one stamped for the write. Ahead of
-            // the `kind` arm's `continue` because the CHECK is silent on `kind`
-            // and a non-trial phase drifts the same way.
-            if let Some(duration) = phase.phase_duration_days
-                && duration != days
-            {
-                report.violate_at_write(
-                    DISPLAY_TRIAL_DAYS_INVALID,
-                    subject_ref.clone(),
-                    format!(
-                        "phase {} carries displayTrialDays {days} and phaseDurationDays \
-                         {duration}: the two are one value under two names, so one of them is \
-                         the number to change — the section 6 CHECK refuses the pair outright, \
-                         and a plan publishing a trial length that is not its trial's length is \
-                         one Subscriptions enforces the wrong runtime from",
-                        phase.phase_id
-                    ),
-                );
-            }
-            if phase.kind != PhaseKind::Trial {
-                report.violate(
-                    DISPLAY_TRIAL_DAYS_INVALID,
-                    subject_ref.clone(),
-                    format!(
-                        "phase {} is a {} phase and carries displayTrialDays {days}: the value is \
-                         the PRD alias of a TRIAL phase's duration, and a plan publishing a trial \
-                         length it has no trial phase for is one Subscriptions enforces a trial \
-                         runtime from",
-                        phase.phase_id,
-                        PhaseKind::as_str(phase.kind)
-                    ),
-                );
-                continue;
-            }
-            if phase.phase_duration_days.is_none() {
-                report.violate(
-                    DISPLAY_TRIAL_DAYS_INVALID,
-                    subject_ref,
-                    format!(
-                        "trial phase {} carries displayTrialDays {days} and no phaseDurationDays \
-                         to project: the two are one value, and the section 6 CHECK is SATISFIED \
-                         here because comparing to NULL is NULL",
-                        phase.phase_id
-                    ),
-                );
-            }
-        }
-    }
-}

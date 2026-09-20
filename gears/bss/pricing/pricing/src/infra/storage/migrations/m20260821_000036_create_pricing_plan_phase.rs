@@ -82,26 +82,21 @@
 //! read of the revision — past the point where the pipeline's report could be
 //! reached at all, and unreachable by any correction this gear offers.
 //!
-//! # `display_trial_days` may not drift from its source
+//! # The trial-length projection is gone
 //!
-//! `chk_pricing_plan_phase_display_trial_days` is §6's, verbatim: a `trial`
-//! phase publishes `displayTrialDays` as the PRD-named projection of its
-//! `phaseDurationDays` (`inst-ph-trial`), one value under two persisted names,
-//! and the two may never disagree (2026-07-28 review fix). Subscriptions reads
-//! the published projection as its single source for trial runtime, so a drift
-//! here is a trial that ends on a different day than the catalog says it does.
+//! `display_trial_days` was this table's second name for `phase_duration_days`
+//! on a `trial` phase, guarded by a drift `CHECK` and, because that `CHECK`
+//! could not carry the rule, by `inst-ph-trial` and `DISPLAY_TRIAL_DAYS_INVALID`
+//! besides. One value under two persisted names cost two guards and still let
+//! the shape it existed to forbid through: SQL's NULL propagation satisfied the
+//! comparison whenever `phase_duration_days` was NULL and the projection was
+//! set, so a phase could publish a trial length it did not have.
 //!
-//! The CHECK is satisfied when `display_trial_days` is NULL — an untaken
-//! projection — and, by SQL's NULL propagation, **also when
-//! `phase_duration_days` is NULL while `display_trial_days` is set**: the
-//! comparison is then NULL, which both engines count as satisfied. That
-//! remaining shape is a trial phase projecting a duration it does not have, and
-//! it is refused at publish rather than here, by the two rules already named:
-//! a non-terminal phase without a duration is `PHASE_DURATION_INVALID`, and a
-//! terminal one carrying the `trial` kind is `TERMINAL_PHASE_KIND_INVALID`.
-//! Closing it with an extra `phase_duration_days IS NOT NULL` conjunct would
-//! make exactly the half-authored draft the paragraph above protects unsavable,
-//! so the schema stands behind the pipeline here rather than in front of it.
+//! A trial's length is now `phase_duration_days` on a phase whose `kind` is
+//! `trial`, read from the frozen payload's `kind` and `phaseDurationDays`. The
+//! two neighbours that already guarded this column's edges still do:
+//! `PHASE_DURATION_INVALID` refuses a non-terminal phase without a duration, and
+//! `TERMINAL_PHASE_KIND_INVALID` refuses a terminal phase carrying `trial`.
 //!
 //! # Append-only with its revision (`01-foundation.md` §3.7, the L-2 fix)
 //!
@@ -214,14 +209,11 @@ const PG_UP_STATEMENTS: &[&str] = &[
             plan_revision        bigint  NOT NULL,
             phase_id             uuid    NOT NULL,
             converts_to_phase_id uuid,
-            display_trial_days   integer,
             kind                 text    NOT NULL,
             display_name         text,
             ordinal              integer NOT NULL,
             phase_duration_days  integer,
-            CONSTRAINT chk_pricing_plan_phase_display_trial_days CHECK (display_trial_days IS NULL OR display_trial_days = phase_duration_days),
             CONSTRAINT chk_pricing_plan_phase_duration_non_negative CHECK (phase_duration_days IS NULL OR phase_duration_days >= 0),
-            CONSTRAINT chk_pricing_plan_phase_trial_projection_non_negative CHECK (display_trial_days IS NULL OR display_trial_days >= 0),
             CONSTRAINT chk_pricing_plan_phase_kind CHECK (kind IN ('trial','interim','evergreen')),
             CONSTRAINT fk_pricing_plan_phase_revision FOREIGN KEY (plan_id, plan_revision) REFERENCES bss.pricing_plan(plan_id, revision),
             CONSTRAINT pricing_plan_phase_pkey PRIMARY KEY (tenant_id, plan_id, plan_revision, phase_id)
@@ -287,15 +279,12 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             plan_revision        bigint NOT NULL,
             phase_id             text   NOT NULL,
             converts_to_phase_id text,
-            display_trial_days   int,
             kind                 text   NOT NULL,
             display_name         text,
             ordinal              int    NOT NULL,
             phase_duration_days  int,
             PRIMARY KEY (tenant_id, plan_id, plan_revision, phase_id),
-            CONSTRAINT chk_pricing_plan_phase_display_trial_days CHECK (display_trial_days IS NULL OR display_trial_days = phase_duration_days),
             CONSTRAINT chk_pricing_plan_phase_duration_non_negative CHECK (phase_duration_days IS NULL OR phase_duration_days >= 0),
-            CONSTRAINT chk_pricing_plan_phase_trial_projection_non_negative CHECK (display_trial_days IS NULL OR display_trial_days >= 0),
             CONSTRAINT chk_pricing_plan_phase_kind CHECK (kind IN ('trial','interim','evergreen')),
             CONSTRAINT fk_pricing_plan_phase_revision FOREIGN KEY (plan_id, plan_revision) REFERENCES pricing_plan(plan_id, revision)
         )",

@@ -775,7 +775,6 @@ async fn seed_publishable_draft() -> (Store, u64) {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             race_stamp(),
         )

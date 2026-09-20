@@ -259,7 +259,6 @@ async fn seed(h: &Harness) -> Seeded {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )
@@ -1086,7 +1085,6 @@ async fn replacing_the_phase_graph_voids_the_pending_unit() {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )
@@ -1905,7 +1903,6 @@ async fn a_second_unit_over_a_rowless_revision_is_refused_by_the_plan_prefix() {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )

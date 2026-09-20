@@ -18,18 +18,17 @@ use bss_fixtures::ModelKind;
 use uuid::Uuid;
 
 use super::{
-    DisplayTrialDaysOnTrialPhase, PhaseChainLinear, PhaseCoverage, PhaseDuration,
-    PhaseGraphIntegrity, PhaseOverrideBase, PhaseOverrideUnits, RowPhaseAttached,
-    TerminalPhaseKind, TerminalPhaseStable,
+    PhaseChainLinear, PhaseCoverage, PhaseDuration, PhaseGraphIntegrity, PhaseOverrideBase,
+    PhaseOverrideUnits, RowPhaseAttached, TerminalPhaseKind, TerminalPhaseStable,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
-    DISPLAY_TRIAL_DAYS_INVALID, PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID,
-    PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED,
-    PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
+    PHASE_CHAIN_NONLINEAR, PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID, PHASE_IN_USE,
+    PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED,
+    TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline};
 use crate::domain::price_record::PriceRecord;
@@ -96,7 +95,6 @@ fn phase(seed: u128, kind: PhaseKind, ordinal: i32, converts_to: Option<PhaseId>
         ordinal,
         converts_to_phase_id: converts_to,
         phase_duration_days: converts_to.is_some().then_some(14),
-        display_trial_days: None,
     }
 }
 
@@ -238,7 +236,7 @@ fn every_rule_names_the_instruction_it_implements() {
     // The name is what the pipeline attributes a failing rule by, so it is part
     // of the contract and not a debug string.
     // In the order `plan_shape_rules` registers them, and **every** rule of the
-    // module. `DisplayTrialDaysOnTrialPhase` was missing from this list while its
+    // module.
     // own cases below exercised it: a census that skips a rule cannot tell anyone
     // that the rule renamed itself, which is the one thing it is here for.
     let named: Vec<&str> = [
@@ -246,7 +244,6 @@ fn every_rule_names_the_instruction_it_implements() {
         &PhaseChainLinear,
         &TerminalPhaseKind,
         &PhaseDuration,
-        &DisplayTrialDaysOnTrialPhase,
         &RowPhaseAttached::default(),
         &PhaseCoverage,
         &PhaseOverrideBase,
@@ -264,7 +261,6 @@ fn every_rule_names_the_instruction_it_implements() {
             "inst-ph-graph/linear",
             "inst-ph-graph/terminal-kind",
             "inst-ph-duration",
-            "inst-ph-trial",
             // Immediately before `inst-ph-coverage`, and the adjacency is the
             // contract (D-337): the two are exact inverses over one relation, so
             // a report carrying both names them together.
@@ -1262,7 +1258,6 @@ fn a_revision_moving_the_terminal_phase_fails() {
             ordinal: 1,
             converts_to_phase_id: Some(phase_id(EVERGREEN)),
             phase_duration_days: Some(30),
-            display_trial_days: None,
         },
         phase(EVERGREEN, PhaseKind::Evergreen, 2, None),
     ]);
@@ -1345,227 +1340,19 @@ fn an_ambiguous_terminal_quiets_the_immutability_arm_and_not_the_in_use_arm() {
 }
 
 // ---------------------------------------------------------------------------
-// inst-ph-trial (D-151)
+// inst-ph-trial (D-151) -- retired with `displayTrialDays`
+//
+// Six cases stood here, and each was right about a hole the section 6 CHECK
+// could not close: an evergreen terminal phase publishing a trial length, an
+// intro phase carrying one, a trial phase projecting a duration it did not have,
+// and three drift shapes. They are gone with the column. A trial's length is now
+// `phase_duration_days` on a phase whose `kind` is `trial`, so a phase cannot
+// publish a length it does not have and there is nothing left to drift from.
+//
+// The two neighbours that covered this rule's edges stay, and are probed above:
+// `PhaseDuration` refuses a non-terminal phase without a duration, and
+// `TerminalPhaseKind` refuses a terminal phase carrying `trial`.
 // ---------------------------------------------------------------------------
-
-#[test]
-fn an_evergreen_terminal_phase_publishing_a_trial_length_is_refused() {
-    // The case nothing caught, and the reason it is worth a rule of its own.
-    // A plan whose ONLY phase is the evergreen terminal one, carrying
-    // `displayTrialDays`: `PhaseDuration` is correct to find no duration on a
-    // terminal phase, `TerminalPhaseKind` is correct to find `evergreen`, and
-    // section 6's CHECK is SATISFIED because comparing to NULL is NULL. Three
-    // guards, each right, and the shape they exist to forbid passed all of them.
-    let mut terminal = phase(0x7e_11, PhaseKind::Evergreen, 1, None);
-    terminal.display_trial_days = Some(14);
-    let subject = shape_of(vec![terminal]);
-
-    // The three that legitimately pass.
-    assert!(judge(&PhaseDuration, &subject).violations.is_empty());
-    assert!(judge(&TerminalPhaseKind, &subject).violations.is_empty());
-    assert!(
-        judge(&PhaseGraphIntegrity::default(), &subject)
-            .violations
-            .is_empty()
-    );
-
-    // The one that does not.
-    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
-    let violation = only(&report);
-    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
-    assert!(
-        violation.subject.contains(&phase_id(0x7e_11).to_string()),
-        "the phase is named: {}",
-        violation.subject
-    );
-    assert!(
-        violation.detail.contains("evergreen"),
-        "{}",
-        violation.detail
-    );
-}
-
-#[test]
-fn an_intro_phase_carrying_a_trial_length_is_refused_too() {
-    // The projection binds to the phase `kind`, and `intro` is the other kind a
-    // non-terminal phase can be.
-    //
-    // The length **matches** `phase()`'s duration of 14 on purpose: the drift arm
-    // added 2026-08-20 reads the pair whatever the `kind`, so a mismatched value
-    // here would report two faults and this case is about the `kind` alone. The
-    // fixtures are clean in every dimension a test is not attacking (this file's
-    // own header).
-    let mut intro = phase(0x11_10, PhaseKind::Interim, 0, Some(phase_id(0x7e_11)));
-    intro.display_trial_days = Some(14);
-    let subject = shape_of(vec![intro, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
-
-    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
-    let violation = only(&report);
-    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
-    assert!(violation.detail.contains("interim"), "{}", violation.detail);
-}
-
-#[test]
-fn a_trial_phase_with_no_duration_to_project_is_refused_naming_the_null_check() {
-    // The half section 6's CHECK cannot carry at all: NULL propagation makes it
-    // satisfied whenever `phase_duration_days` is NULL while
-    // `display_trial_days` is set, on both engines.
-    let mut trial = phase(0x77_1a, PhaseKind::Trial, 0, Some(phase_id(0x7e_11)));
-    trial.phase_duration_days = None;
-    trial.display_trial_days = Some(14);
-    let subject = shape_of(vec![trial, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
-
-    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
-    let violation = only(&report);
-    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
-    assert!(
-        violation.detail.contains("phaseDurationDays"),
-        "{}",
-        violation.detail
-    );
-}
-
-#[test]
-fn a_trial_phase_projecting_the_duration_it_has_is_silent() {
-    // One value, two projections - the shape `inst-ph-trial` exists to permit.
-    let mut trial = phase(0x77_1a, PhaseKind::Trial, 0, Some(phase_id(0x7e_11)));
-    trial.phase_duration_days = Some(14);
-    trial.display_trial_days = Some(14);
-    let subject = shape_of(vec![trial, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
-
-    assert!(
-        judge(&DisplayTrialDaysOnTrialPhase, &subject)
-            .violations
-            .is_empty()
-    );
-}
-
-/// The drift the section 6 `CHECK` refuses, judged **at the write** (2026-08-20
-/// review, H8).
-///
-/// Before this arm the payload `{kind: trial, phaseDurationDays: 14,
-/// displayTrialDays: 30}` passed `phase_of`, passed the two rules the `phases`
-/// facet's door ran, and tripped
-/// `chk_pricing_plan_phase_display_trial_days` — a caller-fixable payload answered
-/// `500 … please retry later`.
-///
-/// The stamp is the assertion, not a detail of it: an arm reporting through
-/// `violate` would be invisible to the door, which takes `write_stage_only()`, and
-/// the REST case would still answer 500. That is what tells the two candidate fixes
-/// apart.
-#[test]
-fn a_trial_phase_whose_display_days_drift_from_its_duration_is_refused_at_the_write() {
-    let mut trial = phase(0x77_1a, PhaseKind::Trial, 0, Some(phase_id(0x7e_11)));
-    trial.phase_duration_days = Some(14);
-    trial.display_trial_days = Some(30);
-    let subject = shape_of(vec![trial, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
-
-    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
-    let violation = only(&report);
-
-    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
-    assert_eq!(
-        violation.stage,
-        Stage::Write,
-        "the CHECK refuses this pair, so the door has to be able to see it"
-    );
-    assert!(
-        violation.detail.contains("14") && violation.detail.contains("30"),
-        "both numbers are named, because either is the one to change: {}",
-        violation.detail
-    );
-    assert!(
-        report.write_stage_only().is_some(),
-        "the phases door filters with write_stage_only(): {:?}",
-        report.violations
-    );
-}
-
-/// A non-trial phase can drift too, and the door sees **only** the drift.
-///
-/// The `kind` arm `continue`s, so an arm placed after it would have left this
-/// payload reaching the `CHECK` exactly as before — the drift check runs first for
-/// that reason. Both faults are reported, and `write_stage_only()` keeps the one the
-/// author can be refused for at a save: the other is a legitimate intermediate
-/// draft under D-151, and the publish pre-check still carries both.
-#[test]
-fn a_non_trial_phase_whose_display_days_drift_reports_both_and_refuses_the_write_for_one() {
-    let mut intro = phase(0x11_10, PhaseKind::Interim, 0, Some(phase_id(0x7e_11)));
-    intro.display_trial_days = Some(30);
-    let subject = shape_of(vec![intro, phase(0x7e_11, PhaseKind::Evergreen, 1, None)]);
-
-    let report = judge(&DisplayTrialDaysOnTrialPhase, &subject);
-
-    assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
-    let refused = report
-        .write_stage_only()
-        .expect("the drift is judgeable at the write whatever the kind");
-    let violation = only(&refused);
-    assert_eq!(violation.code, DISPLAY_TRIAL_DAYS_INVALID);
-    assert!(
-        violation.detail.contains("phaseDurationDays"),
-        "the write-stage fault is the drift, not the kind: {}",
-        violation.detail
-    );
-}
-
-/// The two arms the `CHECK` cannot see stay at **publish**, and that is the whole
-/// reason this rule takes no stage parameter.
-///
-/// A door refusing them would refuse a half-authored trial phase, which is the state
-/// D-151 keeps the `CHECK` loose for. So a subject carrying only those two faults
-/// must leave the door silent — the direction that catches somebody stamping the
-/// whole rule later.
-#[test]
-fn the_two_faults_the_check_cannot_see_do_not_refuse_a_write() {
-    let mut trial = phase(0x77_1a, PhaseKind::Trial, 0, Some(phase_id(0x7e_11)));
-    trial.phase_duration_days = None;
-    trial.display_trial_days = Some(14);
-    let mut terminal = phase(0x7e_11, PhaseKind::Evergreen, 1, None);
-    terminal.display_trial_days = Some(30);
-
-    let report = judge(
-        &DisplayTrialDaysOnTrialPhase,
-        &shape_of(vec![trial, terminal]),
-    );
-
-    assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
-    assert!(
-        report.violations.iter().all(|v| v.stage == Stage::Publish),
-        "{:?}",
-        report.violations
-    );
-    assert!(
-        report.write_stage_only().is_none(),
-        "neither fault is one the store refuses: {:?}",
-        report.violations
-    );
-}
-
-#[test]
-fn every_offending_phase_is_reported_and_not_only_the_first() {
-    // Both phases carry the trial length of the duration they have — 14 for the
-    // intro, and the terminal one has none to disagree with — so each contributes
-    // exactly one fault: the `kind`. Without that the drift arm would make this a
-    // three-violation report and the count below would be asserting two things.
-    let mut intro = phase(0x11_10, PhaseKind::Interim, 0, Some(phase_id(0x7e_11)));
-    intro.display_trial_days = Some(14);
-    let mut terminal = phase(0x7e_11, PhaseKind::Evergreen, 1, None);
-    terminal.display_trial_days = Some(14);
-
-    let report = judge(
-        &DisplayTrialDaysOnTrialPhase,
-        &shape_of(vec![intro, terminal]),
-    );
-
-    assert_eq!(report.violations.len(), 2, "{:?}", report.violations);
-    assert!(
-        report
-            .violations
-            .iter()
-            .all(|v| v.code == DISPLAY_TRIAL_DAYS_INVALID)
-    );
-}
 
 #[test]
 fn same_unit_different_skus_do_not_pair_phase_overrides() {

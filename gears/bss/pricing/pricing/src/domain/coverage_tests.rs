@@ -130,7 +130,6 @@ fn one_row_plan(windows: Vec<KeyWindows>) -> PlanShape {
         ordinal: 0,
         converts_to_phase_id: None,
         phase_duration_days: None,
-        display_trial_days: None,
     }]);
     shape.rows = vec![row_on(0xb001, key(ChargeKind::Recurring, "EUR", "eu"))];
     shape.windows = windows;

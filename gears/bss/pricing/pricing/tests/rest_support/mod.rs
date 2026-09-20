@@ -1320,7 +1320,6 @@ impl Harness {
                     ordinal: 0,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
-                    display_trial_days: None,
                 }],
                 stamp(),
             )
@@ -1738,7 +1737,6 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )
@@ -2656,7 +2654,6 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
-                display_trial_days: None,
             }],
             stamp(),
         )
