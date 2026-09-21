@@ -202,9 +202,11 @@ pub const ORPHANED_BY_PUBLISH_REASON: &str =
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegionGrant {
     /// **Nothing transports a grant on this path.** The rule is then measured
-    /// against the change set's own reach, taken from the subject
-    /// [`judge`] re-derived, so `change_set_regions.is_subset(approver_regions)`
-    /// holds by construction and `REGION_SCOPE_DENIED` is unreachable.
+    /// against the change set's own reach, taken from the subject [`judge`]
+    /// re-derived, so every member of the change set is covered by construction
+    /// and `REGION_SCOPE_DENIED` is unreachable — the currency-wide member
+    /// included, which the synthesis drops with the rest rather than leaving to
+    /// refuse a path this variant says is unenforced (D-381).
     ///
     /// The consequence is stated rather than buried: **`inst-ap-scope` is not
     /// enforced for a caller that passes this.** The alternative was

@@ -657,7 +657,7 @@ For a phased plan the read model **MUST** map each phase id to its price row ref
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-multi-currency-rows`
 
-A Plan **MUST** support independent price rows per `(currency, region)` linked to the same `planId`, emitting `PriceCreated` per row. **A currency's price applies to every region unless a region overrides it (D-379):** a row filed under the reserved region `global` is the currency-wide price, a row on any other region is that region's override of it, and a buyer in region `R` resolves `(currency, R)` where a window covers the instant, else `(currency, global)`, else nothing — never another region's row and never another currency. An override is a whole row and inherits nothing; one whose window ends falls back to `global`, which the coverage report **MUST** disclose; a consumer resolves once at binding and pins the `priceId`, so a later override never re-prices a bound subscription. Where a currency is sold everywhere every line and every phase owes its `global` price, and an override obliges no sibling. The system **MUST** support **at least 20 currencies per plan** as a guaranteed floor and hold the read SLO at that floor.
+A Plan **MUST** support independent price rows per `(currency, region)` linked to the same `planId`, emitting `PriceCreated` per row. **A currency's price applies to every region unless a region overrides it (D-379; re-filed by D-381):** a row that states **no region** is the currency-wide price, a row that states one is that region's override of it, and a buyer in region `R` resolves `(currency, R)` where a window covers the instant, else the currency-wide row, else nothing — never another region's row and never another currency. A buyer with **no** region tries the currency-wide row alone. The currency-wide market is not a value of the region taxonomy, so nothing a tenant can declare, deprecate or retire reaches it. An override is a whole row and inherits nothing; one whose window ends falls back, which the coverage report **MUST** disclose; a consumer resolves once at binding and pins the `priceId`, so a later override never re-prices a bound subscription. Where a currency is sold everywhere every line and every phase owes its currency-wide price, and an override obliges no sibling. The system **MUST** support **at least 20 currencies per plan** as a guaranteed floor and hold the read SLO at that floor.
 
 **Rationale**: Global selling requires many first-class per-market rows without FX derivation.
 
@@ -1599,7 +1599,7 @@ this PRD and the design set are the wire paths.
 - The partner sees the catalog base list price with an overlay disclaimer.
 
 **Alternative Flows**:
-- **No row for `(currency, region)` and no `(currency, global)` row**: preview fails closed (no FX fallback, and no other region's price). A region with no price of its own is quoted the currency's `global` price, and the response says which region's price was quoted (D-379).
+- **No row for `(currency, region)` and no currency-wide row in that currency**: preview fails closed (no FX fallback, and no other region's price). A region with no price of its own is quoted the currency-wide price, and the response says which region's price was quoted — `null` where the currency-wide one served (D-379, re-filed by D-381). The `region` parameter is optional: a buyer with no territory is quoted the currency-wide price and nothing else.
 
 ## 11. User Interaction and Design
 
@@ -1954,7 +1954,7 @@ this PRD and the design set are the wire paths.
 ### Currency and FX policy
 
 **48. Missing currency row fails closed (no implicit FX)**
-- **Given** a preview or publish for a `(currency, region)` with no price row **and no currency-wide `(currency, global)` row** (D-379: where one exists the region resolves it, which is a price the plan authored and not a fallback across currencies)
+- **Given** a preview or publish for a `(currency, region)` with no price row **and no currency-wide row in that currency** — the row that states no region (D-379, re-filed by D-381: where one exists the region resolves it, which is a price the plan authored and not a fallback across currencies)
 - **When** resolution runs
 - **Then** the system MUST fail closed and MUST NOT compute or apply FX conversion
 - **And** a base-currency fallback MUST occur only when an explicit `currencyFallbackPolicy` is configured (Future scope)

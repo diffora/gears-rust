@@ -302,8 +302,8 @@ fn a_tripped_rates_move_carries_the_scale_it_was_measured_at() {
 ///
 /// What the surface hands over is therefore the **fact** that it has no grant to
 /// hand over, and `infra::approval::judge` resolves that against the change set
-/// it re-derived itself — so `change_set_regions.is_subset(approver_regions)`
-/// holds by construction and `REGION_SCOPE_DENIED` is unreachable over HTTP. The
+/// it re-derived itself — so every member of the change set is covered by
+/// construction and `REGION_SCOPE_DENIED` is unreachable over HTTP. The
 /// rule itself is built and both its directions are driven through the service,
 /// in `tests/sqlite_approval_service.rs`, under [`RegionGrant::Explicit`]. What
 /// is missing is one transport — and, with it, any pin on the **wiring**: what

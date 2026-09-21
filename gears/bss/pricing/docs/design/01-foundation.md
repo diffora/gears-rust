@@ -320,8 +320,9 @@ into the pipeline by the Foundation itself),
 no **active** value of the tenant's declared rounding vocabulary; **D-334**, 2026-08-16, and
 registered into the same base set for its sibling's reason — the column is on every price row.
 A tenant that has declared no vocabulary is unconstrained, which is the opposite of
-`REGION_UNKNOWN`'s one-member universe — the seeded `global` a tenant may retire (**D-354**; the
-set was empty before) — and is stated on both),
+`REGION_UNKNOWN`'s universe — **empty until the tenant declares a region**, and reachable only
+by a row that **states** one (**D-381**, 2026-09-21, retiring D-354's seed: a row that states no
+region is the currency-wide price and is not this rule's subject) — and is stated on both),
 `GL_CODE_UNKNOWN` (422 — each row's **effective** `glCode` names no **active** value of the
 tenant's declared GL-code vocabulary; **D-356**, 2026-09-09, **D-373**, 2026-09-16,
 registered into the same base set beside the two other vocabulary rules.

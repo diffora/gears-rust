@@ -476,14 +476,17 @@ belongs to.
 
 ### A currency price applies everywhere
 
-A price on region `global` is the currency's price in **every** region; a price on
-any other region overrides it there (D-379). A market picker therefore offers
-`global` first, and a region with no row of its own is not an empty cell — it
-shows the `global` price, inherited. `GET …/preview` answers `resolved_region`,
-the sellability document's keys and `GET …/coverage`'s entries answer
-`falls_back_to`: an override whose window ends hands its buyers to the `global`
-price at that instant, which a screen should show rather than leave to be
-discovered.
+A price that states **no region** is the currency's price in **every** region; a
+price that states one overrides it there (D-379, re-filed by D-381). A market
+picker therefore offers **"every region"** first — it is not a value in the
+region taxonomy and never appears in that list — and a region row is an
+override. A region with no row of its own is not an empty cell: it shows the
+currency-wide price, inherited. `GET …/preview` answers `resolved_region`,
+**`null`** when the currency-wide price served, and its `region` parameter is
+optional for a buyer with no territory; the sellability document's keys and
+`GET …/coverage`'s entries answer `falls_back_to`: an override whose window ends
+hands its buyers to the currency-wide price at that instant, which a screen
+should show rather than leave to be discovered.
 
 ### Deleting
 
