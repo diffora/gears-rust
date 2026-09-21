@@ -1840,6 +1840,105 @@ pub async fn plan_row_version(harness: &Harness, plan_id: Uuid, revision: u64) -
         .map(|row| row.row_version.get())
 }
 
+/// The principal who proposes the tenant's approver count in a door suite.
+///
+/// Distinct from [`APPROVER_COUNT_REVIEWER`] because
+/// `chk_pricing_approval_distinct_principals` is a real constraint and the
+/// ceremony below is the real one.
+pub const APPROVER_COUNT_PROPOSER: Uuid = Uuid::from_u128(0x5_e0);
+
+/// The independent principal who approves it.
+pub const APPROVER_COUNT_REVIEWER: Uuid = Uuid::from_u128(0xa_e0);
+
+/// Put the tenant at an approver count of `approver_count` (**D-380**).
+///
+/// **Through the ceremony, not around it.** A version is only the tenant's
+/// policy once an independent principal has approved it
+/// (`threshold::effective_version_at` re-checks the unit and its two
+/// principals), so a seed that wrote rows into `pricing_approval_threshold`
+/// would read back as the default and every door test built on it would prove
+/// the default path twice. That is D-380's own safety property, and it applies
+/// to a fixture exactly as it applies to a tenant: one person cannot lower
+/// their own quorum, here either.
+///
+/// The proposal goes through [`bss_pricing::infra::threshold::ThresholdService`]
+/// rather than the `PUT` route because the wire shape does not carry
+/// `approverCount` until the surface task lands; the approve goes through the
+/// **real route**, because that half already works and driving it is what keeps
+/// this helper honest about what a tenant has to do.
+///
+/// **The entry is a zero absolute threshold, and that is deliberate.** A zero
+/// threshold makes every priced change material, which is the state in which
+/// `N` is the only thing deciding whether a second principal is owed — a door
+/// that still refused at `N = 0` could not blame the threshold. The instant is
+/// in the past because a version whose `effectiveFrom` has not arrived does not
+/// move the tenant's quorum (D-188), and a 2099 fixture would leave the tenant
+/// at the default while looking configured.
+pub async fn set_approver_count(harness: &Harness, approver_count: u32) {
+    use bss_pricing::domain::materiality::triggers::Trigger;
+    use bss_pricing::domain::materiality::{ChangeSet, ThresholdBasis, ThresholdEntry};
+    use bss_pricing::infra::threshold::AssertedPolicy;
+
+    let now = OffsetDateTime::now_utc();
+    let scope = harness.scope();
+    let conn = harness.db.conn().expect("a scoped connection");
+    let tag = bss_pricing::infra::threshold::state_at(&conn, &scope, harness.tenant, now)
+        .await
+        .expect("read the tenant's policy state")
+        .tag();
+    let verdict = bss_pricing::domain::materiality::evaluate(
+        &ChangeSet::of_act(Trigger::ThresholdPolicyDiff, Vec::new()),
+        None,
+        None,
+    );
+    let (_, opened) = harness
+        .governance
+        .thresholds
+        .propose(
+            &scope,
+            harness.tenant,
+            Uuid::now_v7(),
+            utc_ymd_hms(2020, 1, 1, 0, 0, 0),
+            vec![ThresholdEntry {
+                currency: CurrencyCode::new("USD").expect("a well-formed code"),
+                basis: ThresholdBasis::Absolute { minor: 0 },
+            }],
+            approver_count,
+            AssertedPolicy { tag, now },
+            serde_json::to_value(bss_pricing::api::rest::approvals::MaterialityView::from(
+                &verdict,
+            ))
+            .expect("the verdict renders"),
+            stamp_of(APPROVER_COUNT_PROPOSER, now),
+        )
+        .await
+        .expect("propose the tenant's approver count");
+
+    let decided = harness
+        .allowed_as(APPROVER_COUNT_REVIEWER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{}/approve", opened.approval_id),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(
+        decided.status(),
+        axum::http::StatusCode::OK,
+        "the approver-count proposal has to be approved for the count to be in force"
+    );
+}
+
+/// The tenant's approver count as the doors read it — the readback that tells
+/// "the door honoured `N`" from "the ceremony never completed".
+pub async fn effective_approver_count(harness: &Harness) -> u32 {
+    let conn = harness.db.conn().expect("a scoped connection");
+    bss_pricing::infra::threshold::effective_approver_count(&conn, &harness.scope(), harness.tenant)
+        .await
+        .expect("the policy walk reads")
+}
+
 /// How many plan revisions the caller's tenant holds.
 ///
 /// The readback a create's denial needs: "403" says nothing about whether a row

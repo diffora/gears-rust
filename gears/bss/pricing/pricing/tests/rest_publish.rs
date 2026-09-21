@@ -31,9 +31,10 @@ use bss_pricing::domain::scope_key::{MarketPriceScopeKey, PhaseId, PlanId};
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
     Harness, Publishable, SEED_ACTOR, approval_row, approval_rows, at, audit_rows, body_json,
-    outbox_correlations_of, plan_state, price_rows, problem_code, publishable_row,
-    publishable_scope_key, refused_by, seed_draft_plan,
-    seed_publishable_plan as seed_live_window_plan, seed_publishable_shape, version, with_headers,
+    effective_approver_count, outbox_correlations_of, plan_state, price_rows, problem_code,
+    publishable_row, publishable_scope_key, refused_by, seed_draft_plan,
+    seed_publishable_plan as seed_live_window_plan, seed_publishable_shape, set_approver_count,
+    version, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -1866,5 +1867,148 @@ async fn a_publish_beside_a_pending_supersession_reaches_the_held_key_guard() {
             .filter(|row| row.subject_kind == "plan_revision")
             .all(|row| row.state != "submitted"),
         "and no plan-revision unit was opened either"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count, on the door the count was designed for.
+// ---------------------------------------------------------------------------
+
+/// **A first publish at `N = 0` publishes, with no approver and no unit.**
+///
+/// `inst-mat-first` is the rule no threshold can reach — a plan's first publish
+/// is material whatever the policy says — so this case is what proves the count
+/// is applied *beside* the five rules rather than inside one of them. The
+/// verdict is unchanged: the act is still material and still says so, and what
+/// `N = 0` removes is the second signature, not the classification.
+#[tokio::test]
+async fn a_first_publish_at_quorum_zero_publishes_without_an_approver() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(
+        effective_approver_count(&h).await,
+        0,
+        "the seed has to have landed, or this case proves the default path twice"
+    );
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "a tenant at zero publishes on the call rather than being handed a 202"
+    );
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "published");
+    assert_eq!(
+        body["materiality"]["material"], true,
+        "the verdict is unchanged - the count prices it, it does not reclassify it"
+    );
+    assert_eq!(
+        body["approval"],
+        serde_json::Value::Null,
+        "no unit was opened, so there is none to name"
+    );
+    assert!(
+        body["receipt"]["published_price_ids"]
+            .as_array()
+            .is_some_and(|ids| !ids.is_empty()),
+        "and the receipt carries the rows it actually froze: {body}"
+    );
+
+    assert_eq!(
+        plan_state(&h, plan_id, seeded.revision).await.as_deref(),
+        Some("published"),
+        "the revision is live, not waiting"
+    );
+    assert!(
+        approval_rows(&h)
+            .await
+            .into_iter()
+            .all(|row| row.subject_kind != "plan_revision"),
+        "no approval record is written for the publish at N = 0: chk_pricing_approval_approver \
+         lets only a submitted or voided row omit an approver, so a record here could only sit \
+         submitted forever, holding the tenant's one proposal slot. (The policy unit the \
+         fixture's own ceremony closed is a different subject kind.)"
+    );
+}
+
+/// **The same publish at the default still needs a second principal.**
+///
+/// The control for the case above, and the one that says the count is read
+/// rather than ignored in the direction that matters: `DEFAULT_APPROVER_COUNT`
+/// is 1, and a tenant that configured nothing is at it.
+#[tokio::test]
+async fn a_first_publish_at_the_default_still_needs_a_second_principal() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    set_approver_count(&h, 1).await;
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert_eq!(
+        plan_state(&h, plan_id, seeded.revision).await.as_deref(),
+        Some("draft"),
+        "nothing is published until the second principal signs"
+    );
+    let opened: Vec<_> = approval_rows(&h)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "plan_revision")
+        .collect();
+    assert_eq!(opened.len(), 1, "and the unit is open over it");
+    assert_eq!(opened[0].state, "submitted");
+}
+
+/// **The act is on the trail at `N = 0`.**
+///
+/// D-380 removes the second principal, not the audit: with no approval record
+/// to join against, the hash-chained audit row is the whole record of who
+/// published, so a path that skipped it would trade a control for a blind spot
+/// rather than for a one-person tenant's ability to ship.
+#[tokio::test]
+async fn a_quorum_zero_publish_is_still_recorded() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    set_approver_count(&h, 0).await;
+
+    assert_eq!(
+        publish_as(&h, SUBMITTER, plan_id, &seeded.etag())
+            .await
+            .status(),
+        axum::http::StatusCode::OK
+    );
+
+    let published_by_this_call: Vec<_> = audit_rows(&h)
+        .await
+        .into_iter()
+        .filter(|row| row.actor_principal_id == SUBMITTER)
+        .collect();
+    assert!(
+        !published_by_this_call.is_empty(),
+        "the publish appended a row of its own - the seed's rows are SEED_ACTOR's"
+    );
+    assert!(
+        published_by_this_call
+            .iter()
+            .any(|row| row.subject_ref.contains(&plan_id.to_string())),
+        "and it names the plan it published: {:?}",
+        published_by_this_call
+            .iter()
+            .map(|row| (row.subject_kind.clone(), row.action.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        published_by_this_call
+            .iter()
+            .all(|row| row.approval_ref.is_none()),
+        "and no row claims an approval that was never opened"
     );
 }
