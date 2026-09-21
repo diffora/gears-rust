@@ -244,28 +244,46 @@ pub async fn effective_version(
 /// `effective_from`**, so the answer is a function of the clock and the clock is the
 /// caller's rather than this function's.
 ///
-/// # The walk runs **upwards**, and D-380 is why
+/// # The walk descends to the first approved version, then climbs back
 ///
-/// It used to run down from the newest version and return the first one that was
-/// both effective and approved. That reads the right answer while a version can
-/// only be authorized one way. D-380 gives it a second way — a tenant whose `N`
-/// is zero owes no second principal, here as at every other door — and *that*
-/// authorization is a fact about the version **below** the one being judged, so
-/// it cannot be decided while walking away from it.
+/// It used to descend and return the first version that was both effective and
+/// approved. That reads the right answer while a version can only be authorized
+/// one way. D-380 gives it a second way — a tenant whose `N` is zero owes no
+/// second principal, here as at every other door — and *that* authorization is a
+/// fact about the version **below** the one being judged, so it cannot be
+/// decided on the way down.
 ///
-/// Upwards, each version is judged against the policy the walk has already
-/// established: an approved unit authorizes it, and so does an `N` of zero on
-/// the version in force beneath it. A version with neither is a **pending
-/// proposal** and is stepped over, leaving the tenant on what they had — which
-/// is the same outcome the downward walk produced, by the same fail-safe
-/// argument.
+/// So the descent stops at the first effective **approved** version: that one is
+/// in force, and it is also the floor every unapproved version above it is
+/// measured against. The climb back up promotes each of those only while the
+/// count beneath reads zero. A version with neither an approved unit nor a zero
+/// quorum under it is a **pending proposal** and is stepped over, leaving the
+/// tenant on what they had — the same fail-safe the plain descent produced.
 ///
 /// **This is what makes "one person cannot lower their own quorum" true.** A
 /// tenant at the default proposes `approver_count = 0`; the version beneath it
-/// reads `1`, so the proposal is not authorized and the walk steps over it. The
-/// tenant stays at `1` until an independent principal approves. A tenant with no
-/// policy at all reads [`DEFAULT_APPROVER_COUNT`], so zero is unreachable by
-/// omission as well.
+/// reads `1`, so the proposal is not authorized and the climb stops. The tenant
+/// stays at `1` until an independent principal approves. A tenant with no policy
+/// at all reads [`DEFAULT_APPROVER_COUNT`], so zero is unreachable by omission
+/// as well.
+///
+/// # Why not simply fold upwards
+///
+/// Because an upward fold has to read **every** version the tenant has ever had,
+/// and issue an approval lookup per version, on a function every governed act
+/// calls. The first shape of this change did exactly that: correct, and a
+/// per-act cost linear in a tenant's policy history. Descending stops at the
+/// floor, so the common case — the newest version approved — is the one read the
+/// plain descent always cost. It also keeps the set of approval records this
+/// function inspects **identical** to the set the plain descent inspected, which
+/// matters because [`crate::infra::approval::independent_approver`] *errors* on
+/// a record naming one principal twice: reading further down than the old walk
+/// did would surface a breach on an old row that the tenant's current policy has
+/// long superseded.
+///
+/// In practice the climb has at most one step. `uq_pricing_approval_policy_pending`
+/// admits one submitted policy unit per tenant, so a tenant cannot stack
+/// proposals.
 ///
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
@@ -276,10 +294,13 @@ pub async fn effective_version_at(
     tenant_id: Uuid,
     now: OffsetDateTime,
 ) -> Result<Option<ThresholdVersion>, DomainError> {
-    let mut versions = threshold_repo::versions_desc(runner, scope, tenant_id)
+    let versions = threshold_repo::versions_desc(runner, scope, tenant_id)
         .await
         .map_err(|e| repo_failure(&e))?;
-    versions.reverse();
+    // Effective, but carrying no approved unit — newest first, as the descent
+    // met them. Each is a candidate for D-380's second authorization and for
+    // nothing else.
+    let mut unapproved: Vec<ThresholdVersion> = Vec::new();
     let mut in_force: Option<ThresholdVersion> = None;
     for stored in versions {
         let number = u64::try_from(stored).map_err(|_| {
@@ -318,19 +339,27 @@ pub async fn effective_version_at(
         if let Some(record) = approved {
             crate::infra::approval::independent_approver(&record)?;
             in_force = Some(version);
-            continue;
+            // The floor. Nothing below it can be the answer, and nothing below
+            // it is read — which is both the cost and the record set the plain
+            // descent had.
+            break;
         }
-        // **D-380's second authorization.** No unit — and none owed, if the
-        // policy standing beneath this version puts the tenant at zero. The
-        // count is read off `in_force` rather than off `version` itself, which
-        // is the whole of the safety property: a proposal cannot authorize
-        // itself by declaring the quorum it wants.
+        unapproved.push(version);
+    }
+    // **D-380's second authorization**, applied bottom-up over what the descent
+    // collected. The count is read off what already stands, never off the
+    // version being judged: that is the whole of the safety property — a
+    // proposal cannot authorize itself by declaring the quorum it wants.
+    for version in unapproved.into_iter().rev() {
         let required = in_force
             .as_ref()
             .map_or(DEFAULT_APPROVER_COUNT, ThresholdVersion::approver_count);
-        if required == 0 {
-            in_force = Some(version);
+        if required > 0 {
+            // Nothing above it can be authorized either: `in_force` did not
+            // move, so the next one up would read the same count.
+            break;
         }
+        in_force = Some(version);
     }
     Ok(in_force)
 }
