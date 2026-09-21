@@ -980,3 +980,30 @@ async fn rows_of_one_version_disagreeing_about_the_count_are_a_corrupt_row() {
         other => panic!("expected a corrupt row, got {other:?}"),
     }
 }
+
+/// **A tenant with no effective version reads the default** (D-380).
+///
+/// The arm that makes `N = 0` unreachable by omission: an absent policy is the
+/// G1 fail-safe, and the count it hands back is the gear's shipped rule rather
+/// than zero. A tenant reaches zero by configuring it, under the quorum in
+/// force before the change, or not at all.
+///
+/// The D-188 arm — a version whose instant has not arrived does not move the
+/// count either — is asserted end-to-end in `rest_threshold_policy`, where the
+/// surface can propose a count and a second principal can approve it.
+#[tokio::test]
+async fn a_tenant_with_no_policy_reads_the_default_approver_count() {
+    let tenant = TENANT.parse::<uuid::Uuid>().expect("a uuid");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let provider = migrated_provider().await;
+    let conn = provider.conn().expect("a scoped connection");
+
+    let count = bss_pricing::infra::threshold::effective_approver_count(&conn, &scope, tenant)
+        .await
+        .expect("the walk reads");
+    assert_eq!(
+        count,
+        bss_pricing::domain::materiality::DEFAULT_APPROVER_COUNT,
+        "an unconfigured tenant is at the two-person rule, never at zero"
+    );
+}

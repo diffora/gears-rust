@@ -132,7 +132,9 @@ use crate::domain::approval::content_pin::threshold_content_hash;
 use crate::domain::audit::AuditStamp;
 use crate::domain::concurrency::{PolicyTag, require_policy_match};
 use crate::domain::error::DomainError;
-use crate::domain::materiality::{ThresholdEntry, ThresholdPolicy, ThresholdVersion};
+use crate::domain::materiality::{
+    DEFAULT_APPROVER_COUNT, ThresholdEntry, ThresholdPolicy, ThresholdVersion,
+};
 use crate::infra::approval::read_threshold_version;
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
 use crate::infra::storage::repo::{ThresholdEntryRow, approval_repo, threshold_repo};
@@ -186,6 +188,47 @@ pub async fn effective_policy_at(
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
 /// refuses.
+/// The tenant's approver count `N` as now in force (**D-380**).
+///
+/// **Reads the same walk [`effective_version_at`] does**, rather than a query of
+/// its own. `N` is a member of the version, so a second reader could disagree
+/// with the first about *which version is in force* — and the two answers would
+/// then be the quorum of one policy and the thresholds of another. One walk, one
+/// version, both facts off it.
+///
+/// A tenant with no effective version reads [`DEFAULT_APPROVER_COUNT`]: the same
+/// fallback an absent policy gets everywhere else, and the reason `N = 0` is
+/// never reached by omission.
+///
+/// # Errors
+/// [`DomainError`] when the walk cannot read the store.
+pub async fn effective_approver_count(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<u32, DomainError> {
+    effective_approver_count_at(runner, scope, tenant_id, OffsetDateTime::now_utc()).await
+}
+
+/// [`effective_approver_count`] against a named instant.
+///
+/// D-188 governs `N` exactly as it governs the thresholds: a version whose
+/// `effective_from` has not arrived does not move the tenant's quorum any more
+/// than it moves their bars, and an unapproved one moves neither.
+///
+/// # Errors
+/// [`DomainError`] when the walk cannot read the store.
+pub async fn effective_approver_count_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: OffsetDateTime,
+) -> Result<u32, DomainError> {
+    Ok(effective_version_at(runner, scope, tenant_id, now)
+        .await?
+        .map_or(DEFAULT_APPROVER_COUNT, |version| version.approver_count()))
+}
+
 pub async fn effective_version(
     runner: &impl DBRunner,
     scope: &AccessScope,
