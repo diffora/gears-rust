@@ -370,6 +370,32 @@ pub struct KeyCoverageView {
     /// check and cannot see one, which is `inst-fg-trailing`'s whole reason for
     /// existing.
     pub interior_gaps: Vec<CoverageGapView>,
+    /// The currency-wide price this key hands its buyers to when its own coverage
+    /// stops, or `null`.
+    ///
+    /// Set on a **region's override** of a currency's `global` price whose coverage
+    /// ends (or that has none). A buyer in that region is sold the region's own
+    /// price where it has one and the `global` price where it does not, so such an
+    /// ending is not a void: from `from` the buyers of this key pay the price on
+    /// `scope_key`, with no act by anyone. That is a regional promotion ending as
+    /// intended, and it is also how a mistaken gap changes a price silently —
+    /// which is why it is stated here, in the `working` and `committed` views
+    /// alike. `null` on a `global` key, on an override that never ends, and on a
+    /// region's price with no `global` price behind it, whose ending is the
+    /// trailing void it always was.
+    pub falls_back_to: Option<CoverageFallbackView>,
+}
+
+/// The key a region's override falls back to, and from when.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct CoverageFallbackView {
+    /// The `global` key of the same line and currency, in the canonical rendering.
+    pub scope_key: String,
+    /// The instant this key's own coverage stops, UTC. `null` when the key has no
+    /// coverage of its own and is served by the currency-wide price from the start.
+    #[serde(default, with = "rfc3339::option")]
+    pub from: Option<OffsetDateTime>,
 }
 
 /// Where a key's coverage stops, as the three-armed answer the domain carries.
@@ -731,6 +757,15 @@ pub struct KeySellabilityView {
     pub intervals: Vec<WindowIntervalView>,
     /// One answer per per-key predicate.
     pub predicates: Vec<PredicateAnswerView>,
+    /// The currency-wide key standing behind this one, when this key is a
+    /// region's override of a `global` price; `null` otherwise.
+    ///
+    /// A buyer in a region is sold the region's own price where it has one and
+    /// the currency's `global` price where it does not. When this is set,
+    /// `coverage_end` is the **override's** own end and is not where the line
+    /// stops selling: past it the buyer is sold the key named here, and the window
+    /// predicate above was judged over the two together.
+    pub falls_back_to: Option<String>,
 }
 
 /// The plan's sellability on one market at one instant.
@@ -805,9 +840,28 @@ impl From<&SellabilitySurface> for PlanSellabilityView {
                     coverage_end: CoverageEndView::from(key.coverage_end),
                     intervals: key.intervals.iter().map(WindowIntervalView::from).collect(),
                     predicates: key.answers.iter().map(PredicateAnswerView::from).collect(),
+                    falls_back_to: key.falls_back_to.as_ref().map(ToString::to_string),
                 })
                 .collect(),
             registry_checked_at: None,
+        }
+    }
+}
+
+impl KeyCoverageView {
+    /// One key of `report`, as the wire renders it.
+    ///
+    /// Takes the report and not the entry alone: whether a key falls back is a
+    /// fact about its sibling `global` key, which only the report holds.
+    fn of(report: &crate::domain::coverage::CoverageReport, entry: &KeyCoverage) -> Self {
+        Self {
+            falls_back_to: report
+                .fallback_of(entry)
+                .map(|fallback| CoverageFallbackView {
+                    scope_key: fallback.to.to_string(),
+                    from: fallback.from,
+                }),
+            ..Self::from(entry)
         }
     }
 }
@@ -830,6 +884,7 @@ impl From<&KeyCoverage> for KeyCoverageView {
                 .into_iter()
                 .map(|(gap_start, gap_end)| CoverageGapView { gap_start, gap_end })
                 .collect(),
+            falls_back_to: None,
         }
     }
 }
@@ -1816,7 +1871,11 @@ async fn get_plan_coverage(
 
     Ok(Json(PlanCoverageView {
         plan_id: plan_id.get(),
-        keys: report.keys.iter().map(KeyCoverageView::from).collect(),
+        keys: report
+            .keys
+            .iter()
+            .map(|entry| KeyCoverageView::of(&report, entry))
+            .collect(),
     }))
 }
 

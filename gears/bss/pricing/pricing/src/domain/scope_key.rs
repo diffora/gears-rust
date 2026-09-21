@@ -1150,6 +1150,34 @@ impl ChargeLineScopeKey {
         })
     }
 
+    /// Are these the **same charge**, on the same or on different overlays?
+    ///
+    /// Equal on every logical axis but `priceOverlay`. Market resolution asks it
+    /// (`domain::market_resolution`): an overlay's price and the base price of one
+    /// charge are candidates for one purchase, ranked overlay first. The
+    /// `let Self {.. }` below carries **no** rest pattern, so a new axis is a
+    /// compile error here rather than a candidate silently matching.
+    #[must_use]
+    pub fn is_same_charge_as(&self, other: &Self) -> bool {
+        let Self {
+            plan_id,
+            phase,
+            price_overlay: _,
+            price_eligibility,
+            charge_kind,
+            cohort,
+            sku_id,
+            dimension_key,
+        } = self;
+        *plan_id == other.plan_id
+            && *phase == other.phase
+            && *price_eligibility == other.price_eligibility
+            && *charge_kind == other.charge_kind
+            && *cohort == other.cohort
+            && *sku_id == other.sku_id
+            && *dimension_key == other.dimension_key
+    }
+
     /// Do these two lines compete for **one** sale — equal on every logical axis
     /// but the eligibility class and the cohort?
     ///

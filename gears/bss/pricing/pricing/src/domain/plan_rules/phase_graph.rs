@@ -499,7 +499,10 @@ impl ValidationRule<PlanShape> for PhaseCoverage {
         if !has_recurring_part(subject) {
             return;
         }
-        let markets = subject.markets();
+        // What each phase owes, not every pair some phase sells: a currency sold
+        // everywhere obliges its `global` price in every phase, and a regional
+        // override on one phase obliges no other — a buyer there falls back.
+        let markets = crate::domain::market_resolution::owed_markets(&subject.markets());
         for phase in subject.phases.in_ordinal_order() {
             for (currency, region) in &markets {
                 let covered = subject.rows.iter().any(|record| {

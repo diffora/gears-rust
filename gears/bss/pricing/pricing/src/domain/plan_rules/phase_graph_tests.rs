@@ -700,6 +700,46 @@ fn a_terminal_phase_carrying_a_duration_fails() {
 // PhaseCoverage
 // ---------------------------------------------------------------------------
 
+/// **An override on one phase does not oblige the others.** The plan sells EUR
+/// everywhere — every phase carries a `global` price — and promotes `DE` on its
+/// evergreen phase alone. A `DE` buyer in the trial resolves the `global` price,
+/// so the trial is covered; reading the sold pairs literally would refuse it for
+/// "not covering EUR/DE".
+#[test]
+fn a_regional_override_on_one_phase_leaves_the_others_covered_by_the_currency_wide_price() {
+    let mut subject = phased();
+    subject.rows = vec![
+        recurring("eur", "global", phase_id(TRIAL)),
+        recurring("eur", "global", phase_id(INTRO)),
+        recurring("eur", "global", phase_id(EVERGREEN)),
+        recurring("eur", "DE", phase_id(EVERGREEN)),
+    ];
+    let report = judge(&PhaseCoverage, &subject);
+    assert!(report.is_publishable(), "{report:?}");
+}
+
+/// And what a phase owes, when the currency is sold everywhere, is the
+/// currency-wide price: a phase priced in `DE` alone leaves every other region
+/// resolving to nothing on conversion into it.
+#[test]
+fn a_phase_priced_only_by_an_override_owes_the_currency_wide_price() {
+    let mut subject = phased();
+    subject.rows = vec![
+        recurring("eur", "global", phase_id(TRIAL)),
+        recurring("eur", "DE", phase_id(INTRO)),
+        recurring("eur", "global", phase_id(EVERGREEN)),
+    ];
+    let report = judge(&PhaseCoverage, &subject);
+    let violation = only(&report);
+    assert_eq!(violation.code, PHASE_UNCOVERED);
+    assert!(violation.subject.contains(&phase_id(INTRO).to_string()));
+    assert!(
+        violation.subject.ends_with("/EUR/global"),
+        "{}",
+        violation.subject
+    );
+}
+
 #[test]
 fn a_phase_with_no_recurring_row_fails_naming_the_phase_and_the_market() {
     let mut subject = phased();

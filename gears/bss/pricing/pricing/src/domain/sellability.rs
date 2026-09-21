@@ -253,9 +253,12 @@ use toolkit_macros::domain_model;
 use crate::domain::coverage::longest_cycle_sold_on;
 use crate::domain::instant::format_rfc3339;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::market_resolution;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
-use crate::domain::scope_key::{MarketPriceScopeKey, PlanId, PriceEligibility, Region};
+use crate::domain::scope_key::{
+    ChargeLineScopeKey, MarketPriceScopeKey, PlanId, PriceEligibility, Region,
+};
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval};
 use time::OffsetDateTime;
 
@@ -436,6 +439,16 @@ pub struct KeySellability {
     pub coverage_end: CoverageEnd,
     /// One answer per member of [`Predicate::PER_KEY`], in that order.
     pub answers: Vec<PredicateOutcome>,
+    /// The currency-wide key standing behind this one, when this key is a
+    /// region's **override** and the line also carries a `global` price.
+    ///
+    /// `None` on a `global` key (it *is* the fallback) and on an override with
+    /// nothing behind it. Stated rather than left to inference because it changes
+    /// what [`Self::coverage_end`] means to a reader: an override's coverage
+    /// ending is not a trailing void when this key covers on, and the window
+    /// predicate is judged over the two together. The fallback is legal; its
+    /// invisibility would not be.
+    pub falls_back_to: Option<MarketPriceScopeKey>,
 }
 
 /// The D-94 conjunction over one plan-market.
@@ -649,9 +662,11 @@ impl SellabilitySurface {
 
         let margin =
             longest_cycle_sold_on(pinned.price_keys.iter(), pinned.frequency, currency, region);
-        let keys = gate_input_keys(&pinned.price_keys, currency, region)
+        let keys = gate_input_keys(pinned, currency, region, at)
             .into_iter()
-            .map(|scope_key| key_sellability(pinned, scope_key, at, margin))
+            .map(|(scope_key, falls_back_to)| {
+                key_sellability(pinned, scope_key, falls_back_to, at, margin)
+            })
             .collect();
 
         Self {
@@ -739,30 +754,75 @@ impl SellabilitySurface {
 ///   and drop the less specific one from the roster below, so the gate would
 ///   answer over a market whose second line it had never looked at a window for.
 fn gate_input_keys(
-    price_keys: &[MarketPriceScopeKey],
+    pinned: &PinnedFacts,
     currency: &CurrencyCode,
     region: &Region,
-) -> Vec<MarketPriceScopeKey> {
-    let candidates: Vec<&MarketPriceScopeKey> = price_keys
+    at: OffsetDateTime,
+) -> Vec<(MarketPriceScopeKey, Option<MarketPriceScopeKey>)> {
+    // **Region first, per line; eligibility after.** A line is a charge *in one
+    // eligibility class*, which is the unit the completeness rules oblige a
+    // `global` price of — so each line resolves its own region, and W3's
+    // most-specific-wins then ranks the resolved lines of one sale exactly as it
+    // always did. Ranking eligibility first would compare rows of different
+    // regions as siblings, which `is_sibling_of` refuses for a reason.
+    let candidates: Vec<&MarketPriceScopeKey> = pinned
+        .price_keys
         .iter()
-        .filter(|key| key.currency() == currency && key.region() == region)
         .filter(|key| key.price_eligibility() != PriceEligibility::ExistingGrandfathered)
         .collect();
-
-    let mut resolved: Vec<MarketPriceScopeKey> = Vec::new();
-    for key in candidates.iter().copied() {
-        let most_specific = candidates
+    let covers = |key: &MarketPriceScopeKey| {
+        pinned
+            .windows
             .iter()
-            .copied()
-            .filter(|sibling| sibling.is_sibling_of(key))
-            .map(MarketPriceScopeKey::price_eligibility)
-            .max()
-            .unwrap_or_else(|| key.price_eligibility());
-        if key.price_eligibility() == most_specific && !resolved.contains(key) {
-            resolved.push(key.clone());
+            .any(|group| group.scope_key == *key && group.covers_at(at))
+    };
+
+    let mut lines: Vec<&ChargeLineScopeKey> = Vec::new();
+    for key in &candidates {
+        if !lines.contains(&key.line()) {
+            lines.push(key.line());
         }
     }
-    resolved.sort_by_key(MarketPriceScopeKey::to_string);
+    let mut per_line: Vec<(MarketPriceScopeKey, Option<MarketPriceScopeKey>)> = Vec::new();
+    for line in lines {
+        let some = || candidates.iter().copied();
+        // The step whose window covers `at`; failing that, the first step that
+        // exists at all. **The second arm is what keeps the gate closed**: a line
+        // no step covers is still a line the purchase binds, and dropping it
+        // would let the conjunction answer over a market whose line it never
+        // looked at a window for. Its window predicate then fails on a real key.
+        let Some(resolved) = market_resolution::resolve(some(), line, currency, region, covers)
+            .or_else(|| market_resolution::resolve(some(), line, currency, region, |_| true))
+        else {
+            continue;
+        };
+        let falls_back_to = (!market_resolution::is_currency_wide(resolved.region()))
+            .then(|| {
+                some().find(|key| {
+                    key.line() == line
+                        && key.currency() == currency
+                        && market_resolution::is_currency_wide(key.region())
+                })
+            })
+            .flatten()
+            .cloned();
+        per_line.push((resolved.clone(), falls_back_to));
+    }
+
+    let mut resolved: Vec<(MarketPriceScopeKey, Option<MarketPriceScopeKey>)> = Vec::new();
+    for (key, falls_back_to) in &per_line {
+        let most_specific = per_line
+            .iter()
+            .filter(|(sibling, _)| sibling.line().is_sibling_of(key.line()))
+            .map(|(sibling, _)| sibling.price_eligibility())
+            .max()
+            .unwrap_or_else(|| key.price_eligibility());
+        if key.price_eligibility() == most_specific && !resolved.iter().any(|(seen, _)| seen == key)
+        {
+            resolved.push((key.clone(), falls_back_to.clone()));
+        }
+    }
+    resolved.sort_by_key(|(key, _)| key.to_string());
     resolved
 }
 
@@ -770,6 +830,7 @@ fn gate_input_keys(
 fn key_sellability(
     pinned: &PinnedFacts,
     scope_key: MarketPriceScopeKey,
+    falls_back_to: Option<MarketPriceScopeKey>,
     at: OffsetDateTime,
     margin: Option<time::Duration>,
 ) -> KeySellability {
@@ -788,6 +849,15 @@ fn key_sellability(
             intervals: Vec::new(),
         });
     let coverage_end = windows.coverage_end();
+    // The currency-wide windows standing behind an override. They are judged
+    // *with* it, never instead of it: the key this answer is filed under is the
+    // one the purchase binds.
+    let behind = falls_back_to.as_ref().and_then(|fallback| {
+        pinned
+            .windows
+            .iter()
+            .find(|group| group.scope_key == *fallback)
+    });
     KeySellability {
         scope_key,
         intervals: windows.intervals.clone(),
@@ -798,7 +868,7 @@ fn key_sellability(
                 predicate: *predicate,
                 answer: match predicate {
                     Predicate::ActiveWindowWithHorizon => {
-                        active_window_with_horizon(&windows, at, margin)
+                        active_window_with_horizon(&windows, behind, at, margin)
                     }
                     Predicate::GaGateFlags => PredicateAnswer::NotEvaluable {
                         owed_to: OWED_TO_GA_GATE,
@@ -814,6 +884,7 @@ fn key_sellability(
                 },
             })
             .collect(),
+        falls_back_to,
     }
 }
 
@@ -843,8 +914,19 @@ fn key_sellability(
 /// landed, and a consumer told "not evaluable" may conclude the gate is not yet a
 /// gate and proceed. A plan selling recurring with no cycle is a plan that cannot
 /// be shown safe to sell, which is a false predicate.
+///
+/// # An override's horizon runs on into the currency-wide price
+///
+/// `behind` is the `global` key of the same line, when `windows` is a region's
+/// override of it. An override whose window ends falls back to that price, so its
+/// ending is a trailing void only if the two **together** leave an instant before
+/// the horizon uncovered — judged by [`KeyWindows::first_uncovered_from`] over
+/// both, which also catches a fallback that opens late. The first half is not
+/// composed: the purchase binds `windows`' key, so it is that key's window that
+/// has to cover `at`.
 fn active_window_with_horizon(
     windows: &KeyWindows,
+    behind: Option<&KeyWindows>,
     at: OffsetDateTime,
     margin: Option<time::Duration>,
 ) -> PredicateAnswer {
@@ -879,6 +961,31 @@ fn active_window_with_horizon(
             ),
         };
     };
+    if let Some(behind) = behind {
+        let together = KeyWindows {
+            scope_key: windows.scope_key.clone(),
+            intervals: windows
+                .intervals
+                .iter()
+                .chain(behind.intervals.iter())
+                .copied()
+                .collect(),
+        };
+        return match together.first_uncovered_from(at, Some(horizon)) {
+            None => PredicateAnswer::Satisfied,
+            Some(void) => PredicateAnswer::Failed {
+                detail: format!(
+                    "this key's coverage and the currency-wide price behind it ({}) together \
+                     leave {} uncovered and the D-80 horizon runs to {}: a purchase at {} would \
+                     bind a line whose coverage stops inside its first billing cycle",
+                    behind.scope_key,
+                    format_rfc3339(void),
+                    format_rfc3339(horizon),
+                    format_rfc3339(at)
+                ),
+            },
+        };
+    }
     match windows.coverage_end() {
         CoverageEnd::OpenEnded => PredicateAnswer::Satisfied,
         CoverageEnd::Ends(end) if end >= horizon => PredicateAnswer::Satisfied,

@@ -228,6 +228,44 @@ fn covering_the_currency_in_the_wrong_region_is_not_coverage() {
     );
 }
 
+/// **Covered means resolvable, not "an exact row exists".** An add-on priced in
+/// EUR everywhere covers a base plan sold in `(EUR, DE)`: a subscriber there
+/// resolves the add-on's currency-wide price.
+#[test]
+fn an_addon_priced_currency_wide_covers_every_region_the_base_sells_that_currency_in() {
+    let shape = plan_selling(
+        &[("EUR", "DE"), ("EUR", "FR")],
+        vec![addon(ADDON_A, true, vec![])],
+    );
+    let report = run(
+        &RequiredAddonsCoverMarkets {
+            coverage: coverage(&[(ADDON_A, &[("EUR", "global")])]),
+        },
+        &shape,
+    );
+    assert!(report.is_publishable(), "{report:?}");
+}
+
+/// The fallback runs one way. A base plan sold in EUR *everywhere* is not covered
+/// by an add-on priced in `DE` alone — a subscriber in `FR` resolves the base and
+/// not the add-on — and the market named is the currency-wide one.
+#[test]
+fn a_base_sold_everywhere_is_not_covered_by_an_addon_priced_in_one_region() {
+    let shape = plan_selling(&[("EUR", "global")], vec![addon(ADDON_A, true, vec![])]);
+    let report = run(
+        &RequiredAddonsCoverMarkets {
+            coverage: coverage(&[(ADDON_A, &[("EUR", "DE")])]),
+        },
+        &shape,
+    );
+    assert_eq!(codes(&report), [CURRENCY_NOT_COVERED]);
+    assert!(
+        report.violations[0].detail.contains("EUR/global"),
+        "{}",
+        report.violations[0].detail
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The optional carve-out.
 // ---------------------------------------------------------------------------

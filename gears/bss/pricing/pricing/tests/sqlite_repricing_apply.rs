@@ -1316,6 +1316,48 @@ async fn a_selector_that_does_not_name_the_eligibility_axis_excludes_grandfather
     );
 }
 
+/// **A run's `region` selects the exact key, never the rows that serve it.**
+///
+/// A currency's `global` price is what a `fr` buyer pays, and what a `de` buyer
+/// pays once `de`'s override stops — but a run on `region = de` means *the `de`
+/// price*. Reaching for the `global` row because it happens to serve `de` would
+/// turn "+10 % in Germany" into "+10 % everywhere", silently. So `de` selects the
+/// override alone, `global` is how the currency-wide price is repriced, and a
+/// region with no price of its own selects nothing — which the run reports as
+/// `RUN_SELECTOR_EMPTY` rather than quietly widening.
+#[tokio::test]
+async fn a_runs_region_selects_the_exact_key_and_never_the_currency_wide_row_serving_it() {
+    let h = harness().await;
+    let plan = Uuid::now_v7();
+    let phase = Uuid::now_v7();
+    seed_plan(&h, plan, phase).await;
+    let currency_wide = seed_published_row(&h, PlanId::new(plan), phase, "global", 9_900).await;
+    let german = seed_published_row(&h, PlanId::new(plan), phase, "de", 8_900).await;
+
+    for (region, expected) in [
+        ("de", vec![german]),
+        ("global", vec![currency_wide]),
+        ("fr", Vec::new()),
+    ] {
+        let selector = bss_pricing::domain::repricing::RunSelector {
+            plan_id: Some(PlanId::new(plan)),
+            region: Some(
+                bss_pricing::domain::scope_key::Region::new(region).expect("a non-blank region"),
+            ),
+            ..Default::default()
+        };
+        let selected = bss_pricing::infra::storage::repo::price_repo::load_published_for_selector(
+            &h.provider.conn().expect("conn"),
+            &h.scope,
+            TENANT,
+            &selector,
+        )
+        .await
+        .expect("expand the selector");
+        assert_eq!(selected, expected, "region = {region}");
+    }
+}
+
 /// The one interaction task 6 newly creates, found by review rather than by this
 /// suite's first pass: a plan carrying an explicitly-selected grandfathered row
 /// **and** an aggregate-pass failure, together.

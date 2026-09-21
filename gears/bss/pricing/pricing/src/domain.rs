@@ -26,6 +26,7 @@ pub mod import;
 pub mod instant;
 pub mod lifecycle;
 pub mod market_price;
+pub mod market_resolution;
 pub mod materiality;
 pub mod membership_change;
 pub mod migration;

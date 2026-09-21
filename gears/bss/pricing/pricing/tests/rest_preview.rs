@@ -315,6 +315,216 @@ async fn the_same_currency_in_another_region_is_not_a_hit() {
     assert_eq!(absent_code(response).await, "PRICE_ROW_ABSENT");
 }
 
+// ---------------------------------------------------------------------------
+// A currency price applies everywhere; a region may override it.
+//
+// Not an exception to `inst-mc-nofx`: nothing is converted and nothing crosses a
+// currency. `global` is a price the plan *authored* for every region, and the two
+// cases above — another currency, and a region's price answering for another
+// region — are refused exactly as before.
+// ---------------------------------------------------------------------------
+
+/// A second market of [`delta_of`]'s one line, at its own amount.
+fn with_a_second_market(
+    mut delta: bss_pricing::domain::projection::PlanSubjectDelta,
+    region: &str,
+    amount: i64,
+) -> bss_pricing::domain::projection::PlanSubjectDelta {
+    use bss_pricing::domain::money::MinorAmount;
+    use bss_pricing::domain::scope_key::{MarketPriceScopeKey, Region};
+
+    let mut second = delta.prices[0].clone();
+    second.price_id = Uuid::from_u128(0xb_0002);
+    second.scope_key = MarketPriceScopeKey::new(
+        second.scope_key.line().clone(),
+        second.scope_key.currency().clone(),
+        Region::new(region).expect("a non-blank region"),
+    );
+    second.row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
+    let projection = delta.tax_projection[&delta.prices[0].price_id].clone();
+    delta.tax_projection.insert(second.price_id, projection);
+    delta.prices.push(second);
+    delta
+}
+
+async fn preview(
+    h: &Harness,
+    plan_id: Uuid,
+    region: &str,
+) -> axum::http::Response<axum::body::Body> {
+    h.allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}&region={region}")),
+            None,
+        ))
+        .await
+}
+
+#[tokio::test]
+async fn a_region_with_no_price_of_its_own_is_quoted_the_currency_wide_price() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let delta = delta_of(
+        plan_id,
+        CURRENCY,
+        "global",
+        false,
+        Some("standard"),
+        false,
+        false,
+    );
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let response = preview(&h, plan_id, "DE").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["amount_minor"], 1_200);
+    assert_eq!(body["region"], "DE", "the requested region, echoed");
+    assert_eq!(
+        body["resolved_region"], "global",
+        "and the region whose price it is: a fallback is said, not implied"
+    );
+}
+
+#[tokio::test]
+async fn a_region_with_a_price_of_its_own_is_quoted_that_and_every_other_the_currency_wide_one() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let delta = with_a_second_market(
+        delta_of(
+            plan_id,
+            CURRENCY,
+            "global",
+            false,
+            Some("standard"),
+            false,
+            false,
+        ),
+        "DE",
+        990,
+    );
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    for (region, amount, resolved) in [("DE", 990, "DE"), ("FR", 1_200, "global")] {
+        let response = preview(&h, plan_id, region).await;
+        assert_eq!(response.status(), StatusCode::OK, "{region}");
+        let body = body_json(response).await;
+        assert_eq!(body["amount_minor"], amount, "{region}");
+        assert_eq!(body["resolved_region"], resolved, "{region}");
+    }
+}
+
+/// The frozen plan payload a consumer pinned to `version` reads.
+async fn frozen_at(h: &Harness, plan_id: Uuid, version: u64) -> (u64, serde_json::Value) {
+    use bss_pricing::domain::read_model::SubjectRef;
+    use bss_pricing::infra::storage::repo::read_model_repo;
+    use bss_pricing_sdk::CatalogVersion;
+
+    let conn = h.db.conn().expect("conn");
+    let stored = read_model_repo::delta_at(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        &SubjectRef::Plan(plan_id),
+        CatalogVersion::new(version),
+    )
+    .await
+    .expect("read the frozen delta")
+    .expect("a delta at or below the version");
+    (stored.catalog_version.get(), stored.payload)
+}
+
+/// **A bound subscription's pin does not move.** A consumer resolves once, when it
+/// binds, and pins what it got. A `de` override published *later* is a new catalog
+/// version: the one the subscription pinned still answers, byte for byte, and
+/// still holds the `global` price alone — so nobody already bound is re-priced by
+/// a region gaining a price of its own. The semantics grandfathering already has.
+#[tokio::test]
+async fn an_override_published_later_does_not_move_an_earlier_pin() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let currency_wide = delta_of(
+        plan_id,
+        CURRENCY,
+        "global",
+        false,
+        Some("standard"),
+        false,
+        false,
+    );
+    project_and_pin(&h, plan_id, 5, &currency_wide).await;
+    let (pinned_version, pinned) = frozen_at(&h, plan_id, 5).await;
+    assert_eq!(pinned_version, 5);
+
+    project_and_pin(
+        &h,
+        plan_id,
+        6,
+        &with_a_second_market(currency_wide, "DE", 990),
+    )
+    .await;
+
+    let (version, reread) = frozen_at(&h, plan_id, 5).await;
+    assert_eq!(version, 5, "the pin still resolves its own version");
+    assert_eq!(
+        reread.to_string(),
+        pinned.to_string(),
+        "and that version is byte-for-byte what it was"
+    );
+    assert_eq!(reread["prices"].as_array().map(Vec::len), Some(1));
+    let (_, latest) = frozen_at(&h, plan_id, 6).await;
+    assert_eq!(latest["prices"].as_array().map(Vec::len), Some(2));
+}
+
+/// **An override is a whole row.** Money and market policy together; nothing of
+/// the `global` row is inherited, so there is no field-level effective value for
+/// anyone to compute or freeze. The override here disagrees with `global` on the
+/// amount *and* on the tax display, and freezes as exactly what was authored.
+#[tokio::test]
+async fn an_override_freezes_as_its_own_row_and_inherits_nothing() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let mut delta = with_a_second_market(
+        delta_of(
+            plan_id,
+            CURRENCY,
+            "global",
+            false,
+            Some("standard"),
+            false,
+            false,
+        ),
+        "DE",
+        990,
+    );
+    delta.prices[1].tax_inclusive = true;
+    project_and_pin(&h, plan_id, 5, &delta).await;
+
+    let (_, payload) = frozen_at(&h, plan_id, 5).await;
+    let rows = payload["prices"].as_array().expect("prices");
+    let of = |region: &str| {
+        rows.iter()
+            .find(|row| row["scopeKey"]["region"] == region)
+            .unwrap_or_else(|| panic!("no {region} row in {payload}"))
+    };
+    let (global, de) = (of("global"), of("DE"));
+    assert_eq!(global["amountMinor"], 1_200);
+    assert_eq!(global["taxInclusive"], false);
+    assert_eq!(de["amountMinor"], 990);
+    assert_eq!(de["taxInclusive"], true);
+    assert!(
+        !de.to_string()
+            .contains(global["priceId"].as_str().expect("an id")),
+        "the override names nothing of the currency-wide row: {de}"
+    );
+
+    // And the quote is the override's own, on both members.
+    let body = body_json(preview(&h, plan_id, "DE").await).await;
+    assert_eq!(body["amount_minor"], 990);
+    assert_eq!(body["tax_inclusive"], true);
+}
+
 /// A plan with **no published version at all** is `404`, not an empty 200.
 #[tokio::test]
 async fn a_plan_with_no_published_version_fails_closed() {

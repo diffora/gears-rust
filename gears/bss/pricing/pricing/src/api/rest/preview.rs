@@ -16,9 +16,17 @@
 //! `inst-mc-nofx` is the sharpest sentence in the slice: *"No FX derivation ever:
 //! a missing `(currency, region)` row is simply absent — preview/publish paths
 //! fail closed on it, no base-currency fallback"*. So an absent market is
-//! [`PRICE_ROW_ABSENT`] (404) and there is deliberately **no** nearest-currency,
-//! no base-currency and no region-fallback branch anywhere below. `Future
-//! currencyFallbackPolicy` is named in §1.5 as exactly that — future.
+//! [`PRICE_ROW_ABSENT`] (404) and there is deliberately **no** nearest-currency
+//! and no base-currency branch anywhere below, and no region ever answers for
+//! another region. `Future currencyFallbackPolicy` is named in §1.5 as exactly
+//! that — future.
+//!
+//! **The currency-wide price is not such a fallback.** A price filed under
+//! `global` is one the plan *authored* for every region, so a buyer in a region
+//! with no price of its own is quoted it — nothing is converted and no currency is
+//! crossed. The order is [`market_resolution`]'s, walked per line: a market is a
+//! mix of lines a region overrides and lines it does not. `resolved_region` says
+//! which price was quoted, because a fallback that is legal must not be invisible.
 //!
 //! The 404 is the design set's own status for it, and it is right: the caller
 //! asked for a price on a market this plan does not sell, so the resource they
@@ -65,6 +73,7 @@ use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::state::GovernanceState;
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
+use crate::domain::market_resolution;
 use crate::domain::money::CurrencyCode;
 use crate::domain::ports::metrics::PreviewFailClosed;
 use crate::domain::read_model::SubjectRef;
@@ -113,6 +122,10 @@ pub struct PreviewView {
     pub currency: String,
     /// The requested region, echoed.
     pub region: String,
+    /// The region whose price the quoted amount is: `region` itself where it has a
+    /// price of its own, else `global` — the currency's price, which applies to
+    /// every region that does not override it.
+    pub resolved_region: String,
     /// The base list amount in minor units.
     ///
     /// NULL on a row whose money is a **rate** — see [`Self::unit_rate_nano_minor`].
@@ -179,9 +192,11 @@ fn region_param() -> ParamSpec {
         location: ParamLocation::Query,
         required: true,
         description: Some(
-            "The commercial region of the market to preview. Required for `currency`'s reason: a \
-             price row is keyed on the pair, and a region-less query names no row. This is the \
-             pricing region, not the IdP authorization-region claim."
+            "The buyer's commercial region. Required: a price row is keyed on the pair, and a \
+             region-less query names no row. A region with no price of its own is quoted the \
+             currency's `global` price, which applies to every region that does not override \
+             it; pass `global` to ask for that price directly. This is the pricing region, not \
+             the IdP authorization-region claim."
                 .to_owned(),
         ),
         param_type: "string".to_owned(),
@@ -198,7 +213,10 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_pricing.preview_plan_price")
         .summary("Preview a plan's base list price on one market")
         .description(
-            "The catalog **base list price** for one `(currency, region)` market, resolved from \
+            "The catalog **base list price** a buyer in one `(currency, region)` market is \
+             quoted: the region's own price where it has one, else the currency's `global` \
+             price, which applies to every region that does not override it. `resolved_region` \
+             says which of the two was quoted. Resolved from \
              the **published read model only** - never from a draft, so a preview cannot show a \
              price nobody has approved. The response carries the amount, its `taxInclusive` \
              display basis, the resolved tax category the catalog version froze, the trial days \
@@ -206,7 +224,8 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              PriceOverlays may apply at purchase and are evaluated by Tariffs, so the amount \
              actually charged may differ. Overlay adjustments are deliberately not applied here. \
              **Fails closed on an absent market**: if the plan publishes no row for the \
-             requested pair the answer is `404` `PRICE_ROW_ABSENT`, never a converted price and \
+             requested pair and no `global` row in that currency, the answer is `404` \
+             `PRICE_ROW_ABSENT`, never a converted price, never another region's price and \
              never a base-currency fallback - the catalog performs no FX under any circumstance, \
              and a currency fallback policy is a named Future item rather than an omission. A \
              row flagged `notSellableGa` is previewable and is returned with the flag set, which \
@@ -333,7 +352,7 @@ async fn preview_plan_price(
         return Err(unpublished());
     };
 
-    let rows = market_rows(&delta.payload, currency.as_str(), region.as_str());
+    let rows = market_rows(&delta.payload, currency.as_str(), &region);
     let row = base_amount_row(&rows, terminal_phase_id(&delta.payload)).ok_or_else(absent)?;
 
     Ok(Json(PreviewView {
@@ -341,6 +360,10 @@ async fn preview_plan_price(
         catalog_version: delta.catalog_version.get(),
         currency: currency.as_str().to_owned(),
         region: region.as_str().to_owned(),
+        resolved_region: row["scopeKey"]["region"]
+            .as_str()
+            .unwrap_or_else(|| region.as_str())
+            .to_owned(),
         amount_minor: row["amountMinor"].as_i64(),
         unit_rate_nano_minor: row["unitRateNanoMinor"].as_i64(),
         tax_inclusive: row["taxInclusive"].as_bool().unwrap_or(false),
@@ -399,9 +422,9 @@ async fn preview_plan_price(
 fn market_rows<'a>(
     payload: &'a serde_json::Value,
     currency: &str,
-    region: &str,
+    region: &Region,
 ) -> Vec<&'a serde_json::Value> {
-    payload["prices"]
+    let eligible: Vec<&serde_json::Value> = payload["prices"]
         .as_array()
         .map(|rows| {
             rows.iter()
@@ -414,7 +437,6 @@ fn market_rows<'a>(
                     // projector writes.
                     let key = &row["scopeKey"];
                     key["currency"] == currency
-                        && key["region"] == region
                         && key["priceOverlay"] == PriceOverlay::Base.as_str()
                         && key["priceEligibility"]
                             != PriceEligibility::ExistingGrandfathered.as_str()
@@ -422,7 +444,36 @@ fn market_rows<'a>(
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    // **Per line, in `market_resolution`'s order** — the region's own row, else
+    // the currency-wide one. The order is that module's and is walked, not
+    // respelled: this surface reads a frozen JSON payload and cannot hand it
+    // scope keys, but it can take the steps in the sequence they are defined in.
+    // A line is every axis of the key but the region, so two rows are one line
+    // exactly when their keys differ in nothing else.
+    let line_of = |row: &serde_json::Value| {
+        let mut key = row["scopeKey"].clone();
+        if let Some(axes) = key.as_object_mut() {
+            axes.remove("region");
+        }
+        key.to_string()
+    };
+    let mut resolved: Vec<&serde_json::Value> = Vec::new();
+    let mut resolved_lines: Vec<String> = Vec::new();
+    for (_, step) in market_resolution::resolution_order(PriceOverlay::Base, region) {
+        // Only an **earlier** step shadows a line. Rows of one step are taken as
+        // they are, exactly as before the fallback existed.
+        let of_this_step: Vec<&serde_json::Value> = eligible
+            .iter()
+            .copied()
+            .filter(|row| row["scopeKey"]["region"] == step.as_str())
+            .filter(|row| !resolved_lines.contains(&line_of(row)))
+            .collect();
+        resolved_lines.extend(of_this_step.iter().map(|row| line_of(row)));
+        resolved.extend(of_this_step);
+    }
+    resolved
 }
 
 /// The row whose amount **is** the base list price.

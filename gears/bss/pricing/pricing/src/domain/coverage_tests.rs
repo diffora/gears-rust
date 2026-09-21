@@ -17,8 +17,9 @@
 use uuid::Uuid;
 
 use super::{
-    AVAILABILITY_OUTSIDE_COVERAGE, WINDOW_COVERAGE_MISSING, WINDOW_GAP, WINDOW_TRAILING_VOID,
-    check_shape, longest_cycle_sold, window_coverage_rules,
+    AVAILABILITY_OUTSIDE_COVERAGE, CoverageReport, KeyCoverage, WINDOW_COVERAGE_MISSING,
+    WINDOW_GAP, WINDOW_TRAILING_VOID, check, check_shape, longest_cycle_sold,
+    window_coverage_rules,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::draft_window::{
@@ -1172,4 +1173,80 @@ fn a_billable_key_the_plane_does_not_mention_is_present_and_uncovered() {
     assert!(entry.required);
     assert!(entry.windows.intervals.is_empty());
     assert_eq!(entry.coverage_end(), CoverageEnd::Uncovered);
+}
+
+// ---------------------------------------------------------------------------
+// A region's override falls back to the currency-wide price, and says so.
+// ---------------------------------------------------------------------------
+
+fn report_of(markets: Vec<(&str, Vec<WindowInterval>)>) -> CoverageReport {
+    let windows: Vec<KeyWindows> = markets
+        .into_iter()
+        .map(|(region, intervals)| group(key(ChargeKind::Recurring, "EUR", region), intervals))
+        .collect();
+    let billable: Vec<MarketPriceScopeKey> = windows
+        .iter()
+        .map(|group| group.scope_key.clone())
+        .collect();
+    check(&billable, &windows)
+}
+
+fn entry_in<'a>(report: &'a CoverageReport, region: &str) -> &'a KeyCoverage {
+    report
+        .find(&key(ChargeKind::Recurring, "EUR", region))
+        .expect("the report carries the key")
+}
+
+/// **An override whose window ends falls back from that instant**, and the report
+/// names both the instant and the key — the fallback is legal, and that is
+/// exactly why it must not be a silent price change.
+#[test]
+fn an_override_that_ends_names_the_instant_and_the_key_it_falls_back_to() {
+    let report = report_of(vec![
+        ("global", vec![interval(0, None, WindowState::Active)]),
+        ("de", vec![interval(0, Some(30), WindowState::Active)]),
+    ]);
+    let fallback = report
+        .fallback_of(entry_in(&report, "de"))
+        .expect("an ending override with a currency-wide price behind it falls back");
+    assert_eq!(fallback.to, key(ChargeKind::Recurring, "EUR", "global"));
+    assert_eq!(fallback.from, Some(at(30)));
+}
+
+/// An override that never ends never falls back, and `global` has nothing behind
+/// it: neither is told it does.
+#[test]
+fn an_open_ended_override_and_the_currency_wide_key_fall_back_to_nothing() {
+    let report = report_of(vec![
+        ("global", vec![interval(0, None, WindowState::Active)]),
+        ("de", vec![interval(0, None, WindowState::Active)]),
+    ]);
+    assert_eq!(report.fallback_of(entry_in(&report, "de")), None);
+    assert_eq!(report.fallback_of(entry_in(&report, "global")), None);
+}
+
+/// An override with no coverage of its own is served by the currency-wide price
+/// from the start, which is an instant nobody authored — so `from` is absent.
+#[test]
+fn an_override_with_no_window_falls_back_from_the_start() {
+    let report = report_of(vec![
+        ("global", vec![interval(0, None, WindowState::Active)]),
+        ("de", Vec::new()),
+    ]);
+    let fallback = report
+        .fallback_of(entry_in(&report, "de"))
+        .expect("an uncovered override is served by the currency-wide price");
+    assert_eq!(fallback.from, None);
+}
+
+/// With no currency-wide price there is nothing to fall back to: the end of the
+/// region's price is the trailing void it always was, and the report does not
+/// dress it as anything else.
+#[test]
+fn a_regions_only_price_falls_back_to_nothing() {
+    let report = report_of(vec![
+        ("fr", vec![interval(0, None, WindowState::Active)]),
+        ("de", vec![interval(0, Some(30), WindowState::Active)]),
+    ]);
+    assert_eq!(report.fallback_of(entry_in(&report, "de")), None);
 }

@@ -276,6 +276,70 @@ async fn a_covered_key_carries_its_interval_and_its_coverage_end() {
     assert_eq!(covered.get("interior_gaps"), Some(&serde_json::json!([])));
 }
 
+/// **An override that ends says what its buyers pay next, and from when.**
+///
+/// One line in EUR: a `global` price, and a `de` override whose window stops. A
+/// `de` buyer is sold the currency-wide price from that instant with no act by
+/// anyone — legal, and the reason the report has to say it: a mistaken gap changes
+/// a price exactly the same way. The `global` key, with nothing behind it, is told
+/// nothing.
+#[tokio::test]
+async fn an_override_that_ends_reports_the_currency_wide_key_it_falls_back_to() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan_with(
+        &h,
+        plan_id,
+        |plan, phase| rest_support::publishable_scope_key(plan, phase, "global"),
+        rest_support::publishable_row(),
+    )
+    .await;
+    let de_key = rest_support::publishable_scope_key(
+        bss_pricing::domain::scope_key::PlanId::new(plan_id),
+        seeded.phase,
+        "de",
+    );
+    let de_price = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            bss_pricing::infra::storage::repo::NewPriceDraft {
+                price_id: de_price,
+                line_version_id: None,
+                market_price_id: None,
+                scope_key: de_key.clone(),
+                content: rest_support::publishable_row(),
+                created_by: rest_support::SEED_ACTOR,
+                created_at_utc: at(0),
+                correlation_id: Uuid::from_u128(0x_c0_11_a7_10),
+            },
+        )
+        .await
+        .expect("author the override");
+    window(&h, seeded.price_id, 0xf1, 0, None).await;
+    window(&h, de_price, 0xf2, 0, Some(30)).await;
+
+    let report = coverage(&h, plan_id).await;
+    let global_key = rest_support::publishable_scope_key(
+        bss_pricing::domain::scope_key::PlanId::new(plan_id),
+        seeded.phase,
+        "global",
+    )
+    .to_string();
+    assert_eq!(
+        entry(&report, &de_key.to_string()).get("falls_back_to"),
+        Some(&serde_json::json!({ "scope_key": global_key, "from": wire(at(30)) })),
+        "{report}"
+    );
+    assert_eq!(
+        entry(&report, &global_key).get("falls_back_to"),
+        Some(&serde_json::Value::Null),
+        "nothing stands behind the currency-wide price: {report}"
+    );
+}
+
 fn common_from() -> OffsetDateTime {
     let (y, m, d) = common::COVERAGE_FROM_UTC;
     utc_ymd_hms(y, m, d, 0, 0, 0)
@@ -3108,6 +3172,10 @@ async fn the_document_carries_no_member_a_caller_could_read_as_a_renewal_check()
             "detail",
             "effective_from",
             "effective_to",
+            // The currency-wide key a region's override hands its buyers to. A
+            // fact about which *price* a purchase binds next, keyed on a scope
+            // key like everything else here — nothing of a subscription.
+            "falls_back_to",
             "intervals",
             "keys",
             "kind",

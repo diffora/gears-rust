@@ -29,6 +29,14 @@
 //! died at order assembly"*. So the domain here is the set of pairs the base
 //! plan sells, and coverage is asked of the pair.
 //!
+//! **"Covers the pair" means the pair *resolves*, not that an exact row exists.**
+//! A currency's `global` price applies to every region that does not override it
+//! ([`crate::domain::market_resolution`]), so an add-on priced `(EUR, global)`
+//! covers a base sold in `(EUR, EU)` — a subscriber there resolves it. D-95's
+//! own failure still fails: EUR in `US` does not cover EUR in `EU`, because one
+//! region's price never answers for another. And the fallback runs one way: a
+//! base sold in EUR *everywhere* is covered by a `global` add-on price alone.
+//!
 //! # And over the `depends_on` **closure**, not the flat required set (C-3)
 //!
 //! §3 step 1: a required add-on may declare `depends_on` on an
@@ -123,9 +131,23 @@ impl AddonCoverage {
 /// when D-211's ordering note is acted on. It answers over pairs, which is a
 /// superset of what that arm needs: S8 keeps the region axis, and a pair-wise
 /// answer restricted to one region is exactly a currency answer.
+///
+/// **"Reach" is resolution, not set membership.** A sold `(C, R)` is reached by
+/// `covered`'s own `(C, R)` row *or* by its currency-wide `(C, global)` one,
+/// which is the price a subscriber in `R` resolves. The fallback runs one way: a
+/// sold `(C, global)` — the currency sold everywhere — is reached by `(C,
+/// global)` alone, since a component priced in one region leaves every other
+/// resolving to nothing. One reading of the order, in
+/// [`crate::domain::market_resolution`]; this function and the bundle plane that
+/// imports it do not keep another.
 #[must_use]
 pub fn uncovered_pairs(sold: &BTreeSet<Market>, covered: &BTreeSet<Market>) -> Vec<Market> {
-    sold.difference(covered).cloned().collect()
+    sold.iter()
+        .filter(|(currency, region)| {
+            !crate::domain::market_resolution::is_sold(covered, currency, region)
+        })
+        .cloned()
+        .collect()
 }
 
 /// The markets a plan's **candidate rows** sell on.
@@ -134,20 +156,30 @@ pub fn uncovered_pairs(sold: &BTreeSet<Market>, covered: &BTreeSet<Market>) -> V
 /// generations are never coverage candidates (ADR-0002, and the narrowing
 /// `inst-bc-coverage` states for the bundle plane). A market a plan reaches only
 /// through a frozen generation is not a market it is selling.
+///
+/// **The one derivation.** A shape carries its prices as resolved `rows` and, for
+/// line-first authoring, as `market_prices` beside them; a shape assembled with
+/// no rows is read off the second. `charge_shape` used to keep a private copy of
+/// this function for that arm — two derivation sites for one rule, which is how
+/// a roster comes to be unified at one of them.
+///
+/// These are the keys as **authored**, exact pairs, a `global` row included as
+/// the pair it is. What the pairs *mean* — that `(C, global)` sells `C`
+/// everywhere — is [`crate::domain::market_resolution`]'s to say.
 #[must_use]
 pub fn sold_markets(shape: &PlanShape) -> BTreeSet<Market> {
-    shape
-        .rows
-        .iter()
-        .filter(|record| {
-            record.scope_key.price_eligibility() != PriceEligibility::ExistingGrandfathered
-        })
-        .map(|record| {
-            (
-                record.scope_key.currency().clone(),
-                record.scope_key.region().clone(),
-            )
-        })
+    let keys: Vec<&crate::domain::scope_key::MarketPriceScopeKey> = if shape.rows.is_empty() {
+        shape
+            .market_prices
+            .iter()
+            .map(|price| &price.scope_key)
+            .collect()
+    } else {
+        shape.rows.iter().map(|record| &record.scope_key).collect()
+    };
+    keys.into_iter()
+        .filter(|key| key.price_eligibility() != PriceEligibility::ExistingGrandfathered)
+        .map(|key| (key.currency().clone(), key.region().clone()))
         .collect()
 }
 
@@ -178,7 +210,8 @@ impl ValidationRule<PlanShape> for RequiredAddonsCoverMarkets {
                     "required add-on {addon} publishes no covering row on {}, which this plan \
                      sells. A subscription bound to that market could not resolve all of its \
                      lines, and an invoice may not mix currencies (D-95: the check is per \
-                     (currency, region) pair, not per currency)",
+                     (currency, region) pair, not per currency - a pair is covered by its own \
+                     row or by the add-on's currency-wide `global` one)",
                     missing
                         .iter()
                         .map(|(currency, region)| format!("{}/{region}", currency.as_str()))

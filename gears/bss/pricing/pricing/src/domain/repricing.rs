@@ -104,7 +104,11 @@ pub struct RunSelector {
     pub plan_id: Option<PlanId>,
     /// Axis 2 — §2's *"a currency segment"*, spelled as one axis.
     pub currency: Option<CurrencyCode>,
-    /// Axis 3.
+    /// Axis 3 — **the exact key, never the rows that serve it.** `de` selects
+    /// `de`'s override rows and never the currency's `global` rows that a `de`
+    /// buyer falls back to: otherwise "+10 % in Germany" raises the price
+    /// everywhere. `global` is how the currency-wide price is repriced, and a
+    /// region with no row of its own selects nothing ([`RUN_SELECTOR_EMPTY`]).
     pub region: Option<Region>,
     /// Axis 5 (axis 4, `priceOverlay`, is not selectable — see the module doc).
     pub phase: Option<PhaseId>,

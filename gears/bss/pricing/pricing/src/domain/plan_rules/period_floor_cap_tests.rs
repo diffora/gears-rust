@@ -155,6 +155,39 @@ fn a_bound_on_a_market_the_plan_does_not_sell_is_refused() {
 
 /// Both axes are part of the market, and a bound naming a sold *region* in an
 /// unsold *currency* is as unreachable as one naming an unsold region.
+/// **A bound has a market to apply in when its region resolves.** A plan selling
+/// EUR everywhere sells it in `FR`, so a floor on `(EUR, FR)` is a real floor —
+/// not the silent "no floor at all" this rule exists to catch.
+#[test]
+fn a_bound_on_a_region_the_currency_wide_price_serves_has_a_market() {
+    let mut subject = shape(vec![bound("eur", "FR", Some(50_000), None)]);
+    subject.rows = vec![recurring(0x01, "eur", "global")];
+    let report = report_of(&PeriodFloorCapMarketSold, &subject);
+    assert!(report.is_publishable(), "{report:?}");
+}
+
+/// The fallback runs one way: a bound on `global` is not sold by a plan that
+/// prices `DE` alone, and another currency's `global` price excuses nothing.
+#[test]
+fn the_currency_wide_price_is_not_reached_from_a_region_or_another_currency() {
+    let mut subject = shape(vec![
+        bound("eur", "global", Some(50_000), None),
+        bound("usd", "FR", Some(50_000), None),
+    ]);
+    subject.rows = vec![
+        recurring(0x01, "eur", "DE"),
+        recurring(0x02, "gbp", "global"),
+    ];
+    let report = report_of(&PeriodFloorCapMarketSold, &subject);
+    assert_eq!(
+        codes(&report),
+        [
+            PERIOD_FLOOR_CAP_MARKET_UNSOLD,
+            PERIOD_FLOOR_CAP_MARKET_UNSOLD
+        ]
+    );
+}
+
 #[test]
 fn the_currency_half_of_the_market_is_checked_too() {
     let refused = report_of(

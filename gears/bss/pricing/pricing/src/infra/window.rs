@@ -1701,6 +1701,18 @@ fn refuse_trailing_void(
         )));
     };
     let after_end = after.coverage_end();
+    // **An override's coverage runs on into the currency-wide price.** A buyer in a
+    // region whose own price stops is sold the currency's `global` one, so removing
+    // an override's coverage opens no void where that price covers the same span —
+    // which is the regional promotion ending as intended. `global` itself has
+    // nothing behind it and is judged exactly as before.
+    let until = match planned.plan.before.coverage_end() {
+        CoverageEnd::OpenEnded => None,
+        before => Some(before.at().map_or(horizon, |at| at.max(horizon))),
+    };
+    if covered_on_by_the_currency_wide_price(&planned.plan, after, until) {
+        return Ok(());
+    }
     match planned.plan.before.coverage_end() {
         // Covered forever today. Any bound at all opens a void with no successor,
         // and the first uncovered instant *is* the bound the caller asked for.
@@ -1739,6 +1751,60 @@ fn refuse_trailing_void(
             )))
         }
     }
+}
+
+/// Does the `global` price of this key's line cover every instant `after` stops
+/// covering, through `until` (`None`: forever)?
+///
+/// `false` for a `global` key — nothing stands behind the currency-wide price —
+/// and for an override whose line carries none. The span asked about is the one
+/// the act **removes**: it starts where `after` first stops covering what the key
+/// covered before, not at the wall clock, because a window scheduled for next year
+/// and cancelled today removes coverage that starts next year. Both walks are
+/// [`KeyWindows::first_uncovered_from`], so a `global` price that opens late, or
+/// stops short, leaves the void it leaves and the act is refused as it always was.
+fn covered_on_by_the_currency_wide_price(
+    plan: &PlanContext,
+    after: &KeyWindows,
+    until: Option<OffsetDateTime>,
+) -> bool {
+    use crate::domain::market_resolution::is_currency_wide;
+
+    if is_currency_wide(plan.key.region()) {
+        return false;
+    }
+    let behind = KeyWindows {
+        scope_key: plan.key.clone(),
+        intervals: plan
+            .plane
+            .iter()
+            .filter(|(_, key, _)| {
+                key.line() == plan.key.line()
+                    && key.currency() == plan.key.currency()
+                    && is_currency_wide(key.region())
+            })
+            .map(|(_, _, interval)| *interval)
+            .collect(),
+    };
+    if behind.intervals.is_empty() {
+        return false;
+    }
+    let Some(covered_from) = plan
+        .before
+        .intervals
+        .iter()
+        .filter(|interval| interval.state != WindowState::Cancelled)
+        .map(|interval| interval.effective_from)
+        .min()
+    else {
+        return false;
+    };
+    // Where the key stops being covered once the act has landed. `None` means it
+    // never does, which the caller's own arms already accept.
+    let Some(void_from) = after.first_uncovered_from(covered_from, until) else {
+        return true;
+    };
+    behind.first_uncovered_from(void_from, until).is_none()
 }
 
 /// `inst-co-bounds` (D-04) — a grandfathered generation's coverage must reach

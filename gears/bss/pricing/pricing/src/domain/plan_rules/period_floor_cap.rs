@@ -82,7 +82,10 @@ impl ValidationRule<PlanShape> for PeriodFloorCapMarketSold {
         // remediates a plan in one pass, and a plan that mis-typed two markets
         // would otherwise take two publishes to learn about both.
         for bound in &subject.period_floor_caps {
-            if sold.contains(&bound.market()) {
+            // A bound has a market to apply in when its region *resolves*: by a
+            // row of its own, or by the currency-wide one that serves it.
+            let (currency, region) = bound.market();
+            if crate::domain::market_resolution::is_sold(&sold, &currency, &region) {
                 continue;
             }
             report.violate(

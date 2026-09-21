@@ -422,6 +422,117 @@ fn a_missing_market_variant_is_named_with_phase_line_and_market() {
     assert!(subject_key.contains("DE"), "{subject_key}");
 }
 
+// ---------------------------------------------------------------------------
+// Completeness when a currency is sold everywhere.
+//
+// A `global` price in currency C means the plan sells C in every region, so
+// every line owes a `global` price in C — and an override on top of it obliges
+// no sibling, because a line without one falls back.
+// ---------------------------------------------------------------------------
+
+/// Two lines of one terminal phase, distinct by charge kind.
+fn two_lines() -> (ChargeLineVersion, ChargeLineVersion) {
+    (
+        line(1, ChargeKind::Recurring, phase_id(TERMINAL)),
+        line(2, ChargeKind::OneTime, phase_id(TERMINAL)),
+    )
+}
+
+fn completeness_of(
+    lines: (ChargeLineVersion, ChargeLineVersion),
+    prices: Vec<MarketPriceVersion>,
+) -> ValidationReport {
+    let mut subject = shape_with(vec![lines.0, lines.1], prices);
+    subject.frequency = Some(Frequency::Monthly);
+    findings(&super::LineMarketPricePresent, &subject)
+}
+
+#[test]
+fn a_plan_priced_only_currency_wide_is_complete() {
+    let (a, b) = two_lines();
+    let report = completeness_of(
+        (a.clone(), b.clone()),
+        vec![
+            market(&a, "eur", "global", priced_flat()),
+            market(&b, "eur", "global", priced_flat()),
+        ],
+    );
+    assert!(report.is_publishable(), "{report:?}");
+}
+
+/// A buyer in `FR` resolves line A and not line B — so B is incomplete, and what
+/// it owes is the currency-wide price, not a row for every region.
+#[test]
+fn a_line_with_only_an_override_beside_a_currency_wide_sibling_owes_the_currency_wide_price() {
+    let (a, b) = two_lines();
+    let report = completeness_of(
+        (a.clone(), b.clone()),
+        vec![
+            market(&a, "eur", "global", priced_flat()),
+            market(&b, "eur", "DE", priced_flat()),
+        ],
+    );
+    assert_eq!(codes(&report), vec![LINE_MARKET_PRICE_MISSING]);
+    let missing = &report.violations[0].subject;
+    assert!(
+        missing.contains(&super::line_label(&b)),
+        "it is B that owes: {missing}"
+    );
+    assert!(
+        missing.ends_with("|EUR|global"),
+        "and what it owes is the currency-wide price: {missing}"
+    );
+}
+
+/// An override obliges no sibling: B has no `DE` row and owes none.
+#[test]
+fn an_override_on_one_line_obliges_no_sibling() {
+    let (a, b) = two_lines();
+    let report = completeness_of(
+        (a.clone(), b.clone()),
+        vec![
+            market(&a, "eur", "global", priced_flat()),
+            market(&a, "eur", "DE", priced_flat()),
+            market(&b, "eur", "global", priced_flat()),
+        ],
+    );
+    assert!(report.is_publishable(), "{report:?}");
+}
+
+/// No currency-wide price anywhere is the rule as it always was, per pair.
+#[test]
+fn without_a_currency_wide_price_completeness_is_per_pair_as_before() {
+    let (a, b) = two_lines();
+    let report = completeness_of(
+        (a.clone(), b.clone()),
+        vec![
+            market(&a, "eur", "DE", priced_flat()),
+            market(&a, "eur", "FR", priced_flat()),
+            market(&b, "eur", "DE", priced_flat()),
+        ],
+    );
+    assert_eq!(codes(&report), vec![LINE_MARKET_PRICE_MISSING]);
+    let missing = &report.violations[0].subject;
+    assert!(missing.contains(&super::line_label(&b)), "{missing}");
+    assert!(missing.ends_with("|EUR|FR"), "{missing}");
+}
+
+/// The footing is per currency: EUR sold everywhere does not excuse a USD pair.
+#[test]
+fn one_currency_sold_everywhere_leaves_another_per_pair() {
+    let (a, b) = two_lines();
+    let report = completeness_of(
+        (a.clone(), b.clone()),
+        vec![
+            market(&a, "eur", "global", priced_flat()),
+            market(&b, "eur", "global", priced_flat()),
+            market(&a, "usd", "US", priced_flat()),
+        ],
+    );
+    assert_eq!(codes(&report), vec![LINE_MARKET_PRICE_MISSING]);
+    assert!(report.violations[0].subject.ends_with("|USD|US"));
+}
+
 #[test]
 fn an_explicit_zero_operand_counts_as_a_binding() {
     let usage = line(1, ChargeKind::Usage, phase_id(TERMINAL));

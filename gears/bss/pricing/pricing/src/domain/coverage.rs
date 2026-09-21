@@ -375,7 +375,62 @@ pub struct CoverageReport {
     pub keys: Vec<KeyCoverage>,
 }
 
+/// Where a region's override hands its buyers to the currency-wide price.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CoverageFallback {
+    /// The `global` key of the same line and currency.
+    pub to: MarketPriceScopeKey,
+    /// The instant the override's own coverage stops, from which its buyers are
+    /// sold [`Self::to`]. `None` when the override has no coverage of its own at
+    /// all: it is served by the currency-wide price from the start, which is not
+    /// an instant anybody authored.
+    pub from: Option<OffsetDateTime>,
+}
+
 impl CoverageReport {
+    /// The currency-wide key `entry` falls back to, and from when — if it does.
+    ///
+    /// A buyer in a region is sold the region's own price where it has one and the
+    /// currency's `global` price where it does not
+    /// ([`market_resolution`](crate::domain::market_resolution)). So an override
+    /// whose coverage **ends** does not leave a void: it changes what its buyers
+    /// pay, at that instant, without any act. That is the regional promotion
+    /// working as intended, and it is also exactly how a mistaken gap changes a
+    /// price silently — which is why the report says it. The fallback is legal;
+    /// its invisibility would not be.
+    ///
+    /// `None` for the `global` key (nothing stands behind it), for an override
+    /// whose coverage never ends (it never falls back), and for an override with
+    /// no `global` key of its line in this report — whose ending is the trailing
+    /// void it always was, and is not dressed here as anything else.
+    #[must_use]
+    pub fn fallback_of(&self, entry: &KeyCoverage) -> Option<CoverageFallback> {
+        use crate::domain::market_resolution::is_currency_wide;
+
+        let key = entry.scope_key();
+        if is_currency_wide(key.region()) {
+            return None;
+        }
+        let from = match entry.coverage_end() {
+            CoverageEnd::OpenEnded => return None,
+            CoverageEnd::Ends(at) => Some(at),
+            CoverageEnd::Uncovered => None,
+        };
+        self.keys
+            .iter()
+            .map(KeyCoverage::scope_key)
+            .find(|other| {
+                other.line() == key.line()
+                    && other.currency() == key.currency()
+                    && is_currency_wide(other.region())
+            })
+            .map(|to| CoverageFallback {
+                to: to.clone(),
+                from,
+            })
+    }
+
     /// The keys `inst-wc-required` demands a live window on.
     pub fn required(&self) -> impl Iterator<Item = &KeyCoverage> {
         self.keys.iter().filter(|entry| entry.required)
@@ -532,10 +587,15 @@ pub fn longest_cycle_sold_on<'a>(
     currency: &CurrencyCode,
     region: &Region,
 ) -> Option<time::Duration> {
+    // The recurring rows a buyer on `(currency, region)` can be sold: the
+    // region's own and the currency-wide one behind it. Matching the exact region
+    // alone would answer "sells nothing recurring" for every region a `global`
+    // price serves, and a zero margin there is the horizon check skipped.
     let sells_recurring = keys.into_iter().any(|key| {
         key.charge_kind() == ChargeKind::Recurring
             && key.currency() == currency
-            && key.region() == region
+            && (key.region() == region
+                || crate::domain::market_resolution::is_currency_wide(key.region()))
     });
     if !sells_recurring {
         return Some(time::Duration::ZERO);

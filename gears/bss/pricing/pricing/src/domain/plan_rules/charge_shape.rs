@@ -175,7 +175,11 @@ impl ValidationRule<PlanShape> for LineMarketPricePresent {
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
         let lines = effective_lines(subject);
         let variants = effective_variants(subject);
-        let markets = sold_markets(subject, &variants);
+        // What each line owes, not merely what some line sells: a currency sold
+        // everywhere obliges its `global` price and no regional one.
+        let markets = crate::domain::market_resolution::owed_markets(
+            &currency_binding::sold_markets(subject),
+        );
         for line in &lines {
             if line.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
                 continue;
@@ -409,27 +413,6 @@ fn effective_variants(subject: &PlanShape) -> Vec<MarketPriceVersion> {
                 scope_key: record.scope_key.clone(),
                 money,
             }
-        })
-        .collect()
-}
-
-fn sold_markets(
-    subject: &PlanShape,
-    variants: &[MarketPriceVersion],
-) -> BTreeSet<(CurrencyCode, Region)> {
-    if !subject.rows.is_empty() {
-        return currency_binding::sold_markets(subject);
-    }
-    variants
-        .iter()
-        .filter(|price| {
-            price.scope_key.price_eligibility() != PriceEligibility::ExistingGrandfathered
-        })
-        .map(|price| {
-            (
-                price.scope_key.currency().clone(),
-                price.scope_key.region().clone(),
-            )
         })
         .collect()
 }

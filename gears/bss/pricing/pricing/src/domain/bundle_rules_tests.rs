@@ -246,6 +246,49 @@ fn every_component_covering_every_market_publishes() {
     );
 }
 
+/// **A component priced only on `global` answers for a bundle evaluated in
+/// `DE`** — by the resolution the plan plane uses, not a second reading of it:
+/// `check_coverage` delegates to `currency_binding::uncovered_pairs`.
+#[test]
+fn a_component_priced_currency_wide_covers_the_region_the_bundle_sells_in() {
+    let global = Region::new("global").expect("non-blank");
+    let c = composition(
+        PriceBasis::SumOfParts,
+        vec![
+            component(1, vec![row(&eur(), &de(), true)]),
+            component(2, vec![row(&eur(), &global, true)]),
+        ],
+    );
+    let report = validate(&c);
+    assert!(
+        report.is_publishable(),
+        "unexpected: {:?}",
+        report.violations
+    );
+}
+
+/// And the fallback runs one way here too: a bundle sold in EUR *everywhere* is
+/// not covered by a component priced in `DE` alone.
+#[test]
+fn a_bundle_sold_everywhere_is_not_covered_by_a_component_priced_in_one_region() {
+    let global = Region::new("global").expect("non-blank");
+    let mut c = composition(
+        PriceBasis::SumOfParts,
+        vec![
+            component(1, vec![row(&eur(), &global, true)]),
+            component(2, vec![row(&eur(), &de(), true)]),
+        ],
+    );
+    c.markets = vec![(eur(), global)];
+    let report = validate(&c);
+    assert_eq!(codes(&report), vec![CURRENCY_NOT_COVERED]);
+    assert_eq!(
+        report.violations[0].subject,
+        Uuid::from_u128(2).to_string(),
+        "it is the regional component that leaves the rest of the world uncovered"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // `inst-bc-frequency` — recurring components only.
 // ---------------------------------------------------------------------------

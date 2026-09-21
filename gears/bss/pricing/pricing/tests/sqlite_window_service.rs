@@ -1972,3 +1972,164 @@ async fn an_indefinite_generations_window_may_not_be_bounded() {
         "the refusal names the instant coverage would stop at: {detail}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `WINDOW_TRAILING_VOID` and a region's override of the currency-wide price
+// ---------------------------------------------------------------------------
+
+/// One published line priced in two markets of one currency, each covered
+/// open-ended from the same instant. Returns the second market's window.
+async fn one_line_in(h: &Harness, plan_id: Uuid, first: &'static str, second: &str) -> Uuid {
+    let seeded = rest_support::seed_publishable_plan_with(
+        h,
+        plan_id,
+        move |plan, phase| rest_support::publishable_scope_key(plan, phase, first),
+        rest_support::publishable_row(),
+    )
+    .await;
+    // **The same line, the same currency, another region.** `seed_price` would not
+    // do: it files its row under USD and the shared seeded phase, which is another
+    // line in another currency — and a case about one line's two markets built on
+    // it passes or fails for reasons that have nothing to do with the rule.
+    let other_key = rest_support::publishable_scope_key(PlanId::new(plan_id), seeded.phase, second);
+    let other_price = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            bss_pricing::infra::storage::repo::NewPriceDraft {
+                price_id: other_price,
+                line_version_id: None,
+                market_price_id: None,
+                scope_key: other_key,
+                content: rest_support::publishable_row(),
+                created_by: rest_support::SEED_ACTOR,
+                created_at_utc: utc_ymd_hms(2026, 8, 2, 10, 0, 0),
+                correlation_id: Uuid::from_u128(0x_c0_11_a7_10),
+            },
+        )
+        .await
+        .expect("author the second market of the one line");
+    // Both markets open-ended from one instant, so the first covers every instant
+    // the second does. `cover_committed_price` would not do here: its window is the
+    // finite `[COVERAGE_FROM, COVERAGE_TO)` fixture, which covers a month of the
+    // span and is — correctly — no fallback for the rest of it.
+    seed_window(h, seeded.price_id).await;
+    let window = seed_window(h, other_price).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_price(plan_id, other_price).await;
+    window
+}
+
+async fn cancel(h: &Harness, window_id: Uuid) -> Result<WindowMutationOutcome, DomainError> {
+    h.governance
+        .windows
+        .cancel(
+            &rest_support::security_context(rest_support::SEED_ACTOR, h.tenant),
+            &h.scope(),
+            h.tenant,
+            window_id,
+            bss_pricing::api::rest::windows::verdict_json,
+            rest_support::seed_stamp(),
+        )
+        .await
+}
+
+/// **Cancelling an override is not a trailing void when the currency-wide price
+/// covers the same span.** The `de` buyers it served are sold the `global` price
+/// from the instant it stops — the regional promotion ending as intended.
+#[tokio::test]
+async fn cancelling_an_override_the_currency_wide_price_covers_is_not_a_trailing_void() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let override_window = one_line_in(&h, plan_id, "global", "de").await;
+
+    let outcome = cancel(&h, override_window).await;
+    assert!(
+        !matches!(outcome, Err(DomainError::WindowTrailingVoid(_))),
+        "the currency-wide price covers every instant the override did: {outcome:?}"
+    );
+}
+
+/// **A currency-wide price that covers only part of the span is no fallback for
+/// the rest.** Here it covers one month of an open-ended override, so cancelling
+/// the override still strands every `de` buyer outside that month.
+#[tokio::test]
+async fn a_currency_wide_price_covering_part_of_the_span_does_not_excuse_the_void() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan_with(
+        &h,
+        plan_id,
+        |plan, phase| rest_support::publishable_scope_key(plan, phase, "global"),
+        rest_support::publishable_row(),
+    )
+    .await;
+    let other_price = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            bss_pricing::infra::storage::repo::NewPriceDraft {
+                price_id: other_price,
+                line_version_id: None,
+                market_price_id: None,
+                scope_key: rest_support::publishable_scope_key(
+                    PlanId::new(plan_id),
+                    seeded.phase,
+                    "de",
+                ),
+                content: rest_support::publishable_row(),
+                created_by: rest_support::SEED_ACTOR,
+                created_at_utc: utc_ymd_hms(2026, 8, 2, 10, 0, 0),
+                correlation_id: Uuid::from_u128(0x_c0_11_a7_10),
+            },
+        )
+        .await
+        .expect("author the override");
+    let override_window = seed_window(&h, other_price).await;
+    h.publish(plan_id, seeded.revision).await;
+    h.publish_price(plan_id, seeded.price_id).await;
+    // The finite `[COVERAGE_FROM, COVERAGE_TO)` fixture: a month, not the span.
+    h.cover_committed_price(seeded.price_id).await;
+    h.publish_price(plan_id, other_price).await;
+
+    let outcome = cancel(&h, override_window).await;
+    assert!(
+        matches!(outcome, Err(DomainError::WindowTrailingVoid(_))),
+        "{outcome:?}"
+    );
+}
+
+/// The control, and the rule as it always was: the same cancel with **no**
+/// currency-wide price behind it empties the market.
+#[tokio::test]
+async fn cancelling_a_regions_only_price_is_still_a_trailing_void() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let only_window = one_line_in(&h, plan_id, "eu", "de").await;
+
+    let outcome = cancel(&h, only_window).await;
+    assert!(
+        matches!(outcome, Err(DomainError::WindowTrailingVoid(_))),
+        "another region's price covers nothing here: {outcome:?}"
+    );
+}
+
+/// **`global` itself keeps the rule untouched.** Nothing stands behind the
+/// currency-wide price, and an override of it serves one region, not every one.
+#[tokio::test]
+async fn cancelling_the_currency_wide_price_is_a_trailing_void_whatever_overrides_it() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let global_window = one_line_in(&h, plan_id, "de", "global").await;
+
+    let outcome = cancel(&h, global_window).await;
+    assert!(
+        matches!(outcome, Err(DomainError::WindowTrailingVoid(_))),
+        "{outcome:?}"
+    );
+}
