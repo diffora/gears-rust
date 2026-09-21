@@ -52,7 +52,7 @@ use bss_pricing::domain::materiality::{MaterialityReason, MaterialityVerdict};
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::scope_key::{
-    ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PlanId, PriceEligibility, SkuId,
+    ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PlanId, PriceEligibility, SkuId, render_region,
 };
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
@@ -209,7 +209,7 @@ async fn rows_on_key(h: &Harness, key: &MarketPriceScopeKey) -> Vec<price::Model
     // would be the first fixture this helper could not tell apart.
     .filter(|graph| {
         graph.market.currency == key.currency().as_str()
-            && graph.market.region == key.region().as_str()
+            && graph.market.region == render_region(key.region())
             && graph.line.charge_kind == key.charge_kind().as_str()
             && graph.line.price_eligibility == key.price_eligibility().as_str()
     })
@@ -884,7 +884,7 @@ async fn an_existing_grandfathered_generation_cannot_be_superseded() {
     rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
     let (plan_id, seeded) = published_plan(&h).await;
     let base = key_of(plan_id, &seeded);
-    let retained = MarketPriceScopeKey::new(
+    let retained = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan_id,
             seeded.phase,
@@ -895,7 +895,7 @@ async fn an_existing_grandfathered_generation_cannot_be_superseded() {
         )
         .expect("existing_grandfathered carries a generation"),
         base.currency().clone(),
-        base.region().clone(),
+        base.region().cloned(),
     );
 
     let refused = supersede(&h, request_of(&retained, 10_000), SUBMITTER)

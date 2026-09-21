@@ -1016,7 +1016,7 @@ fn reset_key(
         .get(&key.phase().get())
         .copied()
         .unwrap_or(key.phase());
-    let reset = MarketPriceScopeKey::new(
+    let reset = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             target,
             phase,
@@ -1026,7 +1026,7 @@ fn reset_key(
             key.sku_id(),
         )?,
         key.currency().clone(),
-        key.region().clone(),
+        key.region().cloned(),
     );
     let meter = record.row.meter.as_deref().map(Meter::new).transpose()?;
     reset.with_usage_line(meter.as_ref(), key.dimension_key().clone())

@@ -47,7 +47,7 @@ fn preview_path(plan_id: Uuid, query: &str) -> String {
 fn delta_of(
     plan_id: Uuid,
     currency: &str,
-    region: &str,
+    region: Option<&str>,
     tax_inclusive: bool,
     resolved_category: Option<&str>,
     not_sellable_ga: bool,
@@ -72,7 +72,7 @@ fn delta_of(
     } else {
         (PriceEligibility::AllSubscriptions, Cohort::None)
     };
-    let key = MarketPriceScopeKey::new(
+    let key = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             PlanId::new(plan_id),
             rest_support::seeded_phase(),
@@ -83,7 +83,7 @@ fn delta_of(
         )
         .expect("the class pairs with its cohort"),
         CurrencyCode::new(currency).expect("three letters"),
-        Region::new(region).expect("a non-blank region"),
+        region.map(|region| Region::new(region).expect("a non-blank region")),
     );
 
     let mut row = {
@@ -200,7 +200,7 @@ async fn seeded(h: &Harness) -> Uuid {
         &delta_of(
             plan_id,
             CURRENCY,
-            REGION,
+            Some(REGION),
             false,
             Some("standard"),
             false,
@@ -368,7 +368,7 @@ async fn a_region_with_no_price_of_its_own_is_quoted_the_currency_wide_price() {
     let delta = delta_of(
         plan_id,
         CURRENCY,
-        "global",
+        None,
         false,
         Some("standard"),
         false,
@@ -382,8 +382,9 @@ async fn a_region_with_no_price_of_its_own_is_quoted_the_currency_wide_price() {
     assert_eq!(body["amount_minor"], 1_200);
     assert_eq!(body["region"], "DE", "the requested region, echoed");
     assert_eq!(
-        body["resolved_region"], "global",
-        "and the region whose price it is: a fallback is said, not implied"
+        body["resolved_region"],
+        serde_json::Value::Null,
+        "and the market whose price it is: a fallback is said, not implied"
     );
 }
 
@@ -395,7 +396,7 @@ async fn a_region_with_a_price_of_its_own_is_quoted_that_and_every_other_the_cur
         delta_of(
             plan_id,
             CURRENCY,
-            "global",
+            None,
             false,
             Some("standard"),
             false,
@@ -406,7 +407,10 @@ async fn a_region_with_a_price_of_its_own_is_quoted_that_and_every_other_the_cur
     );
     project_and_pin(&h, plan_id, 5, &delta).await;
 
-    for (region, amount, resolved) in [("DE", 990, "DE"), ("FR", 1_200, "global")] {
+    for (region, amount, resolved) in [
+        ("DE", 990, serde_json::Value::String("DE".to_owned())),
+        ("FR", 1_200, serde_json::Value::Null),
+    ] {
         let response = preview(&h, plan_id, region).await;
         assert_eq!(response.status(), StatusCode::OK, "{region}");
         let body = body_json(response).await;
@@ -438,8 +442,9 @@ async fn frozen_at(h: &Harness, plan_id: Uuid, version: u64) -> (u64, serde_json
 /// **A bound subscription's pin does not move.** A consumer resolves once, when it
 /// binds, and pins what it got. A `de` override published *later* is a new catalog
 /// version: the one the subscription pinned still answers, byte for byte, and
-/// still holds the `global` price alone — so nobody already bound is re-priced by
-/// a region gaining a price of its own. The semantics grandfathering already has.
+/// still holds the currency-wide price alone — so nobody already bound is
+/// re-priced by a region gaining a price of its own. The semantics
+/// grandfathering already has.
 #[tokio::test]
 async fn an_override_published_later_does_not_move_an_earlier_pin() {
     let h = Harness::new().await;
@@ -447,7 +452,7 @@ async fn an_override_published_later_does_not_move_an_earlier_pin() {
     let currency_wide = delta_of(
         plan_id,
         CURRENCY,
-        "global",
+        None,
         false,
         Some("standard"),
         false,
@@ -478,9 +483,10 @@ async fn an_override_published_later_does_not_move_an_earlier_pin() {
 }
 
 /// **An override is a whole row.** Money and market policy together; nothing of
-/// the `global` row is inherited, so there is no field-level effective value for
-/// anyone to compute or freeze. The override here disagrees with `global` on the
-/// amount *and* on the tax display, and freezes as exactly what was authored.
+/// the currency-wide row is inherited, so there is no field-level effective
+/// value for anyone to compute or freeze. The override here disagrees with it on
+/// the amount *and* on the tax display, and freezes as exactly what was
+/// authored.
 #[tokio::test]
 async fn an_override_freezes_as_its_own_row_and_inherits_nothing() {
     let h = Harness::new().await;
@@ -489,7 +495,7 @@ async fn an_override_freezes_as_its_own_row_and_inherits_nothing() {
         delta_of(
             plan_id,
             CURRENCY,
-            "global",
+            None,
             false,
             Some("standard"),
             false,
@@ -503,12 +509,15 @@ async fn an_override_freezes_as_its_own_row_and_inherits_nothing() {
 
     let (_, payload) = frozen_at(&h, plan_id, 5).await;
     let rows = payload["prices"].as_array().expect("prices");
-    let of = |region: &str| {
+    let of = |region: serde_json::Value| {
         rows.iter()
             .find(|row| row["scopeKey"]["region"] == region)
             .unwrap_or_else(|| panic!("no {region} row in {payload}"))
     };
-    let (global, de) = (of("global"), of("DE"));
+    let (global, de) = (
+        of(serde_json::Value::Null),
+        of(serde_json::Value::String("DE".to_owned())),
+    );
     assert_eq!(global["amountMinor"], 1_200);
     assert_eq!(global["taxInclusive"], false);
     assert_eq!(de["amountMinor"], 990);
@@ -570,7 +579,7 @@ async fn a_grandfathered_only_market_is_not_previewable() {
         &delta_of(
             plan_id,
             CURRENCY,
-            REGION,
+            Some(REGION),
             false,
             Some("standard"),
             false,
@@ -644,7 +653,7 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
     let mut delta = delta_of(
         plan_id,
         CURRENCY,
-        REGION,
+        Some(REGION),
         false,
         Some("standard"),
         false,
@@ -768,7 +777,7 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
     let mut delta = delta_of(
         plan_id,
         CURRENCY,
-        REGION,
+        Some(REGION),
         false,
         Some("standard"),
         false,
@@ -862,7 +871,7 @@ async fn a_repriced_market_quotes_the_successor_and_not_the_superseded_row() {
     let mut delta = delta_of(
         plan_id,
         CURRENCY,
-        REGION,
+        Some(REGION),
         false,
         Some("standard"),
         false,
@@ -917,7 +926,7 @@ async fn a_payload_predating_the_ga_flag_reads_as_gated() {
     let delta = delta_of(
         plan_id,
         CURRENCY,
-        REGION,
+        Some(REGION),
         true,
         Some("standard"),
         true,
@@ -1109,7 +1118,7 @@ async fn a_per_seat_plan_is_quoted_its_unit_rate() {
 
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    let mut delta = delta_of(plan_id, CURRENCY, REGION, false, None, false, false);
+    let mut delta = delta_of(plan_id, CURRENCY, Some(REGION), false, None, false, false);
     let record = delta.prices.first_mut().expect("the fixture seeds one row");
     record.row.model_kind = Some(ModelKind::PerUnit);
     record.row.unit_rate =
@@ -1189,7 +1198,7 @@ async fn a_ga_gated_row_is_previewable_and_says_so() {
         &delta_of(
             plan_id,
             CURRENCY,
-            REGION,
+            Some(REGION),
             true,
             Some("standard"),
             true,

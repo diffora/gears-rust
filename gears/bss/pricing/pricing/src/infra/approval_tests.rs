@@ -166,9 +166,9 @@ fn shape_over(markets: &[&str]) -> PlanShape {
 #[test]
 fn the_change_sets_regions_are_the_union_over_its_rows() {
     let regions = regions_of(&shape_over(&["EU", "US", "EU"]));
-    let expected: BTreeSet<Region> = ["EU", "US"]
+    let expected: BTreeSet<Option<Region>> = ["EU", "US"]
         .iter()
-        .map(|value| Region::new(value).expect("a non-blank region"))
+        .map(|value| Some(Region::new(value).expect("a non-blank region")))
         .collect();
     assert_eq!(regions, expected);
 }
@@ -236,12 +236,41 @@ fn an_explicit_grant_is_taken_exactly_as_given_and_a_narrow_one_refuses() {
         "a grant missing a region the change set touches is inst-ap-scope's refusing direction"
     );
 
-    let covering: BTreeSet<Region> = change_set.clone();
+    let covering: BTreeSet<Region> = change_set.iter().flatten().cloned().collect();
     assert_eq!(
         judged_with(&RegionGrant::Explicit(covering), &change_set),
         Ok(()),
         "and the same path authorizes a grant that covers it, or the refusal above is \
          whatever this returns for every input"
+    );
+}
+
+/// **A currency-wide row is reached by every region, so no finite grant covers
+/// it** (D-381) — and an untransported grant stays unmeasured, as it is for
+/// every other reach.
+#[test]
+fn a_currency_wide_row_refuses_an_explicit_grant_and_stays_unmeasured_without_one() {
+    let mut shape = shape_over(&["DE"]);
+    shape.rows[0].scope_key = MarketPriceScopeKey::currency_wide(
+        shape.rows[0].scope_key.line().clone(),
+        shape.rows[0].scope_key.currency().clone(),
+    );
+    let change_set = regions_of(&shape);
+    assert_eq!(change_set, BTreeSet::from([None]));
+
+    let every_declared_region: BTreeSet<Region> = ["DE", "FR", "US"]
+        .iter()
+        .map(|value| Region::new(value).expect("a region"))
+        .collect();
+    assert_eq!(
+        judged_with(&RegionGrant::Explicit(every_declared_region), &change_set),
+        Err(DecisionRefusal::OutOfScope),
+        "a grant is a set of regions and the currency-wide market is not one of them"
+    );
+    assert_eq!(
+        judged_with(&RegionGrant::Untransported, &change_set),
+        Ok(()),
+        "nothing transports a grant on this path, so the rule has no operand"
     );
 }
 
@@ -253,12 +282,22 @@ fn an_explicit_grant_is_taken_exactly_as_given_and_a_narrow_one_refuses() {
 /// self-approval or a content mismatch wearing its name.
 fn judged_with(
     grant: &RegionGrant,
-    change_set_regions: &BTreeSet<Region>,
+    change_set_regions: &BTreeSet<Option<Region>>,
 ) -> Result<(), DecisionRefusal> {
-    let approver_regions = match approver_reach(grant) {
-        ApproverReach::Unmeasured => change_set_regions.clone(),
-        ApproverReach::Granted(regions) => regions,
+    // `judge`'s own two-arm composition, spelled the same way: the unmeasured
+    // arm synthesises the grant from the reach's **regions** and hands the rule
+    // a change set it covers by construction, the currency-wide member dropped
+    // with the rest (D-381); a real grant is measured against the reach whole.
+    let (approver_regions, change_set_regions) = match approver_reach(grant) {
+        ApproverReach::Unmeasured => {
+            let synthesised: BTreeSet<Region> =
+                change_set_regions.iter().flatten().cloned().collect();
+            let covered = synthesised.iter().cloned().map(Some).collect();
+            (synthesised, covered)
+        }
+        ApproverReach::Granted(regions) => (regions, change_set_regions.clone()),
     };
+    let change_set_regions = &change_set_regions;
     let pinned = [7_u8; 32];
     authorize_decision(&DecisionRequest {
         record_state: ApprovalState::Submitted,

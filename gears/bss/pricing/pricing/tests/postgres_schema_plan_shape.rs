@@ -1265,6 +1265,17 @@ async fn a_bound_that_admits_no_bill_is_refused_by_its_own_check() {
         "chk_pricing_plan_period_floor_cap_present",
     )
     .await;
+    // D-381: `''` is the currency-wide market and `'none'` is what the canonical
+    // rendering writes for it, so a bound storing the token is a lie about which
+    // market it binds.
+    must_be_rejected(
+        &conn,
+        &insert_bound(PLAN_A, "USD", "none", "50000", "NULL"),
+        "chk_pricing_plan_period_floor_cap_region_not_absent_token",
+    )
+    .await;
+    // And the currency-wide bound itself is authorable: `''` is the spelling.
+    must_succeed(&conn, &insert_bound(PLAN_A, "GBP", "", "50000", "NULL")).await;
 
     // The controls, in the same order: one minor unit, one minor unit, an equal
     // pair (a fixed-fee plan is not a contradiction), and each one-sided shape —

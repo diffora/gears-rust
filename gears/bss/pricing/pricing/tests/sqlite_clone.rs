@@ -55,7 +55,7 @@ use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
-    Region, SkuId,
+    Region, SkuId, render_region,
 };
 use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
@@ -670,13 +670,13 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
             vec![
                 PeriodFloorCap {
                     currency: CurrencyCode::new("EUR").expect("three letters"),
-                    region: Region::new("eu").expect("a non-blank region"),
+                    region: Some(Region::new("eu").expect("a non-blank region")),
                     floor_minor: Some(MinorAmount::new(1_000).expect("a positive floor")),
                     cap_minor: Some(MinorAmount::new(50_000).expect("a positive cap")),
                 },
                 PeriodFloorCap {
                     currency: CurrencyCode::new("EUR").expect("three letters"),
-                    region: Region::new("us").expect("a non-blank region"),
+                    region: Some(Region::new("us").expect("a non-blank region")),
                     floor_minor: None,
                     cap_minor: Some(MinorAmount::new(90_000).expect("a positive cap")),
                 },
@@ -1243,11 +1243,11 @@ async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
     // does.
     assert!(
         rows.iter()
-            .all(|row| row.scope_key.region().as_str() != "us"),
+            .all(|row| row.scope_key.region().map(Region::as_str) != Some("us")),
         "the clone holds a row on the market only the new_subscriptions_only \
          row occupied: {:?}",
         rows.iter()
-            .map(|row| row.scope_key.region().as_str().to_owned())
+            .map(|row| render_region(row.scope_key.region()).to_owned())
             .collect::<Vec<_>>()
     );
 
@@ -1994,14 +1994,14 @@ async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
         2,
         "both of the source's bounds came across, not merely one"
     );
-    assert_eq!(bounds[0].region.as_str(), "eu");
+    assert_eq!(bounds[0].region.as_ref().map(Region::as_str), Some("eu"));
     assert_eq!(
         bounds[0].floor_minor.map(MinorAmount::get),
         Some(1_000),
         "the floor is money and travels by value, not by default"
     );
     assert_eq!(bounds[0].cap_minor.map(MinorAmount::get), Some(50_000));
-    assert_eq!(bounds[1].region.as_str(), "us");
+    assert_eq!(bounds[1].region.as_ref().map(Region::as_str), Some("us"));
     assert_eq!(
         bounds[1].floor_minor, None,
         "an absent floor stays absent: a copier defaulting it would invent a bound"

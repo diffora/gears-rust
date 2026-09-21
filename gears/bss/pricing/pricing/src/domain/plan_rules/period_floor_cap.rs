@@ -62,6 +62,7 @@ use toolkit_macros::domain_model;
 use crate::domain::money::MinorAmount;
 use crate::domain::plan_rules::{PERIOD_FLOOR_CAP_AMOUNT_INVALID, PERIOD_FLOOR_CAP_MARKET_UNSOLD};
 use crate::domain::plan_shape::PlanShape;
+use crate::domain::scope_key::render_region;
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
 /// `inst-pfc-market` — every authored bound names a market the plan sells.
@@ -85,7 +86,7 @@ impl ValidationRule<PlanShape> for PeriodFloorCapMarketSold {
             // A bound has a market to apply in when its region *resolves*: by a
             // row of its own, or by the currency-wide one that serves it.
             let (currency, region) = bound.market();
-            if crate::domain::market_resolution::is_sold(&sold, &currency, &region) {
+            if crate::domain::market_resolution::is_sold(&sold, &currency, region.as_ref()) {
                 continue;
             }
             report.violate(
@@ -97,7 +98,7 @@ impl ValidationRule<PlanShape> for PeriodFloorCapMarketSold {
                      no row of this plan can contribute to, so it would freeze into the \
                      snapshot as a minimum nothing can reach",
                     currency = bound.currency,
-                    region = bound.region.as_str(),
+                    region = render_region(bound.region.as_ref()),
                 ),
             );
         }
@@ -124,7 +125,11 @@ impl ValidationRule<PlanShape> for PeriodFloorCapAmounts {
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
         for bound in &subject.period_floor_caps {
-            let market = format!("({}, {})", bound.currency, bound.region.as_str());
+            let market = format!(
+                "({}, {})",
+                bound.currency,
+                render_region(bound.region.as_ref())
+            );
             let mut complain = |detail: String| {
                 report.violate(PERIOD_FLOOR_CAP_AMOUNT_INVALID, subject.subject(), detail);
             };

@@ -567,7 +567,7 @@ mod publish_path {
     fn market(currency: &str, region: &str) -> Market {
         (
             CurrencyCode::new(currency).expect("three letters"),
-            Region::new(region).expect("non-blank"),
+            Some(Region::new(region).expect("non-blank")),
         )
     }
 

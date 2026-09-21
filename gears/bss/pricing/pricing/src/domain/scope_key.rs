@@ -159,9 +159,9 @@ fn check_no_separator(axis: &str, value: &str) -> Result<(), DomainError> {
 /// renders its empty value as this token, so an authored `none` dimension renders
 /// what an undimensioned line renders.
 ///
-/// **One axis, not two, since D-372.** The ninth position was `meter`, whose own
-/// absent form carried the same collision — `Meter("none")` on an undimensioned
-/// line and no meter at all were two keys, held apart in the store by
+/// **Not the ninth position, since D-372.** It was `meter`, whose own absent
+/// form carried the same collision — `Meter("none")` on an undimensioned line
+/// and no meter at all were two keys, held apart in the store by
 /// `COALESCE(meter, '')`, that rendered one string. That position is now
 /// [`SkuId`], which is `NOT NULL` and a uuid: it has no absent form to collide
 /// with and no spelling that could reach this token. [`Meter::new`] keeps
@@ -174,10 +174,14 @@ fn check_no_separator(axis: &str, value: &str) -> Result<(), DomainError> {
 /// every rendering already embedded in an approval register row, a
 /// `DUPLICATE_SCOPE_KEY` message and a `unit_request_id`.
 ///
-/// Exactly one axis can collide with it. `region` is free-form and mandatory, so
-/// it has no absent form; the eight others are two uuids, a three-letter currency
-/// and four closed token enums, and `Cohort::Generation` renders epoch
-/// milliseconds.
+/// **Two axes have an absent form, and they are arranged alike.**
+/// `dimension_key` is absent on an undimensioned line; `region` is absent on the
+/// currency-wide market, the price every region without a row of its own is sold
+/// (D-381). Both refuse this token at the door — [`Region::new`] and
+/// [`ChargeLineScopeKey::with_dimension_key`] — the store spells both absences
+/// `''`, and the rendering spells both with this token. The eight others cannot
+/// collide with it: two uuids, a three-letter currency and four closed token
+/// enums, and `Cohort::Generation` renders epoch milliseconds.
 pub const ABSENT_AXIS_TOKEN: &str = "none";
 
 /// Refuse a free-form axis value that renders as [`ABSENT_AXIS_TOKEN`].
@@ -308,9 +312,11 @@ impl Region {
     ///
     /// # Errors
     ///
-    /// [`DomainError::InvalidRequest`] when the value is blank — an empty axis
-    /// value is not "no region", it is a key component that cannot be compared —
-    /// or when it carries [`KEY_SEPARATOR`]; see that constant.
+    /// [`DomainError::InvalidRequest`] when the value is blank — a blank is the
+    /// column's spelling of the currency-wide market (see [`region_column`]), so
+    /// a region that could be blank would be indistinguishable from the row that
+    /// states no region — or when it carries [`KEY_SEPARATOR`], or when it equals
+    /// [`ABSENT_AXIS_TOKEN`]; see those constants.
     pub fn new(value: &str) -> Result<Self, DomainError> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -319,6 +325,7 @@ impl Region {
             ));
         }
         check_no_separator("region", trimmed)?;
+        check_not_absent_token("region", trimmed)?;
         Ok(Self(trimmed.to_owned()))
     }
 
@@ -333,6 +340,36 @@ impl fmt::Display for Region {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// The rendering's spelling of the region axis: the value, or
+/// [`ABSENT_AXIS_TOKEN`] for the currency-wide market. Injective because
+/// [`Region::new`] refuses the token.
+#[must_use]
+pub fn render_region(region: Option<&Region>) -> &str {
+    region.map_or(ABSENT_AXIS_TOKEN, Region::as_str)
+}
+
+/// The column's and the pin's spelling: the value, or `''` for the currency-wide
+/// market. Injective because [`Region::new`] refuses a blank — and unauthorable
+/// through the taxonomy too, whose `value_present` CHECK refuses declaring one.
+#[must_use]
+pub fn region_column(region: Option<&Region>) -> &str {
+    region.map_or("", Region::as_str)
+}
+
+/// Read the column back. `''` is the currency-wide market; anything else is a
+/// region and is judged as [`Region::new`] judges it.
+///
+/// # Errors
+///
+/// [`DomainError::InvalidRequest`] as [`Region::new`] — the caller turns it into
+/// its own `CorruptRow`, since a stored value that fails is a fact about the row.
+pub fn region_from_column(value: &str) -> Result<Option<Region>, DomainError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    Region::new(value).map(Some)
 }
 
 /// The `priceOverlay` axis.
@@ -805,7 +842,11 @@ pub struct ChargeLineScopeKey {
 pub struct MarketPriceScopeKey {
     line: ChargeLineScopeKey,
     currency: CurrencyCode,
-    region: Region,
+    /// `None` is the **currency-wide market**: the price every region without a
+    /// row of its own is sold (D-381). It is not a region, so nothing in the
+    /// region taxonomy can declare, deprecate or retire it — the property the
+    /// reserved `global` value of D-379 did not have.
+    region: Option<Region>,
 }
 
 /// Every axis of a [`MarketPriceScopeKey`], borrowed — the shape that makes "all ten axes"
@@ -870,7 +911,7 @@ pub struct MarketPriceScopeKey {
 pub(crate) struct MarketPriceScopeKeyParts<'a> {
     pub plan_id: PlanId,
     pub currency: &'a CurrencyCode,
-    pub region: &'a Region,
+    pub region: Option<&'a Region>,
     pub price_overlay: PriceOverlay,
     pub phase: PhaseId,
     pub price_eligibility: PriceEligibility,
@@ -1208,13 +1249,34 @@ impl ChargeLineScopeKey {
 
 impl MarketPriceScopeKey {
     /// Compose a full market key from a logical line and the two market axes.
+    ///
+    /// The total constructor; [`Self::new`] and [`Self::currency_wide`] are its
+    /// two spellings.
     #[must_use]
-    pub fn new(line: ChargeLineScopeKey, currency: CurrencyCode, region: Region) -> Self {
+    pub fn on_market(
+        line: ChargeLineScopeKey,
+        currency: CurrencyCode,
+        region: Option<Region>,
+    ) -> Self {
         Self {
             line,
             currency,
             region,
         }
+    }
+
+    /// Compose a full market key from a logical line and the two market axes,
+    /// where the row states a region: the price that region overrides with.
+    #[must_use]
+    pub fn new(line: ChargeLineScopeKey, currency: CurrencyCode, region: Region) -> Self {
+        Self::on_market(line, currency, Some(region))
+    }
+
+    /// The currency-wide market: the price every region without a row of its own
+    /// is sold (D-381).
+    #[must_use]
+    pub fn currency_wide(line: ChargeLineScopeKey, currency: CurrencyCode) -> Self {
+        Self::on_market(line, currency, None)
     }
 
     /// The logical charge line this market key prices.
@@ -1249,7 +1311,7 @@ impl MarketPriceScopeKey {
         MarketPriceScopeKeyParts {
             plan_id: *plan_id,
             currency,
-            region,
+            region: region.as_ref(),
             price_overlay: *price_overlay,
             phase: *phase,
             price_eligibility: *price_eligibility,
@@ -1318,10 +1380,17 @@ impl MarketPriceScopeKey {
         &self.currency
     }
 
-    /// Axis 3 — the pricing region.
+    /// Axis 3 — the pricing region, or `None` for the currency-wide market.
     #[must_use]
-    pub const fn region(&self) -> &Region {
-        &self.region
+    pub const fn region(&self) -> Option<&Region> {
+        self.region.as_ref()
+    }
+
+    /// Does this key name the currency-wide market — the price every region
+    /// without a row of its own is sold (D-381)?
+    #[must_use]
+    pub const fn is_currency_wide(&self) -> bool {
+        self.region.is_none()
     }
 
     /// Axis 4 — the overlay plane (always `base` on an authored row).
@@ -1421,21 +1490,23 @@ impl fmt::Display for MarketPriceScopeKey {
     /// collision between two rows that do not actually share a key.
     ///
     /// **The arity is fixed at ten whatever the row is (D-196)**, `none` filling
-    /// the tenth position on an undimensioned key — and since D-372 only that one:
-    /// the ninth is a SKU id, which every row has. A rendering whose segment count
-    /// depended on the charge kind would be a parsing hazard in the three places
-    /// this string is embedded rather than read: the rejection message, the
-    /// approval register's held-key rows, and `unit_request_id`, the
-    /// cross-tenant registry idempotency key.
+    /// the tenth position on an undimensioned key and the third on the
+    /// currency-wide market (D-381). The ninth takes no sentinel since D-372: it
+    /// is a SKU id, which every row has. A rendering whose segment count depended
+    /// on the charge kind would be a parsing hazard in the three places this
+    /// string is embedded rather than read: the rejection message, the approval
+    /// register's held-key rows, and `unit_request_id`, the cross-tenant registry
+    /// idempotency key.
     ///
     /// **Ten segments, always.** The two free-form axes refuse [`KEY_SEPARATOR`]
     /// — [`Region::new`] and [`ChargeLineScopeKey::with_dimension_key`] — which is
     /// why this impl may join with a bare literal and count on ten.
     ///
     /// **And the rendering is injective**, which is the property the four surfaces
-    /// that read it back as identity actually need. The one axis with an absent
-    /// form refuses [`ABSENT_AXIS_TOKEN`] at the door onto the key, so the token
-    /// means "absent" and cannot also mean an authored value.
+    /// that read it back as identity actually need. Both axes with an absent form
+    /// — `region` and `dimension_key` — refuse [`ABSENT_AXIS_TOKEN`] at the door
+    /// onto the key, so in either position the token means "absent" and cannot
+    /// also mean an authored value.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Destructured, so an eleventh axis is a compile error here rather than a
         // segment silently missing from the string a `DUPLICATE_SCOPE_KEY`
@@ -1452,6 +1523,7 @@ impl fmt::Display for MarketPriceScopeKey {
             sku_id,
             dimension_key,
         } = self.parts();
+        let region = render_region(region);
         write!(
             f,
             "{plan_id}|{currency}|{region}|{price_overlay}|{phase}|{price_eligibility}|\

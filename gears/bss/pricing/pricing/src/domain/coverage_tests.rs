@@ -63,7 +63,13 @@ fn phase() -> PhaseId {
 }
 
 fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> MarketPriceScopeKey {
-    MarketPriceScopeKey::new(
+    key_on(charge_kind, currency, Some(region))
+}
+
+/// [`key`] over the whole region axis: `None` is the currency-wide market — the
+/// price every region without a row of its own is sold (D-381).
+fn key_on(charge_kind: ChargeKind, currency: &str, region: Option<&str>) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan(),
             phase(),
@@ -74,7 +80,7 @@ fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> MarketPriceScop
         )
         .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(currency).expect("three letters"),
-        Region::new(region).expect("non-blank"),
+        region.map(|region| Region::new(region).expect("non-blank")),
     )
 }
 
@@ -997,7 +1003,7 @@ fn the_margin_is_zero_where_the_market_sells_no_recurring_row() {
         longest_cycle_sold(
             &shape,
             &CurrencyCode::new("EUR").expect("three letters"),
-            &Region::new("eu").expect("non-blank")
+            Some(&Region::new("eu").expect("non-blank"))
         ),
         Some(time::Duration::ZERO)
     );
@@ -1020,7 +1026,7 @@ fn the_margin_is_per_market_and_not_per_plan_alone() {
         longest_cycle_sold(
             &shape,
             &CurrencyCode::new("USD").expect("three letters"),
-            &Region::new("us").expect("non-blank")
+            Some(&Region::new("us").expect("non-blank"))
         ),
         Some(time::Duration::ZERO)
     );
@@ -1028,7 +1034,7 @@ fn the_margin_is_per_market_and_not_per_plan_alone() {
         longest_cycle_sold(
             &shape,
             &CurrencyCode::new("EUR").expect("three letters"),
-            &Region::new("eu").expect("non-blank")
+            Some(&Region::new("eu").expect("non-blank"))
         ),
         Some(time::Duration::days(31)),
         "monthly rounds up to the longest calendar month, because every consumer is a margin"
@@ -1051,7 +1057,7 @@ fn every_fixed_frequency_rounds_up_to_its_calendar_maximum() {
         let mut shape = one_row_plan(Vec::new());
         shape.frequency = Some(frequency);
         assert_eq!(
-            longest_cycle_sold(&shape, &market.0, &market.1),
+            longest_cycle_sold(&shape, &market.0, Some(&market.1)),
             Some(time::Duration::days(days)),
             "{frequency}"
         );
@@ -1076,7 +1082,7 @@ fn a_custom_interval_is_read_from_the_variant_and_not_the_placeholder() {
         unit: CustomIntervalUnit::Days,
     });
     assert_eq!(
-        longest_cycle_sold(&days, &market.0, &market.1),
+        longest_cycle_sold(&days, &market.0, Some(&market.1)),
         Some(time::Duration::days(90))
     );
 
@@ -1086,7 +1092,7 @@ fn a_custom_interval_is_read_from_the_variant_and_not_the_placeholder() {
         unit: CustomIntervalUnit::Months,
     });
     assert_eq!(
-        longest_cycle_sold(&months, &market.0, &market.1),
+        longest_cycle_sold(&months, &market.0, Some(&market.1)),
         Some(time::Duration::days(62))
     );
 
@@ -1112,7 +1118,7 @@ fn the_margin_has_no_value_when_a_recurring_market_authored_no_frequency() {
         longest_cycle_sold(
             &shape,
             &CurrencyCode::new("EUR").expect("three letters"),
-            &Region::new("eu").expect("non-blank")
+            Some(&Region::new("eu").expect("non-blank"))
         ),
         None
     );
@@ -1179,10 +1185,10 @@ fn a_billable_key_the_plane_does_not_mention_is_present_and_uncovered() {
 // A region's override falls back to the currency-wide price, and says so.
 // ---------------------------------------------------------------------------
 
-fn report_of(markets: Vec<(&str, Vec<WindowInterval>)>) -> CoverageReport {
+fn report_of(markets: Vec<(Option<&str>, Vec<WindowInterval>)>) -> CoverageReport {
     let windows: Vec<KeyWindows> = markets
         .into_iter()
-        .map(|(region, intervals)| group(key(ChargeKind::Recurring, "EUR", region), intervals))
+        .map(|(region, intervals)| group(key_on(ChargeKind::Recurring, "EUR", region), intervals))
         .collect();
     let billable: Vec<MarketPriceScopeKey> = windows
         .iter()
@@ -1191,9 +1197,9 @@ fn report_of(markets: Vec<(&str, Vec<WindowInterval>)>) -> CoverageReport {
     check(&billable, &windows)
 }
 
-fn entry_in<'a>(report: &'a CoverageReport, region: &str) -> &'a KeyCoverage {
+fn entry_in<'a>(report: &'a CoverageReport, region: Option<&str>) -> &'a KeyCoverage {
     report
-        .find(&key(ChargeKind::Recurring, "EUR", region))
+        .find(&key_on(ChargeKind::Recurring, "EUR", region))
         .expect("the report carries the key")
 }
 
@@ -1203,13 +1209,13 @@ fn entry_in<'a>(report: &'a CoverageReport, region: &str) -> &'a KeyCoverage {
 #[test]
 fn an_override_that_ends_names_the_instant_and_the_key_it_falls_back_to() {
     let report = report_of(vec![
-        ("global", vec![interval(0, None, WindowState::Active)]),
-        ("de", vec![interval(0, Some(30), WindowState::Active)]),
+        (None, vec![interval(0, None, WindowState::Active)]),
+        (Some("de"), vec![interval(0, Some(30), WindowState::Active)]),
     ]);
     let fallback = report
-        .fallback_of(entry_in(&report, "de"))
+        .fallback_of(entry_in(&report, Some("de")))
         .expect("an ending override with a currency-wide price behind it falls back");
-    assert_eq!(fallback.to, key(ChargeKind::Recurring, "EUR", "global"));
+    assert_eq!(fallback.to, key_on(ChargeKind::Recurring, "EUR", None));
     assert_eq!(fallback.from, Some(at(30)));
 }
 
@@ -1218,11 +1224,11 @@ fn an_override_that_ends_names_the_instant_and_the_key_it_falls_back_to() {
 #[test]
 fn an_open_ended_override_and_the_currency_wide_key_fall_back_to_nothing() {
     let report = report_of(vec![
-        ("global", vec![interval(0, None, WindowState::Active)]),
-        ("de", vec![interval(0, None, WindowState::Active)]),
+        (None, vec![interval(0, None, WindowState::Active)]),
+        (Some("de"), vec![interval(0, None, WindowState::Active)]),
     ]);
-    assert_eq!(report.fallback_of(entry_in(&report, "de")), None);
-    assert_eq!(report.fallback_of(entry_in(&report, "global")), None);
+    assert_eq!(report.fallback_of(entry_in(&report, Some("de"))), None);
+    assert_eq!(report.fallback_of(entry_in(&report, None)), None);
 }
 
 /// An override with no coverage of its own is served by the currency-wide price
@@ -1230,11 +1236,11 @@ fn an_open_ended_override_and_the_currency_wide_key_fall_back_to_nothing() {
 #[test]
 fn an_override_with_no_window_falls_back_from_the_start() {
     let report = report_of(vec![
-        ("global", vec![interval(0, None, WindowState::Active)]),
-        ("de", Vec::new()),
+        (None, vec![interval(0, None, WindowState::Active)]),
+        (Some("de"), Vec::new()),
     ]);
     let fallback = report
-        .fallback_of(entry_in(&report, "de"))
+        .fallback_of(entry_in(&report, Some("de")))
         .expect("an uncovered override is served by the currency-wide price");
     assert_eq!(fallback.from, None);
 }
@@ -1245,8 +1251,8 @@ fn an_override_with_no_window_falls_back_from_the_start() {
 #[test]
 fn a_regions_only_price_falls_back_to_nothing() {
     let report = report_of(vec![
-        ("fr", vec![interval(0, None, WindowState::Active)]),
-        ("de", vec![interval(0, Some(30), WindowState::Active)]),
+        (Some("fr"), vec![interval(0, None, WindowState::Active)]),
+        (Some("de"), vec![interval(0, Some(30), WindowState::Active)]),
     ]);
-    assert_eq!(report.fallback_of(entry_in(&report, "de")), None);
+    assert_eq!(report.fallback_of(entry_in(&report, Some("de"))), None);
 }

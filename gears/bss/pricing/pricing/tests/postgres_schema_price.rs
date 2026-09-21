@@ -478,6 +478,15 @@ async fn neither_free_form_key_axis_admits_the_separator() {
         "chk_pricing_market_price_region_no_separator",
     )
     .await;
+    // D-381: `''` is the currency-wide market and `'none'` is what the canonical
+    // rendering writes for it, so a row storing the token is a lie about itself
+    // in exactly the way `'eu|west'` is.
+    must_be_rejected(
+        &conn,
+        &insert(DRAFT, &[("region", "'none'")]),
+        "chk_pricing_market_price_region_not_absent_token",
+    )
+    .await;
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("meter", "'api|calls'")]),

@@ -546,8 +546,15 @@ fn read_scope_key(value: &JsonValue) -> Result<MarketPriceScopeKey, RepoError> {
     {
         let market_currency = CurrencyCode::new(string(value, "currency")?)
             .map_err(|e| malformed("scopeKey.currency", &e.to_string()))?;
-        let market_region = Region::new(string(value, "region")?)
-            .map_err(|e| malformed("scopeKey.region", &e.to_string()))?;
+        // `null` is the currency-wide market (D-381), read as `dimensionKey`
+        // four lines above is read: absence is a member of the axis, not a gap.
+        let market_region = match value.get("region").filter(|v| !v.is_null()) {
+            None => None,
+            Some(_) => Some(
+                Region::new(string(value, "region")?)
+                    .map_err(|e| malformed("scopeKey.region", &e.to_string()))?,
+            ),
+        };
         ChargeLineScopeKey::new(
             PlanId::new(uuid(value, "planId")?),
             PhaseId::new(uuid(value, "phase")?),
@@ -566,7 +573,7 @@ fn read_scope_key(value: &JsonValue) -> Result<MarketPriceScopeKey, RepoError> {
             cohort,
             sku_id,
         )
-        .map(|line| MarketPriceScopeKey::new(line, market_currency, market_region))
+        .map(|line| MarketPriceScopeKey::on_market(line, market_currency, market_region))
     }
     .and_then(|key| key.with_dimension_key(dimension))
     .map_err(|e| malformed("scopeKey", &e.to_string()))

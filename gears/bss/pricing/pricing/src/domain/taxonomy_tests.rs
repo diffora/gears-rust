@@ -82,6 +82,17 @@ fn row_in(price_id: u128, in_region: &str) -> PriceRecord {
     }
 }
 
+/// One candidate row on the currency-wide market — the row that states no
+/// region (D-381).
+fn currency_wide_row(price_id: u128) -> PriceRecord {
+    let mut record = row_in(price_id, "DE");
+    record.scope_key = MarketPriceScopeKey::currency_wide(
+        record.scope_key.line().clone(),
+        record.scope_key.currency().clone(),
+    );
+    record
+}
+
 /// A plan shape carrying exactly the named regions, one row each.
 fn shape_over(regions: &[&str]) -> PlanShape {
     let mut shape = PlanShape::new(plan(), 1, now());
@@ -381,6 +392,29 @@ fn a_tenant_with_no_declared_region_fails_closed_rather_than_open() {
 }
 
 /// The rule is registered under the instruction id it implements.
+
+#[test]
+fn a_currency_wide_row_is_not_the_region_rules_subject() {
+    // D-381: the price every region without a row of its own is sold states no
+    // region, so there is no taxonomy value for this rule to judge. A tenant
+    // that segments nothing declares nothing and still publishes.
+    let rule = declared(&[]);
+    let mut shape = PlanShape::new(plan(), 1, now());
+    shape.rows = vec![currency_wide_row(0xb100), row_in(0xb101, "DE")];
+
+    let report = run(&rule, &shape);
+
+    assert_eq!(
+        codes(&report),
+        vec![REGION_UNKNOWN.to_owned()],
+        "the regional row is refused, the currency-wide one is not judged"
+    );
+    assert_eq!(subjects(&report), vec!["DE".to_owned()]);
+    assert!(
+        rule.violation_for(None).is_none(),
+        "the authoring edge answers the same way"
+    );
+}
 #[test]
 fn the_rule_names_the_instruction_it_implements() {
     assert_eq!(declared(&[]).name(), "inst-tx-region");

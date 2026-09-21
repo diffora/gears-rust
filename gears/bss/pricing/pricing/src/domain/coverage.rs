@@ -392,7 +392,7 @@ impl CoverageReport {
     /// The currency-wide key `entry` falls back to, and from when — if it does.
     ///
     /// A buyer in a region is sold the region's own price where it has one and the
-    /// currency's `global` price where it does not
+    /// currency-wide price where it does not
     /// ([`market_resolution`](crate::domain::market_resolution)). So an override
     /// whose coverage **ends** does not leave a void: it changes what its buyers
     /// pay, at that instant, without any act. That is the regional promotion
@@ -400,16 +400,15 @@ impl CoverageReport {
     /// price silently — which is why the report says it. The fallback is legal;
     /// its invisibility would not be.
     ///
-    /// `None` for the `global` key (nothing stands behind it), for an override
-    /// whose coverage never ends (it never falls back), and for an override with
-    /// no `global` key of its line in this report — whose ending is the trailing
-    /// void it always was, and is not dressed here as anything else.
+    /// `None` for the currency-wide key (nothing stands behind it), for an
+    /// override whose coverage never ends (it never falls back), and for an
+    /// override with no currency-wide key of its line in this report — whose
+    /// ending is the trailing void it always was, and is not dressed here as
+    /// anything else.
     #[must_use]
     pub fn fallback_of(&self, entry: &KeyCoverage) -> Option<CoverageFallback> {
-        use crate::domain::market_resolution::is_currency_wide;
-
         let key = entry.scope_key();
-        if is_currency_wide(key.region()) {
+        if key.is_currency_wide() {
             return None;
         }
         let from = match entry.coverage_end() {
@@ -423,7 +422,7 @@ impl CoverageReport {
             .find(|other| {
                 other.line() == key.line()
                     && other.currency() == key.currency()
-                    && is_currency_wide(other.region())
+                    && other.is_currency_wide()
             })
             .map(|to| CoverageFallback {
                 to: to.clone(),
@@ -555,7 +554,7 @@ pub fn check_shape(shape: &PlanShape) -> CoverageReport {
 pub fn longest_cycle_sold(
     shape: &PlanShape,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Option<time::Duration> {
     longest_cycle_sold_on(
         shape.rows.iter().map(|record| &record.scope_key),
@@ -585,17 +584,17 @@ pub fn longest_cycle_sold_on<'a>(
     keys: impl IntoIterator<Item = &'a MarketPriceScopeKey>,
     frequency: Option<Frequency>,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Option<time::Duration> {
     // The recurring rows a buyer on `(currency, region)` can be sold: the
     // region's own and the currency-wide one behind it. Matching the exact region
-    // alone would answer "sells nothing recurring" for every region a `global`
-    // price serves, and a zero margin there is the horizon check skipped.
+    // alone would answer "sells nothing recurring" for every region the
+    // currency-wide price serves, and a zero margin there is the horizon check
+    // skipped.
     let sells_recurring = keys.into_iter().any(|key| {
         key.charge_kind() == ChargeKind::Recurring
             && key.currency() == currency
-            && (key.region() == region
-                || crate::domain::market_resolution::is_currency_wide(key.region()))
+            && (key.region() == region || key.is_currency_wide())
     });
     if !sells_recurring {
         return Some(time::Duration::ZERO);

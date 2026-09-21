@@ -105,11 +105,30 @@ fn market(
     market: &str,
     money: MarketPriceTerms,
 ) -> MarketPriceVersion {
+    market_on(line, code, Some(market), money)
+}
+
+/// [`market`] over the whole region axis: `None` is the currency-wide market —
+/// the price every region without a row of its own is sold (D-381).
+fn everywhere(line: &ChargeLineVersion, code: &str, money: MarketPriceTerms) -> MarketPriceVersion {
+    market_on(line, code, None, money)
+}
+
+fn market_on(
+    line: &ChargeLineVersion,
+    code: &str,
+    market: Option<&str>,
+    money: MarketPriceTerms,
+) -> MarketPriceVersion {
     MarketPriceVersion {
         market_price_id: Uuid::from_u128(line.charge_line_id.as_u128() + 0x200),
         price_id: Uuid::from_u128(line.charge_line_id.as_u128() + 0x300),
         line_version_id: line.line_version_id,
-        scope_key: MarketPriceScopeKey::new(line.scope_key.clone(), currency(code), region(market)),
+        scope_key: MarketPriceScopeKey::on_market(
+            line.scope_key.clone(),
+            currency(code),
+            market.map(region),
+        ),
         money,
     }
 }
@@ -453,8 +472,8 @@ fn a_plan_priced_only_currency_wide_is_complete() {
     let report = completeness_of(
         (a.clone(), b.clone()),
         vec![
-            market(&a, "eur", "global", priced_flat()),
-            market(&b, "eur", "global", priced_flat()),
+            everywhere(&a, "eur", priced_flat()),
+            everywhere(&b, "eur", priced_flat()),
         ],
     );
     assert!(report.is_publishable(), "{report:?}");
@@ -468,7 +487,7 @@ fn a_line_with_only_an_override_beside_a_currency_wide_sibling_owes_the_currency
     let report = completeness_of(
         (a.clone(), b.clone()),
         vec![
-            market(&a, "eur", "global", priced_flat()),
+            everywhere(&a, "eur", priced_flat()),
             market(&b, "eur", "DE", priced_flat()),
         ],
     );
@@ -479,7 +498,7 @@ fn a_line_with_only_an_override_beside_a_currency_wide_sibling_owes_the_currency
         "it is B that owes: {missing}"
     );
     assert!(
-        missing.ends_with("|EUR|global"),
+        missing.ends_with("|EUR|none"),
         "and what it owes is the currency-wide price: {missing}"
     );
 }
@@ -491,9 +510,9 @@ fn an_override_on_one_line_obliges_no_sibling() {
     let report = completeness_of(
         (a.clone(), b.clone()),
         vec![
-            market(&a, "eur", "global", priced_flat()),
+            everywhere(&a, "eur", priced_flat()),
             market(&a, "eur", "DE", priced_flat()),
-            market(&b, "eur", "global", priced_flat()),
+            everywhere(&b, "eur", priced_flat()),
         ],
     );
     assert!(report.is_publishable(), "{report:?}");
@@ -524,8 +543,8 @@ fn one_currency_sold_everywhere_leaves_another_per_pair() {
     let report = completeness_of(
         (a.clone(), b.clone()),
         vec![
-            market(&a, "eur", "global", priced_flat()),
-            market(&b, "eur", "global", priced_flat()),
+            everywhere(&a, "eur", priced_flat()),
+            everywhere(&b, "eur", priced_flat()),
             market(&a, "usd", "US", priced_flat()),
         ],
     );

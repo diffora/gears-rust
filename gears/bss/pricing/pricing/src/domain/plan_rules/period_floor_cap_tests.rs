@@ -51,7 +51,13 @@ fn minor(units: i64) -> MinorAmount {
 /// A recurring base row, which is what puts a market into
 /// [`PlanShape::markets`].
 fn recurring(seed: u128, code: &str, market: &str) -> PriceRecord {
-    let scope_key = MarketPriceScopeKey::new(
+    recurring_on(seed, code, Some(market))
+}
+
+/// [`recurring`] over the whole region axis: `None` is the currency-wide market
+/// — the price every region without a row of its own is sold (D-381).
+fn recurring_on(seed: u128, code: &str, market: Option<&str>) -> PriceRecord {
+    let scope_key = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan(),
             PhaseId::new(Uuid::from_u128(TERMINAL)),
@@ -62,7 +68,7 @@ fn recurring(seed: u128, code: &str, market: &str) -> PriceRecord {
         )
         .expect("all_subscriptions pairs with cohort none"),
         currency(code),
-        region(market),
+        market.map(region),
     );
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(minor(2_500));
@@ -87,9 +93,19 @@ fn recurring(seed: u128, code: &str, market: &str) -> PriceRecord {
 }
 
 fn bound(code: &str, market: &str, floor: Option<i64>, cap: Option<i64>) -> PeriodFloorCap {
+    bound_on(code, Some(market), floor, cap)
+}
+
+/// [`bound`] over the whole region axis; `None` is the currency-wide market.
+fn bound_on(
+    code: &str,
+    market: Option<&str>,
+    floor: Option<i64>,
+    cap: Option<i64>,
+) -> PeriodFloorCap {
     PeriodFloorCap {
         currency: currency(code),
-        region: region(market),
+        region: market.map(region),
         floor_minor: floor.map(minor),
         cap_minor: cap.map(minor),
     }
@@ -161,22 +177,27 @@ fn a_bound_on_a_market_the_plan_does_not_sell_is_refused() {
 #[test]
 fn a_bound_on_a_region_the_currency_wide_price_serves_has_a_market() {
     let mut subject = shape(vec![bound("eur", "FR", Some(50_000), None)]);
-    subject.rows = vec![recurring(0x01, "eur", "global")];
+    subject.rows = vec![recurring_on(0x01, "eur", None)];
     let report = report_of(&PeriodFloorCapMarketSold, &subject);
     assert!(report.is_publishable(), "{report:?}");
 }
 
-/// The fallback runs one way: a bound on `global` is not sold by a plan that
-/// prices `DE` alone, and another currency's `global` price excuses nothing.
+/// The fallback runs one way: a bound on the currency-wide market is not sold
+/// by a plan that prices `DE` alone, and another currency's currency-wide price
+/// excuses nothing.
+///
+/// A `DE` row serves one region; the currency-wide market is every region, so
+/// nothing a subscription is bound on ever lands on it and the bound is
+/// unreachable (D-381).
 #[test]
 fn the_currency_wide_price_is_not_reached_from_a_region_or_another_currency() {
     let mut subject = shape(vec![
-        bound("eur", "global", Some(50_000), None),
+        bound_on("eur", None, Some(50_000), None),
         bound("usd", "FR", Some(50_000), None),
     ]);
     subject.rows = vec![
         recurring(0x01, "eur", "DE"),
-        recurring(0x02, "gbp", "global"),
+        recurring_on(0x02, "gbp", None),
     ];
     let report = report_of(&PeriodFloorCapMarketSold, &subject);
     assert_eq!(

@@ -134,8 +134,9 @@ impl ContractLockSet {
 pub struct Boundary {
     /// ISO currency the subscription is frozen on.
     pub currency: String,
-    /// The region axis of its canonical scope key.
-    pub region: String,
+    /// The region axis of its canonical scope key; `None` is the currency-wide
+    /// market (D-381).
+    pub region: Option<String>,
     /// Its billing frequency.
     pub frequency: String,
 }

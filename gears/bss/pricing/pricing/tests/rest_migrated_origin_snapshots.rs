@@ -72,7 +72,7 @@ fn before_the_window() -> OffsetDateTime {
 fn seeded_key() -> FrozenKey {
     FrozenKey {
         currency: "EUR".to_owned(),
-        region: "eu".to_owned(),
+        region: Some("eu".to_owned()),
     }
 }
 
@@ -225,7 +225,7 @@ async fn a_key_the_plan_does_not_publish_fails_closed() {
     let mut request = synthesis_request(Uuid::now_v7(), plan_id, covered_at());
     request.keys = vec![FrozenKey {
         currency: "JPY".to_owned(),
-        region: "apac".to_owned(),
+        region: Some("apac".to_owned()),
     }];
 
     // **The key, not merely an `Err`.** `synthesize` refuses on this path for
@@ -265,7 +265,7 @@ async fn one_uncovered_key_refuses_the_whole_snapshot() {
         seeded_key(),
         FrozenKey {
             currency: "JPY".to_owned(),
-            region: "apac".to_owned(),
+            region: Some("apac".to_owned()),
         },
     ];
 
@@ -989,7 +989,7 @@ async fn a_period_bound_is_materialized_into_the_frozen_payload() {
             seeded.version,
             vec![PeriodFloorCap {
                 currency: CurrencyCode::new("EUR").expect("three letters"),
-                region: Region::new("eu").expect("non-blank"),
+                region: Some(Region::new("eu").expect("non-blank")),
                 floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
                 cap_minor: None,
             }],

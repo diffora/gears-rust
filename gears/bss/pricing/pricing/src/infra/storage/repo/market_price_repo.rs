@@ -9,7 +9,7 @@ use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureInsertExt
 use uuid::Uuid;
 
 use crate::domain::money::CurrencyCode;
-use crate::domain::scope_key::Region;
+use crate::domain::scope_key::{Region, region_column};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::market_price;
 
@@ -22,7 +22,7 @@ pub async fn find_or_create(
     tenant_id: Uuid,
     charge_line_id: Uuid,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Result<Uuid, RepoError> {
     if let Some(existing) = find(runner, scope, tenant_id, charge_line_id, currency, region).await?
     {
@@ -34,7 +34,9 @@ pub async fn find_or_create(
         market_price_id: Set(market_price_id),
         charge_line_id: Set(charge_line_id),
         currency: Set(currency.as_str().to_owned()),
-        region: Set(region.as_str().to_owned()),
+        // `''` is the currency-wide market (D-381) — unauthorable as a region,
+        // so the column means one thing.
+        region: Set(region_column(region).to_owned()),
     };
     let insert = market_price::Entity::insert(row.clone())
         .secure()
@@ -85,7 +87,7 @@ pub async fn find_by_line_market(
     tenant_id: Uuid,
     charge_line_id: Uuid,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Result<Option<market_price::Model>, RepoError> {
     find(runner, scope, tenant_id, charge_line_id, currency, region).await
 }
@@ -96,6 +98,11 @@ pub async fn find_by_line_market(
 /// to filter rows by region now resolves the markets first and filters rows by
 /// `market_price_id`. Bounded by the tenant's markets in those regions, never by
 /// its price rows.
+///
+/// **Currency-wide markets are never matched**, and that is right: the taxonomy
+/// holds no blank value, so `regions` can never carry one, and a currency-wide
+/// row references no region — it is not part of any region's reference count
+/// (D-381).
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -127,7 +134,7 @@ async fn find(
     tenant_id: Uuid,
     charge_line_id: Uuid,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Result<Option<market_price::Model>, RepoError> {
     market_price::Entity::find()
         .secure()
@@ -137,23 +144,28 @@ async fn find(
                 .add(market_price::Column::TenantId.eq(tenant_id))
                 .add(market_price::Column::ChargeLineId.eq(charge_line_id))
                 .add(market_price::Column::Currency.eq(currency.as_str()))
-                .add(market_price::Column::Region.eq(region.as_str())),
+                .add(market_price::Column::Region.eq(region_column(region))),
         )
         .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read pricing_market_price by scope: {e}")))
 }
 
+/// The market's derived id.
+///
+/// The currency is fixed-width (three letters), so concatenating it with the
+/// region stays injective even where the region is the empty currency-wide
+/// spelling (D-381).
 fn market_id(
     tenant_id: Uuid,
     charge_line_id: Uuid,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Uuid {
     let mut bytes = Vec::new();
     bytes.extend(tenant_id.as_bytes());
     bytes.extend(charge_line_id.as_bytes());
     bytes.extend(currency.as_str().as_bytes());
-    bytes.extend(region.as_str().as_bytes());
+    bytes.extend(region_column(region).as_bytes());
     Uuid::new_v5(&MARKET_NS, &bytes)
 }

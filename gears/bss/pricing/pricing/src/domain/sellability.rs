@@ -581,8 +581,10 @@ pub struct SellabilitySurface {
     pub at: OffsetDateTime,
     /// The currency half of the bound market.
     pub currency: CurrencyCode,
-    /// The region half of the bound market.
-    pub region: Region,
+    /// The region half of the bound market; `None` is the currency-wide
+    /// market — a buyer with no territory, quoted the price every region
+    /// without a row of its own is sold (D-381).
+    pub region: Option<Region>,
     /// The version the answer was read from, when one carries the plan.
     pub catalog_version: Option<CatalogVersion>,
     /// One answer per member of [`Predicate::PLAN_LEVEL`], in that order.
@@ -616,7 +618,7 @@ impl SellabilitySurface {
         facts: &SellabilityFacts,
         at: OffsetDateTime,
         currency: &CurrencyCode,
-        region: &Region,
+        region: Option<&Region>,
         registry_permission: PredicateAnswer,
     ) -> Self {
         let pinned = match facts {
@@ -626,7 +628,7 @@ impl SellabilitySurface {
                     plan_id: *plan_id,
                     at,
                     currency: currency.clone(),
-                    region: region.clone(),
+                    region: region.cloned(),
                     catalog_version: None,
                     plan_answers: Predicate::PLAN_LEVEL
                         .iter()
@@ -673,7 +675,7 @@ impl SellabilitySurface {
             plan_id: pinned.plan_id,
             at,
             currency: currency.clone(),
-            region: region.clone(),
+            region: region.cloned(),
             catalog_version: Some(pinned.catalog_version),
             plan_answers: Predicate::PLAN_LEVEL
                 .iter()
@@ -756,12 +758,12 @@ impl SellabilitySurface {
 fn gate_input_keys(
     pinned: &PinnedFacts,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
     at: OffsetDateTime,
 ) -> Vec<(MarketPriceScopeKey, Option<MarketPriceScopeKey>)> {
     // **Region first, per line; eligibility after.** A line is a charge *in one
     // eligibility class*, which is the unit the completeness rules oblige a
-    // `global` price of — so each line resolves its own region, and W3's
+    // currency-wide price of — so each line resolves its own region, and W3's
     // most-specific-wins then ranks the resolved lines of one sale exactly as it
     // always did. Ranking eligibility first would compare rows of different
     // regions as siblings, which `is_sibling_of` refuses for a reason.
@@ -796,12 +798,12 @@ fn gate_input_keys(
         else {
             continue;
         };
-        let falls_back_to = (!market_resolution::is_currency_wide(resolved.region()))
+        let falls_back_to = resolved
+            .region()
+            .is_some()
             .then(|| {
                 some().find(|key| {
-                    key.line() == line
-                        && key.currency() == currency
-                        && market_resolution::is_currency_wide(key.region())
+                    key.line() == line && key.currency() == currency && key.is_currency_wide()
                 })
             })
             .flatten()

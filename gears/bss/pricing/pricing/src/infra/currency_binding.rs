@@ -41,7 +41,7 @@ use crate::domain::currency_binding::{AddonCoverage, Market};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
-use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::scope_key::{PriceEligibility, region_from_column};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{plan, price};
 use crate::infra::storage::repo::plan_repo;
@@ -144,7 +144,8 @@ pub async fn addon_coverage(
                 graph.market.currency
             ))
         })?;
-        let region = Region::new(&graph.market.region).map_err(|e| {
+        // `''` is the currency-wide market (D-381), not a corrupt row.
+        let region = region_from_column(&graph.market.region).map_err(|e| {
             RepoError::CorruptRow(format!(
                 "pricing_market_price.region `{}`: {e}",
                 graph.market.region

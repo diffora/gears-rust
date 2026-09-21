@@ -500,6 +500,7 @@ TABLE pricing_market_price
   COLUMN region TEXT NOT NULL DEFAULT - PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   CONSTRAINT chk_pricing_market_price_region_no_separator CHECK (region NOT LIKE '%|%')
+  CONSTRAINT chk_pricing_market_price_region_not_absent_token CHECK (region <> 'none')
   CONSTRAINT fk_pricing_market_price_line FOREIGN KEY (tenant_id, charge_line_id)
   CONSTRAINT uq_pricing_market_price_line UNIQUE (tenant_id, market_price_id, charge_line_id)
   CONSTRAINT uq_pricing_market_price_scope UNIQUE (tenant_id, charge_line_id, currency, region)
@@ -644,6 +645,7 @@ TABLE pricing_plan_period_floor_cap
   CONSTRAINT chk_pricing_plan_period_floor_cap_floor_positive CHECK (floor_minor IS NULL OR floor_minor > 0)
   CONSTRAINT chk_pricing_plan_period_floor_cap_ordered CHECK (floor_minor IS NULL OR cap_minor IS NULL OR floor_minor <= cap_minor)
   CONSTRAINT chk_pricing_plan_period_floor_cap_present CHECK (floor_minor IS NOT NULL OR cap_minor IS NOT NULL)
+  CONSTRAINT chk_pricing_plan_period_floor_cap_region_not_absent_token CHECK (region <> 'none')
   CONSTRAINT fk_pricing_plan_period_floor_cap_revision FOREIGN KEY (plan_id, plan_revision)
   FK plan_id -> pricing_plan.plan_id
   FK plan_revision -> pricing_plan.revision

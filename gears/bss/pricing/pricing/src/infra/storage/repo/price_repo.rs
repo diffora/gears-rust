@@ -137,7 +137,7 @@ use crate::domain::projection::PROJECTED_ROW_STATES;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
-    PlanId, PriceEligibility, PriceOverlay, Region, SkuId,
+    PlanId, PriceEligibility, PriceOverlay, SkuId, region_column, region_from_column,
 };
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
@@ -3292,7 +3292,8 @@ pub async fn load_published_for_selector(
             market_filter = market_filter.add(market_price::Column::Currency.eq(currency.as_str()));
         }
         if let Some(region) = selector.region.as_ref() {
-            market_filter = market_filter.add(market_price::Column::Region.eq(region.as_str()));
+            market_filter =
+                market_filter.add(market_price::Column::Region.eq(region_column(Some(region))));
         }
         if let Some(ids) = line_ids.as_ref() {
             market_filter =
@@ -5498,10 +5499,11 @@ fn read_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> 
     let market = &graph.market;
     let currency = CurrencyCode::new(&market.currency)
         .map_err(|e| RepoError::CorruptRow(format!("pricing_market_price.currency: {e}")))?;
-    let region = Region::new(&market.region)
+    // `''` is the currency-wide market (D-381), not a corrupt row.
+    let region = region_from_column(&market.region)
         .map_err(|e| RepoError::CorruptRow(format!("pricing_market_price.region: {e}")))?;
     read_line_key(&graph.line, &graph.version)
-        .map(|logical| MarketPriceScopeKey::new(logical, currency, region))
+        .map(|logical| MarketPriceScopeKey::on_market(logical, currency, region))
 }
 
 /// The eight structural axes, read off the line and the version that carries its

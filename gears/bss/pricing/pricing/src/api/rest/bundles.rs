@@ -68,10 +68,11 @@ use crate::domain::bundle::{
     Absorber, InvoiceItemization, Party, PartyShare, PriceBasis, RevShareGroup,
 };
 use crate::domain::bundle_rules::check_basis_declared;
+use crate::domain::currency_binding::Market;
 use crate::domain::error::DomainError;
 use crate::domain::materiality::{self, ChangeSet, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
-use crate::domain::scope_key::{PlanId, Region};
+use crate::domain::scope_key::PlanId;
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{BundleComponentDraft, CompositionDraft, NewBundle, bundle_repo};
 use time::OffsetDateTime;
@@ -194,8 +195,10 @@ pub struct PublishBundleRequest {
 pub struct MarketRequest {
     /// ISO 4217.
     pub currency: String,
-    /// The region axis value.
-    pub region: String,
+    /// The region axis value. Omit it for the currency-wide market — the price
+    /// every region without a row of its own is sold (D-381).
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 /// What a created bundle answers with.
@@ -346,11 +349,16 @@ fn draft_of(request: &CompositionRequest) -> Result<CompositionDraft, DomainErro
     })
 }
 
-fn markets_of(request: &PublishBundleRequest) -> Result<Vec<(CurrencyCode, Region)>, DomainError> {
+fn markets_of(request: &PublishBundleRequest) -> Result<Vec<Market>, DomainError> {
     request
         .markets
         .iter()
-        .map(|m| Ok((CurrencyCode::new(&m.currency)?, Region::new(&m.region)?)))
+        .map(|m| {
+            Ok((
+                CurrencyCode::new(&m.currency)?,
+                crate::api::rest::prices::region_from_wire(m.region.as_deref())?,
+            ))
+        })
         .collect()
 }
 

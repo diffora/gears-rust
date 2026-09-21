@@ -127,13 +127,13 @@ fn shape_only() -> PlanSubjectDelta {
         period_floor_caps: vec![
             PeriodFloorCap {
                 currency: CurrencyCode::new("USD").expect("three letters"),
-                region: Region::new("us").expect("non-blank"),
+                region: Some(Region::new("us").expect("non-blank")),
                 floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
                 cap_minor: None,
             },
             PeriodFloorCap {
                 currency: CurrencyCode::new("EUR").expect("three letters"),
-                region: Region::new("de").expect("non-blank"),
+                region: Some(Region::new("de").expect("non-blank")),
                 floor_minor: None,
                 cap_minor: Some(MinorAmount::new(900_000).expect("non-negative")),
             },

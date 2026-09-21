@@ -323,7 +323,7 @@ fn grant_set(flags: &[(&str, bool)], quotas: &[(&str, i64)]) -> GrantSet {
 fn bound(currency: &str, region: &str, floor: Option<i64>, cap: Option<i64>) -> PeriodFloorCap {
     PeriodFloorCap {
         currency: CurrencyCode::new(currency).expect("a three-letter code"),
-        region: Region::new(region).expect("a non-blank region"),
+        region: Some(Region::new(region).expect("a non-blank region")),
         floor_minor: floor.map(|m| MinorAmount::new(m).expect("a non-negative amount")),
         cap_minor: cap.map(|m| MinorAmount::new(m).expect("a non-negative amount")),
     }
@@ -717,7 +717,7 @@ fn period_floor_cap_mutators() -> Vec<Mutator> {
                 CurrencyCode::new("GBP").expect("a three-letter code");
         }),
         ("shape.period_floor_caps[0].region", |s| {
-            s.period_floor_caps[0].region = Region::new("ca").expect("a non-blank region");
+            s.period_floor_caps[0].region = Some(Region::new("ca").expect("a non-blank region"));
         }),
         ("shape.period_floor_caps: added", |s| {
             s.period_floor_caps
@@ -1856,10 +1856,14 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 // The same generation also moves the ladder: tier bounds left the line frame and
 // are framed beside their rates on each market. No v22 pin was ever taken against
 // a deployment between the two, so the vector is re-frozen under the one bump.
+//
+// v23 re-frames the region axis: `''` is the currency-wide market, which D-379
+// had spelled `global`. No v23 pin was ever taken against a `global` row, so the
+// vector is re-frozen under this bump as under the last.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "d8ae8744c38e5e46a64e02abefce68e2be4752c0cc64cc90cc72af45ac38bfdc"
+        "28ad15a17f75ea1d48729e6d35ae50d43d8ba3b4c3eeff4e897368986984406e"
     );
 }
 
@@ -2030,11 +2034,33 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v22\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v23\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,
         b"VHP-BSS-PRICING-THRESHOLD-PIN-v2\x1f"
+    );
+}
+
+#[test]
+fn a_regional_and_a_currency_wide_row_of_one_line_pin_differently() {
+    // D-381: the currency-wide market is the absent region, framed `''` as the
+    // tenth axis frames its own absence. A row that overrides one region is a
+    // different subject from the row every region falls back to, and a pin that
+    // could not tell them apart would let an approve of one satisfy the other.
+    let regional = base();
+    let mut wide = base();
+    for row in &mut wide.rows {
+        row.scope_key = MarketPriceScopeKey::currency_wide(
+            row.scope_key.line().clone(),
+            row.scope_key.currency().clone(),
+        );
+    }
+
+    assert_ne!(
+        hex32(&content_hash(&regional)),
+        hex32(&content_hash(&wide)),
+        "the region axis is framed, so absence and a value are two preimages"
     );
 }
 

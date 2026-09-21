@@ -712,8 +712,8 @@ pub struct PinnedMarketPriceView {
     pub line_version_id: Uuid,
     /// ISO 4217.
     pub currency: String,
-    /// The market's region.
-    pub region: String,
+    /// The market's region, `null` for the currency-wide price (D-381).
+    pub region: Option<String>,
     /// The amounts and rates.
     pub money: crate::api::rest::charge_lines::MoneyView,
 }
@@ -725,7 +725,7 @@ impl From<&crate::domain::market_price::MarketPriceVersion> for PinnedMarketPric
             price_id: price.price_id,
             line_version_id: price.line_version_id,
             currency: price.scope_key.currency().as_str().to_owned(),
-            region: price.scope_key.region().as_str().to_owned(),
+            region: price.scope_key.region().map(|r| r.as_str().to_owned()),
             money: crate::api::rest::charge_lines::money_view_of(&price.money),
         }
     }

@@ -54,6 +54,15 @@ fn regions(values: &[&str]) -> BTreeSet<Region> {
         .collect()
 }
 
+/// A change set's reach, where every row states a region.
+fn reach(values: &[&str]) -> BTreeSet<Option<Region>> {
+    values.iter().map(|value| Some(region(value))).collect()
+}
+
+fn region(value: &str) -> Region {
+    Region::new(value).expect("a non-blank region")
+}
+
 /// A request every one of the five checks passes.
 ///
 /// The world in which each refusal below is a fact about the guard it names.
@@ -61,7 +70,7 @@ fn regions(values: &[&str]) -> BTreeSet<Region> {
 /// `fn authorize_decision(_) -> Err(whatever)`.
 struct World {
     approver_regions: BTreeSet<Region>,
-    change_set_regions: BTreeSet<Region>,
+    change_set_regions: BTreeSet<Option<Region>>,
     pinned: Vec<u8>,
 }
 
@@ -69,7 +78,7 @@ impl World {
     fn new() -> Self {
         Self {
             approver_regions: regions(&["EU", "US"]),
-            change_set_regions: regions(&["EU"]),
+            change_set_regions: reach(&["EU"]),
             pinned: pinned32().to_vec(),
         }
     }
@@ -219,7 +228,7 @@ fn a_foreign_withdraw_is_refused_unless_the_caller_holds_catalog_authority() {
 fn an_approver_whose_grant_misses_a_region_of_the_change_set_is_refused() {
     let mut world = World::new();
     world.approver_regions = regions(&["EU"]);
-    world.change_set_regions = regions(&["EU", "US"]);
+    world.change_set_regions = reach(&["EU", "US"]);
     assert_eq!(
         authorize_decision(&world.valid()),
         Err(DecisionRefusal::OutOfScope)
@@ -232,7 +241,7 @@ fn an_approver_whose_grant_misses_a_region_of_the_change_set_is_refused() {
 fn covering_some_of_the_change_set_is_not_covering_it() {
     let mut world = World::new();
     world.approver_regions = regions(&["EU", "APAC"]);
-    world.change_set_regions = regions(&["EU", "APAC", "US"]);
+    world.change_set_regions = reach(&["EU", "APAC", "US"]);
     assert_eq!(
         authorize_decision(&world.valid()),
         Err(DecisionRefusal::OutOfScope)
@@ -244,7 +253,7 @@ fn covering_some_of_the_change_set_is_not_covering_it() {
 fn a_wider_grant_covers_a_narrower_change_set() {
     let mut world = World::new();
     world.approver_regions = regions(&["EU", "US", "APAC"]);
-    world.change_set_regions = regions(&["EU"]);
+    world.change_set_regions = reach(&["EU"]);
     assert_eq!(authorize_decision(&world.valid()), Ok(()));
 }
 
@@ -262,12 +271,41 @@ fn a_change_set_touching_no_region_is_covered_by_any_grant() {
     assert_eq!(authorize_decision(&world.valid()), Ok(()));
 }
 
+/// A currency-wide row is reached by **every** region, so no finite grant
+/// covers it (D-381).
+///
+/// `RegionGrant::Explicit` is a set of regions and the currency-wide market is
+/// not one of them. The empty change set above is covered by every grant because
+/// it reaches nothing; a change set carrying `None` reaches everything, which is
+/// the opposite, and the two must not be one answer.
+#[test]
+fn a_currency_wide_row_is_reached_by_every_region_so_a_finite_grant_never_covers_it() {
+    let mut world = World::new();
+    world.approver_regions = regions(&["DE"]);
+
+    world.change_set_regions = reach(&["DE"]);
+    assert_eq!(authorize_decision(&world.valid()), Ok(()));
+
+    world.change_set_regions = BTreeSet::from([None]);
+    assert_eq!(
+        authorize_decision(&world.valid()),
+        Err(DecisionRefusal::OutOfScope)
+    );
+
+    // And a grant that covers every declared region still does not cover it.
+    world.approver_regions = regions(&["DE", "FR", "US"]);
+    assert_eq!(
+        authorize_decision(&world.valid()),
+        Err(DecisionRefusal::OutOfScope)
+    );
+}
+
 /// A withdraw is exempt: it decides nothing about the content.
 #[test]
 fn a_withdraw_is_not_scope_checked() {
     let mut world = World::new();
     world.approver_regions = BTreeSet::new();
-    world.change_set_regions = regions(&["US"]);
+    world.change_set_regions = reach(&["US"]);
     let mut request = world.valid();
     request.decision = DecisionBy::Void(None);
     assert_eq!(authorize_decision(&request), Ok(()));

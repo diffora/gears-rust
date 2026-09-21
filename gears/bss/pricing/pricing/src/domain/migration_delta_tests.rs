@@ -17,7 +17,7 @@ use crate::domain::scope_key::PhaseId;
 fn boundary(currency: &str, region: &str, frequency: &str) -> Boundary {
     Boundary {
         currency: currency.to_owned(),
-        region: region.to_owned(),
+        region: Some(region.to_owned()),
         frequency: frequency.to_owned(),
     }
 }

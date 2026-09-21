@@ -397,7 +397,13 @@ async fn publish_plan(h: &Harness, plan: PlanId, revision: u64) {
 }
 
 fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> MarketPriceScopeKey {
-    MarketPriceScopeKey::new(
+    scope_key_on(plan, phase, Some(region))
+}
+
+/// [`scope_key`] over the whole region axis: `None` is the currency-wide market
+/// — the price every region without a row of its own is sold (D-381).
+fn scope_key_on(plan: PlanId, phase: Uuid, region: Option<&str>) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan,
             PhaseId::new(phase),
@@ -408,7 +414,7 @@ fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> MarketPriceScopeKey {
         )
         .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
-        Region::new(region).expect("region"),
+        region.map(|region| Region::new(region).expect("region")),
     )
 }
 
@@ -440,9 +446,21 @@ async fn seed_published_row(
     region: &str,
     amount_minor: i64,
 ) -> Uuid {
+    seed_published_row_on(h, plan, phase, Some(region), amount_minor).await
+}
+
+/// [`seed_published_row`] over the whole region axis; `None` is the
+/// currency-wide market.
+async fn seed_published_row_on(
+    h: &Harness,
+    plan: PlanId,
+    phase: Uuid,
+    region: Option<&str>,
+    amount_minor: i64,
+) -> Uuid {
     seed_published_content(
         h,
-        scope_key(plan, phase, region),
+        scope_key_on(plan, phase, region),
         publishable_row(amount_minor),
     )
     .await
@@ -1318,27 +1336,27 @@ async fn a_selector_that_does_not_name_the_eligibility_axis_excludes_grandfather
 
 /// **A run's `region` selects the exact key, never the rows that serve it.**
 ///
-/// A currency's `global` price is what a `fr` buyer pays, and what a `de` buyer
-/// pays once `de`'s override stops — but a run on `region = de` means *the `de`
-/// price*. Reaching for the `global` row because it happens to serve `de` would
-/// turn "+10 % in Germany" into "+10 % everywhere", silently. So `de` selects the
-/// override alone, `global` is how the currency-wide price is repriced, and a
-/// region with no price of its own selects nothing — which the run reports as
-/// `RUN_SELECTOR_EMPTY` rather than quietly widening.
+/// The currency-wide price is what a `fr` buyer pays, and what a `de` buyer pays
+/// once `de`'s override stops — but a run on `region = de` means *the `de`
+/// price*. Reaching for the currency-wide row because it happens to serve `de`
+/// would turn "+10 % in Germany" into "+10 % everywhere", silently. So `de`
+/// selects the override alone, and a region with no price of its own selects
+/// nothing — which the run reports as `RUN_SELECTOR_EMPTY` rather than quietly
+/// widening.
+///
+/// **The currency-wide row is selected by no `region` at all** (D-381): it
+/// states none, so no value of this selector names it. The selector that does
+/// arrives with `currency_wide` in the wire contract.
 #[tokio::test]
 async fn a_runs_region_selects_the_exact_key_and_never_the_currency_wide_row_serving_it() {
     let h = harness().await;
     let plan = Uuid::now_v7();
     let phase = Uuid::now_v7();
     seed_plan(&h, plan, phase).await;
-    let currency_wide = seed_published_row(&h, PlanId::new(plan), phase, "global", 9_900).await;
+    let currency_wide = seed_published_row_on(&h, PlanId::new(plan), phase, None, 9_900).await;
     let german = seed_published_row(&h, PlanId::new(plan), phase, "de", 8_900).await;
 
-    for (region, expected) in [
-        ("de", vec![german]),
-        ("global", vec![currency_wide]),
-        ("fr", Vec::new()),
-    ] {
+    for (region, expected) in [("de", vec![german]), ("fr", Vec::new())] {
         let selector = bss_pricing::domain::repricing::RunSelector {
             plan_id: Some(PlanId::new(plan)),
             region: Some(
@@ -1354,6 +1372,10 @@ async fn a_runs_region_selects_the_exact_key_and_never_the_currency_wide_row_ser
         )
         .await
         .expect("expand the selector");
+        assert!(
+            !selected.contains(&currency_wide),
+            "no region names the currency-wide row: region = {region}"
+        );
         assert_eq!(selected, expected, "region = {region}");
     }
 }

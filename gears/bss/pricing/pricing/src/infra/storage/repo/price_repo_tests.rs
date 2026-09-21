@@ -46,6 +46,7 @@ use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey,
     MarketPriceScopeKeyParts, Meter, PhaseId, PlanId, PriceEligibility, Region, SkuId,
+    region_column,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{charge_line, charge_line_version, market_price, price};
@@ -123,7 +124,7 @@ fn row_of(key: &MarketPriceScopeKey) -> PriceGraph {
             market_price_id: uuid::Uuid::from_u128(0x_a1),
             charge_line_id: uuid::Uuid::from_u128(0xc3),
             currency: key.currency().as_str().to_owned(),
-            region: key.region().as_str().to_owned(),
+            region: region_column(key.region()).to_owned(),
         },
         line: charge_line::Model {
             tenant_id: uuid::Uuid::from_u128(0x_7e),
@@ -231,7 +232,7 @@ fn axis_cases() -> Vec<AxisCase> {
     // where that claim is checked rather than assumed.
     assert_eq!(base.line.plan_id, plan_id.get());
     assert_eq!(base.market.currency, currency.as_str());
-    assert_eq!(base.market.region, region.as_str());
+    assert_eq!(base.market.region, region_column(region));
     assert_eq!(base.line.price_overlay, price_overlay.as_str());
     assert_eq!(base.line.phase, phase.get());
     assert_eq!(base.line.price_eligibility, price_eligibility.as_str());
@@ -581,7 +582,7 @@ fn an_unreadable_axis_names_the_row_it_could_not_read() {
     // wrapper that refused everything would satisfy both halves above.
     let row = row_of(&key);
     let loaded = to_scope_key(&row).expect("the fixture's own row must read back");
-    assert_eq!(loaded.region().as_str(), key.region().as_str());
+    assert_eq!(loaded.region(), key.region());
     // Not the ninth axis: `to_scope_key` reads the nil SKU shim for it until
     // Task 6a adds the column, so the axis a rehydration can be checked on here
     // is the tenth.

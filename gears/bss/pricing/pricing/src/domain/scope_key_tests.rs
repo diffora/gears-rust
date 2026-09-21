@@ -6,7 +6,7 @@ use super::{
     ABSENT_AXIS_TOKEN, COHORT_ELIGIBILITY_MISMATCH, ChargeKind, ChargeLineScopeKey, Cohort,
     DimensionKey, KEY_SEPARATOR, MarketPriceScopeKey, Meter, PhaseId, PlanId, PriceEligibility,
     PriceOverlay, Region, SkuId, USAGE_LINE_AXIS_MISMATCH, check_cohort_eligibility,
-    check_usage_line_axes,
+    check_usage_line_axes, region_column, region_from_column, render_region,
 };
 use crate::domain::error::DomainError;
 use crate::domain::instant::from_unix;
@@ -871,4 +871,81 @@ fn logical_axes_change_both_keys_market_axes_change_only_the_full_key() {
         MarketPriceScopeKey::new(base_line, usd(), Region::new("APAC").expect("region"));
     assert_eq!(other_region.line(), base.line());
     assert_ne!(other_region, base);
+}
+
+/// A plain recurring line, for the cases about the market axes alone.
+fn sample_line() -> ChargeLineScopeKey {
+    ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        sku(),
+    )
+    .expect("a plain recurring line")
+}
+
+#[test]
+fn a_currency_wide_key_renders_the_absent_token_in_the_region_segment() {
+    let key = MarketPriceScopeKey::currency_wide(
+        sample_line(),
+        CurrencyCode::new("EUR").expect("EUR is well-formed"),
+    );
+    let rendered = key.to_string();
+    let segments: Vec<&str> = rendered.split(KEY_SEPARATOR).collect();
+    assert_eq!(segments.len(), 10, "arity is fixed at ten (D-196)");
+    assert_eq!(segments[2], ABSENT_AXIS_TOKEN);
+    assert!(key.is_currency_wide());
+    assert_eq!(key.region(), None);
+}
+
+#[test]
+fn region_new_refuses_the_absent_token_like_every_axis_with_an_absent_form() {
+    let err = Region::new(ABSENT_AXIS_TOKEN).expect_err("the token is not a region");
+    match err {
+        DomainError::InvalidRequest(detail) => {
+            assert!(
+                detail.contains(ABSENT_AXIS_TOKEN),
+                "the refusal names the token: {detail}"
+            );
+        }
+        other => panic!("expected an invalid-request refusal, got {other}"),
+    }
+}
+
+#[test]
+fn the_column_spelling_round_trips_both_forms() {
+    let de = Region::new("DE").expect("DE is a region");
+    assert_eq!(region_column(Some(&de)), "DE");
+    assert_eq!(region_column(None), "");
+    assert_eq!(region_from_column("").expect("blank is absent"), None);
+    assert_eq!(
+        region_from_column("DE").expect("a stored region"),
+        Some(de.clone())
+    );
+    assert!(
+        region_from_column(ABSENT_AXIS_TOKEN).is_err(),
+        "a stored token is a lie about the row"
+    );
+    // The rendering's spelling is the other one, and the two do not overlap.
+    assert_eq!(render_region(Some(&de)), "DE");
+    assert_eq!(render_region(None), ABSENT_AXIS_TOKEN);
+}
+
+#[test]
+fn a_regional_and_a_currency_wide_key_of_one_line_are_two_markets_and_not_siblings() {
+    let line = sample_line();
+    let eur = CurrencyCode::new("EUR").expect("EUR is well-formed");
+    let de = MarketPriceScopeKey::new(
+        line.clone(),
+        eur.clone(),
+        Region::new("DE").expect("DE is a region"),
+    );
+    let wide = MarketPriceScopeKey::currency_wide(line, eur);
+    assert_ne!(de, wide);
+    assert!(
+        !de.is_sibling_of(&wide),
+        "currency and region stay in the sibling comparison"
+    );
 }

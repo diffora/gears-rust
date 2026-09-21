@@ -415,7 +415,7 @@ async fn a_consumer_pinned_before_a_cancel_still_reads_the_old_coverage() {
             &read_model_repo::sellability_facts(delta).expect("a payload this gear wrote"),
             at(5),
             &CurrencyCode::new("EUR").expect("three letters"),
-            &Region::new("eu").expect("a non-blank region"),
+            Some(&Region::new("eu").expect("a non-blank region")),
             // This case is about coverage, not about sale permission: the
             // registry is not read, and the gate says so rather than guessing.
             bss_pricing::domain::sellability::registry_unreadable(),

@@ -58,7 +58,7 @@ use crate::domain::price_record::PriceContent;
 use crate::domain::price_row::{BandTop, TierBand, model_kind_wire};
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, PhaseId, PlanId,
-    PriceEligibility, Region, SkuId,
+    PriceEligibility, SkuId,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::charge_line::{self, LineWrite, PlanTag};
@@ -320,8 +320,11 @@ pub struct PatchChargeLineRequest {
 pub struct CreateMarketPriceRequest {
     /// ISO 4217 currency of the market.
     pub currency: String,
-    /// The market's region; must be one the tenant declared.
-    pub region: String,
+    /// The market's region; when stated it must be one the tenant declared.
+    /// Omit it for the currency-wide price, the price every region without a
+    /// row of its own is sold (D-381).
+    #[serde(default)]
+    pub region: Option<String>,
     /// The amounts and rates.
     pub money: MoneyView,
     /// The market's tax and rounding policy.
@@ -355,8 +358,8 @@ pub struct MarketPriceView {
     pub charge_line_id: Uuid,
     /// The market's currency.
     pub currency: String,
-    /// The market's region.
-    pub region: String,
+    /// The market's region, `null` for the currency-wide price (D-381).
+    pub region: Option<String>,
     /// The amounts and rates.
     pub money: MoneyView,
     /// The market's policy.
@@ -377,7 +380,7 @@ impl From<&MarketPriceRecord> for MarketPriceView {
             line_version_id: found.line_version_id,
             charge_line_id: found.charge_line_id,
             currency: record.scope_key.currency().as_str().to_owned(),
-            region: record.scope_key.region().as_str().to_owned(),
+            region: record.scope_key.region().map(|r| r.as_str().to_owned()),
             money: MoneyView {
                 amount_minor: row.amount_minor.map(MinorAmount::get),
                 unit_rate_nano_minor: row.unit_rate.map(RateMinor::nano_minor),
@@ -944,7 +947,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Creates a `draft` monetary version for one currency and region of the line, \
              priced against exactly this line version. Answers `201` with a `Location` naming \
              the price row and an `ETag` carrying its own row version. An `Idempotency-Key` is \
-             required. The region must be one the tenant declared (`REGION_UNKNOWN`), and a \
+             required. The region, when stated, must be one the tenant declared \
+             (`REGION_UNKNOWN`); omitted, the price is the currency-wide one every region \
+             without a row of its own is sold. A \
              market that already holds a `draft` or `published` price is refused \
              `DUPLICATE_SCOPE_KEY`. On a `graduated` or `volume` line the market states its \
              whole ladder in `money.tiers`: every band's `from_qty`, `to_qty` (`null` on the \
@@ -1314,7 +1319,7 @@ async fn create_market_price(
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash = preconditions::request_digest(&(line_version_id, &request))?;
     let currency = CurrencyCode::new(&request.currency)?;
-    let region = Region::new(&request.region)?;
+    let region = crate::api::rest::prices::region_from_wire(request.region.as_deref())?;
     let now = OffsetDateTime::now_utc();
 
     let (key, content) = {
@@ -1342,7 +1347,7 @@ async fn create_market_price(
             charge_line::require_line_of_plan(&conn, &scope, tenant, plan_id, line_version_id)
                 .await?;
         let mut content = market_content(&line, &request.money, &request.market_policy)?;
-        let key = MarketPriceScopeKey::new(line.scope_key.clone(), currency, region);
+        let key = MarketPriceScopeKey::on_market(line.scope_key.clone(), currency, region);
         let sku_context = authoring_sku_context(
             &conn,
             state.catalog.as_ref(),

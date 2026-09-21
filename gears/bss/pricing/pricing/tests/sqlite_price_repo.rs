@@ -111,7 +111,10 @@ use uuid::Uuid;
 /// here and not on [`flat_content`]: a category on the shared content builder would
 /// have left that case passing while proving nothing.
 fn fixture_readiness() -> bss_pricing::domain::tax_display::RegionTaxReadiness {
-    readiness_for("EU", Some("standard"))
+    readiness_for(
+        Some(&Region::new("EU").expect("non-blank")),
+        Some("standard"),
+    )
 }
 
 /// One value for a whole test binary: these suites drive a repository or a
@@ -202,6 +205,15 @@ fn base_key(charge_kind: ChargeKind) -> MarketPriceScopeKey {
         .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
+    )
+}
+
+/// [`base_key`]'s currency-wide sibling: the same line and currency with **no
+/// region** — the price every region without a row of its own is sold (D-381).
+fn currency_wide_key(charge_kind: ChargeKind) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::currency_wide(
+        base_key(charge_kind).line().clone(),
+        CurrencyCode::new("USD").expect("three letters"),
     )
 }
 
@@ -2673,10 +2685,15 @@ async fn stored_row(
 }
 
 /// A readiness declaring one region's default category.
-fn readiness_for(region: &str, category: Option<&str>) -> RegionTaxReadiness {
+fn readiness_for(region: Option<&Region>, category: Option<&str>) -> RegionTaxReadiness {
+    // A currency-wide row names no region, so there is nothing for the map to
+    // declare and the lookup fails closed (D-381).
+    let Some(region) = region else {
+        return RegionTaxReadiness::new(std::collections::BTreeMap::new());
+    };
     RegionTaxReadiness::new(
         [(
-            region.to_owned(),
+            region.as_str().to_owned(),
             RegionReadiness {
                 tax_category: category.map(ToOwned::to_owned),
                 tax_rate_present: true,
@@ -2718,10 +2735,7 @@ async fn publish_freezes_the_effective_tax_category_from_the_readiness_it_judged
         tenant(),
         plan(),
         vec![(price_id, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::Recurring).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), Some("standard")),
     )
     .await
     .expect("publish");
@@ -2767,10 +2781,7 @@ async fn publish_freezes_the_rows_own_category_over_the_region_default() {
         tenant(),
         plan(),
         vec![(price_id, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::Recurring).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), Some("standard")),
     )
     .await
     .expect("publish");
@@ -2819,7 +2830,7 @@ async fn the_frozen_category_map_holds_every_published_row_and_no_draft() {
     let published = Uuid::from_u128(0xb_00d1);
     let superseded = Uuid::from_u128(0xb_00d2);
     let never_published = Uuid::from_u128(0xb_00d3);
-    let readiness = readiness_for(base_key(ChargeKind::Recurring).region().as_str(), None);
+    let readiness = readiness_for(base_key(ChargeKind::Recurring).region(), None);
 
     for (price_id, key) in [
         (published, base_key(ChargeKind::Recurring)),
@@ -5820,10 +5831,7 @@ async fn publish_freezes_the_tenant_rounding_default_onto_a_row_that_carries_non
         tenant(),
         plan(),
         vec![(first, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::Recurring).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), Some("standard")),
         "half_up/2",
     )
     .await
@@ -5875,10 +5883,7 @@ async fn publish_freezes_the_tenant_rounding_default_onto_a_row_that_carries_non
         tenant(),
         plan(),
         vec![(second, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::OneTime).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::OneTime).region(), Some("standard")),
         "half_even/2",
     )
     .await
@@ -5939,10 +5944,7 @@ async fn a_publish_that_resolves_no_rounding_policy_is_refused_rather_than_froze
         tenant(),
         plan(),
         vec![(price_id, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::Recurring).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), Some("standard")),
     )
     .await
     .expect_err("a row resolving no rounding policy cannot publish");
@@ -5992,10 +5994,7 @@ async fn the_same_set_publishes_once_the_tenant_default_resolves_it() {
         tenant(),
         plan(),
         vec![(price_id, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::Recurring).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), Some("standard")),
         "half_up/2",
     )
     .await
@@ -6042,7 +6041,7 @@ async fn a_publish_that_resolves_no_tax_category_is_refused_rather_than_frozen_a
         plan(),
         vec![(price_id, RowVersion::new(0))],
         // The region declares none, which is the fault.
-        &readiness_for(base_key(ChargeKind::Recurring).region().as_str(), None),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), None),
         "half_up/2",
     )
     .await
@@ -6092,10 +6091,7 @@ async fn the_same_set_publishes_once_the_region_declares_a_category() {
         tenant(),
         plan(),
         vec![(price_id, RowVersion::new(0))],
-        &readiness_for(
-            base_key(ChargeKind::Recurring).region().as_str(),
-            Some("standard"),
-        ),
+        &readiness_for(base_key(ChargeKind::Recurring).region(), Some("standard")),
         "half_up/2",
     )
     .await
@@ -6309,5 +6305,111 @@ async fn the_page_aggregate_counts_authoring_rows_and_lists_kinds_and_currencies
             .expect("aggregate nothing")
             .is_empty(),
         "an empty page asks the store nothing"
+    );
+}
+
+/// **The currency-wide market is a market of its own, found once and keyed by an
+/// absent region** (D-381).
+///
+/// Through the door rather than by raw SQL, because the claim is about
+/// `market_price_repo::find_or_create`'s identity and not about the column: a
+/// second call on one line and currency with no region answers the market the
+/// authored row already sits on, a region's own market on that line is a
+/// **second** id, and the stored key reads back as currency-wide. The column
+/// spelling is `''`, which `Region::new` refuses, so nothing authored can land
+/// there.
+#[tokio::test]
+async fn the_currency_wide_market_is_found_once_and_a_region_is_a_second_market() {
+    use bss_pricing::infra::storage::repo::market_price_repo;
+
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::allow_all();
+
+    let wide_row = Uuid::from_u128(0xb_5a1);
+    let regional_row = Uuid::from_u128(0xb_5a2);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            wide_row,
+            currency_wide_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect("author the currency-wide row");
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(
+            regional_row,
+            base_key(ChargeKind::Recurring),
+            flat_content(),
+        ),
+    )
+    .await
+    .expect("author the region's own row");
+
+    let wide_market = stored_row(&provider, &scope, wide_row)
+        .await
+        .market_price_id;
+    let regional_market = stored_row(&provider, &scope, regional_row)
+        .await
+        .market_price_id;
+    assert_ne!(
+        wide_market, regional_market,
+        "an override is a market of its own, not the same row"
+    );
+
+    // The door, asked again for the market the authored row already sits on.
+    let graph = stored_graph(&provider, &scope, wide_row).await;
+    let conn = provider.conn().expect("conn");
+    let found = market_price_repo::find_or_create(
+        &conn,
+        &scope,
+        tenant(),
+        graph.line.charge_line_id,
+        &CurrencyCode::new("USD").expect("three letters"),
+        None,
+    )
+    .await
+    .expect("find the currency-wide market again");
+    assert_eq!(
+        found, wide_market,
+        "one line and currency hold one currency-wide market"
+    );
+
+    assert_eq!(
+        graph.market.region, "",
+        "the column's spelling of the absent axis"
+    );
+    let read_back = repo
+        .find(&scope, tenant(), wide_row)
+        .await
+        .expect("read")
+        .expect("present");
+    assert!(
+        read_back.scope_key.is_currency_wide(),
+        "and the key reads back as the currency-wide market: {}",
+        read_back.scope_key
+    );
+    assert_eq!(read_back.scope_key.region(), None);
+
+    // `in_regions` never matches it: it references no region, so it is in no
+    // region's reference count.
+    let referenced = market_price_repo::in_regions(&conn, &scope, tenant(), &["EU".to_owned()])
+        .await
+        .expect("count the markets standing in EU");
+    let ids: Vec<Uuid> = referenced
+        .iter()
+        .map(|market| market.market_price_id)
+        .collect();
+    assert!(
+        ids.contains(&regional_market),
+        "the EU market references EU"
+    );
+    assert!(
+        !ids.contains(&wide_market),
+        "the currency-wide market references no region"
     );
 }

@@ -4133,7 +4133,7 @@ async fn a_period_bound_on_an_unsold_market_is_refused_by_the_publish_path() {
             current.row_version,
             vec![bss_pricing::domain::plan_shape::PeriodFloorCap {
                 currency: CurrencyCode::new("EUR").expect("three letters"),
-                region: Region::new("us").expect("a non-blank region"),
+                region: Some(Region::new("us").expect("a non-blank region")),
                 floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
                 cap_minor: None,
             }],
@@ -4169,7 +4169,7 @@ async fn a_period_bound_on_an_unsold_market_is_refused_by_the_publish_path() {
             after_bad.row_version,
             vec![bss_pricing::domain::plan_shape::PeriodFloorCap {
                 currency: CurrencyCode::new("EUR").expect("three letters"),
-                region: Region::new("eu").expect("a non-blank region"),
+                region: Some(Region::new("eu").expect("a non-blank region")),
                 floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
                 cap_minor: None,
             }],

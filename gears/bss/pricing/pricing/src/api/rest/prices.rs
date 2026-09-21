@@ -204,8 +204,10 @@ pub struct ScopeKeyRequest {
     pub sku_id: Uuid,
     /// ISO 4217 currency.
     pub currency: String,
-    /// The pricing region.
-    pub region: String,
+    /// The pricing region. Omit it for the currency-wide price, the price every
+    /// region without a row of its own is sold (D-381).
+    #[serde(default)]
+    pub region: Option<String>,
     /// The phase this row prices; the plan's terminal phase for a
     /// phase-invariant row (D-19).
     pub phase: Uuid,
@@ -230,8 +232,9 @@ pub struct ScopeKeyView {
     pub sku_id: Uuid,
     /// Axis 2.
     pub currency: String,
-    /// Axis 3.
-    pub region: String,
+    /// Axis 3, `null` for the currency-wide price — the price every region
+    /// without a row of its own is sold (D-381).
+    pub region: Option<String>,
     /// Axis 4 — always `base` on an authored row.
     pub price_overlay: String,
     /// Axis 5.
@@ -260,7 +263,7 @@ impl ScopeKeyView {
             plan_id: key.plan_id().get(),
             sku_id: key.sku_id().as_uuid(),
             currency: key.currency().as_str().to_owned(),
-            region: key.region().as_str().to_owned(),
+            region: key.region().map(|r| r.as_str().to_owned()),
             price_overlay: key.price_overlay().as_str().to_owned(),
             phase: key.phase().get(),
             price_eligibility: key.price_eligibility().as_str().to_owned(),
@@ -1029,6 +1032,16 @@ pub(crate) fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
 /// # Errors
 /// [`DomainError::RegionUnknown`] carrying `REGION_UNKNOWN` when the region is
 /// not declared active; [`DomainError::Internal`] on a storage failure.
+/// The wire's spelling of the region axis: absent or `null` is the currency-wide
+/// market; a blank string is a `400`, not a spelling of absence — the same rule
+/// [`Region::new`] applies to every other blank.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] as [`Region::new`].
+pub(crate) fn region_from_wire(value: Option<&str>) -> Result<Option<Region>, DomainError> {
+    value.map(Region::new).transpose()
+}
+
 pub(crate) async fn require_declared_region(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &toolkit_db::secure::AccessScope,
@@ -1094,7 +1107,7 @@ pub(crate) fn scope_key_of(
 ) -> Result<MarketPriceScopeKey, DomainError> {
     {
         let market_currency = CurrencyCode::new(&key.currency)?;
-        let market_region = Region::new(&key.region)?;
+        let market_region = region_from_wire(key.region.as_deref())?;
         ChargeLineScopeKey::new(
             plan_id,
             PhaseId::new(key.phase),
@@ -1113,7 +1126,7 @@ pub(crate) fn scope_key_of(
             key.cohort.map_or(Cohort::None, Cohort::Generation),
             SkuId::new(key.sku_id),
         )
-        .map(|line| MarketPriceScopeKey::new(line, market_currency, market_region))
+        .map(|line| MarketPriceScopeKey::on_market(line, market_currency, market_region))
     }
 }
 

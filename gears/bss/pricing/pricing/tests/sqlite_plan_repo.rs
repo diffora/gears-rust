@@ -1837,13 +1837,13 @@ fn two_period_bounds() -> Vec<PeriodFloorCap> {
     vec![
         PeriodFloorCap {
             currency: CurrencyCode::new("EUR").expect("three letters"),
-            region: Region::new("DE").expect("non-blank"),
+            region: Some(Region::new("DE").expect("non-blank")),
             floor_minor: Some(MinorAmount::new(40_000).expect("non-negative")),
             cap_minor: None,
         },
         PeriodFloorCap {
             currency: CurrencyCode::new("USD").expect("three letters"),
-            region: Region::new("US").expect("non-blank"),
+            region: Some(Region::new("US").expect("non-blank")),
             floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
             cap_minor: Some(MinorAmount::new(500_000).expect("non-negative")),
         },

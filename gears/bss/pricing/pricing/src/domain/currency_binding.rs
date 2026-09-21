@@ -68,7 +68,7 @@ use toolkit_macros::domain_model;
 
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
-use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::scope_key::{PriceEligibility, Region, render_region};
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
 /// A component that does not cover a market the thing selling it sells
@@ -79,8 +79,9 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 /// operator's remedy is the same in each — author the missing row.
 pub const CURRENCY_NOT_COVERED: &str = "CURRENCY_NOT_COVERED";
 
-/// One `(currency, region)` market.
-pub type Market = (CurrencyCode, Region);
+/// One `(currency, region)` market. `None` is the currency-wide market: the
+/// price every region without a row of its own is sold (D-381).
+pub type Market = (CurrencyCode, Option<Region>);
 
 /// What a plan's add-on composition looks like to this rule, as the caller
 /// resolved it.
@@ -144,7 +145,7 @@ impl AddonCoverage {
 pub fn uncovered_pairs(sold: &BTreeSet<Market>, covered: &BTreeSet<Market>) -> Vec<Market> {
     sold.iter()
         .filter(|(currency, region)| {
-            !crate::domain::market_resolution::is_sold(covered, currency, region)
+            !crate::domain::market_resolution::is_sold(covered, currency, region.as_ref())
         })
         .cloned()
         .collect()
@@ -179,7 +180,7 @@ pub fn sold_markets(shape: &PlanShape) -> BTreeSet<Market> {
     };
     keys.into_iter()
         .filter(|key| key.price_eligibility() != PriceEligibility::ExistingGrandfathered)
-        .map(|key| (key.currency().clone(), key.region().clone()))
+        .map(|key| (key.currency().clone(), key.region().cloned()))
         .collect()
 }
 
@@ -211,10 +212,12 @@ impl ValidationRule<PlanShape> for RequiredAddonsCoverMarkets {
                      sells. A subscription bound to that market could not resolve all of its \
                      lines, and an invoice may not mix currencies (D-95: the check is per \
                      (currency, region) pair, not per currency - a pair is covered by its own \
-                     row or by the add-on's currency-wide `global` one)",
+                     row or by the add-on's currency-wide one)",
                     missing
                         .iter()
-                        .map(|(currency, region)| format!("{}/{region}", currency.as_str()))
+                        .map(|(currency, region)| {
+                            format!("{}/{}", currency.as_str(), render_region(region.as_ref()))
+                        })
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),

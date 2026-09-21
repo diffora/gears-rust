@@ -3,6 +3,15 @@
 //! Unique per `(tenant, charge_line, currency, region)`. Monetary versions of
 //! this market live on `pricing_price` and may be several when their windows
 //! do not overlap.
+//!
+//! `region` is `text NOT NULL` with **no default** — an `INSERT` that forgets
+//! the axis must fail, not file a currency-wide price. `''` **is** the
+//! currency-wide market (D-381), the price every region without a row of its
+//! own is sold: unauthorable as a region, because `Region::new` refuses a blank
+//! and the taxonomy's `value_present` CHECK refuses declaring one, so the column
+//! means exactly one thing. `'none'` is refused because it is what the canonical
+//! key rendering writes for that market, and a row carrying it would render the
+//! string the absent axis renders.
 
 use sea_orm_migration::prelude::*;
 
@@ -17,6 +26,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             currency         varchar(3) NOT NULL,
             region           text       NOT NULL,
             CONSTRAINT chk_pricing_market_price_region_no_separator CHECK (region NOT LIKE '%|%'),
+            CONSTRAINT chk_pricing_market_price_region_not_absent_token CHECK (region <> 'none'),
             CONSTRAINT fk_pricing_market_price_line FOREIGN KEY (tenant_id, charge_line_id)
                 REFERENCES bss.pricing_charge_line (tenant_id, charge_line_id),
             CONSTRAINT uq_pricing_market_price_line UNIQUE (
@@ -53,6 +63,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             region           text       NOT NULL,
             PRIMARY KEY (tenant_id, market_price_id),
             CONSTRAINT chk_pricing_market_price_region_no_separator CHECK (region NOT LIKE '%|%'),
+            CONSTRAINT chk_pricing_market_price_region_not_absent_token CHECK (region <> 'none'),
             CONSTRAINT fk_pricing_market_price_line FOREIGN KEY (tenant_id, charge_line_id)
                 REFERENCES pricing_charge_line (tenant_id, charge_line_id),
             CONSTRAINT uq_pricing_market_price_line UNIQUE (

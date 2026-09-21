@@ -267,7 +267,7 @@ use crate::domain::price_row::{
     TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::read_model::OverlayIndexShard;
-use crate::domain::scope_key::{MarketPriceScopeKey, MarketPriceScopeKeyParts, PlanId};
+use crate::domain::scope_key::{MarketPriceScopeKey, MarketPriceScopeKeyParts, PlanId, Region};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
 
@@ -1085,7 +1085,9 @@ pub(crate) fn period_floor_cap_value(bound: &PeriodFloorCap) -> JsonValue {
     } = bound;
     json!({
         "currency": currency.as_str(),
-        "region": region.as_str(),
+        // `null` is the currency-wide market (D-381), the bound every region
+        // without one of its own is held to.
+        "region": region.as_ref().map(Region::as_str),
         "floorMinor": floor_minor.map(MinorAmount::get),
         "capMinor": cap_minor.map(MinorAmount::get),
     })
@@ -1504,7 +1506,9 @@ fn scope_key_value(key: &MarketPriceScopeKey) -> JsonValue {
     json!({
         "planId": plan_id.get(),
         "currency": currency.as_str(),
-        "region": region.as_str(),
+        // Axis 3. `null` is the currency-wide market (D-381) — the price every
+        // region without a row of its own is sold.
+        "region": region.map(Region::as_str),
         "priceOverlay": price_overlay.as_str(),
         "phase": phase.get(),
         "priceEligibility": price_eligibility.as_str(),

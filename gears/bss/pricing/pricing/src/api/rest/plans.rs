@@ -73,7 +73,7 @@ use crate::domain::plan_shape::{
     AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
     PlanShape,
 };
-use crate::domain::scope_key::{PhaseId, PlanId, Region};
+use crate::domain::scope_key::{PhaseId, PlanId, render_region};
 use crate::domain::validation::ValidationPipeline;
 use crate::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
@@ -346,8 +346,10 @@ impl From<AddonRule> for AddonRuleView {
 pub struct PeriodFloorCapView {
     /// ISO 4217.
     pub currency: String,
-    /// The market's region axis value.
-    pub region: String,
+    /// The market's region axis value, `null` for the currency-wide market —
+    /// the bound every region without one of its own is held to (D-381).
+    #[serde(default)]
+    pub region: Option<String>,
     /// The period floor in minor units, or `null` when only a cap is authored.
     pub floor_minor: Option<i64>,
     /// The period cap in minor units, or `null` when only a floor is authored.
@@ -358,7 +360,7 @@ impl From<PeriodFloorCap> for PeriodFloorCapView {
     fn from(bound: PeriodFloorCap) -> Self {
         Self {
             currency: bound.currency.as_str().to_owned(),
-            region: bound.region.as_str().to_owned(),
+            region: bound.region.as_ref().map(|r| r.as_str().to_owned()),
             floor_minor: bound.floor_minor.map(MinorAmount::get),
             cap_minor: bound.cap_minor.map(MinorAmount::get),
         }
@@ -1212,10 +1214,11 @@ fn require_distinct_period_markets(
 ) -> Result<(), DomainError> {
     let mut seen: BTreeSet<(&str, &str)> = BTreeSet::new();
     for bound in bounds {
-        if !seen.insert((bound.currency.as_str(), bound.region.as_str())) {
+        let region = render_region(bound.region.as_ref());
+        if !seen.insert((bound.currency.as_str(), region)) {
             return Err(DomainError::InvalidRequest(format!(
-                "market {}/{} carries more than one period floor/cap in this set",
-                bound.currency, bound.region
+                "market {}/{region} carries more than one period floor/cap in this set",
+                bound.currency
             )));
         }
     }
@@ -3644,7 +3647,7 @@ fn composite_of(view: CompositeMeterRequest) -> CompositeMeter {
 fn period_floor_cap_of(view: &PeriodFloorCapView) -> Result<PeriodFloorCap, DomainError> {
     Ok(PeriodFloorCap {
         currency: CurrencyCode::new(&view.currency)?,
-        region: Region::new(&view.region)?,
+        region: crate::api::rest::prices::region_from_wire(view.region.as_deref())?,
         floor_minor: view.floor_minor.map(MinorAmount::new).transpose()?,
         cap_minor: view.cap_minor.map(MinorAmount::new).transpose()?,
     })

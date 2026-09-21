@@ -156,7 +156,7 @@ fn populated() -> PlanSubjectDelta {
         // all exercised (D-319).
         period_floor_caps: vec![PeriodFloorCap {
             currency: CurrencyCode::new("USD").expect("three letters"),
-            region: Region::new("us").expect("non-blank"),
+            region: Some(Region::new("us").expect("non-blank")),
             floor_minor: Some(MinorAmount::new(50_000).expect("non-negative")),
             cap_minor: None,
         }],

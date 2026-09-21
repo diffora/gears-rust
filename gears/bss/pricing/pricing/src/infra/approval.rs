@@ -221,6 +221,14 @@ pub enum RegionGrant {
     /// service-level suites supply it to drive **both** directions of
     /// `inst-ap-scope`, which is the coverage that would be lost if the field
     /// collapsed into the synthesis above.
+    ///
+    /// **A grant is a set of regions and the currency-wide market is not one of
+    /// them**, so this variant never covers a change set carrying a
+    /// currency-wide row: that row moves the price every region without one of
+    /// its own is sold, and a region-restricted reviewer deciding it would be
+    /// reaching outside their grant in every region at once. The transport that
+    /// one day supplies a grant owes an "every region" form before such a row
+    /// can be decided under one (D-381).
     Explicit(BTreeSet<Region>),
 }
 
@@ -409,8 +417,9 @@ pub enum PinnedSubject {
         report: JsonValue,
         /// The run this unit is about — the id its `subject_ref` carries.
         operation_id: Uuid,
-        /// The regions the run's selected rows sit on.
-        regions: BTreeSet<Region>,
+        /// The regions the run's selected rows sit on; a `None` member is the
+        /// currency-wide market (D-381).
+        regions: BTreeSet<Option<Region>>,
     },
 }
 
@@ -454,7 +463,10 @@ impl PinnedSubject {
     ///
     /// [`DomainError::InvalidRequest`] when a stored region value does not parse
     /// as a [`Region`] — a value the declare door should have refused.
-    pub fn regions(&self) -> Result<BTreeSet<Region>, DomainError> {
+    ///
+    /// A `None` member is the **currency-wide market** (D-381), which no
+    /// [`RegionGrant::Explicit`] covers.
+    pub fn regions(&self) -> Result<BTreeSet<Option<Region>>, DomainError> {
         match self {
             Self::Plan(shape) | Self::BundleComposition(shape, ..) => Ok(regions_of(shape)),
             // **Neither a policy version nor a membership move reaches a
@@ -484,9 +496,9 @@ impl PinnedSubject {
             // stops being so.
             Self::TaxonomyValue(change) => {
                 if change.proposal.class == TaxonomyClass::Region {
-                    Ok(BTreeSet::from([Region::new(
+                    Ok(BTreeSet::from([Some(Region::new(
                         change.proposal.value.as_str(),
-                    )?]))
+                    )?)]))
                 } else {
                     Ok(BTreeSet::new())
                 }
@@ -511,7 +523,7 @@ impl PinnedSubject {
             // caller today, not why it would be safe if it did.
             Self::Overlay(revision) => match revision.scope.value() {
                 Some(value) if revision.scope.class() == ScopeClass::Region => {
-                    Ok(BTreeSet::from([Region::new(value.as_str())?]))
+                    Ok(BTreeSet::from([Some(Region::new(value.as_str())?)]))
                 }
                 _ => Ok(BTreeSet::new()),
             },
@@ -2508,7 +2520,7 @@ async fn judge(
     // a world a concurrent mutation could move, and the disagreement rendered as
     // `OutOfScope` — a 403 plus an attempted-authority-violation record against a
     // reviewer who had done nothing.
-    let approver_regions = match approver_reach(&request.approver_regions) {
+    let (approver_regions, change_set_regions) = match approver_reach(&request.approver_regions) {
         // **`inst-ap-scope` is not evaluated here**, and the arm is written out
         // so that the unenforced case has a site rather than looking like a
         // covering grant. The alternative to synthesising is fail-closed, and
@@ -2518,8 +2530,21 @@ async fn judge(
         // whose operand nobody can supply. What an operator can see instead is
         // the boot report `api::rest::approvals::report_region_grant_transport`
         // writes and the alarm it raises.
-        ApproverReach::Unmeasured => change_set_regions.clone(),
-        ApproverReach::Granted(regions) => regions,
+        //
+        // **The currency-wide member is dropped with the rest of the synthesis**
+        // (D-381). It is the one member no finite grant covers, so carrying it
+        // into a set that is meant to pass by construction would turn the
+        // unenforced path into a fail-closed one and refuse every currency-wide
+        // row on a deployment that transports no grant at all.
+        ApproverReach::Unmeasured => {
+            let synthesised: BTreeSet<Region> =
+                change_set_regions.iter().flatten().cloned().collect();
+            let covered = synthesised.iter().cloned().map(Some).collect();
+            (synthesised, covered)
+        }
+        // A real grant is measured against the reach whole, currency-wide member
+        // and all, which is what refuses it.
+        ApproverReach::Granted(regions) => (regions, change_set_regions),
     };
 
     let judgement = authorize_decision(&DecisionRequest {
@@ -3246,7 +3271,7 @@ async fn run_regions(
     scope: &AccessScope,
     tenant_id: Uuid,
     operation_id: Uuid,
-) -> Result<BTreeSet<Region>, DomainError> {
+) -> Result<BTreeSet<Option<Region>>, DomainError> {
     let rows = repricing_journal_repo::list_for_run(runner, scope, tenant_id, operation_id)
         .await
         .map_err(|e| repo_failure(&e))?;
@@ -3256,7 +3281,7 @@ async fn run_regions(
             .await
             .map_err(|e| repo_failure(&e))?
             .into_iter()
-            .map(|(_, key)| key.region().clone())
+            .map(|(_, key)| key.region().cloned())
             .collect(),
     )
 }
@@ -3472,11 +3497,11 @@ fn approver_reach(grant: &RegionGrant) -> ApproverReach {
 /// Off the rows' canonical scope keys, which is the only place a pricing region
 /// lives. A pure plan-shape revision touches none, and the empty set is covered
 /// by every grant — see the scope rule's own tests.
-fn regions_of(shape: &PlanShape) -> BTreeSet<Region> {
+fn regions_of(shape: &PlanShape) -> BTreeSet<Option<Region>> {
     shape
         .rows
         .iter()
-        .map(|row| row.scope_key.region().clone())
+        .map(|row| row.scope_key.region().cloned())
         .collect()
 }
 

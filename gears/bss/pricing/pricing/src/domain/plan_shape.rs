@@ -134,6 +134,7 @@ use uuid::Uuid;
 
 use crate::domain::charge_line::ChargeLineVersion;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
+use crate::domain::currency_binding::Market;
 use crate::domain::draft_window::{DraftWindowEntry, WindowBaseline};
 use crate::domain::market_price::MarketPriceVersion;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -580,8 +581,9 @@ pub struct PeriodFloorCap {
     /// ISO 4217 — the first half of the market, and the denomination of both
     /// amounts below.
     pub currency: CurrencyCode,
-    /// The second half of the market pair.
-    pub region: Region,
+    /// The second half of the market pair; `None` is the currency-wide market
+    /// (D-381), the bound every region without one of its own is held to.
+    pub region: Option<Region>,
     /// The period floor in minor units of [`PeriodFloorCap::currency`].
     ///
     /// Strictly positive when present: a `0` floor is `max(total, 0)`, which
@@ -595,7 +597,7 @@ pub struct PeriodFloorCap {
 impl PeriodFloorCap {
     /// The market this bound is filed under.
     #[must_use]
-    pub fn market(&self) -> (CurrencyCode, Region) {
+    pub fn market(&self) -> Market {
         (self.currency.clone(), self.region.clone())
     }
 }
@@ -851,7 +853,7 @@ impl PlanShape {
     /// range over it. Deriving it once means they cannot disagree about which
     /// markets a plan is in.
     #[must_use]
-    pub fn markets(&self) -> BTreeSet<(CurrencyCode, Region)> {
+    pub fn markets(&self) -> BTreeSet<Market> {
         self.rows.iter().map(market_of).collect()
     }
 
@@ -860,7 +862,7 @@ impl PlanShape {
     /// D-84 is a statement about two of these sets: every market with a
     /// recurring row must also carry the plan's usage lines.
     #[must_use]
-    pub fn markets_with(&self, charge_kind: ChargeKind) -> BTreeSet<(CurrencyCode, Region)> {
+    pub fn markets_with(&self, charge_kind: ChargeKind) -> BTreeSet<Market> {
         self.rows
             .iter()
             .filter(|record| record.scope_key.charge_kind() == charge_kind)
@@ -894,10 +896,10 @@ impl PlanShape {
 /// which carries the same axis for the Slice-3 shape rules' convenience. The
 /// two agree by construction, and picking one of them everywhere means no later
 /// rule has to know that.
-fn market_of(record: &PriceRecord) -> (CurrencyCode, Region) {
+fn market_of(record: &PriceRecord) -> Market {
     (
         record.scope_key.currency().clone(),
-        record.scope_key.region().clone(),
+        record.scope_key.region().cloned(),
     )
 }
 

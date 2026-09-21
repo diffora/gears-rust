@@ -39,19 +39,40 @@ fn plan() -> PlanId {
 }
 
 fn market(currency: &str, region: &str) -> Market {
+    market_on(currency, Some(region))
+}
+
+/// [`market`] over the whole region axis: `None` is the currency-wide market —
+/// the price every region without a row of its own is sold (D-381).
+fn market_on(currency: &str, region: Option<&str>) -> Market {
     (
         CurrencyCode::new(currency).expect("three letters"),
-        Region::new(region).expect("non-blank"),
+        region.map(|region| Region::new(region).expect("non-blank")),
     )
 }
 
+/// One currency sold everywhere, and nothing else.
+fn everywhere(currency: &str) -> Market {
+    market_on(currency, None)
+}
+
 fn row(price_id: u128, currency: &str, region: &str, eligibility: PriceEligibility) -> PriceRecord {
+    row_on(price_id, currency, Some(region), eligibility)
+}
+
+/// [`row`] over the whole region axis; `None` is the currency-wide market.
+fn row_on(
+    price_id: u128,
+    currency: &str,
+    region: Option<&str>,
+    eligibility: PriceEligibility,
+) -> PriceRecord {
     let cohort = if eligibility == PriceEligibility::ExistingGrandfathered {
         Cohort::Generation(now())
     } else {
         Cohort::None
     };
-    let scope_key = MarketPriceScopeKey::new(
+    let scope_key = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan(),
             PhaseId::new(Uuid::from_u128(0xf1)),
@@ -62,7 +83,7 @@ fn row(price_id: u128, currency: &str, region: &str, eligibility: PriceEligibili
         )
         .expect("the eligibility and cohort pair"),
         CurrencyCode::new(currency).expect("three letters"),
-        Region::new(region).expect("non-blank"),
+        region.map(|region| Region::new(region).expect("non-blank")),
     );
 
     let mut shape = PriceRow::new(ChargeKind::Recurring, None);
@@ -103,11 +124,25 @@ fn addon(sku: Uuid, required: bool, depends_on: Vec<Uuid>) -> AddonRule {
 
 /// A plan selling the given markets, with the given add-on rules.
 fn plan_selling(markets: &[(&str, &str)], addons: Vec<AddonRule>) -> PlanShape {
+    let owned: Vec<(&str, Option<&str>)> = markets.iter().map(|(c, r)| (*c, Some(*r))).collect();
+    plan_selling_on(&owned, addons)
+}
+
+/// [`plan_selling`] over the whole region axis; `None` is the currency-wide
+/// market (D-381).
+fn plan_selling_on(markets: &[(&str, Option<&str>)], addons: Vec<AddonRule>) -> PlanShape {
     let mut shape = PlanShape::new(plan(), 1, now());
     shape.rows = markets
         .iter()
         .enumerate()
-        .map(|(n, (c, r))| row(0xb000 + n as u128, c, r, PriceEligibility::AllSubscriptions))
+        .map(|(n, (c, r))| {
+            row_on(
+                0xb000 + n as u128,
+                c,
+                *r,
+                PriceEligibility::AllSubscriptions,
+            )
+        })
         .collect();
     shape.addon_rules = addons;
     shape
@@ -239,7 +274,10 @@ fn an_addon_priced_currency_wide_covers_every_region_the_base_sells_that_currenc
     );
     let report = run(
         &RequiredAddonsCoverMarkets {
-            coverage: coverage(&[(ADDON_A, &[("EUR", "global")])]),
+            coverage: AddonCoverage::new(BTreeMap::from([(
+                ADDON_A,
+                BTreeSet::from([everywhere("EUR")]),
+            )])),
         },
         &shape,
     );
@@ -251,7 +289,7 @@ fn an_addon_priced_currency_wide_covers_every_region_the_base_sells_that_currenc
 /// not the add-on — and the market named is the currency-wide one.
 #[test]
 fn a_base_sold_everywhere_is_not_covered_by_an_addon_priced_in_one_region() {
-    let shape = plan_selling(&[("EUR", "global")], vec![addon(ADDON_A, true, vec![])]);
+    let shape = plan_selling_on(&[("EUR", None)], vec![addon(ADDON_A, true, vec![])]);
     let report = run(
         &RequiredAddonsCoverMarkets {
             coverage: coverage(&[(ADDON_A, &[("EUR", "DE")])]),
@@ -260,7 +298,7 @@ fn a_base_sold_everywhere_is_not_covered_by_an_addon_priced_in_one_region() {
     );
     assert_eq!(codes(&report), [CURRENCY_NOT_COVERED]);
     assert!(
-        report.violations[0].detail.contains("EUR/global"),
+        report.violations[0].detail.contains("EUR/none"),
         "{}",
         report.violations[0].detail
     );

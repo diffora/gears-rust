@@ -113,7 +113,9 @@ use crate::domain::plan_rules::{
 };
 use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{Cohort, PhaseId, PriceEligibility, PriceOverlay, Region};
+use crate::domain::scope_key::{
+    Cohort, PhaseId, PriceEligibility, PriceOverlay, Region, render_region,
+};
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
 // ---------------------------------------------------------------------------
@@ -299,7 +301,8 @@ impl ValidationRule<PlanShape> for MeterInjectivity {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MeteredLine {
     currency: CurrencyCode,
-    region: Region,
+    /// `None` is the currency-wide market (D-381).
+    region: Option<Region>,
     price_overlay: PriceOverlay,
     phase: PhaseId,
     price_eligibility: PriceEligibility,
@@ -323,7 +326,7 @@ impl MeteredLine {
             self.meter,
             self.dimension_key,
             self.currency,
-            self.region,
+            render_region(self.region.as_ref()),
             self.price_overlay,
             self.phase,
             self.price_eligibility,
@@ -338,7 +341,7 @@ fn metered_line(record: &PriceRecord) -> Option<MeteredLine> {
     let key = &record.scope_key;
     Some(MeteredLine {
         currency: key.currency().clone(),
-        region: key.region().clone(),
+        region: key.region().cloned(),
         price_overlay: key.price_overlay(),
         phase: key.phase(),
         price_eligibility: key.price_eligibility(),

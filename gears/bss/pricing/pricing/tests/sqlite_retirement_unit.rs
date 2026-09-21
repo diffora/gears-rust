@@ -576,7 +576,7 @@ async fn plan_with_a_generation(
     let generation = rest_support::seed_price_keyed_with_horizon(
         h,
         plan_uuid,
-        "us",
+        Some("us"),
         PriceEligibility::ExistingGrandfathered,
         Cohort::Generation(generation_cohort()),
         Some(generation_horizon()),

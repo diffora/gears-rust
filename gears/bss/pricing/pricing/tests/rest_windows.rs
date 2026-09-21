@@ -282,8 +282,8 @@ async fn a_covered_key_carries_its_interval_and_its_coverage_end() {
 /// One line in EUR: a `global` price, and a `de` override whose window stops. A
 /// `de` buyer is sold the currency-wide price from that instant with no act by
 /// anyone — legal, and the reason the report has to say it: a mistaken gap changes
-/// a price exactly the same way. The `global` key, with nothing behind it, is told
-/// nothing.
+/// a price exactly the same way. The currency-wide key, with nothing behind it,
+/// is told nothing.
 #[tokio::test]
 async fn an_override_that_ends_reports_the_currency_wide_key_it_falls_back_to() {
     let h = Harness::new().await;
@@ -291,8 +291,8 @@ async fn an_override_that_ends_reports_the_currency_wide_key_it_falls_back_to() 
     let seeded = rest_support::seed_publishable_plan_with(
         &h,
         plan_id,
-        |plan, phase| rest_support::publishable_scope_key(plan, phase, "global"),
-        rest_support::publishable_row(),
+        |plan, phase| rest_support::publishable_scope_key_currency_wide(plan, phase),
+        rest_support::publishable_row_currency_wide(),
     )
     .await;
     let de_key = rest_support::publishable_scope_key(
@@ -323,10 +323,9 @@ async fn an_override_that_ends_reports_the_currency_wide_key_it_falls_back_to() 
     window(&h, de_price, 0xf2, 0, Some(30)).await;
 
     let report = coverage(&h, plan_id).await;
-    let global_key = rest_support::publishable_scope_key(
+    let global_key = rest_support::publishable_scope_key_currency_wide(
         bss_pricing::domain::scope_key::PlanId::new(plan_id),
         seeded.phase,
-        "global",
     )
     .to_string();
     assert_eq!(

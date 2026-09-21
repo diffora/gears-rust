@@ -1217,7 +1217,7 @@ fn referencing(
     ReferencingMarket::new(
         Uuid::from_u128(bundle),
         CurrencyCode::new(currency).expect("three letters"),
-        Region::new(region).expect("non-blank"),
+        Some(Region::new(region).expect("non-blank")),
         tax_inclusive,
     )
 }

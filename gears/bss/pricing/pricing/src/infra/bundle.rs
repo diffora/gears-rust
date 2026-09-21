@@ -73,13 +73,16 @@ use crate::domain::bundle_rules::{
     BundleComposition, ComponentDefect, ComponentSnapshot, CoverageRow, validate,
 };
 use crate::domain::concurrency::RowVersion;
+use crate::domain::currency_binding::Market;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::ChangeSet;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
 use crate::domain::publish::rules::ReferencingMarket;
-use crate::domain::scope_key::{Cohort, PlanId, PriceEligibility, Region};
+use crate::domain::scope_key::{
+    Cohort, PlanId, PriceEligibility, region_column, region_from_column,
+};
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -326,7 +329,7 @@ impl BundleService {
         tenant_id: Uuid,
         plan_id: PlanId,
         revision: u64,
-        markets: Vec<(CurrencyCode, Region)>,
+        markets: Vec<Market>,
     ) -> Result<BundleComposition, RepoError> {
         let Some(record) = self.bundles.find_by_plan(scope, tenant_id, plan_id).await? else {
             return Err(RepoError::NotFound {
@@ -390,7 +393,7 @@ impl BundleService {
         tenant_id: Uuid,
         plan_id: PlanId,
         revision: u64,
-        markets: Vec<(CurrencyCode, Region)>,
+        markets: Vec<Market>,
     ) -> Result<ValidationReport, RepoError> {
         let composition = self
             .assemble(scope, tenant_id, plan_id, revision, markets)
@@ -931,7 +934,8 @@ async fn component_rows(
                 graph.price.price_id
             ))
         })?;
-        let region = Region::new(&graph.market.region).map_err(|e| {
+        // `''` is the currency-wide market (D-381), not a corrupt row.
+        let region = region_from_column(&graph.market.region).map_err(|e| {
             RepoError::CorruptRow(format!(
                 "price {} carries an unusable region: {e}",
                 graph.price.price_id
@@ -1061,7 +1065,7 @@ pub async fn referencing_markets(
         for row in rows {
             let market = (
                 row.currency.as_str().to_owned(),
-                row.region.as_str().to_owned(),
+                region_column(row.region.as_ref()).to_owned(),
             );
             if seen.insert(market) {
                 markets.push(ReferencingMarket::new(

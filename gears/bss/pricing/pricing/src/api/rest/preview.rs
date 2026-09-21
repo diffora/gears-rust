@@ -122,10 +122,10 @@ pub struct PreviewView {
     pub currency: String,
     /// The requested region, echoed.
     pub region: String,
-    /// The region whose price the quoted amount is: `region` itself where it has a
-    /// price of its own, else `global` — the currency's price, which applies to
-    /// every region that does not override it.
-    pub resolved_region: String,
+    /// The region whose price the quoted amount is: `region` itself where it has
+    /// a price of its own, else `null` — the currency-wide price, which applies
+    /// to every region that does not override it (D-381).
+    pub resolved_region: Option<String>,
     /// The base list amount in minor units.
     ///
     /// NULL on a row whose money is a **rate** — see [`Self::unit_rate_nano_minor`].
@@ -352,7 +352,7 @@ async fn preview_plan_price(
         return Err(unpublished());
     };
 
-    let rows = market_rows(&delta.payload, currency.as_str(), &region);
+    let rows = market_rows(&delta.payload, currency.as_str(), Some(&region));
     let row = base_amount_row(&rows, terminal_phase_id(&delta.payload)).ok_or_else(absent)?;
 
     Ok(Json(PreviewView {
@@ -360,10 +360,9 @@ async fn preview_plan_price(
         catalog_version: delta.catalog_version.get(),
         currency: currency.as_str().to_owned(),
         region: region.as_str().to_owned(),
-        resolved_region: row["scopeKey"]["region"]
-            .as_str()
-            .unwrap_or_else(|| region.as_str())
-            .to_owned(),
+        // `null` where the currency-wide row served (D-381); the resolved row's
+        // own axis otherwise, which is the requested region or nothing.
+        resolved_region: row["scopeKey"]["region"].as_str().map(ToOwned::to_owned),
         amount_minor: row["amountMinor"].as_i64(),
         unit_rate_nano_minor: row["unitRateNanoMinor"].as_i64(),
         tax_inclusive: row["taxInclusive"].as_bool().unwrap_or(false),
@@ -422,7 +421,7 @@ async fn preview_plan_price(
 fn market_rows<'a>(
     payload: &'a serde_json::Value,
     currency: &str,
-    region: &Region,
+    region: Option<&Region>,
 ) -> Vec<&'a serde_json::Value> {
     let eligible: Vec<&serde_json::Value> = payload["prices"]
         .as_array()
@@ -462,12 +461,17 @@ fn market_rows<'a>(
     let mut resolved: Vec<&serde_json::Value> = Vec::new();
     let mut resolved_lines: Vec<String> = Vec::new();
     for (_, step) in market_resolution::resolution_order(PriceOverlay::Base, region) {
+        // The payload spells the currency-wide market `null` on this axis, as the
+        // projector writes it (D-381), and a region as its own string.
+        let step = step.map_or(serde_json::Value::Null, |region| {
+            serde_json::Value::String(region.as_str().to_owned())
+        });
         // Only an **earlier** step shadows a line. Rows of one step are taken as
         // they are, exactly as before the fallback existed.
         let of_this_step: Vec<&serde_json::Value> = eligible
             .iter()
             .copied()
-            .filter(|row| row["scopeKey"]["region"] == step.as_str())
+            .filter(|row| row["scopeKey"]["region"] == step)
             .filter(|row| !resolved_lines.contains(&line_of(row)))
             .collect();
         resolved_lines.extend(of_this_step.iter().map(|row| line_of(row)));

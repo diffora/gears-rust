@@ -2,21 +2,26 @@
 //! it has one, else the currency's.**
 //!
 //! Prices are authored per currency and apply to every region; a region carries
-//! a price of its own only where it needs one. The currency-wide price is filed
-//! under the reserved region [`CURRENCY_WIDE_REGION`] — `global`, the value every
-//! tenant's region taxonomy starts with (D-354). Region stays an axis of the
-//! market key: an override needs its own versions, windows, supersession and
-//! conflict checks, and every one of those is keyed on the full market key.
+//! a price of its own only where it needs one. The currency-wide price **has no
+//! region** (D-381): the `region` axis of its key is absent, spelled `''` in the
+//! column and [`ABSENT_AXIS_TOKEN`](crate::domain::scope_key::ABSENT_AXIS_TOKEN)
+//! in the canonical rendering. It is not a taxonomy value, so nothing a tenant
+//! can declare, deprecate or retire reaches it — which is what D-379's reserved
+//! `global` value could not promise. Region stays an axis of the market key: an
+//! override needs its own versions, windows, supersession and conflict checks,
+//! and every one of those is keyed on the full market key.
 //!
 //! # The whole rule
 //!
 //! ```text
-//! price at instant T for (overlay O, currency C, region R) =
-//!     the covering window on (O,    C, R)
-//!     else                   (O,    C, global)
-//!     else                   (base, C, R)
-//!     else                   (base, C, global)
+//! price at instant T for (overlay O, currency C, buyer region R) =
+//!     the covering window on (O,    C, Some(R))   -- the region's own price
+//!     else                   (O,    C, None)      -- the currency-wide price
+//!     else                   (base, C, Some(R))
+//!     else                   (base, C, None)
 //!     else refused — no FX fallback and no cross-currency fallback
+//!
+//! a buyer with no region (R absent) tries the two `None` steps only.
 //! ```
 //!
 //! **An overlay outranks a region**, so the overlay is the outer loop of
@@ -29,9 +34,9 @@
 //! and which the consumer composes at evaluation. So the first two steps name
 //! keys nothing here can file, and the order that ranks them is a statement of
 //! the consumer contract rather than a branch this gear reaches. It is written
-//! out anyway — deduplicated, so today it is `R` then `global` — because a second
-//! reading of this order, added the day a second variant arrives, is exactly the
-//! defect the rule exists to prevent.
+//! out anyway — deduplicated, so today it is `Some(R)` then `None` — because a
+//! second reading of this order, added the day a second variant arrives, is
+//! exactly the defect the rule exists to prevent.
 //!
 //! # Which region this is
 //!
@@ -41,9 +46,9 @@
 //!
 //! # An override is a whole row
 //!
-//! Resolution answers a **key**. Nothing of the `global` row is inherited by an
-//! override — not an amount, not a band, not the tax display — so there is no
-//! field-level effective value to compute, and a consumer that pinned the
+//! Resolution answers a **key**. Nothing of the currency-wide row is inherited
+//! by an override — not an amount, not a band, not the tax display — so there is
+//! no field-level effective value to compute, and a consumer that pinned the
 //! `priceId` it resolved has pinned everything.
 //!
 //! # One function
@@ -52,37 +57,34 @@
 //! call [`resolve`] and [`resolves_statically`]. A second implementation of this
 //! order is a finding.
 
+use std::collections::BTreeSet;
+
+use crate::domain::currency_binding::Market;
 use crate::domain::money::CurrencyCode;
-use crate::domain::read_model::GLOBAL_SCOPE;
 use crate::domain::scope_key::{ChargeLineScopeKey, MarketPriceScopeKey, PriceOverlay, Region};
-
-/// The reserved region a currency-wide price is filed under.
-pub const CURRENCY_WIDE_REGION: &str = GLOBAL_SCOPE;
-
-/// Is `region` the reserved currency-wide one?
-#[must_use]
-pub fn is_currency_wide(region: &Region) -> bool {
-    region.as_str() == CURRENCY_WIDE_REGION
-}
 
 /// The `(overlay, region)` pairs tried for a purchase on `(overlay, region)`, in
 /// order, each at most once.
 ///
-/// Four steps when the overlay is not the base and the region is not `global`;
-/// fewer where two of them name the same key, which is every case this gear can
-/// reach today (see the module doc).
+/// Four steps when the overlay is not the base and the buyer states a region;
+/// fewer otherwise, which is every case this gear can reach today (see the
+/// module doc). A buyer with no region tries the currency-wide market alone.
 #[must_use]
-pub fn resolution_order(overlay: PriceOverlay, region: &Region) -> Vec<(PriceOverlay, Region)> {
+pub fn resolution_order(
+    overlay: PriceOverlay,
+    region: Option<&Region>,
+) -> Vec<(PriceOverlay, Option<Region>)> {
     let mut overlays = vec![overlay];
     if overlay != PriceOverlay::Base {
         overlays.push(PriceOverlay::Base);
     }
-    let mut regions = vec![region.clone()];
-    if !is_currency_wide(region)
-        && let Ok(global) = Region::new(CURRENCY_WIDE_REGION)
-    {
-        regions.push(global);
+    // The region's own market first where the buyer has one; the currency-wide
+    // market always, and last. A buyer with no region tries the second only.
+    let mut regions: Vec<Option<Region>> = Vec::new();
+    if let Some(region) = region {
+        regions.push(Some(region.clone()));
     }
+    regions.push(None);
     overlays
         .into_iter()
         .flat_map(|overlay| regions.iter().map(move |region| (overlay, region.clone())))
@@ -102,7 +104,7 @@ pub fn resolve<'a>(
     candidates: impl IntoIterator<Item = &'a MarketPriceScopeKey>,
     charge: &ChargeLineScopeKey,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
     admits: impl Fn(&MarketPriceScopeKey) -> bool,
 ) -> Option<&'a MarketPriceScopeKey> {
     let of_this_charge: Vec<&MarketPriceScopeKey> = candidates
@@ -113,7 +115,7 @@ pub fn resolve<'a>(
         .into_iter()
         .find_map(|(overlay, region)| {
             of_this_charge.iter().copied().find(|key| {
-                key.price_overlay() == overlay && *key.region() == region && admits(key)
+                key.price_overlay() == overlay && key.region() == region.as_ref() && admits(key)
             })
         })
 }
@@ -128,7 +130,7 @@ pub fn resolves_statically<'a>(
     candidates: impl IntoIterator<Item = &'a MarketPriceScopeKey>,
     charge: &ChargeLineScopeKey,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> bool {
     resolve(candidates, charge, currency, region, |_| true).is_some()
 }
@@ -138,41 +140,45 @@ pub fn resolves_statically<'a>(
 ///
 /// Per currency, and on one of two footings:
 ///
-/// - **some line sells the currency everywhere** — a `global` price exists in it.
-///   Then the plan sells that currency in every region, so every line owes the
-///   `global` price and nothing else. An override on top obliges no sibling: a
-///   line without one falls back. Without this arm a buyer in `FR` would resolve
-///   the line that has a `global` price and not the one that has only a `DE` row.
+/// - **some line sells the currency everywhere** — a currency-wide price exists
+///   in it. Then the plan sells that currency in every region, so every line
+///   owes the currency-wide price and nothing else. An override on top obliges
+///   no sibling: a line without one falls back. Without this arm a buyer in `FR`
+///   would resolve the line that has a currency-wide price and not the one that
+///   has only a `DE` row.
 /// - **no line does** — the rule as it always was, per pair: every line owes
 ///   every region some line sells the currency in.
 ///
 /// A plan declares no set of regions it sells into; sold markets are *derived*
 /// from the rows' keys, and so is this.
 #[must_use]
-pub fn owed_markets(
-    sold: &std::collections::BTreeSet<(CurrencyCode, Region)>,
-) -> std::collections::BTreeSet<(CurrencyCode, Region)> {
-    let everywhere: std::collections::BTreeSet<&CurrencyCode> = sold
+pub fn owed_markets(sold: &BTreeSet<Market>) -> BTreeSet<Market> {
+    let everywhere: BTreeSet<&CurrencyCode> = sold
         .iter()
-        .filter(|(_, region)| is_currency_wide(region))
+        .filter(|(_, region)| region.is_none())
         .map(|(currency, _)| currency)
         .collect();
     sold.iter()
-        .filter(|(currency, region)| !everywhere.contains(currency) || is_currency_wide(region))
+        .filter(|(currency, region)| !everywhere.contains(currency) || region.is_none())
         .cloned()
         .collect()
 }
 
 /// Is a bound, a rule or an add-on stated on `(currency, region)` stated on a
 /// market the plan sells — by that pair's own row, or by the currency-wide one?
+///
+/// **The fallback runs one way**, which is the whole shape of the rule and the
+/// reason the currency-wide case is not "sold when the currency is sold
+/// anywhere". A statement on `Some(DE)` is served by the `DE` row or by the
+/// currency-wide row behind it; a statement on the currency-wide market is
+/// served only by a currency-wide row, because that market is *every* region
+/// and a `DE` row reaches one of them. Widening it would make an add-on priced
+/// in `DE` alone "cover" a base plan sold in EUR everywhere — the exact
+/// `CURRENCY_NOT_COVERED` case D-95 exists to raise.
 #[must_use]
-pub fn is_sold(
-    sold: &std::collections::BTreeSet<(CurrencyCode, Region)>,
-    currency: &CurrencyCode,
-    region: &Region,
-) -> bool {
+pub fn is_sold(sold: &BTreeSet<Market>, currency: &CurrencyCode, region: Option<&Region>) -> bool {
     sold.iter().any(|(sold_currency, sold_region)| {
-        sold_currency == currency && (sold_region == region || is_currency_wide(sold_region))
+        sold_currency == currency && (sold_region.as_ref() == region || sold_region.is_none())
     })
 }
 

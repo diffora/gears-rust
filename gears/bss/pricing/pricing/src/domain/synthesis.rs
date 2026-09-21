@@ -281,8 +281,9 @@ pub fn select_rows(live: &[LiveCandidate]) -> Vec<SelectedRow> {
 pub struct UnresolvedKey {
     /// The currency axis of the key.
     pub currency: String,
-    /// The region axis.
-    pub region: String,
+    /// The region axis; `None` is the currency-wide market (D-381), which a
+    /// subscription may legitimately be frozen on.
+    pub region: Option<String>,
 }
 
 /// What synthesis resolved for one subscription, before it is frozen.
@@ -340,7 +341,15 @@ impl SynthesisOutcome {
         let keys = self
             .unresolved
             .iter()
-            .map(|key| format!("({}, {})", key.currency, key.region))
+            .map(|key| {
+                format!(
+                    "({}, {})",
+                    key.currency,
+                    key.region
+                        .as_deref()
+                        .unwrap_or(crate::domain::scope_key::ABSENT_AXIS_TOKEN)
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         Err(DomainError::PriceRowAbsent(format!(

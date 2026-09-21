@@ -76,7 +76,7 @@ use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::scope_key::PlanId;
+use crate::domain::scope_key::{PlanId, Region};
 use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
@@ -93,8 +93,9 @@ use time::OffsetDateTime;
 pub struct FrozenKey {
     /// ISO currency.
     pub currency: String,
-    /// The region axis.
-    pub region: String,
+    /// The region axis; `None` is the currency-wide market (D-381), which a
+    /// subscription may legitimately be frozen on.
+    pub region: Option<String>,
 }
 
 /// The plan's window plane and its admissible row set — the two reads every key
@@ -172,7 +173,7 @@ fn select_against(plane: &PlanPlane, key: &FrozenKey, at: OffsetDateTime) -> Vec
                     .iter()
                     .any(|row| row.price_id == window.price_id)
                 && window.scope_key.currency().as_str() == key.currency
-                && window.scope_key.region().as_str() == key.region
+                && window.scope_key.region().map(Region::as_str) == key.region.as_deref()
                 // Half-open: `[from, to)`.
                 && window.effective_from <= at
                 && window.effective_to.is_none_or(|to| at < to)

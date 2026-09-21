@@ -780,8 +780,9 @@ pub struct PlanSellabilityView {
     pub at: OffsetDateTime,
     /// The currency half of the bound market.
     pub currency: String,
-    /// The region half of the bound market.
-    pub region: String,
+    /// The region half of the bound market, `null` for a buyer with no
+    /// territory — quoted the currency-wide price (D-381).
+    pub region: Option<String>,
     /// The pin-eligible version the answer was read from, `null` when none carries
     /// this plan.
     pub catalog_version: Option<u64>,
@@ -824,7 +825,7 @@ impl From<&SellabilitySurface> for PlanSellabilityView {
             plan_id: surface.plan_id.get(),
             at: surface.at,
             currency: surface.currency.as_str().to_owned(),
-            region: surface.region.as_str().to_owned(),
+            region: surface.region.as_ref().map(|r| r.as_str().to_owned()),
             catalog_version: surface.catalog_version.map(CatalogVersion::get),
             verdict: surface.plan_market_verdict().as_str().to_owned(),
             predicates: surface
@@ -2030,7 +2031,8 @@ async fn get_plan_sellability(
         // rather than answered yes.
         _ => (crate::domain::sellability::registry_unreadable(), None),
     };
-    let surface = SellabilitySurface::of_delta(&facts, at, &currency, &region, registry_permission);
+    let surface =
+        SellabilitySurface::of_delta(&facts, at, &currency, Some(&region), registry_permission);
     Ok(Json(
         PlanSellabilityView::from(&surface).checked_at(registry_checked_at),
     ))

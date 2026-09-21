@@ -895,8 +895,14 @@ impl RegionsDeclared {
     /// because the save has **one** region and no `PlanShape` — building a shape
     /// to judge one axis would be inventing a subject to satisfy a signature.
     /// This is `overlay_rules::check_authored_shape`'s arrangement.
+    ///
+    /// **A currency-wide row names no region and is not this rule's subject**
+    /// (D-381): `None` earns no violation. The empty universe fails every
+    /// **regional** row, and a tenant that segments nothing declares nothing and
+    /// publishes.
     #[must_use]
-    pub fn violation_for(&self, region: &Region) -> Option<Violation> {
+    pub fn violation_for(&self, region: Option<&Region>) -> Option<Violation> {
+        let region = region?;
         if self.declared.contains(region) {
             return None;
         }
@@ -927,7 +933,10 @@ impl ValidationRule<PlanShape> for RegionsDeclared {
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
         let mut reported: BTreeSet<&Region> = BTreeSet::new();
         for record in &subject.rows {
-            let region = record.scope_key.region();
+            // A currency-wide row states no region: nothing to judge (D-381).
+            let Some(region) = record.scope_key.region() else {
+                continue;
+            };
             if self.declared.contains(region) {
                 continue;
             }
@@ -939,7 +948,7 @@ impl ValidationRule<PlanShape> for RegionsDeclared {
             if !reported.insert(region) {
                 continue;
             }
-            if let Some(violation) = self.violation_for(region) {
+            if let Some(violation) = self.violation_for(Some(region)) {
                 report.violations.push(violation);
             }
         }

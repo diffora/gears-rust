@@ -106,7 +106,7 @@ use crate::domain::plan_shape::PlanShape;
 use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId, render_region};
 use crate::domain::supersession::{
     ChangeoverMoment, ComposedWindows, NamedWindow, SupersessionPlan, WindowShorten,
     plan_supersession,
@@ -354,7 +354,7 @@ async fn refuse_unresolved_tax_category(
     if crate::domain::tax_display::effective_category(successor, &readiness).is_some() {
         return Ok(());
     }
-    let region = successor.scope_key.region();
+    let region = render_region(successor.scope_key.region());
     let mut report = crate::domain::validation::ValidationReport::default();
     report.violate(
         crate::domain::tax_display::TAX_BASIS_INCOMPLETE,

@@ -73,7 +73,7 @@ use crate::domain::bundle::{
 use crate::domain::currency_binding::{Market, uncovered_pairs};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
-use crate::domain::scope_key::Region;
+use crate::domain::scope_key::{Region, render_region};
 use crate::domain::validation::ValidationReport;
 
 /// No price basis declared (§5, **422 architectural**; `inst-bb-declared`).
@@ -141,8 +141,8 @@ pub const BUNDLE_TAX_BASIS_MIXED: &str = "BUNDLE_TAX_BASIS_MIXED";
 pub struct CoverageRow {
     /// The row's currency axis.
     pub currency: CurrencyCode,
-    /// The row's region axis.
-    pub region: Region,
+    /// The row's region axis; `None` is the currency-wide market (D-381).
+    pub region: Option<Region>,
     /// The row's tax display basis (D-110's per-row column).
     pub tax_inclusive: bool,
 }
@@ -234,8 +234,9 @@ pub struct BundleComposition {
     pub bundle_id: Uuid,
     /// Its declared basis.
     pub basis: PriceBasis,
-    /// The `(currency, region)` markets the bundle sells in.
-    pub markets: Vec<(CurrencyCode, Region)>,
+    /// The `(currency, region)` markets the bundle sells in. A `None` region is
+    /// the currency-wide market (D-381).
+    pub markets: Vec<Market>,
     /// Its referenced components.
     pub components: Vec<ComponentSnapshot>,
     /// The bundle's **own** rows — `own_price` only, empty for `sum_of_parts`
@@ -313,7 +314,7 @@ fn check_coverage(composition: &BundleComposition, report: &mut ValidationReport
             .rows
             .iter()
             .map(|row| (row.currency.clone(), row.region.clone()))
-            .collect();
+            .collect::<BTreeSet<Market>>();
         // Ordered by the set difference rather than by the request's market
         // order, which is the honest direction: two callers listing one market
         // set in two orders describe one composition and should read one report.
@@ -325,7 +326,7 @@ fn check_coverage(composition: &BundleComposition, report: &mut ValidationReport
                     "component plan {} has no covering published row for ({}, {})",
                     component.component_plan_id,
                     currency.as_str(),
-                    region.as_str()
+                    render_region(region.as_ref())
                 ),
             );
         }
@@ -454,6 +455,7 @@ fn check_tax_basis(composition: &BundleComposition, report: &mut ValidationRepor
             if &row.currency != currency || &row.region != region {
                 continue;
             }
+
             by_basis
                 .entry(row.tax_inclusive)
                 .or_default()
@@ -474,15 +476,15 @@ fn check_tax_basis(composition: &BundleComposition, report: &mut ValidationRepor
                 )
             })
             .collect();
+        let region = render_region(region.as_ref());
         report.violate(
             BUNDLE_TAX_BASIS_MIXED,
-            format!("{}/{}", currency.as_str(), region.as_str()),
+            format!("{}/{region}", currency.as_str()),
             format!(
-                "market ({}, {}) mixes tax display bases — {}. An invoice is one document and \
-                 `tax_inclusive` is a display basis, so the bundle's lines cannot be rendered \
-                 coherently side by side (D-119)",
+                "market ({}, {region}) mixes tax display bases — {}. An invoice is one document \
+                 and `tax_inclusive` is a display basis, so the bundle's lines cannot be \
+                 rendered coherently side by side (D-119)",
                 currency.as_str(),
-                region.as_str(),
                 sides.join("; ")
             ),
         );

@@ -807,6 +807,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
     "chk_pricing_market_price_region_no_separator",
+    "chk_pricing_market_price_region_not_absent_token",
     // Slice 11, the same twelve the SQLite mirror carries, name for name.
     "chk_pricing_migration_announced_before_effective",
     "chk_pricing_migration_cancelled_at",
@@ -844,6 +845,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_plan_period_floor_cap_floor_positive",
     "chk_pricing_plan_period_floor_cap_ordered",
     "chk_pricing_plan_period_floor_cap_present",
+    "chk_pricing_plan_period_floor_cap_region_not_absent_token",
     "chk_pricing_plan_phase_duration_non_negative",
     "chk_pricing_plan_phase_kind",
     "chk_pricing_plan_purchase_max_qty",

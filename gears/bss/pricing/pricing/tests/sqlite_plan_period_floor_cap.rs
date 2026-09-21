@@ -465,7 +465,7 @@ fn stamp() -> bss_pricing::domain::audit::AuditStamp {
 fn bound(currency: &str, region: &str, floor: Option<i64>, cap: Option<i64>) -> PeriodFloorCap {
     PeriodFloorCap {
         currency: CurrencyCode::new(currency).expect("three letters"),
-        region: Region::new(region).expect("non-blank"),
+        region: Some(Region::new(region).expect("non-blank")),
         floor_minor: floor.map(|v| MinorAmount::new(v).expect("non-negative")),
         cap_minor: cap.map(|v| MinorAmount::new(v).expect("non-negative")),
     }

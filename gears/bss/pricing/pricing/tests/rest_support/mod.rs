@@ -52,7 +52,7 @@ use bss_pricing::domain::plan::PlanRevision;
 use bss_pricing::domain::plan_shape::Frequency;
 use bss_pricing::domain::plan_shape::{AddonRule, PhaseKind, PlanPhase};
 use bss_pricing::domain::ports::metrics::PricingMetricsPort;
-use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
+pub use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
 use bss_pricing::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, MinQtyUsageFallback, PriceRow,
@@ -124,7 +124,13 @@ const FIXTURE_TAX_CATEGORY: &str = "standard";
 /// only `tax_category` off these markers. The **rate** arm of `inst-td-policy` is
 /// `TaxBasisComplete`'s and runs on the publish rule set, which this seeder
 /// deliberately bypasses; see [`Harness::publish`].
-fn fixture_readiness(region: &str) -> bss_pricing::domain::tax_display::RegionTaxReadiness {
+fn fixture_readiness(region: Option<&str>) -> bss_pricing::domain::tax_display::RegionTaxReadiness {
+    // A currency-wide row names no region, so there is no regional default to
+    // declare and the readiness map is empty (D-381) — which is exactly the
+    // fail-closed state that makes such a row state its own `taxCategory`.
+    let Some(region) = region else {
+        return bss_pricing::domain::tax_display::RegionTaxReadiness::new(BTreeMap::new());
+    };
     bss_pricing::domain::tax_display::RegionTaxReadiness::new(BTreeMap::from([(
         region.to_owned(),
         bss_pricing::domain::tax_display::RegionReadiness {
@@ -1141,9 +1147,8 @@ impl Harness {
             .unwrap_or_else(|| panic!("price row {price_id} is a draft of plan {plan_id}"))
             .scope_key
             .region()
-            .as_str()
-            .to_owned();
-        let readiness = fixture_readiness(&region);
+            .map(|region| region.as_str().to_owned());
+        let readiness = fixture_readiness(region.as_deref());
         let (_, outcome) = self
             .db
             .db()
@@ -2161,7 +2166,26 @@ pub async fn seed_price_keyed(
     price_eligibility: PriceEligibility,
     cohort: Cohort,
 ) -> PriceRecord {
-    seed_price_keyed_with_horizon(harness, plan_id, region, price_eligibility, cohort, None).await
+    seed_price_keyed_with_horizon(
+        harness,
+        plan_id,
+        Some(region),
+        price_eligibility,
+        cohort,
+        None,
+    )
+    .await
+}
+
+/// [`seed_price_keyed`] on the **currency-wide market** — the row that states no
+/// region, the price every region without one of its own is sold (D-381).
+pub async fn seed_price_keyed_currency_wide(
+    harness: &Harness,
+    plan_id: Uuid,
+    price_eligibility: PriceEligibility,
+    cohort: Cohort,
+) -> PriceRecord {
+    seed_price_keyed_with_horizon(harness, plan_id, None, price_eligibility, cohort, None).await
 }
 
 /// [`seed_price_keyed`] carrying a **grandfathering horizon**.
@@ -2176,12 +2200,12 @@ pub async fn seed_price_keyed(
 pub async fn seed_price_keyed_with_horizon(
     harness: &Harness,
     plan_id: Uuid,
-    region: &str,
+    region: Option<&str>,
     price_eligibility: PriceEligibility,
     cohort: Cohort,
     grandfather_until: Option<OffsetDateTime>,
 ) -> PriceRecord {
-    let key = MarketPriceScopeKey::new(
+    let key = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             PlanId::new(plan_id),
             seeded_phase(),
@@ -2192,7 +2216,7 @@ pub async fn seed_price_keyed_with_horizon(
         )
         .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
-        Region::new(region).expect("region"),
+        region.map(|region| Region::new(region).expect("region")),
     );
     harness
         .state
@@ -2984,6 +3008,23 @@ pub fn publishable_row() -> PriceContentAlias {
     }
 }
 
+/// [`publishable_row`] for a row on the **currency-wide market**.
+///
+/// It states its own `taxCategory`, and that is not fixture convenience: a row
+/// with no region has no regional default to coalesce with, so
+/// `coalesce(row.tax_category_ref, readiness.taxCategory)` resolves nothing
+/// unless the row says it. D-154 makes that `TAX_BASIS_INCOMPLETE`
+/// unconditionally, and D-381 records it as the currency-wide row's standing
+/// obligation — the same fail-closed marker the retired `global` seed carried,
+/// now by construction.
+#[must_use]
+pub fn publishable_row_currency_wide() -> PriceContentAlias {
+    PriceContentAlias {
+        tax_category_ref: Some(FIXTURE_TAX_CATEGORY.to_owned()),
+        ..publishable_row()
+    }
+}
+
 /// [`publishable_row`]'s `per_unit` sibling: the money is a **rate**, and
 /// `amount_minor` is left NULL because the placement matrix forbids it here.
 ///
@@ -3100,7 +3141,24 @@ pub fn publishable_usage_scope_key(
     phase: PhaseId,
     region: &str,
 ) -> MarketPriceScopeKey {
-    MarketPriceScopeKey::new(
+    publishable_usage_scope_key_on(plan_id, phase, Some(region))
+}
+
+/// [`publishable_usage_scope_key`] on the currency-wide market (D-381).
+#[must_use]
+pub fn publishable_usage_scope_key_currency_wide(
+    plan_id: PlanId,
+    phase: PhaseId,
+) -> MarketPriceScopeKey {
+    publishable_usage_scope_key_on(plan_id, phase, None)
+}
+
+fn publishable_usage_scope_key_on(
+    plan_id: PlanId,
+    phase: PhaseId,
+    region: Option<&str>,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan_id,
             phase,
@@ -3111,7 +3169,7 @@ pub fn publishable_usage_scope_key(
         )
         .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
-        Region::new(region).expect("a non-blank region"),
+        region.map(|region| Region::new(region).expect("a non-blank region")),
     )
     .with_usage_line(
         Some(&Meter::new(USAGE_METER).expect("a non-blank meter")),
@@ -3123,7 +3181,22 @@ pub fn publishable_usage_scope_key(
 /// The canonical scope key a publishable row sits on.
 #[must_use]
 pub fn publishable_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> MarketPriceScopeKey {
-    MarketPriceScopeKey::new(
+    publishable_scope_key_on(plan_id, phase, Some(region))
+}
+
+/// [`publishable_scope_key`] on the currency-wide market — the row that states
+/// no region (D-381).
+#[must_use]
+pub fn publishable_scope_key_currency_wide(plan_id: PlanId, phase: PhaseId) -> MarketPriceScopeKey {
+    publishable_scope_key_on(plan_id, phase, None)
+}
+
+fn publishable_scope_key_on(
+    plan_id: PlanId,
+    phase: PhaseId,
+    region: Option<&str>,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan_id,
             phase,
@@ -3134,7 +3207,7 @@ pub fn publishable_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> M
         )
         .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
-        Region::new(region).expect("a non-blank region"),
+        region.map(|region| Region::new(region).expect("a non-blank region")),
     )
 }
 

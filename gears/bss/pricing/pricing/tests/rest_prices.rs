@@ -1087,7 +1087,13 @@ async fn a_patch_may_not_move_the_canonical_scope_key() {
         "unknown field `scope_key`",
     );
     let after = price_rows(&harness, plan_id).await;
-    assert_eq!(after[0].scope_key.region().as_str(), "EU");
+    assert_eq!(
+        after[0]
+            .scope_key
+            .region()
+            .map(bss_pricing::domain::scope_key::Region::as_str),
+        Some("EU")
+    );
     assert_eq!(after[0].row_version.get(), 0);
 }
 

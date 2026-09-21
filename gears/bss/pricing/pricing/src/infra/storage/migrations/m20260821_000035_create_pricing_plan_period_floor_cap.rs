@@ -78,6 +78,14 @@
 //!    production held no bound at all. `length()` counts characters on both
 //!    engines, so the guard means the same thing on each.
 //!
+//! `region` is `text NOT NULL` with **no default**: an `INSERT` that forgets the
+//! axis must fail, not file a currency-wide bound. `''` **is** the currency-wide
+//! market (D-381), the bound every region without one of its own is held to —
+//! unauthorable as a region, because `Region::new` refuses a blank and the
+//! taxonomy's `value_present` CHECK refuses declaring one — and `'none'` is
+//! refused because it is what the canonical key rendering writes for that
+//! market.
+//!
 //! What is **not** here: that the row's `(currency, region)` is a market the
 //! plan actually sells. That is a property of the *plan's row set*, not of this
 //! row, it is unknowable to this table, and it is `PERIOD_FLOOR_CAP_MARKET_UNSOLD`
@@ -122,6 +130,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_plan_period_floor_cap_floor_positive CHECK (floor_minor IS NULL OR floor_minor > 0),
             CONSTRAINT chk_pricing_plan_period_floor_cap_ordered CHECK (floor_minor IS NULL OR cap_minor IS NULL OR floor_minor <= cap_minor),
             CONSTRAINT chk_pricing_plan_period_floor_cap_present CHECK (floor_minor IS NOT NULL OR cap_minor IS NOT NULL),
+            CONSTRAINT chk_pricing_plan_period_floor_cap_region_not_absent_token CHECK (region <> 'none'),
             CONSTRAINT fk_pricing_plan_period_floor_cap_revision FOREIGN KEY (plan_id, plan_revision) REFERENCES bss.pricing_plan(plan_id, revision),
             CONSTRAINT pricing_plan_period_floor_cap_pkey PRIMARY KEY (plan_id, plan_revision, currency, region)
         )",
@@ -193,6 +202,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_plan_period_floor_cap_floor_positive CHECK (floor_minor IS NULL OR floor_minor > 0),
             CONSTRAINT chk_pricing_plan_period_floor_cap_ordered CHECK (floor_minor IS NULL OR cap_minor IS NULL OR floor_minor <= cap_minor),
             CONSTRAINT chk_pricing_plan_period_floor_cap_present CHECK (floor_minor IS NOT NULL OR cap_minor IS NOT NULL),
+            CONSTRAINT chk_pricing_plan_period_floor_cap_region_not_absent_token CHECK (region <> 'none'),
             CONSTRAINT fk_pricing_plan_period_floor_cap_revision FOREIGN KEY (plan_id, plan_revision) REFERENCES pricing_plan(plan_id, revision)
         )",
     "CREATE INDEX idx_pricing_plan_period_floor_cap_revision ON pricing_plan_period_floor_cap (tenant_id, plan_id, plan_revision)",

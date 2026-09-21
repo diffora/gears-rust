@@ -22,11 +22,22 @@ fn us() -> Region {
 }
 
 fn row(currency: &CurrencyCode, region: &Region, tax_inclusive: bool) -> CoverageRow {
+    row_on(currency, Some(region.clone()), tax_inclusive)
+}
+
+/// [`row`] over the whole region axis: `None` is the currency-wide market — the
+/// price every region without a row of its own is sold (D-381).
+fn row_on(currency: &CurrencyCode, region: Option<Region>, tax_inclusive: bool) -> CoverageRow {
     CoverageRow {
         currency: currency.clone(),
-        region: region.clone(),
+        region,
         tax_inclusive,
     }
+}
+
+/// A row on the currency-wide market.
+fn row_everywhere(currency: &CurrencyCode, tax_inclusive: bool) -> CoverageRow {
+    row_on(currency, None, tax_inclusive)
 }
 
 /// A published, unphased, monthly recurring component covering one market.
@@ -44,7 +55,7 @@ fn composition(basis: PriceBasis, components: Vec<ComponentSnapshot>) -> BundleC
     BundleComposition {
         bundle_id: Uuid::from_u128(0xb0_1d),
         basis,
-        markets: vec![(eur(), de())],
+        markets: vec![(eur(), Some(de()))],
         components,
         own_rows: Vec::new(),
         rev_share_groups: Vec::new(),
@@ -146,7 +157,7 @@ fn a_component_missing_a_sold_market_blocks_publish_naming_both() {
         PriceBasis::SumOfParts,
         vec![component(1, vec![row(&eur(), &de(), true)])],
     );
-    c.markets.push((usd(), us()));
+    c.markets.push((usd(), Some(us())));
 
     let report = validate(&c);
 
@@ -197,8 +208,8 @@ fn a_market_named_twice_is_reported_once() {
             component(3, vec![row(&eur(), &de(), true), row(&usd(), &us(), false)]),
         ],
     );
-    c.markets.push((usd(), us()));
-    c.markets.push((usd(), us()));
+    c.markets.push((usd(), Some(us())));
+    c.markets.push((usd(), Some(us())));
 
     let report = validate(&c);
 
@@ -235,7 +246,7 @@ fn every_component_covering_every_market_publishes() {
             component(2, vec![row(&eur(), &de(), true), row(&usd(), &us(), false)]),
         ],
     );
-    c.markets.push((usd(), us()));
+    c.markets.push((usd(), Some(us())));
 
     let report = validate(&c);
 
@@ -246,17 +257,16 @@ fn every_component_covering_every_market_publishes() {
     );
 }
 
-/// **A component priced only on `global` answers for a bundle evaluated in
+/// **A component priced only currency-wide answers for a bundle evaluated in
 /// `DE`** — by the resolution the plan plane uses, not a second reading of it:
 /// `check_coverage` delegates to `currency_binding::uncovered_pairs`.
 #[test]
 fn a_component_priced_currency_wide_covers_the_region_the_bundle_sells_in() {
-    let global = Region::new("global").expect("non-blank");
     let c = composition(
         PriceBasis::SumOfParts,
         vec![
             component(1, vec![row(&eur(), &de(), true)]),
-            component(2, vec![row(&eur(), &global, true)]),
+            component(2, vec![row_everywhere(&eur(), true)]),
         ],
     );
     let report = validate(&c);
@@ -271,15 +281,14 @@ fn a_component_priced_currency_wide_covers_the_region_the_bundle_sells_in() {
 /// not covered by a component priced in `DE` alone.
 #[test]
 fn a_bundle_sold_everywhere_is_not_covered_by_a_component_priced_in_one_region() {
-    let global = Region::new("global").expect("non-blank");
     let mut c = composition(
         PriceBasis::SumOfParts,
         vec![
-            component(1, vec![row(&eur(), &global, true)]),
+            component(1, vec![row_everywhere(&eur(), true)]),
             component(2, vec![row(&eur(), &de(), true)]),
         ],
     );
-    c.markets = vec![(eur(), global)];
+    c.markets = vec![(eur(), None)];
     let report = validate(&c);
     assert_eq!(codes(&report), vec![CURRENCY_NOT_COVERED]);
     assert_eq!(
@@ -554,7 +563,7 @@ fn one_basis_per_market_publishes_even_when_the_markets_differ() {
             component(2, vec![row(&eur(), &de(), true), row(&usd(), &us(), false)]),
         ],
     );
-    c.markets.push((usd(), us()));
+    c.markets.push((usd(), Some(us())));
 
     let report = validate(&c);
 

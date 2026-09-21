@@ -98,7 +98,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{AddonRule, CompositeMeter, PeriodFloorCap, PhaseKind, PlanPhase};
-use crate::domain::scope_key::{PhaseId, PlanId, Region};
+use crate::domain::scope_key::{PhaseId, PlanId, region_column, region_from_column};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     composite_meter, plan, plan_addon_rule, plan_period_floor_cap, plan_phase,
@@ -1523,7 +1523,8 @@ fn period_floor_cap_models(
             plan_id: Set(parent.plan_id),
             plan_revision: Set(parent.revision),
             currency: Set(bound.currency.as_str().to_owned()),
-            region: Set(bound.region.as_str().to_owned()),
+            // `''` is the currency-wide market (D-381).
+            region: Set(region_column(bound.region.as_ref()).to_owned()),
             tenant_id: Set(parent.tenant_id),
             floor_minor: Set(bound.floor_minor.map(MinorAmount::get)),
             cap_minor: Set(bound.cap_minor.map(MinorAmount::get)),
@@ -1546,7 +1547,8 @@ fn to_period_floor_cap(row: &plan_period_floor_cap::Model) -> Result<PeriodFloor
                 row.currency
             ))
         })?,
-        region: Region::new(&row.region).map_err(|e| {
+        // `''` is the currency-wide market (D-381), not a corrupt row.
+        region: region_from_column(&row.region).map_err(|e| {
             RepoError::CorruptRow(format!(
                 "pricing_plan_period_floor_cap.region holds {}: {e}",
                 row.region

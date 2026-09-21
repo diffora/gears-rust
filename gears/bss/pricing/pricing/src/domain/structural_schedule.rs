@@ -35,7 +35,7 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::instant::format_rfc3339;
-use crate::domain::scope_key::{ChargeLineScopeKey, MarketPriceScopeKey};
+use crate::domain::scope_key::{ChargeLineScopeKey, MarketPriceScopeKey, render_region};
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use crate::domain::window::WINDOW_OVERLAP;
 
@@ -286,7 +286,11 @@ fn render_selection(selected: &BTreeMap<&MarketPriceScopeKey, Uuid>) -> String {
         .iter()
         .map(|(market, version)| {
             let axes = market.parts();
-            format!("{}/{} => {version}", axes.currency, axes.region)
+            format!(
+                "{}/{} => {version}",
+                axes.currency,
+                render_region(axes.region)
+            )
         })
         .collect::<Vec<_>>()
         .join(", ")

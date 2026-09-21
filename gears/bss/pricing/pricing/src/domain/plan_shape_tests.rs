@@ -346,8 +346,8 @@ fn markets_is_the_de_duplicated_union_over_the_candidate_rows() {
     let markets = subject.markets();
 
     assert_eq!(markets.len(), 2);
-    assert!(markets.contains(&(currency("USD"), region("US"))));
-    assert!(markets.contains(&(currency("EUR"), region("EU"))));
+    assert!(markets.contains(&(currency("USD"), Some(region("US")))));
+    assert!(markets.contains(&(currency("EUR"), Some(region("EU")))));
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn markets_with_selects_one_charge_kind() {
     let usage = subject.markets_with(ChargeKind::Usage);
 
     assert_eq!(recurring.len(), 2);
-    assert_eq!(usage, [(currency("EUR"), region("EU"))].into());
+    assert_eq!(usage, [(currency("EUR"), Some(region("EU")))].into());
     assert_eq!(
         recurring.difference(&usage).count(),
         1,

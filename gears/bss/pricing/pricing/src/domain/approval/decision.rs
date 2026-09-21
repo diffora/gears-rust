@@ -381,8 +381,10 @@ pub struct DecisionRequest<'a> {
     /// The pricing regions the approver's grant covers. See the module doc: this
     /// is the commercial axis, never the authz-region claim.
     pub approver_regions: &'a BTreeSet<Region>,
-    /// The pricing regions the pinned change set touches.
-    pub change_set_regions: &'a BTreeSet<Region>,
+    /// The pricing regions the pinned change set touches. A `None` member is
+    /// the **currency-wide market** (D-381): a row every region falls back to,
+    /// reached by all of them, and therefore covered by no finite grant.
+    pub change_set_regions: &'a BTreeSet<Option<Region>>,
     /// Whether the caller may close a unit that is not theirs (`inst-as-void`).
     ///
     /// Read only on the `Void` arm. See [`WithdrawAuthority`] for why this is a
@@ -424,10 +426,16 @@ pub fn authorize_decision(request: &DecisionRequest<'_>) -> Result<(), DecisionR
         }
 
         // 3. The approver's reach over the pinned change set.
-        if !request
-            .change_set_regions
-            .is_subset(request.approver_regions)
-        {
+        //
+        //    A `None` in the change set is the currency-wide market, whose price
+        //    every region without a row of its own is sold. A grant is a **set of
+        //    regions** and that market is not one of them, so an `Explicit` grant
+        //    never covers it — fail-closed, and deliberately not "covered because
+        //    it names no region", which is the empty change set's reading and the
+        //    opposite fact (D-381).
+        if !request.change_set_regions.iter().all(
+            |region| matches!(region, Some(region) if request.approver_regions.contains(region)),
+        ) {
             return Err(DecisionRefusal::OutOfScope);
         }
     }

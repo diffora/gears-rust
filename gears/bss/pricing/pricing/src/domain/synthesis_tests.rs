@@ -172,7 +172,7 @@ fn one_unresolved_key_refuses_the_whole_snapshot() {
         }],
         unresolved: vec![UnresolvedKey {
             currency: "JPY".to_owned(),
-            region: "APAC".to_owned(),
+            region: Some("APAC".to_owned()),
         }],
     };
 

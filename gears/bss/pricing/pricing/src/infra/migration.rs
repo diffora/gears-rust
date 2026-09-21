@@ -632,7 +632,7 @@ async fn target_shape(
             .into_iter()
             .map(|(_price_id, key)| Boundary {
                 currency: key.currency().to_string(),
-                region: key.region().to_string(),
+                region: key.region().map(ToString::to_string),
                 frequency: frequency.clone(),
             })
             .collect();

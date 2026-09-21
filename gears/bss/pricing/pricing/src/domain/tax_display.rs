@@ -33,8 +33,11 @@
 //! readiness.taxCategory)`. Both halves can be absent and they are different
 //! facts:
 //!
-//! * the **region is undeclared** — [`RegionTaxReadiness`] answers `None`, and C4
-//!   fails closed on it outright (*"an unknown region fails closed"*);
+//! * the **region is undeclared, or the row states none at all** —
+//!   [`RegionTaxReadiness`] answers `None`, and C4 fails closed on it outright
+//!   (*"an unknown region fails closed"*). A currency-wide row (D-381) is the
+//!   second case by construction: no region, so no regional default and no
+//!   declared rate;
 //! * the region is declared and states **no default**, and the row states none
 //!   either — the effective category resolves to nothing.
 //!
@@ -66,7 +69,7 @@ use toolkit_macros::domain_model;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::scope_key::{PriceEligibility, Region, render_region};
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
 /// A publishing row whose tax display basis is incomplete (§5, 422).
@@ -142,10 +145,16 @@ impl RegionTaxReadiness {
         self.by_region.get(region)
     }
 
-    /// One region's readiness, or `None` for a region nobody declared.
+    /// One region's readiness, or `None` for a region nobody declared — and for
+    /// the currency-wide market, which names no region at all (D-381).
+    ///
+    /// The two absences are the same fail-closed answer for the same reason:
+    /// there is no regional default category and no declared rate to read, so a
+    /// currency-wide row must state its own `taxCategory` (D-154) and a
+    /// `taxInclusive = true` one stays policy-governed.
     #[must_use]
-    pub fn of(&self, region: &Region) -> Option<&RegionReadiness> {
-        self.by_region.get(region.as_str())
+    pub fn of(&self, region: Option<&Region>) -> Option<&RegionReadiness> {
+        self.by_region.get(region?.as_str())
     }
 }
 
@@ -244,8 +253,8 @@ impl ValidationRule<PlanShape> for TaxBasisComplete {
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
         for record in &subject.rows {
-            let region = record.scope_key.region();
-            let readiness = self.readiness.of(region);
+            let region = render_region(record.scope_key.region());
+            let readiness = self.readiness.of(record.scope_key.region());
 
             // Arm 1 — the **category**. Unconditional (D-154): a per-tenant
             // display policy may not publish past a pinned D-48 v1 element.
@@ -298,8 +307,9 @@ impl ValidationRule<PlanShape> for TaxBasisComplete {
 ///
 /// Named because both axes are load-bearing and a bare tuple invites reading it
 /// as "the region": `EUR/eu` and `USD/eu` are two markets and may legitimately
-/// carry different display bases.
-type Market = (CurrencyCode, Region);
+/// carry different display bases. `None` is the currency-wide market (D-381),
+/// which is its own market and groups with no region's.
+type Market = (CurrencyCode, Option<Region>);
 
 /// The row ids on each side of a market's basis, keyed by the basis itself.
 ///
@@ -331,7 +341,7 @@ impl ValidationRule<PlanShape> for MarketBasisUniform {
             markets
                 .entry((
                     record.scope_key.currency().clone(),
-                    record.scope_key.region().clone(),
+                    record.scope_key.region().cloned(),
                 ))
                 .or_default()
                 .entry(record.tax_inclusive)
@@ -355,6 +365,7 @@ impl ValidationRule<PlanShape> for MarketBasisUniform {
                     )
                 })
                 .collect();
+            let region = render_region(region.as_ref());
             report.violate(
                 TAX_BASIS_MIXED_MARKET,
                 format!("{}/{region}", currency.as_str()),

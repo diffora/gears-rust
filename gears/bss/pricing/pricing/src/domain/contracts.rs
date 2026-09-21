@@ -29,7 +29,7 @@ use uuid::Uuid;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::{PlanPhase, PlanShape};
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{ChargeKind, PriceEligibility, Region};
+use crate::domain::scope_key::{ChargeKind, PriceEligibility, Region, render_region};
 use crate::domain::validation::{ValidationPipeline, ValidationReport, ValidationRule};
 
 /// The day of the month a `fixed_day` anchor lands on, 1–31.
@@ -490,7 +490,7 @@ impl ValidationRule<PlanShape> for ProrationContractMarketUniform {
             markets
                 .entry((
                     record.scope_key.currency().clone(),
-                    record.scope_key.region().clone(),
+                    record.scope_key.region().cloned(),
                 ))
                 .or_default()
                 .push((record, contract));
@@ -535,6 +535,7 @@ impl ValidationRule<PlanShape> for ProrationContractMarketUniform {
                 })
                 .collect();
 
+            let region = render_region(region.as_ref());
             report.violate(
                 PRORATION_CONTRACT_MIXED_MARKET,
                 format!("{}/{region}", currency.as_str()),
@@ -569,7 +570,8 @@ pub fn consumer_contract_rules(index: &ChangeTargetIndex) -> ValidationPipeline<
 
 /// The `(currency, region)` pair D-123 scopes uniformity to. Named because the
 /// rule groups by it and `tax_display`'s D-110 sibling groups by the same pair.
-type Market = (CurrencyCode, Region);
+/// `None` is the currency-wide market (D-381), its own market like any other.
+type Market = (CurrencyCode, Option<Region>);
 
 /// One row of a market beside the contract it published. The contract is not an
 /// `Option` here: rows without one are `inst-pi-required`'s finding and never

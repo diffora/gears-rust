@@ -294,7 +294,7 @@ use crate::domain::price_row::{
 };
 use crate::domain::scope_key::{
     ChargeLineScopeKey, ChargeLineScopeKeyParts, MarketPriceScopeKey, MarketPriceScopeKeyParts,
-    PhaseId, PlanId,
+    PhaseId, PlanId, region_column,
 };
 use crate::domain::taxonomy::{RegionTaxMarkers, TaxonomyEntry, TaxonomyValueChange};
 use time::OffsetDateTime;
@@ -663,7 +663,13 @@ use time::OffsetDateTime;
 /// **Drain-fail**, as every generation before it. Every open `pricing_approval`
 /// unit answers `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and
 /// resubmitted under v21; a stored v20 digest cannot be translated.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v22\x1f";
+///
+/// **v23 re-frames the region axis (D-381).** The currency-wide market is the
+/// **absent** region, framed `''` exactly as the tenth axis frames its own
+/// absence; D-379 had spelled it `global`, an ordinary taxonomy value, which is
+/// a different preimage. Drain-fail as before, and no v23 pin was ever taken
+/// against a `global` row.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v23\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1216,7 +1222,8 @@ fn put_period_floor_cap(buf: &mut Vec<u8>, bound: &PeriodFloorCap) {
         cap_minor,
     } = bound;
     put_str(buf, currency.as_str());
-    put_str(buf, region.as_str());
+    // `''` is the currency-wide market (D-381), unauthorable as a region.
+    put_str(buf, region_column(region.as_ref()));
     put_opt_i64(buf, floor_minor.map(MinorAmount::get));
     put_opt_i64(buf, cap_minor.map(MinorAmount::get));
 }
@@ -1294,7 +1301,8 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     // move for a re-read. Length-framed like every other collection here.
     let mut ordered_bounds: Vec<&PeriodFloorCap> = period_floor_caps.iter().collect();
     ordered_bounds.sort_unstable_by(|a, b| {
-        (a.currency.as_str(), a.region.as_str()).cmp(&(b.currency.as_str(), b.region.as_str()))
+        (a.currency.as_str(), region_column(a.region.as_ref()))
+            .cmp(&(b.currency.as_str(), region_column(b.region.as_ref())))
     });
     put_u64(buf, count_of(ordered_bounds.len()));
     for bound in ordered_bounds {
@@ -1817,7 +1825,10 @@ fn put_scope_key(buf: &mut Vec<u8>, key: &MarketPriceScopeKey) {
     } = key.parts();
     put_uuid(buf, plan_id.get());
     put_str(buf, currency.as_str());
-    put_str(buf, region.as_str());
+    // Axis 3, `''` for the currency-wide market (D-381) — the same total framing
+    // the tenth axis takes, and for the same reason: a conditional field would
+    // make two adjacent values re-splittable.
+    put_str(buf, region_column(region));
     put_str(buf, price_overlay.as_str());
     put_uuid(buf, phase.get());
     put_str(buf, price_eligibility.as_str());

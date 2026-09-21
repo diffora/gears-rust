@@ -71,7 +71,16 @@ fn key_of(
     currency: &CurrencyCode,
     region: &Region,
 ) -> MarketPriceScopeKey {
-    MarketPriceScopeKey::new(
+    key_on(charge_kind, currency, Some(region.clone()))
+}
+
+/// [`key_of`] over the whole region axis; `None` is the currency-wide market.
+fn key_on(
+    charge_kind: ChargeKind,
+    currency: &CurrencyCode,
+    region: Option<Region>,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan(),
             phase(),
@@ -82,7 +91,7 @@ fn key_of(
         )
         .expect("the class pairs with cohort none"),
         currency.clone(),
-        region.clone(),
+        region,
     )
 }
 
@@ -184,7 +193,7 @@ fn surface_of(facts: PinnedFacts) -> SellabilitySurface {
         &SellabilityFacts::Pinned(facts),
         at(10),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     )
 }
@@ -498,7 +507,7 @@ fn an_instant_whose_horizon_is_not_representable_refuses_rather_than_panicking()
         &SellabilityFacts::Pinned(sellable_facts()),
         crate::domain::instant::max_utc(),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
 
@@ -549,7 +558,7 @@ fn a_pending_uncommitted_version_is_not_sellable() {
         &SellabilityFacts::NotAddressable { plan_id: plan() },
         at(10),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
 
@@ -654,7 +663,7 @@ fn the_available_from_boundary_is_inside_the_window_and_the_quantum_before_it_is
         &SellabilityFacts::Pinned(facts.clone()),
         from,
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
 
@@ -671,7 +680,7 @@ fn the_available_from_boundary_is_inside_the_window_and_the_quantum_before_it_is
         &SellabilityFacts::Pinned(facts),
         from - time::Duration::milliseconds(1),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
     assert!(matches!(
@@ -944,7 +953,7 @@ fn a_market_the_plan_publishes_no_key_on_is_not_sellable() {
         &SellabilityFacts::Pinned(sellable_facts()),
         at(10),
         &usd(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
 
@@ -1127,7 +1136,7 @@ fn a_past_instant_inside_an_expired_interval_still_answers_covered() {
         &SellabilityFacts::Pinned(facts),
         at(-20),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
 
@@ -1172,7 +1181,7 @@ fn an_expired_only_key_answers_a_past_instant_off_both_halves() {
         &SellabilityFacts::Pinned(facts),
         at(-20),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
 
@@ -1218,14 +1227,14 @@ fn the_surface_takes_no_payer_and_holds_no_cache() {
         &facts,
         at(10),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
     let second = SellabilitySurface::of_delta(
         &facts,
         at(10),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
     assert_eq!(first, second, "the surface is a function of its arguments");
@@ -1234,7 +1243,7 @@ fn the_surface_takes_no_payer_and_holds_no_cache() {
         &facts,
         at(-1),
         &eur(),
-        &eu(),
+        Some(&eu()),
         crate::domain::sellability::registry_unreadable(),
     );
     assert!(matches!(
@@ -1447,7 +1456,13 @@ fn region_of(value: &str) -> Region {
 }
 
 fn recurring_in(region: &str) -> MarketPriceScopeKey {
-    key_of(ChargeKind::Recurring, &eur(), &region_of(region))
+    recurring_on(Some(region))
+}
+
+/// [`recurring_in`] over the whole region axis: `None` is the currency-wide
+/// market — the price every region without a row of its own is sold (D-381).
+fn recurring_on(region: Option<&str>) -> MarketPriceScopeKey {
+    key_on(ChargeKind::Recurring, &eur(), region.map(region_of))
 }
 
 fn open_from(day: i64) -> Vec<WindowInterval> {
@@ -1463,26 +1478,26 @@ fn closed(from: i64, to: i64) -> Vec<WindowInterval> {
 }
 
 /// A monthly plan whose one recurring line is priced on each `(region, windows)`.
-fn facts_pricing(markets: Vec<(&str, Vec<WindowInterval>)>) -> PinnedFacts {
+fn facts_pricing(markets: Vec<(Option<&str>, Vec<WindowInterval>)>) -> PinnedFacts {
     let mut facts = sellable_facts();
     facts.price_keys = markets
         .iter()
-        .map(|(region, _)| recurring_in(region))
+        .map(|(region, _)| recurring_on(*region))
         .collect();
     facts.windows = markets
         .into_iter()
-        .map(|(region, intervals)| windows_of(recurring_in(region), intervals))
+        .map(|(region, intervals)| windows_of(recurring_on(region), intervals))
         .collect();
     facts
 }
 
 /// The surface at `at(10)` for a buyer in `region`, paying EUR.
-fn surface_in(facts: PinnedFacts, region: &str) -> SellabilitySurface {
+fn surface_in(facts: PinnedFacts, region: Option<&str>) -> SellabilitySurface {
     SellabilitySurface::of_delta(
         &SellabilityFacts::Pinned(facts),
         at(10),
         &eur(),
-        &region_of(region),
+        region.map(region_of).as_ref(),
         crate::domain::sellability::registry_unreadable(),
     )
 }
@@ -1493,20 +1508,20 @@ fn window_answer(surface: &SellabilitySurface) -> &PredicateAnswer {
 
 #[test]
 fn a_region_with_no_price_of_its_own_is_sold_the_currency_wide_price() {
-    let surface = surface_in(facts_pricing(vec![("global", open_from(0))]), "fr");
+    let surface = surface_in(facts_pricing(vec![(None, open_from(0))]), Some("fr"));
     assert_eq!(surface.keys.len(), 1, "{surface:?}");
-    assert_eq!(surface.keys[0].scope_key, recurring_in("global"));
+    assert_eq!(surface.keys[0].scope_key, recurring_on(None));
     assert_eq!(surface.keys[0].falls_back_to, None, "it is the fallback");
     assert_eq!(window_answer(&surface), &PredicateAnswer::Satisfied);
 }
 
 #[test]
 fn a_region_with_a_price_of_its_own_is_sold_that_and_told_what_stands_behind_it() {
-    let facts = facts_pricing(vec![("global", open_from(0)), ("de", open_from(0))]);
-    let surface = surface_in(facts, "de");
+    let facts = facts_pricing(vec![(None, open_from(0)), (Some("de"), open_from(0))]);
+    let surface = surface_in(facts, Some("de"));
     assert_eq!(surface.keys.len(), 1, "one line, one key: {surface:?}");
     assert_eq!(surface.keys[0].scope_key, recurring_in("de"));
-    assert_eq!(surface.keys[0].falls_back_to, Some(recurring_in("global")));
+    assert_eq!(surface.keys[0].falls_back_to, Some(recurring_on(None)));
     assert_eq!(window_answer(&surface), &PredicateAnswer::Satisfied);
 }
 
@@ -1514,27 +1529,28 @@ fn a_region_with_a_price_of_its_own_is_sold_that_and_told_what_stands_behind_it(
 /// the currency-wide price rather than refused.
 #[test]
 fn an_override_whose_window_has_ended_falls_back_to_the_currency_wide_price() {
-    let facts = facts_pricing(vec![("global", open_from(0)), ("de", closed(0, 5))]);
-    let surface = surface_in(facts, "de");
+    let facts = facts_pricing(vec![(None, open_from(0)), (Some("de"), closed(0, 5))]);
+    let surface = surface_in(facts, Some("de"));
     assert_eq!(surface.keys.len(), 1);
-    assert_eq!(surface.keys[0].scope_key, recurring_in("global"));
+    assert_eq!(surface.keys[0].scope_key, recurring_on(None));
     assert_eq!(window_answer(&surface), &PredicateAnswer::Satisfied);
 }
 
 /// **An override that ends inside the horizon is not a trailing void when the
 /// currency-wide price covers on.** At `at(10)` a monthly cycle puts the horizon
-/// past `at(20)`, where the `de` window stops — and the `global` one does not.
+/// past `at(20)`, where the `de` window stops — and the currency-wide one does
+/// not.
 #[test]
 fn an_override_ending_inside_the_horizon_sells_when_the_currency_wide_price_covers_on() {
-    let facts = facts_pricing(vec![("global", open_from(0)), ("de", closed(0, 20))]);
-    let surface = surface_in(facts, "de");
+    let facts = facts_pricing(vec![(None, open_from(0)), (Some("de"), closed(0, 20))]);
+    let surface = surface_in(facts, Some("de"));
     assert_eq!(surface.keys[0].scope_key, recurring_in("de"));
     assert_eq!(
         surface.keys[0].coverage_end,
         CoverageEnd::Ends(at(20)),
         "the key's own coverage is reported as it is"
     );
-    assert_eq!(surface.keys[0].falls_back_to, Some(recurring_in("global")));
+    assert_eq!(surface.keys[0].falls_back_to, Some(recurring_on(None)));
     assert_eq!(window_answer(&surface), &PredicateAnswer::Satisfied);
 }
 
@@ -1542,15 +1558,15 @@ fn an_override_ending_inside_the_horizon_sells_when_the_currency_wide_price_cove
 /// always was, and so is one whose fallback leaves a hole before the horizon.
 #[test]
 fn an_override_ending_inside_the_horizon_with_nothing_covering_on_is_still_refused() {
-    let alone = surface_in(facts_pricing(vec![("de", closed(0, 20))]), "de");
+    let alone = surface_in(facts_pricing(vec![(Some("de"), closed(0, 20))]), Some("de"));
     assert!(matches!(
         window_answer(&alone),
         PredicateAnswer::Failed { .. }
     ));
 
     let holed = surface_in(
-        facts_pricing(vec![("de", closed(0, 20)), ("global", open_from(25))]),
-        "de",
+        facts_pricing(vec![(Some("de"), closed(0, 20)), (None, open_from(25))]),
+        Some("de"),
     );
     assert!(
         matches!(window_answer(&holed), PredicateAnswer::Failed { .. }),
@@ -1563,8 +1579,8 @@ fn an_override_ending_inside_the_horizon_with_nothing_covering_on_is_still_refus
 /// market whose only line it never looked at a window for.
 #[test]
 fn a_line_no_step_covers_is_still_a_gate_input_and_fails() {
-    let facts = facts_pricing(vec![("global", closed(0, 5)), ("de", closed(0, 5))]);
-    let surface = surface_in(facts, "de");
+    let facts = facts_pricing(vec![(None, closed(0, 5)), (Some("de"), closed(0, 5))]);
+    let surface = surface_in(facts, Some("de"));
     assert_eq!(surface.keys.len(), 1, "{surface:?}");
     assert_eq!(surface.keys[0].scope_key, recurring_in("de"));
     assert!(matches!(
@@ -1580,10 +1596,10 @@ fn a_line_no_step_covers_is_still_a_gate_input_and_fails() {
 #[test]
 fn another_currency_is_not_sold_there_is_no_cross_currency_fallback() {
     let surface = SellabilitySurface::of_delta(
-        &SellabilityFacts::Pinned(facts_pricing(vec![("global", open_from(0))])),
+        &SellabilityFacts::Pinned(facts_pricing(vec![(None, open_from(0))])),
         at(10),
         &usd(),
-        &region_of("de"),
+        Some(&region_of("de")),
         crate::domain::sellability::registry_unreadable(),
     );
     assert!(surface.keys.is_empty());
@@ -1593,9 +1609,10 @@ fn another_currency_is_not_sold_there_is_no_cross_currency_fallback() {
     );
 }
 
-/// The fallback runs one way: a plan priced in `de` alone sells nothing `global`.
+/// The fallback runs one way: a plan priced in `de` alone sells nothing to a
+/// buyer with no region of their own.
 #[test]
 fn a_regional_price_does_not_answer_for_the_currency_wide_market() {
-    let surface = surface_in(facts_pricing(vec![("de", open_from(0))]), "global");
+    let surface = surface_in(facts_pricing(vec![(Some("de"), open_from(0))]), None);
     assert!(surface.keys.is_empty());
 }

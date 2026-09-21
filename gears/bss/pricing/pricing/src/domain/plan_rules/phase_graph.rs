@@ -124,7 +124,7 @@ use crate::domain::plan_rules::{
 use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::unit_determining_mismatch;
-use crate::domain::scope_key::{ChargeKind, PhaseId};
+use crate::domain::scope_key::{ChargeKind, PhaseId, render_region};
 use crate::domain::validation::{Stage, ValidationReport, ValidationRule};
 
 // ---------------------------------------------------------------------------
@@ -500,8 +500,9 @@ impl ValidationRule<PlanShape> for PhaseCoverage {
             return;
         }
         // What each phase owes, not every pair some phase sells: a currency sold
-        // everywhere obliges its `global` price in every phase, and a regional
-        // override on one phase obliges no other — a buyer there falls back.
+        // everywhere obliges its currency-wide price in every phase, and a
+        // regional override on one phase obliges no other — a buyer there falls
+        // back.
         let markets = crate::domain::market_resolution::owed_markets(&subject.markets());
         for phase in subject.phases.in_ordinal_order() {
             for (currency, region) in &markets {
@@ -509,11 +510,12 @@ impl ValidationRule<PlanShape> for PhaseCoverage {
                     record.scope_key.phase() == phase.phase_id
                         && record.scope_key.charge_kind() == ChargeKind::Recurring
                         && record.scope_key.currency() == currency
-                        && record.scope_key.region() == region
+                        && record.scope_key.region() == region.as_ref()
                 });
                 if covered {
                     continue;
                 }
+                let region = render_region(region.as_ref());
                 report.violate(
                     PHASE_UNCOVERED,
                     format!(

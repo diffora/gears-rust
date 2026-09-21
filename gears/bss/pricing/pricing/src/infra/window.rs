@@ -1762,21 +1762,20 @@ fn refuse_trailing_void(
 /// Does the `global` price of this key's line cover every instant `after` stops
 /// covering, through `until` (`None`: forever)?
 ///
-/// `false` for a `global` key — nothing stands behind the currency-wide price —
-/// and for an override whose line carries none. The span asked about is the one
-/// the act **removes**: it starts where `after` first stops covering what the key
+/// `false` for a currency-wide key — nothing stands behind that price — and for
+/// an override whose line carries none. The span asked about is the one the act
+/// **removes**: it starts where `after` first stops covering what the key
 /// covered before, not at the wall clock, because a window scheduled for next year
 /// and cancelled today removes coverage that starts next year. Both walks are
-/// [`KeyWindows::first_uncovered_from`], so a `global` price that opens late, or
-/// stops short, leaves the void it leaves and the act is refused as it always was.
+/// [`KeyWindows::first_uncovered_from`], so a currency-wide price that opens
+/// late, or stops short, leaves the void it leaves and the act is refused as it
+/// always was.
 fn covered_on_by_the_currency_wide_price(
     plan: &PlanContext,
     after: &KeyWindows,
     until: Option<OffsetDateTime>,
 ) -> bool {
-    use crate::domain::market_resolution::is_currency_wide;
-
-    if is_currency_wide(plan.key.region()) {
+    if plan.key.is_currency_wide() {
         return false;
     }
     let behind = KeyWindows {
@@ -1787,7 +1786,7 @@ fn covered_on_by_the_currency_wide_price(
             .filter(|(_, key, _)| {
                 key.line() == plan.key.line()
                     && key.currency() == plan.key.currency()
-                    && is_currency_wide(key.region())
+                    && key.is_currency_wide()
             })
             .map(|(_, _, interval)| *interval)
             .collect(),

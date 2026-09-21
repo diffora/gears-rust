@@ -124,7 +124,19 @@ fn record(
     on_phase: PhaseId,
     row: PriceRow,
 ) -> PriceRecord {
-    let scope_key = MarketPriceScopeKey::new(
+    record_on(charge_kind, code, Some(market), on_phase, row)
+}
+
+/// [`record`] over the whole region axis: `None` is the currency-wide market —
+/// the price every region without a row of its own is sold (D-381).
+fn record_on(
+    charge_kind: ChargeKind,
+    code: &str,
+    market: Option<&str>,
+    on_phase: PhaseId,
+    row: PriceRow,
+) -> PriceRecord {
+    let scope_key = MarketPriceScopeKey::on_market(
         ChargeLineScopeKey::new(
             plan(),
             on_phase,
@@ -135,7 +147,7 @@ fn record(
         )
         .expect("all_subscriptions pairs with cohort none"),
         currency(code),
-        region(market),
+        market.map(region),
     );
 
     PriceRecord {
@@ -159,9 +171,14 @@ fn record(
 }
 
 fn recurring(code: &str, market: &str, on_phase: PhaseId) -> PriceRecord {
+    recurring_on(code, Some(market), on_phase)
+}
+
+/// [`recurring`] on the currency-wide market when `market` is `None`.
+fn recurring_on(code: &str, market: Option<&str>, on_phase: PhaseId) -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(minor(2_500));
-    record(ChargeKind::Recurring, code, market, on_phase, row)
+    record_on(ChargeKind::Recurring, code, market, on_phase, row)
 }
 
 /// A graduated metered row on `meter`, denominated `per_hour` over the calendar
@@ -701,17 +718,17 @@ fn a_terminal_phase_carrying_a_duration_fails() {
 // ---------------------------------------------------------------------------
 
 /// **An override on one phase does not oblige the others.** The plan sells EUR
-/// everywhere — every phase carries a `global` price — and promotes `DE` on its
-/// evergreen phase alone. A `DE` buyer in the trial resolves the `global` price,
-/// so the trial is covered; reading the sold pairs literally would refuse it for
-/// "not covering EUR/DE".
+/// everywhere — every phase carries a currency-wide price — and promotes `DE`
+/// on its evergreen phase alone. A `DE` buyer in the trial resolves the
+/// currency-wide price, so the trial is covered; reading the sold pairs
+/// literally would refuse it for "not covering EUR/DE".
 #[test]
 fn a_regional_override_on_one_phase_leaves_the_others_covered_by_the_currency_wide_price() {
     let mut subject = phased();
     subject.rows = vec![
-        recurring("eur", "global", phase_id(TRIAL)),
-        recurring("eur", "global", phase_id(INTRO)),
-        recurring("eur", "global", phase_id(EVERGREEN)),
+        recurring_on("eur", None, phase_id(TRIAL)),
+        recurring_on("eur", None, phase_id(INTRO)),
+        recurring_on("eur", None, phase_id(EVERGREEN)),
         recurring("eur", "DE", phase_id(EVERGREEN)),
     ];
     let report = judge(&PhaseCoverage, &subject);
@@ -725,16 +742,16 @@ fn a_regional_override_on_one_phase_leaves_the_others_covered_by_the_currency_wi
 fn a_phase_priced_only_by_an_override_owes_the_currency_wide_price() {
     let mut subject = phased();
     subject.rows = vec![
-        recurring("eur", "global", phase_id(TRIAL)),
+        recurring_on("eur", None, phase_id(TRIAL)),
         recurring("eur", "DE", phase_id(INTRO)),
-        recurring("eur", "global", phase_id(EVERGREEN)),
+        recurring_on("eur", None, phase_id(EVERGREEN)),
     ];
     let report = judge(&PhaseCoverage, &subject);
     let violation = only(&report);
     assert_eq!(violation.code, PHASE_UNCOVERED);
     assert!(violation.subject.contains(&phase_id(INTRO).to_string()));
     assert!(
-        violation.subject.ends_with("/EUR/global"),
+        violation.subject.ends_with("/EUR/none"),
         "{}",
         violation.subject
     );

@@ -21,6 +21,7 @@ use crate::domain::plan_shape::{CustomIntervalUnit, Frequency, PlanShape};
 use crate::domain::price_row::{PriceRow, unit_determining_mismatch};
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, PhaseId, PriceEligibility, PriceOverlay, Region, SkuId,
+    render_region,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
@@ -193,9 +194,10 @@ impl ValidationRule<PlanShape> for LineMarketPricePresent {
                 continue;
             }
             for (currency, region) in &markets {
-                if has_binding(&variants, line, currency, region) {
+                if has_binding(&variants, line, currency, region.as_ref()) {
                     continue;
                 }
+                let region = render_region(region.as_ref());
                 report.violate(
                     LINE_MARKET_PRICE_MISSING,
                     format!(
@@ -429,7 +431,7 @@ fn has_binding(
     variants: &[MarketPriceVersion],
     line: &ChargeLineVersion,
     currency: &CurrencyCode,
-    region: &Region,
+    region: Option<&Region>,
 ) -> bool {
     variants.iter().any(|price| {
         same_line_scope(price, line)

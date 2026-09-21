@@ -44,6 +44,12 @@ fn market(currency: &str, region: &str) -> MarketPriceScopeKey {
     )
 }
 
+/// The currency-wide market of the same line — the row that states no region
+/// (D-381).
+fn everywhere(currency: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::currency_wide(line(), CurrencyCode::new(currency).expect("iso currency"))
+}
+
 fn t(seconds: i64) -> OffsetDateTime {
     from_unix(1_800_000_000 + seconds, 0).expect("a real instant")
 }
@@ -116,15 +122,16 @@ fn structure_cutover_requires_the_same_boundary_in_every_market() {
     );
 }
 
-/// **`global` is a market like any other here.** A region's override and the
-/// currency-wide price behind it are two markets of one line, so they are bound
-/// to one structure at every instant — an override that moved to `v2` while
-/// `global` stayed on `v1` is the same fault as any two markets disagreeing. The
-/// fallback makes this matter more, not less: a `de` buyer crosses from one row
-/// to the other with no act, and would cross a structure boundary doing it.
+/// **The currency-wide market is a market like any other here.** A region's
+/// override and the currency-wide price behind it are two markets of one line,
+/// so they are bound to one structure at every instant — an override that moved
+/// to `v2` while the currency-wide row stayed on `v1` is the same fault as any
+/// two markets disagreeing. The fallback makes this matter more, not less: a
+/// `de` buyer crosses from one row to the other with no act, and would cross a
+/// structure boundary doing it.
 #[test]
 fn an_override_and_the_currency_wide_price_are_bound_to_one_structure() {
-    let global = market("EUR", "global");
+    let global = everywhere("EUR");
     let de = market("EUR", "DE");
     let required = BTreeSet::from([global.clone(), de.clone()]);
     let mut bindings = vec![

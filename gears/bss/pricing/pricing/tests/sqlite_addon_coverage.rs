@@ -171,7 +171,13 @@ async fn markets(provider: &DBProvider<DbError>) -> Vec<String> {
     let mut rendered: Vec<String> = coverage
         .markets_of(SKU)
         .iter()
-        .map(|(currency, region)| format!("{}/{region}", currency.as_str()))
+        .map(|(currency, region)| {
+            format!(
+                "{}/{}",
+                currency.as_str(),
+                bss_pricing::domain::scope_key::render_region(region.as_ref())
+            )
+        })
         .collect();
     rendered.sort();
     rendered

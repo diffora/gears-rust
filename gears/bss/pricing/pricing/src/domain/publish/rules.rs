@@ -152,7 +152,7 @@ use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, pla
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_row::PriceRow;
 use crate::domain::rules::price_row_rules;
-use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::scope_key::{PriceEligibility, Region, render_region};
 use crate::domain::tax_display::{
     MarketBasisUniform, RegionTaxReadiness, TaxBasisComplete, TaxDisplayPolicy,
 };
@@ -307,7 +307,8 @@ pub struct PublishRuleParams {
 pub struct ReferencingMarket {
     bundle_id: Uuid,
     currency: CurrencyCode,
-    region: Region,
+    /// `None` is the currency-wide market (D-381).
+    region: Option<Region>,
     tax_inclusive: bool,
 }
 
@@ -317,7 +318,7 @@ impl ReferencingMarket {
     pub const fn new(
         bundle_id: Uuid,
         currency: CurrencyCode,
-        region: Region,
+        region: Option<Region>,
         tax_inclusive: bool,
     ) -> Self {
         Self {
@@ -614,7 +615,7 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
         let market = format!(
             "{}/{}",
             record.scope_key.currency().as_str(),
-            record.scope_key.region().as_str()
+            render_region(record.scope_key.region())
         );
         report.absorb(row_rules.run(&record.row).within(&market));
     }
@@ -795,7 +796,7 @@ impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
             let mut divergent: BTreeSet<Uuid> = BTreeSet::new();
             for record in subject.rows.iter().filter(|record| {
                 record.scope_key.currency() == &market.currency
-                    && record.scope_key.region() == &market.region
+                    && record.scope_key.region() == market.region.as_ref()
             }) {
                 if record.tax_inclusive != market.tax_inclusive {
                     divergent.insert(record.price_id);
@@ -811,7 +812,7 @@ impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
                     "{}/{}/{}",
                     market.bundle_id,
                     market.currency.as_str(),
-                    market.region.as_str()
+                    render_region(market.region.as_ref())
                 ),
                 format!(
                     "bundle {} sells market ({}, {}) on tax_inclusive = {}, and this publish would \
@@ -819,7 +820,7 @@ impl ValidationRule<PlanShape> for BundleMarketBasisUnmixed {
                      plans onto one invoice, so one market carries one display basis",
                     market.bundle_id,
                     market.currency.as_str(),
-                    market.region.as_str(),
+                    render_region(market.region.as_ref()),
                     market.tax_inclusive,
                     rows.len(),
                     rows.join(", ")

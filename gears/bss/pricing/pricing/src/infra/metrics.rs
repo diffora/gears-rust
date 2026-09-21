@@ -30,14 +30,13 @@ use opentelemetry::metrics::{Counter, Meter, ObservableGauge};
 
 use crate::domain::bundle::PriceBasis;
 use crate::domain::bundle_rules::CURRENCY_NOT_COVERED;
-use crate::domain::currency_binding::uncovered_required_addons;
-use crate::domain::money::CurrencyCode;
+use crate::domain::currency_binding::{Market, uncovered_required_addons};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::ports::metrics::{
     CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
 };
 use crate::domain::publish::rules::PublishRuleParams;
-use crate::domain::scope_key::{PriceEligibility, Region};
+use crate::domain::scope_key::PriceEligibility;
 use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
 use crate::domain::validation::ValidationReport;
 
@@ -295,7 +294,7 @@ pub fn report_market_metrics(
     // its reason (ADR-0002): a market reached only through a frozen generation is
     // not one this plan sells, and it can never be un-gated by re-publishing —
     // counting it would put a market in a backlog no action can clear.
-    let gated: BTreeSet<(CurrencyCode, Region)> = shape
+    let gated: BTreeSet<Market> = shape
         .rows
         .iter()
         .filter(|record| {
@@ -305,7 +304,7 @@ pub fn report_market_metrics(
         .map(|record| {
             (
                 record.scope_key.currency().clone(),
-                record.scope_key.region().clone(),
+                record.scope_key.region().cloned(),
             )
         })
         .collect();
