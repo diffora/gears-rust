@@ -129,6 +129,66 @@ use time::OffsetDateTime;
 pub mod delta;
 pub mod triggers;
 
+/// `N`'s default — **one**: the author plus one approver is the two-person rule
+/// G2 is named after, and `fr-approval-two-person`'s own words are *"submitter
+/// + 1 approver = two distinct principals"* (**D-380**).
+///
+/// Products converged on the same number on 2026-09-21 (**P-D-177**); it had
+/// defaulted to two *approvers*, which is a three-person rule under a
+/// two-person name. This gear's shipped behaviour is what the number preserves:
+/// an unconfigured tenant is exactly where it was.
+pub const DEFAULT_APPROVER_COUNT: u32 = 1;
+
+/// `N`'s floor. **Zero is reachable** (**D-380**) and only by explicit
+/// configuration — an absent policy resolves to the default, so zero is never
+/// reached by omission.
+///
+/// Deliberately not asserted anywhere: at zero,
+/// `approver_count >= APPROVER_COUNT_FLOOR` is a tautology for a `u32`, and an
+/// always-true guard reads as a constraint while enforcing nothing. The
+/// constant's job is to give the number one name, and the probe that reads it
+/// is what keeps the floor from drifting in prose.
+pub const APPROVER_COUNT_FLOOR: u32 = 0;
+
+/// How many approvers an act needs, and whether that is below the two-person
+/// rule.
+///
+/// The **count**, never the verdict: [`MaterialityVerdict`] says which rule
+/// fired and this says what it costs. An auditor reads both, and a record
+/// saying "material, and it cost nobody" is a different fact from "not
+/// material".
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QuorumDescriptor {
+    /// The tenant's `N`, as read from the policy in force at this instant.
+    pub configured: u32,
+    /// What this act needs: `configured` when material, `0` otherwise.
+    pub required: u32,
+    /// Set exactly when `required < DEFAULT_APPROVER_COUNT` — the marker an
+    /// auditor filters on. It means *below the two-person rule*, so it does
+    /// **not** fire on the ordinary one-approver ceremony.
+    pub quorum_reduced: bool,
+}
+
+/// The quorum a verdict implies at a configured `N` (**D-380**).
+///
+/// **This is the seam between two questions**, and the whole design rests on
+/// keeping them apart: the five rules of this module decide *whether* a change
+/// is material, `N` decides *how many principals that costs*. Because the count
+/// is applied **after** the verdict rather than inside it, `N = 0` lifts the
+/// second-person requirement for all five rules — `inst-mat-first`,
+/// `inst-mat-newrow` and `inst-mat-registered` included — without any rule
+/// being weakened, and the verdict still carries the reason it fired.
+#[must_use]
+pub const fn describe_quorum(verdict: &MaterialityVerdict, configured: u32) -> QuorumDescriptor {
+    let required = if verdict.is_material() { configured } else { 0 };
+    QuorumDescriptor {
+        configured,
+        required,
+        quorum_reduced: required < DEFAULT_APPROVER_COUNT,
+    }
+}
+
 /// Why a change set is material.
 ///
 /// Five arms, all five of which [`evaluate`] answers with. There is no `Other` and

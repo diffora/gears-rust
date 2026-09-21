@@ -25,8 +25,9 @@ use uuid::Uuid;
 
 use super::triggers::Trigger;
 use super::{
-    ChangeSet, MaterialityReason, MaterialityVerdict, PublishedPriceBaseline, ThresholdBasis,
-    ThresholdEntry, ThresholdPolicy, ThresholdRefusal, ThresholdVersion, evaluate,
+    APPROVER_COUNT_FLOOR, ChangeSet, DEFAULT_APPROVER_COUNT, MaterialityReason, MaterialityVerdict,
+    PublishedPriceBaseline, ThresholdBasis, ThresholdEntry, ThresholdPolicy, ThresholdRefusal,
+    ThresholdVersion, describe_quorum, evaluate,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::instant::utc_ymd_hms;
@@ -1207,5 +1208,68 @@ fn a_revision_that_moves_a_row_reaches_no_shape_trigger_however_its_shape_moved(
         evaluate(&shape_only, Some(&policy), Some(&baseline)),
         MaterialityVerdict::triggered(Trigger::PlanShapeRevisionContent),
         "a revision that moves no row is D-115's, and the bound rides that trigger"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The quorum: how many principals a verdict costs (D-380)
+// ---------------------------------------------------------------------------
+
+/// `N`'s default is **one** — the author plus one approver is the two-person
+/// rule G2 is named after — and its floor is zero, reachable only by explicit
+/// configuration.
+#[test]
+fn n_defaults_to_one_and_zero_is_reachable() {
+    assert_eq!(
+        DEFAULT_APPROVER_COUNT, 1,
+        "the shipped rule: submitter + 1 approver = two distinct principals"
+    );
+    assert_eq!(APPROVER_COUNT_FLOOR, 0, "zero is reachable (D-380)");
+}
+
+/// **Materiality and quorum are two questions, and this is the seam.** The five
+/// rules decide *whether* a change is material; `N` decides *how many
+/// principals that costs*. Keeping them apart is what lets `N = 0` lift all
+/// five rules without any rule being weakened — the verdict is untouched and
+/// still carries its reason.
+#[test]
+fn a_material_change_costs_the_configured_count_and_a_non_material_one_costs_none() {
+    let material = MaterialityVerdict::material(MaterialityReason::FirstPublish);
+    assert_eq!(describe_quorum(&material, 1).required, 1);
+    assert_eq!(describe_quorum(&material, 0).required, 0);
+    assert_eq!(describe_quorum(&material, 3).required, 3);
+    assert_eq!(
+        describe_quorum(&MaterialityVerdict::AutoPublishable, 3).required,
+        0,
+        "an auto-publishable change costs nobody, whatever the tenant configured"
+    );
+}
+
+/// The verdict survives the quorum: `reason` is still the rule that fired, so an
+/// operator at `N = 0` is still told *why* the change was material.
+#[test]
+fn the_verdict_is_unchanged_by_the_count() {
+    let verdict = MaterialityVerdict::material(MaterialityReason::FirstPublish);
+    let quorum = describe_quorum(&verdict, 0);
+    assert_eq!(quorum.required, 0);
+    assert!(
+        verdict.is_material(),
+        "the rule still fired; only its price changed"
+    );
+}
+
+/// `quorumReduced` marks a ceremony **below the two-person rule**, which is one
+/// approver beside the author — never the ordinary case.
+#[test]
+fn quorum_reduced_is_set_exactly_below_the_two_person_rule() {
+    let m = MaterialityVerdict::material(MaterialityReason::FirstPublish);
+    assert!(describe_quorum(&m, 0).quorum_reduced, "no approver at all");
+    assert!(
+        !describe_quorum(&m, 1).quorum_reduced,
+        "one approver IS the rule, not a reduction of it"
+    );
+    assert!(
+        !describe_quorum(&m, 2).quorum_reduced,
+        "a tenant that configured a third person is not reduced either"
     );
 }
