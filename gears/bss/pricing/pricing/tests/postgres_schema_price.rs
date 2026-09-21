@@ -1,14 +1,15 @@
-//! `pricing_price`, `pricing_price_tier_band` and the four tables the charge-line
+//! `pricing_price`, `pricing_price_tier_band` and the three tables the charge-line
 //! split moved their columns onto, proved by **executing the statement each object
 //! must refuse**, on Postgres.
 //!
-//! # One logical row, six tables
+//! # One logical row, five tables
 //!
 //! This suite was written when a price row was one table with its bands beside it.
 //! The split moved the eight structural axes to `pricing_charge_line`, the shared
-//! content to `pricing_charge_line_version`, currency and region to
-//! `pricing_market_price` and band geometry to `pricing_charge_tier`; the money
-//! and the rates stayed. The guards went with their columns, so the *cases* did not
+//! content to `pricing_charge_line_version`, and currency and region to
+//! `pricing_market_price`; the money stayed, and so does the whole ladder — a
+//! band's bounds sit beside its rate on `pricing_price_tier_band`, one ladder per
+//! market. The guards went with their columns, so the *cases* did not
 //! change -- "this otherwise-valid row, with `billing_timing` moved" is still the
 //! whole of one -- and [`insert`] and [`band`] route each column to the table that
 //! owns it now. What a case asserts is the guard's new name, on its new table.
@@ -1872,43 +1873,18 @@ async fn a_grandfathering_horizon_may_be_tightened() {
 const BAND_A: &str = "bbbbbbbb-0000-0000-0000-000000000001";
 const BAND_B: &str = "bbbbbbbb-0000-0000-0000-000000000002";
 
-/// One authored band: its **geometry** on the price row's line version, then its
-/// **rate** on the price row, joined on the ordinal.
+/// One authored band of `price_id`'s ladder: its bounds beside its rate.
 ///
-/// The ordinal is read off the band id's last digit (`BAND_A` is band 0), so a case
-/// still says "this band, those bounds" and nothing about positions. Geometry is
-/// inserted unless that ordinal is present -- by primary key only, so its CHECKs and
-/// its lower-bound `UNIQUE` still answer -- because two markets of one line share
-/// it. A price row that does not exist yields no geometry statement effect at all
-/// and a rate naming no version, which is the row the rate table's own trigger is
-/// there to refuse.
+/// The line version is read off the price row, as the compound key requires. A
+/// price row that does not exist yields a band naming no version, which is the
+/// row the band table's own trigger is there to refuse.
 fn band(band_id: &str, price_id: &str, from_qty: &str, to_qty: &str, unit_price: &str) -> String {
-    let ordinal = band_id
-        .chars()
-        .last()
-        .and_then(|digit| digit.to_digit(16))
-        .map_or(0, |digit| digit.saturating_sub(1));
-    [
-        format!(
-            "INSERT INTO bss.pricing_charge_tier
-                (tenant_id, line_version_id, band_ordinal, from_qty, to_qty)
-             SELECT '{TENANT}', line_version_id, {ordinal}, {from_qty}, {to_qty}
-               FROM bss.pricing_price WHERE price_id = '{price_id}'
-             ON CONFLICT ON CONSTRAINT pricing_charge_tier_pkey DO NOTHING"
-        ),
-        rate(band_id, price_id, ordinal, unit_price),
-    ]
-    .join(THEN)
-}
-
-/// The rate half of [`band`] alone.
-fn rate(band_id: &str, price_id: &str, ordinal: u32, unit_price: &str) -> String {
     format!(
         "INSERT INTO bss.pricing_price_tier_band
-            (band_id, tenant_id, price_id, line_version_id, band_ordinal, unit_price_nano)
+            (band_id, tenant_id, price_id, line_version_id, from_qty, to_qty, unit_price_nano)
          VALUES ('{band_id}', '{TENANT}', '{price_id}',
             (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{price_id}'),
-            {ordinal}, {unit_price})"
+            {from_qty}, {to_qty}, {unit_price})"
     )
 }
 
@@ -1956,7 +1932,7 @@ async fn a_negative_band_lower_bound_is_refused() {
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "-1", "100", "500"),
-        "chk_pricing_charge_tier_from_qty",
+        "chk_pricing_price_tier_band_from_qty",
     )
     .await;
 }
@@ -1988,13 +1964,13 @@ async fn a_zero_width_or_inverted_band_is_refused() {
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "100", "100", "500"),
-        "chk_pricing_charge_tier_width",
+        "chk_pricing_price_tier_band_width",
     )
     .await;
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "100", "50", "500"),
-        "chk_pricing_charge_tier_width",
+        "chk_pricing_price_tier_band_width",
     )
     .await;
 }
@@ -2010,7 +1986,63 @@ async fn two_bands_sharing_a_lower_bound_cannot_coexist() {
     must_be_rejected(
         &conn,
         &band(BAND_B, DRAFT, "0", "200", "400"),
-        "uq_pricing_charge_tier_lower_bound",
+        "uq_pricing_price_tier_band_lower_bound",
+    )
+    .await;
+}
+
+/// **Within its own market.** Two markets of one line version each start a ladder
+/// at 0, on their own break-points, without asking each other — which is the
+/// whole of what the ladder being the market's means at this layer.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_markets_of_one_line_version_carry_their_own_ladders() {
+    let conn = applied().await;
+    seed_graduated_draft(&conn, DRAFT, "EU").await;
+    seed_graduated_draft(&conn, OTHER, "US").await;
+    let versions = pg_support::catalog_strings(
+        &conn,
+        &format!(
+            "SELECT DISTINCT line_version_id::text AS v FROM bss.pricing_price \
+             WHERE price_id IN ('{DRAFT}', '{OTHER}')"
+        ),
+    )
+    .await;
+    assert_eq!(versions.len(), 1, "two markets of the one line version");
+
+    must_succeed(&conn, &band(BAND_A, DRAFT, "0", "100", "500")).await;
+    must_succeed(&conn, &band(BAND_B, DRAFT, "100", "NULL", "400")).await;
+    must_succeed(
+        &conn,
+        &band(
+            "bbbbbbbb-0000-0000-0000-000000000003",
+            OTHER,
+            "0",
+            "50",
+            "450",
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &band(
+            "bbbbbbbb-0000-0000-0000-000000000004",
+            OTHER,
+            "50",
+            "500",
+            "350",
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &band(
+            "bbbbbbbb-0000-0000-0000-000000000005",
+            OTHER,
+            "500",
+            "NULL",
+            "250",
+        ),
     )
     .await;
 }
@@ -2160,11 +2192,9 @@ async fn a_band_repointed_onto_a_price_row_of_the_wrong_kind_is_refused() {
     seed_graduated_draft(&conn, DRAFT, "EU").await;
     must_succeed(&conn, &insert(OTHER, &[("region", "'US'")])).await;
     must_succeed(&conn, &band(BAND_A, DRAFT, "0", "100", "500")).await;
-    // **The rule has no trigger of its own any more, and needs none.** A rate names
-    // its price row *and that row's line version* through one compound key, and its
-    // ordinal through another into the version's geometry -- which exists only under
-    // a banded kind. So walking a rate onto a `flat` row is refused twice over, by
-    // structure: moving the price alone leaves the version behind it,
+    // Walking a band onto a `flat` row is refused twice over. A band names its
+    // price row *and that row's line version* through one compound key, so moving
+    // the price alone leaves the version behind it,
     must_be_rejected(
         &conn,
         &format!(
@@ -2174,7 +2204,8 @@ async fn a_band_repointed_onto_a_price_row_of_the_wrong_kind_is_refused() {
         "fk_pricing_price_tier_band_price",
     )
     .await;
-    // and moving both lands on a version that has no band 0 to be the rate of.
+    // and moving both lands on a version whose kind carries no bands, which is
+    // this trigger's UPDATE event answering.
     must_be_rejected(
         &conn,
         &format!(
@@ -2182,7 +2213,7 @@ async fn a_band_repointed_onto_a_price_row_of_the_wrong_kind_is_refused() {
              (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{OTHER}') \
              WHERE band_id = '{BAND_A}'"
         ),
-        "fk_pricing_price_tier_band_tier",
+        "band rows are forbidden on a flat line version",
     )
     .await;
 }
@@ -2203,13 +2234,13 @@ async fn a_banded_price_row_cannot_become_a_kind_that_carries_no_bands() {
     must_be_rejected(
         &conn,
         &update_version_of(DRAFT, "model_kind = 'flat'"),
-        "still carries bands and may not become a flat version",
+        "still prices bands and may not become a flat version",
     )
     .await;
     must_be_rejected(
         &conn,
         &update_version_of(DRAFT, "model_kind = NULL"),
-        "still carries bands and may not become a kindless version",
+        "still prices bands and may not become a kindless version",
     )
     .await;
 }
@@ -2227,18 +2258,10 @@ async fn a_banded_price_row_moves_between_the_two_banded_kinds() {
     seed_graduated_draft(&conn, DRAFT, "EU").await;
     must_succeed(&conn, &band(BAND_A, DRAFT, "0", "NULL", "500")).await;
     must_succeed(&conn, &update_version_of(DRAFT, "model_kind = 'volume'")).await;
-    // Rates first, then the geometry they name -- the order the two keys impose.
+    // The ladder first, then the kind -- the order the parent-side arm imposes.
     must_succeed(
         &conn,
         &format!("DELETE FROM bss.pricing_price_tier_band WHERE price_id = '{DRAFT}'"),
-    )
-    .await;
-    must_succeed(
-        &conn,
-        &format!(
-            "DELETE FROM bss.pricing_charge_tier WHERE line_version_id = \
-             (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{DRAFT}')"
-        ),
     )
     .await;
     must_succeed(&conn, &update_version_of(DRAFT, "model_kind = 'flat'")).await;
@@ -2274,17 +2297,17 @@ async fn a_band_cannot_be_inserted_under_a_frozen_price_row() {
         ),
     )
     .await;
-    // The geometry half answers first: the row's version is frozen with it.
     must_be_rejected(
         &conn,
         &band(BAND_A, PUBLISHED, "0", "100", "500"),
-        "INSERT of a band under a published line version is not permitted",
+        "INSERT of a band under a published price row is not permitted",
     )
     .await;
 
-    // The rate half is its own guard, and needs a world where only it can answer:
-    // a frozen price row over a version still in `draft`, so the geometry lands and
-    // the rate is what is refused.
+    // **The referent is the price row, not the version it names.** A band is a
+    // market's money, so it freezes with the monetary version: a frozen price row
+    // over a version still in `draft` refuses exactly the same way, and a band
+    // table that read the version's state instead would let this one through.
     must_succeed(
         &conn,
         &insert(

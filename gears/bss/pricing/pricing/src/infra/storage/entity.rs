@@ -44,7 +44,6 @@ entities! {
     catalog_version_ref,
     charge_line,
     charge_line_version,
-    charge_tier,
     composite_meter,
     customer_group_taxonomy,
     draft_window,

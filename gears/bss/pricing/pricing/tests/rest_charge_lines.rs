@@ -52,7 +52,7 @@ async fn read_line(h: &Harness, plan_id: Uuid, line_version_id: &str) -> serde_j
     .await
 }
 
-/// A three-tier graduated usage line on a metered SKU.
+/// A graduated usage line on a metered SKU. Its ladder is each market's own.
 fn tiered_line_body() -> serde_json::Value {
     serde_json::json!({
         "scope_key": {
@@ -64,12 +64,7 @@ fn tiered_line_body() -> serde_json::Value {
         },
         "structure": {
             "model_kind": "graduated",
-            "billing_granularity": "per_hour",
-            "tiers": [
-                {"from_qty": 0, "to_qty": 100},
-                {"from_qty": 100, "to_qty": 1000},
-                {"from_qty": 1000, "to_qty": null}
-            ]
+            "billing_granularity": "per_hour"
         }
     })
 }
@@ -631,7 +626,7 @@ async fn a_structure_refuses_money_and_a_price_refuses_structure() {
     );
 
     let version = version_of(&create_flat_line(&h, plan_id).await);
-    for member in ["model_kind", "tiers", "package_size", "billing_granularity"] {
+    for member in ["model_kind", "package_size", "billing_granularity"] {
         let mut body = flat_price_body("USD", "US", 1_000);
         body["money"][member] = serde_json::json!("flat");
         let response = post_price(
@@ -660,11 +655,36 @@ async fn a_structure_refuses_money_and_a_price_refuses_structure() {
 }
 
 // ---------------------------------------------------------------------------
-// Tier geometry is the line's; tier rates are the market's.
+// The ladder is the market's: bounds and rates together, per currency.
 // ---------------------------------------------------------------------------
 
+/// Post one market's ladder under `version` and answer the created price.
+async fn post_ladder(
+    h: &Harness,
+    plan_id: Uuid,
+    version: &str,
+    (currency, region): (&str, &str),
+    tiers: serde_json::Value,
+    key: &str,
+) -> axum::response::Response {
+    post_price(
+        h,
+        plan_id,
+        version,
+        serde_json::json!({
+            "currency": currency, "region": region,
+            "money": { "tiers": tiers }
+        }),
+        key,
+    )
+    .await
+}
+
+/// **One model, different ladders.** The line says the charge is `graduated`;
+/// each market says where its own break-points are and what each band costs.
+/// EUR has two tiers and USD three, on different bounds, under one line version.
 #[tokio::test]
-async fn tier_rates_fill_the_lines_geometry_and_survive_an_edit_of_it() {
+async fn each_market_of_one_line_carries_its_own_ladder() {
     let h = Harness::new().await;
     let plan_id = drafted_plan(&h).await;
     let created = post_line(&h, plan_id, tiered_line_body(), "tiered-line").await;
@@ -672,54 +692,76 @@ async fn tier_rates_fill_the_lines_geometry_and_survive_an_edit_of_it() {
     let line = body_json(created).await;
     assert_eq!(status, StatusCode::CREATED, "{line}");
     let version = version_of(&line);
-    assert_eq!(
-        line["structure"]["meter"], "cloudlets",
-        "the meter derives from the SKU"
+    assert!(
+        line["structure"].get("tiers").is_none(),
+        "a line carries no ladder: {line}"
     );
 
-    // A rate count that is not the tier count cannot be stored against the ladder.
-    let short = post_price(
-        &h,
-        plan_id,
-        &version,
-        serde_json::json!({
-            "currency": "USD", "region": "US",
-            "money": { "tier_rates_nano_minor": [500, 400] }
-        }),
-        "short-ladder",
-    )
-    .await;
-    assert_eq!(short.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(problem_code(short).await, "MARKET_TIER_RATE_COUNT_MISMATCH");
-
-    // Two markets, each with its own rates on the one shared ladder.
-    for (currency, region, rates, key) in [
-        ("USD", "US", [500, 400, 300], "ladder-usd"),
-        ("EUR", "EU", [450, 350, 250], "ladder-eur"),
+    let eur = serde_json::json!([
+        {"from_qty": 0, "to_qty": 100, "rate_nano_minor": 450},
+        {"from_qty": 100, "to_qty": null, "rate_nano_minor": 350}
+    ]);
+    let usd = serde_json::json!([
+        {"from_qty": 0, "to_qty": 50, "rate_nano_minor": 500},
+        {"from_qty": 50, "to_qty": 500, "rate_nano_minor": 400},
+        {"from_qty": 500, "to_qty": null, "rate_nano_minor": 300}
+    ]);
+    for (market, tiers, key) in [
+        (("EUR", "EU"), eur.clone(), "ladder-eur"),
+        (("USD", "US"), usd.clone(), "ladder-usd"),
     ] {
-        let response = post_price(
-            &h,
-            plan_id,
-            &version,
-            serde_json::json!({
-                "currency": currency, "region": region,
-                "money": { "tier_rates_nano_minor": rates }
-            }),
-            key,
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::CREATED, "{currency}");
+        let response = post_ladder(&h, plan_id, &version, market, tiers, key).await;
+        let status = response.status();
+        let body = body_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "{market:?}: {body}");
     }
 
-    // Move the bounds. Both markets' rates point into this geometry, so the edit
-    // has to carry them across rather than be refused by the key between them.
+    // Each market reads back the ladder it was given, whole.
+    let read = read_line(&h, plan_id, &version).await;
+    let prices = read["prices"].as_array().expect("prices");
+    assert_eq!(prices.len(), 2, "{read}");
+    for (currency, expected) in [("EUR", &eur), ("USD", &usd)] {
+        let price = prices
+            .iter()
+            .find(|price| price["currency"] == currency)
+            .unwrap_or_else(|| panic!("{currency} is priced: {read}"));
+        assert_eq!(&price["money"]["tiers"], expected, "{currency}");
+        assert!(
+            price["money"].get("tier_rates_nano_minor").is_none(),
+            "a rate sits beside the bound it prices: {price}"
+        );
+    }
+
+    // And the resolved rows differ in shape under the one line version.
+    let rows = price_rows(&h, plan_id).await;
+    assert_eq!(rows.len(), 2);
+    let mut ladders: Vec<Vec<u64>> = rows
+        .iter()
+        .map(|row| row.row.bands.iter().map(|band| band.from_qty).collect())
+        .collect();
+    ladders.sort();
+    assert_eq!(ladders, vec![vec![0, 50, 500], vec![0, 100]]);
+}
+
+/// **A structure edit leaves every market's ladder alone while the line stays
+/// tiered.** The ladder is not the line's to move any more, so nothing has to be
+/// carried across the edit, and nothing is.
+#[tokio::test]
+async fn a_structure_edit_of_a_tiered_line_leaves_its_markets_ladders_alone() {
+    let h = Harness::new().await;
+    let plan_id = drafted_plan(&h).await;
+    let line = body_json(post_line(&h, plan_id, tiered_line_body(), "tiered-line").await).await;
+    let version = version_of(&line);
+    let tiers = serde_json::json!([
+        {"from_qty": 0, "to_qty": 100, "rate_nano_minor": 450},
+        {"from_qty": 100, "to_qty": null, "rate_nano_minor": 350}
+    ]);
+    let priced = post_ladder(&h, plan_id, &version, ("EUR", "EU"), tiers.clone(), "eur").await;
+    assert_eq!(priced.status(), StatusCode::CREATED);
+
     let tag = h.plan_etag(plan_id).await;
     let mut structure = tiered_line_body()["structure"].clone();
-    structure["tiers"] = serde_json::json!([
-        {"from_qty": 0, "to_qty": 50},
-        {"from_qty": 50, "to_qty": 500},
-        {"from_qty": 500, "to_qty": null}
-    ]);
+    structure["model_kind"] = serde_json::json!("volume");
     let edited = h
         .allowed()
         .send(with_headers(
@@ -732,27 +774,88 @@ async fn tier_rates_fill_the_lines_geometry_and_survive_an_edit_of_it() {
     let status = edited.status();
     let edited = body_json(edited).await;
     assert_eq!(status, StatusCode::OK, "{edited}");
-    assert_eq!(edited["structure"]["tiers"][1]["from_qty"], 50);
-    let rates: Vec<&serde_json::Value> = edited["prices"]
-        .as_array()
-        .expect("prices")
-        .iter()
-        .map(|price| &price["money"]["tier_rates_nano_minor"])
-        .collect();
-    assert_eq!(rates.len(), 2);
+    assert_eq!(edited["structure"]["model_kind"], "volume");
+    assert_eq!(edited["prices"][0]["money"]["tiers"], tiers, "{edited}");
+}
+
+/// **Leaving `graduated` / `volume` takes the ladders off.** A `per_unit` line
+/// has no ladder to keep, and a band left hanging off one is money no rule reads.
+#[tokio::test]
+async fn a_line_leaving_the_tiered_kinds_drops_its_markets_ladders() {
+    let h = Harness::new().await;
+    let plan_id = drafted_plan(&h).await;
+    let line = body_json(post_line(&h, plan_id, tiered_line_body(), "tiered-line").await).await;
+    let version = version_of(&line);
+    let tiers = serde_json::json!([
+        {"from_qty": 0, "to_qty": null, "rate_nano_minor": 450}
+    ]);
+    let priced = post_ladder(&h, plan_id, &version, ("EUR", "EU"), tiers, "eur").await;
+    assert_eq!(priced.status(), StatusCode::CREATED);
+
+    let tag = h.plan_etag(plan_id).await;
+    let mut structure = tiered_line_body()["structure"].clone();
+    structure["model_kind"] = serde_json::json!("per_unit");
+    let edited = h
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &line_path(plan_id, &version),
+            Some(serde_json::json!({ "structure": structure })),
+            &[("if-match", tag.as_str())],
+        ))
+        .await;
+    let status = edited.status();
+    let edited = body_json(edited).await;
+    assert_eq!(status, StatusCode::OK, "{edited}");
     assert!(
-        rates.contains(&&serde_json::json!([500, 400, 300]))
-            && rates.contains(&&serde_json::json!([450, 350, 250])),
-        "each market kept its own rates on the moved ladder: {edited}"
+        edited["prices"][0]["money"]["tiers"].is_null(),
+        "a per_unit line's market carries no ladder: {edited}"
+    );
+    let rows = price_rows(&h, plan_id).await;
+    assert!(rows.iter().all(|row| row.row.bands.is_empty()));
+}
+
+/// **The old shape is refused by name, never dropped.** A client that keeps
+/// sending the line's `tiers` or the market's positional rates and hears nothing
+/// would believe both are still honored.
+#[tokio::test]
+async fn the_split_ladder_shape_is_refused_by_name() {
+    let h = Harness::new().await;
+    let plan_id = drafted_plan(&h).await;
+
+    let mut body = tiered_line_body();
+    body["structure"]["tiers"] = serde_json::json!([{"from_qty": 0, "to_qty": null}]);
+    let response = post_line(&h, plan_id, body, "ladder-on-line").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    refused_by(
+        &body_json(response).await,
+        "invalid_argument",
+        "unknown field `tiers`",
     );
 
-    // And the resolved row joins the two halves in quantity order.
-    let rows = price_rows(&h, plan_id).await;
-    assert_eq!(rows.len(), 2);
-    for row in rows {
-        let bounds: Vec<u64> = row.row.bands.iter().map(|band| band.from_qty).collect();
-        assert_eq!(bounds, vec![0, 50, 500]);
-    }
+    let line = body_json(post_line(&h, plan_id, tiered_line_body(), "tiered-line").await).await;
+    let version = version_of(&line);
+    let response = post_price(
+        &h,
+        plan_id,
+        &version,
+        serde_json::json!({
+            "currency": "USD", "region": "US",
+            "money": { "tier_rates_nano_minor": [500, 400, 300] }
+        }),
+        "positional-rates",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    refused_by(
+        &body_json(response).await,
+        "invalid_argument",
+        "unknown field `tier_rates_nano_minor`",
+    );
+    assert!(
+        price_rows(&h, plan_id).await.is_empty(),
+        "a refused request writes nothing"
+    );
 }
 
 // ---------------------------------------------------------------------------

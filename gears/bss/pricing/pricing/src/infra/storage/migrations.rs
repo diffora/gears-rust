@@ -81,7 +81,6 @@ pub mod m20260821_000021_create_pricing_plan;
 pub mod m20260821_000022_01_create_pricing_charge_line;
 pub mod m20260821_000022_02_create_pricing_charge_line_version;
 pub mod m20260821_000022_03_create_pricing_market_price;
-pub mod m20260821_000022_04_create_pricing_charge_tier;
 pub mod m20260821_000022_create_pricing_policy_object;
 pub mod m20260821_000023_create_pricing_price;
 pub mod m20260821_000024_create_pricing_price_overlay;
@@ -194,7 +193,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20260821_000022_01_create_pricing_charge_line::Migration),
             Box::new(m20260821_000022_02_create_pricing_charge_line_version::Migration),
             Box::new(m20260821_000022_03_create_pricing_market_price::Migration),
-            Box::new(m20260821_000022_04_create_pricing_charge_tier::Migration),
             Box::new(m20260821_000022_create_pricing_policy_object::Migration),
             Box::new(m20260821_000023_create_pricing_price::Migration),
             Box::new(m20260821_000024_create_pricing_price_overlay::Migration),

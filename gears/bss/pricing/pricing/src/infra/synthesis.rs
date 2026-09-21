@@ -81,9 +81,9 @@ use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
 use crate::domain::window::WindowState;
-use crate::infra::storage::entity::{charge_tier, plan_period_floor_cap, price, price_tier_band};
+use crate::infra::storage::entity::{plan_period_floor_cap, price, price_tier_band};
 use crate::infra::storage::repo::price_join::{self, PriceGraph};
-use crate::infra::storage::repo::{charge_line_repo, plan_repo, price_repo, window_repo};
+use crate::infra::storage::repo::{plan_repo, price_repo, window_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 use time::OffsetDateTime;
 
@@ -300,10 +300,7 @@ pub async fn materialize(
             .await
             .map_err(|e| repo_failure(&e))?;
 
-        // Ascending by `band_ordinal`, which is `inst-tb-order`'s single read-side
-        // guarantee expressed on the column the two band tables share — authored
-        // order does not survive the store and the ordinal is what carries it.
-        let rates = price_tier_band::Entity::find()
+        let bands = price_tier_band::Entity::find()
             .secure()
             .scope_with(scope)
             .filter(
@@ -311,7 +308,7 @@ pub async fn materialize(
                     .add(price_tier_band::Column::TenantId.eq(tenant_id))
                     .add(price_tier_band::Column::PriceId.eq(row.row_id)),
             )
-            .order_by(price_tier_band::Column::BandOrdinal, Order::Asc)
+            .order_by(price_tier_band::Column::FromQty, Order::Asc)
             .all(runner)
             .await
             .map_err(|e| {
@@ -320,12 +317,8 @@ pub async fn materialize(
                     row.row_id
                 )))
             })?;
-        let geometry =
-            charge_line_repo::load_geometry(runner, scope, tenant_id, graph.price.line_version_id)
-                .await
-                .map_err(|e| repo_failure(&e))?;
 
-        rows.push(row_value(row, &graph, &geometry, &rates));
+        rows.push(row_value(row, &graph, &bands));
     }
 
     Ok(json!({
@@ -357,12 +350,7 @@ pub async fn materialize(
 /// take a row's only price away, and adding the marker would put the *first*
 /// compiled artifact into a payload whose `includedAllowance` is the authored
 /// declaration beside it.
-fn row_value(
-    row: &SelectedRow,
-    graph: &PriceGraph,
-    geometry: &[charge_tier::Model],
-    rates: &[price_tier_band::Model],
-) -> JsonValue {
+fn row_value(row: &SelectedRow, graph: &PriceGraph, bands: &[price_tier_band::Model]) -> JsonValue {
     let mut value = json!({
         "rowId": row.row_id,
         "skuId": graph.line.sku_id,
@@ -424,20 +412,13 @@ fn row_value(
             // unreadable — and rendering the set is what closes it: an empty array
             // beside `"modelKind": "flat"` says the row has no bands, which is what
             // `inst-mk-forbidden` says too.
-            // **Two tables, one ladder.** The boundaries are shared geometry of the
-            // line version (`pricing_charge_tier`) and the rates are this market's
-            // (`pricing_price_tier_band`); both come back ordered by `band_ordinal`,
-            // which is the ordinal the two were written under together. A rate whose
-            // ordinal names no boundary is dropped rather than rendered against an
-            // invented band — the payload is INSERT-only and uncorrectable, so a
-            // half-read ladder must not reach it.
-        "bands": geometry
+            // **One table, one ladder.** A band is this market's, bounds beside
+            // its rate (`pricing_price_tier_band`), so there is nothing to join and
+            // no half-read ladder to guard against.
+        "bands": bands
             .iter()
-            .filter_map(|band| {
-                let rate = rates
-                    .iter()
-                    .find(|rate| rate.band_ordinal == band.band_ordinal)?;
-                Some(json!({
+            .map(|band| {
+                json!({
                     "fromQty": band.from_qty,
                         // `null` is the **open top** (D-17) — a state of the band
                         // rather than an absent value, and the read model's
@@ -446,8 +427,8 @@ fn row_value(
                         // D-311's scale and the read model's member name, so one
                         // number has one name whichever door a consumer read it
                         // through.
-                    "unitPriceNanoMinor": rate.unit_price_nano,
-                }))
+                    "unitPriceNanoMinor": band.unit_price_nano,
+                })
             })
             .collect::<Vec<_>>(),
         "packageSize": graph.version.package_size,

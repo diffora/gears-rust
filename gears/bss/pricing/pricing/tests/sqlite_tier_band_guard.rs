@@ -1,19 +1,25 @@
 //! The two cross-table guards on `pricing_price_tier_band`, plus its per-row
 //! constraints, proven against a real database.
 //!
-//! Neither guard is a row CHECK: **structural exclusivity** reads the parent's
-//! `model_kind` and **append-only-with-the-parent** reads the parent's
-//! `lifecycle_state`, and a row CHECK may not read another table. Both are
-//! therefore triggers, and a trigger that is silently wrong is a trigger that
-//! never fires — so each branch gets a case here, alongside the moves that are
-//! *supposed* to work, so this proves a rule rather than a blanket ban.
+//! Neither guard is a row CHECK: **structural exclusivity** reads the
+//! `model_kind` of the *line version* the band's price names, and
+//! **append-only-with-the-parent** reads the `lifecycle_state` of the *price
+//! row*, and a row CHECK may not read another table. Both are therefore
+//! triggers, and a trigger that is silently wrong is a trigger that never fires
+//! — so each branch gets a case here, alongside the moves that are *supposed* to
+//! work, so this proves a rule rather than a blanket ban.
 //!
-//! Structural exclusivity has **two ends**, and the last case in this file is
-//! the second one: the child-side arms judge a band as it arrives, and the
-//! parent-side arm — a trigger on `pricing_price` this table's migration
-//! installs — refuses a row that still carries bands becoming a kind that
-//! carries none. Without it the forbidden pair is reachable by moving the
-//! parent instead of the band, and the row is left in it.
+//! **A band is one row, and it is a market's.** Its bounds sit beside the rate
+//! that prices them, keyed by the price row, so two markets of one line version
+//! each carry a ladder of their own. The model kind stays the line's — which is
+//! why the two guards read two different parents.
+//!
+//! Structural exclusivity has **two ends**: the child-side arms judge a band as
+//! it arrives, and the parent-side arm — a trigger on
+//! `pricing_charge_line_version` this table's migration installs — refuses a
+//! version that still prices bands becoming a kind that carries none. Without it
+//! the forbidden pair is reachable by moving the parent instead of the band, and
+//! the version is left in it.
 //!
 //! Postgres carries both as PL/pgSQL functions; `SQLite` mirrors them as
 //! fixed-message `RAISE(ABORT, ...)` triggers whose parent lookup is a
@@ -49,30 +55,29 @@ const UNTIERED: &str = "66666666-6666-6666-6666-666666666666";
 /// `graduated` would pass with the second literal dropped or misspelled on
 /// either backend.
 const TIERED_VOLUME: &str = "77777777-7777-7777-7777-777777777777";
+/// A second market (EUR) of [`TIERED`]'s line version. Seeded only by the cases
+/// that are about two markets of one line.
+const TIERED_SIBLING: &str = "88888888-8888-8888-8888-888888888888";
 
 /// Reject, **and** for the stated reason.
 ///
-/// The fragment is not decoration. This table carries twelve rejectors — five
+/// The fragment is not decoration. This table carries a dozen rejectors — five
 /// `SQLite` triggers of its own, three CHECKs, a UNIQUE, a `band_id` PRIMARY
 /// KEY, a foreign key, and the parent-side kind trigger its migration puts on
-/// `pricing_price` — and several of them can fire on the same statement. An
-/// INSERT alone passes under the kind trigger, the append-only trigger, the PK
-/// and the FK. A test that accepted any error would pass with the guard it
-/// means to prove switched off; a band insert refused by the FK says nothing at
-/// all about structural exclusivity, and one refused by the kind trigger says
-/// nothing about the freeze.
+/// `pricing_charge_line_version` — and several of them can fire on the same
+/// statement. An INSERT alone passes under the kind trigger, the append-only
+/// trigger, the PK and the FK. A test that accepted any error would pass with
+/// the guard it means to prove switched off; a band insert refused by the FK
+/// says nothing at all about structural exclusivity, and one refused by the kind
+/// trigger says nothing about the freeze.
 async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
     let err = exec(conn, sql)
         .await
         .err()
         .unwrap_or_else(|| panic!("the band guard must reject: {sql}"));
     let message = err.to_string();
-    // **Either band table**, because a band is two rows: its geometry is
-    // `pricing_charge_tier`'s and its rate is `pricing_price_tier_band`'s, and
-    // the guards split between them along that same line. Naming one would make
-    // half this suite assert against a table its case no longer touches.
     assert!(
-        message.contains("pricing_price_tier_band") || message.contains("pricing_charge_tier"),
+        message.contains("pricing_price_tier_band"),
         "the rejection must name the guard it came from, got: {message}"
     );
     assert!(
@@ -81,91 +86,100 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
     );
 }
 
+/// One price row under `charge_kind`'s line, in `currency`.
+///
+/// The seeder is idempotent on the line and its version, so a second call on
+/// the same charge kind with another currency is a **sibling market of one line
+/// version** — the shape the ladder's per-market identity has to be proven on.
+async fn seed_price(
+    conn: &DatabaseConnection,
+    price_id: &str,
+    charge_kind: &str,
+    model_kind: &str,
+    currency: &str,
+    amount: &str,
+) {
+    let graph = common::seed_charge_graph_sql(
+        conn,
+        &common::SqlGraphSeed {
+            charge_kind,
+            currency,
+            model_kind: Some(model_kind),
+            lifecycle_state: "draft",
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+        },
+    )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_price (
+                price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                line_version_id, market_price_id, amount_minor, lifecycle_state,
+                created_by, created_at_utc)
+             VALUES ('{price_id}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
+                {amount}, 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
+        ),
+    )
+    .await;
+}
+
 /// One parent per model kind under test — `graduated`, `volume` and `flat` —
 /// all draft, on distinct charge kinds so nothing depends on the scope-key
 /// index.
+///
+/// The model kind is shared content of the line version and the charge kind is
+/// an axis of the line, so each parent is a line of its own with its own
+/// version — which is what "distinct charge kinds" already meant.
 async fn seed_parents(conn: &DatabaseConnection) {
     for (price_id, charge_kind, model_kind, amount) in [
         (TIERED, "usage", "graduated", "NULL"),
         (TIERED_VOLUME, "one_time", "volume", "NULL"),
         (UNTIERED, "recurring", "flat", "1000"),
     ] {
-        // The model kind is shared content of the line version now, and the charge
-        // kind is an axis of the line, so each parent is a line of its own with
-        // its own version — which is what "distinct charge kinds" already meant.
-        let graph = common::seed_charge_graph_sql(
-            conn,
-            &common::SqlGraphSeed {
-                charge_kind,
-                model_kind: Some(model_kind),
-                lifecycle_state: "draft",
-                created_by: ACTOR,
-                ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
-            },
-        )
-        .await;
-        must_succeed(
-            conn,
-            &format!(
-                "INSERT INTO pricing_price (
-                    price_id, tenant_id, plan_id, plan_revision, charge_line_id,
-                    line_version_id, market_price_id, amount_minor, lifecycle_state,
-                    created_by, created_at_utc)
-                 VALUES ('{price_id}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
-                    {amount}, 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00')",
-                graph.charge_line_id, graph.line_version_id, graph.market_price_id
-            ),
-        )
-        .await;
+        seed_price(conn, price_id, charge_kind, model_kind, "USD", amount).await;
     }
 }
 
 /// The line version behind one of [`seed_parents`]' price rows.
 ///
-/// Derived the way the seeder derives it, so a case can address the geometry of
-/// a parent without threading ids through every signature.
-fn version_of(charge_kind: &str) -> String {
+/// Derived the way the seeder derives it, so a case can address a parent's
+/// version without threading ids through every signature.
+fn version_of(price_id: &str) -> String {
+    let charge_kind = match price_id {
+        TIERED | TIERED_SIBLING => "usage",
+        TIERED_VOLUME => "one_time",
+        _ => "recurring",
+    };
     common::sql_line_version_id(TENANT, PLAN, PHASE, SKU, charge_kind, 0)
 }
 
-/// The charge kind each seeded parent is keyed on — its line, and therefore its
-/// version, follows from it.
-fn kind_of(price_id: &str) -> &'static str {
-    match price_id {
-        TIERED => "usage",
-        TIERED_VOLUME => "one_time",
-        _ => "recurring",
-    }
-}
-
-/// **A band is two rows now.** Its *geometry* — where it starts and stops — is
-/// shared calculation structure and lives on `pricing_charge_tier`, keyed by the
-/// line version; its *rate* is this market's money and stays on
-/// `pricing_price_tier_band`, keyed by the price row. They meet on
-/// `band_ordinal`, which is also what replaced `from_qty` as the band's identity.
-///
-/// So every case below names which of the two it is about, and the guards it
-/// asserts belong to whichever table owns the column.
+/// One band of `price_id`'s ladder: its bounds beside its rate.
 ///
 /// `from_qty` and `unit_price_nano` are **signed**, and deliberately. Typed
-/// `u32`, no statement this file can build reaches `chk_pricing_charge_tier_from_qty`
-/// or `chk_pricing_price_tier_band_unit_price` - both `>= 0` - so the module
-/// doc's claim that each branch gets a case costs two of them their case by
+/// `u32`, no statement this file can build reaches
+/// `chk_pricing_price_tier_band_from_qty` or
+/// `chk_pricing_price_tier_band_unit_price` - both `>= 0` - so the module doc's
+/// claim that each branch gets a case costs two of them their case by
 /// construction of the helper rather than by omission.
-fn insert_geometry(version_id: &str, ordinal: i32, from_qty: i64, to_qty: &str) -> String {
+fn insert_band(band_id: &str, price_id: &str, from_qty: i64, to_qty: &str, unit: i64) -> String {
     format!(
-        "INSERT INTO pricing_charge_tier (
-            tenant_id, line_version_id, band_ordinal, from_qty, to_qty)
-         VALUES ('{TENANT}', '{version_id}', {ordinal}, {from_qty}, {to_qty})"
+        "INSERT INTO pricing_price_tier_band (
+            band_id, tenant_id, price_id, line_version_id, from_qty, to_qty, unit_price_nano)
+         VALUES ('{band_id}', '{TENANT}', '{price_id}', '{}', {from_qty}, {to_qty}, {unit})",
+        version_of(price_id)
     )
 }
 
-/// The market's rate against one band of [`insert_geometry`]'s ladder.
-fn insert_rate(band_id: &str, price_id: &str, version_id: &str, ordinal: i32, unit: i64) -> String {
+/// Move a band onto another price row, the only way the compound foreign key
+/// admits: the price and the version it names move together.
+fn re_point(band_id: &str, onto: &str) -> String {
     format!(
-        "INSERT INTO pricing_price_tier_band (
-            band_id, tenant_id, price_id, line_version_id, band_ordinal, unit_price_nano)
-         VALUES ('{band_id}', '{TENANT}', '{price_id}', '{version_id}', {ordinal}, {unit})"
+        "UPDATE pricing_price_tier_band SET price_id = '{onto}', line_version_id = '{}' \
+         WHERE band_id = '{band_id}'",
+        version_of(onto)
     )
 }
 
@@ -175,40 +189,31 @@ fn insert_rate(band_id: &str, price_id: &str, version_id: &str, ordinal: i32, un
 /// every ladder, and a `unit_price_nano` of 0 is a free tier - real authoring
 /// shapes, so the floor has to be inclusive and a case has to say so.
 #[tokio::test]
-async fn the_two_quantity_floors_refuse_below_zero_and_admit_it() {
+async fn the_two_floors_refuse_below_zero_and_admit_it() {
     let conn = migrated_db().await;
     seed_parents(&conn).await;
 
-    let version = version_of(kind_of(TIERED));
-    // The quantity floor is the shared ladder's, the money floor is the market's.
     must_be_rejected(
         &conn,
-        &insert_geometry(&version, 0, -1, "100"),
-        "chk_pricing_charge_tier_from_qty",
+        &insert_band(
+            "aaaaaaa9-0000-0000-0000-000000000001",
+            TIERED,
+            -1,
+            "100",
+            50,
+        ),
+        "chk_pricing_price_tier_band_from_qty",
     )
     .await;
-    must_succeed(&conn, &insert_geometry(&version, 0, 0, "100")).await;
     must_be_rejected(
         &conn,
-        &insert_rate(
-            "aaaaaaa9-0000-0000-0000-000000000002",
-            TIERED,
-            &version,
-            0,
-            -1,
-        ),
+        &insert_band("aaaaaaa9-0000-0000-0000-000000000002", TIERED, 0, "100", -1),
         "chk_pricing_price_tier_band_unit_price",
     )
     .await;
     must_succeed(
         &conn,
-        &insert_rate(
-            "aaaaaaa9-0000-0000-0000-000000000003",
-            TIERED,
-            &version,
-            0,
-            0,
-        ),
+        &insert_band("aaaaaaa9-0000-0000-0000-000000000003", TIERED, 0, "100", 0),
     )
     .await;
 }
@@ -222,54 +227,124 @@ async fn bands_are_permitted_only_on_a_tiered_parent() {
     // can be dropped without a failure here.
     must_succeed(
         &conn,
-        &insert_geometry(&version_of(kind_of(TIERED)), 0, 0, "100"),
+        &insert_band("aaaaaaa1-0000-0000-0000-000000000001", TIERED, 0, "100", 50),
     )
     .await;
     must_succeed(
         &conn,
-        &insert_geometry(&version_of(kind_of(TIERED_VOLUME)), 0, 0, "100"),
+        &insert_band(
+            "aaaaaaa1-0000-0000-0000-000000000002",
+            TIERED_VOLUME,
+            0,
+            "100",
+            50,
+        ),
     )
     .await;
 
-    // A `flat` row's bands would be priced by nothing and read by nothing — a
+    // A `flat` line's bands would be priced by nothing and read by nothing — a
     // silent mispricing, indistinguishable from a correct row until an invoice
     // is wrong. The kind flip that would otherwise be the way to reach this
-    // state is already impossible on a published row, so the case is driven
+    // state is already impossible on a published version, so the case is driven
     // through a second parent rather than an UPDATE of the first.
     must_be_rejected(
         &conn,
-        &insert_geometry(&version_of(kind_of(UNTIERED)), 0, 0, "100"),
+        &insert_band(
+            "aaaaaaa1-0000-0000-0000-000000000003",
+            UNTIERED,
+            0,
+            "100",
+            50,
+        ),
         "permitted only on a graduated or volume line version",
     )
     .await;
 
     let bands = scalar(
         &conn,
-        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_tier",
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price_tier_band",
     )
     .await;
     assert_eq!(bands, "2", "only the two tiered parents' ladders landed");
 }
 
+/// **A band is where it starts — within its own market.**
+///
+/// `uq_pricing_price_tier_band_lower_bound` is `(price_id, from_qty)`: one market
+/// cannot hold two bands on one lower bound, and a sibling market of the *same
+/// line version* starts its own ladder at 0 without asking anyone. The second
+/// half is the whole point of the ladder being the market's, so it is asserted
+/// rather than left to follow from the key's spelling.
 #[tokio::test]
-async fn a_lower_bound_identifies_a_band_and_cannot_repeat() {
+async fn a_lower_bound_identifies_a_band_within_its_own_market() {
     let conn = migrated_db().await;
     seed_parents(&conn).await;
+    seed_price(&conn, TIERED_SIBLING, "usage", "graduated", "EUR", "NULL").await;
+    assert_eq!(
+        version_of(TIERED),
+        version_of(TIERED_SIBLING),
+        "the sibling is a second market of the one line version"
+    );
 
-    let version = version_of(kind_of(TIERED));
-    must_succeed(&conn, &insert_geometry(&version, 0, 0, "100")).await;
-    // **The identity is the ordinal now, not the lower bound.** The ladder used
-    // to carry no ordinal, so `from_qty` had to be unique for "the band at 0" to
-    // mean anything; `pricing_charge_tier`'s key is
-    // `(tenant_id, line_version_id, band_ordinal)`, and it is the ordinal the
-    // market's rates join on — so a repeated ordinal is what would make a band
-    // ambiguous, and it is what the store refuses.
+    must_succeed(
+        &conn,
+        &insert_band("aaaaaaa2-0000-0000-0000-000000000001", TIERED, 0, "100", 50),
+    )
+    .await;
     must_be_rejected(
         &conn,
-        &insert_geometry(&version, 0, 200, "300"),
+        &insert_band("aaaaaaa2-0000-0000-0000-000000000002", TIERED, 0, "300", 40),
         "UNIQUE constraint failed",
     )
     .await;
+
+    // The sibling's ladder shares nothing with it: not the break-points, not the
+    // number of bands, not the rates.
+    must_succeed(
+        &conn,
+        &insert_band(
+            "aaaaaaa2-0000-0000-0000-000000000003",
+            TIERED_SIBLING,
+            0,
+            "50",
+            45,
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert_band(
+            "aaaaaaa2-0000-0000-0000-000000000004",
+            TIERED_SIBLING,
+            50,
+            "500",
+            35,
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert_band(
+            "aaaaaaa2-0000-0000-0000-000000000005",
+            TIERED_SIBLING,
+            500,
+            "NULL",
+            25,
+        ),
+    )
+    .await;
+
+    for (price_id, expected) in [(TIERED, "1"), (TIERED_SIBLING, "3")] {
+        let bands = scalar(
+            &conn,
+            &format!(
+                "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price_tier_band \
+                 WHERE price_id = '{price_id}'"
+            ),
+        )
+        .await;
+        assert_eq!(bands, expected, "{price_id} carries its own ladder");
+    }
 }
 
 #[tokio::test]
@@ -279,26 +354,47 @@ async fn a_band_covers_a_quantity_or_is_open_at_the_top() {
 
     // A band that covers nothing is always an authoring mistake and it makes
     // the set's contiguity ambiguous.
-    let version = version_of(kind_of(TIERED));
     must_be_rejected(
         &conn,
-        &insert_geometry(&version, 0, 100, "100"),
-        "chk_pricing_charge_tier_width",
+        &insert_band(
+            "aaaaaaa3-0000-0000-0000-000000000001",
+            TIERED,
+            100,
+            "100",
+            50,
+        ),
+        "chk_pricing_price_tier_band_width",
     )
     .await;
     must_be_rejected(
         &conn,
-        &insert_geometry(&version, 0, 100, "40"),
-        "chk_pricing_charge_tier_width",
+        &insert_band(
+            "aaaaaaa3-0000-0000-0000-000000000002",
+            TIERED,
+            100,
+            "40",
+            50,
+        ),
+        "chk_pricing_price_tier_band_width",
     )
     .await;
 
     // NULL is the open top — a state of the band, not an absent value.
-    must_succeed(&conn, &insert_geometry(&version, 0, 100, "NULL")).await;
+    must_succeed(
+        &conn,
+        &insert_band(
+            "aaaaaaa3-0000-0000-0000-000000000003",
+            TIERED,
+            100,
+            "NULL",
+            50,
+        ),
+    )
+    .await;
 
     let top = scalar(
         &conn,
-        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_tier WHERE to_qty IS NULL",
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price_tier_band WHERE to_qty IS NULL",
     )
     .await;
     assert_eq!(top, "1", "the open-topped band is the one that landed");
@@ -311,17 +407,16 @@ async fn a_band_freezes_when_its_parent_does() {
 
     let mutable = "aaaaaaa4-0000-0000-0000-000000000001";
     let doomed = "aaaaaaa4-0000-0000-0000-000000000002";
-    let version = version_of(kind_of(TIERED));
-    must_succeed(&conn, &insert_geometry(&version, 0, 0, "100")).await;
-    must_succeed(&conn, &insert_geometry(&version, 1, 100, "NULL")).await;
-    must_succeed(&conn, &insert_rate(mutable, TIERED, &version, 0, 50)).await;
-    must_succeed(&conn, &insert_rate(doomed, TIERED, &version, 1, 40)).await;
+    must_succeed(&conn, &insert_band(mutable, TIERED, 0, "100", 50)).await;
+    must_succeed(&conn, &insert_band(doomed, TIERED, 100, "NULL", 40)).await;
 
-    // While the parent is draft the band set is authoring material.
+    // While the parent is draft the band set is authoring material — bounds and
+    // rate alike.
     must_succeed(
         &conn,
         &format!(
-            "UPDATE pricing_price_tier_band SET unit_price_nano = 45 WHERE band_id = '{mutable}'"
+            "UPDATE pricing_price_tier_band SET unit_price_nano = 45, to_qty = 90 \
+             WHERE band_id = '{mutable}'"
         ),
     )
     .await;
@@ -343,12 +438,19 @@ async fn a_band_freezes_when_its_parent_does() {
     // referent. Without this the band set of a frozen row could be rewritten
     // under an unchanged `pricing_price`, and the projector's warm re-drive —
     // which reads truth rows — would re-materialize the same `CatalogVersion`
-    // at different money.
+    // at different money. A moved **bound** is the same fault as a moved rate:
+    // both are what the market charges.
     must_be_rejected(
         &conn,
         &format!(
             "UPDATE pricing_price_tier_band SET unit_price_nano = 1 WHERE band_id = '{mutable}'"
         ),
+        "UPDATE of a band under a non-draft price row is not permitted",
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!("UPDATE pricing_price_tier_band SET to_qty = 80 WHERE band_id = '{mutable}'"),
         "UPDATE of a band under a non-draft price row is not permitted",
     )
     .await;
@@ -367,11 +469,11 @@ async fn a_band_freezes_when_its_parent_does() {
     // refuse an INSERT into this table.
     must_be_rejected(
         &conn,
-        &insert_rate(
+        &insert_band(
             "aaaaaaa4-0000-0000-0000-000000000003",
             TIERED,
-            &version,
-            1,
+            100,
+            "NULL",
             30,
         ),
         "INSERT of a band under a non-draft price row is not permitted",
@@ -381,12 +483,12 @@ async fn a_band_freezes_when_its_parent_does() {
     let price = scalar(
         &conn,
         &format!(
-            "SELECT CAST(unit_price_nano AS TEXT) AS v FROM pricing_price_tier_band \
-             WHERE band_id = '{mutable}'"
+            "SELECT CAST(unit_price_nano AS TEXT) || '/' || CAST(to_qty AS TEXT) AS v \
+             FROM pricing_price_tier_band WHERE band_id = '{mutable}'"
         ),
     )
     .await;
-    assert_eq!(price, "45", "no rejected statement may have landed");
+    assert_eq!(price, "45/90", "no rejected statement may have landed");
     let bands = scalar(
         &conn,
         &format!(
@@ -403,41 +505,29 @@ async fn a_re_pointed_band_is_judged_against_its_new_parents_kind() {
     let conn = migrated_db().await;
     seed_parents(&conn).await;
 
-    let tiered = version_of(kind_of(TIERED));
-    let volume = version_of(kind_of(TIERED_VOLUME));
-    let flat = version_of(kind_of(UNTIERED));
-    must_succeed(&conn, &insert_geometry(&tiered, 0, 0, "100")).await;
+    let band = "aaaaaaa5-0000-0000-0000-000000000001";
+    must_succeed(&conn, &insert_band(band, TIERED, 0, "100", 50)).await;
 
-    // The kind rule cares only about where a band ends up, so it reads
-    // `NEW.price_id`. Moving this band onto the `flat` parent is the only way
-    // to observe that choice: nothing else in the suite distinguishes it from
-    // `OLD.price_id`, and both parents are draft, so the append-only arms stay
-    // out of the way.
+    // The kind rule cares only about where a band ends up, so it reads the
+    // `NEW` row. Moving this band onto the `flat` parent is the only way to
+    // observe that choice: nothing else in the suite distinguishes it from the
+    // `OLD` one, and both parents are draft, so the append-only arms stay out
+    // of the way.
     must_be_rejected(
         &conn,
-        &format!(
-            "UPDATE pricing_charge_tier SET line_version_id = '{flat}' \
-             WHERE line_version_id = '{tiered}'"
-        ),
+        &re_point(band, UNTIERED),
         "permitted only on a graduated or volume line version",
     )
     .await;
 
     // A move onto the other tiered kind is a legitimate authoring edit.
-    must_succeed(
-        &conn,
-        &format!(
-            "UPDATE pricing_charge_tier SET line_version_id = '{volume}' \
-             WHERE line_version_id = '{tiered}'"
-        ),
-    )
-    .await;
+    must_succeed(&conn, &re_point(band, TIERED_VOLUME)).await;
 
     let parent = scalar(
         &conn,
         &format!(
-            "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_tier \
-             WHERE line_version_id = '{volume}'"
+            "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price_tier_band \
+             WHERE price_id = '{TIERED_VOLUME}'"
         ),
     )
     .await;
@@ -445,23 +535,27 @@ async fn a_re_pointed_band_is_judged_against_its_new_parents_kind() {
 }
 
 #[tokio::test]
-async fn a_parent_that_still_carries_bands_may_not_leave_the_tiered_kinds() {
+async fn a_version_that_still_prices_bands_may_not_leave_the_tiered_kinds() {
     let conn = migrated_db().await;
     seed_parents(&conn).await;
+    seed_price(&conn, TIERED_SIBLING, "usage", "graduated", "EUR", "NULL").await;
 
-    let version = version_of(kind_of(TIERED));
-    must_succeed(&conn, &insert_geometry(&version, 0, 0, "100")).await;
+    let version = version_of(TIERED);
+    let own = "aaaaaaa6-0000-0000-0000-000000000001";
+    let siblings = "aaaaaaa6-0000-0000-0000-000000000002";
+    must_succeed(&conn, &insert_band(own, TIERED, 0, "100", 50)).await;
+    must_succeed(&conn, &insert_band(siblings, TIERED_SIBLING, 0, "NULL", 45)).await;
 
     // The other end of structural exclusivity, and the one the child-side arms
-    // cannot see: they judge a band as it arrives, and this row's bands arrived
-    // legally. Flipping the parent reaches the forbidden pair — a `flat` row
+    // cannot see: they judge a band as it arrives, and these bands arrived
+    // legally. Flipping the version reaches the forbidden pair — a `flat` line
     // with priced bands nothing reads and nothing applies — from the side
     // nothing was watching, and leaves it there.
     //
-    // The statement is raw SQL against a **draft** parent on purpose: a draft is
-    // where `model_kind` is still movable at all, so this is the only reachable
-    // shape of the defect, and `PriceRepo` is not the only thing that can issue
-    // an UPDATE.
+    // The statement is raw SQL against a **draft** version on purpose: a draft
+    // is where `model_kind` is still movable at all, so this is the only
+    // reachable shape of the defect, and the repositories are not the only thing
+    // that can issue an UPDATE.
     must_be_rejected(
         &conn,
         &format!(
@@ -493,18 +587,34 @@ async fn a_parent_that_still_carries_bands_may_not_leave_the_tiered_kinds() {
         ),
     )
     .await;
-    // A non-kind edit of the same banded row is untouched by the rule.
+    // A non-kind edit of a banded price row is untouched by the rule.
     must_succeed(
         &conn,
         &format!("UPDATE pricing_price SET row_version = 1 WHERE price_id = '{TIERED}'"),
     )
     .await;
-    // And a row with no bands may become anything its own CHECK admits — which
-    // is also the state an authoring edit reaches by replacing the band set
-    // before it moves the row.
+
+    // **Every market's ladder has to be gone, not one.** The version is shared,
+    // so clearing the market an edit arrived through leaves the sibling's bands
+    // under a kind that reads none — which is why the line's own door clears
+    // them all before it moves the kind.
     must_succeed(
         &conn,
-        &format!("DELETE FROM pricing_charge_tier WHERE line_version_id = '{version}'"),
+        &format!("DELETE FROM pricing_price_tier_band WHERE band_id = '{own}'"),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE pricing_charge_line_version SET model_kind = 'flat' \
+             WHERE line_version_id = '{version}'"
+        ),
+        "may not leave the graduated or volume kinds",
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!("DELETE FROM pricing_price_tier_band WHERE band_id = '{siblings}'"),
     )
     .await;
     must_succeed(
@@ -532,37 +642,34 @@ async fn a_band_may_not_be_re_pointed_onto_a_frozen_parent() {
     let conn = migrated_db().await;
     seed_parents(&conn).await;
 
-    let tiered = version_of(kind_of(TIERED));
-    let volume = version_of(kind_of(TIERED_VOLUME));
-    must_succeed(&conn, &insert_geometry(&tiered, 0, 0, "100")).await;
+    let band = "aaaaaaa7-0000-0000-0000-000000000001";
+    must_succeed(&conn, &insert_band(band, TIERED, 0, "100", 50)).await;
     must_succeed(
         &conn,
         &format!(
-            "UPDATE pricing_charge_line_version SET lifecycle_state = 'published' \
-             WHERE line_version_id = '{volume}'"
+            "UPDATE pricing_price SET lifecycle_state = 'published' \
+             WHERE price_id = '{TIERED_VOLUME}'"
         ),
     )
     .await;
 
     // Re-pointing is how you would append a band to a frozen set without ever
     // issuing an INSERT: the band's own parent is draft, so the OLD-side arm
-    // permits the edit, and the target is `volume`, so the kind rule permits it
-    // too. Only reading the prospective parent's `lifecycle_state` refuses it.
+    // permits the edit, and the target's line is `volume`, so the kind rule
+    // permits it too. Only reading the prospective parent's `lifecycle_state`
+    // refuses it.
     must_be_rejected(
         &conn,
-        &format!(
-            "UPDATE pricing_charge_tier SET line_version_id = '{volume}' \
-             WHERE line_version_id = '{tiered}'"
-        ),
-        "UPDATE of a band under a non-draft line version is not permitted",
+        &re_point(band, TIERED_VOLUME),
+        "UPDATE of a band under a non-draft price row is not permitted",
     )
     .await;
 
     let parent = scalar(
         &conn,
         &format!(
-            "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_tier \
-             WHERE line_version_id = '{tiered}'"
+            "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price_tier_band \
+             WHERE price_id = '{TIERED}'"
         ),
     )
     .await;

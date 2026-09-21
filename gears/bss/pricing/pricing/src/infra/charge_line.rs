@@ -19,9 +19,7 @@
 //! refuse every caller holding a plan tag across a price create.
 
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
-use toolkit_db::secure::{
-    AccessScope, DBRunner, DbTx, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
-};
+use toolkit_db::secure::{AccessScope, DBRunner, DbTx, SecureDeleteExt, SecureEntityExt};
 use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditStamp};
@@ -32,7 +30,7 @@ use crate::domain::price_record::PriceContent;
 use crate::domain::scope_key::{ChargeLineScopeKey, PlanId};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    charge_line, charge_line_version, charge_tier, market_price, price, price_tier_band,
+    charge_line, charge_line_version, market_price, price, price_tier_band,
 };
 use crate::infra::storage::repo::plan_repo::{
     load_revision, record_revision_mutation, refuse, swap_guard,
@@ -121,16 +119,18 @@ pub async fn create_line(
     })
 }
 
-/// Replace a draft version's whole shared structure, tier geometry included.
+/// Replace a draft version's whole shared structure.
 ///
-/// **The markets' rates survive a geometry edit where they still have a band to
-/// be the rate of.** A rate names its band by ordinal through a compound key into
-/// the geometry, so the ladder cannot be replaced under it; the rates of every
-/// market of this version are lifted off, the structure and geometry are
-/// rewritten, and each rate whose ordinal still exists goes back. A market left
-/// with fewer rates than bands is an incomplete draft -- which a draft may be, and
-/// which the publish pre-check reports by name -- rather than a refusal here that
-/// would make a ladder uneditable once priced.
+/// **A market's ladder is left alone while the line stays tiered.** Bounds and
+/// rates are the market's, so a structure edit has nothing of theirs to carry
+/// across and touches none of it.
+///
+/// **Leaving `graduated` / `volume` takes every market's ladder off.** A
+/// `per_unit` or `flat` line has no ladder to keep, a band left under one is
+/// money no rule reads, and the store refuses the kind moving while bands hang
+/// off the version — so they come off first, in this transaction. The markets
+/// are then unfinished drafts, which a draft may be and which the publish
+/// pre-check reports by name.
 ///
 /// # Errors
 /// As [`create_line`] for the tag; [`DomainError::NotFound`] when the version is
@@ -149,23 +149,12 @@ pub async fn replace_structure(
     let current = require_line_of_plan(txn, scope, tenant_id, tag.plan_id, line_version_id).await?;
     require_draft(&current)?;
 
-    let lifted = lift_rates(txn, scope, tenant_id, line_version_id).await?;
+    if !content.row.is_tiered() {
+        drop_ladders(txn, scope, tenant_id, line_version_id).await?;
+    }
     charge_line_repo::update_draft_structure(txn, scope, tenant_id, line_version_id, content)
         .await
         .map_err(|e| repo_failure(&e))?;
-    let bands = i32::try_from(content.row.bands.len()).unwrap_or(i32::MAX);
-    for rate in lifted {
-        if rate.band_ordinal < bands {
-            let row = price_tier_band::ActiveModel::from(rate);
-            price_tier_band::Entity::insert(row.clone())
-                .secure()
-                .scope_with_model(scope, &row)
-                .map_err(|e| DomainError::Internal(format!("pricing_price_tier_band scope: {e}")))?
-                .exec(txn)
-                .await
-                .map_err(|e| DomainError::Internal(format!("restore tier rate: {e}")))?;
-        }
-    }
 
     let plan_row_version = close_cas(txn, scope, tenant_id, tag, guard, stamp).await?;
     let line = require_line_record(txn, scope, tenant_id, line_version_id).await?;
@@ -214,15 +203,6 @@ pub async fn delete_version(
         )));
     }
 
-    delete_where!(
-        charge_tier::Entity,
-        Condition::all()
-            .add(charge_tier::Column::TenantId.eq(tenant_id))
-            .add(charge_tier::Column::LineVersionId.eq(line_version_id)),
-        scope,
-        txn,
-        "pricing_charge_tier"
-    )?;
     delete_where!(
         charge_line_version::Entity,
         Condition::all()
@@ -405,31 +385,20 @@ async fn close_cas(
     Ok(updated.row_version.get())
 }
 
-/// Read every market's tier rates of one version, then take them off.
-async fn lift_rates(
+/// Take every market's ladder off one draft version.
+async fn drop_ladders(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     line_version_id: Uuid,
-) -> Result<Vec<price_tier_band::Model>, DomainError> {
-    let filter = || {
-        Condition::all()
-            .add(price_tier_band::Column::TenantId.eq(tenant_id))
-            .add(price_tier_band::Column::LineVersionId.eq(line_version_id))
-    };
-    let rates = price_tier_band::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(filter())
-        .all(runner)
-        .await
-        .map_err(|e| DomainError::Internal(format!("read tier rates of a line version: {e}")))?;
+) -> Result<(), DomainError> {
     delete_where!(
         price_tier_band::Entity,
-        filter(),
+        Condition::all()
+            .add(price_tier_band::Column::TenantId.eq(tenant_id))
+            .add(price_tier_band::Column::LineVersionId.eq(line_version_id)),
         scope,
         runner,
         "pricing_price_tier_band"
-    )?;
-    Ok(rates)
+    )
 }

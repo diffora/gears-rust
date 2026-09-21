@@ -1,5 +1,6 @@
-//! Charge-line and line-version persistence: logical identity, revision-owned
-//! shared structure, and shared tier geometry.
+//! Charge-line and line-version persistence: logical identity and revision-owned
+//! shared structure. A ladder is a market's and lives with its price
+//! ([`super::price_repo`]); nothing here reads or writes one.
 //!
 //! Monetary versions live on [`super::price_repo`]. Market identity lives on
 //! [`super::market_price_repo`].
@@ -8,17 +9,17 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait};
 use toolkit_db::secure::{
-    AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
 
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceContent;
-use crate::domain::price_row::{BandTop, model_kind_wire};
+use crate::domain::price_row::model_kind_wire;
 use crate::domain::scope_key::{ChargeLineScopeKey, PlanId};
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{charge_line, charge_line_version, charge_tier};
-use crate::infra::storage::repo::price_repo::{allowance_json, stored_bound, stored_count};
+use crate::infra::storage::entity::{charge_line, charge_line_version};
+use crate::infra::storage::repo::price_repo::{allowance_json, stored_count};
 
 /// Namespace for deterministic charge-line ids (stable across retries).
 const LINE_NS: Uuid = Uuid::from_u128(0x7c_11_e9_a0_9c_0f_4b_21_a1_e0_c4_12_f0_01_00_01);
@@ -37,7 +38,7 @@ pub struct ChargeGraph {
     pub plan_revision: i64,
 }
 
-/// Find or insert the logical line, its draft version, and shared geometry.
+/// Find or insert the logical line and its draft version.
 ///
 /// Shared content is taken from `content` only when the version is created or
 /// is still a draft. A published version is an immutable reference.
@@ -168,9 +169,13 @@ async fn version_at(
 /// exactly what `content` submits.
 ///
 /// Equality is asked of the stored form — the same column assignments
-/// [`update_draft_structure`] would write, and the geometry rows — so "the same
-/// structure" means "would store the same", not a second, looser comparison that
-/// could drift from the writer.
+/// [`update_draft_structure`] would write — so "the same structure" means "would
+/// store the same", not a second, looser comparison that could drift from the
+/// writer.
+///
+/// **A ladder is not part of the question.** Break-points are a market's, so a
+/// successor that moves them submits the structure this version already holds
+/// and is bound to it: re-tiering a published line mints no structure version.
 async fn latest_version_holding(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -220,20 +225,7 @@ async fn latest_version_holding(
     if values(submitted) != values(stored) {
         return Ok(None);
     }
-    let geometry = load_geometry(runner, scope, tenant_id, latest.line_version_id).await?;
-    let mut submitted_bounds = Vec::new();
-    for (_, band) in crate::domain::price_row::bands_in_ordinal_order(&content.row.bands) {
-        let top = match band.to_qty {
-            BandTop::Open => None,
-            BandTop::Closed(top) => Some(stored_bound("band to_qty", top)?),
-        };
-        submitted_bounds.push((stored_bound("band from_qty", band.from_qty)?, top));
-    }
-    let stored_bounds: Vec<(i64, Option<i64>)> = geometry
-        .iter()
-        .map(|tier| (tier.from_qty, tier.to_qty))
-        .collect();
-    Ok((submitted_bounds == stored_bounds).then_some(latest))
+    Ok(Some(latest))
 }
 
 /// Load a version that must already exist (exact-reference door).
@@ -300,7 +292,12 @@ pub async fn find_by_scope(
         .map_err(|e| RepoError::Db(format!("read pricing_charge_line by scope: {e}")))
 }
 
-/// Write shared structure onto a still-draft version and replace its geometry.
+/// Write shared structure onto a still-draft version.
+///
+/// **A caller moving the kind off `graduated` / `volume` clears the markets'
+/// ladders first.** `trg_pricing_price_tier_band_parent_kind` refuses a version
+/// that still prices bands becoming a kind that carries none, and the bands are
+/// the prices', so this function cannot take them off itself.
 pub async fn update_draft_structure(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -312,8 +309,6 @@ pub async fn update_draft_structure(
     if version.lifecycle_state != LifecycleState::Draft.as_str() {
         return Ok(());
     }
-    // The ladder comes off before the kind moves; see [`clear_draft_geometry`].
-    clear_draft_geometry(runner, scope, tenant_id, line_version_id).await?;
     let model = version_model(
         tenant_id,
         line_version_id,
@@ -346,14 +341,7 @@ pub async fn update_draft_structure(
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("update pricing_charge_line_version: {e}")))?;
-    replace_draft_geometry(
-        runner,
-        scope,
-        tenant_id,
-        line_version_id,
-        &content.row.bands,
-    )
-    .await
+    Ok(())
 }
 
 fn version_content_assignments(
@@ -548,27 +536,6 @@ pub async fn freeze_published_versions(
             .map_err(|e| RepoError::Db(format!("publish pricing_charge_line_version: {e}")))?;
     }
     Ok(())
-}
-
-/// Shared geometry of one version, ordered by ordinal.
-pub async fn load_geometry(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    line_version_id: Uuid,
-) -> Result<Vec<charge_tier::Model>, RepoError> {
-    charge_tier::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(charge_tier::Column::TenantId.eq(tenant_id))
-                .add(charge_tier::Column::LineVersionId.eq(line_version_id)),
-        )
-        .order_by(charge_tier::Column::BandOrdinal, sea_orm::Order::Asc)
-        .all(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("read pricing_charge_tier: {e}")))
 }
 
 async fn open_plan_revision(
@@ -796,114 +763,4 @@ fn version_model(
         created_at_utc: Set(created_at_utc),
         row_version: Set(0),
     })
-}
-
-/// Drop a draft version's geometry, leaving the version itself alone.
-///
-/// **Separate from writing the new geometry, and the gap between them is where
-/// the kind moves.** `trg_pricing_charge_tier_parent_kind` refuses a version
-/// that still carries bands leaving `graduated`/`volume`, and
-/// `trg_pricing_charge_tier_kind_insert` refuses a band on a version that is not
-/// one of those — so a `graduated → flat` edit has to clear first and a
-/// `flat → graduated` edit has to write last. One `replace` could satisfy only
-/// one of the two, and the tiered-to-flat direction is the one a draft edit
-/// actually takes.
-async fn clear_draft_geometry(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    line_version_id: Uuid,
-) -> Result<(), RepoError> {
-    let Some(version) = charge_line_version::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(charge_line_version::Column::TenantId.eq(tenant_id))
-                .add(charge_line_version::Column::LineVersionId.eq(line_version_id)),
-        )
-        .one(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("read line version for geometry: {e}")))?
-    else {
-        return Ok(());
-    };
-    if version.lifecycle_state != LifecycleState::Draft.as_str() {
-        return Ok(());
-    }
-    charge_tier::Entity::delete_many()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(charge_tier::Column::TenantId.eq(tenant_id))
-                .add(charge_tier::Column::LineVersionId.eq(line_version_id)),
-        )
-        .exec(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("delete pricing_charge_tier: {e}")))?;
-    Ok(())
-}
-
-async fn replace_draft_geometry(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    line_version_id: Uuid,
-    bands: &[crate::domain::price_row::TierBand],
-) -> Result<(), RepoError> {
-    let Some(version) = charge_line_version::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(charge_line_version::Column::TenantId.eq(tenant_id))
-                .add(charge_line_version::Column::LineVersionId.eq(line_version_id)),
-        )
-        .one(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("read line version for geometry: {e}")))?
-    else {
-        return Ok(());
-    };
-    if version.lifecycle_state != LifecycleState::Draft.as_str() {
-        return Ok(());
-    }
-    charge_tier::Entity::delete_many()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(charge_tier::Column::TenantId.eq(tenant_id))
-                .add(charge_tier::Column::LineVersionId.eq(line_version_id)),
-        )
-        .exec(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("delete pricing_charge_tier: {e}")))?;
-    for (ordinal, band) in crate::domain::price_row::bands_in_ordinal_order(bands) {
-        let ordinal = i32::try_from(ordinal).map_err(|_| RepoError::ValueOutOfRange {
-            field: "band_ordinal".to_owned(),
-            value: ordinal.to_string(),
-        })?;
-        let from_qty = stored_bound("band from_qty", band.from_qty)?;
-        let to_qty = match band.to_qty {
-            BandTop::Open => None,
-            BandTop::Closed(top) => Some(stored_bound("band to_qty", top)?),
-        };
-        let row = charge_tier::ActiveModel {
-            tenant_id: Set(tenant_id),
-            line_version_id: Set(line_version_id),
-            band_ordinal: Set(ordinal),
-            from_qty: Set(from_qty),
-            to_qty: Set(to_qty),
-        };
-        charge_tier::Entity::insert(row.clone())
-            .secure()
-            .scope_with_model(scope, &row)
-            .map_err(|e| RepoError::Db(format!("pricing_charge_tier scope: {e}")))?
-            .exec(runner)
-            .await
-            .map_err(|e| RepoError::Db(format!("insert pricing_charge_tier: {e}")))?;
-    }
-    Ok(())
 }

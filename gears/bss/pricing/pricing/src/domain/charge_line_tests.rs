@@ -2,10 +2,10 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use super::{ChargeLineVersion, ChargeStructure, TierGeometry};
+use super::{ChargeLineVersion, ChargeStructure};
 use crate::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use crate::domain::money::CurrencyCode;
-use crate::domain::price_row::{BandTop, ModelKind};
+use crate::domain::price_row::ModelKind;
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
     Region, SkuId,
@@ -30,24 +30,6 @@ fn timing() -> ProrationContract {
         proration_basis: ProrationBasis::CalendarDaysActual,
         credit_on_downgrade: false,
     }
-}
-
-#[test]
-fn closed_and_open_geometry_match_band_bounds() {
-    assert_eq!(
-        TierGeometry::closed(0, 100),
-        TierGeometry {
-            from_qty: 0,
-            to_qty: BandTop::Closed(100),
-        }
-    );
-    assert_eq!(
-        TierGeometry::open(100),
-        TierGeometry {
-            from_qty: 100,
-            to_qty: BandTop::Open,
-        }
-    );
 }
 
 #[test]
@@ -81,7 +63,6 @@ fn billing_timing_is_authored_on_the_line_version_not_per_currency() {
 #[test]
 fn an_empty_structure_matches_an_empty_price_row_on_non_money_fields() {
     let structure = ChargeStructure::new(ChargeKind::Usage, Some(ModelKind::Graduated));
-    assert!(structure.bands.is_empty());
     assert_eq!(structure.dimension_key, "");
     assert_eq!(structure.sku_id, SkuId::new(Uuid::nil()));
     assert_eq!(structure.subject(), "usage/graduated");

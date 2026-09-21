@@ -4,13 +4,21 @@
 //! # Structure is authored once; money is authored per market
 //!
 //! A charge line carries what every market of it shares: the eight structural
-//! axes, the calculation model, tier *geometry*, the usage policy, the descriptor
-//! and the proration contract. A market price carries what differs per currency
-//! and region: the amounts and rates that fill that structure, and the market's
-//! tax and rounding policy. The two are separate requests on separate routes, and
-//! **each refuses the other's fields** -- `currency` on a structure, a tier bound
+//! axes, the calculation model, the usage policy, the descriptor and the
+//! proration contract. A market price carries what differs per currency and
+//! region: the amounts and rates that fill that structure, and the market's tax
+//! and rounding policy. The two are separate requests on separate routes, and
+//! **each refuses the other's fields** -- `currency` on a structure, `model_kind`
 //! on a price -- rather than ignoring them, because a field silently dropped is a
 //! client that believes it authored something.
+//!
+//! **The line says what is charged and how it is measured; the market says how
+//! much — and a tier ladder is part of how much.** `money.tiers` is a market's
+//! whole ladder, each band's bounds beside its rate, and two markets of one line
+//! may differ in the number of bands, the break-points and the rates. What they
+//! may not differ in is the model: a market cannot be `graduated` where its
+//! sibling is `volume`. `package_size` stays the line's for D-122's reason — a
+//! block size is a unit, and Rating counts blocks on the assumption of one.
 //!
 //! # Which tag guards which act
 //!
@@ -38,11 +46,10 @@ use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::preconditions;
 use crate::api::rest::prices::{
-    self, IncludedAllowanceView, PriceContentView, TierBandView, authoring_sku_context, content_of,
-    read_scope, require_declared_region, wire_token, write_scope,
+    self, IncludedAllowanceView, PriceContentView, authoring_sku_context, content_of, read_scope,
+    require_declared_region, wire_token, write_scope,
 };
 use crate::api::rest::state::AuthoringState;
-use crate::domain::charge_line::TierGeometry;
 use crate::domain::contracts::AnchorDay;
 use crate::domain::error::DomainError;
 use crate::domain::instant::rfc3339;
@@ -76,10 +83,6 @@ pub const PLAN_CHARGE_LINE: &str = "/bss-pricing/v1/plans/{planId}/charge-lines/
 /// declaration is a route it cannot see -- and it says so by count, not by name.
 #[rustfmt::skip]
 pub const PLAN_CHARGE_LINE_PRICES: &str = "/bss-pricing/v1/plans/{planId}/charge-lines/{lineVersionId}/prices";
-
-/// The code a market's tier rates answer with when they do not fit the line's
-/// geometry -- the domain's own, so the wire and the resolver agree on one name.
-const TIER_RATE_COUNT_MISMATCH: &str = crate::domain::market_price::MARKET_TIER_RATE_COUNT_MISMATCH;
 
 // ---------------------------------------------------------------------------
 // Views and requests.
@@ -147,7 +150,11 @@ impl From<&ChargeLineScopeKey> for LineScopeKeyView {
     }
 }
 
-/// One tier's bounds. The rate that fills it is a market's, not the line's.
+/// One band of a market's ladder: its bounds, and the rate that prices it.
+///
+/// The ladder is the market's whole answer to *how much*, so a rate sits beside
+/// the bound it prices. Two markets of one line may carry different numbers of
+/// tiers on different break-points; only the line's `model_kind` is shared.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 #[serde(deny_unknown_fields)]
@@ -156,6 +163,23 @@ pub struct TierView {
     pub from_qty: u64,
     /// Exclusive upper bound; `null` for the open top.
     pub to_qty: Option<u64>,
+    /// The band's rate, in nano-minor units.
+    pub rate_nano_minor: i64,
+}
+
+impl From<&TierBand> for TierView {
+    fn from(band: &TierBand) -> Self {
+        Self {
+            from_qty: band.from_qty,
+            to_qty: band.to_qty.closed_at(),
+            rate_nano_minor: band.unit_price_rate.nano_minor(),
+        }
+    }
+}
+
+/// A ladder as the wire carries it: absent where the market has none.
+fn tiers_view(bands: &[TierBand]) -> Option<Vec<TierView>> {
+    (!bands.is_empty()).then(|| bands.iter().map(TierView::from).collect())
 }
 
 /// What every market of a line shares.
@@ -170,8 +194,6 @@ pub struct TierView {
 pub struct StructureView {
     /// `flat`, `per_unit`, `graduated`, `volume` or `package`.
     pub model_kind: Option<String>,
-    /// Tier geometry, for the two banded kinds.
-    pub tiers: Option<Vec<TierView>>,
     /// Units per package, for `package`.
     pub package_size: Option<u64>,
     /// `subscription_seat_count` or `manual`.
@@ -246,8 +268,9 @@ pub struct MoneyView {
     pub amount_minor: Option<i64>,
     /// The per-unit rate, in nano-minor units.
     pub unit_rate_nano_minor: Option<i64>,
-    /// One rate per tier of the line, in the line's quantity order.
-    pub tier_rates_nano_minor: Option<Vec<i64>>,
+    /// This market's ladder, for a `graduated` or `volume` line: every band's
+    /// bounds beside its rate. Its own to shape -- a sibling market may differ.
+    pub tiers: Option<Vec<TierView>>,
     /// The package price, in minor units.
     pub package_price_minor: Option<i64>,
     /// The reserved-capacity rate, in nano-minor units.
@@ -358,12 +381,7 @@ impl From<&MarketPriceRecord> for MarketPriceView {
             money: MoneyView {
                 amount_minor: row.amount_minor.map(MinorAmount::get),
                 unit_rate_nano_minor: row.unit_rate.map(RateMinor::nano_minor),
-                tier_rates_nano_minor: (!row.bands.is_empty()).then(|| {
-                    row.bands
-                        .iter()
-                        .map(|band| band.unit_price_rate.nano_minor())
-                        .collect()
-                }),
+                tiers: tiers_view(&row.bands),
                 package_price_minor: row.package_price_minor.map(MinorAmount::get),
                 reserved_rate_nano_minor: row.reserved_rate.map(RateMinor::nano_minor),
             },
@@ -443,15 +461,6 @@ fn structure_view(line: &LineRecord) -> StructureView {
     let contract = line.content.proration_contract;
     StructureView {
         model_kind: row.model_kind.map(model_kind_wire).map(str::to_owned),
-        tiers: (!line.tiers.is_empty()).then(|| {
-            line.tiers
-                .iter()
-                .map(|tier| TierView {
-                    from_qty: tier.from_qty,
-                    to_qty: tier.to_qty.closed_at(),
-                })
-                .collect()
-        }),
         package_size: row.package_size,
         quantity_source: row.quantity_source.map(|q| q.as_str().to_owned()),
         manual_quantity: row.manual_quantity,
@@ -505,7 +514,6 @@ pub(crate) fn structure_view_of(
         gl_code_ref,
         charge_kind: _,
         model_kind,
-        bands,
         package_size,
         quantity_source,
         manual_quantity,
@@ -528,15 +536,6 @@ pub(crate) fn structure_view_of(
     let contract = line.proration_contract;
     StructureView {
         model_kind: model_kind.map(model_kind_wire).map(str::to_owned),
-        tiers: (!bands.is_empty()).then(|| {
-            bands
-                .iter()
-                .map(|tier| TierView {
-                    from_qty: tier.from_qty,
-                    to_qty: tier.to_qty.closed_at(),
-                })
-                .collect()
-        }),
         package_size: *package_size,
         quantity_source: quantity_source.map(|q| q.as_str().to_owned()),
         manual_quantity: *manual_quantity,
@@ -575,15 +574,14 @@ pub(crate) fn money_view_of(money: &crate::domain::market_price::MarketPriceTerm
     let crate::domain::market_price::MarketPriceTerms {
         amount_minor,
         unit_rate,
-        tier_rates,
+        tiers,
         package_price_minor,
         reserved_rate,
     } = money;
     MoneyView {
         amount_minor: amount_minor.map(crate::domain::money::MinorAmount::get),
         unit_rate_nano_minor: unit_rate.map(RateMinor::nano_minor),
-        tier_rates_nano_minor: (!tier_rates.is_empty())
-            .then(|| tier_rates.iter().map(|rate| rate.nano_minor()).collect()),
+        tiers: tiers_view(tiers),
         package_price_minor: package_price_minor.map(crate::domain::money::MinorAmount::get),
         reserved_rate_nano_minor: reserved_rate.map(RateMinor::nano_minor),
     }
@@ -624,10 +622,9 @@ fn line_key_of(
 /// token already goes through.
 ///
 /// A structure is rendered as the flat content it is the shared half of -- no
-/// money, and each tier as a band whose rate is zero -- and handed to
-/// [`content_of`], so a token, a bound or a proration contract is parsed by the
-/// same code whichever door it came through. The zero rates are never stored: a
-/// line writes geometry only.
+/// money and no ladder, both being a market's -- and handed to [`content_of`], so
+/// a token or a proration contract is parsed by the same code whichever door it
+/// came through.
 fn structure_content(
     key: &ChargeLineScopeKey,
     structure: &StructureView,
@@ -647,16 +644,7 @@ fn structure_content(
         model_kind: structure.model_kind.clone(),
         amount_minor: None,
         unit_rate_nano_minor: None,
-        bands: structure.tiers.as_ref().map(|tiers| {
-            tiers
-                .iter()
-                .map(|tier| TierBandView {
-                    from_qty: tier.from_qty,
-                    to_qty: tier.to_qty,
-                    unit_price_nano_minor: 0,
-                })
-                .collect()
-        }),
+        bands: None,
         package_size: structure.package_size,
         package_price_minor: None,
         quantity_source: structure.quantity_source.clone(),
@@ -693,37 +681,25 @@ fn structure_content(
 
 /// A line's stored shared content, filled with one market's money.
 ///
+/// The ladder arrives whole -- a rate beside the bound it prices -- so there is
+/// no count to reconcile against the line. Whether it is a *valid* ladder (first
+/// band from zero, no gap, no overlap, one open top) is the band rules' question
+/// at publish, asked of this market alone. No ladder at all is a legal
+/// unfinished draft.
+///
 /// # Errors
-/// [`DomainError::ValidationFailed`] carrying
-/// `MARKET_TIER_RATE_COUNT_MISMATCH` when rates are supplied and their count is
-/// not the line's tier count: a rate is stored against a band by position, so a
-/// surplus one has no band to be the rate of and a partial ladder would bill the
-/// uncovered tiers at nothing. No rates at all is a legal unfinished draft.
+/// [`DomainError::InvalidRequest`] when an amount or a rate is outside its scale.
 pub(crate) fn market_content(
     line: &LineRecord,
     money: &MoneyView,
     policy: &MarketPolicyView,
 ) -> Result<PriceContent, DomainError> {
-    let rates = money.tier_rates_nano_minor.as_deref().unwrap_or_default();
-    if !rates.is_empty() && rates.len() != line.tiers.len() {
-        let mut report = ValidationReport::default();
-        report.violate_at_write(
-            TIER_RATE_COUNT_MISMATCH,
-            "money.tier_rates_nano_minor",
-            format!(
-                "the line has {} tier(s) and the market supplies {} rate(s); send one rate per \
-                 tier, in the line's quantity order",
-                line.tiers.len(),
-                rates.len()
-            ),
-        );
-        return Err(DomainError::ValidationFailed(report));
-    }
-    let bands = line
+    let bands = money
         .tiers
+        .as_deref()
+        .unwrap_or_default()
         .iter()
-        .zip(rates)
-        .map(|(tier, rate)| band_of(tier, *rate))
+        .map(band_of)
         .collect::<Result<Vec<_>, _>>()?;
     let mut content = line.content.clone();
     content.row.amount_minor = prices::amount("money.amount_minor", money.amount_minor)?;
@@ -746,15 +722,12 @@ pub(crate) fn market_content(
     Ok(content)
 }
 
-fn band_of(tier: &TierGeometry, rate: i64) -> Result<TierBand, DomainError> {
+fn band_of(tier: &TierView) -> Result<TierBand, DomainError> {
     Ok(TierBand {
         from_qty: tier.from_qty,
-        to_qty: match tier.to_qty {
-            BandTop::Open => BandTop::Open,
-            BandTop::Closed(top) => BandTop::Closed(top),
-        },
-        unit_price_rate: RateMinor::from_nano_minor(rate).map_err(|e| {
-            DomainError::InvalidRequest(format!("money.tier_rates_nano_minor: {e}"))
+        to_qty: tier.to_qty.map_or(BandTop::Open, BandTop::Closed),
+        unit_price_rate: RateMinor::from_nano_minor(tier.rate_nano_minor).map_err(|e| {
+            DomainError::InvalidRequest(format!("money.tiers.rate_nano_minor: {e}"))
         })?,
     })
 }
@@ -912,12 +885,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.patch_charge_line")
         .summary("Replace a draft line version's shared structure")
         .description(
-            "Replaces the whole shared structure of a `draft` line version, tier geometry \
-             included, under the plan revision's `If-Match`. Every market's tier rates are \
-             kept where the new geometry still has a tier at that position; a market left with \
-             fewer rates than tiers is an unfinished draft that publish reports. A `published` \
-             version is immutable and answers the immutable-resource refusal; the axes are \
-             never editable.",
+            "Replaces the whole shared structure of a `draft` line version under the plan \
+             revision's `If-Match`. A tier ladder is each market's own (`money.tiers`) and is \
+             not part of the structure: `tiers` sent here is refused as an unknown field, and \
+             an edit that keeps the line `graduated` or `volume` leaves every market's ladder \
+             exactly as it was. Moving the line to any other model removes every market's \
+             ladder in the same write, since such a line has none; those markets are then \
+             unfinished drafts that publish reports. A `published` version is immutable and \
+             answers the immutable-resource refusal; the axes are never editable.",
         )
         .tag(TAG)
         .authenticated()
@@ -971,9 +946,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              the price row and an `ETag` carrying its own row version. An `Idempotency-Key` is \
              required. The region must be one the tenant declared (`REGION_UNKNOWN`), and a \
              market that already holds a `draft` or `published` price is refused \
-             `DUPLICATE_SCOPE_KEY`. Tier rates are one per tier of the line, in its quantity \
-             order (`MARKET_TIER_RATE_COUNT_MISMATCH` otherwise). Model, tier geometry and \
-             package size are the line's and are refused here as unknown fields.",
+             `DUPLICATE_SCOPE_KEY`. On a `graduated` or `volume` line the market states its \
+             whole ladder in `money.tiers`: every band's `from_qty`, `to_qty` (`null` on the \
+             open top) and `rate_nano_minor`. The ladder is this market's own - another \
+             market of the same line may have a different number of bands on different \
+             break-points - and is judged per market at publish. The positional \
+             `money.tier_rates_nano_minor` is gone and is refused as an unknown field. Model \
+             and package size are the line's and are refused here the same way.",
         )
         .tag(TAG)
         .authenticated()

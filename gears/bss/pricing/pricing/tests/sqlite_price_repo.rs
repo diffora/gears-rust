@@ -61,7 +61,7 @@ use bss_pricing::domain::scope_key::{
 };
 use bss_pricing::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use bss_pricing::infra::storage::entity::{
-    audit_log, charge_line_version, charge_tier, price, price_tier_band, price_window,
+    audit_log, charge_line_version, price, price_tier_band, price_window,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::price_repo::aggregate_authoring_rows_for_plans;
@@ -70,7 +70,6 @@ use bss_pricing::infra::storage::{RepoError, repo_failure};
 use time::OffsetDateTime;
 
 use sea_orm::ActiveValue::Set;
-use sea_orm::ExprTrait;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
@@ -388,49 +387,6 @@ async fn stored_bands(
         .expect("read the band table directly")
 }
 
-/// The shared tier geometry of the version a price row names.
-///
-/// The boundaries left `pricing_price_tier_band` for `pricing_charge_tier` when
-/// the structure became shared, so a case that asserts *where* a band starts
-/// reads them here and a case that asserts its rate still reads the band table.
-async fn stored_geometry(
-    provider: &DBProvider<DbError>,
-    scope: &AccessScope,
-    price_id: Uuid,
-) -> Vec<bss_pricing::infra::storage::entity::charge_tier::Model> {
-    let graph = stored_graph(provider, scope, price_id).await;
-    let conn = provider.conn().expect("conn");
-    bss_pricing::infra::storage::repo::charge_line_repo::load_geometry(
-        &conn,
-        scope,
-        graph.price.tenant_id,
-        graph.price.line_version_id,
-    )
-    .await
-    .expect("read the shared geometry")
-}
-
-/// Every geometry row this tenant holds, with no price row to route through.
-///
-/// [`stored_geometry`] starts from a price and follows it to its line version,
-/// which a case about a *refused* create cannot do: the thing it has to prove
-/// absent is the row that would have been the route. This reads the table flat
-/// instead, so "nothing was left behind" is measured rather than inferred from
-/// a lookup that could only have failed.
-async fn stored_geometry_if_any(
-    provider: &DBProvider<DbError>,
-    scope: &AccessScope,
-) -> Vec<charge_tier::Model> {
-    let conn = provider.conn().expect("conn");
-    charge_tier::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(Condition::all().add(charge_tier::Column::TenantId.eq(tenant())))
-        .all(&conn)
-        .await
-        .expect("read the geometry table directly")
-}
-
 /// The stored row joined to the line, version and market it references.
 async fn stored_graph(
     provider: &DBProvider<DbError>,
@@ -576,33 +532,27 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
         .expect("create");
     assert_eq!(created.row.bands, ascending);
 
-    // Both write paths normalize: `create_draft` and `update_draft` assign
-    // `band_ordinal` in `from_qty` order, so neither can be used to reach a
-    // stored state whose ordinal order disagrees with its quantity order. A
-    // test driven through either would prove an in-memory sort and leave the
-    // read side unpinned — so the scrambled state is written here, past the
-    // repository, the way a raw fixture or a future writer could.
-    //
-    // `1000 - band_ordinal` reverses the three ordinals in one statement per
-    // table and cannot collide: the new values (998, 999, 1000) are disjoint
-    // from the old (0, 1, 2) and from each other, so no intermediate row ever
-    // duplicates a primary key. The same transform is applied to geometry and
-    // to rates, so band *N* of one still pairs with band *N* of the other and
-    // the compound foreign key holds.
+    // The stored set is put back **top band first**, past the repository, the
+    // way a raw fixture or a future writer could. A band's identity is where it
+    // starts (`uq_pricing_price_tier_band_lower_bound`), so there is no ordinal
+    // for a writer to get wrong any more — what remains to pin is that the order
+    // rows were written in never reaches a reader.
     let conn = provider.conn().expect("conn");
-    // A compound foreign key ties each rate to the geometry row of the same
-    // `(line_version_id, band_ordinal)`, and SQLite checks it per statement, so
-    // the rates have to step aside before the geometry can be re-ordinalled.
-    // They are read, removed, and written back under the transformed ordinal
-    // with every other column — `band_id` included — untouched.
-    let rates = price_tier_band::Entity::find()
-        .secure()
-        .scope_with(&scope)
-        .filter(Condition::all().add(price_tier_band::Column::PriceId.eq(price_id)))
-        .all(&conn)
-        .await
-        .expect("read the stored rates");
-    assert_eq!(rates.len(), 3, "the authored set is three bands");
+    let mut stored = stored_bands(&provider, &scope, price_id).await;
+    assert_eq!(stored.len(), 3, "the authored set is three bands");
+    stored.sort_by_key(|band| std::cmp::Reverse(band.from_qty));
+    let written: Vec<u64> = stored
+        .iter()
+        .map(|band| u64::try_from(band.from_qty).expect("a non-negative bound"))
+        .collect();
+    assert_eq!(
+        written,
+        descending
+            .iter()
+            .map(|band| band.from_qty)
+            .collect::<Vec<_>>(),
+        "the rewrite goes in top-first, or this is not the state under test"
+    );
 
     let removed = price_tier_band::Entity::delete_many()
         .secure()
@@ -610,72 +560,34 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
         .filter(Condition::all().add(price_tier_band::Column::PriceId.eq(price_id)))
         .exec(&conn)
         .await
-        .expect("lift the rates off their geometry");
+        .expect("take the ladder off");
     assert_eq!(removed.rows_affected, 3);
-
-    let moved = charge_tier::Entity::update_many()
-        .secure()
-        .scope_with(&scope)
-        .col_expr(
-            charge_tier::Column::BandOrdinal,
-            Expr::value(1_000).sub(Expr::col(charge_tier::Column::BandOrdinal)),
-        )
-        .exec(&conn)
-        .await
-        .expect("scramble the stored geometry ordinals");
-    assert_eq!(
-        moved.rows_affected, 3,
-        "all three bands must have been re-ordinalled, or the scramble is not \
-         the state under test"
-    );
-
-    for rate in rates {
+    for band in stored {
         let row = price_tier_band::ActiveModel {
-            band_id: Set(rate.band_id),
-            tenant_id: Set(rate.tenant_id),
-            price_id: Set(rate.price_id),
-            line_version_id: Set(rate.line_version_id),
-            band_ordinal: Set(1_000 - rate.band_ordinal),
-            unit_price_nano: Set(rate.unit_price_nano),
+            band_id: Set(band.band_id),
+            tenant_id: Set(band.tenant_id),
+            price_id: Set(band.price_id),
+            line_version_id: Set(band.line_version_id),
+            from_qty: Set(band.from_qty),
+            to_qty: Set(band.to_qty),
+            unit_price_nano: Set(band.unit_price_nano),
         };
         price_tier_band::Entity::insert(row.clone())
             .secure()
             .scope_with_model(&scope, &row)
-            .expect("rate scope")
+            .expect("band scope")
             .exec(&conn)
             .await
-            .expect("put the rate back on its re-ordinalled geometry");
+            .expect("put the band back, top first");
     }
 
-    // The physical rows really are the wrong way round now: `load_geometry`
-    // reads in `band_ordinal` order, so this is the order a repository that
-    // trusted the ordinal would answer in. It is measuring what the read has to
-    // correct rather than restating what the write did.
-    let physical: Vec<u64> = stored_geometry(&provider, &scope, price_id)
-        .await
-        .iter()
-        .map(|band| u64::try_from(band.from_qty).expect("a non-negative bound"))
-        .collect();
-    assert_eq!(
-        physical,
-        vec![1_000, 100, 0],
-        "the scramble must have left ordinal order disagreeing with quantity \
-         order, or this test is no longer measuring the read-side guarantee"
-    );
-    assert_eq!(
-        physical.len(),
-        descending.len(),
-        "the scrambled set is the authored set, re-ordinalled"
-    );
-
-    // And a read still answers ascending. The ordinal joins a rate to its
-    // geometry; it does not decide the order the set comes back in, because
-    // `to_price_row` sorts the assembled bands on `from_qty`. Authoring order
-    // therefore does not survive persistence and stored order does not leak
-    // out; `TierBandValidator` judges geometry over the set sorted by `from_qty`
-    // for that reason, and a repository that answered in stored order would let
-    // a row pass the save-time pre-check and fail the identical re-run inside
-    // the publish commit.
+    // And a read still answers ascending: the band queries order by `from_qty`
+    // and `to_price_row` sorts the assembled set on it as well. Authoring order
+    // therefore does not survive persistence and write order does not leak out;
+    // `TierBandValidator` judges geometry over the set sorted by `from_qty` for
+    // that reason, and a repository that answered in written order would let a
+    // row pass the save-time pre-check and fail the identical re-run inside the
+    // publish commit.
 
     let read = repo
         .find(&scope, tenant(), price_id)
@@ -2501,15 +2413,8 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
     // A `flat` row carrying a band set. It fails in the one place that makes
     // the transaction observable: the row INSERT succeeds — `flat` is a legal
     // kind and the row satisfies every CHECK on its own table — and the *next*
-    // statement is refused, by a band table's structural-exclusivity trigger
-    // reading the parent this call has just written.
-    //
-    // Which band table refuses is a consequence of write order, not of the
-    // claim: geometry goes to `pricing_charge_tier` before the rate reaches
-    // `pricing_price_tier_band`, so the geometry trigger is the one that sees a
-    // `flat` parent first and the rate table is never reached. Either refusal
-    // proves the same thing, so the assertion names both rather than pinning
-    // the order two repositories happen to write in.
+    // statement is refused, by the band table's structural-exclusivity trigger
+    // reading the line version this call has just written.
     let mut content = flat_content();
     content.row.bands = vec![TierBand::closed(0, 100, rate(50))];
     let err = repo
@@ -2524,8 +2429,8 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
         panic!("the band table's refusal reaches the caller as a storage failure");
     };
     assert!(
-        detail.contains("pricing_price_tier_band") || detail.contains("pricing_charge_tier"),
-        "the refusal must be a band table's, got: {detail}"
+        detail.contains("pricing_price_tier_band"),
+        "the refusal must be the band table's, got: {detail}"
     );
 
     // The claim this file's repository makes is "both tables or neither", and
@@ -2541,11 +2446,7 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
     );
     assert!(
         stored_bands(&provider, &scope, price_id).await.is_empty(),
-        "and no rate either"
-    );
-    assert!(
-        stored_geometry_if_any(&provider, &scope).await.is_empty(),
-        "nor any geometry - the write that was refused is the one that must \
+        "and no band either - the write that was refused is the one that must \
          leave nothing behind"
     );
 
@@ -3218,6 +3119,175 @@ async fn the_supersession_door_puts_a_successor_draft_on_the_key_its_predecessor
             .lifecycle_state,
         LifecycleState::Draft.as_str()
     );
+}
+
+/// Freeze the line version a price row names, the way a publish does — **as a
+/// version a later revision introduced.**
+///
+/// [`flip_state`] moves the monetary version alone. The door under test binds a
+/// successor to a line's **frozen** version, and a version still in `draft` is
+/// one it must not reuse — so a case about reuse has to freeze both halves.
+///
+/// The revision is moved to 1 because that is what arms the case. With no draft
+/// open the door's fallback looks a version up at revision 0: for a line born at
+/// revision 0 that lookup finds the frozen version too, so "reused" and "fell
+/// through" answer the same id and a case there proves nothing. A line born
+/// later has nothing at revision 0, so the fallback **mints** — a different id.
+async fn freeze_version_of(provider: &DBProvider<DbError>, scope: &AccessScope, price_id: Uuid) {
+    let version = stored_row(provider, scope, price_id).await.line_version_id;
+    let conn = provider.conn().expect("conn");
+    let result = charge_line_version::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            charge_line_version::Column::PlanRevision,
+            Expr::value(1_i64),
+        )
+        .col_expr(
+            charge_line_version::Column::LifecycleState,
+            Expr::value(LifecycleState::Published.as_str()),
+        )
+        .filter(Condition::all().add(charge_line_version::Column::LineVersionId.eq(version)))
+        .exec(&conn)
+        .await
+        .expect("freeze the line version");
+    assert_eq!(
+        result.rows_affected, 1,
+        "the seed must have moved one version"
+    );
+}
+
+/// [`graduated_content`] on a key the successor door admits: that fixture states a
+/// `grandfather_until`, which only the grandfathered class may carry, and that
+/// class is the one a price may never be superseded on.
+fn supersedable_graduated_content() -> PriceContent {
+    let mut content = graduated_content();
+    content.grandfather_until = None;
+    content
+}
+
+/// **Re-tiering a published market is a monetary successor.**
+///
+/// The ladder is the market's, so a successor that moves its break-points submits
+/// the very structure the line already holds and is bound to the line's frozen
+/// version — no structure version is minted, which is what keeps the edit out of
+/// `inst-sc-simultaneous`'s reach: every sibling market is still on the one
+/// version. Before the ladder moved, bounds were shared content and this same
+/// edit was a structural change no door could author.
+///
+/// The control is the case below: a successor that changes a field the line
+/// *does* share is not handed that version, so the reuse here is a comparison
+/// that ran and not a lookup that always answers yes.
+#[tokio::test]
+async fn a_successor_that_moves_the_ladder_keeps_its_predecessors_structure_version() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let key = base_key(ChargeKind::Usage);
+    let predecessor = Uuid::from_u128(0xb_5101);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(predecessor, key.clone(), supersedable_graduated_content()),
+    )
+    .await
+    .expect("author the predecessor");
+    flip_state(&provider, &scope, predecessor, LifecycleState::Published).await;
+    freeze_version_of(&provider, &scope, predecessor).await;
+    let frozen = stored_row(&provider, &scope, predecessor)
+        .await
+        .line_version_id;
+    let authored = stored_bands(&provider, &scope, predecessor).await;
+
+    // Two bands where there were three, on break-points of its own.
+    let mut re_tiered = supersedable_graduated_content();
+    re_tiered.row.bands = vec![
+        TierBand::closed(0, 250, rate(20)),
+        TierBand::open(250, rate(8)),
+    ];
+    let successor = Uuid::from_u128(0xb_5102);
+    let (record, superseded) = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(successor, key.clone(), re_tiered.clone()),
+    )
+    .await
+    .expect("a ladder edit is an ordinary monetary successor");
+    assert_eq!(superseded, predecessor);
+    assert_eq!(
+        record.row.bands, re_tiered.row.bands,
+        "the successor's own ladder"
+    );
+    assert_eq!(
+        stored_row(&provider, &scope, successor)
+            .await
+            .line_version_id,
+        frozen,
+        "re-tiering mints no structure version"
+    );
+    assert_eq!(
+        stored_bands(&provider, &scope, predecessor).await,
+        authored,
+        "and the published ladder is untouched"
+    );
+}
+
+/// The control for the case above, on its own predecessor so neither successor
+/// can stand in the other's way on the key.
+#[tokio::test]
+async fn a_successor_that_moves_shared_structure_is_not_handed_the_frozen_version() {
+    let (repo, provider) = harness().await;
+    let scope = AccessScope::for_tenant(tenant());
+    let key = base_key(ChargeKind::Usage);
+    let predecessor = Uuid::from_u128(0xb_5111);
+    repo.create_draft(
+        &scope,
+        tenant(),
+        draft(predecessor, key.clone(), supersedable_graduated_content()),
+    )
+    .await
+    .expect("author the predecessor");
+    flip_state(&provider, &scope, predecessor, LifecycleState::Published).await;
+    freeze_version_of(&provider, &scope, predecessor).await;
+    let frozen = stored_row(&provider, &scope, predecessor)
+        .await
+        .line_version_id;
+
+    let mut restructured = supersedable_graduated_content();
+    restructured.row.max_hold_granules = Some(12);
+    let successor = Uuid::from_u128(0xb_5112);
+    let outcome = supersede(
+        &provider,
+        &scope,
+        tenant(),
+        draft(successor, key, restructured),
+    )
+    .await;
+    // Whether this door should *refuse* a structural successor is D-375's
+    // recorded open item (b), and not this case's to settle. What is pinned is the
+    // one thing every answer to it shares: the frozen version is not reused, so
+    // the door goes on to mint one.
+    //
+    // Here the mint is *attempted and collides*, and that is this fixture's doing
+    // rather than the door's: a version id is derived from `(line, revision)`, and
+    // `freeze_version_of` moved the revision without re-deriving the id, so the
+    // version the door mints at revision 0 has the id the frozen one already
+    // holds. The collision is therefore the proof that a mint was reached — which
+    // the ladder case above, on this same fixture, never reaches.
+    match outcome {
+        Ok(_) => assert_ne!(
+            stored_row(&provider, &scope, successor)
+                .await
+                .line_version_id,
+            frozen,
+            "a changed structure is carried by a version of its own"
+        ),
+        Err(RepoError::Db(detail)) => assert!(
+            detail.contains("insert pricing_charge_line_version"),
+            "the door went on to mint a version: {detail}"
+        ),
+        Err(other) => panic!("neither reused nor minted: {other:?}"),
+    }
 }
 
 #[tokio::test]

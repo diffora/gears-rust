@@ -1501,3 +1501,170 @@ fn fixture_sku_index() -> std::sync::Arc<crate::domain::registry_view::SkuIndex>
         },
     ]))
 }
+
+// ---------------------------------------------------------------------------
+// A ladder is a market's, so a fault in one names the market it is in.
+// ---------------------------------------------------------------------------
+
+/// One market of a `graduated` usage line: the shared line key, and this
+/// market's own ladder. Two of these differ only in money and in market.
+fn tiered_market(
+    price_id: u128,
+    currency: &str,
+    region: &str,
+    bands: Vec<crate::domain::price_row::TierBand>,
+) -> PriceRecord {
+    let mut market = record(price_id, Some(ModelKind::Graduated), Some("half_up"));
+    market.scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xf1)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
+        CurrencyCode::new(currency).expect("three letters"),
+        Region::new(region).expect("non-blank"),
+    );
+    market.row.charge_kind = ChargeKind::Usage;
+    market.row.amount_minor = None;
+    market.row.bands = bands;
+    market
+}
+
+fn nano(rate: i64) -> RateMinor {
+    RateMinor::from_nano_minor(rate).expect("a non-negative rate")
+}
+
+/// The subjects a report files `code` under, violations and advisories alike.
+fn subjects_of(report: &crate::domain::validation::ValidationReport, code: &str) -> Vec<String> {
+    report
+        .violations
+        .iter()
+        .filter(|violation| violation.code == code)
+        .map(|violation| violation.subject.clone())
+        .chain(
+            report
+                .warnings
+                .iter()
+                .filter(|advisory| advisory.code == code)
+                .map(|advisory| advisory.subject.clone()),
+        )
+        .collect()
+}
+
+/// **Each ladder fault is reported on the market that has it, and only there.**
+///
+/// Both markets are one line, so before a ladder was a market's their row-rule
+/// subject — `usage/graduated` — could be the same string and lose nothing. Now
+/// EUR is whole and USD is not, and a report that cannot say which is a report an
+/// author has to bisect.
+#[test]
+fn a_ladder_fault_names_the_market_it_is_in_and_leaves_the_sibling_clean() {
+    use crate::domain::price_row::TierBand;
+    use crate::domain::rules::{TIER_BANDS_GAP, TIER_BANDS_OVERLAP, TIER_TOP_CLOSED};
+
+    let whole = || {
+        vec![
+            TierBand::closed(0, 100, nano(500)),
+            TierBand::open(100, nano(400)),
+        ]
+    };
+    for (code, broken) in [
+        (
+            TIER_BANDS_GAP,
+            vec![
+                TierBand::closed(0, 100, nano(500)),
+                TierBand::open(150, nano(400)),
+            ],
+        ),
+        (
+            TIER_BANDS_OVERLAP,
+            vec![
+                TierBand::closed(0, 100, nano(500)),
+                TierBand::open(50, nano(400)),
+            ],
+        ),
+        (TIER_TOP_CLOSED, vec![TierBand::closed(0, 100, nano(500))]),
+        (
+            // The first band not from zero is the gap at the origin.
+            TIER_BANDS_GAP,
+            vec![
+                TierBand::closed(10, 100, nano(500)),
+                TierBand::open(100, nano(400)),
+            ],
+        ),
+    ] {
+        let mut shape = clean_plan();
+        shape.rows = vec![
+            tiered_market(0xe0, "EUR", "eu", whole()),
+            tiered_market(0xd0, "USD", "us", broken),
+        ];
+        let report = run_publish_rules(&shape, &params_declaring(&["eu", "us"]));
+
+        let subjects = subjects_of(&report, code);
+        assert!(!subjects.is_empty(), "{code} is raised: {report:?}");
+        assert!(
+            subjects.iter().all(|subject| subject.contains("USD/us")),
+            "{code} names the market it is in: {subjects:?}"
+        );
+        assert!(
+            !report
+                .violations
+                .iter()
+                .any(|violation| violation.code.starts_with("TIER_")
+                    && violation.subject.contains("EUR/eu")),
+            "and the sibling is clean: {report:?}"
+        );
+    }
+}
+
+/// **A shared floor is judged against each market's own ladder.** One
+/// `min_qty_usage` of 75 — the line's — sits at no band's interior in EUR
+/// (`[0,75)`, `[75,∞)`) and strictly inside USD's priced `[50,500)`: exactly one
+/// `FLOOR_INSIDE_PRICED_BAND`, on USD.
+#[test]
+fn a_shared_floor_is_judged_against_each_markets_own_ladder() {
+    use crate::domain::price_row::{MinQtyUsageFallback, TierBand};
+    use crate::domain::rules::floor_typing::FLOOR_INSIDE_PRICED_BAND;
+
+    let mut eur = tiered_market(
+        0xe0,
+        "EUR",
+        "eu",
+        vec![
+            TierBand::closed(0, 75, nano(500)),
+            TierBand::open(75, nano(400)),
+        ],
+    );
+    let mut usd = tiered_market(
+        0xd0,
+        "USD",
+        "us",
+        vec![
+            TierBand::closed(0, 50, nano(600)),
+            TierBand::closed(50, 500, nano(450)),
+            TierBand::open(500, nano(300)),
+        ],
+    );
+    for market in [&mut eur, &mut usd] {
+        market.row.min_qty_usage = Some(75);
+        market.row.min_qty_usage_fallback = Some(MinQtyUsageFallback::Exception);
+    }
+    let mut shape = clean_plan();
+    shape.rows = vec![eur, usd];
+    let report = run_publish_rules(&shape, &params_declaring(&["eu", "us"]));
+
+    let subjects = subjects_of(&report, FLOOR_INSIDE_PRICED_BAND);
+    assert_eq!(
+        subjects.len(),
+        1,
+        "one finding, not one per market: {report:?}"
+    );
+    assert!(
+        subjects[0].contains("USD/us"),
+        "and it is USD's ladder the floor falls inside: {subjects:?}"
+    );
+}

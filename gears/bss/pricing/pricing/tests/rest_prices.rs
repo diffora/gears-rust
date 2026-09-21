@@ -99,9 +99,10 @@ fn split_content(
     let mut policy = serde_json::Map::new();
     for (name, value) in content.as_object().cloned().unwrap_or_default() {
         match name.as_str() {
+            // A ladder is the market's, whole: a rate beside the bound it prices.
             "bands" => {
                 let bands = value.as_array().cloned().unwrap_or_default();
-                structure.insert(
+                money.insert(
                     "tiers".to_owned(),
                     bands
                         .iter()
@@ -109,15 +110,9 @@ fn split_content(
                             serde_json::json!({
                                 "from_qty": band["from_qty"],
                                 "to_qty": band["to_qty"],
+                                "rate_nano_minor": band["unit_price_nano_minor"],
                             })
                         })
-                        .collect(),
-                );
-                money.insert(
-                    "tier_rates_nano_minor".to_owned(),
-                    bands
-                        .iter()
-                        .map(|band| band["unit_price_nano_minor"].clone())
                         .collect(),
                 );
             }

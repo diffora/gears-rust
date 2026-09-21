@@ -461,10 +461,10 @@ fn conflicting_line_definitions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)
                     code: IMPORT_LINE_DEFINITION_CONFLICT.to_owned(),
                     detail: format!(
                         "this row and row(s) {} are markets of one charge line ({}) and \
-                         disagree about what the line's markets share — model, tier geometry, \
-                         package size, usage policy, descriptor, billing timing or proration \
-                         contract. A line has one structure; amounts, tax and rounding are what \
-                         may differ per market.",
+                         disagree about what the line's markets share — model, package size, \
+                         usage policy, descriptor, billing timing or proration contract. A \
+                         line has one structure; amounts, the tier ladder, tax and rounding \
+                         are what may differ per market.",
                         others.join(", "),
                         rows[index].scope_key.line()
                     ),

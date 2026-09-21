@@ -18,7 +18,7 @@ use crate::domain::plan_rules::{
     RECURRING_FREQUENCY_REQUIRED,
 };
 use crate::domain::plan_shape::{CustomIntervalUnit, Frequency, PlanShape};
-use crate::domain::price_row::{PriceRow, TierBand, unit_determining_mismatch};
+use crate::domain::price_row::{PriceRow, unit_determining_mismatch};
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, PhaseId, PriceEligibility, PriceOverlay, Region, SkuId,
 };
@@ -437,7 +437,7 @@ fn sold_markets(
 fn has_money(money: &MarketPriceTerms) -> bool {
     money.amount_minor.is_some()
         || money.unit_rate.is_some()
-        || !money.tier_rates.is_empty()
+        || !money.tiers.is_empty()
         || money.package_price_minor.is_some()
         || money.reserved_rate.is_some()
 }
@@ -511,7 +511,6 @@ fn assembled_row(structure: &ChargeStructure) -> PriceRow {
         gl_code_ref,
         charge_kind,
         model_kind,
-        bands,
         package_size,
         quantity_source,
         manual_quantity,
@@ -539,14 +538,9 @@ fn assembled_row(structure: &ChargeStructure) -> PriceRow {
         model_kind: *model_kind,
         amount_minor: None,
         unit_rate: Some(RateMinor::ZERO),
-        bands: bands
-            .iter()
-            .map(|geometry| TierBand {
-                from_qty: geometry.from_qty,
-                to_qty: geometry.to_qty,
-                unit_price_rate: RateMinor::ZERO,
-            })
-            .collect(),
+        // A ladder is a market's, and none of D-82's unit-determining fields
+        // reads one: break-points are a lever a monetary successor may move.
+        bands: Vec::new(),
         package_size: *package_size,
         package_price_minor: None,
         quantity_source: *quantity_source,

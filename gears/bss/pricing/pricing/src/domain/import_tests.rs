@@ -594,6 +594,42 @@ fn two_markets_of_one_line_that_disagree_about_its_structure_are_both_refused() 
     );
 }
 
+/// **A ladder is not part of what a line's markets share.** Two markets of one
+/// line stating different ladders — another number of bands, other break-points,
+/// other rates — are two prices, not two definitions of the line. Whatever else
+/// the batch says about these rows, it does not say this.
+#[test]
+fn two_markets_of_one_line_with_different_ladders_are_not_a_definition_conflict() {
+    use crate::domain::money::RateMinor;
+    use crate::domain::price_row::TierBand;
+    let rate = |nano: i64| RateMinor::from_nano_minor(nano).expect("non-negative");
+
+    let mut eu = row(base());
+    eu.content.row.bands = vec![
+        TierBand::closed(0, 100, rate(500)),
+        TierBand::open(100, rate(400)),
+    ];
+    let mut us = row(key(
+        "us",
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+    ));
+    us.content.row.bands = vec![
+        TierBand::closed(0, 50, rate(600)),
+        TierBand::closed(50, 500, rate(450)),
+        TierBand::open(500, rate(300)),
+    ];
+
+    let report = classify(&[eu, us]);
+
+    for at in [0, 1] {
+        assert!(
+            !codes(&report, at).contains(&super::IMPORT_LINE_DEFINITION_CONFLICT.to_owned()),
+            "row {at}: {report:?}"
+        );
+    }
+}
+
 /// Billing timing is filed on the line version too, so two markets stating two
 /// timings are the same conflict — and a third row on **another** line is left
 /// alone.

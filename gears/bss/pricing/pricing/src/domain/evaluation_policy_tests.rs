@@ -102,7 +102,6 @@ fn any_structure() -> ChargeStructure {
         gl_code_ref: None,
         charge_kind: ChargeKind::Recurring,
         model_kind: None,
-        bands: Vec::new(),
         package_size: None,
         quantity_source: None,
         manual_quantity: None,
@@ -345,6 +344,9 @@ fn the_shared_structure_omits_only_market_money_columns() {
     let money: BTreeSet<&str> = [
         "amount_minor",
         "unit_rate",
+        // The ladder is a market's: a band's bounds sit beside the rate that
+        // prices it, so the whole set is money and none of it is shared.
+        "bands",
         "package_price_minor",
         "reserved_rate",
     ]

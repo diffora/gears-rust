@@ -142,8 +142,7 @@ use crate::domain::scope_key::{
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    charge_line, charge_line_version, charge_tier, market_price, price, price_tier_band,
-    price_window,
+    charge_line, charge_line_version, market_price, price, price_tier_band, price_window,
 };
 use crate::infra::storage::odata_mapping::{
     HistoryODataMapper, LIST_LIMIT_CFG, OdataPageError, PlanPriceODataMapper,
@@ -2711,7 +2710,7 @@ async fn hydrate_bands(
                     .add(price_tier_band::Column::PriceId.is_in(chunk.to_vec())),
             )
             .order_by(price_tier_band::Column::PriceId, Order::Asc)
-            .order_by(price_tier_band::Column::BandOrdinal, Order::Asc)
+            .order_by(price_tier_band::Column::FromQty, Order::Asc)
             .all(runner)
             .await
             .map_err(|e| RepoError::Db(format!("list plan price bands: {e}")))?;
@@ -2723,19 +2722,8 @@ async fn hydrate_bands(
     let graphs = load_graphs(runner, scope, tenant_id, rows).await?;
     let mut records = Vec::with_capacity(graphs.len());
     for graph in graphs {
-        let rates = grouped.remove(&graph.price.price_id).unwrap_or_default();
-        let geometry = if rates.is_empty() {
-            Vec::new()
-        } else {
-            super::charge_line_repo::load_geometry(
-                runner,
-                scope,
-                tenant_id,
-                graph.price.line_version_id,
-            )
-            .await?
-        };
-        records.push(to_record(&graph, &geometry, &rates)?);
+        let bands = grouped.remove(&graph.price.price_id).unwrap_or_default();
+        records.push(to_record(&graph, &bands)?);
     }
     Ok(records)
 }
@@ -3431,7 +3419,7 @@ async fn load_bands(
                 .add(price_tier_band::Column::TenantId.eq(tenant_id))
                 .add(price_tier_band::Column::PriceId.eq(price_id)),
         )
-        .order_by(price_tier_band::Column::BandOrdinal, Order::Asc)
+        .order_by(price_tier_band::Column::FromQty, Order::Asc)
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read price tier bands: {e}")))
@@ -3448,15 +3436,8 @@ async fn load_record(
         return Ok(None);
     };
     let graph = load_graph(runner, scope, tenant_id, row).await?;
-    let rates = load_bands(runner, scope, tenant_id, price_id).await?;
-    let geometry = super::charge_line_repo::load_geometry(
-        runner,
-        scope,
-        tenant_id,
-        graph.price.line_version_id,
-    )
-    .await?;
-    to_record(&graph, &geometry, &rates).map(Some)
+    let bands = load_bands(runner, scope, tenant_id, price_id).await?;
+    to_record(&graph, &bands).map(Some)
 }
 
 /// [`PriceRepo::find`] through a runner the caller already holds.
@@ -4735,15 +4716,15 @@ pub async fn update_draft_on(
 /// [`update_draft_on`] for the **monetary half alone** -- the market-price door.
 ///
 /// The line's own `PATCH` owns the shared structure since line-first authoring, so
-/// this door must leave it exactly as it stands. That is a correctness property and
-/// not only a division of labour: rewriting the structure replaces the version's
-/// tier geometry, and a sibling market's rates point into that geometry through a
-/// compound key -- so a whole-content edit of one market of a tiered line is
-/// refused by the store as soon as a second market is priced.
+/// this door must leave it exactly as it stands: a sibling market reads the same
+/// version, and a structure rewritten from one market's submission would move
+/// under the others.
+///
+/// **The ladder is this door's.** Bounds and rates are one market's answer to
+/// *how much*, so `content.row.bands` lands here whole and no sibling is touched.
 ///
 /// `content`'s shared half is still required, and is expected to be the stored
-/// one: the rates are bound to the version's geometry by position, and the
-/// line-axis guard reads the usage line off it.
+/// one: the line-axis guard reads the usage line off it.
 ///
 /// # Errors
 /// Whatever [`PriceRepo::update_draft`] documents.
@@ -4819,10 +4800,9 @@ async fn update_draft_halves(
         return Err(refuse(runner, scope, tenant_id, price_id, expected).await);
     };
     // **The door writes the market half.** The eligibility class and the usage
-    // line axis are the line's, and the tier *rates* are this row's against the
-    // version's shared geometry — so both guards read through the graph and the
-    // band models are bound to the version the row already names rather than to
-    // anything the submission could move.
+    // line axis are the line's, so both guards read through the graph; the ladder
+    // is this row's own, and its band models name the version the row already
+    // names rather than anything the submission could move.
     let graph = load_graph(runner, scope, tenant_id, row).await?;
     let bands = band_models(
         tenant_id,
@@ -4834,16 +4814,17 @@ async fn update_draft_halves(
     check_update_keeps_the_line(&graph, &content_line)?;
     // **The whole submitted content still lands, across both owners.** This door
     // takes a `PriceContent`, which is one resolved row: its shared half — model,
-    // tier geometry, descriptor, timing, the proration contract — belongs to the
+    // descriptor, timing, the proration contract — belongs to the
     // line version and its monetary half to this row. Splitting the *doors* is
     // Task 5's job, and until the line's own `PATCH` exists, dropping the shared
     // half here would make it unauthorable rather than authorable elsewhere. The
     // write is a no-op once the version is published, which `update_draft_structure`
     // decides for itself.
-    // **The rates come off before the geometry they point at.**
-    // `pricing_price_tier_band` has a compound foreign key into
-    // `pricing_charge_tier`, so clearing the ladder while this row's rates
-    // still reference it is a raw FK violation rather than an edit.
+    // **The ladder comes off before the kind can move.**
+    // `trg_pricing_price_tier_band_parent_kind` refuses a version that still
+    // prices bands becoming a kind that carries none, so a `graduated -> flat`
+    // edit has to clear first; the new ladder goes back last, where the band
+    // table's own kind trigger judges it against the kind the version now has.
     delete_bands(runner, scope, tenant_id, price_id).await?;
     if halves == Halves::Both {
         super::charge_line_repo::update_draft_structure(
@@ -5068,19 +5049,21 @@ fn band_models(
     line_version_id: Uuid,
     bands: &[TierBand],
 ) -> Result<Vec<price_tier_band::ActiveModel>, RepoError> {
-    crate::domain::price_row::bands_in_ordinal_order(bands)
-        .into_iter()
-        .map(|(ordinal, band)| {
-            let band_ordinal = i32::try_from(ordinal).map_err(|_| RepoError::ValueOutOfRange {
-                field: "band_ordinal".to_owned(),
-                value: ordinal.to_string(),
-            })?;
+    bands
+        .iter()
+        .map(|band| {
+            let from_qty = stored_bound("band from_qty", band.from_qty)?;
+            let to_qty = match band.to_qty {
+                BandTop::Open => None,
+                BandTop::Closed(top) => Some(stored_bound("band to_qty", top)?),
+            };
             Ok(price_tier_band::ActiveModel {
-                band_id: Set(band_id(price_id, band_ordinal)),
+                band_id: Set(band_id(price_id, from_qty)),
                 tenant_id: Set(tenant_id),
                 price_id: Set(price_id),
                 line_version_id: Set(line_version_id),
-                band_ordinal: Set(band_ordinal),
+                from_qty: Set(from_qty),
+                to_qty: Set(to_qty),
                 unit_price_nano: Set(band.unit_price_rate.nano_minor()),
             })
         })
@@ -5088,16 +5071,16 @@ fn band_models(
 }
 
 /// A band's surrogate key, derived from the identity the table actually states:
-/// `UNIQUE (price_id, band_ordinal)`.
+/// `UNIQUE (price_id, from_qty)` — a band is where it starts.
 ///
 /// `band_id` is a `PRIMARY KEY` with no default and nothing outside this module
 /// reads it, so it could have been random. Deriving it makes the surrogate agree
 /// with the real identity: replacing a band set with an identical one writes the
 /// same ids back, so no consumer can come to depend on an id that changes on
-/// every save, and two bands sharing an ordinal collide on both keys rather
+/// every save, and two bands sharing a lower bound collide on both keys rather
 /// than on only the one that happened to be checked.
-fn band_id(price_id: Uuid, band_ordinal: i32) -> Uuid {
-    Uuid::new_v5(&price_id, &band_ordinal.to_be_bytes())
+fn band_id(price_id: Uuid, from_qty: i64) -> Uuid {
+    Uuid::new_v5(&price_id, &from_qty.to_be_bytes())
 }
 
 /// The D-45 declaration as the column carries it, in the `{quantity,
@@ -5167,9 +5150,8 @@ fn out_of_range(field: &str, value: u64) -> RepoError {
 /// Line-first authoring drafts the shared structure before any market prices it,
 /// so the version needs a reading that does not start from a price row. The
 /// shared half arrives as the same [`PriceContent`] every rule already reads --
-/// with no money on it and no bands, since a band is geometry *and* a rate --
-/// and the geometry arrives beside it, which is the only place a rate-less band
-/// can be said.
+/// with no money on it and no bands: a ladder is a market's, bounds and rates
+/// together, and a line read on its own has none to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineRecord {
     /// The stable logical line.
@@ -5186,8 +5168,6 @@ pub struct LineRecord {
     pub scope_key: ChargeLineScopeKey,
     /// The shared half of the content; the monetary half is empty.
     pub content: PriceContent,
-    /// Tier geometry, in quantity order.
-    pub tiers: Vec<crate::domain::charge_line::TierGeometry>,
     /// Publish-frozen descriptor results.
     pub resolved_invoice_line_template: Option<String>,
     /// Publish-frozen GL code.
@@ -5245,9 +5225,7 @@ pub async fn load_line_record(
     let line =
         super::charge_line_repo::require_line(runner, scope, tenant_id, version.charge_line_id)
             .await?;
-    line_record(runner, scope, tenant_id, line, version)
-        .await
-        .map(Some)
+    line_record(tenant_id, line, version).map(Some)
 }
 
 /// Every line of a plan, each at its **latest** version, in a stable order.
@@ -5322,7 +5300,7 @@ pub async fn list_line_records_page(
             .await
             .map_err(|e| RepoError::Db(format!("read latest line version: {e}")))?;
         if let Some(version) = latest {
-            records.push(line_record(runner, scope, tenant_id, line, version).await?);
+            records.push(line_record(tenant_id, line, version)?);
         }
     }
     Ok(records)
@@ -5355,15 +5333,8 @@ pub async fn list_prices_of_version(
     for row in rows {
         let price_id = row.price_id;
         let graph = load_graph(runner, scope, tenant_id, row).await?;
-        let geometry = super::charge_line_repo::load_geometry(
-            runner,
-            scope,
-            tenant_id,
-            graph.price.line_version_id,
-        )
-        .await?;
-        let rates = load_bands(runner, scope, tenant_id, price_id).await?;
-        records.push(market_price_record(&graph, &geometry, &rates)?);
+        let bands = load_bands(runner, scope, tenant_id, price_id).await?;
+        records.push(market_price_record(&graph, &bands)?);
     }
     Ok(records)
 }
@@ -5393,53 +5364,28 @@ pub async fn load_market_price(
         return Ok(None);
     };
     let graph = load_graph(runner, scope, tenant_id, row).await?;
-    let geometry = super::charge_line_repo::load_geometry(
-        runner,
-        scope,
-        tenant_id,
-        graph.price.line_version_id,
-    )
-    .await?;
-    let rates = load_bands(runner, scope, tenant_id, price_id).await?;
-    market_price_record(&graph, &geometry, &rates).map(Some)
+    let bands = load_bands(runner, scope, tenant_id, price_id).await?;
+    market_price_record(&graph, &bands).map(Some)
 }
 
 fn market_price_record(
     graph: &PriceGraph,
-    geometry: &[charge_tier::Model],
-    rates: &[price_tier_band::Model],
+    bands: &[price_tier_band::Model],
 ) -> Result<MarketPriceRecord, RepoError> {
     Ok(MarketPriceRecord {
-        record: to_record(graph, geometry, rates)?,
+        record: to_record(graph, bands)?,
         charge_line_id: graph.line.charge_line_id,
         line_version_id: graph.version.line_version_id,
         market_price_id: graph.market.market_price_id,
     })
 }
 
-async fn line_record(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
+fn line_record(
     tenant_id: Uuid,
     line: charge_line::Model,
     version: charge_line_version::Model,
 ) -> Result<LineRecord, RepoError> {
     let scope_key = read_line_key(&line, &version)?;
-    let geometry =
-        super::charge_line_repo::load_geometry(runner, scope, tenant_id, version.line_version_id)
-            .await?;
-    let tiers = geometry
-        .iter()
-        .map(|band| {
-            Ok(crate::domain::charge_line::TierGeometry {
-                from_qty: read_bound("pricing_charge_tier.from_qty", band.from_qty)?,
-                to_qty: match read_count("pricing_charge_tier.to_qty", band.to_qty)? {
-                    None => BandTop::Open,
-                    Some(top) => BandTop::Closed(top),
-                },
-            })
-        })
-        .collect::<Result<Vec<_>, RepoError>>()?;
     // **A graph with no money under it.** `to_price_row` reads the shared half off
     // the version and the line and the monetary half off the price row, so a price
     // row carrying nothing yields exactly the shared half -- through the one reader
@@ -5480,7 +5426,7 @@ async fn line_record(
         line,
         version,
     };
-    let row = to_price_row(&graph, scope_key.charge_kind(), &geometry, &[])?;
+    let row = to_price_row(&graph, scope_key.charge_kind(), &[])?;
     let version = &graph.version;
     Ok(LineRecord {
         charge_line_id: graph.line.charge_line_id,
@@ -5504,7 +5450,6 @@ async fn line_record(
             grandfather_until: None,
             supersedes_price_id: None,
         },
-        tiers,
         resolved_invoice_line_template: version.resolved_invoice_line_template.clone(),
         resolved_gl_code: version.resolved_gl_code.clone(),
         created_by: version.created_by,
@@ -5514,12 +5459,11 @@ async fn line_record(
 
 fn to_record(
     graph: &PriceGraph,
-    geometry: &[charge_tier::Model],
-    rates: &[price_tier_band::Model],
+    bands: &[price_tier_band::Model],
 ) -> Result<PriceRecord, RepoError> {
     let row = &graph.price;
     let scope_key = to_scope_key(graph)?;
-    let shape = to_price_row(graph, scope_key.charge_kind(), geometry, rates)?;
+    let shape = to_price_row(graph, scope_key.charge_kind(), bands)?;
     Ok(PriceRecord {
         resolved_invoice_line_template: graph.version.resolved_invoice_line_template.clone(),
         resolved_gl_code: graph.version.resolved_gl_code.clone(),
@@ -5615,38 +5559,22 @@ fn read_eligibility(line: &charge_line::Model) -> Result<PriceEligibility, RepoE
 fn to_price_row(
     graph: &PriceGraph,
     charge_kind: ChargeKind,
-    geometry: &[charge_tier::Model],
-    rates: &[price_tier_band::Model],
+    stored_bands: &[price_tier_band::Model],
 ) -> Result<PriceRow, RepoError> {
     let version = &graph.version;
     let line = &graph.line;
     let row = &graph.price;
-    let mut geometry_by_ordinal: HashMap<i32, &charge_tier::Model> = HashMap::new();
-    for band in geometry {
-        geometry_by_ordinal.insert(band.band_ordinal, band);
-    }
-    let mut rates_sorted = rates.to_vec();
-    rates_sorted.sort_by_key(|band| band.band_ordinal);
-    let mut bands = rates_sorted
+    let mut bands = stored_bands
         .iter()
-        .map(|rate| {
-            let geom = geometry_by_ordinal.get(&rate.band_ordinal).ok_or_else(|| {
-                RepoError::CorruptRow(format!(
-                    "price {} rate ordinal {} has no charge_tier geometry",
-                    row.price_id, rate.band_ordinal
-                ))
-            })?;
-            to_band(geom, rate)
-        })
+        .map(to_band)
         .collect::<Result<Vec<_>, _>>()?;
-    // The ordinal joined the rate to its geometry; it does not decide the order
-    // the set comes back in. Sorting on the bound the bands actually describe
-    // makes the read-side guarantee hold for rows this repository did not
-    // write — a raw fixture, a migration, a future writer — and not merely for
-    // rows whose ordinals were normalized on the way in. `TierBandValidator`
-    // judges geometry over the set sorted this way, so a repository answering
-    // in stored order would let a row pass the save-time pre-check and fail the
-    // identical re-run inside the publish commit.
+    // Sorting on the bound the bands actually describe makes the read-side
+    // guarantee hold for rows this repository did not write — a raw fixture, a
+    // migration, a future writer — and not merely for the queries here that
+    // happen to order by it. `TierBandValidator` judges geometry over the set
+    // sorted this way, so a repository answering in stored order would let a row
+    // pass the save-time pre-check and fail the identical re-run inside the
+    // publish commit.
     bands.sort_by_key(|band| band.from_qty);
     Ok(PriceRow {
         invoice_line_template: version.invoice_line_template.clone(),
@@ -5754,16 +5682,13 @@ fn to_price_row(
     })
 }
 
-fn to_band(
-    geometry: &charge_tier::Model,
-    rate: &price_tier_band::Model,
-) -> Result<TierBand, RepoError> {
-    let from_qty = read_bound("pricing_charge_tier.from_qty", geometry.from_qty)?;
-    let to_qty = match read_count("pricing_charge_tier.to_qty", geometry.to_qty)? {
+fn to_band(band: &price_tier_band::Model) -> Result<TierBand, RepoError> {
+    let from_qty = read_bound("pricing_price_tier_band.from_qty", band.from_qty)?;
+    let to_qty = match read_count("pricing_price_tier_band.to_qty", band.to_qty)? {
         None => BandTop::Open,
         Some(top) => BandTop::Closed(top),
     };
-    let unit_price_rate = RateMinor::from_nano_minor(rate.unit_price_nano).map_err(|e| {
+    let unit_price_rate = RateMinor::from_nano_minor(band.unit_price_nano).map_err(|e| {
         RepoError::CorruptRow(format!("pricing_price_tier_band.unit_price_nano: {e}"))
     })?;
     Ok(TierBand {

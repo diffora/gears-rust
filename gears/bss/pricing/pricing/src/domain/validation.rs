@@ -220,6 +220,26 @@ impl ValidationReport {
         self.violations.is_empty()
     }
 
+    /// This report with every subject qualified by `scope`, as `subject|scope`.
+    ///
+    /// For an aggregator that runs one pipeline over several subjects whose own
+    /// subject strings can coincide. A row rule names its row `usage/graduated`,
+    /// which says everything when one row is judged and nothing when two markets
+    /// of one line are: their ladders are their own, so a gap in one of them has
+    /// to say whose. The rule cannot know — it sees a row, not the key it is filed
+    /// under — so the caller that does know says it here, once, for violations and
+    /// advisories alike.
+    #[must_use]
+    pub fn within(mut self, scope: &str) -> Self {
+        for violation in &mut self.violations {
+            violation.subject = format!("{}|{scope}", violation.subject);
+        }
+        for advisory in &mut self.warnings {
+            advisory.subject = format!("{}|{scope}", advisory.subject);
+        }
+        self
+    }
+
     /// Merge another report into this one, preserving order.
     pub fn absorb(&mut self, other: Self) {
         self.violations.extend(other.violations);

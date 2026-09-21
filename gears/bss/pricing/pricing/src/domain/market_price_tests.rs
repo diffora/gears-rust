@@ -8,9 +8,7 @@ use crate::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationCon
 use crate::domain::error::DomainError;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::market_price::{
-    MARKET_TIER_RATE_COUNT_MISMATCH, MarketPriceTerms, MarketPriceVersion, resolve_row, split_row,
-};
+use crate::domain::market_price::{MarketPriceTerms, MarketPriceVersion, resolve_row, split_row};
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -168,52 +166,75 @@ fn per_unit_usage_round_trip_carries_allowance() {
     round_trip(&row);
 }
 
+/// **One model, different ladders.** Two markets of one structure differ in the
+/// number of bands, the break-points and the rates, and both join — the structure
+/// they share is byte-for-byte the same value.
 #[test]
-fn missing_tier_rate_is_a_count_mismatch_not_a_partial_row() {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
-    row.meter = Some("egress_bytes".to_owned());
-    row.billing_granularity = Some(BillingGranularity::PerHour);
-    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+fn two_markets_of_one_structure_carry_different_ladders() {
+    let mut eur_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    eur_row.meter = Some("egress_bytes".to_owned());
+    eur_row.billing_granularity = Some(BillingGranularity::PerHour);
+    eur_row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+    let mut usd_row = eur_row.clone();
+    eur_row.bands = vec![
+        TierBand::closed(0, 100, rate(25)),
+        TierBand::open(100, rate(20)),
+    ];
+    usd_row.bands = vec![
+        TierBand::closed(0, 50, rate(30)),
+        TierBand::closed(50, 500, rate(24)),
+        TierBand::open(500, rate(18)),
+    ];
+
+    let (eur_structure, eur_money) = split_row(eur_row.clone());
+    let (usd_structure, usd_money) = split_row(usd_row.clone());
+    assert_eq!(
+        eur_structure, usd_structure,
+        "a ladder is no part of the shared structure"
+    );
+    assert_eq!(eur_money.tiers.len(), 2);
+    assert_eq!(usd_money.tiers.len(), 3);
+    assert_eq!(resolve_row(&eur_structure, &eur_money).unwrap(), eur_row);
+    assert_eq!(resolve_row(&eur_structure, &usd_money).unwrap(), usd_row);
+}
+
+/// A ladder edit moves money and nothing else: the structure a successor submits
+/// is the one the line already holds, which is what lets the store bind it to the
+/// frozen version instead of minting a new one.
+#[test]
+fn moving_a_markets_break_points_does_not_change_structure() {
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Volume));
+    row.meter = Some("api_calls".to_owned());
+    row.billing_granularity = Some(BillingGranularity::WholeUnit);
+    row.tier_aggregation_window = Some(TierAggregationWindow::InvoicePeriod);
     row.bands = vec![
-        TierBand::closed(0, 1_000, rate(10)),
-        TierBand::open(1_000, rate(6)),
+        TierBand::closed(0, 100, rate(5)),
+        TierBand::open(100, rate(4)),
     ];
     let (structure, mut money) = split_row(row);
-    money.tier_rates.pop();
-    let err = resolve_row(&structure, &money).expect_err("unequal counts must not join");
-    assert_eq!(codes(err), vec![MARKET_TIER_RATE_COUNT_MISMATCH]);
+    money.tiers = vec![
+        TierBand::closed(0, 250, rate(5)),
+        TierBand::closed(250, 1_000, rate(4)),
+        TierBand::open(1_000, rate(3)),
+    ];
+    let changed = resolve_row(&structure, &money).expect("a re-tiered market still joins");
+    assert_eq!(changed.bands, money.tiers);
+    assert_eq!(split_row(changed).0, structure);
 }
 
 #[test]
-fn extra_tier_rate_is_a_count_mismatch() {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
-    row.meter = Some("egress_bytes".to_owned());
-    row.billing_granularity = Some(BillingGranularity::PerHour);
-    row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
-    row.bands = vec![
-        TierBand::closed(0, 1_000, rate(10)),
-        TierBand::open(1_000, rate(6)),
-    ];
-    let (structure, mut money) = split_row(row);
-    money.tier_rates.push(rate(1));
-    let err = resolve_row(&structure, &money).expect_err("unequal counts must not join");
-    assert_eq!(codes(err), vec![MARKET_TIER_RATE_COUNT_MISMATCH]);
-}
-
-#[test]
-fn a_flat_row_with_a_tier_rate_is_invalid() {
+fn a_flat_line_with_a_ladder_is_invalid() {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(minor(1_500));
     let (structure, mut money) = split_row(row);
-    money.tier_rates = vec![rate(9)];
-    let err = resolve_row(&structure, &money).expect_err("flat + tier rate must not join");
+    money.tiers = vec![TierBand::open(0, rate(9))];
+    let err = resolve_row(&structure, &money).expect_err("flat + a ladder must not join");
     let found = codes(err);
     assert!(
-        found.contains(&MARKET_TIER_RATE_COUNT_MISMATCH.to_owned())
-            || found
-                .iter()
-                .any(|code| code == EVAL_POLICY_MISPLACED || code == AMOUNT_PLACEMENT_INVALID),
-        "expected a count mismatch or an existing operand rule, got {found:?}"
+        found
+            .iter()
+            .any(|code| code == EVAL_POLICY_MISPLACED || code == AMOUNT_PLACEMENT_INVALID),
+        "expected an existing operand rule, got {found:?}"
     );
 }
 
@@ -243,7 +264,7 @@ fn tax_and_rounding_stay_on_the_market_record() {
     let (structure, money) = split_row(record.row.clone());
     round_trip(&record.row);
     assert!(money.amount_minor.is_some());
-    assert!(structure.bands.is_empty());
+    assert!(money.tiers.is_empty());
     assert!(record.tax_inclusive);
     assert_eq!(record.tax_category_ref.as_deref(), Some("standard-vat"));
     assert_eq!(record.rounding_policy_ref.as_deref(), Some("half_up"));
@@ -300,7 +321,7 @@ fn market_terms_default_is_an_empty_operand_set() {
         MarketPriceTerms {
             amount_minor: None,
             unit_rate: None,
-            tier_rates: Vec::new(),
+            tiers: Vec::new(),
             package_price_minor: None,
             reserved_rate: None,
         }

@@ -1,7 +1,8 @@
 //! Simultaneous structural cutovers across a logical line's markets.
 //!
-//! A charge line's **structure** — model kind, tier geometry, package size, the
-//! usage policy, the descriptor — is shared by every market of the line, and a
+//! A charge line's **structure** — model kind, package size, the usage policy,
+//! the descriptor — is shared by every market of the line (a tier ladder is
+//! not: it is each market's money, so re-tiering is no cutover), and a
 //! market's money is bound to one immutable
 //! [`ChargeLineVersion`](crate::domain::charge_line::ChargeLineVersion) through
 //! its price row's `line_version_id`. Money therefore schedules per market

@@ -40,9 +40,6 @@ INDEX idx_pricing_charge_line_plan
 INDEX idx_pricing_charge_line_version_line
   ON pricing_charge_line_version
   DDL CREATE INDEX idx_pricing_charge_line_version_line ON pricing_charge_line_version (tenant_id, charge_line_id, lifecycle_state)
-INDEX idx_pricing_charge_tier_version
-  ON pricing_charge_tier
-  DDL CREATE INDEX idx_pricing_charge_tier_version ON pricing_charge_tier (tenant_id, line_version_id)
 INDEX idx_pricing_composite_meter_revision
   ON pricing_composite_meter
   DDL CREATE INDEX idx_pricing_composite_meter_revision ON pricing_composite_meter (tenant_id, plan_id, plan_revision)
@@ -115,6 +112,9 @@ INDEX idx_pricing_price_supersedes
 INDEX idx_pricing_price_tier_band_price
   ON pricing_price_tier_band
   DDL CREATE INDEX idx_pricing_price_tier_band_price ON pricing_price_tier_band (tenant_id, price_id)
+INDEX idx_pricing_price_tier_band_version
+  ON pricing_price_tier_band
+  DDL CREATE INDEX idx_pricing_price_tier_band_version ON pricing_price_tier_band (tenant_id, line_version_id)
 INDEX idx_pricing_price_window_due
   ON pricing_price_window
   DDL CREATE INDEX idx_pricing_price_window_due ON pricing_price_window (state, effective_from)
@@ -420,19 +420,6 @@ TABLE pricing_charge_line_version
   CONSTRAINT uq_pricing_charge_line_version_revision UNIQUE (tenant_id, charge_line_id, plan_revision)
   FK charge_line_id -> pricing_charge_line.charge_line_id
   FK tenant_id -> pricing_charge_line.tenant_id
-TABLE pricing_charge_tier
-  COLUMN band_ordinal INTEGER NOT NULL DEFAULT - PK 3
-  COLUMN from_qty bigint NOT NULL DEFAULT - PK 0
-  COLUMN line_version_id TEXT NOT NULL DEFAULT - PK 2
-  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
-  COLUMN to_qty bigint NULL DEFAULT - PK 0
-  CONSTRAINT chk_pricing_charge_tier_from_qty CHECK (from_qty >= 0)
-  CONSTRAINT chk_pricing_charge_tier_ordinal CHECK (band_ordinal >= 0)
-  CONSTRAINT chk_pricing_charge_tier_width CHECK (to_qty IS NULL OR to_qty > from_qty)
-  CONSTRAINT fk_pricing_charge_tier_version FOREIGN KEY (tenant_id, line_version_id)
-  CONSTRAINT uq_pricing_charge_tier_lower_bound UNIQUE (tenant_id, line_version_id, from_qty)
-  FK line_version_id -> pricing_charge_line_version.line_version_id
-  FK tenant_id -> pricing_charge_line_version.tenant_id
 TABLE pricing_composite_meter
   COLUMN composite_id TEXT NOT NULL DEFAULT - PK 4
   COLUMN constituent_units TEXT NOT NULL DEFAULT - PK 0
@@ -799,21 +786,19 @@ TABLE pricing_price_overlay_line_amount
   FK tenant_id -> pricing_price_overlay_line.tenant_id
 TABLE pricing_price_tier_band
   COLUMN band_id TEXT NOT NULL DEFAULT - PK 1
-  COLUMN band_ordinal INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN from_qty bigint NOT NULL DEFAULT - PK 0
   COLUMN line_version_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN price_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN to_qty bigint NULL DEFAULT - PK 0
   COLUMN unit_price_nano bigint NOT NULL DEFAULT - PK 0
-  CONSTRAINT chk_pricing_price_tier_band_ordinal CHECK (band_ordinal >= 0)
+  CONSTRAINT chk_pricing_price_tier_band_from_qty CHECK (from_qty >= 0)
   CONSTRAINT chk_pricing_price_tier_band_unit_price CHECK (unit_price_nano >= 0)
+  CONSTRAINT chk_pricing_price_tier_band_width CHECK (to_qty IS NULL OR to_qty > from_qty)
   CONSTRAINT fk_pricing_price_tier_band_price FOREIGN KEY (tenant_id, price_id, line_version_id)
-  CONSTRAINT fk_pricing_price_tier_band_tier FOREIGN KEY (tenant_id, line_version_id, band_ordinal)
-  CONSTRAINT uq_pricing_price_tier_band_ordinal UNIQUE (price_id, band_ordinal)
-  FK band_ordinal -> pricing_charge_tier.band_ordinal
-  FK line_version_id -> pricing_charge_tier.line_version_id
+  CONSTRAINT uq_pricing_price_tier_band_lower_bound UNIQUE (price_id, from_qty)
   FK line_version_id -> pricing_price.line_version_id
   FK price_id -> pricing_price.price_id
-  FK tenant_id -> pricing_charge_tier.tenant_id
   FK tenant_id -> pricing_price.tenant_id
 TABLE pricing_price_window
   COLUMN activated_at TEXT NULL DEFAULT - PK 0
@@ -1046,24 +1031,6 @@ TRIGGER trg_pricing_charge_line_version_frozen_columns
 TRIGGER trg_pricing_charge_line_version_no_delete
   ON pricing_charge_line_version
   DDL CREATE TRIGGER trg_pricing_charge_line_version_no_delete BEFORE DELETE ON pricing_charge_line_version FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' BEGIN SELECT RAISE(ABORT, 'pricing_charge_line_version: DELETE of a non-draft line version is not permitted'); END
-TRIGGER trg_pricing_charge_tier_kind_insert
-  ON pricing_charge_tier
-  DDL CREATE TRIGGER trg_pricing_charge_tier_kind_insert BEFORE INSERT ON pricing_charge_tier FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_charge_tier: band rows are permitted only on a graduated or volume line version') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind IN ('graduated','volume')); END
-TRIGGER trg_pricing_charge_tier_kind_update
-  ON pricing_charge_tier
-  DDL CREATE TRIGGER trg_pricing_charge_tier_kind_update BEFORE UPDATE ON pricing_charge_tier FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_charge_tier: band rows are permitted only on a graduated or volume line version') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind IN ('graduated','volume')); END
-TRIGGER trg_pricing_charge_tier_no_delete
-  ON pricing_charge_tier
-  DDL CREATE TRIGGER trg_pricing_charge_tier_no_delete BEFORE DELETE ON pricing_charge_tier FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_charge_tier: DELETE of a band under a non-draft line version is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = OLD.tenant_id AND line_version_id = OLD.line_version_id AND lifecycle_state = 'draft'); END
-TRIGGER trg_pricing_charge_tier_no_insert
-  ON pricing_charge_tier
-  DDL CREATE TRIGGER trg_pricing_charge_tier_no_insert BEFORE INSERT ON pricing_charge_tier FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_charge_tier: INSERT of a band under a non-draft line version is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND lifecycle_state = 'draft'); END
-TRIGGER trg_pricing_charge_tier_no_update
-  ON pricing_charge_tier
-  DDL CREATE TRIGGER trg_pricing_charge_tier_no_update BEFORE UPDATE ON pricing_charge_tier FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_charge_tier: UPDATE of a band under a non-draft line version is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = OLD.tenant_id AND line_version_id = OLD.line_version_id AND lifecycle_state = 'draft') OR NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND lifecycle_state = 'draft'); END
-TRIGGER trg_pricing_charge_tier_parent_kind
-  ON pricing_charge_line_version
-  DDL CREATE TRIGGER trg_pricing_charge_tier_parent_kind BEFORE UPDATE ON pricing_charge_line_version FOR EACH ROW WHEN NEW.model_kind IS NULL OR NEW.model_kind NOT IN ('graduated','volume') BEGIN SELECT RAISE(ABORT, 'pricing_charge_tier: a line version that still carries bands may not leave the graduated or volume kinds') WHERE EXISTS (SELECT 1 FROM pricing_charge_tier WHERE tenant_id = OLD.tenant_id AND line_version_id = OLD.line_version_id); END
 TRIGGER trg_pricing_composite_meter_no_delete
   ON pricing_composite_meter
   DDL CREATE TRIGGER trg_pricing_composite_meter_no_delete BEFORE DELETE ON pricing_composite_meter FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_composite_meter: DELETE of a composite under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = OLD.plan_id AND revision = OLD.plan_revision AND lifecycle_state = 'draft'); END
@@ -1244,6 +1211,12 @@ TRIGGER trg_pricing_price_package_price_kind_insert
 TRIGGER trg_pricing_price_package_price_kind_update
   ON pricing_price
   DDL CREATE TRIGGER trg_pricing_price_package_price_kind_update BEFORE UPDATE ON pricing_price FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price: package_price_minor is permitted only on a package line version') WHERE NEW.package_price_minor IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind = 'package'); END
+TRIGGER trg_pricing_price_tier_band_kind_insert
+  ON pricing_price_tier_band
+  DDL CREATE TRIGGER trg_pricing_price_tier_band_kind_insert BEFORE INSERT ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: band rows are permitted only on a graduated or volume line version') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind IN ('graduated','volume')); END
+TRIGGER trg_pricing_price_tier_band_kind_update
+  ON pricing_price_tier_band
+  DDL CREATE TRIGGER trg_pricing_price_tier_band_kind_update BEFORE UPDATE ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: band rows are permitted only on a graduated or volume line version') WHERE NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind IN ('graduated','volume')); END
 TRIGGER trg_pricing_price_tier_band_no_delete
   ON pricing_price_tier_band
   DDL CREATE TRIGGER trg_pricing_price_tier_band_no_delete BEFORE DELETE ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: DELETE of a band under a non-draft price row is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = OLD.price_id AND lifecycle_state = 'draft'); END
@@ -1253,6 +1226,9 @@ TRIGGER trg_pricing_price_tier_band_no_insert
 TRIGGER trg_pricing_price_tier_band_no_update
   ON pricing_price_tier_band
   DDL CREATE TRIGGER trg_pricing_price_tier_band_no_update BEFORE UPDATE ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: UPDATE of a band under a non-draft price row is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = OLD.price_id AND lifecycle_state = 'draft') OR NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_price_tier_band_parent_kind
+  ON pricing_charge_line_version
+  DDL CREATE TRIGGER trg_pricing_price_tier_band_parent_kind BEFORE UPDATE ON pricing_charge_line_version FOR EACH ROW WHEN NEW.model_kind IS NULL OR NEW.model_kind NOT IN ('graduated','volume') BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: a line version that still prices bands may not leave the graduated or volume kinds') WHERE EXISTS (SELECT 1 FROM pricing_price_tier_band WHERE tenant_id = OLD.tenant_id AND line_version_id = OLD.line_version_id); END
 TRIGGER trg_pricing_price_window_act_sequence
   ON pricing_price_window
   DDL CREATE TRIGGER trg_pricing_price_window_act_sequence BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state NOT IN ('expired','cancelled') AND NEW.mutation_seq IS NOT OLD.mutation_seq AND NEW.mutation_seq <> OLD.mutation_seq + 1 BEGIN SELECT RAISE(ABORT, 'pricing_price_window: the act sequence moves by one act at a time; it names an act, and a name that can be reused or run backwards names nothing'); END

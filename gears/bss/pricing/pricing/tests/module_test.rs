@@ -2614,9 +2614,16 @@ async fn the_two_authoring_doors_publish_their_own_request_documents() {
     );
 
     // The removed members are gone from the shapes that survive: a market price
-    // request carries no structure, and a structure carries no money.
+    // request carries no structure, and a structure carries no money. The
+    // positional `tier_rates_nano_minor` is gone with them: a rate sits beside
+    // the bound it prices, inside the market's own `tiers`.
     let market = members_of(&components, "CreateMarketPriceRequest");
-    for member in ["model_kind", "tiers", "package_size", "billing_granularity"] {
+    for member in [
+        "model_kind",
+        "tier_rates_nano_minor",
+        "package_size",
+        "billing_granularity",
+    ] {
         assert!(
             !market.contains(member),
             "a market price request must not publish `{member}`: {market:?}"
@@ -2627,7 +2634,7 @@ async fn the_two_authoring_doors_publish_their_own_request_documents() {
         "currency",
         "region",
         "amount_minor",
-        "tier_rates_nano_minor",
+        "tiers",
         "tax_inclusive",
     ] {
         assert!(
@@ -2643,13 +2650,15 @@ async fn the_two_authoring_doors_publish_their_own_request_documents() {
         "amount_minor",
         "tax_inclusive",
         "unit_rate_nano_minor",
+        // A ladder is money: bounds and rates together, per market.
+        "tiers",
     ] {
         assert!(
             !line.contains(member),
             "a charge line request must not publish `{member}`: {line:?}"
         );
     }
-    for member in ["model_kind", "tiers", "charge_kind", "sku_id", "phase"] {
+    for member in ["model_kind", "charge_kind", "sku_id", "phase"] {
         assert!(
             line.contains(member),
             "and it must still publish `{member}`: {line:?}"

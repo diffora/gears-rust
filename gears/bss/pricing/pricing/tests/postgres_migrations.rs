@@ -296,8 +296,6 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_bundle(bundle_id)",
     "fk_pricing_charge_line_version_line: FOREIGN KEY (tenant_id, charge_line_id) REFERENCES \
      bss.pricing_charge_line(tenant_id, charge_line_id)",
-    "fk_pricing_charge_tier_version: FOREIGN KEY (tenant_id, line_version_id) REFERENCES \
-     bss.pricing_charge_line_version(tenant_id, line_version_id)",
     // The five composite keys onto `pricing_plan (plan_id, revision)`. Each is
     // the half `postgres_schema_plan_shape.rs` says a refusal cannot show: a
     // single-column key would refuse the same row and would let a child sit
@@ -326,8 +324,6 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_price_overlay(price_overlay_id, revision)",
     "fk_pricing_price_tier_band_price: FOREIGN KEY (tenant_id, price_id, line_version_id) \
      REFERENCES bss.pricing_price(tenant_id, price_id, line_version_id)",
-    "fk_pricing_price_tier_band_tier: FOREIGN KEY (tenant_id, line_version_id, band_ordinal) \
-     REFERENCES bss.pricing_charge_tier(tenant_id, line_version_id, band_ordinal)",
     "fk_pricing_price_version_line: FOREIGN KEY (tenant_id, line_version_id, charge_line_id) \
      REFERENCES bss.pricing_charge_line_version(tenant_id, line_version_id, charge_line_id)",
     "fk_pricing_price_window_price: FOREIGN KEY (price_id) \
@@ -349,7 +345,6 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      phase, price_eligibility, charge_kind, cohort, dimension_key)",
     "uq_pricing_charge_line_version_line: UNIQUE (tenant_id, line_version_id, charge_line_id)",
     "uq_pricing_charge_line_version_revision: UNIQUE (tenant_id, charge_line_id, plan_revision)",
-    "uq_pricing_charge_tier_lower_bound: UNIQUE (tenant_id, line_version_id, from_qty)",
     // Table-level `UNIQUE`s (`contype = 'u'`): every other uniqueness in the chain
     // is a partial `CREATE UNIQUE INDEX`, which is why this list is short and
     // `EXPECTED_INDEXES` is not.
@@ -359,7 +354,7 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
     "uq_pricing_price_id_market: UNIQUE (tenant_id, price_id, market_price_id)",
     "uq_pricing_price_id_version: UNIQUE (tenant_id, price_id, line_version_id)",
     "uq_pricing_price_tenant_id: UNIQUE (tenant_id, price_id)",
-    "uq_pricing_price_tier_band_ordinal: UNIQUE (price_id, band_ordinal)",
+    "uq_pricing_price_tier_band_lower_bound: UNIQUE (price_id, from_qty)",
 ];
 
 /// Every table's primary key as `table: col, col` (D-236).
@@ -406,9 +401,6 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_bundle_revshare_group_append_only",
     "pricing_charge_line_append_only",
     "pricing_charge_line_version_append_only",
-    "pricing_charge_tier_append_only",
-    "pricing_charge_tier_kind",
-    "pricing_charge_tier_parent_kind",
     // Slice 10's composite meter: one PL/pgSQL function, three SQLite triggers.
     "pricing_composite_meter_append_only",
     "pricing_draft_window_append_only",
@@ -427,6 +419,8 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_price_overlay_line_append_only",
     "pricing_price_package_price_kind",
     "pricing_price_tier_band_append_only",
+    "pricing_price_tier_band_kind",
+    "pricing_price_tier_band_parent_kind",
     "pricing_price_window_append_only",
     // Slice 12: one PL/pgSQL function, four SQLite triggers.
     "pricing_repricing_journal_progress",
@@ -453,9 +447,6 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_revshare_group_append_only",
     "trg_pricing_charge_line_append_only",
     "trg_pricing_charge_line_version_append_only",
-    "trg_pricing_charge_tier_append_only",
-    "trg_pricing_charge_tier_kind",
-    "trg_pricing_charge_tier_parent_kind",
     "trg_pricing_composite_meter_append_only",
     "trg_pricing_draft_window_append_only",
     "trg_pricing_market_price_append_only",
@@ -471,6 +462,8 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_overlay_line_append_only",
     "trg_pricing_price_package_price_kind",
     "trg_pricing_price_tier_band_append_only",
+    "trg_pricing_price_tier_band_kind",
+    "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_append_only",
     "trg_pricing_repricing_journal_progress",
     "trg_pricing_snapshot_provenance_frozen",
@@ -573,7 +566,6 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_charge_line_plan",
     "idx_pricing_charge_line_version_line",
-    "idx_pricing_charge_tier_version",
     "idx_pricing_composite_meter_revision",
     "idx_pricing_draft_window_revision",
     "idx_pricing_group_membership_payer",
@@ -598,6 +590,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_plan",
     "idx_pricing_price_supersedes",
     "idx_pricing_price_tier_band_price",
+    "idx_pricing_price_tier_band_version",
     "idx_pricing_price_window_due",
     "idx_pricing_price_window_market",
     "idx_pricing_price_window_price",
@@ -657,7 +650,6 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
     "pricing_charge_line: tenant_id, charge_line_id",
     "pricing_charge_line_version: tenant_id, line_version_id",
-    "pricing_charge_tier: tenant_id, line_version_id, band_ordinal",
     // Tenant- and plan-scoped (D-340). `composite_id, plan_revision` alone is a
     // client-supplied id with no tenant, so one composite id would belong to one
     // plan per revision *number* across the whole table. `pricing_plan_phase`
@@ -784,9 +776,6 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_charge_line_version_row_version",
     "chk_pricing_charge_line_version_tier_aggregation_window",
     "chk_pricing_charge_line_version_tier_qualification_window",
-    "chk_pricing_charge_tier_from_qty",
-    "chk_pricing_charge_tier_ordinal",
-    "chk_pricing_charge_tier_width",
     // Slice 10's composite meter. One CHECK only: arity and self-reference are
     // publish rules, for `pricing_composite_meter`'s portability reason.
     "chk_pricing_composite_meter_output_unit",
@@ -855,7 +844,6 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_plan_period_floor_cap_present",
     "chk_pricing_plan_phase_duration_non_negative",
     "chk_pricing_plan_phase_kind",
-    "chk_pricing_plan_phase_trial_projection_non_negative",
     "chk_pricing_plan_purchase_max_qty",
     "chk_pricing_plan_purchase_min_qty",
     "chk_pricing_plan_purchase_qty",
@@ -907,8 +895,9 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_reserved_rate_nano",
     "chk_pricing_price_revision",
     "chk_pricing_price_row_version",
-    "chk_pricing_price_tier_band_ordinal",
+    "chk_pricing_price_tier_band_from_qty",
     "chk_pricing_price_tier_band_unit_price",
+    "chk_pricing_price_tier_band_width",
     // D-311's `per_unit` rate, non-negative for the reason `amount_minor` is:
     // typed credit rows are Future scope, so a negative price is a mistake
     // caught where it lands. Postgres only -- `pricing_price`'s migration doc

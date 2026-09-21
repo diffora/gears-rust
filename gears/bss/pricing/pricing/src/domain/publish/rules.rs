@@ -607,7 +607,16 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
             index: index.clone(),
             introducing: record.lifecycle_state != LifecycleState::Published,
         });
-        report.absorb(row_rules.run(&record.row));
+        // Filed under the market, because a row rule names its row by charge and
+        // model kind alone and every market of a line shares both. What the
+        // markets do not share is their money — the ladder included — so a band
+        // fault in one of them is that market's, and says so.
+        let market = format!(
+            "{}/{}",
+            record.scope_key.currency().as_str(),
+            record.scope_key.region().as_str()
+        );
+        report.absorb(row_rules.run(&record.row).within(&market));
     }
     report.absorb(foundation_plan_rules(params).run(shape));
     report.absorb(plan_shape_rules(params.interval_bounds, params.descriptors.clone()).run(shape));

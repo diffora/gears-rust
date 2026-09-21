@@ -46,7 +46,7 @@ use uuid::Uuid;
 use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
 use super::{content_hash, threshold_content_hash};
 use crate::domain::audit::hex32;
-use crate::domain::charge_line::{ChargeLineVersion, TierGeometry};
+use crate::domain::charge_line::ChargeLineVersion;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, GrantSet, ProrationBasis, ProrationContract,
@@ -566,15 +566,6 @@ fn line_version_mutators() -> Vec<Mutator> {
         ("structure.model_kind", |s| {
             s.charge_lines[0].structure.model_kind = Some(ModelKind::Volume);
         }),
-        ("structure.bands: one dropped", |s| {
-            s.charge_lines[0].structure.bands.truncate(1);
-        }),
-        ("structure.bands[0].from_qty", |s| {
-            s.charge_lines[0].structure.bands[0].from_qty = 1;
-        }),
-        ("structure.bands[0].to_qty", |s| {
-            s.charge_lines[0].structure.bands[0] = TierGeometry::closed(0, 90);
-        }),
         ("structure.package_size", |s| {
             s.charge_lines[0].structure.package_size = Some(51);
         }),
@@ -675,11 +666,17 @@ fn market_price_mutators() -> Vec<Mutator> {
         ("money.unit_rate", |s| {
             s.market_prices[0].money.unit_rate = Some(rate(7));
         }),
-        ("money.tier_rates: one dropped", |s| {
-            s.market_prices[0].money.tier_rates.truncate(1);
+        ("money.tiers: one dropped", |s| {
+            s.market_prices[0].money.tiers.truncate(1);
         }),
-        ("money.tier_rates[0]", |s| {
-            s.market_prices[0].money.tier_rates[0] = rate(11);
+        ("money.tiers[0].from_qty", |s| {
+            s.market_prices[0].money.tiers[0].from_qty = 1;
+        }),
+        ("money.tiers[0].to_qty", |s| {
+            s.market_prices[0].money.tiers[0].to_qty = BandTop::Closed(90);
+        }),
+        ("money.tiers[0].unit_price_rate", |s| {
+            s.market_prices[0].money.tiers[0].unit_price_rate = rate(11);
         }),
         ("money.package_price_minor", |s| {
             s.market_prices[0].money.package_price_minor = Some(money(401));
@@ -1542,9 +1539,15 @@ fn the_other_collections_are_sets_too() {
     assert_ne!(straight.charge_lines, lines.charge_lines);
     assert_eq!(content_hash(&straight), content_hash(&lines));
 
-    let mut geometry = base();
-    geometry.charge_lines[0].structure.bands.reverse();
-    assert_eq!(content_hash(&straight), content_hash(&geometry));
+    // A market's ladder is a set of bands, each carrying its own bounds: one
+    // ladder authored in two orders is one ladder.
+    let mut ladder = base();
+    ladder.market_prices[0].money.tiers.reverse();
+    assert_ne!(
+        straight.market_prices[0].money.tiers, ladder.market_prices[0].money.tiers,
+        "the fixture carries more than one band"
+    );
+    assert_eq!(content_hash(&straight), content_hash(&ladder));
 
     let mut prices = base();
     prices.market_prices.reverse();
@@ -1552,19 +1555,39 @@ fn the_other_collections_are_sets_too() {
     assert_eq!(content_hash(&straight), content_hash(&prices));
 }
 
-/// A market's tier rates are a **sequence**: the n-th rate prices the n-th band
-/// of the structure version the row names. Swapping two of them is a different
-/// tariff, so — unlike every collection above — their order is content.
+/// Swapping the rates of two bands is a different tariff, and pins differently —
+/// not because the ladder is positional, but because each band carries its own
+/// rate beside its own bounds, so the swap changes the bands themselves.
 #[test]
-fn a_markets_tier_rates_are_positional() {
+fn swapping_two_bands_rates_is_a_different_ladder() {
     let straight = base();
     let mut swapped = base();
-    swapped.market_prices[0].money.tier_rates.reverse();
-    assert_ne!(
-        straight.market_prices[0].money.tier_rates, swapped.market_prices[0].money.tier_rates,
-        "the fixture carries two distinct rates"
-    );
+    let tiers = &mut swapped.market_prices[0].money.tiers;
+    let (first, second) = (tiers[0].unit_price_rate, tiers[1].unit_price_rate);
+    assert_ne!(first, second, "the fixture carries two distinct rates");
+    tiers[0].unit_price_rate = second;
+    tiers[1].unit_price_rate = first;
     assert_ne!(content_hash(&straight), content_hash(&swapped));
+}
+
+/// **The ladder is framed on the market and nowhere on the line.** Two markets
+/// of one line version with different ladders pin differently from two that
+/// agree, while the line's own frame is the same in both.
+#[test]
+fn two_markets_of_one_line_pin_their_own_ladders() {
+    let agreed = base();
+    let mut diverged = base();
+    assert!(
+        diverged.market_prices.len() >= 2,
+        "the fixture prices one line in two markets"
+    );
+    diverged.market_prices[1].money.tiers = vec![
+        TierBand::closed(0, 50, rate(9)),
+        TierBand::closed(50, 500, rate(7)),
+        TierBand::open(500, rate(5)),
+    ];
+    assert_eq!(agreed.charge_lines, diverged.charge_lines);
+    assert_ne!(content_hash(&agreed), content_hash(&diverged));
 }
 
 /// Two shapes built independently, field for field, pin identically.
@@ -1829,10 +1852,14 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 // v22 re-freezes the plan preimage with the trial-length projection removed: the
 // member was a second name for `phase_duration_days` and framed on every phase,
 // so every plan's preimage moves.
+//
+// The same generation also moves the ladder: tier bounds left the line frame and
+// are framed beside their rates on each market. No v22 pin was ever taken against
+// a deployment between the two, so the vector is re-frozen under the one bump.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "52cdd25479662d9d74fd13595730427a05218d26dd1b839c7ed890604b12e3aa"
+        "d8ae8744c38e5e46a64e02abefce68e2be4752c0cc64cc90cc72af45ac38bfdc"
     );
 }
 

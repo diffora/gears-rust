@@ -11,52 +11,19 @@ use uuid::Uuid;
 
 use crate::domain::contracts::ProrationContract;
 use crate::domain::price_row::{
-    AggregationFunction, AggregationGranularity, BandTop, BillingGranularity, IncludedAllowance,
+    AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance,
     MinQtyUsageFallback, ModelKind, QuantitySource, ReservationFlavor, TierAggregationWindow,
     TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{ChargeKind, ChargeLineScopeKey, SkuId};
 
-/// Quantity bounds of one tier band, without the market rate.
-///
-/// `[from_qty, to_qty)` is the same half-open convention as
-/// [`crate::domain::price_row::TierBand`]. The rate that applies inside the band
-/// is a [`crate::domain::market_price::MarketPriceTerms::tier_rates`] operand.
-#[domain_model]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TierGeometry {
-    /// Inclusive lower bound, in billable units.
-    pub from_qty: u64,
-    /// Exclusive upper bound, in billable units; [`BandTop::Open`] on the top
-    /// band.
-    pub to_qty: BandTop,
-}
-
-impl TierGeometry {
-    /// A closed band.
-    #[must_use]
-    pub const fn closed(from_qty: u64, to_qty: u64) -> Self {
-        Self {
-            from_qty,
-            to_qty: BandTop::Closed(to_qty),
-        }
-    }
-
-    /// An open-topped band.
-    #[must_use]
-    pub const fn open(from_qty: u64) -> Self {
-        Self {
-            from_qty,
-            to_qty: BandTop::Open,
-        }
-    }
-}
-
 /// Shared, non-monetary charge shape.
 ///
 /// Every [`crate::domain::price_row::PriceRow`] field that is not a market money
-/// operand is here. `bands` carries geometry only — never a hidden
-/// [`crate::domain::price_row::PriceRow`] and never a flattened money column.
+/// operand is here. **The ladder is not**: a band's bounds and its rate are one
+/// market's answer to *how much*, and live together on
+/// [`crate::domain::market_price::MarketPriceTerms::tiers`]. What stays shared is
+/// `model_kind` — a market cannot be `graduated` where its sibling is `volume`.
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChargeStructure {
@@ -68,8 +35,6 @@ pub struct ChargeStructure {
     pub charge_kind: ChargeKind,
     /// See [`crate::domain::price_row::PriceRow::model_kind`].
     pub model_kind: Option<ModelKind>,
-    /// Tier quantity bounds, in authored order. Empty on a non-tiered line.
-    pub bands: Vec<TierGeometry>,
     /// See [`crate::domain::price_row::PriceRow::package_size`].
     pub package_size: Option<u64>,
     /// See [`crate::domain::price_row::PriceRow::quantity_source`].
@@ -121,7 +86,6 @@ impl ChargeStructure {
             gl_code_ref: None,
             charge_kind,
             model_kind,
-            bands: Vec::new(),
             package_size: None,
             quantity_source: None,
             manual_quantity: None,

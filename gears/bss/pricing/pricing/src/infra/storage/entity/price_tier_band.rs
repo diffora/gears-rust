@@ -1,5 +1,5 @@
-//! `SeaORM` entity for `bss.pricing_price_tier_band` — market rates of a price
-//! against shared [`super::charge_tier`] geometry.
+//! `SeaORM` entity for `bss.pricing_price_tier_band` — one market's ladder: each
+//! band's bounds beside the rate that prices it.
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
@@ -13,8 +13,13 @@ pub struct Model {
     pub band_id: Uuid,
     pub tenant_id: Uuid,
     pub price_id: Uuid,
+    /// The structure version the price names. Carried so the band can answer
+    /// for its line's `model_kind` without a join through `pricing_price`.
     pub line_version_id: Uuid,
-    pub band_ordinal: i32,
+    /// Inclusive lower bound. A band's identity within its price.
+    pub from_qty: i64,
+    /// Exclusive upper bound; `NULL` on the open top band.
+    pub to_qty: Option<i64>,
     /// Rate in 10^-9 minor units (D-311). Column name is the existing typed
     /// `unit_price_nano` rather than a second scale.
     pub unit_price_nano: i64,

@@ -189,7 +189,6 @@ pub fn partition_structure_fields(
             invoice_line_template,
             gl_code_ref,
             charge_kind,
-            bands,
             quantity_source,
             manual_quantity,
             sku_id,

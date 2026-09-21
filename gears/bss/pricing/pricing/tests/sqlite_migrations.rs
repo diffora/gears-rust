@@ -43,13 +43,13 @@ mod common;
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
     brand_taxonomy, bulk_operation, bulk_row_lock, bundle, bundle_component, bundle_revshare,
-    bundle_revshare_group, catalog_version_ref, charge_line, charge_line_version, charge_tier,
-    composite_meter, customer_group_taxonomy, draft_window, gl_code_taxonomy, group_membership,
-    idempotency_dedup, market_price, migration, operator_flag, org_tier_taxonomy, outbox,
-    partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_period_floor_cap, plan_phase,
-    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
-    price_tier_band, price_window, read_model, region_taxonomy, repricing_journal,
-    rounding_policy_taxonomy, snapshot_provenance, window_baseline, window_guard,
+    bundle_revshare_group, catalog_version_ref, charge_line, charge_line_version, composite_meter,
+    customer_group_taxonomy, draft_window, gl_code_taxonomy, group_membership, idempotency_dedup,
+    market_price, migration, operator_flag, org_tier_taxonomy, outbox, partner_taxonomy,
+    pin_frontier, plan, plan_addon_rule, plan_period_floor_cap, plan_phase, policy_object, price,
+    price_overlay, price_overlay_line, price_overlay_line_amount, price_tier_band, price_window,
+    read_model, region_taxonomy, repricing_journal, rounding_policy_taxonomy, snapshot_provenance,
+    window_baseline, window_guard,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityName, EntityTrait, Statement};
@@ -68,7 +68,6 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_price",
     "pricing_charge_line",
     "pricing_charge_line_version",
-    "pricing_charge_tier",
     "pricing_market_price",
     "pricing_price_tier_band",
     "pricing_read_model",
@@ -186,12 +185,6 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_charge_line_version_flip_whitelist",
     "trg_pricing_charge_line_version_frozen_columns",
     "trg_pricing_charge_line_version_no_delete",
-    "trg_pricing_charge_tier_kind_insert",
-    "trg_pricing_charge_tier_kind_update",
-    "trg_pricing_charge_tier_no_delete",
-    "trg_pricing_charge_tier_no_insert",
-    "trg_pricing_charge_tier_no_update",
-    "trg_pricing_charge_tier_parent_kind",
     "trg_pricing_composite_meter_no_delete",
     "trg_pricing_composite_meter_no_insert",
     "trg_pricing_composite_meter_no_update",
@@ -263,9 +256,12 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_overlay_no_delete",
     "trg_pricing_price_package_price_kind_insert",
     "trg_pricing_price_package_price_kind_update",
+    "trg_pricing_price_tier_band_kind_insert",
+    "trg_pricing_price_tier_band_kind_update",
     "trg_pricing_price_tier_band_no_delete",
     "trg_pricing_price_tier_band_no_insert",
     "trg_pricing_price_tier_band_no_update",
+    "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_act_sequence",
     "trg_pricing_price_window_flip_whitelist",
     "trg_pricing_price_window_frozen_columns",
@@ -322,7 +318,6 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_charge_line_plan",
     "idx_pricing_charge_line_version_line",
-    "idx_pricing_charge_tier_version",
     "idx_pricing_composite_meter_revision",
     "idx_pricing_draft_window_revision",
     // The resolution walk (`inst-cg-resolve`) and the exclusion constraint's own
@@ -349,6 +344,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_plan",
     "idx_pricing_price_supersedes",
     "idx_pricing_price_tier_band_price",
+    "idx_pricing_price_tier_band_version",
     "idx_pricing_price_window_due",
     "idx_pricing_price_window_market",
     "idx_pricing_price_window_price",
@@ -460,9 +456,6 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_charge_line_version_row_version",
     "chk_pricing_charge_line_version_tier_aggregation_window",
     "chk_pricing_charge_line_version_tier_qualification_window",
-    "chk_pricing_charge_tier_from_qty",
-    "chk_pricing_charge_tier_ordinal",
-    "chk_pricing_charge_tier_width",
     "chk_pricing_composite_meter_output_unit",
     // Slice 9's own taxonomy (`inst-cg-taxonomy`), the taxonomy pair of CHECKs
     // over `pricing_customer_group_taxonomy`.
@@ -579,8 +572,9 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_reserved_rate_nano",
     "chk_pricing_price_revision",
     "chk_pricing_price_row_version",
-    "chk_pricing_price_tier_band_ordinal",
+    "chk_pricing_price_tier_band_from_qty",
     "chk_pricing_price_tier_band_unit_price",
+    "chk_pricing_price_tier_band_width",
     // D-311's `unit_rate_nano` carries this CHECK on both engines, and every
     // column rule here does. Giving one to Postgres alone, on the ground that
     // rebuilding `pricing_price` for a single clause "would be a large edit",
@@ -674,15 +668,11 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_catalog_version_ref",
         "tenant_id, pending_ref, subject_kind, subject_ref",
     ),
-    // The charge-line split's three: the logical line, its revision-owned
-    // version, and the shared tier geometry that hangs off that version. Each is
-    // tenant-first like every other key here.
+    // The charge-line split's two: the logical line and its revision-owned
+    // version. Each is tenant-first like every other key here. A ladder is a
+    // market's and hangs off the price (`pricing_price_tier_band`), not the line.
     ("pricing_charge_line", "tenant_id, charge_line_id"),
     ("pricing_charge_line_version", "tenant_id, line_version_id"),
-    (
-        "pricing_charge_tier",
-        "tenant_id, line_version_id, band_ordinal",
-    ),
     // Slice 10's composite meter, D-106's revision discipline in the key
     // itself: `composite_id` is stable across revisions and the revision is the
     // second column, so a copy-forward is a new row rather than an edit.
@@ -954,30 +944,6 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         3_133_939_019_997_044_640_u64,
     ),
     (
-        "trg_pricing_charge_tier_kind_insert",
-        11_702_517_855_604_031_680_u64,
-    ),
-    (
-        "trg_pricing_charge_tier_kind_update",
-        9_438_023_538_088_757_248_u64,
-    ),
-    (
-        "trg_pricing_charge_tier_no_delete",
-        5_100_207_432_444_194_297_u64,
-    ),
-    (
-        "trg_pricing_charge_tier_no_insert",
-        16_976_366_173_058_031_311_u64,
-    ),
-    (
-        "trg_pricing_charge_tier_no_update",
-        10_008_278_653_887_274_629_u64,
-    ),
-    (
-        "trg_pricing_charge_tier_parent_kind",
-        14_749_494_382_767_439_272_u64,
-    ),
-    (
         "trg_pricing_composite_meter_no_delete",
         7_816_235_272_572_446_796_u64,
     ),
@@ -1215,6 +1181,14 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         4_098_446_913_409_470_352_u64,
     ),
     (
+        "trg_pricing_price_tier_band_kind_insert",
+        4_037_980_680_327_990_349_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_kind_update",
+        8_756_873_100_198_882_501_u64,
+    ),
+    (
         "trg_pricing_price_tier_band_no_delete",
         16_327_178_531_631_512_347_u64,
     ),
@@ -1225,6 +1199,10 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_price_tier_band_no_update",
         4_573_092_537_464_078_304_u64,
+    ),
+    (
+        "trg_pricing_price_tier_band_parent_kind",
+        15_096_149_025_002_395_680_u64,
     ),
     (
         "trg_pricing_price_window_act_sequence",
@@ -1593,12 +1571,11 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         plan_addon_rule::Entity,
         // D-319's fourth revision-scoped child.
         plan_period_floor_cap::Entity,
-        // The four the charge-line split added: a price row is money plus three
+        // The three the charge-line split added: a price row is money plus three
         // references now, and each of those tables is read on every authoring
         // path, so each owes this census a probe.
         charge_line::Entity,
         charge_line_version::Entity,
-        charge_tier::Entity,
         market_price::Entity,
         price::Entity,
         price_tier_band::Entity,

@@ -1491,8 +1491,7 @@ fn normalized_planes(
         if record.plan_revision != revision || lines.contains_key(&record.line_version_id) {
             continue;
         }
-        let (mut structure, _) = split_row(record.content.row.clone());
-        structure.bands.clone_from(&record.tiers);
+        let (structure, _) = split_row(record.content.row.clone());
         lines.insert(
             record.line_version_id,
             ChargeLineVersion {

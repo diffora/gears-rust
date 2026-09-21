@@ -22,11 +22,12 @@ use schema_dump::{migrate_and_dump_sqlite, normalise_sql, tables_in};
 /// silently renders **fewer** objects than the schema has — a filter that is too eager reads as
 /// a passing determinism case, because an empty dump is perfectly deterministic.
 ///
-/// 43 until the charge-line split, which added `pricing_charge_line`, its version,
-/// `pricing_charge_tier` and `pricing_market_price`: four tables that carry the
-/// scope key, the shared calculation, the shared tier geometry and the market a
-/// price row used to hold itself.
-const PRICING_TABLES: usize = 47;
+/// 43 until the charge-line split, which added `pricing_charge_line`, its version and
+/// `pricing_market_price`: three tables that carry the scope key, the shared calculation
+/// and the market a price row used to hold itself. The split briefly had a fourth,
+/// `pricing_charge_tier`, for tier geometry shared across a line's markets; a ladder is a
+/// market's own now and lives whole on `pricing_price_tier_band`, so that table is gone.
+const PRICING_TABLES: usize = 46;
 
 async fn migrated_dump() -> String {
     let conn = Database::connect("sqlite::memory:")

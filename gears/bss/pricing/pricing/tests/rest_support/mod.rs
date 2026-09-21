@@ -3296,12 +3296,11 @@ async fn planes_of_the_plan_aggregate(harness: &Harness, out: &mut Planes) {
 async fn planes_of_the_price_aggregate(harness: &Harness, out: &mut Planes) {
     let conn = harness.db.conn().expect("conn");
     // The logical line, its shared version and its markets are planes of this
-    // aggregate too: a denied authoring call must leave all six untouched, and a
-    // write that landed on one of the four new tables would otherwise read here
-    // as a call that wrote nothing.
+    // aggregate too: a denied authoring call must leave every one untouched, and
+    // a write that landed on one of the three normalized tables would otherwise
+    // read here as a call that wrote nothing.
     plane!(out, &conn, harness, charge_line);
     plane!(out, &conn, harness, charge_line_version);
-    plane!(out, &conn, harness, charge_tier);
     plane!(out, &conn, harness, market_price);
     plane!(out, &conn, harness, price);
     plane!(out, &conn, harness, price_tier_band);

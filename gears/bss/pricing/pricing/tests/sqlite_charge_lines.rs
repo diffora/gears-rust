@@ -88,7 +88,10 @@ async fn fresh_schema_contains_normalized_charge_tables() {
         ))
         .await
         .unwrap();
-    assert_eq!(rows.len(), 4);
+    // Three, and the fourth name is asked for on purpose: a line carries no
+    // ladder table. A band is a market's, bounds beside rate, on
+    // `pricing_price_tier_band` — `sqlite_tier_band_guard` owns its guards.
+    assert_eq!(rows.len(), 3);
 }
 
 /// **A fresh `charge_line_id` does not buy a second line on one logical scope.**
@@ -224,110 +227,6 @@ async fn a_line_version_is_bound_to_its_line_and_its_revision() {
              ('{TENANT}','{OTHER_VERSION}','{LINE}',2,'draft','flat','{TENANT}',\
              '2026-01-01 00:00:00',0)"
         ),
-    )
-    .await;
-}
-
-/// **Tier geometry hangs off a version, and only off a tiered one.**
-///
-/// The kind trigger is the half a foreign key cannot state: a `flat` version has
-/// no ladder to carry, so a band under one is not a dangling reference but a
-/// contradiction.
-#[tokio::test]
-async fn tier_geometry_requires_a_tiered_version() {
-    let conn = common::migrated_db().await;
-    seed(&conn).await;
-
-    must_be_rejected(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
-             from_qty, to_qty) VALUES ('{TENANT}','{VERSION}',0,0,100)"
-        ),
-        "pricing_charge_tier",
-    )
-    .await;
-
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_line_version (tenant_id, line_version_id, \
-             charge_line_id, plan_revision, lifecycle_state, model_kind, created_by, \
-             created_at_utc, row_version) VALUES \
-             ('{TENANT}','{OTHER_VERSION}','{LINE}',2,'draft','graduated','{TENANT}',\
-             '2026-01-01 00:00:00',0)"
-        ),
-    )
-    .await;
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
-             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',0,0,100)"
-        ),
-    )
-    .await;
-
-    // A band on a version of nobody is refused by the key, not by a precheck.
-    must_be_rejected(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
-             from_qty, to_qty) VALUES \
-             ('{TENANT}','00000000-0000-0000-0000-0000000000df',0,0,100)"
-        ),
-        "pricing_charge_tier",
-    )
-    .await;
-}
-
-/// **Two bands of one version cannot start at the same quantity.**
-///
-/// The table this geometry came from was keyed `(price_id, from_qty)` -- a band's
-/// identity was where it starts -- and the charge-line split moved the key to
-/// `band_ordinal` without carrying that refusal across. A fresh ordinal is
-/// exactly how a duplicate lower bound would arrive, so that is the row this
-/// case offers.
-#[tokio::test]
-async fn a_second_band_on_one_lower_bound_is_refused() {
-    let conn = common::migrated_db().await;
-    seed(&conn).await;
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_line_version (tenant_id, line_version_id, \
-             charge_line_id, plan_revision, lifecycle_state, model_kind, created_by, \
-             created_at_utc, row_version) VALUES \
-             ('{TENANT}','{OTHER_VERSION}','{LINE}',2,'draft','graduated','{TENANT}',\
-             '2026-01-01 00:00:00',0)"
-        ),
-    )
-    .await;
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
-             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',0,0,100)"
-        ),
-    )
-    .await;
-
-    // The control: a different lower bound under a fresh ordinal is an ordinary band.
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
-             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',1,100,NULL)"
-        ),
-    )
-    .await;
-    must_be_rejected(
-        &conn,
-        &format!(
-            "INSERT INTO pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
-             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',2,0,50)"
-        ),
-        "pricing_charge_tier.from_qty",
     )
     .await;
 }

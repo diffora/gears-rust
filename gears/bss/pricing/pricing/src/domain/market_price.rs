@@ -8,20 +8,12 @@
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
-use crate::domain::charge_line::{ChargeStructure, TierGeometry};
+use crate::domain::charge_line::ChargeStructure;
 use crate::domain::error::DomainError;
 use crate::domain::money::{MinorAmount, RateMinor};
 use crate::domain::price_row::{PriceRow, TierBand};
 use crate::domain::rules::row_local_rules;
 use crate::domain::scope_key::MarketPriceScopeKey;
-use crate::domain::validation::ValidationReport;
-
-/// Rule code when shared tier geometry and market `tier_rates` disagree in
-/// length.
-///
-/// Raised on the existing [`DomainError::ValidationFailed`] envelope so a
-/// consumer matches one family of codes. Joining must not emit a partial row.
-pub const MARKET_TIER_RATE_COUNT_MISMATCH: &str = "MARKET_TIER_RATE_COUNT_MISMATCH";
 
 /// Market money operands of one price.
 ///
@@ -35,8 +27,11 @@ pub struct MarketPriceTerms {
     pub amount_minor: Option<MinorAmount>,
     /// See [`PriceRow::unit_rate`].
     pub unit_rate: Option<RateMinor>,
-    /// One rate per [`ChargeStructure::bands`] entry, in the same order.
-    pub tier_rates: Vec<RateMinor>,
+    /// This market's ladder: each band's bounds beside the rate that prices it.
+    /// Empty on a non-tiered line. Two markets of one line may differ in the
+    /// number of bands, their break-points and their rates — only the line's
+    /// `model_kind` is shared. See [`PriceRow::bands`].
+    pub tiers: Vec<TierBand>,
     /// See [`PriceRow::package_price_minor`].
     pub package_price_minor: Option<MinorAmount>,
     /// See [`PriceRow::reserved_rate`].
@@ -99,23 +94,12 @@ pub fn split_row(row: PriceRow) -> (ChargeStructure, MarketPriceTerms) {
         discount_ref,
     } = row;
 
-    let mut geometry = Vec::with_capacity(bands.len());
-    let mut tier_rates = Vec::with_capacity(bands.len());
-    for band in bands {
-        geometry.push(TierGeometry {
-            from_qty: band.from_qty,
-            to_qty: band.to_qty,
-        });
-        tier_rates.push(band.unit_price_rate);
-    }
-
     (
         ChargeStructure {
             invoice_line_template,
             gl_code_ref,
             charge_kind,
             model_kind,
-            bands: geometry,
             package_size,
             quantity_source,
             manual_quantity,
@@ -138,7 +122,7 @@ pub fn split_row(row: PriceRow) -> (ChargeStructure, MarketPriceTerms) {
         MarketPriceTerms {
             amount_minor,
             unit_rate,
-            tier_rates,
+            tiers: bands,
             package_price_minor,
             reserved_rate,
         },
@@ -147,18 +131,18 @@ pub fn split_row(row: PriceRow) -> (ChargeStructure, MarketPriceTerms) {
 
 /// Join shared structure and market money back into a resolved [`PriceRow`].
 ///
-/// Tier geometry and `tier_rates` must have equal length before any band is
-/// built. The assembled row then runs the existing row-local model/operand
-/// rules: a draft may still be stored incomplete as a [`PriceRow`], but this
-/// converter refuses a join that those rules already reject (a `flat` row with
-/// a tier rate, a competing amount column, and so on). Publication remains the
-/// authority that rejects an incomplete operand set on a real write.
+/// The market's ladder arrives whole — a rate sits beside the bound it prices —
+/// so there is no count to reconcile and no partial row to refuse. The assembled
+/// row then runs the existing row-local model/operand rules: a draft may still
+/// be stored incomplete as a [`PriceRow`], but this converter refuses a join
+/// that those rules already reject (a `flat` line with a ladder, a competing
+/// amount column, and so on). Publication remains the authority that rejects an
+/// incomplete operand set on a real write.
 ///
 /// # Errors
 ///
-/// [`DomainError::ValidationFailed`] carrying [`MARKET_TIER_RATE_COUNT_MISMATCH`]
-/// when the band and rate counts differ, or carrying the existing row-local
-/// codes when the assembled row is not publishable.
+/// [`DomainError::ValidationFailed`] carrying the existing row-local codes when
+/// the assembled row is not publishable.
 pub fn resolve_row(
     structure: &ChargeStructure,
     money: &MarketPriceTerms,
@@ -168,7 +152,6 @@ pub fn resolve_row(
         gl_code_ref,
         charge_kind,
         model_kind,
-        bands,
         package_size,
         quantity_source,
         manual_quantity,
@@ -191,35 +174,10 @@ pub fn resolve_row(
     let MarketPriceTerms {
         amount_minor,
         unit_rate,
-        tier_rates,
+        tiers,
         package_price_minor,
         reserved_rate,
     } = money;
-
-    if bands.len() != tier_rates.len() {
-        let mut report = ValidationReport::default();
-        report.violate(
-            MARKET_TIER_RATE_COUNT_MISMATCH,
-            structure.subject(),
-            format!(
-                "shared structure has {} tier band(s) and market terms carry {} rate(s); \
-                 joining would produce a partial row",
-                bands.len(),
-                tier_rates.len(),
-            ),
-        );
-        return Err(DomainError::ValidationFailed(report));
-    }
-
-    let joined_bands = bands
-        .iter()
-        .zip(tier_rates)
-        .map(|(geometry, rate)| TierBand {
-            from_qty: geometry.from_qty,
-            to_qty: geometry.to_qty,
-            unit_price_rate: *rate,
-        })
-        .collect();
 
     let row = PriceRow {
         invoice_line_template: invoice_line_template.clone(),
@@ -228,7 +186,7 @@ pub fn resolve_row(
         model_kind: *model_kind,
         amount_minor: *amount_minor,
         unit_rate: *unit_rate,
-        bands: joined_bands,
+        bands: tiers.clone(),
         package_size: *package_size,
         package_price_minor: *package_price_minor,
         quantity_source: *quantity_source,

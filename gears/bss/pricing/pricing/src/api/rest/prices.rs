@@ -581,14 +581,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Replace a draft market price's monetary content")
         .description(
             "Replaces the money and market policy of a `draft` price row under the `If-Match` \
-             precondition (D-141). **Monetary content only**: model, tier geometry, package \
-             size and every other shared field belong to the row's charge line and are edited \
+             precondition (D-141). **Monetary content only**: model, package size and every \
+             other shared field belong to the row's charge line and are edited \
              through `PATCH .../charge-lines/{lineVersionId}`; sent here they are refused as \
              unknown fields rather than ignored. The market - currency and region - is the \
              row's identity and is never editable: a different market is a different price, \
-             filed under the line. Tier rates are one per tier of the line, in its quantity \
-             order (`MARKET_TIER_RATE_COUNT_MISMATCH` otherwise). A row belonging to a \
-             different plan than the `{planId}` segment answers `404`.",
+             filed under the line. A tier ladder **is** monetary content: `money.tiers` \
+             replaces this market's whole ladder - bounds and rates - and touches no other \
+             market of the line. A row belonging to a different plan than the `{planId}` \
+             segment answers `404`.",
         )
         .tag(TAG)
         .authenticated()

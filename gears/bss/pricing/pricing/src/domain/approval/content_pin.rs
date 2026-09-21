@@ -263,7 +263,7 @@ use aws_lc_rs::digest::{SHA256, digest as sha256};
 
 use uuid::Uuid;
 
-use crate::domain::charge_line::{ChargeLineVersion, ChargeStructure, TierGeometry};
+use crate::domain::charge_line::{ChargeLineVersion, ChargeStructure};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract,
@@ -640,6 +640,13 @@ use time::OffsetDateTime;
 /// every plan, so the generation moves and every open unit drain-fails
 /// `APPROVAL_CONTENT_MISMATCH`. A stored v21 digest cannot be translated: the
 /// bytes it was taken over no longer exist to re-derive.
+///
+/// **The ladder changes frames under the same generation.** Tier bounds were
+/// framed on the line version and the rates, positionally, on each market; a
+/// market now frames its whole ladder — bounds beside rates — and the line frames
+/// none. Both moves landed before any v22 pin was taken against a deployment, so
+/// they share the one bump: a second separator would name a preimage nobody ever
+/// held.
 ///
 /// # `v21`: the normalized graph joins the preimage
 ///
@@ -1588,7 +1595,6 @@ fn put_charge_structure(buf: &mut Vec<u8>, structure: &ChargeStructure) {
         gl_code_ref,
         charge_kind,
         model_kind,
-        bands,
         package_size,
         quantity_source,
         manual_quantity,
@@ -1613,16 +1619,8 @@ fn put_charge_structure(buf: &mut Vec<u8>, structure: &ChargeStructure) {
     put_str(buf, charge_kind.as_str());
     put_opt_str(buf, model_kind.map(model_kind_wire));
 
-    // Geometry is a set of bounds; the rate inside each band is the market's.
-    let mut ordered: Vec<&TierGeometry> = bands.iter().collect();
-    ordered.sort_unstable_by_key(|band| (band.from_qty, band.to_qty.closed_at()));
-    put_u64(buf, count_of(ordered.len()));
-    for band in ordered {
-        let TierGeometry { from_qty, to_qty } = band;
-        put_u64(buf, *from_qty);
-        put_opt_u64(buf, to_qty.closed_at());
-    }
-
+    // No ladder here: a band's bounds are framed beside its rate, on the market
+    // (`put_market_price_version`).
     put_opt_u64(buf, *package_size);
     put_opt_str(buf, quantity_source.map(QuantitySource::as_str));
     put_opt_u64(buf, *manual_quantity);
@@ -1666,10 +1664,11 @@ fn put_charge_structure(buf: &mut Vec<u8>, structure: &ChargeStructure) {
 /// One monetary version of one market: its three identities, the full market
 /// key, and the money.
 ///
-/// **`tier_rates` is a sequence, not a set**, and is framed in authored order:
-/// a rate is positional — the n-th rate prices the n-th band of the structure
-/// version this row names — so sorting would let two ladders that swapped two
-/// rates pin alike.
+/// **The ladder is framed as a set**, sorted exactly as [`put_price_row`] sorts
+/// the resolved row's bands. A band carries its own bounds beside its rate, so
+/// nothing about it is positional: two ladders that swapped two rates differ in
+/// the bands themselves and cannot pin alike, while one ladder authored in two
+/// orders is one ladder and must.
 fn put_market_price_version(buf: &mut Vec<u8>, price: &MarketPriceVersion) {
     let MarketPriceVersion {
         market_price_id,
@@ -1685,15 +1684,23 @@ fn put_market_price_version(buf: &mut Vec<u8>, price: &MarketPriceVersion) {
     let MarketPriceTerms {
         amount_minor,
         unit_rate,
-        tier_rates,
+        tiers,
         package_price_minor,
         reserved_rate,
     } = money;
     put_opt_i64(buf, amount_minor.map(MinorAmount::get));
     put_opt_i64(buf, unit_rate.map(RateMinor::nano_minor));
-    put_u64(buf, count_of(tier_rates.len()));
-    for rate in tier_rates {
-        put_i64(buf, rate.nano_minor());
+    let mut ordered: Vec<&TierBand> = tiers.iter().collect();
+    ordered.sort_unstable_by_key(|band| {
+        (
+            band.from_qty,
+            band.to_qty.closed_at(),
+            band.unit_price_rate.nano_minor(),
+        )
+    });
+    put_u64(buf, count_of(ordered.len()));
+    for band in ordered {
+        put_tier_band(buf, band);
     }
     put_opt_i64(buf, package_price_minor.map(MinorAmount::get));
     put_opt_i64(buf, reserved_rate.map(RateMinor::nano_minor));
