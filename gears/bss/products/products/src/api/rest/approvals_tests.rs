@@ -765,6 +765,30 @@ async fn submit(harness: &TestHarness, author: Uuid) -> Uuid {
     submit_for(harness, author, PRODUCT).await
 }
 
+/// A submission whose author declares it finance-material (**P-D-169**: the
+/// operand is the caller's), so `finance_required` binds on the descriptor.
+async fn submit_finance_material(harness: &TestHarness, author: Uuid) -> Uuid {
+    let body = body_of(
+        post(
+            app_for(harness, TENANT),
+            "/bss-products/v1/approvals",
+            ctx_without_roles(author),
+            json!({
+                "subject_kind": "entity_publish",
+                "subject_ref": format!("product/{PRODUCT}"),
+                "finance_material": true,
+            }),
+        )
+        .await,
+    )
+    .await;
+    body["approval_id"]
+        .as_str()
+        .expect("the receipt names the record")
+        .parse()
+        .expect("a uuid")
+}
+
 async fn submit_for(harness: &TestHarness, author: Uuid, product_id: Uuid) -> Uuid {
     let body = body_of(
         post(
@@ -783,13 +807,27 @@ async fn submit_for(harness: &TestHarness, author: Uuid, product_id: Uuid) -> Uu
         .expect("a uuid")
 }
 
-/// **A principal with no role claim is refused `APPROVER_ROLE_REQUIRED`
-/// (403)** — never told the role was held (**P-D-119** rows 13 and 30,
-/// **P-D-134** row 25).
+/// **A principal with no role claim decides, because RBAC already admitted
+/// them** (**P-D-177**).
+///
+/// This test was its own opposite until 2026-09-21: the door refused a
+/// roleless caller `APPROVER_ROLE_REQUIRED`, which is what C1's base set asks
+/// for and what `BaseRoleSet::CatalogAdminOrFinanceReviewer` enforced. The
+/// clause is not withdrawn — its **operand** never arrived. **P-D-134** row 25
+/// routed the role-claim shape to the platform-identity owner and no surface
+/// carries one, so the strict reading refused *every* principal on *every*
+/// deployment and the ceremony could not run at all.
+///
+/// So eligibility now rests on the authority that does answer: a caller
+/// without `approval × decide` is refused by the PDP long before a role is
+/// read. The wildcard is **not** repurposed as a role — it is a permission
+/// wildcard, as this module's own header says — the door simply stops asking
+/// the token a question the token was never given an answer to.
 #[tokio::test]
-async fn a_decider_with_no_role_claim_is_refused_403() {
+async fn a_decider_with_no_role_claim_decides_because_rbac_already_admitted_them() {
     let harness = harness().await;
     seed_head(&harness).await;
+    set_quorum(&harness, 1).await;
     let approval = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
 
     let response = post(
@@ -799,11 +837,41 @@ async fn a_decider_with_no_role_claim_is_refused_403() {
         json!({ "verdict": "approved" }),
     )
     .await;
+    assert_eq!(response.status(), 200);
+    let body = body_of(response).await;
+    assert_eq!(
+        body["state"], "satisfied",
+        "a roleless decider counts toward the quorum: {body}"
+    );
+}
+
+/// **The finance lens still discriminates, and that is what P-D-177 leaves
+/// alone.** A finance-material change needs a `FinanceReviewer` among the
+/// approvers. A roleless principal now *counts* toward the number — that is
+/// what P-D-177 changed — but carries no lens, so the record is refused
+/// `APPROVER_ROLE_REQUIRED` on `RolePredicateUnmet`: met numerically, unmet on
+/// the predicate, and told which. The two clauses were never one check — the
+/// evaluator reads the lens off each decision independently of the base set —
+/// so dropping the base set left this one exactly where it was.
+#[tokio::test]
+async fn a_roleless_decider_does_not_satisfy_the_finance_predicate() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 1).await;
+    let approval = submit_finance_material(&harness, Uuid::from_u128(0x5a_b0)).await;
+
+    let response = post(
+        app_for(&harness, TENANT),
+        &format!("/bss-products/v1/approvals/{approval}/decisions"),
+        ctx_without_roles(Uuid::from_u128(0x5a_b1)),
+        json!({ "verdict": "approved" }),
+    )
+    .await;
     assert_eq!(response.status(), 403);
     let body = body_of(response).await;
     assert_eq!(
         body["context"]["reason"], "APPROVER_ROLE_REQUIRED",
-        "the code is the ceremony's own, not the platform's permission denial"
+        "met numerically, unmet on the lens, and the refusal says which: {body}"
     );
 }
 

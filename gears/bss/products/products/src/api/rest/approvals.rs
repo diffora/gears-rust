@@ -1710,29 +1710,20 @@ async fn decide_approval(
         }
     }
 
-    // **C1's base role set, read from the claim and never defaulted**
-    // (P-D-119 rows 13 and 30, P-D-134 row 25). An approver holding neither
-    // named role is not an eligible approver, so their verdict never reaches
-    // the append-only table.
+    // **The roles a claim happens to carry, and no refusal for their absence**
+    // (**P-D-177**). C1's base set is not withdrawn — its *operand* never
+    // arrived: P-D-134 row 25 routed the role-claim shape to the
+    // platform-identity owner and no surface carries one, so refusing an empty
+    // set refused every principal on every deployment and the ceremony could
+    // not run at all. Eligibility rests on the authority that does answer —
+    // `approval × decide`, checked above by the PDP — and the quorum settles
+    // under `BaseRoleSet::AnyDecider`.
+    //
+    // The claim is still read, because the **finance lens** is a separate
+    // clause the evaluator takes off each decision independently of the base
+    // set: a `FinanceReviewer` claim still satisfies `finance_required`, and
+    // its absence still leaves a finance-material record open.
     let roles = roles_from_claims(ctx.token_scopes());
-    if roles.is_empty() {
-        return Err(refuse(
-            &state,
-            &scope,
-            tenant_id,
-            actor_ref,
-            AUDIT_SUBJECT_APPROVAL,
-            attempted,
-            DomainError::ApproverRoleRequired(format!(
-                "principal {actor_ref} carries no role claim: C1 requires an approver holding \
-                 {} or {}, and the platform's policy point encodes neither on any surface today \
-                 (P-D-134 row 25)",
-                ApproverRole::CatalogAdmin.as_str(),
-                ApproverRole::FinanceReviewer.as_str()
-            )),
-        )
-        .await);
-    }
 
     // `inst-gv-scope` (`dod-approver-scope`; P-D-155): the approver's brand
     // and region claims must cover the subject's scope. Before the ceremony

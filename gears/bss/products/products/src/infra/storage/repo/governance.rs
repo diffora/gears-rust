@@ -708,7 +708,13 @@ pub async fn settle_quorum(
         &descriptor,
         record.submitter,
         &decisions,
-        BaseRoleSet::CatalogAdminOrFinanceReviewer,
+        // **P-D-177**: the base set's operand does not exist on any deployment
+        // (P-D-134 row 25), so the strict reading counted no approver at all.
+        // `AnyDecider` is the second reading `BaseRoleSet` already carries,
+        // chosen out loud here as its doc requires. Eligibility is RBAC's
+        // (`approval x decide`); the finance lens is unaffected — `evaluate_quorum`
+        // reads it off each decision independently of the base set.
+        BaseRoleSet::AnyDecider,
     );
 
     match outcome {
