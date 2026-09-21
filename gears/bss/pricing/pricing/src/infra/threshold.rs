@@ -276,7 +276,7 @@ pub async fn effective_version(
 /// floor, so the common case — the newest version approved — is the one read the
 /// plain descent always cost. It also keeps the set of approval records this
 /// function inspects **identical** to the set the plain descent inspected, which
-/// matters because [`crate::infra::approval::independent_approver`] *errors* on
+/// matters because `infra::approval::independent_approver` *errors* on
 /// a record naming one principal twice: reading further down than the old walk
 /// did would surface a breach on an old row that the tenant's current policy has
 /// long superseded.
