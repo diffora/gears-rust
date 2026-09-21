@@ -7256,7 +7256,7 @@ fn parse_sku_value(
             {
                 return Err((
                     wire.to_owned(),
-                    "sku_type must be one of product, service, bundle".to_owned(),
+                    "sku_type must be one of offer, component, bundle".to_owned(),
                 ));
             }
             Ok(match field {
@@ -7802,7 +7802,7 @@ fn shape_sku_type(raw: Option<&str>, report: &mut ValidationReport) -> String {
         report.violate(
             "VALIDATION",
             "sku_type",
-            "sku_type is required: one of product, service, bundle",
+            "sku_type is required: one of offer, component, bundle",
         );
     }
     sku_type
