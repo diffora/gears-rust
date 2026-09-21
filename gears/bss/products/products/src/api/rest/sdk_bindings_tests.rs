@@ -162,7 +162,7 @@ async fn the_authoring_binding_runs_the_doors_with_both_preconditions() {
     let ctx = crate::test_support::authed_ctx(TENANT);
     let new = || NewProduct {
         id: None,
-        brand_id: BRAND,
+        brand_id: Some(BRAND),
         name: "Compute Plus".to_owned(),
         product_code: Some("COMPUTE-PLUS".to_owned()),
         region_scope: None,

@@ -202,6 +202,85 @@ async fn two_creates_of_one_name_contend_on_the_name_index_and_one_is_refused() 
     );
 }
 
+/// **The brand-less bucket, on the engine the decision was made for**
+/// (**P-D-178**).
+///
+/// P-D-178 stores *"names no brand"* as the nil UUID rather than as `NULL`,
+/// and its third reason is the one this probe exists for: Postgres holds
+/// `NULL`s **distinct** in a unique index, so a nullable column would admit
+/// unlimited same-name brand-less Products — the opposite of the decision —
+/// while a sentinel is compared like any other value. That is a claim about
+/// *this* engine, and the fast tier runs `SQLite`, so asserting it there would
+/// prove it where it was never in doubt.
+///
+/// Sequential rather than raced: contention is the suite's other probe's
+/// subject, and what is under test here is which rows the index considers
+/// equal.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn brand_less_products_share_one_bucket_of_the_name_index() {
+    let pg = Pg::applied().await;
+    let db = pg.db().await;
+
+    let brand_less = |product_id: Uuid, code: &str| NewProduct {
+        brand_id: Uuid::nil(),
+        ..contender(product_id, code)
+    };
+
+    let (db, first) = db
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                repo::insert_product(txn, &scope(), brand_less(WINNER, "FIBRE-500-A"))
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await;
+    first.expect("the first brand-less Product is uncontended and must commit");
+
+    let (db, second) = db
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                repo::insert_product(txn, &scope(), brand_less(LOSER, "FIBRE-500-B"))
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await;
+    let refusal = second
+        .expect_err("a second brand-less Product under the same name must be refused")
+        .into_domain(|infra| RepoError::Db(format!("brand-less insert: {infra}")));
+    assert!(
+        refusal
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("uq_products_product_name"),
+        "the refusal must be the name index's, not another constraint's: {refusal}"
+    );
+
+    // ...and naming a brand re-opens the very name that just collided, which
+    // is the half that proves the bucket is the operand rather than the name
+    // having become globally unique.
+    let (_db, branded) = db
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                repo::insert_product(txn, &scope(), contender(LOSER, "FIBRE-500-C"))
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .await;
+    branded.expect("the same name under a named brand is a different index entry");
+
+    let conn = pg.raw().await;
+    let holders = surviving_holders(&conn).await;
+    assert_eq!(
+        holders.len(),
+        2,
+        "exactly two rows hold this name: one brand-less, one branded"
+    );
+}
+
 /// The `product_id`s holding the contested name under the index's own
 /// predicate.
 async fn surviving_holders(conn: &sea_orm::DatabaseConnection) -> Vec<String> {

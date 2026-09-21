@@ -82,9 +82,16 @@ pub type SaveFields = BTreeMap<String, FieldValue>;
 pub struct NewProduct {
     /// A caller-supplied id, or `None` for a server-minted one.
     pub id: Option<Uuid>,
-    /// The owning brand.
-    pub brand_id: Uuid,
-    /// The human name, tenant-unique under `normalized(name)`.
+    /// The owning brand, or `None` for a Product that names none
+    /// (**P-D-178**).
+    ///
+    /// Absence is also a statement about uniqueness: `brand_id` is an operand
+    /// of the absolute name index, so brand-less Products share one bucket
+    /// and `name` is unique across them, while naming a brand re-opens the
+    /// name.
+    pub brand_id: Option<Uuid>,
+    /// The human name, tenant-unique under `normalized(name)` — **and under
+    /// `brand_id`**, see above.
     pub name: String,
     /// The optional operator-facing code, reserved atomically at create.
     pub product_code: Option<String>,

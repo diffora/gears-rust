@@ -92,11 +92,17 @@
 //! own `SecurityContext` to validate `brand_id` against, and inventing a
 //! lookup (a table this slice's target paths exclude, a side-channel this
 //! design set never named) would be answering a question the identity layer
-//! has not yet been asked. This door therefore validates only that
-//! `brand_id` is present and non-nil (`VALIDATION` otherwise) — the part of
-//! `dod-create-doors` this door *can* discharge — and the "does the caller
-//! hold this brand" half stays open, owed to whoever adds a brand claim to
+//! has not yet been asked. The "does the caller hold this brand" half
+//! therefore stays open, owed to whoever adds a brand claim to
 //! `SecurityContext` (the token-issuer/identity owner, not this gear).
+//!
+//! **And the presence check that stood in its place is gone** (**P-D-178**).
+//! This door used to discharge the one part it could — `brand_id` present and
+//! non-nil, `VALIDATION` otherwise — but a mandatory operand nothing validates
+//! does not strengthen the index it is an operand of; measured on the stand,
+//! callers minted a distinct UUID per Product and the name rule it guards
+//! stopped biting. The field is optional now, absence is the nil brand, and
+//! what this door validates about it is nothing at all.
 //!
 //! **Telling `DUPLICATE_NAME` from `DUPLICATE_CODE` from an unrelated
 //! storage failure.** `infra::storage::repo::insert_product`'s own doc
@@ -714,7 +720,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              `VALIDATION`. \
              `product_code`'s and the normalized name's uniqueness are reserved by the insert \
              itself: a collision refuses `DUPLICATE_CODE`/`DUPLICATE_NAME`, each with an \
-             audited reason. \
+             audited reason. The name's uniqueness is **per brand**, and `brand_id` is \
+             **optional** (P-D-178): a Product that names no brand - the field omitted, or sent \
+             as the nil UUID, which says the same thing - shares one bucket with every other \
+             brand-less Product, so `name` is unique across them; naming a brand re-opens the \
+             name. \
              An optional `Idempotency-Key` header claims the key \
              `(tenant, /bss-products/v1/products, key)` in the same transaction as the \
              mutation: a duplicate under a live key is refused \
@@ -1290,11 +1300,21 @@ pub struct CreateProductRequest {
     /// field-less one. The entity id is always server-minted
     /// (`dod-create-doors`).
     pub id: Option<Uuid>,
-    /// Required. Validated for presence only in this slice — see this
-    /// module's doc, "`brand_id` claims this door cannot check", for why the
-    /// caller's-brand-claims half of `dod-create-doors`/P-D-33 is not built
-    /// here.
-    pub brand_id: Uuid,
+    /// The brand that owns this Product, or **absent for a Product that
+    /// names none** (**P-D-178**). An explicitly nil UUID is the same
+    /// statement spelled differently and is accepted as such — two spellings
+    /// of absence that behaved differently would be a trap.
+    ///
+    /// **Absence is an answer about uniqueness, not only about ownership.**
+    /// `brand_id` is an operand of the absolute name index, so brand-less
+    /// Products share one bucket and `(tenant, name)` is unique across them;
+    /// naming a brand re-opens the name (§4.1, `inst-fd-name-unique`).
+    ///
+    /// A brand that **is** named is still not checked against the caller —
+    /// see this module's doc, "`brand_id` claims this door cannot check", for
+    /// why the caller's-brand-claims half of `dod-create-doors`/P-D-33 is not
+    /// built here and what it is owed to.
+    pub brand_id: Option<Uuid>,
     /// The operator-facing name, as authored. `name_normalized` is derived
     /// from it (`crate::domain::name::normalize`), never accepted from the
     /// caller.
@@ -1342,9 +1362,14 @@ fn payload_digest(request: &CreateProductRequest) -> Vec<u8> {
     if let Some(id) = request.id {
         fields.insert("id".to_owned(), JsonValue::String(id.to_string()));
     }
+    // **Normalized, not carried verbatim** (P-D-178): an absent `brand_id`
+    // and an explicitly nil one are one statement, so they must digest to one
+    // value. Carrying the two spellings apart would make the same logical
+    // request under one `Idempotency-Key` an `IDEMPOTENCY_CONFLICT` against
+    // itself.
     fields.insert(
         "brand_id".to_owned(),
-        JsonValue::String(request.brand_id.to_string()),
+        JsonValue::String(request.brand_id.unwrap_or_default().to_string()),
     );
     fields.insert("name".to_owned(), JsonValue::String(request.name.clone()));
     if let Some(code) = request.product_code.clone() {
@@ -1605,9 +1630,9 @@ pub(crate) async fn create_product(
             ),
         );
     }
-    if brand_id.is_nil() {
-        report.violate("VALIDATION", "brand_id", "brand_id is required");
-    }
+    // No `brand_id` refusal: P-D-178 made the field optional and reads a nil
+    // value as the statement *this Product names no brand*, so the value the
+    // shape phase used to reject is now one of its two legal spellings.
     if caller_supplied_id.is_some() {
         report.violate(
             "VALIDATION",
@@ -1676,7 +1701,12 @@ pub(crate) async fn create_product(
     let new = NewProduct {
         product_id: Uuid::new_v4(),
         tenant_id,
-        brand_id,
+        // Absence resolves to the nil UUID, the same way the two scope
+        // columns below resolve theirs to the empty string: P-D-178 stores
+        // "names no brand" as a value rather than as `NULL`, so the name
+        // index compares it like any other operand and brand-less Products
+        // share one bucket on both engines.
+        brand_id: brand_id.unwrap_or_default(),
         name: trimmed_name.clone(),
         name_normalized: name::normalize(&trimmed_name),
         product_code,

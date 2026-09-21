@@ -261,6 +261,83 @@ async fn a_failing_row_fails_alone_with_the_owning_code() {
     assert!(good.entity_id.is_some(), "siblings never block");
 }
 
+/// **The bulk path reads an absent `brand_id` the way the create door does**
+/// (**P-D-178**), and still refuses a present one that is not a UUID.
+///
+/// Both halves in one batch, because the change here was to split two cases
+/// the code had collapsed: `field` answers `None` for a missing key *and* a
+/// blank one, and the old row refused both together with *"`brand_id` must be a
+/// uuid"*. Design 01's step 4 says every creation path names a role for the
+/// SKU and, since this decision, that no path demands a brand — so a bulk
+/// create must not be stricter than the door it stages through.
+#[tokio::test]
+async fn a_bulk_row_may_name_no_brand_and_a_malformed_one_still_fails() {
+    let harness = harness().await;
+
+    let mut brand_less = product_row("r-brandless", "Gamma");
+    brand_less.staged_payload = Some(json!({ "name": "Gamma" }).to_string());
+    let mut malformed = product_row("r-malformed", "Delta");
+    malformed.staged_payload =
+        Some(json!({ "name": "Delta", "brand_id": "not-a-uuid" }).to_string());
+    // The two spellings a naive "absent" reading swallows. `field` answers
+    // `None` for a blank string and for a non-string alike, so a helper built
+    // on it would stage both as brand-less — which is a value the caller
+    // meant, read as a value they omitted, into a bucket-i column.
+    let mut blank = product_row("r-blank", "Epsilon");
+    blank.staged_payload = Some(json!({ "name": "Epsilon", "brand_id": "  " }).to_string());
+    let mut not_a_string = product_row("r-notstring", "Zeta");
+    not_a_string.staged_payload = Some(json!({ "name": "Zeta", "brand_id": 12345 }).to_string());
+
+    let batch_id = seed_batch(
+        &harness,
+        "b-brand",
+        vec![brand_less, malformed, blank, not_a_string],
+    )
+    .await;
+    let outcome = stage_next_batch(
+        &worker_ctx(&harness),
+        TENANT,
+        ACTOR,
+        OffsetDateTime::now_utc(),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("stage");
+    assert_eq!(
+        outcome,
+        StageOutcome::Reported {
+            batch_id,
+            staged: 1,
+            failed: 3
+        }
+    );
+
+    let conn = harness.state.db.conn().expect("conn");
+    let rows = repo::find_batch_rows(&conn, &scope(), TENANT, batch_id)
+        .await
+        .expect("read");
+    let landed = rows
+        .iter()
+        .find(|row| row.row_key == "r-brandless")
+        .expect("row");
+    assert!(
+        landed.entity_id.is_some(),
+        "a row naming no brand stages like any other since P-D-178"
+    );
+    for (key, why) in [
+        ("r-malformed", "a present brand_id that is not a UUID"),
+        (
+            "r-blank",
+            "a blank brand_id is a value the caller meant, not an omission",
+        ),
+        ("r-notstring", "a non-string brand_id is the same"),
+    ] {
+        let refused = rows.iter().find(|row| row.row_key == key).expect("row");
+        assert_eq!(refused.disposition.as_deref(), Some("failed"), "{why}");
+        assert_eq!(refused.code.as_deref(), Some("VALIDATION"), "{why}");
+    }
+}
+
 /// A name already reserved is the Foundation's own `DUPLICATE_NAME` inside
 /// the ledger, not a bulk-invented code.
 #[tokio::test]

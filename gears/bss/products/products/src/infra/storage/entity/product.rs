@@ -32,6 +32,14 @@ pub struct Model {
     /// An operand of the uniqueness index and a bucket-i column: re-branding
     /// moves the row into a different uniqueness scope, so it is refused after
     /// first publish.
+    ///
+    /// **The nil UUID is a value here, not a missing one** (**P-D-178**): it
+    /// is how a Product says it names no brand, which is why the column stays
+    /// `NOT NULL`. Every brand-less row therefore shares one entry space of
+    /// `uq_products_product_name`, and `name_normalized` is unique across them
+    /// per tenant. A nullable column would not have said this: `NULL`s are
+    /// held distinct by Postgres's unique index, so each brand-less row would
+    /// have been unique to itself.
     pub brand_id: Uuid,
     /// The operator-facing name, as authored.
     pub name: String,

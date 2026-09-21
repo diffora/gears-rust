@@ -211,6 +211,35 @@ fn field(payload: &JsonValue, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The brand a bulk payload names, under **P-D-178**'s reading.
+///
+/// **An absent key — or an explicit JSON `null` — is the nil brand**, the same
+/// statement the create door reads from an omitted field. Anything else is a
+/// value the caller meant, and it must parse: `None` here is the caller's
+/// mistake, which the stage step refuses `VALIDATION` and the head lookup
+/// declines to guess past.
+///
+/// **Deliberately not built on `field`**, which answers `None` for three
+/// different things — key missing, value not a JSON string, and value blank
+/// after trimming. Reading that one answer as absence would take `""` and
+/// `12345` for *names no brand* and stage them into the tenant-wide brand-less
+/// name bucket, where they can collide with unrelated rows and, `brand_id`
+/// being bucket-i, cannot be corrected after first publish except through
+/// 07's door. The widening this decision makes is permissive about **absence**
+/// only, never about a malformed value.
+///
+/// One function because the reading appears at both sites, and two copies of
+/// it would be two chances for one of them to keep the old collapsed form.
+fn payload_brand(payload: &JsonValue) -> Option<Uuid> {
+    match payload.get("brand_id") {
+        None | Some(JsonValue::Null) => Some(Uuid::nil()),
+        Some(value) => value
+            .as_str()
+            .map(str::trim)
+            .and_then(|raw| Uuid::parse_str(raw).ok()),
+    }
+}
+
 /// Stage one Product row through the Foundation's own insert path.
 async fn stage_product(
     ctx: &BulkWorkerContext,
@@ -223,7 +252,7 @@ async fn stage_product(
 ) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
     let name_value = field(payload, "name");
-    let brand = field(payload, "brand_id").and_then(|raw| Uuid::parse_str(&raw).ok());
+    let brand = payload_brand(payload);
     if name_value.is_none() {
         report.violate("VALIDATION", "name", "name must not be blank");
     }
@@ -935,11 +964,21 @@ async fn report_and_submit(
     sample.truncate(5);
     let mut unseen_regions: BTreeSet<&str> = BTreeSet::new();
     let mut unseen_brands: BTreeSet<Uuid> = BTreeSet::new();
-    for fact in facts.iter().filter(|fact| !fact.region.is_empty()) {
-        if !known_regions.contains(&fact.region) {
+    // **Each dimension judges its own absence.** The loop used to be filtered
+    // on `!fact.region.is_empty()`, which gated the brand check too — and
+    // `region_scope` defaults to empty (§3.1 row 5: absent means unrestricted),
+    // so for the ordinary row the brand half never ran and `unseenBrands` was
+    // dead for the approver it exists to warn. The filter is now per check.
+    for fact in &facts {
+        if !fact.region.is_empty() && !known_regions.contains(&fact.region) {
             unseen_regions.insert(fact.region.as_str());
         }
+        // The nil brand is **not** an unseen brand: since P-D-178 it is how a
+        // Product says it names none, so reporting it would tell a reviewer the
+        // batch introduces a brand when it introduces none at all — the same
+        // reading the region check above gives its own empty value.
         if let Some(brand) = fact.brand
+            && !brand.is_nil()
             && !known_brands.contains(&brand)
         {
             unseen_brands.insert(brand);
@@ -2445,11 +2484,16 @@ async fn resolve_promotion(
         {
             head = repo::find_product_by_code(&conn, scope, tenant_id, &code).await?;
         }
+        // The brand reads the same here as at the stage step (P-D-178):
+        // absent is the nil brand and finds the brand-less head, while a
+        // present-but-unparseable value still resolves to no lookup — a row
+        // whose brand the caller misspelled must not silently match some
+        // other head. Without the absent arm a brand-less row could be
+        // created but never matched, and every re-run of it would answer
+        // `DUPLICATE_NAME` instead of finding its own head.
         if head.is_none()
-            && let (Some(brand), Some(name_value)) = (
-                field(payload, "brand_id").and_then(|raw| Uuid::parse_str(&raw).ok()),
-                field(payload, "name"),
-            )
+            && let (Some(brand), Some(name_value)) =
+                (payload_brand(payload), field(payload, "name"))
         {
             head = repo::find_product_by_brand_and_name(
                 &conn,

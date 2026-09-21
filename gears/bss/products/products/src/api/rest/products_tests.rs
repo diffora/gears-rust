@@ -696,6 +696,109 @@ async fn a_duplicate_name_within_the_same_tenant_and_brand_is_refused_and_audite
     assert_eq!(error_code.as_deref(), Some("DUPLICATE_NAME"));
 }
 
+/// **A Product may name no brand, and then `name` is unique per tenant**
+/// (**P-D-178**).
+///
+/// The owner's rule in one test: two brand-less Products cannot share a name,
+/// and naming a brand re-opens it. The mechanism is that absence resolves to
+/// the nil UUID, so every brand-less row lands in one bucket of the
+/// `(tenant_id, brand_id, name_normalized)` index — which is why this is
+/// asserted through the door's own refusal rather than by reading the column:
+/// a stored nil proves the write, not the rule.
+#[tokio::test]
+async fn a_brand_less_product_is_created_and_its_name_is_then_unique_per_tenant() {
+    let harness = harness().await;
+
+    let first = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(
+        first.status(),
+        StatusCode::CREATED,
+        "brand_id is optional since P-D-178: an omitted one names no brand"
+    );
+
+    let second = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "name": "  FIBRE 500  " }),
+    )
+    .await;
+    assert_eq!(
+        second.status(),
+        StatusCode::CONFLICT,
+        "across brand-less Products the same index reads (tenant, name), so the \
+         second one collides"
+    );
+
+    // ...and a brand re-opens the very name that just collided.
+    let branded = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(
+        branded.status(),
+        StatusCode::CREATED,
+        "naming a brand moves the row out of the brand-less bucket"
+    );
+
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 2, "the collision left no row behind");
+}
+
+/// **An explicitly nil `brand_id` is the same statement as an omitted one**
+/// (**P-D-178**), including under one `Idempotency-Key`.
+///
+/// Two spellings of absence that behaved differently would be a trap, and the
+/// idempotency digest is where it would bite first: the digest normalizes the
+/// field, so the same logical request under one key is a replay rather than
+/// an `IDEMPOTENCY_CONFLICT` against itself. The nil value used to be this
+/// door's own `VALIDATION` refusal, which is what makes it worth pinning.
+#[tokio::test]
+async fn an_explicit_nil_brand_is_read_as_absence_and_digests_the_same() {
+    let harness = harness().await;
+    let nil = uuid::Uuid::nil();
+
+    let explicit = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": nil, "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(
+        explicit.status(),
+        StatusCode::CREATED,
+        "a nil brand says `this Product names no brand`, it is not a refusal"
+    );
+
+    let omitted = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "name": "Fibre 500" }),
+    )
+    .await;
+    assert_eq!(
+        omitted.status(),
+        StatusCode::CONFLICT,
+        "the omitted spelling lands in the same bucket the explicit nil did"
+    );
+
+    // The idempotency half, through the door's own digest function rather
+    // than through a second request: the two spellings must hash alike, or
+    // the same logical create under one key answers `IDEMPOTENCY_CONFLICT`
+    // against itself.
+    assert_eq!(
+        digest_of(&json!({ "brand_id": nil, "name": "Fibre 500" })),
+        digest_of(&json!({ "name": "Fibre 500" })),
+        "absent and explicitly nil are one statement, so they are one digest"
+    );
+}
+
 /// A create colliding on `product_code` is refused `DUPLICATE_CODE`, with
 /// the same three assertions as the name collision above.
 #[tokio::test]
