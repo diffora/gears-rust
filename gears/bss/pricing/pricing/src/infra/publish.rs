@@ -1150,7 +1150,7 @@ pub(crate) async fn rule_params(
     .with_addon_coverage(addon_coverage)
     .with_change_targets(change_targets);
     Ok(if composes_a_bundle {
-        params.as_bundle_publication()
+        params.with_bundle_publication()
     } else {
         params
     })

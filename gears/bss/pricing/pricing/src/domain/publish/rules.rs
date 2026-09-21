@@ -352,7 +352,7 @@ impl PublishRuleParams {
     /// ordinary case: `false` is not a thing a caller asserts, it is what not
     /// having a composition means.
     #[must_use]
-    pub fn as_bundle_publication(mut self) -> Self {
+    pub fn with_bundle_publication(mut self) -> Self {
         self.plan_sku_role = crate::domain::plan_sku_rules::ROLE_BUNDLE;
         self
     }

@@ -3806,18 +3806,16 @@ async fn a_period_floor_cap_authoring_neither_bound_is_refused_at_the_write() {
     assert_eq!(plan_row_version(&harness, plan_id, 0).await, Some(0));
 }
 
-/// The drift refusal is retired with `displayTrialDays`.
-///
-/// It stood for a real fault — two numbers set and disagreeing, which reached
-/// the section 6 CHECK and came back a 500 advising a retry. With one number
-/// there is nothing to disagree with, and the door's remaining write-stage
-/// filter is probed by its neighbours above.
+// The drift refusal is retired with `displayTrialDays`.
+//
+// It stood for a real fault — two numbers set and disagreeing, which reached
+// the section 6 CHECK and came back a 500 advising a retry. With one number
+// there is nothing to disagree with, and the door's remaining write-stage
+// filter is probed by its neighbours above.
 
-/// The positive control: a trial phase projecting the duration it has still
-/// lands.
-///
-/// Without it the door could refuse every `displayTrialDays` and the case above
-/// would still pass.
+/// The positive control for the write-stage refusals above: a trial phase
+/// stating the duration it has still lands, so the door is a filter and not a
+/// ban.
 #[tokio::test]
 async fn a_trial_phase_projecting_the_duration_it_has_still_lands() {
     let harness = Harness::new().await;

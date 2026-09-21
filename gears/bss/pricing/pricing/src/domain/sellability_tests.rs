@@ -166,9 +166,9 @@ fn sellable_facts() -> PinnedFacts {
         plan_id: plan(),
         catalog_version: CatalogVersion::new(7),
         lifecycle_state: LifecycleState::Published,
-        sale_sku_ids: vec![Uuid::from_u128(0x5_c1)],
         available_from: Some(at(0)),
         available_to: None,
+        sale_sku_ids: vec![Uuid::from_u128(0x5_c1)],
         frequency: Some(Frequency::Monthly),
         price_keys: vec![recurring()],
         windows: vec![windows_of(

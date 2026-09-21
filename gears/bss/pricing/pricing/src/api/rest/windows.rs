@@ -786,7 +786,6 @@ impl PlanSellabilityView {
 impl From<&SellabilitySurface> for PlanSellabilityView {
     fn from(surface: &SellabilitySurface) -> Self {
         Self {
-            registry_checked_at: None,
             plan_id: surface.plan_id.get(),
             at: surface.at,
             currency: surface.currency.as_str().to_owned(),
@@ -808,6 +807,7 @@ impl From<&SellabilitySurface> for PlanSellabilityView {
                     predicates: key.answers.iter().map(PredicateAnswerView::from).collect(),
                 })
                 .collect(),
+            registry_checked_at: None,
         }
     }
 }

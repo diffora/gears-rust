@@ -709,14 +709,14 @@ async fn the_plan_picker_filters_the_published_projection_by_role() {
     let conn = harness.state.db.conn().expect("conn");
     let now = crate::test_support::utc(2026, 9, 20, 9, 0, 0);
 
-    let mut seed = |tenant: Uuid,
-                    n: u128,
-                    name: &str,
-                    role: &str,
-                    sellable: bool,
-                    state: &str,
-                    deprecated: bool| {
-        let row = repo::ReadEntityRow {
+    let seed = |tenant: Uuid,
+                n: u128,
+                name: &str,
+                role: &str,
+                sellable: bool,
+                state: &str,
+                deprecated: bool| {
+        repo::ReadEntityRow {
             tenant_id: tenant,
             entity_kind: "sku".to_owned(),
             entity_id: Uuid::from_u128(0xb0_1e_00 + n),
@@ -739,8 +739,7 @@ async fn the_plan_picker_filters_the_published_projection_by_role() {
             published_version: 1,
             projected_at: now,
             generation: 0,
-        };
-        row
+        }
     };
 
     for row in [

@@ -263,11 +263,6 @@ use time::OffsetDateTime;
 const OWED_TO_GA_GATE: &str = "Slice 4's per-market `not_sellable_ga` flag and Slice 10's \
                                prepaid-execution gate, published as the same flag mechanism";
 
-/// What the registry gear owes predicate (6).
-const OWED_TO_REGISTRY: &str = "D-46's registry `sellable` flag on the offered SKU, frozen per \
-                                `CatalogVersion` by the products registry gear, which is not in \
-                                this repository";
-
 /// What a predicate answered on the *other* plane is owed, if a roster ever puts
 /// it on this one.
 ///
@@ -599,6 +594,11 @@ impl SellabilitySurface {
     /// REST boundary, after authorization, and hands the aggregate in — including
     /// [`registry_unreadable`] when it could not read at all, which is
     /// `NotEvaluable` and never `Satisfied`.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the caller hands the answer over: it resolved predicate (6) for this \
+                  surface and has no further use for it"
+    )]
     pub fn of_delta(
         facts: &SellabilityFacts,
         at: OffsetDateTime,

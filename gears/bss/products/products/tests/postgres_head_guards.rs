@@ -596,7 +596,7 @@ async fn composition_pending_moves_only_with_a_published_version_bump() {
 
 /// **The role column admits its closed set, with either sale flag, and `NULL`.**
 ///
-/// The PostgreSQL half of the same backstop the SQLite migration suite pins:
+/// The `PostgreSQL` half of the same backstop the `SQLite` migration suite pins:
 /// `chk_products_sku_type`. It matters on this dialect for the same reason the
 /// rest of this file does — the doors are Rust and the constraint is the only
 /// thing standing behind a write that did not come through one.

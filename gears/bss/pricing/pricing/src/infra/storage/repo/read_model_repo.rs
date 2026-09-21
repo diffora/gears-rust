@@ -392,6 +392,8 @@ pub fn sellability_facts(delta: &StoredDelta) -> Result<SellabilityFacts, RepoEr
             LifecycleState::ALL,
             LifecycleState::as_str,
         )?,
+        available_from: optional_instant(payload, "availableFrom")?,
+        available_to: optional_instant(payload, "availableTo")?,
         // The frozen roster, read back rather than re-derived: a gate that
         // recomputed it from live storage would answer about a plan the pin does
         // not describe. An older pin that predates the member carries none, and
@@ -412,8 +414,6 @@ pub fn sellability_facts(delta: &StoredDelta) -> Result<SellabilityFacts, RepoEr
             }
             ids
         },
-        available_from: optional_instant(payload, "availableFrom")?,
-        available_to: optional_instant(payload, "availableTo")?,
         frequency: read_frequency(payload)?,
         price_keys,
         windows,

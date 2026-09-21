@@ -315,7 +315,7 @@ async fn lists_answer_an_empty_page_without_an_etag() {
         let response = app(&h, TENANT)
             .oneshot(
                 Request::builder()
-                    .uri(&url(kind, &[("$top", "1")]))
+                    .uri(url(kind, &[("$top", "1")]))
                     .extension(authed_ctx(TENANT))
                     .body(Body::empty())
                     .unwrap(),

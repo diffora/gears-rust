@@ -238,15 +238,15 @@ async fn two_revisions_of_one_plan_each_carry_their_own_terminal_phase() {
     assert_eq!(count_phases(&conn, 1).await, "1");
 }
 
-/// The trial-length projection is gone, and with it this table's drift guard.
-///
-/// What stood here probed `chk_pricing_plan_phase_display_trial_days`, the CHECK
-/// over two persisted columns holding one value. A trial's length is now
-/// `phase_duration_days` on a phase whose `kind` is `trial`; there is no second
-/// column to drift from, and the shape the CHECK could not catch — a projection
-/// set over a NULL duration — is unrepresentable.
+// The trial-length projection is gone, and with it this table's drift guard.
+//
+// What stood here probed `chk_pricing_plan_phase_display_trial_days`, the CHECK
+// over two persisted columns holding one value. A trial's length is now
+// `phase_duration_days` on a phase whose `kind` is `trial`; there is no second
+// column to drift from, and the shape the CHECK could not catch — a projection
+// set over a NULL duration — is unrepresentable.
 
-/// Neither day-count column admits a negative.
+/// The duration column admits no negative.
 ///
 /// Both are read back through `u32::try_from` into the count the domain holds
 /// and answer `CorruptRow` for anything else, so a poisoned row is a revision no
