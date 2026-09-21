@@ -55,15 +55,20 @@ Foundation pipeline; the **math is never computed here** — Tariffs applies the
 the §17.2 conformance mapping.
 
 **Shared structure versus market money.** A `PriceRow` is the *resolved* join of a
-`ChargeStructure` (SKU, `model_kind`, derived `meter`, `dimension_key`, tier
-`from_qty`/`to_qty` geometry, `package_size`, quantity source, evaluation-policy
+`ChargeStructure` (SKU, `model_kind`, derived `meter`, `dimension_key`,
+`package_size`, quantity source, evaluation-policy
 windows, allowance, reservation flavor, floors, invoice template, `gl_code_ref`,
-`discount_ref`) and `MarketPriceTerms` (`amount_minor`, `unit_rate`, `tier_rates`,
+`discount_ref`) and `MarketPriceTerms` (`amount_minor`, `unit_rate`, `tiers`,
 `package_price_minor`, `reserved_rate`). `billing_timing` and the proration contract
 are authored on the charge-line version so they cannot differ per `currency`.
-`split_row` / `resolve_row` are internal converters; a `tier_rates` count that does
-not match the geometry fails with `MARKET_TIER_RATE_COUNT_MISMATCH` before any
-partial row is produced. Persistence and REST still speak the joined row.
+**The ladder is the market's (D-378):** the line says *what* is charged and *how it
+is measured*; the market says *how much*, and a tier ladder is part of how much.
+`tiers` carries each band's `from_qty`/`to_qty` beside the rate that prices it, so
+two markets of one line may differ in the number of bands, the break-points and
+the rates — only `model_kind` is shared (a market cannot be `graduated` where its
+sibling is `volume`), and `package_size` stays shared because a block size is a
+unit (D-122). `split_row` / `resolve_row` are internal converters; a ladder
+arrives whole, so there is no count to reconcile.
 
 **Traces to**: `cpt-cf-bss-pricing-fr-model-kind`, `cpt-cf-bss-pricing-fr-tier-validation`,
 `cpt-cf-bss-pricing-fr-package-pricing`, `cpt-cf-bss-pricing-fr-model-kind-conformance`,
@@ -133,9 +138,8 @@ Design-introduced names (Slice 3):
 | `TierBandValidator` | Registered rules: ordering, non-overlap, contiguity, top-band policy under Q1 |
 | `PackageValidator` | Registered rules: `package_size`/`package_price_minor` presence + structural exclusivity with tier-band fields |
 | `FixtureGate` | The publish-time check that the row's `model_kind` (and the reservation / `level-aggregation` (D-44) / `trailing_tier` (D-40, S10 `inst-tt-fixture`) variants) has a green joint golden fixture |
-| `ChargeStructure` | Shared non-monetary shape of a charge-line version. Every `PriceRow` field that is not a market money operand; `bands` are `from_qty`/`to_qty` geometry only |
-| `TierGeometry` | One band's quantity bounds without its rate |
-| `MarketPriceTerms` | Market money operands: `amount_minor`, `unit_rate`, `tier_rates`, `package_price_minor`, `reserved_rate` |
+| `ChargeStructure` | Shared non-monetary shape of a charge-line version. Every `PriceRow` field that is not a market money operand. It carries **no ladder** (D-378) |
+| `MarketPriceTerms` | Market money operands: `amount_minor`, `unit_rate`, `tiers` (the market's whole ladder — each band's bounds beside its rate), `package_price_minor`, `reserved_rate` |
 | `split_row` / `resolve_row` | Internal converters between the resolved `PriceRow` and `(ChargeStructure, MarketPriceTerms)`. Not a public write adapter; persistence still stores the joined row |
 
 ### 1.8 Context & Dependencies
@@ -209,17 +213,22 @@ only, at the authoring write** (D-312)
 
 1. [ ] - `p1` - The row's `sku_id` must occur as published in the registry read model; otherwise `SKU_NOT_PUBLISHED` - `inst-pr-sku-published`
 2. [ ] - `p1` - A deprecated registry SKU may not be **newly** named (`ROW_SKU_DEPRECATED`); an already-published row that names a since-deprecated SKU still admits (D-370). Task 7 serves a deprecated SKU as `status: "published"` plus `deprecated: true`, so `SKU_NOT_PUBLISHED` does not fire on it. The operand is an introduction of the reference (a create, a draft whose `sku_id` just changed, or a draft being published), not the row alone - `inst-pr-sku-deprecated`
-3. [ ] - `p1` - A row names either the plan's own SKU or a SKU with `sellable = false`; another sellable offer is `ROW_SKU_SELLABLE` - `inst-pr-sku-sellability`
+3. [ ] - `p1` - A row names either the plan's own SKU or a SKU whose registry **role** is `component`; another `offer` or a `bundle` is `ROW_SKU_TYPE_INVALID` **whatever its `sellable` flag** — the flag is permission to sell, read by the sale gate (S7 predicate 6) and never by authoring, so a `sellable = false` component is as nameable as a `true` one (D-376, products P-D-176; retires `inst-pr-sku-sellability` and `ROW_SKU_SELLABLE`) - `inst-pr-sku-role`
 4. [ ] - `p1` - Usage requires a metering unit (`USAGE_ROW_SKU_UNMETERED` otherwise); recurring and one-time fee rows require no metering unit (`FEE_ROW_SKU_METERED` otherwise) - `inst-pr-sku-metered`
 5. [ ] - `p1` - Derive `meter` from the selected SKU at save, refuse authored meter as `VALIDATION` subject `meter`, and verify stored meter against that SKU at publish (`METER_SKU_MISMATCH`) - `inst-pr-meter-derived`
 
-Fee authoring defaults to the plan's own unmetered SKU. A dedicated unmetered, unsellable fee SKU is optional for a fee shared across plans or carrying distinct registry facts. This is authoring guidance, not a mandate to create another SKU.
+Fee authoring defaults to the plan's own unmetered SKU. A dedicated unmetered `component` fee SKU is optional for a fee shared across plans or carrying distinct registry facts. This is authoring guidance, not a mandate to create another SKU.
 
 ### Tier-Band Validation
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-tier-bands`
 
-**Input**: a `graduated`/`volume` row's band set
+**Input**: a `graduated`/`volume` row's band set — which is **one market's ladder** (D-378). Every
+step below is judged per market, and a violation **names the market it is in**: a row rule names
+its row by charge and model kind, which every market of a line shares, so publish files each row's
+findings under `…|{currency}/{region}`. Two markets of one line are judged independently — a gap
+in USD's ladder says nothing about EUR's — and a shared floor judged against two ladders
+(`inst-ft-warn`) is one finding, on the market whose band it falls inside.
 **Output**: an ordered, gapless, non-overlapping band set in the read model (+ top-band policy)
 
 **Steps**:
@@ -313,7 +322,7 @@ line would hide the second fault behind the first. The publish pre-check still r
 the **whole** set including this subset — the write-side check is an earlier refusal,
 never a replacement, and §4.2's commit-time re-validation is untouched.
 
-**Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED`, `ROW_SKU_DEPRECATED`, `USAGE_ROW_SKU_UNMETERED`, `FEE_ROW_SKU_METERED`, `ROW_SKU_SELLABLE`, `METER_SKU_MISMATCH` (422); authored `meter` is `VALIDATION` (400). `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
+**Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED`, `ROW_SKU_DEPRECATED`, `USAGE_ROW_SKU_UNMETERED`, `FEE_ROW_SKU_METERED`, `ROW_SKU_TYPE_INVALID`, `METER_SKU_MISMATCH` (422); authored `meter` is `VALIDATION` (400). `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
 `TIER_BANDS_GAP` (422 — including a tiered row carrying **no bands at all**, and a first band that does not start at the quantity origin: both are the same fault, a quantity the row prices nowhere; 2026-08-02 clarification), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
 `TIER_TOP_CLOSED` (422 — the top band must be open; capping belongs to quotas / per-period caps, D-17), `PACKAGE_FIELDS_INVALID` (422),
 `EVAL_POLICY_MISPLACED` (422 — an evaluation-policy or quantity field on a row whose shape does not admit it; **this is also the code for the two directions the rule statements left unnamed** (2026-08-02, found implementing): tier bands present on `flat`/`per_unit`/`package`, and `quantitySource` present on a `per_unit` **usage** row or `manual_quantity` without `quantitySource = manual`. `QUANTITY_SOURCE_MISSING` covers only the absent direction, and a field that may not be there is a placement fault, not a missing one), `MODEL_KIND_CHARGEKIND_MISMATCH` (422 — `graduated`/`volume`/`package` on a non-usage row, or `flat` on a usage row; D-18 + 2026-07-28 review fix), `TIER_AGG_WINDOW_INCOMPATIBLE` (422 — `tierAggregationWindow = per_hour` beside `billingGranularity = per_day`: one billable unit would span twenty-four of the windows meant to band it independently; D-313. Its own code rather than `EVAL_POLICY_MISPLACED` because both values are authorable and each is correct alone — the fault is the pair, which is the shape the tier-qualification pairing rule already minted `TIER_QUAL_WINDOW_INCOMPATIBLE` for — see `design/10-advanced-primitives.md`. **The refusal is judged on any usage row carrying both values, tiered or not, and since 2026-08-15 it is no longer escapable by omission on one class of row (D-317 clause (1)):** a `per_unit` row compiled into a ladder by an `includedAllowance` now owes a `tierAggregationWindow` per `inst-tb-window`, so clearing the window — which used to leave such a row publishable — answers `EVAL_POLICY_MISSING` instead, and the two remedies D-313's own message names are the ones that remain. D-313 argued the pair over an operator-authored ladder and never over a compiled one; the reading holds unchanged, because what a compiled `[0, N) @ $0` opening band bounds per hour is the **allowance**, which under `per_day` units would be re-granted twenty-four times inside one billable unit), `EVAL_POLICY_MISSING` (422 — `tierAggregationWindow` unset on a
@@ -345,9 +354,6 @@ counterpart of `aggregationGranularity` (`hour` ⇒ `per_hour`, `day` ⇒ `per_d
 `inst-la-granularity`, D-77 — otherwise `inst-tb-units` and `inst-la-units` name different band
 units for one row), `LEVEL_COMPOSITE_FORBIDDEN` (422 — non-`sum` on a derived
 (composite) meter; launch, D-44),
-`MARKET_TIER_RATE_COUNT_MISMATCH` (422 — `ChargeStructure.bands` and
-`MarketPriceTerms.tier_rates` differ in length; joining must not emit a partial
-row),
 `DUPLICATE_SCOPE_KEY` (409 — Foundation-owned, referenced here; on the **draft** plane too since
 D-148, §6), `STALE_VERSION` (409 — Foundation-owned, referenced here; the ETag precondition of
 **both** `PATCH` and `DELETE`, D-141), `PRECISION_EXCEEDED` (422 —
@@ -452,7 +458,7 @@ The snapshot row carries `invoiceLineTemplate` and `glCode` from the resolved co
 `taxCategory` and `billingTiming`: four row-borne descriptor elements; the fifth,
 `itemizationRule`, is derived in the plan's `billing` section (Slice 6).
 
-**`pricing_price_tier_band`** (FK `price_id`; `graduated`/`volume` rows only). **Authored bands
+**`pricing_price_tier_band`** (FK `(tenant_id, price_id, line_version_id)`; `graduated`/`volume` lines only). **One ladder per market (D-378):** a band carries its bounds beside its rate and is keyed `(price_id, from_qty)`, so two markets of one line version each hold a ladder of their own; `line_version_id` rides the band so the kind guard can read the line's `model_kind`, and a second guard on `pricing_charge_line_version` refuses a version leaving `graduated`/`volume` while **any** of its markets still prices a band. **Authored bands
 only (D-130, 2026-08-01 review fix):** the D-45 allowance compile is a **projection** — it never
 inserts, offsets or deletes a row here, so this table always holds exactly what the operator
 authored and the compile stays idempotent by construction (the pre-D-130 in-place rewrite

@@ -419,12 +419,12 @@ A line response carries both identities separately, and its prices with theirs:
   "scope_key": {"plan_id": "…", "price_overlay": "base", "phase": "…",
                 "price_eligibility": "all_subscriptions", "charge_kind": "usage",
                 "cohort": null, "sku_id": "…", "dimension_key": null},
-  "structure": {"model_kind": "graduated", "meter": "cloudlets",
-                "tiers": [{"from_qty": 0, "to_qty": 100}, {"from_qty": 100, "to_qty": null}]},
+  "structure": {"model_kind": "graduated", "meter": "cloudlets"},
   "prices": [
     {"market_price_id": "…", "price_id": "…", "line_version_id": "…",
      "charge_line_id": "…", "currency": "USD", "region": "US",
-     "money": {"tier_rates_nano_minor": [500, 400]},
+     "money": {"tiers": [{"from_qty": 0, "to_qty": 100, "rate_nano_minor": 500},
+                         {"from_qty": 100, "to_qty": null, "rate_nano_minor": 400}]},
      "market_policy": {"tax_inclusive": false},
      "lifecycle_state": "draft", "row_version": 0}
   ]
@@ -452,21 +452,38 @@ pricing grid can post markets under a tag it captured once.
 ### Each door refuses the other's fields
 
 Both request shapes set `deny_unknown_fields`. `currency`, `amount_minor` or
-`tax_inclusive` on a structure is `400 unknown field`, and so is `model_kind`,
-`tiers` or `package_size` on a market price. A field that is silently dropped is a
+`tax_inclusive` on a structure is `400 unknown field`, and so is `model_kind` or
+`package_size` on a market price. **`tiers` is money (D-378):** it is refused on a
+structure and accepted on a market price, and the positional
+`money.tier_rates_nano_minor` it replaced is refused by name. A field that is silently dropped is a
 screen that believes it saved something, which is why neither door ignores them.
 `meter` is derived from the SKU and refused on write **including an explicit
 `null`**; `charge_kinds` is derived and never authored.
 
-### Tier rates
+### The ladder
 
-Geometry is the line's and rates are the market's, joined by position:
-`money.tier_rates_nano_minor` is one rate per tier of the line, in its quantity
-order. A different count is `400 MARKET_TIER_RATE_COUNT_MISMATCH`. Sending none is
-a legal unfinished draft. Editing the geometry keeps each market's rates where the
-new ladder still has a tier at that position, so a grid does not lose its numbers
-when a bound moves; a market left with fewer rates than tiers is reported by the
-publish pre-check, not refused at save.
+The ladder is the market's, whole (D-378): `money.tiers` carries each band's
+`from_qty`, `to_qty` (`null` on the open top) and `rate_nano_minor`. Two markets of
+one line may differ in the number of bands, the break-points and the rates — a grid
+is one ladder **per currency column**, not one set of bounds with a rate per
+column. What they share is the line's `model_kind`. Sending no ladder is a legal
+unfinished draft. A structure edit that keeps the line `graduated` or `volume`
+leaves every market's ladder exactly as it was; moving the line to another model
+removes every market's ladder in the same write. Ladder validity — first band from
+zero, no gap, no overlap, one open top — is judged per market at publish, and a
+violation's subject ends `|{currency}/{region}` so a screen can mark the column it
+belongs to.
+
+### A currency price applies everywhere
+
+A price on region `global` is the currency's price in **every** region; a price on
+any other region overrides it there (D-379). A market picker therefore offers
+`global` first, and a region with no row of its own is not an empty cell — it
+shows the `global` price, inherited. `GET …/preview` answers `resolved_region`,
+the sellability document's keys and `GET …/coverage`'s entries answer
+`falls_back_to`: an override whose window ends hands its buyers to the `global`
+price at that instant, which a screen should show rather than leave to be
+discovered.
 
 ### Deleting
 

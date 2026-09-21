@@ -1569,6 +1569,52 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-176 — A SKU's `type` is its role — `offer`, `component`, `bundle` — and `sellable` is permission to sell it at all
+
+- **Date**: 2026-09-20 (**the product owner's decisions**, taken one at a time while reviewing the
+  committed catalog and pricing API; implemented 2026-09-20…21). **Breaking on the wire.** Pricing's
+  twin is **D-376** in that gear's register, and the two entries cite each other.
+- **What this decides.** The closed `type` set is `offer | component | bundle`. It **supersedes**
+  the `product | service | bundle` set of `inst-cl-type-profile` and **P-D-145**, and with it the
+  last thing **P-D-169** left the old two tokens distinguishing — nothing: once both accounting
+  codes left the registry, `product` and `service` validated identically and meant nothing to any
+  consumer. The three roles each say where a SKU may be **used**:
+  an `offer` is what an ordinary plan realizes; a `component` is a billable constituent a plan's
+  charge rows name; a `bundle` is what a composition realizes. The column keeps its name,
+  `sku_type`, and the field its name, `type`.
+- **And what `sellable` means, which is not what D-46 said.** `sellable = false` **prohibits new
+  sales of the SKU in any composition** — standalone, as a row of a plan, as a member of a bundle,
+  or as a component of a member plan. D-46 read it as *"composition/metering-only"* and **exempted
+  bundle-component references**; that exemption is withdrawn (pricing D-376). Role says where a SKU
+  may be used; the flag says whether it may be sold. The two are **independent**: every role
+  accepts either value, an omitted flag defaults to `true` for all three, and `component + true` is
+  valid and does not let that SKU own an ordinary plan. Existing subscriptions are untouched.
+- **Timing.** A flip takes effect **after publication** of the SKU, against the registry's current
+  published state; saving an unpublished head edits nothing a consumer reads. It stays bucket iii
+  (P-D-28, P-D-121 row 16): a governed head-row save, frozen as version N+1.
+- **Every creation path names a role.** Bulk create defaulted a missing `type` to `product`
+  silently; it is now the required-field `VALIDATION` the single-create door already answered, and an
+  unknown token is `SKU_TYPE_UNKNOWN` on every path. `product` and `service` are unknown tokens.
+- **No compatibility.** No alias, no dual-read period, no data conversion: there is no deployment,
+  and the one development stand's catalog data is disposable (owner-confirmed). The initial DDL's
+  `chk_products_sku_type` is edited in place.
+- **Why not keep `product`/`service` and add a role beside them.** That is two classifications of
+  one SKU, one of which nothing reads. **Why not make `sellable` role-dependent** (a `component`
+  forced `false`): it conflates the two questions again, and it makes "stop selling this
+  constituent" and "this is a constituent" the same edit — the first is reversible and the second
+  is bucket ii.
+- **What this costs a consumer.** Closing sales on a `component` closes new sales of every plan
+  and bundle that includes it. That is the meaning asked for, and it is a wider blast radius than
+  the flag had; it is stated in pricing's gate, which names **every** closed SKU rather than the
+  first.
+- **Residue owed**: nothing in this gear. Pricing's browse-as-picker guidance and the sale gate are
+  D-376's.
+- **Propagated**: PRD (glossary *SKU* and *Sellable*, §4.1 scope row, `fr-define-sku`,
+  `fr-sku-sellable`, NFR *Versatility*, use case step, AC 2a and the define-SKU AC),
+  `design/03-sku-classification.md` (§1 purpose, `TypeProfile`, `inst-cl-type-profile`,
+  `inst-cl-sellable`), `design/12-consumer-contracts.md` (the predicate-6 consumer obligation),
+  `features/sku-classification.md` (§1, the `sellable` behaviour bullet and `dod-sellable`).
+
 #### P-D-175 — The set doors become the vocabulary doors: five path templates move to `config/vocabularies/{class}/values/{value}`, and the word in the code does not move with them
 
 - **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase N group E — the last group, and the

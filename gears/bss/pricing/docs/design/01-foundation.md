@@ -1346,7 +1346,7 @@ from `GET /bss-pricing/v1/migrated-origin-snapshots/{subscriptionRef}` (Slice 11
 service identity — **D-102**, 2026-07-31 review fix; registered as an inbound lane of the Tariffs
 contract, [`../PRD.md`](../PRD.md) §9.2). Everything else resolves version-pinned as above.
 
-D-372 row-SKU violations are `SKU_NOT_PUBLISHED`, `USAGE_ROW_SKU_UNMETERED`, `FEE_ROW_SKU_METERED`, `ROW_SKU_SELLABLE` and `METER_SKU_MISMATCH` (architectural 422, standard validation envelope). The same rules run at write and publish; registry failure prevents validation. A request authoring `meter` is malformed (`VALIDATION`, subject `meter`).
+D-372 row-SKU violations are `SKU_NOT_PUBLISHED`, `USAGE_ROW_SKU_UNMETERED`, `FEE_ROW_SKU_METERED`, `ROW_SKU_TYPE_INVALID` (D-376: a row names its plan's own SKU or a `component`) and `METER_SKU_MISMATCH` (architectural 422, standard validation envelope). The same rules run at write and publish; registry failure prevents validation. A request authoring `meter` is malformed (`VALIDATION`, subject `meter`).
 
 `IMPORT_PLAN_NOT_FOUND` is a per-row bulk-import finding when no open draft or current parent plan is visible in the importing tenant. Missing and foreign plans have the same code and detail. Any such finding blocks the entire batch with the existing `BULK_VALIDATION_FAILED` envelope; a missing parent never bypasses SKU validation.
 

@@ -2116,7 +2116,7 @@ async fn create_plan(
     let draft_shape = shape_of(&body)?;
     // The plan's own SKU, judged before the transaction opens.
     //
-    // Nothing else judges it. `inst-pr-sku-sellability` exempts the plan SKU by
+    // Nothing else judges it. `inst-pr-sku-role` exempts the plan SKU by
     // identity so a row may name it, and that exemption means the row rules
     // never look at the binding itself — a plan with no rows, or one whose rows
     // all price components, reaches publish with this unasked. Either

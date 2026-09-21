@@ -33,9 +33,9 @@
 
 ### 1.1 Overview
 
-This slice owns everything that makes a SKU **classified and downstream-bindable**: the type
-(`product`/`service`/`bundle`) with per-type required-field sets, the `sellable`
-offering-eligibility flag (D-46), the `PlanTier` taxonomy and the SKU-level tier value, the
+This slice owns everything that makes a SKU **classified and downstream-bindable**: the type —
+its **role**, `offer`/`component`/`bundle` (P-D-176) — the `sellable`
+sale-permission flag (D-46, amended by P-D-176), the `PlanTier` taxonomy and the SKU-level tier value, the
 and the **metering-unit declaration** — the one thing that makes a SKU a usage SKU — with its
 `usageTypeRef` binding (P-D-05) and the recognized-unit set's own governed lifecycle. The three
 vocabularies this slice governs (PlanTier taxonomy, recognized units, recognized codes) are
@@ -101,7 +101,7 @@ discovered weeks later at ERP export or rating time.
 
 | Name | Meaning |
 |------|---------|
-| `TypeProfile` | The closed `type` set the define/publish validators run (`product`/`service`/`bundle`). It carried a per-type required-code set until **P-D-169**; with both accounting codes out of the registry the profile constrains the type alone, and `bundle`'s exemption from the override gate is its remaining per-type rule |
+| `TypeProfile` | The closed `type` set the define/publish validators run: the SKU's **role**, `offer`/`component`/`bundle` (**P-D-176**, superseding `product`/`service`/`bundle`). It carried a per-type required-code set until **P-D-169**; with both accounting codes out of the registry the profile constrains the type alone, and `bundle`'s exemption from the override gate is its remaining per-type rule |
 | `MeterDeclaration` | The value object `(unit, usageTypeRef)` — always both or neither |
 | `RecognizedSet` | The generic governed vocabulary (units; tax categories; GL codes; the PlanTier taxonomy) with `active|deprecated|removed` states and reference-guarded removal — a removal is the `removed` state, never a DELETE (**P-D-47**) |
 | `UsageTypeResolver` | The publish-time port to the usage-collector's `get_usage_type` (P-D-05) |
@@ -125,9 +125,9 @@ Declared by [`../features/sku-classification.md`](../features/sku-classification
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed set (`SKU_TYPE_UNKNOWN`). The per-type **required-code** arm was withdrawn with P-D-169 (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
+1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed **role** set `offer | component | bundle` (`SKU_TYPE_UNKNOWN`; `product` and `service` are unknown tokens — **P-D-176**). Every creation path names a role, bulk included: a missing one is the shape's `VALIDATION`, never a default. The per-type **required-code** arm was withdrawn with P-D-169 (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
 2. [ ] - `p1` - Promotional/$0/"Free" offerings are ordinary SKUs — no separate entity, no special validator path (PRD `fr-define-sku`) - `inst-cl-no-promo-entity`
-3. [ ] - `p1` - `sellable` defaults `true`; flipping it is a bucket-iii edit — a head-row save re-published as version N+1 (01's head-row model) under slice-05 materiality; the SDK read shape exposes it per `CatalogVersion` so pricing's predicate 6 has its operand - `inst-cl-sellable`
+3. [ ] - `p1` - `sellable` defaults `true` **for every role and is independent of it** (P-D-176: the role says where a SKU may be used, the flag whether it may be sold — in any composition, with no component exemption); flipping it is a bucket-iii edit — a head-row save re-published as version N+1 (01's head-row model) under slice-05 materiality; the SDK read shape exposes it per `CatalogVersion` so pricing's predicate 6 has its operand - `inst-cl-sellable`
 4. [ ] - `p1` - **Uncomposed-bundle publish override (P-D-02)**: publishing a `bundle` that plan-price has not composed requires the explicit two-person override at THIS entity publish — and **P-D-30** makes that override the operand 01's `PublishDoor` reads to set `composition_pending`, the door being unable to judge composition itself — `N`-governed with `quorumReduced` recorded, the author performing the acknowledgment at `N = 0` (P-D-13) — this slice registers the gate condition (an unacknowledged publish refused `BUNDLE_OVERRIDE_REQUIRED`), slice 05 executes the override ceremony (lint findings presented to approvers). **The condition is registered on the publish, not on the lane**: every lane that publishes a `bundle` carries it, bulk included (09 `inst-bk-override`), and the published SKU enters flagged `compositionPending = true` (cleared by slice 06's inbound signal) - `inst-cl-bundle-override`
 
 ### Declare a metering unit

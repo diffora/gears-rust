@@ -161,7 +161,7 @@ pub struct Product {
 /// was left to be inferred from `sellable`, so a foreign SKU could be priced
 /// into a plan only by declaring it unsellable, and "may this be sold" and
 /// "may this sit in a plan" were one flag. These three say where a SKU may be
-/// used; [`SkuRead::sellable`] says whether it may be sold. The two are
+/// used; [`Sku::sellable`] says whether it may be sold. The two are
 /// independent, and every combination of them is a legal authoring state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SkuType {

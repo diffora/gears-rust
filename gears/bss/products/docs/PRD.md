@@ -172,9 +172,9 @@ This PRD carves the **registry** scope out of the combined predecessor (`PRD-pro
 |----------|----------------|
 | **Catalog (registry)** | The authoritative registry of products/services/bundles/SKUs, categories, and localized attributes, and the catalog-wide version/publish mechanism (manifest §4.1). SoR: BSS. Defines *what can be sold and how it is described, classified, and published* — not how it is priced. |
 | **Product** | A sellable or describable offering record with a name, **one required primary category plus optional secondary categories**, lifecycle state, brand/region scope, and version. The top of the catalog hierarchy. Identified by a system-generated `productId`. |
-| **SKU (Stock Keeping Unit)** | A uniquely identifiable variant of a Product, typed as `product`, `service`, or `bundle`, optionally carrying a **metering-unit declaration** (for usage products). Neither accounting code is a SKU field: tax-category assignment is price-row-owned and the GL code is a plan-descriptor field (P-D-169). A SKU has two identifiers: a system-generated immutable `skuId` and an operator-supplied human-readable `skuCode`. A SKU carries its own brand/region scope, **contained within its parent Product's scope**; the SKU→Product link is immutable after first publish. |
+| **SKU (Stock Keeping Unit)** | A uniquely identifiable variant of a Product, typed by its **role** — `offer`, `component`, or `bundle` (P-D-176) — optionally carrying a **metering-unit declaration** (for usage products). Neither accounting code is a SKU field: tax-category assignment is price-row-owned and the GL code is a plan-descriptor field (P-D-169). A SKU has two identifiers: a system-generated immutable `skuId` and an operator-supplied human-readable `skuCode`. A SKU carries its own brand/region scope, **contained within its parent Product's scope**; the SKU→Product link is immutable after first publish. |
 | **Usage SKU** | Definition, not detection: a SKU that **carries a metering-unit declaration**. There is no separate "is-usage" flag — declaring a metering unit **is** what makes a SKU a usage SKU. "A usage SKU missing its declaration" is not a detectable registry state; usage-completeness is enforced at the plan-price seam, never at registry publish. |
-| **Sellable** | Per-SKU offering-eligibility flag (`sellable`, default `true`; D-46). `sellable = false` = **composition/metering-only**: the SKU publishes normally, MAY be referenced as a bundle/plan component and MAY carry a metering-unit declaration, but MUST NOT be offered **standalone** (pricing sellability-gate predicate 6). Distinct from lifecycle (`published` = *referenceable*) and from per-market GA gates (`not_sellable_ga`). The migration cover for technical/component SKUs of existing catalogs. |
+| **Sellable** | Per-SKU **sale-permission** flag (`sellable`, default `true` for every role; D-46 as amended by **P-D-176**). `sellable = false` **prohibits new sales of the SKU in any composition** — standalone, as a row of a plan, as a bundle member, or as a component of a member plan (pricing sellability-gate predicate 6, asked of every SKU a sale includes). The SKU still publishes, is still referenceable and priceable in authoring, and MAY carry a metering-unit declaration; existing subscriptions are untouched. **Independent of the role**: the role says where a SKU may be *used*, the flag whether it may be *sold*. Distinct from lifecycle (`published` = *referenceable*) and from per-market GA gates (`not_sellable_ga`). |
 | **Identifier** | The registry distinguishes **system identity** from **human/business code**. `productId`/`skuId` are server-generated immutable UUIDs. `skuCode` is operator-supplied, fixed-format, tenant-unique, immutable after first publish. Products MAY carry an optional `productCode` under the same reservation rules. Downstream consumers bind to `skuId`; humans/external catalogs reference `skuCode`/`productCode`. |
 | **Bundle (SKU type)** | A SKU whose `type = bundle`. This PRD owns only the **type flag and identity**; the bundle's commercial composition (included SKUs, constraints, revenue share, invoice itemization) is authored in plan-price. A published bundle is commercially incomplete until composed. |
 | **Category** | A node in the catalog taxonomy for browse, search, curation, and marketplace listing classification; supports hierarchy. |
@@ -348,7 +348,7 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 |-------------|--------------|-----------|
 | Product definition | `p1` | Create/update Products: name, one required primary category + optional secondary, description, brand/region scope, lifecycle, version (§4.1 Product). |
 | Category & taxonomy | `p1` | Hierarchical Category tree; cycle-free; uniqueness within parent. |
-| SKU definition & typing | `p1` | Define SKUs typed `product`/`service`/`bundle`; `bundle` type flag only (composition is plan-price). |
+| SKU definition & typing | `p1` | Define SKUs typed by role `offer`/`component`/`bundle` (P-D-176); `bundle` type flag only (composition is plan-price). |
 | Metering-unit declaration | `p1` | Declare/validate the usage metering unit (unit identity only); governed de-listing. Consumed by plan-price, metering, Rating. |
 | PlanTier taxonomy & SKU classification | `p1` | Own the `PlanTier` taxonomy and the SKU-level value; plan-price enforces presence at plan publish. Distinct from OrgTier. |
 | Attribute management & localization (i18n) | `p1` | Extensible attribute schema; i18n with brand/region visibility and fallback `(locale,region,brand) → (locale,brand) → (default-locale,brand) → global`. |
@@ -459,7 +459,7 @@ Category operations **MUST** validate name uniqueness within parent (re-checked 
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-define-sku`
 
-Defining a SKU **MUST** link it to the Product, assign `skuId`/`skuCode`, type it `product`/`service`/`bundle`, and validate the per-type required-field set. A `bundle`-typed SKU **MUST** persist only the type flag and identity (composition authored in plan-price; publishing it **uncomposed** requires the explicit two-person override at its **entity publish** — §15 decision). Promotional/$0/"Free" SKUs **MUST** follow identical registry rules; there is no separate promo entity.
+Defining a SKU **MUST** link it to the Product, assign `skuId`/`skuCode`, type it by role — `offer`/`component`/`bundle` (P-D-176; every creation path, bulk included, names one) — and validate the per-type required-field set. A `bundle`-typed SKU **MUST** persist only the type flag and identity (composition authored in plan-price; publishing it **uncomposed** requires the explicit two-person override at its **entity publish** — §15 decision). Promotional/$0/"Free" SKUs **MUST** follow identical registry rules; there is no separate promo entity.
 
 **Rationale**: A uniform, type-aware SKU contract lets downstream bind without re-validation.
 
@@ -469,7 +469,7 @@ Defining a SKU **MUST** link it to the Product, assign `skuId`/`skuCode`, type i
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-sku-sellable`
 
-A SKU **MUST** carry a dedicated `sellable` flag (default `true`), independent of lifecycle state (D-46). `sellable = false` marks a **composition/metering-only** SKU: it publishes normally, MAY be referenced as a bundle/plan component and MAY carry a metering-unit declaration, but **MUST NOT** be offerable standalone — plan-price enforces this as sellability-gate predicate **(6)** for standalone lines (bundle-**component** references are exempt; the component conjunction keeps predicates (1)–(5)). The flag is **material-but-mutable** (bucket iii of the mutability matrix): a change takes a new published version under governance and is frozen per `CatalogVersion`.
+A SKU **MUST** carry a dedicated `sellable` flag (default `true` for every role), independent of lifecycle state and **independent of the role** (D-46, amended by **P-D-176**). `sellable = false` **prohibits new sales of the SKU in any composition**: it publishes normally, stays referenceable and priceable in authoring and MAY carry a metering-unit declaration, but plan-price **MUST** refuse a new sale that includes it — as the plan's own SKU, as a row's component, as a bundle member or as a component of a member plan — as sellability-gate predicate **(6)**, asked of **every** SKU the sale includes. *There is no component exemption; D-46's was withdrawn (P-D-176).* A flip takes effect once the SKU is **published**, against the registry's current published state, and never rewrites an existing subscription. The flag is **material-but-mutable** (bucket iii of the mutability matrix): a change takes a new published version under governance and is frozen per `CatalogVersion`.
 
 **Rationale**: `published` means *referenceable*, not *offerable* — migrated catalogs carry technical/component SKUs that must exist, meter, and compose without ever being sold alone; conflating the two forces either unpublishable components or accidentally offerable internals.
 
@@ -1030,7 +1030,7 @@ The cache-first **read** path **MUST** meet **99.9%** availability and the **wri
 | **Reliability** | Immutable Product/SKU versioning, byte-identical `CatalogVersion` snapshots, 100% audited write paths, fail-closed publish validation, and a CI contract test guarding the registry↔plan-price seam. | The registry is the foundation all monetization binds to; silent drift or lost history breaks downstream snapshots and compliance. |
 | **Performance** | Browse/search p95 < 100 ms and ≥ 2,000 read QPS/tenant partition via cache-first read models; nested propagation budgets (convergence < 2 s, propagation < 3 s, posting-safe < 5 s, cold-version < 2 s); graceful degradation. | Slow catalog reads degrade portal/sales UX; delayed publication yields stale offerings. |
 | **Security** | Complete tenant/brand/region isolation (deny-by-default), RBAC, the configured approver quorum for material changes (default 2, floor 0 — its predicates fixed), time-boxed break-glass for cross-tenant access, retention/erasure reconciled with immutable audit, minimal PII in events. | Cross-tenant leakage is a commercial risk; unauthorized publish is a fraud risk; standing super-access and unbounded retention are compliance risks. |
-| **Versatility** | Extensible attributes/taxonomy and a type-agnostic SKU model (product/service/bundle) with backward-compatible schema evolution (`vN` deserializes `vN+1`). | New product categories must be added without breaking published content or downstream contracts. |
+| **Versatility** | Extensible attributes/taxonomy and a role-typed SKU model (offer/component/bundle) with backward-compatible schema evolution (`vN` deserializes `vN+1`). | New product categories must be added without breaking published content or downstream contracts. |
 
 ## 9. Public Library Interfaces
 
@@ -1132,7 +1132,7 @@ until while the decision speaks for all of them.*
 
 **Main Flow**:
 1. Create/select a Product (name, category, description, brand/region scope); `productId`/`skuId` system-generated, `skuCode` operator-entered with inline format check.
-2. Add a SKU; pick type product/service/bundle.
+2. Add a SKU; pick its role: offer, component or bundle.
 3. For a usage SKU, declare the metering unit (validated); set `PlanTier` from the taxonomy.
 
 **Postconditions**:
@@ -1295,9 +1295,9 @@ until while the decision speaks for all of them.*
 - **And** the active-reference count MUST be sourced from `SkuReferenceCount` as the 3-state predicate; never treat an entity as unreferenced absent a fresh watermark
 
 **2a. Sellable flag (offering eligibility)**
-- **Given** a SKU with `sellable = false` (composition/metering-only; default is `true`)
+- **Given** a SKU of any role with `sellable = false` (new sales prohibited; default is `true` — P-D-176)
 - **When** it is published and referenced
-- **Then** publish MUST succeed and bundle/plan **component** references MUST remain valid, while any **standalone** offer of the SKU MUST fail the plan-price sellability gate (predicate 6)
+- **Then** publish MUST succeed and every authoring reference to it — a plan's own SKU, a row's component, a bundle member — MUST remain valid, while any **new sale that includes it, in any of those positions**, MUST fail the plan-price sellability gate (predicate 6)
 - **And** flipping `sellable` MUST follow the material-but-mutable path (new published version, governed) and the value MUST be frozen per `CatalogVersion`
 
 **3. Reference-signal sourcing, freshness & counting**
@@ -1334,7 +1334,7 @@ until while the decision speaks for all of them.*
 
 **7. Define a SKU**
 - **Given** an existing Product
-- **When** a ProductManager defines a SKU typed `product`/`service`/`bundle`
+- **When** a ProductManager defines a SKU typed `offer`/`component`/`bundle`
 - **Then** the system MUST link it, assign `skuId`/`skuCode`, and validate the per-type required-field set
 - **And** a `bundle` SKU persists only type flag + identity (composition in plan-price; the uncomposed-publish two-person override is exercised at the bundle's entity publish, §15 decision)
 - **And** promotional/$0/"Free" SKUs follow identical registry rules; no separate promo entity

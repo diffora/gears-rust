@@ -255,7 +255,7 @@ flowchart TB
 | `POST` | `/bss-pricing/v1/history/export` | History export (SLO-bound per D-125 page/chunk) | client key | `audit × export` (D-328) |
 
 **Problem responses (RFC 9457):** `BULK_VALIDATION_FAILED` (422, per-row),
-`IMPORT_LINE_DEFINITION_CONFLICT` (per-row in the Phase-1 report — two rows on different markets of one charge line disagree about the line's shared structure; names the other rows, `inst-bk-phase1`), `IMPORT_TARGETS_PUBLISHED` (per-row in the Phase-1 report — an import row addressing a
+`IMPORT_LINE_DEFINITION_CONFLICT` (per-row in the Phase-1 report — two rows on different markets of one charge line disagree about the line's shared structure; names the other rows, `inst-bk-phase1`. **A tier ladder is not shared structure (D-378)**: two markets stating different ladders are two prices, not two definitions of the line, and do not conflict), `IMPORT_TARGETS_PUBLISHED` (per-row in the Phase-1 report — an import row addressing a
 published row's scope key, **whatever its content** since D-287, 2026-08-09: the only door
 that authors a draft already refuses an occupied key either way, so the "with changed
 content" qualifier let Phase 1 pass a row nothing could write; D-118, remediation = a

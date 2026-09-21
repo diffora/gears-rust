@@ -1224,7 +1224,7 @@ fn referencing(
 
 /// The plan's own binding is judged where the row rules are blind.
 ///
-/// `inst-pr-sku-sellability` exempts the plan SKU by identity so a row may name
+/// `inst-pr-sku-role` exempts the plan SKU by identity so a row may name
 /// it, and that exemption is why nothing looked at the binding itself. Two
 /// shapes reach publish straight through it: a plan with **no rows at all**,
 /// which the row loop never enters, and a plan whose every row prices a

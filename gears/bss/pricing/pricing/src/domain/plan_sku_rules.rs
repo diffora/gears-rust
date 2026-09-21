@@ -6,7 +6,7 @@
 //!
 //! # Why the row rules could not carry this
 //!
-//! `inst-pr-sku-sellability` exempts the plan's own SKU by identity: a row may
+//! `inst-pr-sku-role` exempts the plan's own SKU by identity: a row may
 //! name it whatever it is. That exemption is correct and it is also a blind
 //! spot, because the exempting rule never looks at the plan SKU itself. Two
 //! shapes reach publish through it untouched: a plan with **no rows at all**,

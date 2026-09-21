@@ -369,10 +369,19 @@ money — beside the resolved `rows`, which remain. Two states v20 pinned alike 
 distinguishable: a market **re-bound to another line version of identical content** (every
 resolved row reads the same, no row version and no revision version moves, so under v20 the
 stale approval published), and a line drafted with **no market price**, which has no row at all.
-Collections are sets ordered by their own identities; a market's `tierRates` are a **sequence**,
-because the n-th rate prices the n-th band of the version the row names. The reviewer's document
+Collections are sets ordered by their own identities; ~~a market's `tierRates` are a **sequence**,
+because the n-th rate prices the n-th band of the version the row names~~ *(true of `v21`; see `v22`
+below)*. The reviewer's document
 gains `charge_lines` and `market_prices` for the rule stated above — what the digest covers, the
 document shows. Open units drain-fail `APPROVAL_CONTENT_MISMATCH`; there is no pin-rewrite path.
+**`v21` → `v22` (2026-09-20…21), one bump for two changes.** `display_trial_days` was framed on
+every phase and is gone (**D-377**), which moves every plan's preimage. And **the ladder changes
+frames (D-378)**: tier bounds leave the line-version frame, and each monetary version frames its
+**whole ladder** — bounds beside rates — as a **set**, sorted as the resolved row's bands are. Nothing
+about a band is positional any more: two ladders that swapped two rates differ in the bands
+themselves, while one ladder authored in two orders is one ladder and pins alike. Both landed before
+any `v22` pin was taken against a deployment, so they share the generation; a `v23` would name a
+preimage nobody ever held. Drain-fail, as every generation before it.
 **Materiality needs no line-level rule:** the evaluator reads resolved rows and a line's structure
 is folded into every one of its markets' rows, so a structural edit lands each of them in D-115's
 no-computable-delta case at once, while a monetary edit moves one market's row and leaves its

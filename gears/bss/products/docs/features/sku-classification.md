@@ -58,8 +58,8 @@
 ### 1.1 Overview
 
 This feature owns everything that makes a SKU **classified and downstream-bindable**, short of
-any price: the type (`product` / `service` / `bundle`) with its per-type required-field sets, the
-`sellable` offering-eligibility flag, the `PlanTier` taxonomy and a SKU's value in it, the stable
+any price: the type — the SKU's **role**, `offer` / `component` / `bundle` (P-D-176) — the
+`sellable` sale-permission flag, the `PlanTier` taxonomy and a SKU's value in it, the stable
 **metering-unit declaration** — the one thing that makes a SKU a usage SKU — with its
 `usageTypeRef` binding and the recognized-unit set's own governed lifecycle.
 
@@ -199,7 +199,7 @@ failure look like, and where its boundary runs.
 
 **Success Scenarios**:
 - A SKU carries a `type` from the closed set, and the per-type required fields are enforced at
-- `sellable` defaults `true`; flipping it is a head-row save re-published as version N+1, and the
+- `sellable` defaults `true` for every role and is independent of it (P-D-176); flipping it is a head-row save re-published as version N+1, and the
   SDK read shape exposes it per `CatalogVersion` so pricing's sellability predicate has its
   operand
 - A promotional, zero-price or "free" offering is an ordinary SKU — no separate entity and no
@@ -564,7 +564,7 @@ easy thing to lose.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sellable`
 
-The system **MUST** default `sellable` to `true`, treat a flip as a bucket-iii head-row save
+The system **MUST** default `sellable` to `true` **for every role** (P-D-176: the flag is permission to sell the SKU in any composition and is independent of the role), treat a flip as a bucket-iii head-row save
 re-published as version N+1, and expose it in the SDK read shape per `CatalogVersion`.
 **Whether the flip is material is open item 16.**
 
