@@ -2171,3 +2171,129 @@ async fn two_principals_reach_quorum_zero_through_the_ordinary_ceremony() {
         "a proposal an independent principal approved is the tenant's policy, count and all"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D-380 on the surface: the request field, the pinned view, the tag.
+// ---------------------------------------------------------------------------
+
+/// A proposal that also sets the tenant's `N`.
+fn proposal_with_count(
+    currency: &str,
+    absolute_minor: i64,
+    approver_count: u32,
+) -> serde_json::Value {
+    let mut body = proposal(currency, absolute_minor);
+    body["approver_count"] = serde_json::json!(approver_count);
+    body
+}
+
+/// **`approverCount` round-trips: proposed, approved, read back.**
+///
+/// The field is part of the version, so it is pinned and reviewed exactly as
+/// the entries are — and the `GET` serves it off the version in force, which is
+/// the only place a caller can see what their tenant's quorum actually is.
+#[tokio::test]
+async fn the_approver_count_round_trips_from_the_put_to_the_get() {
+    let h = Harness::new().await;
+
+    let version = propose_and_approve(&h, proposal_with_count("NOK", 4_000, 0)).await;
+
+    let read = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(read["effective"]["version"], version, "{read}");
+    assert_eq!(
+        read["effective"]["approver_count"], 0,
+        "the count the tenant configured is the count the read serves: {read}"
+    );
+    assert_eq!(
+        effective_approver_count(&h).await,
+        0,
+        "and it is the one the doors price their acts at"
+    );
+}
+
+/// **An omitted `approverCount` carries the value in force forward.**
+///
+/// The rule the field's own doc states, and the one whose two failure modes are
+/// both silent: read as the default it would re-raise a tenant at zero every
+/// time they edited a threshold, and read as zero it would lower everyone's.
+/// An absent field is not a request.
+#[tokio::test]
+async fn an_omitted_approver_count_leaves_the_tenant_where_they_were() {
+    let h = Harness::new().await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+
+    // No `approver_count` in the body at all. The tenant is at zero, so this
+    // proposal is in force on the call — which is what makes the readback the
+    // assertion rather than a second ceremony.
+    let response = propose_as(&h, PROPOSER, proposal("NOK", 4_000)).await;
+    let view = body_json(response).await;
+    assert_eq!(
+        view["proposed"]["approver_count"], 0,
+        "the minted version carries the count forward: {view}"
+    );
+
+    assert_eq!(
+        effective_approver_count(&h).await,
+        0,
+        "an omitted field re-raised nothing"
+    );
+    let read = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(read["effective"]["entries"][0]["currency"], "NOK", "{read}");
+    assert_eq!(read["effective"]["approver_count"], 0, "{read}");
+}
+
+/// **The reviewer sees the count they are signing** (D-61).
+///
+/// A change from `1` to `0` moves **no threshold at all**, so a pinned view
+/// carrying only the entries would show the reviewer a document whose entire
+/// content was off the page — and the field they could not see is the one
+/// deciding whether anybody reads the next one.
+#[tokio::test]
+async fn the_pinned_view_a_reviewer_reads_names_the_approver_count() {
+    let h = Harness::new().await;
+
+    // Same entries as the tenant would have had; only the count moves.
+    let opened =
+        body_json(propose_as(&h, PROPOSER, proposal_with_count("NOK", 4_000, 0)).await).await;
+    let approval_id: Uuid = opened["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit's id")
+        .parse()
+        .expect("a uuid");
+
+    let unit = h
+        .allowed_as(REVIEWER)
+        .send(with_headers(
+            "GET",
+            &format!("/bss-pricing/v1/approvals/{approval_id}"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(unit.status(), StatusCode::OK);
+    let unit = body_json(unit).await;
+    assert_eq!(
+        unit["pinned_threshold_policy"]["approver_count"], 0,
+        "the document the reviewer signs names the quorum it sets: {unit}"
+    );
+}
+
+/// **The tag moves when the count moves.**
+///
+/// D-186's precondition has to see a count change, or a caller who read the
+/// policy before somebody lowered the quorum is told their premise still holds
+/// — over the one field that decides whether their next act needs a reviewer.
+#[tokio::test]
+async fn the_policy_tag_moves_when_the_approver_count_does() {
+    let h = Harness::new().await;
+    let before = policy_etag_of(&h, PROPOSER).await;
+
+    propose_and_approve(&h, proposal_with_count("NOK", 4_000, 0)).await;
+
+    let after = policy_etag_of(&h, PROPOSER).await;
+    assert_ne!(
+        before, after,
+        "a caller holding the old tag must not be told their premise still holds"
+    );
+}

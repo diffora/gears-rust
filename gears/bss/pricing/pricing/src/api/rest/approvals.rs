@@ -976,6 +976,15 @@ pub struct PinnedThresholdPolicyView {
     pub effective_from: OffsetDateTime,
     /// The per-currency entries, in the order the pin frames them.
     pub entries: Vec<ThresholdEntryView>,
+    /// How many approvers this version sets for the tenant (**D-380**).
+    ///
+    /// **On the pinned view because a reviewer must see what they sign**
+    /// (D-61). A policy version whose entries a reviewer reads while its
+    /// approver count stays invisible is a document that hides the very field
+    /// deciding whether anybody has to read the next one — and the change from
+    /// `1` to `0` moves no threshold at all, so it would be an approve over a
+    /// diff whose whole content was off the page.
+    pub approver_count: u32,
 }
 
 /// One currency's proposed threshold.
@@ -1070,6 +1079,7 @@ impl From<&ThresholdVersion> for PinnedThresholdPolicyView {
                     }
                 })
                 .collect(),
+            approver_count: version.approver_count(),
         }
     }
 }

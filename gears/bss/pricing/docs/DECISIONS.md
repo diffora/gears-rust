@@ -1714,7 +1714,7 @@ So the gap is **not a missing capability**. It is that the record says something
 - **Owed back to the implementation** (`bss/pricing-impl`): compare `effective_from` in the effective-version walk, and re-date the REST suite's proposals so the assertions mean what their names say.
 - **Propagated**: S5 §6 (the approval-threshold policy — the effective-from note).
 
-- **Amended by D-380 (2026-09-21)**: the effective-version walk now carries the version's `approver_count` too, so a version whose instant has not arrived does not move the tenant's quorum any more than it moves its thresholds.
+- **Amended by D-380 (2026-09-21)**: the effective-version walk now carries the version's `approver_count` too, so a version whose instant has not arrived does not move the tenant's quorum any more than it moves its thresholds. **And it runs the other way.** It used to descend from the newest version and return the first that was effective and approved, which is correct while an approved unit is the only authorization there is; D-380 adds a second, and that one is a fact about the version *beneath* the one being judged, so it cannot be decided while walking away from it. The walk now ascends, and a version with neither an approved unit nor a zero quorum under it is a pending proposal the walk steps over — the same fail-safe outcome, reached in the order that can see both authorizations.
 
 #### D-189 [M] An adjustment emits `PriceWindowScheduled`, and the outbox key that deduplicates it had to learn the act
 
@@ -5015,6 +5015,36 @@ verdict with the rule that fired, on both arms; `effectiveFrom` still applies; `
   smoothed over. What a tenant at zero gives up: the second pair of eyes on a first publish, a new market row, a bundle composition, an overlay mutation, a retirement and a cutover.
 - **Storage follows this table's own precedent.** `effective_from` is a per-version scalar carried on every entry row and derived back with disagreement refused as a corrupt row (D-188); `approver_count` is stored the same way, and the tombstone table carries it too — a tombstone is a version, and a version with no `N` would make the type partial.
 - **The content pin moves to v2.** An approver signs the count, so it enters the threshold framing and `THRESHOLD_PIN_DOMAIN_SEP` becomes `…-v2`. A decision against a version pinned under v1 answers `APPROVAL_CONTENT_MISMATCH`; withdraw and resubmit it. A silent re-framing under the v1 separator would break the pin's only promise, which is that identical bytes mean identical content.
+- **What the implementation measured that this entry did not predict** (2026-09-21, during B4/B5).
+  Three things, each of which changed the work rather than the text alone.
+  **(1) The effective-version walk had to be inverted** — see the D-188 amendment. "Authorized
+  because the tenant is at zero" is a fact about the version standing *beneath* the one being
+  judged, so the descending walk could not express it. The inversion is also what makes this
+  entry's central safety claim executable rather than argued: the count read for an unapproved
+  version is the one below it, so a proposal cannot authorize itself by declaring the quorum it
+  wants. `rest_threshold_policy::a_tenant_at_the_default_cannot_reach_quorum_zero_alone` and
+  `…a_tenant_with_no_policy_cannot_reach_quorum_zero_alone` are the two cases.
+  **(2) The policy door opens no unit at `N = 0` either**, and answers `200` with
+  `approval: null` rather than `202`. The `202` means *a reviewer has this*, which is false for
+  a tenant who has none; and a unit opened there would hold
+  `uq_pricing_approval_policy_pending` for good, blocking every later proposal. This is the same
+  store fact as the publish arm above, reaching the door that sets `N`.
+  **(3) A unit-less arm is not interchangeable with another unit-less arm.**
+  `commit_taxonomy_value_direct_in` writes the same row with the same absent `approval_ref` and
+  is authorized by something else entirely — D-355's *nothing published names this value* — which
+  it re-tests inside its own transaction, so it refuses every quorum-zero call. Its twin
+  re-tests the premise that does authorize this arm, the tenant's count, with the same
+  `CONCURRENT_MUTATION` remedy. Measured by the first run of the test, not by reading.
+- **Still owed: the read-and-write straddle on four REST doors.** `publish`, `bundles`,
+  `overlays` and both `customer_groups` moves read the count on a plain connection and commit in
+  a later transaction. A policy version approved in that window raises `N` after the act was
+  priced, and one act then commits on a single principal. The taxonomy arm closes exactly this
+  gap for itself (above, (3)); the infra doors — cutover, retirement, grandfathering, windows,
+  supersessions, repricing — never had it, because they read the count through their own
+  transaction runner. The window needs a tenant who already has two principals, so it is not the
+  one-person case this decision is about; it is nonetheless the class D-355 refuses to leave
+  open, and it is recorded here rather than closed because closing it is a change to four doors
+  that no test currently demands.
 - **Propagated**: S5 §1.6 (G6), §3 (`inst-mat-quorum`), §5, §6, §8 `dod-threshold`, §9; PRD `fr-approval-two-person`, `fr-approval-threshold-policy`. **Amends** D-10 (the always-material diff now includes `N`), D-188 (the effective-version walk carries `N`), D-185 (a tombstone version carries an `N` too). Products' twin is **P-D-177**, and the two entries cite each other.
 
 ## I. Asks from the products gear (filed 2026-09-05 — products P-D-160)

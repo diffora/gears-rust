@@ -915,40 +915,14 @@ async fn patch_taxonomy_value(
         authorization,
         crate::infra::approval::ActAuthorization::ByPolicy
     ) {
-        let now = OffsetDateTime::now_utc();
-        let stamp = audit_stamp(&ctx, now, correlation);
-        let commit_scope = scope.clone();
-        let committed_change = change.clone();
-        // **Not D-355's arm**, though it writes the same row with the same
-        // absent `approval_ref`. That one is authorized by nothing published
-        // naming the value and re-tests exactly that premise inside its
-        // transaction, which refuses every call made here — this value *is*
-        // named, and what authorizes the edit is the tenant's `N`. The twin
-        // re-tests that premise instead.
-        let (_, outcome) = state
-            .db
-            .db()
-            .in_transaction::<TaxonomyEntry, DomainError, _>(move |txn| {
-                Box::pin(async move {
-                    ApprovalService::commit_taxonomy_value_at_quorum_zero_in(
-                        txn,
-                        &commit_scope,
-                        tenant,
-                        &committed_change,
-                        now,
-                        stamp,
-                    )
-                    .await
-                })
-            })
-            .await;
-        let committed = outcome.map_err(|err| {
-            err.into_domain(|infra| {
-                DomainError::Internal(format!(
-                    "bss-pricing: taxonomy value quorum-zero commit: {infra}"
-                ))
-            })
-        })?;
+        let committed = commit_at_quorum_zero(
+            state.as_ref(),
+            scope.clone(),
+            tenant,
+            change.clone(),
+            audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation),
+        )
+        .await?;
         return Ok(render_value(class, &committed, StatusCode::OK, None, None));
     }
 
@@ -1023,6 +997,57 @@ async fn patch_taxonomy_value(
         }),
     )
         .into_response())
+}
+
+/// Apply a governed edit for a tenant at `N = 0` (**D-380**), in its own
+/// transaction.
+///
+/// A free function rather than four more lines in [`patch_taxonomy_value`]:
+/// `clippy::too_many_lines` bounds that handler at 200 and this arm is what
+/// pushed it to 217 — `infra::cutover`'s `CutoverAudit` situation and the same
+/// remedy.
+///
+/// **Not D-355's arm**, though it writes the same row with the same absent
+/// `approval_ref`. That one is authorized by *nothing published naming the
+/// value* and re-tests exactly that premise inside its transaction, so it
+/// refuses every call made here — the value this arm edits **is** named, and
+/// what authorizes the edit is the tenant's count. The twin re-tests that
+/// premise instead.
+///
+/// The instant is taken once and used for both the stamp and the count's
+/// re-test, so the audit row and the premise cannot land on opposite sides of a
+/// policy's `effectiveFrom` (D-188).
+///
+/// # Errors
+/// [`ApprovalService::commit_taxonomy_value_at_quorum_zero_in`]'s, and
+/// [`DomainError::Internal`] when the transaction itself fails.
+async fn commit_at_quorum_zero(
+    state: &AuthoringState,
+    scope: AccessScope,
+    tenant: Uuid,
+    change: TaxonomyValueChange,
+    stamp: crate::domain::audit::AuditStamp,
+) -> Result<TaxonomyEntry, CanonicalError> {
+    let now = stamp.recorded_at;
+    let (_, outcome) = state
+        .db
+        .db()
+        .in_transaction::<TaxonomyEntry, DomainError, _>(move |txn| {
+            Box::pin(async move {
+                ApprovalService::commit_taxonomy_value_at_quorum_zero_in(
+                    txn, &scope, tenant, &change, now, stamp,
+                )
+                .await
+            })
+        })
+        .await;
+    outcome.map_err(|err| {
+        CanonicalError::from(err.into_domain(|infra| {
+            DomainError::Internal(format!(
+                "bss-pricing: taxonomy value quorum-zero commit: {infra}"
+            ))
+        }))
+    })
 }
 
 /// The 404 for a value the tenant never declared. `NotFound`'s own shape: no

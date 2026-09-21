@@ -1852,16 +1852,10 @@ pub async fn plan_row_version(harness: &Harness, plan_id: Uuid, revision: u64) -
 /// to a fixture exactly as it applies to a tenant: one person cannot lower
 /// their own quorum, here either.
 ///
-/// The proposal goes through [`bss_pricing::infra::threshold::ThresholdService`]
-/// rather than the `PUT` route because the wire shape does not carry
-/// `approverCount` until the surface task lands; the approve goes through the
-/// **real route**, because that half already works and driving it is what keeps
-/// this helper honest about what a tenant has to do.
-///
-/// **It is [`approve_threshold_policy_from`] with one more field**, and it
-/// should collapse back into that function the moment the `PUT` carries
-/// `approverCount` — two fixtures installing a policy is two places for the
-/// ceremony to drift. The two share the principals for that reason.
+/// [`approve_threshold_policy_from`] with the count named, sharing its
+/// principals and its `PUT` + approve shape. The approve is **conditional**:
+/// a tenant already at zero is answered `200` with no unit to decide, which is
+/// the door's own D-380 arm and not a fixture special case.
 ///
 /// **The entry is a zero absolute threshold, and that is deliberate.** A zero
 /// threshold makes every priced change material, which is the state in which
@@ -1871,54 +1865,39 @@ pub async fn plan_row_version(harness: &Harness, plan_id: Uuid, revision: u64) -
 /// move the tenant's quorum (D-188), and a 2099 fixture would leave the tenant
 /// at the default while looking configured.
 pub async fn set_approver_count(harness: &Harness, approver_count: u32) {
-    use bss_pricing::domain::materiality::triggers::Trigger;
-    use bss_pricing::domain::materiality::{ChangeSet, ThresholdBasis, ThresholdEntry};
-    use bss_pricing::infra::threshold::AssertedPolicy;
-
-    let now = OffsetDateTime::now_utc();
-    let scope = harness.scope();
-    let conn = harness.db.conn().expect("a scoped connection");
-    let tag = bss_pricing::infra::threshold::state_at(&conn, &scope, harness.tenant, now)
-        .await
-        .expect("read the tenant's policy state")
-        .tag();
-    let verdict = bss_pricing::domain::materiality::evaluate(
-        &ChangeSet::of_act(Trigger::ThresholdPolicyDiff, Vec::new()),
-        None,
-        None,
+    let tag = policy_etag_of(harness, POLICY_PROPOSER).await;
+    let proposed = harness
+        .allowed_as(POLICY_PROPOSER)
+        .send(with_headers(
+            "PUT",
+            bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY,
+            Some(serde_json::json!({
+                "effective_from": "2020-01-01T00:00:00Z",
+                "entries": [{ "currency": "USD", "absolute_minor": 0 }],
+                "approver_count": approver_count,
+            })),
+            &[("if-match", tag.as_str())],
+        ))
+        .await;
+    let status = proposed.status();
+    let opened = body_json(proposed).await;
+    assert!(
+        status == axum::http::StatusCode::ACCEPTED || status == axum::http::StatusCode::OK,
+        "the approver-count proposal must be accepted: {status} {opened}"
     );
-    let (_, opened) = harness
-        .governance
-        .thresholds
-        .propose(
-            &scope,
-            harness.tenant,
-            Uuid::now_v7(),
-            utc_ymd_hms(2020, 1, 1, 0, 0, 0),
-            vec![ThresholdEntry {
-                currency: CurrencyCode::new("USD").expect("a well-formed code"),
-                basis: ThresholdBasis::Absolute { minor: 0 },
-            }],
-            approver_count,
-            AssertedPolicy { tag, now },
-            serde_json::to_value(bss_pricing::api::rest::approvals::MaterialityView::from(
-                &verdict,
-            ))
-            .expect("the verdict renders"),
-            stamp_of(POLICY_PROPOSER, now),
-        )
-        .await
-        .expect("propose the tenant's approver count");
 
-    // `None` is the tenant who was **already** at zero: the service opens no
-    // unit there, and the version is in force on the proposal (D-380). Every
-    // other tenant owes the ceremony, and it is driven here in full.
-    if let Some(opened) = opened {
+    // `null` is the tenant who was **already** at zero: the door opens no unit
+    // there and the version is in force on the call (D-380). Every other tenant
+    // owes the ceremony, and it is driven here in full.
+    if let Some(approval_id) = opened["approval"]["approval_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+    {
         let decided = harness
             .allowed_as(POLICY_REVIEWER)
             .send(with_headers(
                 "POST",
-                &format!("/bss-pricing/v1/approvals/{}/approve", opened.approval_id),
+                &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
                 None,
                 &[],
             ))

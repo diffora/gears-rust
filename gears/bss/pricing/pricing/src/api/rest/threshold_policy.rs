@@ -273,6 +273,25 @@ pub struct PutThresholdPolicyRequest {
     /// is material*, so a future date would be an operator asking for **less**
     /// review between now and then than they have already decided they want.
     pub retire: Option<bool>,
+    /// How many approvers every material act of this tenant costs (**D-380**).
+    ///
+    /// **Omitted means *unchanged***, not "the default": the field carries the
+    /// value in force forward. An absent field is not a request, and reading
+    /// one as `1` would silently re-raise the quorum of a tenant at zero every
+    /// time they edited a threshold — while reading it as `0` would lower
+    /// everyone's. Neither is something the caller asked for.
+    ///
+    /// It applies on the **same two arms as everything else here**: it is part
+    /// of the version, so it is pinned, reviewed and in force exactly when the
+    /// version is. A tenant at the default therefore cannot lower it alone —
+    /// their proposal is priced at the count in force before it, which is the
+    /// safety property D-380 rests on.
+    ///
+    /// Valid on a retirement too. A tombstone takes the tenant's thresholds
+    /// away and says nothing about how many people sign; carrying the count
+    /// forward there is the same rule as everywhere else, and setting it is as
+    /// legitimate on that arm as on this one.
+    pub approver_count: Option<u32>,
 }
 
 /// What the `PUT` did: opened a unit over the proposed version — or, at
@@ -393,7 +412,20 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              place - under mutation in place the proposed content would have nowhere to live and \
              the approval's pin nothing to cover. The body is the **whole** policy and not a \
              patch. A tenant's first proposal is itself material under the fail-safe, so no \
-             tenant can configure a threshold without completing an approved unit first. Shape \
+             tenant can configure a threshold without completing an approved unit first. \
+             \
+             **`approverCount`** is how many approvers every material act of this tenant costs \
+             (D-380). Its default is `1` - the author plus one approver, which is the \
+             two-person rule - and an unconfigured tenant is at it, so `0` is never reached by \
+             omission. Its floor is `0`, and a tenant reaches it only by configuring it under \
+             the count in force before the change: a proposal is priced at the quorum standing \
+             beneath it, so one person cannot lower their own. **Omitting the field means \
+             unchanged**, never `1`: an absent field is not a request, and reading one as the \
+             default would re-raise the quorum of a tenant at zero on every threshold edit. It \
+             is part of the version, so it is pinned, reviewed and in force exactly when the \
+             version is, and the approval's pinned view names it - a change from `1` to `0` \
+             moves no threshold at all, so a reviewer who could not see it would be signing a \
+             diff with no visible content. It is valid on the `retire` arm too. Shape \
              rules, all `THRESHOLD_INVALID` (400): keys are ISO 4217 codes, at least one entry, \
              no currency twice, exactly one of `absolute_minor` / `percent_bp` per entry, \
              `absolute_minor` >= 0, and `percent_bp` in `1..=10000`. A second proposal while one is \
@@ -575,10 +607,21 @@ async fn put_threshold_policy(
                 tenant,
                 Uuid::now_v7(),
                 at,
-                // D-380-PENDING-SURFACE: the request's `approverCount` lands here
-                // once the DTO carries it; until then a retirement keeps the
-                // tenant's count where the surface cannot yet move it.
-                crate::domain::materiality::DEFAULT_APPROVER_COUNT,
+                // **Omitted means unchanged** — resolved against the count in
+                // force, which `quorum.configured` already read at this
+                // instant. Resolving it here rather than inside the service is
+                // what keeps `propose`'s parameter "the value the version
+                // should carry" rather than a second three-valued question for
+                // the store to answer.
+                //
+                // The read and the write are not one transaction, and the
+                // `If-Match` premise is what closes that: the count lives on a
+                // version, the tag covers which version is effective, and a
+                // count that moved moved it by making a **different** version
+                // effective. So a proposal whose "unchanged" was computed
+                // against a policy that has since moved is refused
+                // `STALE_VERSION` rather than carrying a stale number forward.
+                request.approver_count.unwrap_or(quorum.configured),
                 asserted,
                 materiality,
                 stamp,
@@ -610,9 +653,8 @@ async fn put_threshold_policy(
                 Uuid::now_v7(),
                 effective_from,
                 entries,
-                // D-380-PENDING-SURFACE: as above — the DTO's `approverCount`
-                // replaces this in the surface task.
-                crate::domain::materiality::DEFAULT_APPROVER_COUNT,
+                // Omitted means unchanged, as on the retirement arm above.
+                request.approver_count.unwrap_or(quorum.configured),
                 asserted,
                 materiality,
                 stamp,

@@ -4191,10 +4191,10 @@ async fn a_material_schedule_at_quorum_zero_commits_on_the_first_call() {
         "and no window unit was opened"
     );
 
-    let window_id = committed["window"]["window_id"]
-        .as_str()
-        .map(|s| Uuid::parse_str(s).expect("a uuid"))
-        .unwrap_or_else(|| panic!("the commit names the window it minted: {committed}"));
+    let window_id = committed["window"]["window_id"].as_str().map_or_else(
+        || panic!("the commit names the window it minted: {committed}"),
+        |s| Uuid::parse_str(s).expect("a uuid"),
+    );
     assert_eq!(
         window_state(&h, window_id).await.as_deref(),
         Some("scheduled"),

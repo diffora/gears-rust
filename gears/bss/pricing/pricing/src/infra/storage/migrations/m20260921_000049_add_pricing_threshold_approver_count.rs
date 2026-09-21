@@ -32,9 +32,9 @@
 //! `APPROVAL_CONTENT_MISMATCH`; withdraw and resubmit it. That is the drain the
 //! pin constants' docs prescribe, not an exception to them.
 //!
-//! # SQLite takes `ADD COLUMN` here without a table rebuild
+//! # `SQLite` takes `ADD COLUMN` here without a table rebuild
 //!
-//! The frozen-chain rule about rebuilding a SQLite table is about **tightening
+//! The frozen-chain rule about rebuilding a `SQLite` table is about **tightening
 //! an existing** column. Adding one is admissible on both engines, so neither
 //! side rebuilds and the append-only triggers on these two tables are
 //! untouched.

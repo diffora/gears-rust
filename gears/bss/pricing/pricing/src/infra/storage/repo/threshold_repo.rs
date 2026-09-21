@@ -287,7 +287,6 @@ pub async fn read_version(
     }
     Ok(Some(StoredVersion {
         effective_from,
-        approver_count,
         entries: rows
             .into_iter()
             .map(|row| ThresholdEntryRow {
@@ -296,6 +295,7 @@ pub async fn read_version(
                 percent_bp: row.percent_bp,
             })
             .collect(),
+        approver_count,
     }))
 }
 
@@ -333,6 +333,16 @@ pub async fn read_version(
 /// writes disagreeing about whether a lost mint is a conflict or a crash, since
 /// `approval_repo::open` one file over classifies the identical shape through
 /// `policy_guard_or_contention`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the runner and the scope its \
+              transaction compiled, the tenant, the number it minted off `latest_version`, and \
+              the four halves of the version itself - its instant, its entries, its approver \
+              count and the stamp. Folding the version's four into a struct would name a type \
+              only this call site has, and `StoredVersion` is the *read* shape: it carries no \
+              version number and no stamp, so a writer taking it would still need both beside \
+              it"
+)]
 pub async fn open_version(
     runner: &impl DBRunner,
     scope: &AccessScope,
