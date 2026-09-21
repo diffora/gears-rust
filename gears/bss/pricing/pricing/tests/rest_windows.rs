@@ -2850,6 +2850,15 @@ fn market_query(at_day: i64) -> String {
     )
 }
 
+/// [`market_query`] for a buyer with **no territory**: the region is omitted,
+/// and the currency-wide keys are judged (D-381).
+fn currency_wide_query(at_day: i64) -> String {
+    format!(
+        "at={}&currency={MARKET_CURRENCY}",
+        format_rfc3339(at(at_day))
+    )
+}
+
 fn sellability_key(
     plan_id: Uuid,
     charge_kind: bss_pricing::domain::scope_key::ChargeKind,
@@ -3443,8 +3452,56 @@ async fn a_plan_absent_from_a_live_frontier_answers_the_same_way() {
     assert_eq!(live["catalog_version"], serde_json::json!(4));
 }
 
-/// All three query parameters are required, and an absent or unparseable one is a
+/// **A sellability query with no region judges the currency-wide keys** and
+/// nothing else (D-381).
+///
+/// The `region` parameter is optional because a buyer may have no territory. On
+/// a plan whose one row sits on a region, such a buyer is bound on no key at
+/// all, and the gate says `not_sellable` on an empty roster rather than
+/// answering over somebody else's market.
+#[tokio::test]
+async fn a_sellability_query_with_no_region_judges_the_currency_wide_keys() {
+    use bss_pricing::domain::window::{WindowInterval, WindowState};
+
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    project_and_pin(
+        &h,
+        plan_id,
+        4,
+        &delta_of(
+            plan_id,
+            vec![WindowInterval::new(at(-10), None, WindowState::Active)],
+        ),
+    )
+    .await;
+
+    // The region the fixture prices still answers over its own key.
+    let regional = sellability(&h, plan_id, &market_query(0)).await;
+    assert_eq!(regional["region"], serde_json::json!(MARKET_REGION));
+    assert_eq!(regional["keys"].as_array().map(Vec::len), Some(1));
+
+    // A buyer with no territory is on no key of this plan: it prices a region
+    // and nothing currency-wide.
+    let wide = sellability(&h, plan_id, &currency_wide_query(0)).await;
+    assert_eq!(
+        wide["region"],
+        serde_json::Value::Null,
+        "the request named none, and the echo says so: {wide}"
+    );
+    assert!(
+        wide["keys"].as_array().expect("a roster").is_empty(),
+        "no region's row serves a buyer who is in no region: {wide}"
+    );
+    assert_eq!(wide["verdict"], serde_json::json!("not_sellable"));
+}
+
+/// `at` and `currency` are required, and an absent or unparseable one is a
 /// **problem document naming it** rather than axum's bare rejection.
+///
+/// `region` is **not** among them since D-381: omitted, the currency-wide keys
+/// are judged, which is the market a buyer with no territory is bound on. Its
+/// absence is a market, not a missing operand.
 #[tokio::test]
 async fn each_missing_or_malformed_query_parameter_is_named_in_a_problem_document() {
     let h = Harness::new().await;
@@ -3453,7 +3510,6 @@ async fn each_missing_or_malformed_query_parameter_is_named_in_a_problem_documen
     let cases = [
         ("currency=EUR&region=eu", "at"),
         ("at=2099-10-01T00:00:00.000000Z&region=eu", "currency"),
-        ("at=2099-10-01T00:00:00.000000Z&currency=EUR", "region"),
         ("at=whenever&currency=EUR&region=eu", "at"),
     ];
     for (query, named) in cases {

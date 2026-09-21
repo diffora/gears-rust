@@ -440,9 +440,10 @@ pub struct KeySellability {
     /// One answer per member of [`Predicate::PER_KEY`], in that order.
     pub answers: Vec<PredicateOutcome>,
     /// The currency-wide key standing behind this one, when this key is a
-    /// region's **override** and the line also carries a `global` price.
+    /// region's **override** and the line also carries a currency-wide price.
     ///
-    /// `None` on a `global` key (it *is* the fallback) and on an override with
+    /// `None` on a currency-wide key (it *is* the fallback) and on an override
+    /// with
     /// nothing behind it. Stated rather than left to inference because it changes
     /// what [`Self::coverage_end`] means to a reader: an override's coverage
     /// ending is not a trailing void when this key covers on, and the window
@@ -919,7 +920,7 @@ fn key_sellability(
 ///
 /// # An override's horizon runs on into the currency-wide price
 ///
-/// `behind` is the `global` key of the same line, when `windows` is a region's
+/// `behind` is the currency-wide key of the same line, when `windows` is a region's
 /// override of it. An override whose window ends falls back to that price, so its
 /// ending is a trailing void only if the two **together** leave an instant before
 /// the horizon uncovered — judged by [`KeyWindows::first_uncovered_from`] over

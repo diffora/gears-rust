@@ -1378,6 +1378,38 @@ async fn a_runs_region_selects_the_exact_key_and_never_the_currency_wide_row_ser
         );
         assert_eq!(selected, expected, "region = {region}");
     }
+
+    // **`currency_wide` is the selector that does name it** (D-381), and it
+    // names nothing else.
+    let wide_selector = bss_pricing::domain::repricing::RunSelector {
+        plan_id: Some(PlanId::new(plan)),
+        currency_wide: true,
+        ..Default::default()
+    };
+    let selected = bss_pricing::infra::storage::repo::price_repo::load_published_for_selector(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        &wide_selector,
+    )
+    .await
+    .expect("expand the currency-wide selector");
+    assert_eq!(selected, vec![currency_wide]);
+
+    // And an unconstrained axis 3 is every market, this one included.
+    let every = bss_pricing::domain::repricing::RunSelector {
+        plan_id: Some(PlanId::new(plan)),
+        ..Default::default()
+    };
+    let selected = bss_pricing::infra::storage::repo::price_repo::load_published_for_selector(
+        &h.provider.conn().expect("conn"),
+        &h.scope,
+        TENANT,
+        &every,
+    )
+    .await
+    .expect("expand the unconstrained selector");
+    assert!(selected.contains(&currency_wide) && selected.contains(&german));
 }
 
 /// The one interaction task 6 newly creates, found by review rather than by this

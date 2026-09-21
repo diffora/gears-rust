@@ -352,13 +352,100 @@ async fn preview(
     plan_id: Uuid,
     region: &str,
 ) -> axum::http::Response<axum::body::Body> {
+    preview_on(h, plan_id, Some(region)).await
+}
+
+/// [`preview`] for a buyer with **no territory**, who names no `region` at all
+/// and is quoted the currency-wide price (D-381).
+async fn preview_on(
+    h: &Harness,
+    plan_id: Uuid,
+    region: Option<&str>,
+) -> axum::http::Response<axum::body::Body> {
+    let query = match region {
+        Some(region) => format!("currency={CURRENCY}&region={region}"),
+        None => format!("currency={CURRENCY}"),
+    };
     h.allowed()
-        .send(request(
-            "GET",
-            &preview_path(plan_id, &format!("currency={CURRENCY}&region={region}")),
-            None,
-        ))
+        .send(request("GET", &preview_path(plan_id, &query), None))
         .await
+}
+
+/// **A buyer with no region is quoted the currency-wide price, and nothing
+/// else** (D-381).
+///
+/// The `region` parameter is optional because a tenant that does not segment
+/// its market has buyers with no territory. Such a buyer tries the two `None`
+/// steps of the resolution order only: no region's row can serve them, so a
+/// plan priced regionally alone is `PRICE_ROW_ABSENT` rather than quietly
+/// quoted somebody else's market.
+#[tokio::test]
+async fn a_buyer_with_no_region_is_quoted_the_currency_wide_price_and_nothing_else() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    project_and_pin(
+        &h,
+        plan_id,
+        5,
+        &with_a_second_market(
+            delta_of(
+                plan_id,
+                CURRENCY,
+                None,
+                false,
+                Some("standard"),
+                false,
+                false,
+            ),
+            "DE",
+            990,
+        ),
+    )
+    .await;
+
+    let quoted = preview_on(&h, plan_id, None).await;
+    assert_eq!(quoted.status(), StatusCode::OK);
+    let body = body_json(quoted).await;
+    assert_eq!(body["amount_minor"], 1_200);
+    assert_eq!(
+        body["region"],
+        serde_json::Value::Null,
+        "the request named none, and the echo says so"
+    );
+    assert_eq!(body["resolved_region"], serde_json::Value::Null);
+
+    // The region's own row still wins for a buyer who names it, and a region
+    // without one still falls back.
+    let de = body_json(preview_on(&h, plan_id, Some("DE")).await).await;
+    assert_eq!(de["amount_minor"], 990);
+    assert_eq!(de["resolved_region"], "DE");
+    let fr = body_json(preview_on(&h, plan_id, Some("FR")).await).await;
+    assert_eq!(fr["amount_minor"], 1_200);
+    assert_eq!(fr["resolved_region"], serde_json::Value::Null);
+
+    // A plan priced on `DE` alone sells such a buyer nothing. A second pin of
+    // the same tenant has to move the frontier forward, which is per-tenant.
+    let de_only = Uuid::now_v7();
+    project_and_pin(
+        &h,
+        de_only,
+        6,
+        &delta_of(
+            de_only,
+            CURRENCY,
+            Some("DE"),
+            false,
+            Some("standard"),
+            false,
+            false,
+        ),
+    )
+    .await;
+    assert_eq!(
+        preview_on(&h, de_only, None).await.status(),
+        StatusCode::NOT_FOUND,
+        "no region's row serves a buyer who is in no region"
+    );
 }
 
 #[tokio::test]
@@ -1154,17 +1241,18 @@ async fn a_per_seat_plan_is_quoted_its_unit_rate() {
 // The query contract.
 // ---------------------------------------------------------------------------
 
-/// Both parameters are required: a preview without a market names no row.
+/// **The currency is required and the region is not** (D-381).
+///
+/// A market is a currency and, optionally, a region. A query naming no currency
+/// names no market and is a client fault; one naming a currency alone names the
+/// currency-wide market, which is a market a buyer with no territory is sold
+/// on — so it is answered, and the answer is about the *plan's* rows.
 #[tokio::test]
-async fn a_preview_without_a_market_is_refused() {
+async fn a_preview_without_a_currency_is_refused_and_one_without_a_region_is_not() {
     let h = Harness::new().await;
     let plan_id = seeded(&h).await;
 
-    for query in [
-        "",
-        &format!("currency={CURRENCY}"),
-        &format!("region={REGION}"),
-    ] {
+    for query in ["", &format!("region={REGION}")] {
         let response = h
             .allowed()
             .send(request("GET", &preview_path(plan_id, query), None))
@@ -1172,9 +1260,23 @@ async fn a_preview_without_a_market_is_refused() {
         assert_eq!(
             response.status(),
             StatusCode::BAD_REQUEST,
-            "`{query}` names no market"
+            "`{query}` names no currency"
         );
     }
+
+    // The currency alone is the currency-wide market. This fixture prices a
+    // region, so the answer is `404 PRICE_ROW_ABSENT` — the market is well
+    // formed and the plan does not sell it, which is a different fact from a
+    // malformed request.
+    let named = h
+        .allowed()
+        .send(request(
+            "GET",
+            &preview_path(plan_id, &format!("currency={CURRENCY}")),
+            None,
+        ))
+        .await;
+    assert_eq!(named.status(), StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------

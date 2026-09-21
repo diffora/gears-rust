@@ -109,6 +109,121 @@ async fn a_published_row(harness: &Harness, plan: Uuid, region: &str) -> Uuid {
     row.price_id
 }
 
+/// [`a_published_row`] on the **currency-wide market** — the row that states no
+/// region (D-381).
+async fn a_published_currency_wide_row(harness: &Harness, plan: Uuid) -> Uuid {
+    let row = rest_support::seed_price_currency_wide(harness, plan).await;
+    harness.publish_price(plan, row.price_id).await;
+    row.price_id
+}
+
+/// Open a run and answer its status alone.
+async fn open_run_status(harness: &Harness, selector: &serde_json::Value) -> StatusCode {
+    harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(Uuid::now_v7(), selector)),
+            &[],
+        ))
+        .await
+        .status()
+}
+
+/// The `price_id`s a run over `selector` froze, sorted.
+async fn touched_rows(harness: &Harness, selector: &serde_json::Value) -> Vec<String> {
+    let run_id = Uuid::now_v7();
+    let opened = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, selector)),
+            &[],
+        ))
+        .await;
+    assert_eq!(opened.status(), StatusCode::ACCEPTED, "{selector}");
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &run_path(run_id), None, &[]))
+        .await;
+    let run = body_json(read).await;
+    let mut ids: Vec<String> = run["journal"]
+        .as_array()
+        .expect("a journal")
+        .iter()
+        .map(|row| row["price_id"].as_str().expect("an id").to_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// **`currency_wide` is axis 3's other spelling** (D-381).
+///
+/// The region axis has an absent form and a `region` selector cannot name it: a
+/// currency-wide row states no region, so no value of that parameter reaches
+/// it. `currency_wide: true` does, the two are exclusive, and an unconstrained
+/// axis still means every market including the currency-wide one.
+#[tokio::test]
+async fn currency_wide_selects_the_region_less_rows_and_region_selects_the_exact_ones() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let wide = a_published_currency_wide_row(&harness, plan)
+        .await
+        .to_string();
+    let de = a_published_row(&harness, plan, "eu").await.to_string();
+
+    assert_eq!(
+        touched_rows(
+            &harness,
+            &serde_json::json!({ "currency": "USD", "currency_wide": true })
+        )
+        .await,
+        vec![wide.clone()],
+        "the currency-wide rows, and only those"
+    );
+    assert_eq!(
+        touched_rows(
+            &harness,
+            &serde_json::json!({ "currency": "USD", "region": "eu" })
+        )
+        .await,
+        vec![de.clone()],
+        "the exact key, never the currency-wide row serving it"
+    );
+    let mut both_rows = vec![wide, de];
+    both_rows.sort();
+    assert_eq!(
+        touched_rows(&harness, &serde_json::json!({ "currency": "USD" })).await,
+        both_rows,
+        "an unconstrained axis is every market, the currency-wide one included"
+    );
+
+    // The two spellings are exclusive: both stated is a malformed request, not a
+    // silent precedence rule.
+    assert_eq!(
+        open_run_status(
+            &harness,
+            &serde_json::json!({ "currency": "USD", "region": "eu", "currency_wide": true })
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+
+    // And a region with no rows of its own still selects nothing: the
+    // currency-wide row serving it is never reached through `region`.
+    assert_eq!(
+        open_run_status(
+            &harness,
+            &serde_json::json!({ "currency": "USD", "region": "fr" })
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
 #[tokio::test]
 async fn a_run_opens_over_the_published_rows_and_freezes_them_pending() {
     let harness = Harness::new().await;

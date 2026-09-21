@@ -242,7 +242,8 @@ pub struct SellabilityQuery {
     pub at: Option<String>,
     /// The currency half of the bound market, ISO 4217.
     pub currency: Option<String>,
-    /// The region half of the bound market.
+    /// The region half of the bound market. Omitted, the currency-wide keys are
+    /// judged — the market a buyer with no territory is bound on (D-381).
     pub region: Option<String>,
 }
 
@@ -373,16 +374,16 @@ pub struct KeyCoverageView {
     /// The currency-wide price this key hands its buyers to when its own coverage
     /// stops, or `null`.
     ///
-    /// Set on a **region's override** of a currency's `global` price whose coverage
+    /// Set on a **region's override** of a currency-wide price whose coverage
     /// ends (or that has none). A buyer in that region is sold the region's own
-    /// price where it has one and the `global` price where it does not, so such an
-    /// ending is not a void: from `from` the buyers of this key pay the price on
-    /// `scope_key`, with no act by anyone. That is a regional promotion ending as
-    /// intended, and it is also how a mistaken gap changes a price silently —
-    /// which is why it is stated here, in the `working` and `committed` views
-    /// alike. `null` on a `global` key, on an override that never ends, and on a
-    /// region's price with no `global` price behind it, whose ending is the
-    /// trailing void it always was.
+    /// price where it has one and the currency-wide price where it does not, so
+    /// such an ending is not a void: from `from` the buyers of this key pay the
+    /// price on `scope_key`, with no act by anyone. That is a regional promotion
+    /// ending as intended, and it is also how a mistaken gap changes a price
+    /// silently — which is why it is stated here, in the `working` and
+    /// `committed` views alike. `null` on a currency-wide key, on an override
+    /// that never ends, and on a region's price with no currency-wide price
+    /// behind it, whose ending is the trailing void it always was.
     pub falls_back_to: Option<CoverageFallbackView>,
 }
 
@@ -390,7 +391,8 @@ pub struct KeyCoverageView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct CoverageFallbackView {
-    /// The `global` key of the same line and currency, in the canonical rendering.
+    /// The currency-wide key of the same line and currency, in the canonical
+    /// rendering. Its region segment is the absent-axis token (D-381).
     pub scope_key: String,
     /// The instant this key's own coverage stops, UTC. `null` when the key has no
     /// coverage of its own and is served by the currency-wide price from the start.
@@ -758,10 +760,10 @@ pub struct KeySellabilityView {
     /// One answer per per-key predicate.
     pub predicates: Vec<PredicateAnswerView>,
     /// The currency-wide key standing behind this one, when this key is a
-    /// region's override of a `global` price; `null` otherwise.
+    /// region's override of it; `null` otherwise.
     ///
     /// A buyer in a region is sold the region's own price where it has one and
-    /// the currency's `global` price where it does not. When this is set,
+    /// the currency-wide price where it does not. When this is set,
     /// `coverage_end` is the **override's** own end and is not where the line
     /// stops selling: past it the buyer is sold the key named here, and the window
     /// predicate above was judged over the two together.
@@ -853,7 +855,7 @@ impl KeyCoverageView {
     /// One key of `report`, as the wire renders it.
     ///
     /// Takes the report and not the entry alone: whether a key falls back is a
-    /// fact about its sibling `global` key, which only the report holds.
+    /// fact about its sibling currency-wide key, which only the report holds.
     fn of(report: &crate::domain::coverage::CoverageReport, entry: &KeyCoverage) -> Self {
         Self {
             falls_back_to: report
@@ -1118,7 +1120,12 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             true,
             "The bound market's currency, ISO 4217 (required)",
         )
-        .query_param("region", true, "The bound market's region (required)")
+        .query_param(
+            "region",
+            false,
+            "The bound market's region; omitted, the currency-wide keys are judged - the \
+             market a buyer with no territory is bound on",
+        )
         .handler(get_plan_sellability)
         .json_response_with_schema::<PlanSellabilityView>(
             openapi,
@@ -2032,7 +2039,7 @@ async fn get_plan_sellability(
         _ => (crate::domain::sellability::registry_unreadable(), None),
     };
     let surface =
-        SellabilitySurface::of_delta(&facts, at, &currency, Some(&region), registry_permission);
+        SellabilitySurface::of_delta(&facts, at, &currency, region.as_ref(), registry_permission);
     Ok(Json(
         PlanSellabilityView::from(&surface).checked_at(registry_checked_at),
     ))
@@ -2065,7 +2072,7 @@ async fn get_plan_sellability(
 /// own description tells a client to send.
 fn market_of(
     query: &SellabilityQuery,
-) -> Result<(OffsetDateTime, CurrencyCode, Region), DomainError> {
+) -> Result<(OffsetDateTime, CurrencyCode, Option<Region>), DomainError> {
     let required = |value: &Option<String>, name: &str| {
         value.clone().ok_or_else(|| {
             DomainError::InvalidRequest(format!(
@@ -2084,7 +2091,8 @@ fn market_of(
     Ok((
         at,
         CurrencyCode::new(&required(&query.currency, "currency")?)?,
-        Region::new(&required(&query.region, "region")?)?,
+        // Absent is the currency-wide market, not a missing operand (D-381).
+        crate::api::rest::prices::region_from_wire(query.region.as_deref())?,
     ))
 }
 

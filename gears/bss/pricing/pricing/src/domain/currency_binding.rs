@@ -30,12 +30,14 @@
 //! plan sells, and coverage is asked of the pair.
 //!
 //! **"Covers the pair" means the pair *resolves*, not that an exact row exists.**
-//! A currency's `global` price applies to every region that does not override it
-//! ([`crate::domain::market_resolution`]), so an add-on priced `(EUR, global)`
-//! covers a base sold in `(EUR, EU)` — a subscriber there resolves it. D-95's
+//! A currency-wide price — one that states **no** region (D-381) — applies to
+//! every region that does not override it
+//! ([`crate::domain::market_resolution`]), so an add-on priced `(EUR, -)`
+//! covers a base sold in `(EUR, EU)`: a subscriber there resolves it. D-95's
 //! own failure still fails: EUR in `US` does not cover EUR in `EU`, because one
 //! region's price never answers for another. And the fallback runs one way: a
-//! base sold in EUR *everywhere* is covered by a `global` add-on price alone.
+//! base sold in EUR *everywhere* is covered by a currency-wide add-on price
+//! alone.
 //!
 //! # And over the `depends_on` **closure**, not the flat required set (C-3)
 //!
@@ -133,12 +135,12 @@ impl AddonCoverage {
 /// superset of what that arm needs: S8 keeps the region axis, and a pair-wise
 /// answer restricted to one region is exactly a currency answer.
 ///
-/// **"Reach" is resolution, not set membership.** A sold `(C, R)` is reached by
-/// `covered`'s own `(C, R)` row *or* by its currency-wide `(C, global)` one,
-/// which is the price a subscriber in `R` resolves. The fallback runs one way: a
-/// sold `(C, global)` — the currency sold everywhere — is reached by `(C,
-/// global)` alone, since a component priced in one region leaves every other
-/// resolving to nothing. One reading of the order, in
+/// **"Reach" is resolution, not set membership.** A sold `(C, Some(R))` is
+/// reached by `covered`'s own `(C, Some(R))` row *or* by its currency-wide
+/// `(C, None)` one, which is the price a subscriber in `R` resolves. The
+/// fallback runs one way: a sold `(C, None)` — the currency sold everywhere —
+/// is reached by `(C, None)` alone, since a component priced in one region
+/// leaves every other resolving to nothing. One reading of the order, in
 /// [`crate::domain::market_resolution`]; this function and the bundle plane that
 /// imports it do not keep another.
 #[must_use]
@@ -164,9 +166,9 @@ pub fn uncovered_pairs(sold: &BTreeSet<Market>, covered: &BTreeSet<Market>) -> V
 /// this function for that arm — two derivation sites for one rule, which is how
 /// a roster comes to be unified at one of them.
 ///
-/// These are the keys as **authored**, exact pairs, a `global` row included as
-/// the pair it is. What the pairs *mean* — that `(C, global)` sells `C`
-/// everywhere — is [`crate::domain::market_resolution`]'s to say.
+/// These are the keys as **authored**, exact pairs, a currency-wide row
+/// included as the pair it is. What the pairs *mean* — that `(C, None)` sells
+/// `C` everywhere — is [`crate::domain::market_resolution`]'s to say.
 #[must_use]
 pub fn sold_markets(shape: &PlanShape) -> BTreeSet<Market> {
     let keys: Vec<&crate::domain::scope_key::MarketPriceScopeKey> = if shape.rows.is_empty() {

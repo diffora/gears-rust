@@ -3286,12 +3286,17 @@ pub async fn load_published_for_selector(
         None
     };
 
-    if selector.currency.is_some() || selector.region.is_some() {
+    if selector.currency.is_some() || selector.region.is_some() || selector.currency_wide {
         let mut market_filter = Condition::all().add(market_price::Column::TenantId.eq(tenant_id));
         if let Some(currency) = selector.currency.as_ref() {
             market_filter = market_filter.add(market_price::Column::Currency.eq(currency.as_str()));
         }
-        if let Some(region) = selector.region.as_ref() {
+        // Axis 3's two spellings. `currency_wide` matches the column's absent
+        // form, which nothing authored can hold (D-381); `region` matches the
+        // exact value and never the currency-wide row serving it.
+        if selector.currency_wide {
+            market_filter = market_filter.add(market_price::Column::Region.eq(region_column(None)));
+        } else if let Some(region) = selector.region.as_ref() {
             market_filter =
                 market_filter.add(market_price::Column::Region.eq(region_column(Some(region))));
         }

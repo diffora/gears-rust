@@ -379,7 +379,8 @@ pub struct CoverageReport {
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageFallback {
-    /// The `global` key of the same line and currency.
+    /// The currency-wide key of the same line and currency — the one that
+    /// states no region (D-381).
     pub to: MarketPriceScopeKey,
     /// The instant the override's own coverage stops, from which its buyers are
     /// sold [`Self::to`]. `None` when the override has no coverage of its own at

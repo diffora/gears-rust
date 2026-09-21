@@ -257,8 +257,15 @@ pub struct RepricingSelectorRequest {
     pub plan_id: Option<Uuid>,
     /// Axis 2, ISO 4217 — §2's *"a currency segment"* is this member alone.
     pub currency: Option<String>,
-    /// Axis 3.
+    /// Axis 3. It cannot name the currency-wide market — that row states no
+    /// region — so [`Self::currency_wide`] is the other spelling.
     pub region: Option<String>,
+    /// Axis 3, the other spelling: `true` selects the rows that state **no**
+    /// region, the currency-wide prices. Exclusive with `region`; both is a
+    /// `400`. Absent with `region` absent selects every region, the
+    /// currency-wide market included.
+    #[serde(default)]
+    pub currency_wide: bool,
     /// Axis 5. Axis 4, `priceOverlay`, is absent by construction: every row this
     /// gear authors is on the `base` plane.
     pub phase: Option<Uuid>,
@@ -1378,6 +1385,7 @@ fn frozen_report(
             "plan_id": selector.plan_id.map(|p| p.get().to_string()),
             "currency": selector.currency.as_ref().map(CurrencyCode::as_str),
             "region": selector.region.as_ref().map(Region::as_str),
+            "currency_wide": selector.currency_wide,
             "phase": selector.phase.map(|p| p.get().to_string()),
             "price_eligibility": selector.price_eligibility.map(PriceEligibility::as_str),
             "charge_kind": selector.charge_kind.map(ChargeKind::as_str),
@@ -1451,7 +1459,15 @@ fn selector_of(request: &RepricingSelectorRequest) -> Result<RunSelector, Domain
             .as_deref()
             .map(CurrencyCode::new)
             .transpose()?,
-        region: request.region.as_deref().map(Region::new).transpose()?,
+        region: {
+            if request.currency_wide && request.region.is_some() {
+                return Err(DomainError::InvalidRequest(
+                    "region and currency_wide are two spellings of axis 3; state one".to_owned(),
+                ));
+            }
+            request.region.as_deref().map(Region::new).transpose()?
+        },
+        currency_wide: request.currency_wide,
         phase: request.phase.map(PhaseId::new),
         price_eligibility: optional_token(
             "selector.price_eligibility",

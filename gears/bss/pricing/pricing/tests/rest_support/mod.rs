@@ -2147,6 +2147,18 @@ pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> Price
     .await
 }
 
+/// [`seed_price`] on the **currency-wide market** — the row that states no
+/// region (D-381).
+pub async fn seed_price_currency_wide(harness: &Harness, plan_id: Uuid) -> PriceRecord {
+    seed_price_keyed_currency_wide(
+        harness,
+        plan_id,
+        PriceEligibility::AllSubscriptions,
+        Cohort::None,
+    )
+    .await
+}
+
 /// The same fixture on a **named eligibility class and cohort**.
 ///
 /// [`seed_price`] delegates here rather than the two carrying a copy of one
@@ -2237,7 +2249,12 @@ pub async fn seed_price_keyed_with_horizon(
                         descriptor_row
                     },
                     tax_inclusive: false,
-                    tax_category_ref: None,
+                    // A currency-wide row states its own category: with no
+                    // region there is no regional default to coalesce with, so
+                    // D-154 would make it incomplete (D-381). A regional row
+                    // leaves it to the region, which is what the readiness
+                    // fixture declares.
+                    tax_category_ref: region.is_none().then(|| FIXTURE_TAX_CATEGORY.to_owned()),
                     billing_timing: None,
                     // Stated, because this is a **recurring** row and Slice 6's
                     // `inst-pi-required` makes the three proration inputs mandatory on one.

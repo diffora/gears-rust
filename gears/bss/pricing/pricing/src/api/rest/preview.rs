@@ -21,12 +21,17 @@
 //! another region. `Future currencyFallbackPolicy` is named in §1.5 as exactly
 //! that — future.
 //!
-//! **The currency-wide price is not such a fallback.** A price filed under
-//! `global` is one the plan *authored* for every region, so a buyer in a region
-//! with no price of its own is quoted it — nothing is converted and no currency is
-//! crossed. The order is [`market_resolution`]'s, walked per line: a market is a
-//! mix of lines a region overrides and lines it does not. `resolved_region` says
-//! which price was quoted, because a fallback that is legal must not be invisible.
+//! **The currency-wide price is not such a fallback.** A price that states **no
+//! region** is one the plan *authored* for every region (D-381), so a buyer in a
+//! region with no price of its own is quoted it — nothing is converted and no
+//! currency is crossed. The order is [`market_resolution`]'s, walked per line: a
+//! market is a mix of lines a region overrides and lines it does not.
+//! `resolved_region` says which price was quoted — `null` when it was the
+//! currency-wide one — because a fallback that is legal must not be invisible.
+//!
+//! **A buyer may have no region at all.** A tenant that does not segment its
+//! market by territory has such buyers, and they omit the parameter: they are
+//! quoted the currency-wide price and no region's row can serve them.
 //!
 //! The 404 is the design set's own status for it, and it is right: the caller
 //! asked for a price on a market this plan does not sell, so the resource they
@@ -77,7 +82,9 @@ use crate::domain::market_resolution;
 use crate::domain::money::CurrencyCode;
 use crate::domain::ports::metrics::PreviewFailClosed;
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{ChargeKind, PlanId, PriceEligibility, PriceOverlay, Region};
+use crate::domain::scope_key::{
+    ChargeKind, PlanId, PriceEligibility, PriceOverlay, Region, render_region,
+};
 use crate::infra::storage::repo::{pin_frontier_repo, read_model_repo};
 use crate::infra::storage::repo_failure;
 
@@ -120,8 +127,8 @@ pub struct PreviewView {
     pub catalog_version: u64,
     /// The requested currency, echoed.
     pub currency: String,
-    /// The requested region, echoed.
-    pub region: String,
+    /// The requested region, echoed; `null` when the caller named none.
+    pub region: Option<String>,
     /// The region whose price the quoted amount is: `region` itself where it has
     /// a price of its own, else `null` — the currency-wide price, which applies
     /// to every region that does not override it (D-381).
@@ -190,12 +197,12 @@ fn region_param() -> ParamSpec {
     ParamSpec {
         name: "region".to_owned(),
         location: ParamLocation::Query,
-        required: true,
+        required: false,
         description: Some(
-            "The buyer's commercial region. Required: a price row is keyed on the pair, and a \
-             region-less query names no row. A region with no price of its own is quoted the \
-             currency's `global` price, which applies to every region that does not override \
-             it; pass `global` to ask for that price directly. This is the pricing region, not \
+            "The buyer's commercial region. Omit it for a buyer with no territory, who is \
+             quoted the currency-wide price - the price every region without a row of its own \
+             is sold. A region with no price of its own is quoted that same price, and \
+             `resolvedRegion` answers `null` when it served. This is the pricing region, not \
              the IdP authorization-region claim."
                 .to_owned(),
         ),
@@ -214,9 +221,12 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Preview a plan's base list price on one market")
         .description(
             "The catalog **base list price** a buyer in one `(currency, region)` market is \
-             quoted: the region's own price where it has one, else the currency's `global` \
-             price, which applies to every region that does not override it. `resolved_region` \
-             says which of the two was quoted. Resolved from \
+             quoted: the region's own price where it has one, else the currency-wide price, \
+             which applies to every region that does not override it. `resolvedRegion` says \
+             which of the two was quoted, and is `null` when the currency-wide price served. \
+             `region` is optional: a buyer with no territory omits it and is quoted the \
+             currency-wide price, which is the only price such a buyer can be sold. Resolved \
+             from \
              the **published read model only** - never from a draft, so a preview cannot show a \
              price nobody has approved. The response carries the amount, its `taxInclusive` \
              display basis, the resolved tax category the catalog version froze, the trial days \
@@ -224,7 +234,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              PriceOverlays may apply at purchase and are evaluated by Tariffs, so the amount \
              actually charged may differ. Overlay adjustments are deliberately not applied here. \
              **Fails closed on an absent market**: if the plan publishes no row for the \
-             requested pair and no `global` row in that currency, the answer is `404` \
+             requested pair and no currency-wide row in that currency, the answer is `404` \
              `PRICE_ROW_ABSENT`, never a converted price, never another region's price and \
              never a base-currency fallback - the catalog performs no FX under any circumstance, \
              and a currency fallback policy is a named Future item rather than an omission. A \
@@ -291,11 +301,13 @@ async fn preview_plan_price(
     // market nobody authored, versus a tenant that has published nothing at all.
     // The counter is where that distinction lives, so the constructors are
     // separate purely to keep each `return` counting the reason it means.
+    // The market as an operator reads it back: the currency, and the region they
+    // named or the absent-axis token for the currency-wide market (D-381).
+    let market = format!("{}/{}", currency.as_str(), render_region(region.as_ref()));
     let unpublished = || {
         CanonicalError::from(DomainError::PriceRowAbsent(format!(
             "plan {plan_id} has no published catalog version, so there is no price to preview \
-             on {}/{region} or on any other market",
-            currency.as_str()
+             on {market} or on any other market"
         )))
     };
     let absent = || {
@@ -303,10 +315,9 @@ async fn preview_plan_price(
             .metrics
             .preview_failclosed(PreviewFailClosed::MarketAbsent);
         CanonicalError::from(DomainError::PriceRowAbsent(format!(
-            "plan {plan_id} publishes no price row on {}/{region}. The catalog performs no FX \
+            "plan {plan_id} publishes no price row on {market}. The catalog performs no FX \
              and has no base-currency fallback, so an absent market is an absent price rather \
-             than a converted one",
-            currency.as_str()
+             than a converted one"
         )))
     };
 
@@ -352,14 +363,14 @@ async fn preview_plan_price(
         return Err(unpublished());
     };
 
-    let rows = market_rows(&delta.payload, currency.as_str(), Some(&region));
+    let rows = market_rows(&delta.payload, currency.as_str(), region.as_ref());
     let row = base_amount_row(&rows, terminal_phase_id(&delta.payload)).ok_or_else(absent)?;
 
     Ok(Json(PreviewView {
         plan_id: plan_id.get(),
         catalog_version: delta.catalog_version.get(),
         currency: currency.as_str().to_owned(),
-        region: region.as_str().to_owned(),
+        region: region.as_ref().map(|r| r.as_str().to_owned()),
         // `null` where the currency-wide row served (D-381); the resolved row's
         // own axis otherwise, which is the requested region or nothing.
         resolved_region: row["scopeKey"]["region"].as_str().map(ToOwned::to_owned),
@@ -590,12 +601,13 @@ fn terminal_phase_id(payload: &serde_json::Value) -> Option<&str> {
         .and_then(|phase| phase["phaseId"].as_str())
 }
 
-/// Both query parameters, parsed and non-blank.
-fn market_of(query: &PreviewQuery) -> Result<(CurrencyCode, Region), CanonicalError> {
+/// The currency, parsed and non-blank, and the region the caller named — `None`
+/// where they named none, which is the currency-wide market (D-381).
+fn market_of(query: &PreviewQuery) -> Result<(CurrencyCode, Option<Region>), CanonicalError> {
     let currency = query.currency.as_deref().unwrap_or_default();
-    let region = query.region.as_deref().unwrap_or_default();
     let currency = CurrencyCode::new(currency).map_err(CanonicalError::from)?;
-    let region = Region::new(region).map_err(CanonicalError::from)?;
+    let region = crate::api::rest::prices::region_from_wire(query.region.as_deref())
+        .map_err(CanonicalError::from)?;
     Ok((currency, region))
 }
 

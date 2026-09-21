@@ -105,11 +105,24 @@ pub struct RunSelector {
     /// Axis 2 — §2's *"a currency segment"*, spelled as one axis.
     pub currency: Option<CurrencyCode>,
     /// Axis 3 — **the exact key, never the rows that serve it.** `de` selects
-    /// `de`'s override rows and never the currency's `global` rows that a `de`
-    /// buyer falls back to: otherwise "+10 % in Germany" raises the price
-    /// everywhere. `global` is how the currency-wide price is repriced, and a
-    /// region with no row of its own selects nothing ([`RUN_SELECTOR_EMPTY`]).
+    /// `de`'s override rows and never the currency-wide rows that a `de` buyer
+    /// falls back to: otherwise "+10 % in Germany" raises the price everywhere.
+    /// A region with no row of its own selects nothing
+    /// ([`RUN_SELECTOR_EMPTY`]).
+    ///
+    /// It cannot name the currency-wide market: that row states **no** region
+    /// (D-381), so no value of this axis reaches it. [`Self::currency_wide`] is
+    /// the other spelling, and the two are exclusive.
     pub region: Option<Region>,
+    /// Axis 3, the other spelling: the rows that state **no** region — the
+    /// currency-wide prices (D-381).
+    ///
+    /// A separate flag rather than a sentinel in [`Self::region`], because a
+    /// sentinel on the wire is exactly what D-381 removes, and `null` cannot
+    /// carry the third state: JSON serializers drop it, so "absent" and
+    /// "explicitly no region" would arrive as one request. Both set is a `400`;
+    /// both absent is every market, the currency-wide one included.
+    pub currency_wide: bool,
     /// Axis 5 (axis 4, `priceOverlay`, is not selectable — see the module doc).
     pub phase: Option<PhaseId>,
     /// Axis 6. Absent excludes `existing_grandfathered`; see
@@ -137,6 +150,7 @@ impl RunSelector {
         self.plan_id.is_none()
             && self.currency.is_none()
             && self.region.is_none()
+            && !self.currency_wide
             && self.phase.is_none()
             && self.price_eligibility.is_none()
             && self.charge_kind.is_none()

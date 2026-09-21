@@ -1707,11 +1707,11 @@ fn refuse_trailing_void(
         )));
     };
     let after_end = after.coverage_end();
-    // **An override's coverage runs on into the currency-wide price.** A buyer in a
-    // region whose own price stops is sold the currency's `global` one, so removing
+    // **An override's coverage runs on into the currency-wide price.** A buyer in
+    // a region whose own price stops is sold the currency-wide one, so removing
     // an override's coverage opens no void where that price covers the same span —
-    // which is the regional promotion ending as intended. `global` itself has
-    // nothing behind it and is judged exactly as before.
+    // which is the regional promotion ending as intended. The currency-wide key
+    // itself has nothing behind it and is judged exactly as before.
     let until = match planned.plan.before.coverage_end() {
         CoverageEnd::OpenEnded => None,
         before => Some(before.at().map_or(horizon, |at| at.max(horizon))),
@@ -1759,8 +1759,8 @@ fn refuse_trailing_void(
     }
 }
 
-/// Does the `global` price of this key's line cover every instant `after` stops
-/// covering, through `until` (`None`: forever)?
+/// Does the currency-wide price of this key's line cover every instant `after`
+/// stops covering, through `until` (`None`: forever)?
 ///
 /// `false` for a currency-wide key — nothing stands behind that price — and for
 /// an override whose line carries none. The span asked about is the one the act

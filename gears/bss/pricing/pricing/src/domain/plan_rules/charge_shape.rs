@@ -177,7 +177,7 @@ impl ValidationRule<PlanShape> for LineMarketPricePresent {
         let lines = effective_lines(subject);
         let variants = effective_variants(subject);
         // What each line owes, not merely what some line sells: a currency sold
-        // everywhere obliges its `global` price and no regional one.
+        // everywhere obliges its currency-wide price and no regional one.
         let markets = crate::domain::market_resolution::owed_markets(
             &currency_binding::sold_markets(subject),
         );
