@@ -1680,14 +1680,21 @@ fn every_materiality_site_consults_the_quorum() {
         // `evaluate` lives there too. Excluded by name rather than by a cleverer
         // needle, because a needle that told a definition from a call would also
         // have to be maintained.
-        if name == "domain/materiality.rs" {
+        if name == "domain/materiality.rs" || name == "infra/approval.rs" {
             continue;
         }
         let body = scannable(&path);
         if body.contains("materiality::evaluate(") {
             evaluating.push(name.clone());
         }
-        if body.contains("describe_quorum(") {
+        // **Two spellings, because there are two shapes of door.** One computes a
+        // verdict and prices it (`describe_quorum`); the other is always material
+        // and asks instead whether an approved unit — or the tenant's `N` —
+        // authorizes the act (`act_authorization`, which reads the count itself).
+        // A needle that knew only the first would report the seam-based doors as
+        // ignoring the quorum they do consult, and a reader would pay down a debt
+        // that is not there.
+        if body.contains("describe_quorum(") || body.contains("act_authorization(") {
             consulting.push(name);
         }
     }

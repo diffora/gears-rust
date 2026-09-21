@@ -383,7 +383,35 @@ async fn publish_plan(
     }
 
     let verdict = materiality_of(&state, &scope, tenant, plan_id, &shape, now).await?;
-    if verdict.is_material() {
+    // **The verdict says whether a second principal is owed; `N` says how many**
+    // (D-380). The count is applied here rather than inside the evaluator, which
+    // is what lets `N = 0` reach every one of §3's five rules — `inst-mat-first`
+    // included, the one no threshold can ever reach — without any rule changing.
+    //
+    // At `required == 0` the act takes the `AutoPublishable` arm, exactly as a
+    // below-threshold change does. It opens **no** approval record, and that is a
+    // store fact rather than a choice: `chk_pricing_approval_approver` lets only
+    // `submitted` and `voided` rows omit an approver, so a zero-quorum record
+    // could only sit `submitted` forever — an open unit nothing will ever decide,
+    // holding the tenant's one proposal slot. What carries the act is the
+    // hash-chained audit row the commit writes and the verdict the receipt
+    // reports, which is present on both arms.
+    let quorum = crate::domain::materiality::describe_quorum(
+        &verdict,
+        crate::infra::threshold::effective_approver_count_at(
+            &state.db.conn().map_err(|e| {
+                CanonicalError::from(DomainError::Internal(format!(
+                    "bss-pricing: scoped connection for the quorum read: {e}"
+                )))
+            })?,
+            &scope,
+            tenant,
+            now,
+        )
+        .await
+        .map_err(CanonicalError::from)?,
+    );
+    if quorum.required > 0 {
         let opened = state
             .approvals
             .submit(

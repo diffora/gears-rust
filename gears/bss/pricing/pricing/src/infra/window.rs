@@ -1314,7 +1314,13 @@ where
             .then(|| PublishedPriceBaseline::of_records(planned.plan.published.iter().cloned()))
             .as_ref(),
     );
-    let authorization = if verdict.is_material() {
+    // D-380: the verdict says a second principal is owed, the tenant's `N` says
+    // how many. Applied after the verdict so `N = 0` reaches every rule of S5 §3.
+    let quorum = crate::domain::materiality::describe_quorum(
+        &verdict,
+        crate::infra::threshold::effective_approver_count_at(runner, scope, tenant_id, now).await?,
+    );
+    let authorization = if quorum.required > 0 {
         let authorized = crate::infra::approval::authorizing_unit(
             runner,
             scope,

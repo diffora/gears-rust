@@ -1142,7 +1142,14 @@ pub async fn supersede_in(
                 .as_ref(),
             context.baseline().as_ref(),
         );
-        if verdict.is_material() {
+        // D-380: the verdict says a second principal is owed, the tenant's `N`
+        // says how many.
+        let quorum = crate::domain::materiality::describe_quorum(
+            &verdict,
+            crate::infra::threshold::effective_approver_count_at(txn, scope, tenant_id, now)
+                .await?,
+        );
+        if quorum.required > 0 {
             return Box::pin(submitted_for_approval(
                 txn,
                 scope,

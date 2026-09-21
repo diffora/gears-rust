@@ -457,38 +457,47 @@ async fn tighten_in(
             .as_ref(),
     );
     let subject_ref = horizon_unit_ref(context.plan_id, price_id, prior, proposed);
-    let authorized = crate::infra::approval::authorizing_unit(
+    // D-380: an approved unit authorizes, and so does a tenant at `N = 0` — this
+    // act is always material (`inst-mat-registered`), so before the count existed
+    // it could only ever open a unit. `ByPolicy` carries no record, and the audit
+    // row's `approval_ref` says so rather than naming one that does not exist.
+    let authorized = match crate::infra::approval::act_authorization(
         runner,
         scope,
         tenant_id,
         &context.shape,
         &subject_ref,
+        now,
     )
-    .await?;
-    let Some(authorization) = authorized else {
-        let record = crate::infra::approval::ApprovalService::submit_horizon_tightening_on(
-            runner,
-            scope,
-            tenant_id,
-            price_id,
-            Uuid::now_v7(),
-            verdict_json(&verdict)?,
-            stamp,
-            &subject_ref,
-        )
-        .await?;
-        return Ok(HorizonOutcome::SubmittedForApproval(Box::new(
-            HorizonPending {
-                plan_id: context.plan_id,
-                revision: context.revision,
+    .await?
+    {
+        crate::infra::approval::ActAuthorization::ByRecord(record) => Some(*record),
+        crate::infra::approval::ActAuthorization::ByPolicy => None,
+        crate::infra::approval::ActAuthorization::Owed => {
+            let record = crate::infra::approval::ApprovalService::submit_horizon_tightening_on(
+                runner,
+                scope,
+                tenant_id,
                 price_id,
-                scope_key: context.key,
-                prior_grandfather_until: prior,
-                proposed_grandfather_until: proposed,
-                row_version: context.generation.row_version,
-                approval: record,
-            },
-        )));
+                Uuid::now_v7(),
+                verdict_json(&verdict)?,
+                stamp,
+                &subject_ref,
+            )
+            .await?;
+            return Ok(HorizonOutcome::SubmittedForApproval(Box::new(
+                HorizonPending {
+                    plan_id: context.plan_id,
+                    revision: context.revision,
+                    price_id,
+                    scope_key: context.key,
+                    prior_grandfather_until: prior,
+                    proposed_grandfather_until: proposed,
+                    row_version: context.generation.row_version,
+                    approval: record,
+                },
+            )));
+        }
     };
 
     // 8. Addressability, fail closed, after re-validation and before the writes
@@ -554,7 +563,7 @@ async fn tighten_in(
             subject_ref: audit_repo::price_unit_ref(price_id),
             before_state: Some(horizon_state_value(&context.generation)),
             after_state: Some(horizon_state_value(&written)),
-            approval_ref: Some(authorization.approval_id),
+            approval_ref: authorized.as_ref().map(|record| record.approval_id),
             correlation_id: stamp.correlation_id,
         },
     )

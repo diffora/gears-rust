@@ -1218,7 +1218,21 @@ async fn advance_on_verdict(
     held_keys: BTreeSet<String>,
     stamp: AuditStamp,
 ) -> Result<BulkOperationRecord, RepoError> {
-    if verdict.is_material() {
+    // D-380: the verdict says a second principal is owed, the tenant's `N` says
+    // how many. Applied after the verdict so `N = 0` reaches every rule of S5 §3,
+    // not only the threshold one.
+    let quorum = crate::domain::materiality::describe_quorum(
+        verdict,
+        crate::infra::threshold::effective_approver_count_at(
+            runner,
+            scope,
+            tenant_id,
+            stamp.recorded_at,
+        )
+        .await
+        .map_err(|e| RepoError::Db(format!("bss-pricing: quorum read: {e}")))?,
+    );
+    if quorum.required > 0 {
         let materiality = serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
             RepoError::Db(format!("bss-pricing: render repricing materiality: {e}"))
         })?;

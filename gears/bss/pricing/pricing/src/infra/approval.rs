@@ -2519,6 +2519,56 @@ pub(crate) async fn authorizing_unit(
     Ok(Some(record))
 }
 
+/// What authorizes an always-material act: an approved unit, or the tenant's own
+/// policy (**D-380**).
+///
+/// The third outcome is what `N = 0` needed and the two-valued `Option` could not
+/// say. These acts are **always material** — every one of them is an
+/// `inst-mat-registered` trigger — so before D-380 they asked only *"is there an
+/// approved unit?"* and opened one when there was not. At `N = 0` there is no
+/// unit to find and none to open, and the act is authorized by the policy the
+/// tenant configured under the quorum in force before the change.
+#[derive(Debug)]
+pub(crate) enum ActAuthorization {
+    /// An approved unit over this exact subject and content.
+    ByRecord(Box<ApprovalRecord>),
+    /// The tenant's `N` is zero, so no second principal is owed and no record
+    /// exists — the hash-chained audit row carries the act, exactly as it does
+    /// on the publish path's auto-publishable arm.
+    ByPolicy,
+    /// A second principal is owed and has not signed.
+    Owed,
+}
+
+/// [`authorizing_unit`], with the tenant's approver count consulted when no unit
+/// is found (**D-380**).
+///
+/// The record is looked for **first** and on its own terms: a tenant that
+/// lowered `N` to zero after a unit was opened and approved is still authorized
+/// by that unit, and the audit trail keeps naming both principals. Only the
+/// absence of one is answered by the policy.
+///
+/// # Errors
+/// As [`authorizing_unit`], plus a storage failure reading the effective count.
+pub(crate) async fn act_authorization(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    shape: &PlanShape,
+    subject_ref: &str,
+    now: OffsetDateTime,
+) -> Result<ActAuthorization, DomainError> {
+    if let Some(record) = authorizing_unit(runner, scope, tenant_id, shape, subject_ref).await? {
+        return Ok(ActAuthorization::ByRecord(Box::new(record)));
+    }
+    let required =
+        crate::infra::threshold::effective_approver_count_at(runner, scope, tenant_id, now).await?;
+    if required == 0 {
+        return Ok(ActAuthorization::ByPolicy);
+    }
+    Ok(ActAuthorization::Owed)
+}
+
 /// `inst-co-single-pending` over a set of keys: refuse if a pending unit holds one.
 ///
 /// The **check**, whose value over `uq_pricing_approval_key_pending` is that it can
