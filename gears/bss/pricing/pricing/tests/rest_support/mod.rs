@@ -1915,20 +1915,25 @@ pub async fn set_approver_count(harness: &Harness, approver_count: u32) {
         .await
         .expect("propose the tenant's approver count");
 
-    let decided = harness
-        .allowed_as(APPROVER_COUNT_REVIEWER)
-        .send(with_headers(
-            "POST",
-            &format!("/bss-pricing/v1/approvals/{}/approve", opened.approval_id),
-            None,
-            &[],
-        ))
-        .await;
-    assert_eq!(
-        decided.status(),
-        axum::http::StatusCode::OK,
-        "the approver-count proposal has to be approved for the count to be in force"
-    );
+    // `None` is the tenant who was **already** at zero: the service opens no
+    // unit there, and the version is in force on the proposal (D-380). Every
+    // other tenant owes the ceremony, and it is driven here in full.
+    if let Some(opened) = opened {
+        let decided = harness
+            .allowed_as(APPROVER_COUNT_REVIEWER)
+            .send(with_headers(
+                "POST",
+                &format!("/bss-pricing/v1/approvals/{}/approve", opened.approval_id),
+                None,
+                &[],
+            ))
+            .await;
+        assert_eq!(
+            decided.status(),
+            axum::http::StatusCode::OK,
+            "the approver-count proposal has to be approved for the count to be in force"
+        );
+    }
 }
 
 /// The tenant's approver count as the doors read it — the readback that tells

@@ -26,7 +26,8 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::domain::approval::ApprovalState;
 use rest_support::{
-    Harness, approval_rows, audit_rows, body_json, policy_etag_of, problem_code, with_headers,
+    Harness, approval_rows, audit_rows, body_json, effective_approver_count, policy_etag_of,
+    problem_code, set_approver_count, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -2038,5 +2039,135 @@ async fn a_version_whose_start_is_still_ahead_is_not_in_the_tag_until_it_arrives
         ahead.tag(),
         bss_pricing::domain::concurrency::PolicyTag::of(None, None),
         "the not-yet state and the never-configured state are the same representation"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the policy door's own quorum — the fail-open's sharpest edge.
+//
+// Every other door is priced at a count this one sets. So this one is priced at
+// the count in force **before** the change it proposes, and the two cases below
+// the first are the executable form of the decision's safety claim: a tenant
+// cannot reach `N = 0` alone, whether they have a policy or not. If either of
+// them reddens, D-380's argument is false and the design needs its owner.
+// ---------------------------------------------------------------------------
+
+/// **At `N = 0` a policy proposal takes effect on the call.**
+///
+/// D-10 makes a policy `PUT` always material, so this door could only ever open
+/// a unit — which is the one act a tenant at zero has nobody to decide. The
+/// version is in force on the call, `approval` is absent rather than naming a
+/// unit that was never opened, and the `GET` says so.
+#[tokio::test]
+async fn at_quorum_zero_a_policy_proposal_takes_effect_without_a_second_principal() {
+    let h = Harness::new().await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+    let units_before = approval_rows(&h).await.len();
+
+    let response = propose_as(&h, PROPOSER, proposal("CHF", 7_000)).await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "a tenant at zero is not handed a 202 for a proposal nobody will decide: {view}"
+    );
+    assert!(
+        view["approval"].is_null(),
+        "no unit was opened, so there is none to name: {view}"
+    );
+    assert_eq!(view["quorum"]["required"], 0, "{view}");
+    assert_eq!(view["quorum"]["configured"], 0, "{view}");
+    assert_eq!(view["quorum"]["quorum_reduced"], true, "{view}");
+
+    assert_eq!(
+        approval_rows(&h).await.len(),
+        units_before,
+        "and the store holds no new unit"
+    );
+    let effective = read_policy_as(&h, PROPOSER).await;
+    assert_eq!(
+        effective["effective"]["entries"][0]["currency"], "CHF",
+        "the version is the tenant's policy on the call: {effective}"
+    );
+}
+
+/// **A tenant at the default cannot lower their own quorum.**
+///
+/// THE safety property of D-380. The proposal is priced at the count in force
+/// *before* it — one — so it opens a unit like any other act, and
+/// `effective_version_at` will not let a version authorize itself: the count it
+/// reads for a version with no unit is the one standing **beneath** it.
+#[tokio::test]
+async fn a_tenant_at_the_default_cannot_reach_quorum_zero_alone() {
+    let h = Harness::new().await;
+    // A policy in force at the default, so the tenant is configured rather than
+    // merely unconfigured — the other half is the case below.
+    set_approver_count(&h, 1).await;
+    assert_eq!(effective_approver_count(&h).await, 1);
+
+    let response = propose_as(&h, PROPOSER, proposal("CHF", 7_000)).await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::ACCEPTED,
+        "the proposal is pending, not applied: {view}"
+    );
+    assert!(view["approval"]["approval_id"].is_string(), "{view}");
+    assert_eq!(view["quorum"]["required"], 1, "{view}");
+
+    assert_eq!(
+        effective_approver_count(&h).await,
+        1,
+        "one person cannot lower their own quorum"
+    );
+}
+
+/// **A tenant with no policy at all cannot reach it either.**
+///
+/// The omission arm: an absent policy resolves to `DEFAULT_APPROVER_COUNT`
+/// rather than to zero, which is why zero is reached by configuration or not at
+/// all. Without this case the fail-safe could be inverted by deleting a row.
+#[tokio::test]
+async fn a_tenant_with_no_policy_cannot_reach_quorum_zero_alone() {
+    let h = Harness::new().await;
+    assert_eq!(
+        effective_approver_count(&h).await,
+        1,
+        "an unconfigured tenant is at the two-person rule"
+    );
+
+    let response = propose_as(&h, PROPOSER, proposal("CHF", 7_000)).await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(status, axum::http::StatusCode::ACCEPTED, "{view}");
+    assert!(view["approval"]["approval_id"].is_string(), "{view}");
+    assert_eq!(
+        effective_approver_count(&h).await,
+        1,
+        "and the first proposal a tenant ever makes is no exception"
+    );
+}
+
+/// **Two principals are what reach zero, and the ceremony is the ordinary one.**
+///
+/// The positive control for the two refusals above: without it they would also
+/// pass against a door at which `N = 0` is unreachable by anyone, which is the
+/// state the gear was in before D-380.
+#[tokio::test]
+async fn two_principals_reach_quorum_zero_through_the_ordinary_ceremony() {
+    let h = Harness::new().await;
+
+    set_approver_count(&h, 0).await;
+
+    assert_eq!(
+        effective_approver_count(&h).await,
+        0,
+        "a proposal an independent principal approved is the tenant's policy, count and all"
     );
 }

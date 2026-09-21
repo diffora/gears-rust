@@ -275,14 +275,57 @@ pub struct PutThresholdPolicyRequest {
     pub retire: Option<bool>,
 }
 
-/// What the `PUT` did: opened a unit over the proposed version.
+/// What the `PUT` did: opened a unit over the proposed version — or, at
+/// `N = 0`, put it in force on the call (**D-380**).
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct ThresholdProposalView {
-    /// The version this proposal minted. It is **not** in force yet.
+    /// The version this proposal minted.
+    ///
+    /// In force already when `approval` is absent, and **not** in force while
+    /// it is present. The two fields are read together rather than either
+    /// alone, which is what the status code says as well: `202` proposed,
+    /// `200` in force.
     pub proposed: PinnedThresholdPolicyView,
-    /// The always-material unit reviewing it (D-10).
-    pub approval: ApprovalView,
+    /// The always-material unit reviewing it (D-10), or `null` when the
+    /// tenant's approver count is zero and none was opened (D-380).
+    ///
+    /// `null` is not "we could not tell you": opening a unit at `N = 0` would
+    /// open one nobody can decide — `chk_pricing_approval_approver` admits no
+    /// `approved` row without an approver — and it would hold the tenant's one
+    /// proposal slot for good.
+    pub approval: Option<ApprovalView>,
+    /// What this act cost, at the count in force **before** it (D-380).
+    ///
+    /// `required` is `0` exactly when no unit was opened, and
+    /// `quorumReduced` is the marker an auditor filters on. Carried on the
+    /// answer rather than left for the caller to infer from `approval`,
+    /// because "no reviewer was needed" and "a reviewer was needed and none
+    /// could be named" are different facts and only one of them is this.
+    pub quorum: QuorumView,
+}
+
+/// [`QuorumDescriptor`](crate::domain::materiality::QuorumDescriptor) on the
+/// wire.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct QuorumView {
+    /// The tenant's `N`, from the policy in force at this instant.
+    pub configured: u32,
+    /// What this act needed: `configured` when material, `0` otherwise.
+    pub required: u32,
+    /// Set exactly when `required` is below the two-person rule.
+    pub quorum_reduced: bool,
+}
+
+impl From<crate::domain::materiality::QuorumDescriptor> for QuorumView {
+    fn from(descriptor: crate::domain::materiality::QuorumDescriptor) -> Self {
+        Self {
+            configured: descriptor.configured,
+            required: descriptor.required,
+            quorum_reduced: descriptor.quorum_reduced,
+        }
+    }
 }
 
 /// Build the Axum router for the two policy operations and register them.
@@ -338,7 +381,11 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Propose the tenant's approval-threshold policy")
         .description(
             "Writes the proposal as a **new version** and answers `202` with the always-material \
-             approval unit reviewing it (D-10). It does **not** apply the diff: the version \
+             approval unit reviewing it (D-10) - or `200` with `approval: null` when the \
+             tenant's `approverCount` is `0`, where the version is in force on the call and no \
+             unit is opened (D-380). The act is priced at the count in force **before** it, so \
+             a tenant at the default cannot lower their own quorum alone. It does **not** apply \
+             the diff at the default: the version \
              becomes the tenant's policy when an independent `FinanceReviewer` approves that \
              unit and its `effectiveFrom` has arrived - a version dated in the future is \
              approved and not yet in force, and the tenant stays on the policy it had - which is \
@@ -371,6 +418,14 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             openapi,
             StatusCode::ACCEPTED,
             "The proposal is open; the body names the version and the unit reviewing it.",
+        )
+        .json_response_with_schema::<ThresholdProposalView>(
+            openapi,
+            StatusCode::OK,
+            "The tenant's `approverCount` is `0` (D-380), so the version is in force on this \
+             call: `approval` is `null` and `quorum.required` is `0`. A tenant reaches that \
+             count only by configuring it under the count in force before the change, never \
+             by omission.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -466,7 +521,33 @@ async fn put_threshold_policy(
     // that authors the tenant's two-person-review thresholds.
     let request: PutThresholdPolicyRequest = preconditions::parse_body(&body)?;
 
-    let materiality = policy_diff_materiality()?;
+    let verdict = policy_diff_verdict();
+    let materiality = rendered_policy_materiality(&verdict)?;
+    // **The policy door's own quorum** (D-380), and this is the fail-open's
+    // sharpest edge: the act that sets `N` is itself priced at the `N` in
+    // force **before** it. A tenant at the default therefore cannot lower
+    // their own quorum alone — their proposal opens a unit like any other, and
+    // `effective_version_at` will not let a version authorize itself.
+    //
+    // Read here for the answer's `quorum` field; the branch that decides
+    // whether a unit is opened is the service's, inside the transaction that
+    // mints. Same division as the `If-Match` tag two blocks up (D-186):
+    // asserted at the surface, tested where the write happens.
+    let quorum = crate::domain::materiality::describe_quorum(
+        &verdict,
+        crate::infra::threshold::effective_approver_count_at(
+            &state.db.conn().map_err(|e| {
+                CanonicalError::from(DomainError::Internal(format!(
+                    "bss-pricing: scoped connection for the quorum read: {e}"
+                )))
+            })?,
+            &scope,
+            tenant,
+            now,
+        )
+        .await
+        .map_err(CanonicalError::from)?,
+    );
     let stamp = audit_stamp(&ctx, now, correlation);
 
     // **The two arms of one door.** A retirement and a threshold set are both
@@ -540,11 +621,22 @@ async fn put_threshold_policy(
             .map_err(CanonicalError::from)?
     };
 
+    // **The status is read off what the service did, not off the count this
+    // handler read.** The two agree except across a race the service is the
+    // authority on — it reads the count inside the transaction that mints —
+    // and in that window the body would otherwise claim a unit that is not
+    // there, or deny one that is.
+    let status = if record.is_some() {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
     Ok((
-        StatusCode::ACCEPTED,
+        status,
         Json(ThresholdProposalView {
             proposed: PinnedThresholdPolicyView::from(&version),
-            approval: ApprovalView::from(&record),
+            approval: record.as_ref().map(ApprovalView::from),
+            quorum: QuorumView::from(quorum),
         }),
     )
         .into_response())
@@ -571,13 +663,28 @@ async fn put_threshold_policy(
 /// # Errors
 /// [`DomainError::Internal`] when the verdict will not serialize, which is
 /// unreachable and reported rather than unwrapped.
-fn policy_diff_materiality() -> Result<serde_json::Value, CanonicalError> {
-    let verdict = materiality::evaluate(
+fn policy_diff_verdict() -> crate::domain::materiality::MaterialityVerdict {
+    materiality::evaluate(
         &ChangeSet::of_act(Trigger::ThresholdPolicyDiff, Vec::new()),
         /* policy */ None,
         /* baseline */ None,
-    );
-    serde_json::to_value(MaterialityView::from(&verdict)).map_err(|e| {
+    )
+}
+
+/// The verdict as the unit stores it.
+///
+/// Split from [`policy_diff_verdict`] rather than folded into it because
+/// D-380 gave the handler a **second** reader of the same verdict — the quorum
+/// descriptor — and one evaluation rendered twice is the rule this file
+/// already states for the wire's string and the record's jsonb.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the verdict will not serialize, which is
+/// unreachable and reported rather than unwrapped.
+fn rendered_policy_materiality(
+    verdict: &crate::domain::materiality::MaterialityVerdict,
+) -> Result<serde_json::Value, CanonicalError> {
+    serde_json::to_value(MaterialityView::from(verdict)).map_err(|e| {
         CanonicalError::from(DomainError::Internal(format!(
             "cannot render the materiality verdict: {e}"
         )))

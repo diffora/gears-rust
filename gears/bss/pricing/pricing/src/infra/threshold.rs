@@ -244,6 +244,29 @@ pub async fn effective_version(
 /// `effective_from`**, so the answer is a function of the clock and the clock is the
 /// caller's rather than this function's.
 ///
+/// # The walk runs **upwards**, and D-380 is why
+///
+/// It used to run down from the newest version and return the first one that was
+/// both effective and approved. That reads the right answer while a version can
+/// only be authorized one way. D-380 gives it a second way — a tenant whose `N`
+/// is zero owes no second principal, here as at every other door — and *that*
+/// authorization is a fact about the version **below** the one being judged, so
+/// it cannot be decided while walking away from it.
+///
+/// Upwards, each version is judged against the policy the walk has already
+/// established: an approved unit authorizes it, and so does an `N` of zero on
+/// the version in force beneath it. A version with neither is a **pending
+/// proposal** and is stepped over, leaving the tenant on what they had — which
+/// is the same outcome the downward walk produced, by the same fail-safe
+/// argument.
+///
+/// **This is what makes "one person cannot lower their own quorum" true.** A
+/// tenant at the default proposes `approver_count = 0`; the version beneath it
+/// reads `1`, so the proposal is not authorized and the walk steps over it. The
+/// tenant stays at `1` until an independent principal approves. A tenant with no
+/// policy at all reads [`DEFAULT_APPROVER_COUNT`], so zero is unreachable by
+/// omission as well.
+///
 /// # Errors
 /// [`DomainError::Internal`] on a storage failure, or on a stored row the domain
 /// refuses.
@@ -253,9 +276,11 @@ pub async fn effective_version_at(
     tenant_id: Uuid,
     now: OffsetDateTime,
 ) -> Result<Option<ThresholdVersion>, DomainError> {
-    let versions = threshold_repo::versions_desc(runner, scope, tenant_id)
+    let mut versions = threshold_repo::versions_desc(runner, scope, tenant_id)
         .await
         .map_err(|e| repo_failure(&e))?;
+    versions.reverse();
+    let mut in_force: Option<ThresholdVersion> = None;
     for stored in versions {
         let number = u64::try_from(stored).map_err(|_| {
             DomainError::Internal(format!(
@@ -266,13 +291,11 @@ pub async fn effective_version_at(
         let Some(version) = read_threshold_version(runner, scope, tenant_id, number).await? else {
             continue;
         };
-        // **D-188, and it is a `continue` rather than a `break`.** A version whose
-        // authored start is ahead of `now` is not this tenant's policy yet, so the
-        // walk carries on to the next version down — which leaves the tenant on an
-        // older approved version, or on none, and none makes everything material.
-        // Stopping instead would take away a policy the tenant already has, which
-        // fails in the *other* direction: a future-dated proposal would tighten
-        // every act the moment it was approved.
+        // **D-188.** A version whose authored start is ahead of `now` is not this
+        // tenant's policy yet, so the walk steps over it and whatever stands
+        // beneath it keeps standing. Taking it away instead would fail in the
+        // *other* direction: a future-dated proposal would tighten every act the
+        // moment it was approved.
         if !version.is_effective_at(now) {
             continue;
         }
@@ -294,10 +317,22 @@ pub async fn effective_version_at(
         // against rows this crate cannot produce.
         if let Some(record) = approved {
             crate::infra::approval::independent_approver(&record)?;
-            return Ok(Some(version));
+            in_force = Some(version);
+            continue;
+        }
+        // **D-380's second authorization.** No unit — and none owed, if the
+        // policy standing beneath this version puts the tenant at zero. The
+        // count is read off `in_force` rather than off `version` itself, which
+        // is the whole of the safety property: a proposal cannot authorize
+        // itself by declaring the quorum it wants.
+        let required = in_force
+            .as_ref()
+            .map_or(DEFAULT_APPROVER_COUNT, ThresholdVersion::approver_count);
+        if required == 0 {
+            in_force = Some(version);
         }
     }
-    Ok(None)
+    Ok(in_force)
 }
 
 /// The threshold-policy surface: read the effective policy, and propose the next
@@ -513,80 +548,110 @@ impl ThresholdService {
         asserted: AssertedPolicy,
         materiality: JsonValue,
         stamp: AuditStamp,
-    ) -> Result<(ThresholdVersion, ApprovalRecord), DomainError> {
+    ) -> Result<(ThresholdVersion, Option<ApprovalRecord>), DomainError> {
         let scope = scope.clone();
         let (_, outcome) = self
             .db
             .db()
-            .in_transaction::<(ThresholdVersion, ApprovalRecord), DomainError, _>(move |txn| {
-                Box::pin(async move {
-                    require_policy_match(
-                        &state_at(txn, &scope, tenant_id, asserted.now).await?.tag(),
-                        &asserted.tag,
-                    )?;
-                    let previous = threshold_repo::latest_version(txn, &scope, tenant_id)
-                        .await
-                        .map_err(|e| repo_failure(&e))?;
-                    // `None` is a tenant that has never proposed one, and its first
-                    // version is `0` — not `1`, and not "unset means 0". See
-                    // `latest_version`'s doc: the absence and version zero are
-                    // different states and only one of them is a configured policy.
-                    let next = previous.map_or(0, |held| held.saturating_add(1));
-                    let number = u64::try_from(next).map_err(|_| {
+            .in_transaction::<(ThresholdVersion, Option<ApprovalRecord>), DomainError, _>(
+                move |txn| {
+                    Box::pin(async move {
+                        require_policy_match(
+                            &state_at(txn, &scope, tenant_id, asserted.now).await?.tag(),
+                            &asserted.tag,
+                        )?;
+                        let previous = threshold_repo::latest_version(txn, &scope, tenant_id)
+                            .await
+                            .map_err(|e| repo_failure(&e))?;
+                        // `None` is a tenant that has never proposed one, and its first
+                        // version is `0` — not `1`, and not "unset means 0". See
+                        // `latest_version`'s doc: the absence and version zero are
+                        // different states and only one of them is a configured policy.
+                        let next = previous.map_or(0, |held| held.saturating_add(1));
+                        let number = u64::try_from(next).map_err(|_| {
                         DomainError::Internal(format!(
                             "bss-pricing: threshold version {next} is not a value this store can \
                              hold"
                         ))
                     })?;
-                    let version =
-                        ThresholdVersion::new(number, effective_from, entries, approver_count)
-                            .map_err(|refusal| DomainError::ThresholdInvalid(refusal.detail()))?;
-                    let rows: Vec<ThresholdEntryRow> = version
-                        .entries()
-                        .iter()
-                        .map(row_of)
-                        .collect::<Result<Vec<_>, DomainError>>()?;
-                    // **The unit before the rows, and that ordering is the mint guard's
-                    // (D-192 clause (2)).** Both are this transaction's, so atomicity is
-                    // indifferent to the order; what is not indifferent is *which*
-                    // constraint a loser meets first. `open_version` appends under the key
-                    // `(tenant, version, currency)`, so two proposals that both minted
-                    // version `n` collide there only if their currency sets **intersect**
-                    // — and that collision renders 500, this store's insert not being one
-                    // `storage` classifies. Opening the unit first puts
-                    // `uq_pricing_approval_policy_pending` ahead of it, so the loser is
-                    // refused `PENDING_CHANGE_UNIT_EXISTS` whatever the two proposals
-                    // happen to price, and no version rows are written by a transaction
-                    // that is going to roll back.
-                    //
-                    // `open_policy_unit` reads nothing from the version store — it hashes
-                    // the in-memory `ThresholdVersion` and names it by number — so there is
-                    // nothing here for the rows to have to exist for.
-                    let record = crate::infra::approval::open_policy_unit(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        approval_id,
-                        &version,
-                        materiality,
-                        stamp,
-                    )
-                    .await?;
-                    threshold_repo::open_version(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        next,
-                        effective_from,
-                        &rows,
-                        count_row(approver_count)?,
-                        stamp,
-                    )
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
-                    Ok((version, record))
-                })
-            })
+                        let version =
+                            ThresholdVersion::new(number, effective_from, entries, approver_count)
+                                .map_err(|refusal| {
+                                    DomainError::ThresholdInvalid(refusal.detail())
+                                })?;
+                        let rows: Vec<ThresholdEntryRow> = version
+                            .entries()
+                            .iter()
+                            .map(row_of)
+                            .collect::<Result<Vec<_>, DomainError>>(
+                        )?;
+                        // **The unit before the rows, and that ordering is the mint guard's
+                        // (D-192 clause (2)).** Both are this transaction's, so atomicity is
+                        // indifferent to the order; what is not indifferent is *which*
+                        // constraint a loser meets first. `open_version` appends under the key
+                        // `(tenant, version, currency)`, so two proposals that both minted
+                        // version `n` collide there only if their currency sets **intersect**
+                        // — and that collision renders 500, this store's insert not being one
+                        // `storage` classifies. Opening the unit first puts
+                        // `uq_pricing_approval_policy_pending` ahead of it, so the loser is
+                        // refused `PENDING_CHANGE_UNIT_EXISTS` whatever the two proposals
+                        // happen to price, and no version rows are written by a transaction
+                        // that is going to roll back.
+                        //
+                        // `open_policy_unit` reads nothing from the version store — it hashes
+                        // the in-memory `ThresholdVersion` and names it by number — so there is
+                        // nothing here for the rows to have to exist for.
+                        //
+                        // **And no unit at all when the tenant's `N` is zero**
+                        // (D-380). Opening one there would be worse than
+                        // pointless: `chk_pricing_approval_approver` admits no
+                        // `approved` row without an approver, so the unit could
+                        // only sit `submitted` forever — holding
+                        // `uq_pricing_approval_policy_pending` and blocking every
+                        // later proposal this tenant makes.
+                        //
+                        // The count is read **here**, inside the transaction that
+                        // mints, and off the policy in force before this version:
+                        // `effective_version_at` has not seen the rows below yet,
+                        // and could not authorize them if it had. That is the same
+                        // discipline `require_policy_match` above applies to the
+                        // tag — asserted at the surface, tested where the write
+                        // happens.
+                        let in_force =
+                            effective_approver_count_at(txn, &scope, tenant_id, asserted.now)
+                                .await?;
+                        let record = if in_force == 0 {
+                            None
+                        } else {
+                            Some(
+                                crate::infra::approval::open_policy_unit(
+                                    txn,
+                                    &scope,
+                                    tenant_id,
+                                    approval_id,
+                                    &version,
+                                    materiality,
+                                    stamp,
+                                )
+                                .await?,
+                            )
+                        };
+                        threshold_repo::open_version(
+                            txn,
+                            &scope,
+                            tenant_id,
+                            next,
+                            effective_from,
+                            &rows,
+                            count_row(approver_count)?,
+                            stamp,
+                        )
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
+                        Ok((version, record))
+                    })
+                },
+            )
             .await;
         outcome.map_err(into_domain)
     }
@@ -653,61 +718,80 @@ impl ThresholdService {
         asserted: AssertedPolicy,
         materiality: JsonValue,
         stamp: AuditStamp,
-    ) -> Result<(ThresholdVersion, ApprovalRecord), DomainError> {
+    ) -> Result<(ThresholdVersion, Option<ApprovalRecord>), DomainError> {
         let scope = scope.clone();
         let (_, outcome) = self
             .db
             .db()
-            .in_transaction::<(ThresholdVersion, ApprovalRecord), DomainError, _>(move |txn| {
-                Box::pin(async move {
-                    require_policy_match(
-                        &state_at(txn, &scope, tenant_id, asserted.now).await?.tag(),
-                        &asserted.tag,
-                    )?;
-                    // The same mint as `propose`, off the same `latest_version` — which
-                    // reads **both** threshold tables, so a retirement cannot take a
-                    // number an entry version already holds and vice versa.
-                    let previous = threshold_repo::latest_version(txn, &scope, tenant_id)
-                        .await
-                        .map_err(|e| repo_failure(&e))?;
-                    let next = previous.map_or(0, |held| held.saturating_add(1));
-                    let number = u64::try_from(next).map_err(|_| {
+            .in_transaction::<(ThresholdVersion, Option<ApprovalRecord>), DomainError, _>(
+                move |txn| {
+                    Box::pin(async move {
+                        require_policy_match(
+                            &state_at(txn, &scope, tenant_id, asserted.now).await?.tag(),
+                            &asserted.tag,
+                        )?;
+                        // The same mint as `propose`, off the same `latest_version` — which
+                        // reads **both** threshold tables, so a retirement cannot take a
+                        // number an entry version already holds and vice versa.
+                        let previous = threshold_repo::latest_version(txn, &scope, tenant_id)
+                            .await
+                            .map_err(|e| repo_failure(&e))?;
+                        let next = previous.map_or(0, |held| held.saturating_add(1));
+                        let number = u64::try_from(next).map_err(|_| {
                         DomainError::Internal(format!(
                             "bss-pricing: threshold version {next} is not a value this store can \
                              hold"
                         ))
                     })?;
-                    let version =
-                        ThresholdVersion::tombstone(number, effective_from, approver_count);
-                    // The unit before the row, for [`Self::propose`]'s reason. The
-                    // tombstone table is keyed `(tenant, version)` rather than by
-                    // currency, so a loser here would meet *its* key on any collision
-                    // rather than only an intersecting one — the same 500, reached more
-                    // easily.
-                    let record = crate::infra::approval::open_policy_unit(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        approval_id,
-                        &version,
-                        materiality,
-                        stamp,
-                    )
-                    .await?;
-                    threshold_repo::open_tombstone(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        next,
-                        effective_from,
-                        count_row(approver_count)?,
-                        stamp,
-                    )
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
-                    Ok((version, record))
-                })
-            })
+                        let version =
+                            ThresholdVersion::tombstone(number, effective_from, approver_count);
+                        // The unit before the row, for [`Self::propose`]'s reason. The
+                        // tombstone table is keyed `(tenant, version)` rather than by
+                        // currency, so a loser here would meet *its* key on any collision
+                        // rather than only an intersecting one — the same 500, reached more
+                        // easily.
+                        //
+                        // And none at all at `N = 0`, for [`Self::propose`]'s other
+                        // reason — the count read here, inside the transaction, off
+                        // the policy in force before this version. The safety
+                        // argument this method's own doc makes ("a tenant must not
+                        // be able to revert the two-person rule single-handed") is
+                        // unchanged: a tenant at the default cannot reach this arm,
+                        // because their `N` is one.
+                        let in_force =
+                            effective_approver_count_at(txn, &scope, tenant_id, asserted.now)
+                                .await?;
+                        let record = if in_force == 0 {
+                            None
+                        } else {
+                            Some(
+                                crate::infra::approval::open_policy_unit(
+                                    txn,
+                                    &scope,
+                                    tenant_id,
+                                    approval_id,
+                                    &version,
+                                    materiality,
+                                    stamp,
+                                )
+                                .await?,
+                            )
+                        };
+                        threshold_repo::open_tombstone(
+                            txn,
+                            &scope,
+                            tenant_id,
+                            next,
+                            effective_from,
+                            count_row(approver_count)?,
+                            stamp,
+                        )
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
+                        Ok((version, record))
+                    })
+                },
+            )
             .await;
         outcome.map_err(into_domain)
     }
