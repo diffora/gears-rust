@@ -19,15 +19,15 @@
 //! functions answering "is this value declared" would be two predicates to keep
 //! in step, and the one that drifted would be the one nobody was looking at.
 //!
-//! # The region universe is never empty (D-354)
+//! # The region universe starts empty, like every other (D-381)
 //!
-//! A tenant that holds no region row reads `{global: active}` from every region
-//! reader here — the list, the active universe, the two readiness reads — and
-//! nothing is written on a read. The tenant's first region write, whatever door
-//! it comes through, calls `materialise_region_seed` first, inside its own
-//! transaction, so the row it goes on to touch is the one the reads answered.
-//! "No row" is the predicate, not "no active row": a tenant that retired every
-//! region holds rows and has the empty universe it asked for.
+//! A tenant that holds no region row reads nothing here, and the readers below
+//! are the table and nothing else. D-354's seeded `global` is retired: it
+//! existed so a fresh tenant could publish under a rule that judged every price
+//! row against a value it had not declared, and the currency-wide market
+//! removes that premise — a price that states no region is the currency's price
+//! everywhere, so `inst-tx-region` has nothing to judge on it. A tenant
+//! declares a region only to price it differently.
 //!
 //! # The `PUT` is the whole set, and absence is retirement rather than deletion
 //!
@@ -86,9 +86,9 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::overlay::{OverlayLifecycle, ScopeClass, ScopeValue};
 use crate::domain::scope_key::Region;
 use crate::domain::taxonomy::{
-    RegionTaxMarkers, SEEDED_REGION, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry,
-    TaxonomyState, ValueReferences, VocabularyClass, check_retirable, check_tax_category_removable,
-    is_a_retirement, seeded_region, tag_of,
+    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState,
+    ValueReferences, VocabularyClass, check_retirable, check_tax_category_removable,
+    is_a_retirement, tag_of,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
@@ -576,14 +576,6 @@ pub async fn active_regions(
     scope: &AccessScope,
     tenant_id: Uuid,
 ) -> Result<BTreeSet<Region>, RepoError> {
-    // D-354: the seed is the universe until the tenant declares its own. "No row
-    // at all", not "no active row": a tenant that retired everything has rows and
-    // an empty universe, which is what it asked for.
-    if !holds_a_region_row(runner, scope, tenant_id).await? {
-        return Region::new(SEEDED_REGION)
-            .map(|region| std::iter::once(region).collect())
-            .map_err(|e| RepoError::CorruptRow(format!("seeded region `{SEEDED_REGION}`: {e}")));
-    }
     let rows = region_taxonomy::Entity::find()
         .secure()
         .scope_with(scope)
@@ -697,10 +689,6 @@ pub async fn region_readiness(
     tenant_id: Uuid,
     region: &Region,
 ) -> Result<Option<RegionTaxMarkers>, RepoError> {
-    // D-354: the seed reads as declared, with its fail-closed markers.
-    if region.as_str() == SEEDED_REGION && !holds_a_region_row(runner, scope, tenant_id).await? {
-        return Ok(seeded_region().tax);
-    }
     let found = region_taxonomy::Entity::find()
         .secure()
         .scope_with(scope)
@@ -732,15 +720,6 @@ pub async fn region_readiness_map(
     scope: &AccessScope,
     tenant_id: Uuid,
 ) -> Result<BTreeMap<String, RegionTaxMarkers>, RepoError> {
-    // D-354, as `region_readiness` reads it, over the whole (one-member) universe.
-    if !holds_a_region_row(runner, scope, tenant_id).await? {
-        let seed = seeded_region();
-        return Ok(seed
-            .tax
-            .into_iter()
-            .map(|markers| (seed.value.as_str().to_owned(), markers))
-            .collect());
-    }
     let rows = region_taxonomy::Entity::find()
         .secure()
         .scope_with(scope)
@@ -764,55 +743,6 @@ pub async fn region_readiness_map(
             )
         })
         .collect())
-}
-
-// ---------------------------------------------------------------------------
-// D-354 — the seeded region.
-// ---------------------------------------------------------------------------
-
-/// Does the tenant hold **any** region row, active or retired?
-///
-/// The seed's predicate. Not "any active row": a tenant that declared regions
-/// and retired them all holds rows and has, deliberately, an empty universe.
-async fn holds_a_region_row(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-) -> Result<bool, RepoError> {
-    let count = region_taxonomy::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(Condition::all().add(region_taxonomy::Column::TenantId.eq(tenant_id)))
-        .count(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("count pricing_region_taxonomy: {e}")))?;
-    Ok(count > 0)
-}
-
-/// Write the seeded `global` row for a tenant that holds no region row yet —
-/// the first step of **every** region write (D-354), inside that write's own
-/// transaction, so the row the write goes on to touch is the one the reads have
-/// been answering. A no-op once the tenant holds any row. Writes no audit
-/// record: the seed is the gear's declared default, not a tenant's act.
-///
-/// # Errors
-/// [`RepoError::Db`] on a scope or storage failure.
-pub async fn materialise_region_seed(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-) -> Result<(), RepoError> {
-    if holds_a_region_row(runner, scope, tenant_id).await? {
-        return Ok(());
-    }
-    insert_entry(
-        runner,
-        scope,
-        tenant_id,
-        TaxonomyClass::Region,
-        &seeded_region(),
-    )
-    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,9 +1041,6 @@ async fn apply_replace(
     asserted: &PolicyTag,
     stamp: AuditStamp,
 ) -> Result<Replaced, RepoError> {
-    if class == TaxonomyClass::Region {
-        materialise_region_seed(runner, scope, tenant_id).await?;
-    }
     let held = list_on(runner, scope, tenant_id, class).await?;
 
     // **The `If-Match` premise is tested here, and only here** — D-186's division
@@ -1224,9 +1151,6 @@ async fn apply_declare(
     entry: TaxonomyEntry,
     stamp: AuditStamp,
 ) -> Result<Declared, RepoError> {
-    if class == TaxonomyClass::Region {
-        materialise_region_seed(runner, scope, tenant_id).await?;
-    }
     let held = list_on(runner, scope, tenant_id, class).await?;
     if let Some(existing) = held.into_iter().find(|h| h.value == entry.value) {
         return Ok(if existing == entry {
@@ -1370,9 +1294,6 @@ pub async fn write_value_patch(
     approval_ref: Option<Uuid>,
     stamp: AuditStamp,
 ) -> Result<(), RepoError> {
-    if class == TaxonomyClass::Region {
-        materialise_region_seed(runner, scope, tenant_id).await?;
-    }
     update_entry(runner, scope, tenant_id, class, next).await?;
     record_value_mutation(
         runner,
@@ -1634,13 +1555,6 @@ async fn list_on(
             .map(|r| (r.value, r.display_name, r.state, None))
             .collect(),
     };
-    // D-354: a tenant that holds **no** region row reads the seeded `global`.
-    // Virtual — nothing is written on a read; the first region write
-    // materialises it (`materialise_region_seed`).
-    if class == TaxonomyClass::Region && rows.is_empty() {
-        return Ok(vec![seeded_region()]);
-    }
-
     rows.into_iter()
         .map(|(value, display_name, state, tax)| {
             Ok(TaxonomyEntry {

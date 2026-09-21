@@ -581,40 +581,13 @@ impl TaxonomyValueChange {
     }
 }
 
-/// The one region every tenant starts with (D-354): `global`.
-///
-/// The same token the overlay plane stores for the classless scope
-/// ([`GLOBAL_SCOPE`](crate::domain::read_model::GLOBAL_SCOPE)), by reference
-/// rather than by a second literal: both spell "the whole market", and the
-/// domain-code census would otherwise read two rules rendering one string.
-pub const SEEDED_REGION: &str = crate::domain::read_model::GLOBAL_SCOPE;
-
-/// The region taxonomy of a tenant that has declared **no** region row yet
-/// (D-354): one active value, `global`, labelled `Global`, with no default tax
-/// category and no rate declared — C4's fail-closed reading, because the seed
-/// asserts no tax fact nobody declared.
-///
-/// `inst-tx-region` is fail-closed and a fresh tenant declares nothing, so
-/// without this a tenant that does not segment its market by territory could
-/// publish nothing until an admin invented a region to satisfy a rule about
-/// territories it does not have. The seed is **virtual while the tenant holds
-/// no row** and is written by the tenant's first region write; afterwards it is
-/// an ordinary value — retire it, re-label it, give it markers, every edit
-/// governed like any other (D-353).
-///
-/// # Panics
-///
-/// Never: the literal is a non-blank value.
-#[must_use]
-pub fn seeded_region() -> TaxonomyEntry {
-    TaxonomyEntry {
-        value: ScopeValue::new(SEEDED_REGION)
-            .unwrap_or_else(|| unreachable!("`{SEEDED_REGION}` is a non-blank literal")),
-        display_name: "Global".to_owned(),
-        state: TaxonomyState::Active,
-        tax: Some(RegionTaxMarkers::default()),
-    }
-}
+// The region taxonomy is **not seeded** (D-381, superseding D-354). A tenant
+// that has declared no region holds an empty universe, like every other
+// universe it holds. The seed existed to make a fresh tenant publishable under
+// a rule that judged every price row against a value it had not declared; the
+// currency-wide market removes that premise, because a price that states no
+// region is the currency's price everywhere and `inst-tx-region` has nothing to
+// judge on it. `global` is once again an ordinary region a tenant may declare.
 
 // ---------------------------------------------------------------------------
 // `inst-tx-mutation` — the retire guard.

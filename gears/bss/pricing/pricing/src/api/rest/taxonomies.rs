@@ -419,11 +419,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              keeps resolving, and both ways back to `active` are legal audited moves, so \
              an operator editing this list has to be able to see the value they are about to \
              re-activate. A tenant that has declared nothing is answered `200` with an empty \
-             list on the brand, partner and org_tier universes - a state, not an absent \
-             resource. The **region** universe is never empty: until the tenant declares a \
-             region row it reads as the seeded `global` (D-354), so a fresh tenant publishes \
-             `global` rows at once; `inst-tx-region` validates every price row's region \
-             against the **active** values here. The response carries the set's \
+             list on every universe, the region one included - a state, not an absent \
+             resource. A tenant declares a region only to price it differently from the \
+             currency-wide price, the price every region without a row of its own is sold; \
+             `inst-tx-region` validates every price row that **states** a region against the \
+             **active** values here, and a row that states none is not its subject. The response carries the set's \
              authored-content `ETag`; the per-value routes carry their own write token. On the \
              `region` universe each value also carries D-01's two markers, `taxCategory` and \
              `taxRatePresent`, which are the MVP source for the tax-display readiness check; \

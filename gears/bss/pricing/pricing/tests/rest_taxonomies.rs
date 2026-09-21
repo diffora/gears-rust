@@ -1730,20 +1730,16 @@ async fn the_set_read_marks_each_values_governed_flag() {
     assert_eq!(by_value["acme"]["references"], detail["references"]);
 }
 
-/// D-354's seeded `global` reads as ungoverned: the seed exists so a fresh
-/// tenant can publish at once, and a ceremony on its first edit would be the
-/// cost it was added to remove.
+/// **`global` is not a value any tenant is given** (D-381). The seed that made
+/// it one is retired; a tenant that declared nothing has nothing to read.
 #[tokio::test]
-async fn the_seeded_global_reads_as_ungoverned() {
+async fn global_is_not_a_value_a_fresh_tenant_holds() {
     let harness = Harness::new().await;
     let one = harness
         .other_tenant()
         .send(request("GET", &value_path("region", "global"), None))
         .await;
-    assert_eq!(one.status(), StatusCode::OK);
-    let body = body_json(one).await;
-    assert_eq!(body["edit_governed"], false, "{body}");
-    assert_eq!(body["references"]["published_price_rows"], 0, "{body}");
+    assert_eq!(one.status(), StatusCode::NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
@@ -1901,14 +1897,18 @@ async fn a_foreign_tenants_value_reads_and_patches_like_an_absent_one() {
 }
 
 // ---------------------------------------------------------------------------
-// D-354: the seeded region, on the wire.
+// D-381: nothing is seeded. A tenant declares a region only to override.
 // ---------------------------------------------------------------------------
 
-/// A tenant that has declared no region reads the seeded `global` — on the set
-/// and by value, with a tag — while its other universes stay empty and a tenant
-/// that declared its own regions is not given one.
+/// **A fresh tenant's region universe is empty**, like every other universe it
+/// holds, and its first region write materialises nothing but itself.
+///
+/// The D-354 seed existed to make a fresh tenant publishable under a rule that
+/// judged every row against a value it had not declared. D-381 removes the
+/// premise: a price that states no region is the currency's price everywhere,
+/// so a tenant that does not segment its market declares nothing and publishes.
 #[tokio::test]
-async fn a_fresh_tenants_region_universe_is_the_seeded_global() {
+async fn a_fresh_tenants_region_universe_is_empty_and_its_first_write_seeds_nothing() {
     let harness = Harness::new().await;
 
     let set = harness
@@ -1916,43 +1916,46 @@ async fn a_fresh_tenants_region_universe_is_the_seeded_global() {
         .send(request("GET", &path("region"), None))
         .await;
     assert_eq!(set.status(), StatusCode::OK);
-    let body = body_json(set).await;
-    assert_eq!(codes(&body), ["global:active"]);
-    let seed = &body["values"][0];
-    assert_eq!(seed["display_name"], "Global");
-    assert!(
-        seed["tax_category"].is_null(),
-        "no tax fact asserted: {seed}"
+    assert_eq!(
+        codes(&body_json(set).await),
+        Vec::<String>::new(),
+        "nothing is seeded (D-381)"
     );
-    assert_eq!(seed["tax_rate_present"], false);
 
     let one = harness
         .other_tenant()
         .send(request("GET", &value_path("region", "global"), None))
         .await;
-    assert_eq!(one.status(), StatusCode::OK);
-    assert!(
-        etag_of(&one).is_some(),
-        "the virtual value carries a tag like any other"
+    assert_eq!(
+        one.status(),
+        StatusCode::NOT_FOUND,
+        "`global` is an ordinary region nobody declared"
     );
 
     let brands = harness
         .other_tenant()
         .send(request("GET", &path("brand"), None))
         .await;
-    assert_eq!(
-        codes(&body_json(brands).await),
-        Vec::<String>::new(),
-        "only the region universe is seeded"
-    );
+    assert_eq!(codes(&body_json(brands).await), Vec::<String>::new());
 
-    // The harness tenant declared its fixture regions, so it holds rows and is
-    // not seeded.
-    let (own, _) = read(&harness, "region").await;
-    assert!(
-        !codes(&own).contains(&"global:active".to_owned()),
-        "a tenant with rows is not given the seed: {:?}",
-        codes(&own)
+    // The first write materialises itself and nothing beside it.
+    let declared = harness
+        .other_tenant()
+        .send(request(
+            "POST",
+            &format!("{}/values", path("region")),
+            Some(json!({ "value": "DE", "display_name": "Germany" })),
+        ))
+        .await;
+    assert_eq!(declared.status(), StatusCode::CREATED);
+    let after = harness
+        .other_tenant()
+        .send(request("GET", &path("region"), None))
+        .await;
+    assert_eq!(
+        codes(&body_json(after).await),
+        ["DE:active"],
+        "the write brought no companion"
     );
 }
 

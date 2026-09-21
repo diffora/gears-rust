@@ -34,9 +34,8 @@ use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::overlay::{ScopeClass, ScopeValue};
 use bss_pricing::domain::scope_key::Region;
 use bss_pricing::domain::taxonomy::{
-    RegionTaxMarkers, SEEDED_REGION, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry,
-    TaxonomyState, TaxonomyValueChange, TaxonomyValuePatch, TaxonomyValueProposal, VocabularyClass,
-    seeded_region, tag_of,
+    RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState,
+    TaxonomyValueChange, TaxonomyValuePatch, TaxonomyValueProposal, VocabularyClass, tag_of,
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::storage::repo::taxonomy_repo::{
@@ -382,19 +381,9 @@ async fn a_put_on_one_class_leaves_the_other_three_alone() {
         .filter(|c| **c != TaxonomyClass::Brand)
     {
         let held = repo.list(&scope, TENANT, *class).await.expect("read back");
-        // The region universe also carries the seed the first write materialised
-        // and the whole-set replace then retired (D-354).
-        let expected = if *class == TaxonomyClass::Region {
-            vec![
-                (SEEDED_REGION, TaxonomyState::Retired),
-                ("shared-value", TaxonomyState::Active),
-            ]
-        } else {
-            vec![("shared-value", TaxonomyState::Active)]
-        };
         assert_eq!(
             values(&held),
-            expected,
+            vec![("shared-value", TaxonomyState::Active)],
             "{class} must be untouched by a brand PUT"
         );
     }
@@ -886,14 +875,7 @@ async fn a_published_overlay_scope_blocks_the_retirement_in_every_class() {
         );
         assert_eq!(
             values(&result.entries),
-            if *class == TaxonomyClass::Region {
-                vec![
-                    (SEEDED_REGION, TaxonomyState::Retired),
-                    ("in-use", TaxonomyState::Active),
-                ]
-            } else {
-                vec![("in-use", TaxonomyState::Active)]
-            },
+            vec![("in-use", TaxonomyState::Active)],
             "{class}: a refused PUT changes nothing at all"
         );
     }
@@ -1119,10 +1101,7 @@ async fn dropping_a_region_tax_category_a_published_row_leans_on_is_refused() {
     );
     assert_eq!(
         values(&result.entries),
-        [
-            ("eu", TaxonomyState::Active),
-            (SEEDED_REGION, TaxonomyState::Retired)
-        ],
+        [("eu", TaxonomyState::Active)],
         "one transaction, one verdict: the taxonomy is unchanged"
     );
 }
@@ -1261,13 +1240,7 @@ async fn a_published_price_row_blocks_its_regions_retirement() {
             .collect::<Vec<_>>(),
         [TAXONOMY_VALUE_IN_USE]
     );
-    assert_eq!(
-        values(&result.entries),
-        [
-            ("eu", TaxonomyState::Active),
-            (SEEDED_REGION, TaxonomyState::Retired)
-        ]
-    );
+    assert_eq!(values(&result.entries), [("eu", TaxonomyState::Active)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -3087,77 +3060,53 @@ async fn a_gl_code_a_published_price_row_names_cannot_be_retired_while_a_drafts_
 }
 
 // ---------------------------------------------------------------------------
-// D-354: the seeded region.
+// D-381: nothing is seeded.
 // ---------------------------------------------------------------------------
 
-/// A tenant holding no region row reads `{global: active}` from every region
-/// reader, with the fail-closed markers — and nothing is written by reading.
+/// **A tenant holding no region row reads nothing from every region reader**,
+/// and its first write materialises itself alone.
+///
+/// D-354's seeded `global` is retired. It existed so a fresh tenant could
+/// publish under a rule that judged every price row against a value it had not
+/// declared; the currency-wide market removes that premise, because a price
+/// that states no region is the currency's price everywhere and
+/// `inst-tx-region` has nothing to judge on it.
 #[tokio::test]
-async fn a_tenant_with_no_region_row_reads_the_seeded_global_everywhere() {
+async fn a_tenant_with_no_region_row_reads_an_empty_universe_everywhere() {
     let (repo, scope, provider) = harness().await;
     let conn = provider.conn().expect("conn");
 
-    let listed = repo
-        .list(&scope, TENANT, TaxonomyClass::Region)
-        .await
-        .expect("list");
-    assert_eq!(listed, vec![seeded_region()]);
-    assert_eq!(
-        values(&listed),
-        vec![(SEEDED_REGION, TaxonomyState::Active)]
-    );
-    let universe = active_regions(&conn, &scope, TENANT)
-        .await
-        .expect("universe");
-    assert_eq!(
-        universe,
-        std::iter::once(Region::new(SEEDED_REGION).expect("ok")).collect()
-    );
-    assert_eq!(
-        region_readiness(
-            &conn,
-            &scope,
-            TENANT,
-            &Region::new(SEEDED_REGION).expect("ok")
-        )
-        .await
-        .expect("read"),
-        Some(RegionTaxMarkers::default()),
-        "declared, with no tax fact asserted"
-    );
-    assert_eq!(
-        region_readiness(&conn, &scope, TENANT, &Region::new("mars").expect("ok"))
-            .await
-            .expect("read"),
-        None,
-        "the seed does not make every region known"
-    );
-    let map = region_readiness_map(&conn, &scope, TENANT)
-        .await
-        .expect("map");
-    assert_eq!(map.len(), 1);
-    assert_eq!(map.get(SEEDED_REGION), Some(&RegionTaxMarkers::default()));
-
-    // Reading wrote nothing: the brand list of the same tenant is untouched, and
-    // a second read of the region list is the same virtual entry.
     assert!(
-        repo.list(&scope, TENANT, TaxonomyClass::Brand)
+        repo.list(&scope, TENANT, TaxonomyClass::Region)
             .await
-            .expect("brand")
+            .expect("list")
+            .is_empty()
+    );
+    assert!(
+        active_regions(&conn, &scope, TENANT)
+            .await
+            .expect("universe")
             .is_empty()
     );
     assert_eq!(
-        repo.list(&scope, TENANT, TaxonomyClass::Region)
+        region_readiness(&conn, &scope, TENANT, &Region::new("global").expect("ok"))
             .await
-            .expect("list again"),
-        vec![seeded_region()]
+            .expect("read"),
+        None,
+        "`global` is an ordinary region nobody declared"
+    );
+    assert!(
+        region_readiness_map(&conn, &scope, TENANT)
+            .await
+            .expect("map")
+            .is_empty()
     );
 }
 
-/// The tenant's first region write materialises the seed before it lands, so
-/// the value the reads answered is the row the write goes on to sit beside.
+/// The tenant's first region write materialises **itself** and nothing beside
+/// it: no companion row appears in the universe.
 #[tokio::test]
-async fn the_first_region_write_materialises_the_seed_beside_it() {
+async fn the_first_region_write_materialises_nothing_but_itself() {
     let (repo, scope, provider) = harness().await;
     let conn = provider.conn().expect("conn");
 
@@ -3177,69 +3126,50 @@ async fn the_first_region_write_materialises_the_seed_beside_it() {
         .expect("list");
     assert_eq!(
         values(&listed),
-        vec![
-            ("eu", TaxonomyState::Active),
-            (SEEDED_REGION, TaxonomyState::Active)
-        ],
-        "two rows now, the seed among them: {listed:?}"
+        vec![("eu", TaxonomyState::Active)],
+        "one row, the one that was written: {listed:?}"
     );
     let universe = active_regions(&conn, &scope, TENANT)
         .await
         .expect("universe");
-    assert_eq!(universe.len(), 2);
-    assert!(universe.contains(&Region::new(SEEDED_REGION).expect("ok")));
+    assert_eq!(universe.len(), 1);
+    assert!(universe.contains(&Region::new("eu").expect("ok")));
 }
 
-/// The seed is an ordinary value once written: retiring it leaves the universe
-/// **empty** — the tenant asked for no regions — and no second seed appears.
+/// **`global` is an ordinary region a tenant may declare.** Nothing reserves
+/// the token any more, so it declares, reads and retires like `eu` (D-381).
 #[tokio::test]
-async fn retiring_the_seed_empties_the_universe_and_nothing_reseeds_it() {
+async fn global_is_an_ordinary_region_a_tenant_may_declare() {
     let (repo, scope, provider) = harness().await;
     let conn = provider.conn().expect("conn");
-    let held = seeded_region();
-    let retired = TaxonomyEntry {
-        state: TaxonomyState::Retired,
-        ..held.clone()
-    };
 
-    write_value_patch(
-        &conn,
+    repo.declare_value(
         &scope,
         TENANT,
         TaxonomyClass::Region,
-        &held,
-        &retired,
-        None,
+        region_entry("global", Some("standard"), true),
         stamp(),
     )
     .await
-    .expect("materialise, then retire");
+    .expect("declare");
 
-    let listed = repo
-        .list(&scope, TENANT, TaxonomyClass::Region)
-        .await
-        .expect("list");
     assert_eq!(
-        values(&listed),
-        vec![(SEEDED_REGION, TaxonomyState::Retired)],
-        "the row exists, retired - not a fresh virtual seed"
+        values(
+            &repo
+                .list(&scope, TENANT, TaxonomyClass::Region)
+                .await
+                .expect("list")
+        ),
+        vec![("global", TaxonomyState::Active)]
     );
-    assert!(
-        active_regions(&conn, &scope, TENANT)
+    assert_eq!(
+        region_readiness(&conn, &scope, TENANT, &Region::new("global").expect("ok"))
             .await
-            .expect("universe")
-            .is_empty(),
-        "a tenant that retired every region has the empty universe it asked for"
-    );
-    assert_eq!(
-        region_readiness(
-            &conn,
-            &scope,
-            TENANT,
-            &Region::new(SEEDED_REGION).expect("ok")
-        )
-        .await
-        .expect("read"),
-        None
+            .expect("read"),
+        Some(RegionTaxMarkers {
+            tax_category: Some("standard".to_owned()),
+            tax_rate_present: true,
+        }),
+        "a declared region reads its own markers, whatever it is called"
     );
 }
