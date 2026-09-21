@@ -485,11 +485,28 @@ pub async fn record_decision(
         )));
     }
 
+    // **Not the wire's 404 — that one is the door's, and it has already run.**
+    // `read_decidable_approval` resolves the path segment before this
+    // transaction opens, so a caller-supplied id the tenant has none of never
+    // reaches here, and absence at this point is an invariant breach rather
+    // than a caller mistake. 500 is the right class for that.
+    //
+    // **The second half of the argument is scoped to this commit on purpose.**
+    // A closed record is `superseded` and never gone, but the gear is not
+    // delete-free: `retention_gc::delete_audit_class_row`'s `products_approval`
+    // arm issues a `DELETE` on every sweep, and it lands only because P-D-136
+    // keeps that table's DB guard shut — the statement is issued rather than
+    // skipped precisely so the hold is measured, `retention_gc`'s own doc
+    // saying a believed-refusing roster "goes stale the day a migration opens
+    // an arm". The day the erasure arm opens, a decision racing a purge is a
+    // real caller-visible race and this message becomes false; it names the
+    // guard so that reads as a change rather than as noise.
     let record = read_approval(runner, scope, new.tenant_id, new.approval_id)
         .await?
         .ok_or_else(|| {
             ApprovalStoreError::Repo(RepoError::Db(format!(
-                "no approval {} in tenant {}",
+                "no approval {} in tenant {}, though the door resolved it before this \
+                 transaction and nothing deletes one",
                 new.approval_id, new.tenant_id
             )))
         })?;

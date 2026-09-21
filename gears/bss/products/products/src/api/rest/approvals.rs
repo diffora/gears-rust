@@ -420,7 +420,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              rejection finalizes the record and leaves the subject exactly as it was - there is \
              no `published -> draft` edge in this gear. An approval that meets the descriptor by \
              distinct eligible principals flips the record `satisfied` in the same transaction. \
-             `ApprovalDecided` is emitted on either verdict.",
+             `ApprovalDecided` is emitted on either verdict. An `approvalId` this tenant holds no \
+             record for is **404**, indistinguishably from one the caller's scope does not reach.",
         )
         .tag(TAG)
         .authenticated()
@@ -689,14 +690,65 @@ fn claims_from_token_scopes(scopes: &[String]) -> ScopePair {
     }
 }
 
+/// The record the `{approvalId}` segment names, or the **404** an id this
+/// tenant has none of answers.
+///
+/// `design/05` §3.3's status rule gives 404 to exactly this shape — *"a path
+/// segment names a resource this tenant has none of"* — and the route has
+/// declared `error_404` since it was registered. Nothing produced one: the
+/// door left the miss to the decision transaction, whose `record_decision`
+/// raises a [`RepoError::Db`] for it, which `repo_error_to_canonical` renders
+/// **500**. An id the caller supplied and the store does not hold is a caller
+/// error; reporting it as an internal one both misleads the caller and raises
+/// a false operator alarm.
+///
+/// **After the PDP, never before.** The read runs once `approval × decide` has
+/// been granted, so the answer cannot be used to probe which ids exist in a
+/// tenant the caller has no decide grant on. A miss is deliberately
+/// indistinguishable from an out-of-scope hit — `read_approval` is scoped, so
+/// both arrive here as `None`, exactly as `product_not_found` treats its own.
+///
+/// **And like that one it writes no audit row**, alone among this door's
+/// refusals, which is the gear's stated posture rather than an omission:
+/// `products::open_head_door`'s *"the `404` is the one refusal that writes no
+/// audit row"* gives the two reasons, and both hold here. There is no registry
+/// code for `products_audit_log.error_code` to carry, and minting a
+/// `NOT_FOUND` token would put one in the trail the taxonomy does not define;
+/// and an audit row written for an absent record but not for another tenant's
+/// would record exactly the distinction this answer exists to withhold.
+///
+/// [`RepoError::Db`]: crate::infra::storage::RepoError::Db
+async fn read_decidable_approval(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    record: ApprovalId,
+) -> Result<crate::infra::storage::entity::approval::Model, CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    repo::read_approval(&conn, scope, tenant_id, record)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .ok_or_else(|| {
+            ApprovalResource::not_found("no approval matches this id in the caller's scope")
+                .with_resource(record.get().to_string())
+                .create()
+        })
+}
+
 /// `inst-gv-scope` at the decide door (`dod-approver-scope`; P-D-155): the
 /// approver's claims must cover the subject's scope, read with the
 /// Foundation's two boundaries. The subject's scope is the entity head's two
 /// columns for an `entity_publish` record and **tenant-wide** for every other
 /// kind — a policy, a live op, a batch or a signal has no narrower scope than
-/// the tenant, so only an unrestricted claim set covers it (clause 2). A
-/// record the store does not hold, or whose head is gone, is left to the
-/// decision transaction, which refuses it by its own code.
+/// the tenant, so only an unrestricted claim set covers it (clause 2).
+///
+/// The record arrives read: [`read_decidable_approval`] has already
+/// established that the tenant holds it, so this rule no longer has an
+/// absence to defer. A record whose **head** is gone still is — that is a
+/// different miss, an `entity_publish` naming an entity the store no longer
+/// serves, and it stays the decision transaction's to refuse.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-approver-scope:p1
 async fn refuse_out_of_scope_approver(
@@ -705,19 +757,13 @@ async fn refuse_out_of_scope_approver(
     tenant_id: Uuid,
     actor_ref: Uuid,
     attempted: String,
-    record: ApprovalId,
+    stored: &crate::infra::storage::entity::approval::Model,
     claims: &ScopePair,
 ) -> Result<(), CanonicalError> {
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let Some(stored) = repo::read_approval(&conn, scope, tenant_id, record)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?
-    else {
-        return Ok(());
-    };
-    let Some(subject) = subject_scope_of(&conn, scope, tenant_id, &stored).await? else {
+    let Some(subject) = subject_scope_of(&conn, scope, tenant_id, stored).await? else {
         return Ok(());
     };
     match approver_covers_subject(claims, &subject) {
@@ -1757,6 +1803,12 @@ async fn decide_approval(
     // its absence still leaves a finance-material record open.
     let roles = roles_from_claims(ctx.token_scopes());
 
+    // The `{approvalId}` segment is resolved once, here and after the PDP: a
+    // miss is this caller's 404 and not the transaction's 500, and the two
+    // rules below read the record this returns rather than the same row twice
+    // more.
+    let stored = read_decidable_approval(&state, &scope, tenant_id, record).await?;
+
     // `inst-gv-scope` (`dod-approver-scope`; P-D-155): the approver's brand
     // and region claims must cover the subject's scope. Before the ceremony
     // and the transaction, like the role check: an approver the rule does
@@ -1767,7 +1819,7 @@ async fn decide_approval(
         tenant_id,
         actor_ref,
         attempted.clone(),
-        record,
+        &stored,
         &claims_from_token_scopes(ctx.token_scopes()),
     )
     .await?;
@@ -1785,7 +1837,7 @@ async fn decide_approval(
             tenant_id,
             actor_ref,
             attempted.clone(),
-            record,
+            &stored,
             body.override_acknowledgments.as_deref(),
         )
         .await?;
@@ -1929,27 +1981,18 @@ async fn decide_approval(
 /// every one of them in `override_acknowledgments`, else the decision is
 /// refused `VALIDATION` on that field, naming the codes not acknowledged. The
 /// conditions were fixed at submission and are read outside the decision's
-/// transaction because they do not move.
+/// transaction because they do not move — from the record
+/// [`read_decidable_approval`] already read, rather than by reading the same
+/// row a second time.
 async fn refuse_unacknowledged_conditions(
     state: &ApiState,
     scope: &toolkit_db::secure::AccessScope,
     tenant_id: Uuid,
     actor_ref: Uuid,
     attempted: String,
-    record: ApprovalId,
+    stored: &crate::infra::storage::entity::approval::Model,
     acknowledgments: Option<&str>,
 ) -> Result<(), CanonicalError> {
-    let conn = state.db.conn().map_err(|e| {
-        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
-            "decision connection: {e}"
-        )))
-    })?;
-    let stored = repo::read_approval(&conn, scope, tenant_id, record)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
-    let Some(stored) = stored else {
-        return Ok(());
-    };
     let Ok(descriptor) = crate::domain::approval::descriptor_from_stored(&stored.quorum_descriptor)
     else {
         return Ok(());

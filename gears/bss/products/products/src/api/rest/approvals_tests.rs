@@ -1243,6 +1243,85 @@ async fn a_second_verdict_from_one_principal_is_409_not_500() {
     );
 }
 
+/// **A decision on an `approvalId` the tenant has no record for is `404`, not
+/// a 500** — `design/05` §3.3's own rule, *"404 only where a path segment
+/// names a resource this tenant has none of"*, and the status the route has
+/// declared since it was registered.
+///
+/// The same shape as [`a_second_verdict_from_one_principal_is_409_not_500`]
+/// and found the same way: the door left the miss to the decision
+/// transaction, whose `record_decision` raises `RepoError::Db("no approval
+/// …")`, and `repo_error_to_canonical` renders that **500**. Measured on the
+/// benidorm stand on 2026-09-21 against a random id, where it read as the
+/// database having broken rather than as a bad id.
+///
+/// The decision table is read too: a refusal at the door writes no verdict,
+/// which a status assertion alone would not catch if the 404 were produced
+/// *after* the append-only row landed.
+#[tokio::test]
+async fn a_decision_on_an_unknown_approval_is_404_not_500() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 1).await;
+    // A record exists in this tenant, so the miss below is this id's and not
+    // an empty table's.
+    let _real = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+    let unknown = Uuid::now_v7();
+
+    let response = decide_as(
+        &harness,
+        unknown,
+        ctx_with_roles(Uuid::from_u128(0x5a_a1), &[ApproverRole::CatalogAdmin]),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        404,
+        "an id the caller supplied and this tenant has no record for is the caller's \
+         mistake, never an internal failure"
+    );
+    assert_eq!(
+        count(
+            &harness,
+            "SELECT COUNT(*) AS v FROM products_approval_decision"
+        )
+        .await,
+        0,
+        "the door refuses before the append-only verdict row"
+    );
+}
+
+/// **The `404` is the PDP's to allow first** — a caller whose compiled scope
+/// does not contain the tenant meets `403`, for the same unknown id.
+///
+/// Ordering, not politeness: a door that resolved the path segment before
+/// authorizing would answer *absent* or *present* to a caller with no decide
+/// grant, which is an oracle over a tenant's approval ids. The enforcer here
+/// pins `owner_tenant_id` to another tenant while the caller authenticates as
+/// `TENANT`, the shape `skus_tests`' own break-glass case uses.
+#[tokio::test]
+async fn an_unknown_approval_is_403_for_a_caller_the_pdp_refuses() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    let unknown = Uuid::now_v7();
+
+    let response = post(
+        app_for(&harness, TARGET_TENANT),
+        &format!("/bss-products/v1/approvals/{unknown}/decisions"),
+        ctx_with_roles(Uuid::from_u128(0x5a_a1), &[ApproverRole::CatalogAdmin]),
+        json!({ "verdict": "approved" }),
+    )
+    .await;
+
+    assert_eq!(
+        response.status(),
+        403,
+        "the decide grant is checked before the id is resolved, so a refused caller \
+         learns nothing about which ids exist"
+    );
+}
+
 /// **A rejection finalizes the record and carries a mandatory reason**, and
 /// a rejection without one is refused before the append-only row lands.
 #[tokio::test]
