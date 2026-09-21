@@ -1641,6 +1641,69 @@ fn rest_sources() -> Vec<std::path::PathBuf> {
 /// *gear* reads is answered by the gear: a reader in `infra` or `domain` is as
 /// invisible to a fixture as one in a handler, so a scan narrower than the crate
 /// would report a hole it never looked into as absent.
+/// **Every site that evaluates materiality must also consult the quorum**
+/// (**D-380**).
+///
+/// This is the census, not a sample. Measured 2026-09-21 at `738da4993`: twelve
+/// sites called `materiality::evaluate`, and only **five** of them asked
+/// `is_material()`. The other seven — bundles, overlays, taxonomies, customer
+/// groups (twice), cutover, retirement and grandfather — opened an approval unit
+/// **unconditionally**, because every act they carry is an `inst-mat-registered`
+/// trigger and is material by construction.
+///
+/// Those seven are exactly the set `N = 0` has to reach. A change that touched
+/// only the publish door would leave a bundle composition, an overlay edit, a
+/// retirement and a cutover still demanding a second principal, and the work
+/// would not reach its stated goal — which is why this scan is written over the
+/// **population** rather than over a list somebody maintains.
+///
+/// The needle is the call, not the module name: a door that stops evaluating
+/// materiality drops out of both sets and the equality still holds, while a door
+/// that starts evaluating it and forgets the quorum breaks this immediately.
+#[test]
+fn every_materiality_site_consults_the_quorum() {
+    let mut evaluating: Vec<String> = Vec::new();
+    let mut consulting: Vec<String> = Vec::new();
+    for path in crate_sources() {
+        let name = path
+            .to_string_lossy()
+            .rsplit("src/")
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        // The tests beside each module are not the subject: a fixture may build a
+        // verdict without being a door.
+        if name.ends_with("_tests.rs") {
+            continue;
+        }
+        // The module that *declares* `describe_quorum` is not a caller of it, and
+        // `evaluate` lives there too. Excluded by name rather than by a cleverer
+        // needle, because a needle that told a definition from a call would also
+        // have to be maintained.
+        if name == "domain/materiality.rs" {
+            continue;
+        }
+        let body = scannable(&path);
+        if body.contains("materiality::evaluate(") {
+            evaluating.push(name.clone());
+        }
+        if body.contains("describe_quorum(") {
+            consulting.push(name);
+        }
+    }
+    evaluating.sort();
+    consulting.sort();
+    assert!(
+        !evaluating.is_empty(),
+        "the scan found no materiality site at all, so it is measuring nothing"
+    );
+    assert_eq!(
+        evaluating, consulting,
+        "a door evaluates materiality and ignores the tenant's approver count, so `N = 0` \
+         does not reach it"
+    );
+}
+
 fn crate_sources() -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
