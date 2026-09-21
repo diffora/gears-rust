@@ -1841,16 +1841,6 @@ pub async fn plan_row_version(harness: &Harness, plan_id: Uuid, revision: u64) -
         .map(|row| row.row_version.get())
 }
 
-/// The principal who proposes the tenant's approver count in a door suite.
-///
-/// Distinct from [`APPROVER_COUNT_REVIEWER`] because
-/// `chk_pricing_approval_distinct_principals` is a real constraint and the
-/// ceremony below is the real one.
-pub const APPROVER_COUNT_PROPOSER: Uuid = Uuid::from_u128(0x5_e0);
-
-/// The independent principal who approves it.
-pub const APPROVER_COUNT_REVIEWER: Uuid = Uuid::from_u128(0xa_e0);
-
 /// Put the tenant at an approver count of `approver_count` (**D-380**).
 ///
 /// **Through the ceremony, not around it.** A version is only the tenant's
@@ -1867,6 +1857,11 @@ pub const APPROVER_COUNT_REVIEWER: Uuid = Uuid::from_u128(0xa_e0);
 /// `approverCount` until the surface task lands; the approve goes through the
 /// **real route**, because that half already works and driving it is what keeps
 /// this helper honest about what a tenant has to do.
+///
+/// **It is [`approve_threshold_policy_from`] with one more field**, and it
+/// should collapse back into that function the moment the `PUT` carries
+/// `approverCount` — two fixtures installing a policy is two places for the
+/// ceremony to drift. The two share the principals for that reason.
 ///
 /// **The entry is a zero absolute threshold, and that is deliberate.** A zero
 /// threshold makes every priced change material, which is the state in which
@@ -1910,7 +1905,7 @@ pub async fn set_approver_count(harness: &Harness, approver_count: u32) {
                 &verdict,
             ))
             .expect("the verdict renders"),
-            stamp_of(APPROVER_COUNT_PROPOSER, now),
+            stamp_of(POLICY_PROPOSER, now),
         )
         .await
         .expect("propose the tenant's approver count");
@@ -1920,7 +1915,7 @@ pub async fn set_approver_count(harness: &Harness, approver_count: u32) {
     // other tenant owes the ceremony, and it is driven here in full.
     if let Some(opened) = opened {
         let decided = harness
-            .allowed_as(APPROVER_COUNT_REVIEWER)
+            .allowed_as(POLICY_REVIEWER)
             .send(with_headers(
                 "POST",
                 &format!("/bss-pricing/v1/approvals/{}/approve", opened.approval_id),

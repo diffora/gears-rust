@@ -46,9 +46,10 @@ use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
 use bss_pricing::domain::instant::format_rfc3339;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use rest_support::{
-    Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row, price_rows,
-    problem_code, seed_current_plan, seed_current_plan_with_phase, seed_per_unit_rate_row,
-    seed_price, seed_price_keyed, seed_priced_row, with_headers,
+    Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row,
+    effective_approver_count, price_rows, problem_code, seed_current_plan,
+    seed_current_plan_with_phase, seed_per_unit_rate_row, seed_price, seed_price_keyed,
+    seed_priced_row, set_approver_count, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -2797,5 +2798,96 @@ async fn a_foreign_tenants_run_reads_like_an_unknown_one() {
     assert_eq!(
         body_json(owner).await["run_id"],
         serde_json::json!(run_id.to_string())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the repricing run.
+// ---------------------------------------------------------------------------
+
+/// **A material run at `N = 0` goes straight to `committing`.**
+///
+/// This door already had a sub-threshold arm that applies without a second
+/// signature, so the case that says anything new is the **material** one: the
+/// fail-safe trips, the run is material, and the tenant owes nobody — the edge
+/// `advance_on_verdict` writes is `validating -> committing` rather than
+/// `-> awaiting_approval`, and no unit is opened over it.
+///
+/// Read off the **stored** run, never the `POST`'s own response, for this
+/// suite's own reason: a response-only assertion cannot tell a handler that
+/// evaluated materiality from one that answers a literal.
+#[tokio::test]
+async fn a_material_run_at_quorum_zero_commits_without_an_approval_unit() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+    set_approver_count(&harness, 0).await;
+    assert_eq!(effective_approver_count(&harness).await, 0);
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_ne!(
+        stored.state,
+        BulkState::AwaitingApproval,
+        "a tenant at zero is not parked waiting for a principal they do not have: {stored:?}"
+    );
+
+    let units: Vec<_> = approval_rows(&harness)
+        .await
+        .into_iter()
+        .filter(|row| row.subject_kind == "bulk_operation" && row.subject_ref == operation_id)
+        .collect();
+    assert!(
+        units.is_empty(),
+        "and no unit was opened over the run: {units:?}"
+    );
+}
+
+/// **The same run at the default still parks in `awaiting_approval`.**
+#[tokio::test]
+async fn a_material_run_at_the_default_still_awaits_approval() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    a_published_row(&harness, plan, "eu").await;
+    set_approver_count(&harness, 1).await;
+
+    let run_id = Uuid::now_v7();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            REPRICING_RUNS,
+            Some(a_run(run_id, &serde_json::json!({ "currency": "USD" }))),
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let operation_id = body_json(response).await["operation_id"]
+        .as_str()
+        .expect("the view carries the minted id")
+        .to_owned();
+
+    let stored = bulk_operation_row(&harness, operation_id.parse().expect("a uuid")).await;
+    assert_eq!(
+        stored.state,
+        BulkState::AwaitingApproval,
+        "the run waits for the second principal the tenant owes: {stored:?}"
     );
 }

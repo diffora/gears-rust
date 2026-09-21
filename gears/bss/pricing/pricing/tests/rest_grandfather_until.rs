@@ -30,8 +30,8 @@ use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 
 use bss_pricing::domain::instant::{format_rfc3339, utc_ymd_hms};
 use rest_support::{
-    Harness, audit_rows, body_json, code_in, problem_code, seed_publishable_plan, violation_for,
-    with_headers,
+    Harness, audit_rows, body_json, code_in, effective_approver_count, problem_code,
+    seed_publishable_plan, set_approver_count, violation_for, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -707,4 +707,76 @@ async fn submits(h: &Harness) -> usize {
         .into_iter()
         .filter(|row| row.action == "submit")
         .count()
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the horizon door.
+// ---------------------------------------------------------------------------
+
+/// **A tightening at `N = 0` sets the column on the first call.**
+///
+/// The horizon tightening is `inst-mat-registered`'s trigger, so the door's two
+/// arms were "open a unit" and "commit under one" — and a tenant with a single
+/// principal had only the first. This is the door the `act_authorization` seam
+/// was built for, and this is the case that says the seam reaches the column.
+#[tokio::test]
+async fn a_tightening_at_quorum_zero_sets_the_bound_on_the_first_call() {
+    let h = Harness::new().await;
+    let g = cut_over(&h).await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+    let tag = tag_of(&h, g.copy_price_id).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "PATCH",
+            &path(g.copy_price_id),
+            Some(body(horizon(1))),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let view = body_json(response).await;
+    assert_eq!(
+        view["outcome"], "tightened",
+        "one principal's call is the whole act at N = 0: {view}"
+    );
+    assert!(
+        view["approval"].is_null(),
+        "no unit was opened, so there is none to name: {view}"
+    );
+    assert_eq!(
+        stored_horizon(&h, g.copy_price_id).await,
+        Some(horizon(1)),
+        "the column moved, read off the store rather than off the response"
+    );
+}
+
+/// **The same tightening at the default still stages.**
+#[tokio::test]
+async fn a_tightening_at_the_default_still_opens_a_unit() {
+    let h = Harness::new().await;
+    let g = cut_over(&h).await;
+    set_approver_count(&h, 1).await;
+    let tag = tag_of(&h, g.copy_price_id).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "PATCH",
+            &path(g.copy_price_id),
+            Some(body(horizon(1))),
+            &[("if-match", &tag)],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let view = body_json(response).await;
+    assert_eq!(view["outcome"], "submitted_for_approval", "{view}");
+    assert!(
+        stored_horizon(&h, g.copy_price_id).await.is_none(),
+        "and the generation is still indefinite"
+    );
 }

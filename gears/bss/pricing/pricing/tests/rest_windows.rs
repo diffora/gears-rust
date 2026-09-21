@@ -25,7 +25,8 @@ use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, schedule};
 use rest_support::{
-    Harness, body_json, request, seed_draft_plan, seed_price, seed_publishable_plan, with_headers,
+    Harness, body_json, effective_approver_count, request, seed_draft_plan, seed_price,
+    seed_publishable_plan, set_approver_count, with_headers,
 };
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
@@ -4155,5 +4156,68 @@ async fn a_foreign_tenant_cannot_cancel_this_tenants_window() {
         window_state(&h, window_id).await.as_deref(),
         Some("scheduled"),
         "which the window is still waiting on"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the window plane.
+// ---------------------------------------------------------------------------
+
+/// **A material schedule at `N = 0` commits on the first call.**
+///
+/// The tenant is unconfigured on thresholds, so `inst-mat-failsafe` makes the
+/// schedule material — and that is the point: the count is applied *after* the
+/// verdict, so it reaches the fail-safe rule as it reaches every other. The
+/// window plane is read back, because a 200 with `outcome: mutated` is also
+/// what a door that answered without writing would produce.
+#[tokio::test]
+async fn a_material_schedule_at_quorum_zero_commits_on_the_first_call() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published_unconfigured(&h, plan_id).await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+
+    let response = post_window(&h, seeded.price_id, common_to(), None).await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let committed = body_json(response).await;
+    assert_eq!(
+        committed["outcome"], "mutated",
+        "one principal's call is the whole act at N = 0: {committed}"
+    );
+    assert!(
+        units_of(&h, AuditSubjectKind::Window).await.is_empty(),
+        "and no window unit was opened"
+    );
+
+    let window_id = committed["window"]["window_id"]
+        .as_str()
+        .map(|s| Uuid::parse_str(s).expect("a uuid"))
+        .unwrap_or_else(|| panic!("the commit names the window it minted: {committed}"));
+    assert_eq!(
+        window_state(&h, window_id).await.as_deref(),
+        Some("scheduled"),
+        "the act took effect on the plane it was about"
+    );
+}
+
+/// **The same schedule at the default still opens a unit and writes nothing.**
+#[tokio::test]
+async fn a_material_schedule_at_the_default_still_opens_a_unit() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = published_unconfigured(&h, plan_id).await;
+    set_approver_count(&h, 1).await;
+
+    let response = post_window(&h, seeded.price_id, common_to(), None).await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "submitted_for_approval", "{body}");
+    assert_eq!(
+        units_of(&h, AuditSubjectKind::Window).await.len(),
+        1,
+        "and the unit is open over it"
     );
 }

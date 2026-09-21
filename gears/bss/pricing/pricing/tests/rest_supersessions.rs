@@ -30,7 +30,10 @@ use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 
 use bss_pricing::domain::instant::utc_ymd_hms;
-use rest_support::{Harness, Publishable, body_json, request, seed_publishable_plan};
+use rest_support::{
+    Harness, Publishable, body_json, effective_approver_count, request, seed_publishable_plan,
+    set_approver_count,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -599,4 +602,70 @@ async fn a_supersession_reads_the_registry_outside_its_transaction() {
         "a registry that needs its own connection must still be readable: {}",
         body_json(response).await
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the supersession door.
+// ---------------------------------------------------------------------------
+
+/// **A material supersession at `N = 0` commits on the first call.**
+///
+/// This door already had a one-call arm — an auto-publishable supersession,
+/// below its threshold — so the case that says anything new is the **material**
+/// one: the act the evaluator judges material, committing with no approver
+/// because the tenant owes none.
+#[tokio::test]
+async fn a_material_supersession_at_quorum_zero_commits_on_the_first_call() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published(&h).await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(supersede_body(seeded.price_id, 12_000)),
+        ))
+        .await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    assert_eq!(
+        view["outcome"], "superseded",
+        "one principal's call is the whole act at N = 0: {view}"
+    );
+    assert!(
+        view["approval"].is_null(),
+        "no unit was opened, so there is none to name: {view}"
+    );
+    assert!(
+        view["pending_version_ref"].is_string(),
+        "and the commit's own handle is present: {view}"
+    );
+}
+
+/// **The same supersession at the default still stages.**
+#[tokio::test]
+async fn a_material_supersession_at_the_default_still_stages() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published(&h).await;
+    set_approver_count(&h, 1).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(supersede_body(seeded.price_id, 12_000)),
+        ))
+        .await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    assert_eq!(view["outcome"], "submitted_for_approval", "{view}");
+    assert!(view["pending_version_ref"].is_null(), "{view}");
 }
