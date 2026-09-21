@@ -1338,6 +1338,7 @@ async fn two_proposals_intersecting_on_a_currency_meet_the_mint_guard_and_not_th
                             0,
                             policy_effective_from(),
                             &winner_rows(),
+                            1,
                             stamp_of(SUBMITTER, at(12)),
                         )
                         .await?;
@@ -1560,6 +1561,7 @@ async fn two_retirements_meet_the_mint_guard_and_not_the_tombstone_key() {
                             TENANT,
                             0,
                             policy_effective_from(),
+                            1,
                             stamp_of(SUBMITTER, at(12)),
                         )
                         .await?;

@@ -3113,6 +3113,17 @@ pub(crate) async fn read_threshold_version(
         return Ok(None);
     };
     let effective_from = stored.effective_from;
+    // **D-380's count, as the store derived it** — one value for the whole
+    // version, with two rows disagreeing already refused a layer down. A
+    // negative here is the CHECK written around, so it reads as the corrupt row
+    // it is rather than as a count.
+    let approver_count = u32::try_from(stored.approver_count).map_err(|_| {
+        DomainError::Internal(format!(
+            "bss-pricing: threshold version {version} carries approver_count {}, which \
+             chk_pricing_approval_threshold_approver_count forbids",
+            stored.approver_count
+        ))
+    })?;
     let mut entries = Vec::with_capacity(stored.entries.len());
     for row in stored.entries {
         let currency = CurrencyCode::new(&row.currency).map_err(|_| {
@@ -3138,13 +3149,10 @@ pub(crate) async fn read_threshold_version(
     // refusal would fold the authored retirement back into "no such version" and leave
     // the tenant on the thresholds they had approved the removal of.
     if entries.is_empty() {
-        // D-380-PENDING-STORE: the stored `approver_count` replaces this default
-        // once the column exists; until then every stored version reads as the
-        // gear's shipped rule, which is what the backfill will also give it.
         return Ok(Some(ThresholdVersion::tombstone(
             version,
             effective_from,
-            crate::domain::materiality::DEFAULT_APPROVER_COUNT,
+            approver_count,
         )));
     }
     // The version's own rows are ordered by currency in SQL, which is the order the
@@ -3156,13 +3164,7 @@ pub(crate) async fn read_threshold_version(
     // whose thresholds may be higher — a change that should be material is judged
     // immaterial and commits on one principal. The `CorruptRow` arm above warns
     // for the same class of stored fault; this one is the same fact one layer in.
-    // D-380-PENDING-STORE: as above — the stored count lands here in the store task.
-    match ThresholdVersion::new(
-        version,
-        effective_from,
-        entries,
-        crate::domain::materiality::DEFAULT_APPROVER_COUNT,
-    ) {
+    match ThresholdVersion::new(version, effective_from, entries, approver_count) {
         Ok(built) => Ok(Some(built)),
         Err(why) => {
             tracing::warn!(

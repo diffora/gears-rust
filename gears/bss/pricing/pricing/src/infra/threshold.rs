@@ -536,6 +536,7 @@ impl ThresholdService {
                         next,
                         effective_from,
                         &rows,
+                        count_row(approver_count)?,
                         stamp,
                     )
                     .await
@@ -656,6 +657,7 @@ impl ThresholdService {
                         tenant_id,
                         next,
                         effective_from,
+                        count_row(approver_count)?,
                         stamp,
                     )
                     .await
@@ -735,3 +737,16 @@ fn into_domain(err: toolkit_db::secure::TxError<DomainError>) -> DomainError {
 #[cfg(test)]
 #[path = "threshold_tests.rs"]
 mod threshold_tests;
+
+/// The approver count as the store holds it.
+///
+/// `i32` because both columns are `integer`; the CHECK keeps them non-negative,
+/// so the only way this fails is a count past `i32::MAX`, which is a caller
+/// fault rather than a stored one and is told as one.
+fn count_row(approver_count: u32) -> Result<i32, DomainError> {
+    i32::try_from(approver_count).map_err(|_| {
+        DomainError::ThresholdInvalid(format!(
+            "approverCount {approver_count} is larger than this store can hold"
+        ))
+    })
+}

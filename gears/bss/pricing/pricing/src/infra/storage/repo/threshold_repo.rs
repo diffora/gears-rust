@@ -117,6 +117,10 @@ pub struct StoredVersion {
     /// The entries, ordered by currency — the order the pin is taken over. Empty
     /// exactly on a tombstone.
     pub entries: Vec<ThresholdEntryRow>,
+    /// The tenant's `N` this version sets (**D-380**), derived across the
+    /// version's rows with disagreement refused — the same treatment
+    /// `effective_from` gets, and for the same reason.
+    pub approver_count: i32,
 }
 
 /// The greatest version number this tenant has ever proposed, **across both
@@ -242,7 +246,7 @@ pub async fn read_version(
         .await
         .map_err(|e| RepoError::Db(format!("read threshold version {version}: {e}")))?;
     let retired = read_tombstone(runner, scope, tenant_id, version).await?;
-    if let Some(retired_at) = retired {
+    if let Some((retired_at, retired_count)) = retired {
         if !rows.is_empty() {
             return Err(RepoError::CorruptRow(format!(
                 "pricing_approval_threshold: version {version} is both a tombstone starting \
@@ -254,6 +258,7 @@ pub async fn read_version(
         return Ok(Some(StoredVersion {
             effective_from: retired_at,
             entries: Vec::new(),
+            approver_count: retired_count,
         }));
     }
     let Some(effective_from) = rows.iter().map(|row| row.effective_from).max() else {
@@ -267,8 +272,22 @@ pub async fn read_version(
             disagreeing.effective_from, disagreeing.currency
         )));
     }
+    // **D-380's count, derived exactly as `effective_from` above.** A scalar of
+    // the version has no row of its own, so the rows carry it and any two of
+    // them free to disagree would let a stored version report a count no
+    // approver signed — which is the same fault, one column over.
+    let approver_count = rows.first().map_or(1, |row| row.approver_count);
+    if let Some(disagreeing) = rows.iter().find(|row| row.approver_count != approver_count) {
+        return Err(RepoError::CorruptRow(format!(
+            "pricing_approval_threshold: version {version} carries two approver_count values - \
+             {approver_count} on one entry and {} on {} - so how many principals an approver \
+             signed for is not determined",
+            disagreeing.approver_count, disagreeing.currency
+        )));
+    }
     Ok(Some(StoredVersion {
         effective_from,
+        approver_count,
         entries: rows
             .into_iter()
             .map(|row| ThresholdEntryRow {
@@ -321,6 +340,9 @@ pub async fn open_version(
     version: i64,
     effective_from: OffsetDateTime,
     entries: &[ThresholdEntryRow],
+    // The tenant's `N` this version sets (D-380). Carried on every row of the
+    // version, which is what `read_version` derives it back from.
+    approver_count: i32,
     stamp: AuditStamp,
 ) -> Result<(), RepoError> {
     check_authored_instant("effectiveFrom", Some(effective_from))?;
@@ -332,6 +354,7 @@ pub async fn open_version(
             absolute_minor: sea_orm::ActiveValue::Set(entry.absolute_minor),
             percent_bp: sea_orm::ActiveValue::Set(entry.percent_bp),
             effective_from: sea_orm::ActiveValue::Set(effective_from),
+            approver_count: sea_orm::ActiveValue::Set(approver_count),
             created_by: sea_orm::ActiveValue::Set(stamp.actor_principal_id),
             created_at: sea_orm::ActiveValue::Set(stamp.recorded_at),
         };
@@ -383,6 +406,9 @@ pub async fn open_tombstone(
     tenant_id: Uuid,
     version: i64,
     effective_from: OffsetDateTime,
+    // The tenant's `N` the tombstone carries (D-380): a tombstone is a version,
+    // and a version with no `N` would make the type partial.
+    approver_count: i32,
     stamp: AuditStamp,
 ) -> Result<(), RepoError> {
     check_authored_instant("effectiveFrom", Some(effective_from))?;
@@ -390,6 +416,7 @@ pub async fn open_tombstone(
         tenant_id: sea_orm::ActiveValue::Set(tenant_id),
         version: sea_orm::ActiveValue::Set(version),
         effective_from: sea_orm::ActiveValue::Set(effective_from),
+        approver_count: sea_orm::ActiveValue::Set(approver_count),
         created_by: sea_orm::ActiveValue::Set(stamp.actor_principal_id),
         created_at: sea_orm::ActiveValue::Set(stamp.recorded_at),
     };
@@ -423,7 +450,7 @@ async fn read_tombstone(
     scope: &AccessScope,
     tenant_id: Uuid,
     version: i64,
-) -> Result<Option<OffsetDateTime>, RepoError> {
+) -> Result<Option<(OffsetDateTime, i32)>, RepoError> {
     let row = approval_threshold_tombstone::Entity::find()
         .secure()
         .scope_with(scope)
@@ -435,7 +462,7 @@ async fn read_tombstone(
         .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read threshold tombstone {version}: {e}")))?;
-    Ok(row.map(|row| row.effective_from))
+    Ok(row.map(|row| (row.effective_from, row.approver_count)))
 }
 
 /// Every version number this tenant has proposed, greatest first — **entry versions

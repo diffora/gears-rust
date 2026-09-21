@@ -914,6 +914,7 @@ async fn a_version_widened_after_approval_stops_being_the_effective_policy() {
             absolute_minor: Some(1),
             percent_bp: None,
         }],
+        1,
         rest_support::seed_stamp(),
     )
     .await

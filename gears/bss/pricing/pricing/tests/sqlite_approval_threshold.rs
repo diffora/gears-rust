@@ -337,6 +337,7 @@ async fn a_version_whose_rows_disagree_about_their_instant_is_a_corrupt_row() {
         0,
         at_utc(1),
         &[row_for("AUD")],
+        1,
         stamp,
     )
     .await
@@ -349,6 +350,7 @@ async fn a_version_whose_rows_disagree_about_their_instant_is_a_corrupt_row() {
         0,
         at_utc(2),
         &[row_for("BRL")],
+        1,
         stamp,
     )
     .await
@@ -382,6 +384,7 @@ async fn a_version_whose_rows_disagree_about_their_instant_is_a_corrupt_row() {
         0,
         at_utc(1),
         &[row_for("AUD"), row_for("BRL")],
+        1,
         stamp,
     )
     .await
@@ -469,6 +472,7 @@ async fn a_version_the_store_cannot_read_is_skipped_rather_than_failing_the_whol
         0,
         at_utc(1),
         &[row_for("AUD")],
+        1,
         stamp,
     )
     .await
@@ -480,6 +484,7 @@ async fn a_version_the_store_cannot_read_is_skipped_rather_than_failing_the_whol
         0,
         at_utc(2),
         &[row_for("BRL")],
+        1,
         stamp,
     )
     .await
@@ -671,11 +676,12 @@ async fn the_two_threshold_tables_are_one_version_sequence() {
         0,
         at_utc(1),
         &[row_for("AUD")],
+        1,
         stamp,
     )
     .await
     .expect("the entry version lands");
-    threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), stamp)
+    threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), 1, stamp)
         .await
         .expect("the tombstone lands");
 
@@ -764,11 +770,12 @@ async fn a_version_that_is_both_a_tombstone_and_an_entry_set_is_a_corrupt_row() 
         0,
         at_utc(1),
         &[row_for("AUD")],
+        1,
         stamp,
     )
     .await
     .expect("the entry version lands");
-    threshold_repo::open_tombstone(&conn, &scope, tenant, 0, at_utc(1), stamp)
+    threshold_repo::open_tombstone(&conn, &scope, tenant, 0, at_utc(1), 1, stamp)
         .await
         .expect("neither table refuses the other's version number; that is the hazard");
 
@@ -837,6 +844,7 @@ async fn a_duplicate_version_number_is_a_conflict_and_not_a_storage_failure() {
         0,
         at_utc(1),
         &[row_for("EUR")],
+        1,
         stamp,
     )
     .await
@@ -850,6 +858,7 @@ async fn a_duplicate_version_number_is_a_conflict_and_not_a_storage_failure() {
         0,
         at_utc(1),
         &[row_for("EUR")],
+        1,
         stamp,
     )
     .await
@@ -861,14 +870,113 @@ async fn a_duplicate_version_number_is_a_conflict_and_not_a_storage_failure() {
 
     // The tombstone half is the same write on the other table, and had the same
     // defect; without this the fix could be applied to one of the two and look done.
-    threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), stamp)
+    threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), 1, stamp)
         .await
         .expect("the first tombstone lands");
-    let refused = threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), stamp)
+    let refused = threshold_repo::open_tombstone(&conn, &scope, tenant, 1, at_utc(2), 1, stamp)
         .await
         .expect_err("the second tombstone of one number is refused");
     assert!(
         matches!(refused, RepoError::ConcurrentMutation { .. }),
         "{refused:?}"
     );
+}
+
+/// **A version's approver count round-trips** (D-380).
+#[tokio::test]
+async fn a_versions_approver_count_round_trips() {
+    use bss_pricing::infra::storage::repo::threshold_repo;
+
+    let tenant = TENANT.parse::<uuid::Uuid>().expect("a uuid");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let stamp = bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: ACTOR.parse().expect("a uuid"),
+        recorded_at: at_utc(1),
+        correlation_id: uuid::Uuid::from_u128(0x_c0_11),
+    };
+    let provider = migrated_provider().await;
+    let conn = provider.conn().expect("a scoped connection");
+
+    threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("AUD")],
+        0,
+        stamp,
+    )
+    .await
+    .expect("the version lands");
+
+    let read = threshold_repo::read_version(&conn, &scope, tenant, 0)
+        .await
+        .expect("the version reads")
+        .expect("a stored version");
+    assert_eq!(
+        read.approver_count, 0,
+        "the count is the version's own, not the column default"
+    );
+}
+
+/// **Two rows of one version disagreeing about the count are a corrupt row.**
+///
+/// The same hazard the instant's twin above is about, one column over: the
+/// store permits widening a version, so a second call can leave one version
+/// speaking with two voices. Without this guard such a version would report a
+/// count **no approver signed** — and `effective_version` would hand it to the
+/// publish path as the tenant's quorum.
+#[tokio::test]
+async fn rows_of_one_version_disagreeing_about_the_count_are_a_corrupt_row() {
+    use bss_pricing::infra::storage::repo::threshold_repo;
+
+    let tenant = TENANT.parse::<uuid::Uuid>().expect("a uuid");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let stamp = bss_pricing::domain::audit::AuditStamp {
+        actor_principal_id: ACTOR.parse().expect("a uuid"),
+        recorded_at: at_utc(1),
+        correlation_id: uuid::Uuid::from_u128(0x_c0_11),
+    };
+    let provider = migrated_provider().await;
+    let conn = provider.conn().expect("a scoped connection");
+
+    threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("AUD")],
+        1,
+        stamp,
+    )
+    .await
+    .expect("the version's first entry lands");
+    // The same version, the same instant, **a different count**.
+    threshold_repo::open_version(
+        &conn,
+        &scope,
+        tenant,
+        0,
+        at_utc(1),
+        &[row_for("BRL")],
+        0,
+        stamp,
+    )
+    .await
+    .expect("the store permits widening a version, which is the whole hazard");
+
+    let err = threshold_repo::read_version(&conn, &scope, tenant, 0)
+        .await
+        .expect_err("a version speaking with two voices about its quorum is refused");
+    match err {
+        bss_pricing::infra::storage::RepoError::CorruptRow(detail) => {
+            assert!(
+                detail.contains("approver_count"),
+                "the refusal names the column an operator has to repair: {detail}"
+            );
+        }
+        other => panic!("expected a corrupt row, got {other:?}"),
+    }
 }

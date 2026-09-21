@@ -56,6 +56,14 @@ pub struct Model {
     pub effective_from: OffsetDateTime,
     /// The pseudonymous principal that proposed this version. **Not** the
     /// approval trail — D-10 puts the second principal on `pricing_approval`.
+    /// The tenant's approver count `N` this version sets (**D-380**).
+    ///
+    /// Per **version**, carried on every row of it and derived back with
+    /// disagreement refused as a corrupt row — the shape `effective_from`
+    /// already has here, and for the same reason: a scalar of the version has
+    /// no row of its own to live on, and two rows free to disagree about it
+    /// would let a stored version report a count no approver signed.
+    pub approver_count: i32,
     pub created_by: Uuid,
     pub created_at: OffsetDateTime,
 }
