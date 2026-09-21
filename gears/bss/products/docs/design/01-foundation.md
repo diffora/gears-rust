@@ -833,7 +833,10 @@ matrix names `skuCode`/`productCode` and the SKU→parent link only as draft-edi
 named bucket to any Foundation column after publish, and routes "other **descriptive** fields" to bucket iv
 (`fr-field-mutability-matrix`'s own wording; AC #2 words the same bucket as "other fields", and
 **P-D-34 reads the FR's wording as governing**, which is why row identity sits outside the scheme
-rather than in the catch-all)): `name` and `name_normalized` are **bucket-iii** — a published Product
+rather than in the catch-all)). **Bucket iv stood empty until `PlanTier` was demoted into it
+(P-D-179)** — no Foundation column is in it still, and 03's tier is its only member; the bucket
+differs from iii *only* in the materiality slice 05 reads off the tag, which is what that
+decision moved and all it moved: `name` and `name_normalized` are **bucket-iii** — a published Product
 can be renamed,
 and the rename comes out as version N+1 under governance rather than forcing retire-and-clone;
 `region_scope` and `brand_scope` are **bucket-iii in both directions**, widening and narrowing

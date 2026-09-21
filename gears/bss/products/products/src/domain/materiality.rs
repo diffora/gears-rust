@@ -537,11 +537,12 @@ fn enumerated_verdict(op: EnumeratedOp) -> Result<Materiality, MaterialityRefusa
 /// registry's four tags.
 ///
 /// It is a function of the tag rather than a branch inside the loop because
-/// the `DoD`'s bucket-iv clause has no column to probe: `Descriptive` carries
-/// **no registered member today** (`domain::bucket`'s own roster), so a
-/// probe written over columns could only assert the buckets that happen to
-/// be populated. Over the tag it is exhaustive, and it stays exhaustive when
-/// bucket iv gains its first member.
+/// the `DoD`'s bucket-iv clause had no column to probe: `Descriptive` carried
+/// **no registered member** until **P-D-179** demoted `plan_tier` into it, so
+/// a probe written over columns could only assert the buckets that happened
+/// to be populated. Over the tag it was exhaustive before that member arrived
+/// and is exhaustive after it — which is what this shape was chosen for, and
+/// the clause now has a column to probe as well.
 #[must_use]
 pub const fn bucket_bearing(bucket: FieldBucket) -> BucketBearing {
     match bucket {

@@ -166,8 +166,10 @@ pub enum FieldBucket {
     /// catch-all: the same save-and-re-publish path as bucket iii, differing
     /// only in the materiality 05 reads off it.
     ///
-    /// **No column today**; see the module doc. It is a tag, never a default —
-    /// nothing in this module routes an unrecognised column here.
+    /// **One column since P-D-179**: `plan_tier`, demoted from iii because a
+    /// relabel was costing an approval ceremony for a value nothing reads.
+    /// Still a tag and never a default — nothing in this module routes an
+    /// unrecognised column here.
     Descriptive,
 }
 
@@ -467,9 +469,20 @@ pub(crate) const SKU_COLUMNS: [ColumnTag; 24] = [
         column: "sellable",
         class: FieldClass::Bucket(FieldBucket::MaterialMutable),
     },
+    // **Bucket iv's first member** (**P-D-179**). The tier moved out of iii
+    // because a ceremony was being charged for a relabel nothing reads: no
+    // behaviour in either built gear branches on the value, and on the stand
+    // 296 SKUs carry `standard` against one `gold`. iv is the same
+    // save-and-re-publish path — it differs from iii *only* in the materiality
+    // slice 05 reads off the tag, which is the whole of this change.
+    //
+    // The field keeps everything else: the closed `PlanTier` set, the publish
+    // requirement, the `standard` default. `bucket_bearing`'s doc anticipated
+    // this member ("stays exhaustive when bucket iv gains its first member")
+    // and the DoD clause that had no column to probe now has one.
     ColumnTag {
         column: "plan_tier",
-        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+        class: FieldClass::Bucket(FieldBucket::Descriptive),
     },
     // Mechanical (§5). `composition_pending` is named there explicitly and is
     // system-owned besides: §4.2 admits a change to it only in the same

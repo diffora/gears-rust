@@ -148,13 +148,44 @@ fn the_skus_tagged_columns_answer_the_buckets_section_4_1_assigns() {
         class_of(kind, "sku_type"),
         FieldClass::Bucket(FieldBucket::Correctable),
     );
-    for column in ["sellable", "plan_tier"] {
-        assert_eq!(
-            class_of(kind, column),
-            FieldClass::Bucket(FieldBucket::MaterialMutable),
-            "{column} is bucket iii",
-        );
-    }
+    assert_eq!(
+        class_of(kind, "sellable"),
+        FieldClass::Bucket(FieldBucket::MaterialMutable),
+        "sellable is bucket iii",
+    );
+    // **P-D-179**: the tier is bucket iv, alone in it. Asserted beside its
+    // former neighbour rather than in a case of its own, so the pair reads as
+    // the split it is: two columns that used to share a bucket and no longer
+    // do.
+    assert_eq!(
+        class_of(kind, "plan_tier"),
+        FieldClass::Bucket(FieldBucket::Descriptive),
+        "plan_tier is bucket iv since P-D-179",
+    );
+}
+
+/// **A tier relabel is immaterial, and that is the whole of P-D-179**
+/// (`bucket_bearing` over the tag, not over the column).
+///
+/// Asserted through `bucket_bearing` because that is the function slice 05
+/// reads: moving the registry entry without moving the bearing would leave
+/// the ceremony in place and the test green. The two neighbours are asserted
+/// in the same case so a future edit that moved the wrong column shows up
+/// here rather than on a stand.
+#[test]
+fn the_tier_bears_no_materiality_while_its_former_neighbours_still_do() {
+    use crate::domain::materiality::{BucketBearing, bucket_bearing};
+
+    assert_eq!(
+        bucket_bearing(FieldBucket::Descriptive),
+        BucketBearing::Immaterial,
+        "bucket iv is the immaterial save path, which is why the tier was moved into it",
+    );
+    assert_eq!(
+        bucket_bearing(FieldBucket::MaterialMutable),
+        BucketBearing::Material,
+        "iii is unchanged: the demotion is one column's, not the bucket's",
+    );
 }
 
 /// One column name, two classes, decided by the entity it sits on.
@@ -362,10 +393,13 @@ fn the_create_only_class_carries_exactly_the_cloned_from_pair() {
     }
 }
 
-/// `inst-fd-bucket-tags` names four buckets; today's columns populate three
-/// of them. Bucket iv is encoded and empty, and a member appearing in it
-/// without a decision behind it fails here; bucket ii filled with 03's meter
-/// pair, on the SKU side only.
+/// `inst-fd-bucket-tags` names four buckets and today's columns populate all
+/// four. Bucket iv was encoded and empty, guarded by this case so that a
+/// member appearing in it **without a decision behind it** would fail here;
+/// **P-D-179** is that decision, and `plan_tier` is the member — demoted from
+/// iii because a relabel was costing an approval ceremony for a value nothing
+/// reads. The guard stands unchanged for the next one: a second bucket-iv
+/// column still fails this case until a decision names it.
 ///
 /// Bucket ii is the correctable set — admitted at the save door while
 /// `published_version = 0`, slice 07's correction door after first publish —
@@ -373,7 +407,7 @@ fn the_create_only_class_carries_exactly_the_cloned_from_pair() {
 /// words as *"other descriptive fields"*; §4.1 assigns no Foundation column
 /// to either, and the bucket-ii members are 03's, on `products_sku`.
 #[test]
-fn bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty() {
+fn bucket_ii_is_the_meter_pair_and_bucket_iv_holds_the_tier_alone() {
     assert_eq!(
         count_of(
             EntityKind::Product,
@@ -390,14 +424,22 @@ fn bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty() {
         3,
         "sku: bucket-ii is 03's meter pair and its type profile (P-D-145)",
     );
-    for kind in BOTH_KINDS {
-        assert_eq!(
-            count_of(kind, FieldClass::Bucket(FieldBucket::Descriptive)),
-            0,
-            "{}: no column is bucket-iv",
-            kind.as_str(),
-        );
-    }
+    assert_eq!(
+        count_of(
+            EntityKind::Product,
+            FieldClass::Bucket(FieldBucket::Descriptive)
+        ),
+        0,
+        "product: no Product column is bucket-iv",
+    );
+    assert_eq!(
+        count_of(
+            EntityKind::Sku,
+            FieldClass::Bucket(FieldBucket::Descriptive)
+        ),
+        1,
+        "sku: bucket-iv holds `plan_tier` and nothing else (P-D-179)",
+    );
 }
 
 /// The class counts, pinned per entity, so a column added to a table without a
@@ -426,9 +468,13 @@ fn the_class_counts_are_pinned_per_entity() {
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::Correctable), 3),
-        // The four head columns and the `attributes` collection (P-D-153);
-        // two accounting codes were among them until P-D-169.
-        (FieldClass::Bucket(FieldBucket::MaterialMutable), 5),
+        // Three head columns and the `attributes` collection (P-D-153); two
+        // accounting codes were among them until P-D-169, and `plan_tier`
+        // until P-D-179 demoted it to iv.
+        (FieldClass::Bucket(FieldBucket::MaterialMutable), 4),
+        // Bucket iv's only member, and the reason this row exists at all
+        // (P-D-179). Product's stays absent, so the two entities differ here.
+        (FieldClass::Bucket(FieldBucket::Descriptive), 1),
         (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 8),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),

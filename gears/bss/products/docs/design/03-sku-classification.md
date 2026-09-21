@@ -95,7 +95,7 @@ discovered weeks later at ERP export or rating time.
 | C2 | Exactly one unit per declaration — the counted identity; dimension sets are plan-price's (P-D-05); a composite meter declares its **output** unit | PRD `fr-metering-unit-declaration` |
 | C3 | Unit identity/semantics immutable (no silent GB→GiB); correction = new unit + deprecate old | PRD `fr-metering-unit-delisting` |
 | C5 | `PlanTier` ≠ OrgTier; tier identity is the stable code, rename is display-only | PRD `fr-plantier-classification` |
-| C6 | Bucket registration (PRD mutability matrix): `type`, metering-unit declaration (incl. `usageTypeRef`) → **bucket ii** (immutable-but-correctable, slice 07); `PlanTier`, `sellable` → **bucket iii** (material-mutable) | PRD `fr-field-mutability-matrix` |
+| C6 | Bucket registration (PRD mutability matrix): `type`, metering-unit declaration (incl. `usageTypeRef`) → **bucket ii** (immutable-but-correctable, slice 07); `sellable` → **bucket iii** (material-mutable); `PlanTier` → **bucket iv** (descriptive) since **P-D-179**, which demoted it because a relabel was costing an approval ceremony for a value nothing reads — the same save-and-re-publish path as iii, differing only in the materiality slice 05 reads off the tag, and bucket iv's first member | PRD `fr-field-mutability-matrix` |
 
 ### 1.7 Naming & Design-Introduced Names
 
