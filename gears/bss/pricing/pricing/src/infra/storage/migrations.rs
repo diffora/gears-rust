@@ -105,6 +105,7 @@ pub mod m20260821_000043_create_pricing_gl_code_taxonomy;
 pub mod m20260918_000046_create_pricing_draft_window;
 pub mod m20260918_000047_create_pricing_window_baseline;
 pub mod m20260918_000048_create_pricing_window_guard;
+pub mod m20260921_000049_add_pricing_threshold_approver_count;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -227,6 +228,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260918_000046_create_pricing_draft_window::Migration),
             Box::new(m20260918_000047_create_pricing_window_baseline::Migration),
             Box::new(m20260918_000048_create_pricing_window_guard::Migration),
+            Box::new(m20260921_000049_add_pricing_threshold_approver_count::Migration),
         ]
     }
 }

@@ -210,6 +210,7 @@ TABLE pricing_approval_key
   CONSTRAINT chk_pricing_approval_key_state CHECK (state IN ('submitted','approved','rejected','voided'))
 TABLE pricing_approval_threshold
   COLUMN absolute_minor bigint NULL DEFAULT - PK 0
+  COLUMN approver_count INTEGER NOT NULL DEFAULT 1 PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00' PK 0
   COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
   COLUMN currency varchar(3) NOT NULL DEFAULT - PK 3
@@ -223,6 +224,7 @@ TABLE pricing_approval_threshold
   CONSTRAINT chk_pricing_approval_threshold_percent_positive CHECK (percent_bp IS NULL OR percent_bp > 0)
   CONSTRAINT chk_pricing_approval_threshold_version CHECK (version >= 0)
 TABLE pricing_approval_threshold_tombstone
+  COLUMN approver_count INTEGER NOT NULL DEFAULT 1 PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00' PK 0
   COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
   COLUMN effective_from TEXT NOT NULL DEFAULT - PK 0

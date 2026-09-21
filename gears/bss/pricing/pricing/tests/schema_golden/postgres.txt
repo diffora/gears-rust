@@ -19,6 +19,7 @@ COLUMN bss.pricing_approval_key scope_key text NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_key state text NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_key tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_threshold absolute_minor bigint NULL DEFAULT -
+COLUMN bss.pricing_approval_threshold approver_count integer NOT NULL DEFAULT 1
 COLUMN bss.pricing_approval_threshold created_at timestamp with time zone NOT NULL DEFAULT now()
 COLUMN bss.pricing_approval_threshold created_by uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_threshold currency character varying(3) NOT NULL DEFAULT -
@@ -26,6 +27,7 @@ COLUMN bss.pricing_approval_threshold effective_from timestamp with time zone NO
 COLUMN bss.pricing_approval_threshold percent_bp integer NULL DEFAULT -
 COLUMN bss.pricing_approval_threshold tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_threshold version bigint NOT NULL DEFAULT -
+COLUMN bss.pricing_approval_threshold_tombstone approver_count integer NOT NULL DEFAULT 1
 COLUMN bss.pricing_approval_threshold_tombstone created_at timestamp with time zone NOT NULL DEFAULT now()
 COLUMN bss.pricing_approval_threshold_tombstone created_by uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_threshold_tombstone effective_from timestamp with time zone NOT NULL DEFAULT -
@@ -430,11 +432,13 @@ CONSTRAINT bss.pricing_approval pricing_approval_pkey PRIMARY KEY (approval_id)
 CONSTRAINT bss.pricing_approval_key chk_pricing_approval_key_state CHECK ((state = ANY (ARRAY['submitted'::text, 'approved'::text, 'rejected'::text, 'voided'::text])))
 CONSTRAINT bss.pricing_approval_key pricing_approval_key_pkey PRIMARY KEY (approval_id, scope_key)
 CONSTRAINT bss.pricing_approval_threshold chk_pricing_approval_threshold_absolute_non_negative CHECK (((absolute_minor IS NULL) OR (absolute_minor >= 0)))
+CONSTRAINT bss.pricing_approval_threshold chk_pricing_approval_threshold_approver_count CHECK ((approver_count >= 0))
 CONSTRAINT bss.pricing_approval_threshold chk_pricing_approval_threshold_basis CHECK (((absolute_minor IS NULL) <> (percent_bp IS NULL)))
 CONSTRAINT bss.pricing_approval_threshold chk_pricing_approval_threshold_currency CHECK ((length((currency)::text) = 3))
 CONSTRAINT bss.pricing_approval_threshold chk_pricing_approval_threshold_percent_positive CHECK (((percent_bp IS NULL) OR (percent_bp > 0)))
 CONSTRAINT bss.pricing_approval_threshold chk_pricing_approval_threshold_version CHECK ((version >= 0))
 CONSTRAINT bss.pricing_approval_threshold pricing_approval_threshold_pkey PRIMARY KEY (tenant_id, version, currency)
+CONSTRAINT bss.pricing_approval_threshold_tombstone chk_pricing_approval_threshold_tombstone_approver_count CHECK ((approver_count >= 0))
 CONSTRAINT bss.pricing_approval_threshold_tombstone chk_pricing_approval_threshold_tombstone_version CHECK ((version >= 0))
 CONSTRAINT bss.pricing_approval_threshold_tombstone pricing_approval_threshold_tombstone_pkey PRIMARY KEY (tenant_id, version)
 CONSTRAINT bss.pricing_audit_log chk_pricing_audit_log_action CHECK ((action = ANY (ARRAY['create'::text, 'update'::text, 'delete'::text, 'abandon'::text, 'publish'::text, 'submit'::text, 'approve'::text, 'reject'::text, 'withdraw'::text, 'deny'::text, 'retire'::text, 'migrate'::text])))
