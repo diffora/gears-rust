@@ -66,7 +66,7 @@ async fn postgres_head_search_pages_and_scopes_both_collections() {
                     created_at: now,
                     cloned_from: None,
                     cloned_from_version: None,
-                    sku_type: "simple".to_owned(),
+                    sku_type: "offer".to_owned(),
                     sellable: true,
                     plan_tier: "standard".to_owned(),
                     metering_unit: None,
