@@ -1007,9 +1007,19 @@ pub async fn retire_in(
         })?;
     let shape = assemble_from(txn, scope, tenant_id, plan_id, current, now).await?;
     let subject_ref = retirement_unit_ref(plan_id, revision);
-    let authorization =
-        crate::infra::approval::authorizing_unit(txn, scope, tenant_id, &shape, &subject_ref)
+    // **D-380.** A retirement is always material (`inst-mat-registered`), so the
+    // absence of an approved unit used to mean one thing only: open one. The
+    // third answer is the tenant at `N = 0`, who owes no second principal and
+    // therefore has no unit to open — `chk_pricing_approval_approver` would only
+    // let such a record sit `submitted` forever.
+    let act_authorization =
+        crate::infra::approval::act_authorization(txn, scope, tenant_id, &shape, &subject_ref, now)
             .await?;
+    let authorization = match &act_authorization {
+        crate::infra::approval::ActAuthorization::ByRecord(record) => Some(record.as_ref()),
+        crate::infra::approval::ActAuthorization::ByPolicy
+        | crate::infra::approval::ActAuthorization::Owed => None,
+    };
 
     // 4. Fixed, and read from the act.
     let verdict = materiality::evaluate(
@@ -1018,7 +1028,10 @@ pub async fn retire_in(
         None,
     );
 
-    if authorization.is_none() {
+    if matches!(
+        act_authorization,
+        crate::infra::approval::ActAuthorization::Owed
+    ) {
         // This act's own pending unit — answered before anything is staged,
         // because the answer is that nothing more should be. A retry of a
         // retirement under review must find that unit rather than open a second.
@@ -1138,7 +1151,7 @@ pub async fn retire_in(
                 retired.lifecycle_state,
                 Some(&pending.pending_ref),
             )),
-            approval_ref: authorization.as_ref().map(|record| record.approval_id),
+            approval_ref: authorization.map(|record| record.approval_id),
             correlation_id: stamp.correlation_id,
         },
     )

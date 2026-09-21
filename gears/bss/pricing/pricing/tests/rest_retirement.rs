@@ -16,8 +16,8 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
 use rest_support::{
-    Harness, approval_rows, body_json, plan_state, problem_code, request, seed_publishable_plan,
-    with_headers,
+    Harness, approval_rows, body_json, effective_approver_count, plan_state, problem_code, request,
+    seed_publishable_plan, set_approver_count, with_headers,
 };
 use uuid::Uuid;
 
@@ -404,5 +404,81 @@ async fn a_foreign_tenant_cannot_retire_this_tenants_plan() {
         StatusCode::ACCEPTED,
         "the owner's identical confirm must be accepted, or the refusals above are about the \
          request rather than about the tenant"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on an always-material door.
+// ---------------------------------------------------------------------------
+
+/// **A retirement at `N = 0` retires, on the call, with no unit.**
+///
+/// Retirement is `inst-mat-registered`'s trigger — always material, no
+/// threshold can reach it — so before D-380 the absence of an approved unit
+/// could only mean *open one*. That is precisely the shape a one-person tenant
+/// could never get past: no second principal exists to decide the unit, and
+/// `chk_pricing_approval_approver` will not let an `approved` row omit an
+/// approver, so the unit could only sit `submitted` forever.
+#[tokio::test]
+async fn a_retirement_at_quorum_zero_retires_without_a_second_principal() {
+    let h = Harness::new().await;
+    let plan_id = published(&h).await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request("POST", &path(plan_id), Some(confirm_body())))
+        .await;
+
+    // **202 on both arms is this route's existing contract** — the confirm
+    // answers `ACCEPTED` whether it staged or committed, and `outcome` is the
+    // discriminator. So the status is not the assertion here; the outcome token
+    // and the plan's state are.
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let view = body_json(response).await;
+    assert_eq!(
+        view["outcome"], "retired",
+        "a tenant at zero retires on the call rather than staging: {view}"
+    );
+    assert!(
+        view["approval"].is_null(),
+        "no unit was opened, so there is none to name: {view}"
+    );
+
+    assert_eq!(
+        plan_state(&h, plan_id, 0).await.as_deref(),
+        Some("retired"),
+        "the plan is retired, not staged"
+    );
+    assert!(
+        approval_rows(&h)
+            .await
+            .into_iter()
+            .all(|row| row.subject_kind != "plan_retirement"),
+        "and no retirement record was opened at N = 0"
+    );
+}
+
+/// **The same confirm at the default still stages.**
+///
+/// The control: without it the case above would also pass against a door that
+/// stopped asking altogether.
+#[tokio::test]
+async fn a_retirement_at_the_default_still_opens_a_unit() {
+    let h = Harness::new().await;
+    let plan_id = published(&h).await;
+    set_approver_count(&h, 1).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request("POST", &path(plan_id), Some(confirm_body())))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(
+        plan_state(&h, plan_id, 0).await.as_deref(),
+        Some("published"),
+        "a single principal's confirm stages the retirement, it does not perform it"
     );
 }

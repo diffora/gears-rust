@@ -28,7 +28,8 @@ use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 
 use bss_pricing::domain::instant::utc_ymd_hms;
 use rest_support::{
-    Harness, Publishable, audit_rows, body_json, problem_code, request, seed_publishable_plan,
+    Harness, Publishable, audit_rows, body_json, effective_approver_count, problem_code, request,
+    seed_publishable_plan, set_approver_count,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -536,4 +537,100 @@ async fn a_cutover_reads_the_registry_outside_its_transaction() {
         "a registry that needs its own connection must still be readable: {}",
         body_json(response).await
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the cutover door.
+// ---------------------------------------------------------------------------
+
+/// **A cutover at `N = 0` cuts over on the first call.**
+///
+/// The act is always material — `inst-mat-registered` — so before D-380 the
+/// first call could only stage two drafts and open a unit, and a one-person
+/// tenant had no way to reach the second call at all. At `N = 0` the same first
+/// call stages, judges and commits, and the receipt carries the commit's own
+/// halves rather than an approval to decide.
+#[tokio::test]
+async fn a_cutover_at_quorum_zero_commits_on_the_first_call() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published(&h).await;
+    set_approver_count(&h, 0).await;
+    assert_eq!(effective_approver_count(&h).await, 0);
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(cutover_body(seeded.price_id, 12_000)),
+        ))
+        .await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    assert_eq!(
+        view["outcome"], "cut_over",
+        "one principal's call is the whole act at N = 0: {view}"
+    );
+    assert!(
+        view["approval"].is_null(),
+        "no unit was opened, so there is none to name: {view}"
+    );
+    assert_eq!(
+        view["shortened_window_id"],
+        common::coverage_window_id(seeded.price_id).to_string(),
+        "and the commit's own halves are present: {view}"
+    );
+    assert!(view["pending_version_ref"].is_string(), "{view}");
+
+    // The trail still names the act, and names **no** approval: the join an
+    // auditor follows is absent because there is no record to join to, rather
+    // than pointing at one that was never opened.
+    //
+    // The cutover's own record is the `price_unit` one the act appends — the
+    // subject is the act rather than either row, for the reason
+    // `record_cutover` gives.
+    let recorded = audit_rows(&h).await;
+    let cutovers: Vec<_> = recorded
+        .iter()
+        .filter(|row| row.subject_kind == "price_unit" && row.subject_ref.contains("cutover"))
+        .collect();
+    assert_eq!(
+        cutovers.len(),
+        1,
+        "the act is on the chain exactly once: {:?}",
+        recorded
+            .iter()
+            .map(|row| (&row.subject_kind, &row.action, &row.subject_ref))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        cutovers[0].approval_ref.is_none(),
+        "and claims no approval that was never opened"
+    );
+}
+
+/// **The same cutover at the default still stages and waits.**
+#[tokio::test]
+async fn a_cutover_at_the_default_still_stages_and_opens_a_unit() {
+    let h = Harness::new().await;
+    let (plan_id, seeded) = published(&h).await;
+    set_approver_count(&h, 1).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(cutover_body(seeded.price_id, 12_000)),
+        ))
+        .await;
+
+    let status = response.status();
+    let view = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    assert_eq!(view["outcome"], "submitted_for_approval", "{view}");
+    assert!(view["approval"]["approval_id"].is_string(), "{view}");
+    assert!(view["pending_version_ref"].is_null(), "{view}");
 }

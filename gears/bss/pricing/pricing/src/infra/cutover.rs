@@ -935,14 +935,29 @@ pub async fn cutover_in(
     //    evaluator first let a threshold raised between the two calls make an act
     //    auto-publishable at the second one, committing on a single principal while
     //    the unit opened over it stayed `submitted` forever.
-    let authorization = crate::infra::approval::authorizing_unit(
+    //
+    //    **D-380's third answer.** A cutover is always material
+    //    (`inst-mat-registered`), so before the tenant's `N` existed the absence of
+    //    a unit could only mean "open one". `ByPolicy` is the case a two-valued
+    //    `Option` could not say: no unit, and none owed, because the tenant
+    //    configured a quorum of zero under the quorum in force before the change.
+    let act_authorization = crate::infra::approval::act_authorization(
         txn,
         scope,
         tenant_id,
         &context.shape,
         &subject_ref,
+        now,
     )
     .await?;
+    // The record, for the audit row and the receipt. `None` on both of the other
+    // arms, and they are told apart by the match below rather than by this value:
+    // `ByPolicy` commits with no record to name, `Owed` never reaches the commit.
+    let authorization = match &act_authorization {
+        crate::infra::approval::ActAuthorization::ByRecord(record) => Some(record.as_ref()),
+        crate::infra::approval::ActAuthorization::ByPolicy
+        | crate::infra::approval::ActAuthorization::Owed => None,
+    };
 
     // 4. The verdict, and it is **fixed**. `ChangeSet::of_act` is the declaration
     //    `domain::materiality::triggers` requires of a surface, and `evaluate`
@@ -958,7 +973,10 @@ pub async fn cutover_in(
         None,
     );
 
-    if authorization.is_none() {
+    if matches!(
+        act_authorization,
+        crate::infra::approval::ActAuthorization::Owed
+    ) {
         // 3b. The content this act is really about, before the retry is answered out
         // of the unit standing for it. `infra::supersession` asks this ahead of its
         // own pending lookup for the same reason: a caller who edited the successor
@@ -1227,7 +1245,7 @@ pub async fn cutover_in(
             successor: &successor,
             copy: &copy,
             shortened: ShortenedWindow::of(shorten, &written.shortened),
-            approval_ref: authorization.as_ref().map(|record| record.approval_id),
+            approval_ref: authorization.map(|record| record.approval_id),
             stamp,
             now,
         },
@@ -1244,7 +1262,7 @@ pub async fn cutover_in(
         cutover_at: request.cutover_at,
         shortened_window_id: shorten.window_id,
         pending_version_ref: pending.pending_ref,
-        authorization: authorization.as_ref().map(|record| record.approval_id),
+        authorization: authorization.map(|record| record.approval_id),
     })))
 }
 
