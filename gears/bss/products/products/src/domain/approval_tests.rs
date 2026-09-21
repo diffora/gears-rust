@@ -150,7 +150,7 @@ fn quorum_reduced_tracks_the_effective_count_not_the_verdict() {
     assert!(
         !describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced(),
         "one approver beside the author IS the two-person rule, not a reduction of it \
-         (P-D-177 — at the old default of two this read `true`, so the marker fired on \
+         (P-D-177: at the old default of two this read `true`, so the marker fired on \
          the ordinary case)"
     );
     // The subject of this test: the marker follows the **effective** count. A
