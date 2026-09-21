@@ -50,7 +50,7 @@ fn line_body(
     phase: Uuid,
     sku: Uuid,
     charge_kind: &str,
-    structure: serde_json::Value,
+    structure: &serde_json::Value,
 ) -> serde_json::Value {
     serde_json::json!({
         "scope_key": {
@@ -231,7 +231,7 @@ async fn published_three_line_plan(
             phase,
             OFFER_SKU,
             "recurring",
-            serde_json::json!({
+            &serde_json::json!({
                 "model_kind": "flat", "gl_code_ref": "4000",
                 "billing_timing": "advance", "billing_anchor_policy": "calendar_month",
                 "proration_basis": "calendar_days_actual", "credit_on_downgrade": false
@@ -247,7 +247,7 @@ async fn published_three_line_plan(
             phase,
             CLOSED_COMPONENT,
             "one_time",
-            serde_json::json!({
+            &serde_json::json!({
                 "model_kind": "flat", "gl_code_ref": "4000"
             }),
         ),
@@ -261,7 +261,7 @@ async fn published_three_line_plan(
             phase,
             metered_component(),
             "usage",
-            serde_json::json!({
+            &serde_json::json!({
                 "model_kind": "per_unit", "gl_code_ref": "4000", "billing_granularity": "per_hour"
             }),
         ),
