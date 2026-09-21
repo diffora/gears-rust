@@ -53,16 +53,48 @@
 //! was already storing. A payload that names no op this gear recognises is
 //! judged exactly as it was.
 //!
-//! # Roles are claims, and their absence is reported as absence
+//! # Roles are claims, their absence is reported as absence, and eligibility
+//! no longer waits on them (**P-D-177**)
 //!
 //! **P-D-134** row 25: a principal's role is on no surface today; when the
-//! platform's PDP encodes it in `token_scopes`, `APPROVER_ROLE_REQUIRED` and
-//! P-D-131's per-set predicate read it from there. Until then a caller holds
-//! **no role claim**, and [`roles_from_claims`] answers the empty set —
-//! never a synthesised `CatalogAdmin`. A door that defaulted the role would
-//! close a material ceremony on two principals holding neither C1 role,
-//! which is exactly what `domain::approval::BaseRoleSet`'s own doc records as
-//! the defect it was built to remove.
+//! platform's PDP encodes it in `token_scopes`, P-D-131's per-set predicate
+//! reads it from there. Until then a caller holds **no role claim**, and
+//! [`roles_from_claims`] answers the empty set — never a synthesised
+//! `CatalogAdmin`. A door that *defaulted* the role would close a material
+//! ceremony on two principals holding neither C1 role, which is what
+//! `domain::approval::BaseRoleSet`'s own doc records as the defect it was
+//! built to remove. **That is still true and nothing here defaults a role.**
+//!
+//! What changed on 2026-09-21 is what the door does with the empty set. It
+//! used to refuse it `APPROVER_ROLE_REQUIRED`, which made C1's base set a
+//! control with no operand: refusing every principal on every deployment, so
+//! that no approval could be decided at all and the downstream suite wrote the
+//! policy row with `psql` to get past it. Eligibility now rests on the
+//! authority that does answer the question — `approval × decide`, checked by
+//! the PDP above — and the quorum settles under `BaseRoleSet::AnyDecider`.
+//!
+//! **The wildcard is not a role.** `token_scopes` of `["*"]` is a *permission*
+//! wildcard: the gateway returns early on it, and the OIDC plugin emits it for
+//! any first-party client. Reading it as `CatalogAdmin + FinanceReviewer`
+//! would be the same "inventing the seam" this gear refused for the region and
+//! brand claims, and would hand the finance lens to every first-party caller.
+//!
+//! # What the finance predicate now rests on
+//!
+//! Unchanged, and that is the point: `evaluate_quorum` reads the lens off each
+//! decision **independently** of the base set, so dropping the base set left
+//! `finance_required` exactly where it was. A `FinanceReviewer` claim still
+//! satisfies it; its absence still refuses, distinctly, on
+//! `QuorumOutcome::RolePredicateUnmet` — *met numerically and not on the
+//! predicate*, which is a different sentence from `APPROVAL_REQUIRED` and is
+//! told as one.
+//!
+//! Since no surface mints the claim, that refusal is today unreachable-by-
+//! satisfaction: a finance-material change cannot be approved on this platform
+//! at all. Giving the predicate a supply it can have — an RBAC action such as
+//! `approval × decide_finance` — is **owed** (P-D-177) and not built here,
+//! because minting a catalog pair is the question `features/governance.md`
+//! §7 row 24 already asks of whoever owns the catalog.
 //!
 //! # No broker event on submit, and that absence is declared
 //!
