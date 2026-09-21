@@ -365,7 +365,7 @@ booked in `12-consumer-contracts`. Refusing the **version** is this feature's do
   `freezeComplete` is all-acked (AC #21). Acks are idempotent per `(version, participant)`.
 - The fan-out re-trigger is idempotent — same event, same version, at-least-once safe.
 - Force-completion is a two-person ceremony, `N`-governed, recording `quorumReduced` on the record
-  **and on `FreezeForceCompleted`** below the default of 2 (**P-D-13** — no fixed floor, since one
+  **and on `FreezeForceCompleted`** below the default of 1 (**P-D-13** — no fixed floor, since one
   would leave a solo tenant's timed-out version permanently un-resolvable).
 - Participant-set membership is a governed live op; each change emits
   `FreezeParticipantSetChanged`, because a participant must learn it was added. Each version
@@ -1186,7 +1186,7 @@ Force-completion **MUST** be a `05-governance` two-person ceremony on
 `catalog_version × force_complete` — its door
 **`POST /bss-products/v1/catalog-versions/{catalogVersionId}/force-completions`** (**P-D-67**) —
 `N`-governed, recording `quorumReduced` on the record **and on
-`FreezeForceCompleted`** below the default of 2 (**P-D-13** — no fixed floor, since one would leave
+`FreezeForceCompleted`** below the default of 1 (**P-D-13** — no fixed floor, since one would leave
 a solo tenant's timed-out version permanently un-resolvable, the class of block **P-D-11** exists to
 remove).
 

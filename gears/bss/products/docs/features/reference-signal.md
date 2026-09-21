@@ -313,7 +313,7 @@ SKU**, the slice's own §6 records three attempts at that rule each introducing 
   correction and the `published_version` bump are **one statement** — the only form 01 §4.2 admits
   after first publish.
 - The full validation pipeline runs, a corrected meter re-resolves `usageTypeRef` (**P-D-05**), and
-  `SkuImmutableFieldCorrected` is emitted with `quorumReduced` recorded below the default of 2.
+  `SkuImmutableFieldCorrected` is emitted with `quorumReduced` recorded below the default of 1.
 
 **Error Scenarios**:
 - Structural identity is **never** correctable — bucket-i, and the door physically cannot write it.
@@ -706,7 +706,7 @@ the corrected version's content — and the subject **MUST** carry no open appro
 
 The correction **MUST** be a governed **material** act through `05-governance`'s quorum at the
 tenant's configured `N`, with **`quorumReduced` recorded on the `ApprovalRecord` and on the emitted
-`SkuImmutableFieldCorrected`** whenever the effective count is below the default of 2 (**P-D-13**,
+`SkuImmutableFieldCorrected`** whenever the effective count is below the default of 1 (**P-D-13**,
 the same clause `inst-lc-undeprecate` and `inst-fz-force` carry).
 
 On approval it **MUST** re-publish the head as version **N+1** through `01-foundation`'s publish

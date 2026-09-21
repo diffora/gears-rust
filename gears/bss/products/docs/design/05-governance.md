@@ -64,11 +64,11 @@ roles counting as two approvers (**principals, not roles**).
   (`fr-tenant-isolation-breakglass`, `fr-breakglass-action-scope`); AC #26, #30, #31; §17.1
   (interim materiality default; affected-entity trigger ≥ 10)
 - [`../DECISIONS.md`](../DECISIONS.md) P-D-02 (override at entity publish), P-D-10 (no
-  gear-side Legal role — C8's narrowing clause), P-D-11 (`N` is a policy value, default 2 floor
+  gear-side Legal role — C8's narrowing clause), P-D-11 (`N` is a policy value, default 1 floor
   0 — C1), P-D-13 (the shorthand's enumerated reach: `inst-bg-open`'s fixed platform floor,
   `quorumReduced` on the reducible ceremonies)
 - Pricing `design/05-governance.md` — the pattern donor (G2 principal distinctness, approver
-  scope, policy-mutation-is-material); divergence: this gear's quorum **defaults** to `N = 2`
+  scope, policy-mutation-is-material); divergence: this gear's quorum **defaults** to `N = 1`
   approvers against pricing's structural submitter + one — pricing's count is **structural** rather than
   configured — two columns under `chk_pricing_approval_distinct_principals`, plus an approver-less
   `AutoPublishable` path — so the two gears differ by default **and** by mechanism (P-D-11)
@@ -98,7 +98,7 @@ roles counting as two approvers (**principals, not roles**).
 
 | # | Constraint | Source |
 |---|-----------|--------|
-| C1 | Quorum for a material change: the tenant's configured **`N` distinct approvers, each distinct from the author**, each holding CatalogAdmin or FinanceReviewer — `N` a typed-policy value, **default 2, floor 0** (P-D-11). Not configurable: a finance-material change (declared by the submitter — the computed operand went with P-D-169) requires ≥ 1 FinanceReviewer **among** the approvers (the predicate governs who, not how many) and the record states the predicate as **unsatisfiable at `N = 0` only** — where there are no approvers to hold the role, so the descriptor stays satisfiable rather than blocking on a role no principal could hold. **At every `N >= 1` the predicate binds and a tenant that has designated no FinanceReviewer simply has an unapprovable change, which is correct** (`inst-gv-finance-predicate` is the normative arm; this row previously read "when the configured `N` cannot carry it", which an implementer could read as *the available approvers cannot satisfy it* and build into a finance-review fail-open at `N = 2` — Blocking 2 of the review); self-approval refused at every `N ≥ 1`; `N` reachable only by explicit configuration, absent ⇒ default; initial `N` from tenant provisioning, later changes material under the then-current quorum (C4) | PRD `fr-materiality-gated-publish`; P-D-11 |
+| C1 | Quorum for a material change: the tenant's configured **`N` distinct approvers, each distinct from the author**, each holding CatalogAdmin or FinanceReviewer — `N` a typed-policy value, **default 1, floor 0** (P-D-11, default moved by **P-D-177**). Not configurable: a finance-material change (declared by the submitter — the computed operand went with P-D-169) requires ≥ 1 FinanceReviewer **among** the approvers (the predicate governs who, not how many) and the record states the predicate as **unsatisfiable at `N = 0` only** — where there are no approvers to hold the role, so the descriptor stays satisfiable rather than blocking on a role no principal could hold. **At every `N >= 1` the predicate binds and a tenant that has designated no FinanceReviewer simply has an unapprovable change, which is correct** (`inst-gv-finance-predicate` is the normative arm; this row previously read "when the configured `N` cannot carry it", which an implementer could read as *the available approvers cannot satisfy it* and build into a finance-review fail-open at `N = 2` — Blocking 2 of the review); self-approval refused at every `N ≥ 1`; `N` reachable only by explicit configuration, absent ⇒ default; initial `N` from tenant provisioning, later changes material under the then-current quorum (C4) | PRD `fr-materiality-gated-publish`; P-D-11 |
 | C2 | Distinctness is by **principal**, never by role: one human holding both roles is one approver | pricing G2, adopted |
 | C3 | An approval pins the internal revision AND stores the submitted content snapshot; **any frozen-content write — save OR lifecycle transition — bumps `internal_revision` and fires the invalidation hook**, **except any transition that consumes an approval in the same transaction — `draft→published`, which the publish door owns, and every gated edge P-D-30 put the gate phase on — which bumps once and fires no hook** (**P-D-26**, extended by **P-D-34** — the same transaction consumes the approval, and a hook firing against the record the act is consuming has no defined ordering) (M-2 fix: head-at-revision-N is therefore byte-identical to the snapshot at revision N; transition-written columns cannot drift under a pinned approval), superseding open approvals and re-queuing with the diff re-presented | PRD `fr-materiality-gated-publish` |
 | C4 | Materiality is a typed, configurable policy with the §17.1 interim default enforceable at launch; **the policy's own mutation is material** (the two-person rule's foundation must not be single-person-editable — the pricing D-10 lesson, adopted) | PRD §17.1 |
@@ -112,7 +112,7 @@ roles counting as two approvers (**principals, not roles**).
 | Name | Meaning |
 |------|---------|
 | `MaterialityEvaluator` | Decides material / non-material for a change set: bucket-iii field touches (registered by owning slices), the PRD-enumerated ops, affected-entity count ≥ the configured trigger, or a `GovernedLiveOp` kind registered material by its owning slice (§3.1(d)) |
-| `ApprovalRecord` | The stored unit: subject ref + **the subject's own pin** (an entity's `InternalRevision`, a category's `mutation_seq`, the store's `pinned_revision` for a catalog version, participant set or materiality policy, a batch's ledger digest — **P-D-125** row 52, **P-D-127** row 11; a live-op subject presents `Unpinned`, P-D-144; the row so stated by **P-D-152**) + **stored content snapshot** + rendered diff basis + quorum descriptor + state. The descriptor also carries **`quorumReduced`** when the effective count is below the retained-name default of 2 (P-D-13) — the count's counterpart to `predicateUnsatisfiable`, so a one-person act is never read off an audit trail that says "two-person". The descriptor carries `required` = the **effective** count — `N` for a material change, `min(N, 1)` for a non-material one (`inst-gv-materiality`), which is also what `inst-gv-queue` exposes — and, when a mandatory predicate cannot be carried at that count (finance-material at `N = 0`), an explicit **`predicateUnsatisfiable`** marker — the control's absence is a stored fact, not something a later reader infers from a config value (the P-D-08 `seal_state` instinct, same reason) |
+| `ApprovalRecord` | The stored unit: subject ref + **the subject's own pin** (an entity's `InternalRevision`, a category's `mutation_seq`, the store's `pinned_revision` for a catalog version, participant set or materiality policy, a batch's ledger digest — **P-D-125** row 52, **P-D-127** row 11; a live-op subject presents `Unpinned`, P-D-144; the row so stated by **P-D-152**) + **stored content snapshot** + rendered diff basis + quorum descriptor + state. The descriptor also carries **`quorumReduced`** when the effective count is below the default of 1 (**P-D-177**) (P-D-13) — the count's counterpart to `predicateUnsatisfiable`, so a one-person act is never read off an audit trail that says "two-person". The descriptor carries `required` = the **effective** count — `N` for a material change, `min(N, 1)` for a non-material one (`inst-gv-materiality`), which is also what `inst-gv-queue` exposes — and, when a mandatory predicate cannot be carried at that count (finance-material at `N = 0`), an explicit **`predicateUnsatisfiable`** marker — the control's absence is a stored fact, not something a later reader infers from a config value (the P-D-08 `seal_state` instinct, same reason) |
 | `QuorumEvaluator` | Counts distinct approving principals against the descriptor (role predicates included) |
 | `OverrideCeremony` | The P-D-02 variant: approvers explicitly acknowledge named lint findings; the acknowledgment is part of the record. At `N = 0` the **author** performs it (P-D-13) — informedness, not head-count, is what the ceremony buys, so it is never skipped for want of an approver |
 | `BreakGlassSession` | The time-boxed elevation record every elevated read hangs off |
@@ -342,6 +342,17 @@ row and open to correction; the requirement is that every code carries one.
   elevated read leaves an audit row with the session id (count asserted, not sampled).
 - Materiality: bucket-iii touch ⇒ material; bucket-iv-only re-publish ⇒ `min(N, 1)` approvers;
   policy-object mutation ⇒ material regardless of direction.
+- **The quorum's two ends (P-D-177).** An unconfigured tenant requires exactly **one** approver
+  beside the author; a tenant at `N = 0` completes every governed operation with none, and each
+  still writes a **satisfied** record carrying its descriptor. `quorumReduced` is set at `N = 0`
+  and **clear at `N = 1`** — the probe that would have passed at the old default is the one that
+  matters, since `required < DEFAULT` used to fire on the ordinary ceremony.
+- **The `min(N, 1)` discount needs `N >= 2` to be observable at all**, so every probe of it
+  configures the count rather than leaning on the default: at the default the discounted and the
+  full count are the same number.
+- **Eligibility is RBAC's (P-D-177).** A caller holding `approval × decide` and **no role claim**
+  decides, and counts; the finance lens still refuses a finance-material record that is met
+  numerically and not on the predicate (`RolePredicateUnmet`, distinct from `APPROVAL_REQUIRED`).
 
 **Alerts and meters (P-D-161).** The events this slice emits as `tracing` events, with the labels the emitting site carries — asserted per site by `lib_tests::every_alert_event_carries_the_labels_its_table_names`. The delivery channel is the platform's; the contract below is this gear's. Thresholds are interim until the NFR workshop.
 
@@ -450,6 +461,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   records. P-D-13 frames it as a marker for the *reducible ceremonies*. Nothing distinguishes
   "reduced by configuration" from "reduced by non-materiality". Owner: this slice with the audit
   consumer. *(Raised by the slice-05 first lens pass.)*
+  **The number in that answer moved (P-D-177, 2026-09-21).** The marker still means what P-D-120 settled — an effective count below the default, for any cause — but the default is now **1**, so it no longer fires on the ordinary one-approver ceremony this item worried it would "ride the majority of". The concern was real and the default was what caused it.
 - **Does C1's base role set bind the single approver of a non-material change?** C1 scopes its
   CatalogAdmin/FinanceReviewer floor to material changes; a non-material change gets `min(N, 1)` and
   the descriptor carries no base role set. Nothing says whether any holder of `approval × decide`
@@ -501,7 +513,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   *(Filed from 01 §6 by the P-D-43…49 propagation audit — the eighth pass's own repair note
   claimed this was filed and it was not.)*
 - **Is a tenant's FIRST materiality policy exempt from the gate?** Raised by the 2026-09-06 e2e
-  wave (**P-D-164**): an unconfigured tenant reads `N = 2` (P-D-135), the policy mutation is
+  wave (**P-D-164**): an unconfigured tenant reads `N = 1` (P-D-135; the default moved from 2 by **P-D-177**), the policy mutation is
   itself material (`MaterialAct::PolicyMutation`), and no principal can decide while nothing mints
   the approver-role claim — so the first `PUT /materiality-policy` answers `403 APPROVAL_REQUIRED`
   and **nothing governed can ever run on a fresh tenant through the wire**. *Recommendation:*
