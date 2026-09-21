@@ -405,7 +405,6 @@ fn a_fresh_shape_carries_nothing_but_its_name_and_its_clock() {
     assert_eq!(subject.evaluated_at, now());
     assert!(subject.frequency.is_none());
     assert!(subject.plan_tier.is_none());
-    assert!(!subject.plan_tier_override);
     assert!(subject.available_from.is_none());
     assert!(subject.available_to.is_none());
     assert!(subject.purchase_min_qty.is_none());

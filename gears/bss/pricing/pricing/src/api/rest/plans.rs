@@ -495,9 +495,6 @@ pub struct PlanView {
     pub plan_name: String,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
-    /// Whether the tier diverges from the parent SKU's under an audited
-    /// override.
-    pub plan_tier_override: bool,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -650,7 +647,6 @@ impl PlanView {
             plan_tier: revision.plan_tier,
             plan_name: revision.plan_name,
             frequency: revision.frequency.map(FrequencyView::from),
-            plan_tier_override: revision.plan_tier_override,
             purchase_min_qty: revision.purchase_min_qty,
             purchase_max_qty: revision.purchase_max_qty,
 
@@ -813,8 +809,6 @@ pub struct PlanShapeRequest {
     pub plan_name: Option<String>,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
-    /// Declare or withdraw the audited tier override (P3).
-    pub plan_tier_override: Option<bool>,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -883,8 +877,6 @@ pub struct CreatePlanRequest {
     pub plan_name: String,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
-    /// Declare or withdraw the audited tier override (P3).
-    pub plan_tier_override: Option<bool>,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -922,7 +914,6 @@ impl From<CreatePlanRequest> for PlanShapeRequest {
             // ("absent leaves it alone"), so the conversion widens it.
             plan_name: Some(value.plan_name),
             frequency: value.frequency,
-            plan_tier_override: value.plan_tier_override,
             purchase_min_qty: value.purchase_min_qty,
             purchase_max_qty: value.purchase_max_qty,
             descriptor_ext: value.descriptor_ext,
@@ -3158,10 +3149,6 @@ struct DraftShape {
     /// The plan's billing cycle.
     /// The recurring frequency, interval and all.
     frequency: Option<Frequency>,
-    /// The audited tier override (P3); absent means no override, because the
-    /// column is `NOT NULL DEFAULT false` and "nobody said" and "no override"
-    /// are the same claim about a plan.
-    plan_tier_override: bool,
     /// Minimum purchasable quantity.
     purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity.
@@ -3213,7 +3200,6 @@ impl DraftShape {
             plan_tier: self.plan_tier,
             plan_name: self.plan_name,
             frequency: self.frequency,
-            plan_tier_override: self.plan_tier_override,
             purchase_min_qty: self.purchase_min_qty,
             purchase_max_qty: self.purchase_max_qty,
             descriptor_ext: self.descriptor_ext,
@@ -3415,7 +3401,6 @@ fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
             DomainError::ValidationFailed(report)
         })?,
         frequency: frequency_of(body.frequency.as_ref())?,
-        plan_tier_override: body.plan_tier_override.unwrap_or(false),
         purchase_min_qty: body.purchase_min_qty,
         purchase_max_qty: body.purchase_max_qty,
         descriptor_ext: body.descriptor_ext.clone().unwrap_or_default(),
@@ -3460,7 +3445,6 @@ fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
         plan_tier: body.plan_tier.clone(),
         plan_name: body.plan_name.clone(),
         frequency: frequency_of(body.frequency.as_ref())?,
-        plan_tier_override: body.plan_tier_override,
         purchase_min_qty: body.purchase_min_qty,
         purchase_max_qty: body.purchase_max_qty,
         descriptor_ext: body.descriptor_ext.clone(),

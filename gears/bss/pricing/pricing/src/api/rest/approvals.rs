@@ -597,9 +597,6 @@ pub struct PinnedContentView {
     /// module doc above makes showing-or-not an explicit decision rather than an
     /// omission.
     pub plan_name: String,
-    /// Whether the tier diverges from the parent SKU's under an audited
-    /// override.
-    pub plan_tier_override: bool,
     /// Start of the availability window, UTC.
     #[serde(default, with = "rfc3339::option")]
     pub available_from: Option<OffsetDateTime>,
@@ -876,7 +873,6 @@ impl From<&PlanShape> for PinnedContentView {
             frequency,
             plan_tier,
             plan_name,
-            plan_tier_override,
             available_from,
             available_to,
             purchase_min_qty,
@@ -911,7 +907,6 @@ impl From<&PlanShape> for PinnedContentView {
             frequency: frequency.map(FrequencyView::from),
             plan_tier: plan_tier.clone(),
             plan_name: plan_name.clone(),
-            plan_tier_override: *plan_tier_override,
             available_from: *available_from,
             available_to: *available_to,
             purchase_min_qty: *purchase_min_qty,

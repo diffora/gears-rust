@@ -97,14 +97,6 @@ pub struct PlanRevision {
     /// repository boundary is the only place either can appear and it refuses
     /// both as corrupt rows.
     pub frequency: Option<Frequency>,
-    /// Whether the tier deliberately diverges from the parent SKU's under an
-    /// explicit audited override (§6, P3).
-    ///
-    /// Not an `Option`: the column is `NOT NULL DEFAULT false` because "nobody
-    /// said" and "no override" are the same claim about a plan, and a third
-    /// state would make the audited exception depend on which of two absences a
-    /// reader met.
-    pub plan_tier_override: bool,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -188,12 +180,10 @@ pub struct PlanRevision {
 /// through a patch — only replaced, or discarded by abandoning the draft
 /// revision, which keeps the revision number it consumed (D-145).
 ///
-/// Two of the Slice-2 fields fall outside that sentence, and both for reasons
-/// of their own rather than by exception:
+/// One of the Slice-2 fields falls outside that sentence, and for a reason of
+/// its own rather than by exception. It was two until **D-383** removed
+/// `plan_tier_override`, the other `Option` over a `NOT NULL` column:
 ///
-/// * [`PlanShapePatch::plan_tier_override`] is an `Option<bool>` over a
-///   `NOT NULL` column, so `Some(false)` really does withdraw the override —
-///   there is no null state to be unable to reach.
 /// * [`PlanShapePatch::frequency`] moves **three** columns as one value.
 ///   Setting a fixed frequency clears `custom_interval_n` and
 ///   `custom_interval_unit` with it, because the interval is part of the
@@ -219,8 +209,6 @@ pub struct PlanShapePatch {
     pub plan_name: Option<String>,
     /// Move the recurring frequency, interval and all; see the type doc.
     pub frequency: Option<Frequency>,
-    /// Declare or withdraw the audited tier override (P3).
-    pub plan_tier_override: Option<bool>,
     /// Move the minimum purchasable quantity.
     pub purchase_min_qty: Option<u64>,
     /// Move the maximum purchasable quantity.

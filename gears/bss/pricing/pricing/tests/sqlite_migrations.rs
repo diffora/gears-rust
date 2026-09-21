@@ -1055,7 +1055,10 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_plan_frozen_columns",
-        16_040_617_608_812_288_893_u64,
+        // Moved by **D-382**: the whitelist lost `plan_tier_override` with the
+        // column, so the body — and therefore this hash — is a different one.
+        // Taken from the engine's own `sqlite_master` rather than computed.
+        3_313_969_686_066_243_010_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
     (

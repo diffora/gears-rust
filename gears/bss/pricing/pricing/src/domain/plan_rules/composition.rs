@@ -67,10 +67,18 @@
 //!
 //! - **`inst-cmp-plantier`, second half** (`PLANTIER_DIVERGENT`) and
 //!   **`inst-cmp-tier-drift`**: both need the parent SKU's `PlanTier` from the
-//!   registry read model, which this gear has no client for
-//!   ([`crate::domain::ports`] holds the `CatalogVersion` registry and nothing
-//!   else). The `plan_tier_override` audit has nothing to audit until the
-//!   equality it overrides can be computed.
+//!   registry read model, which this gear cannot reach: [`crate::domain::ports`]
+//!   does declare a `ProductCatalogClientV1`, so the **port** is not what is
+//!   missing — the only implementation of it is `infra::local_dev_catalog`'s
+//!   static fixture, so what the gear can read is a development stand-in and
+//!   never the registry's answer. (This sentence read *"has no client for it …
+//!   the `CatalogVersion` registry and nothing else"* until 2026-09-21, which
+//!   had gone stale on its first half and right on its second.)
+//!   The `plan_tier_override` flag that stood for this audit is **gone**
+//!   (**D-383**): it audited nothing for as long as it existed, and a
+//!   placeholder that reads `false` on every diverging plan tells an auditor
+//!   the opposite of the truth. The rules stay owed; the false record does
+//!   not stand in for them.
 //! - **`SKU_NOT_PUBLISHED`**: the parent SKU's publication state, same registry.
 //!   D-372 landed the **row's** half of this code — `inst-pr-sku-published`, over
 //!   the SKU a price row names ([`crate::domain::row_sku_rules`]) — so the code is

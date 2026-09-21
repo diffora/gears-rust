@@ -1272,7 +1272,6 @@ pub(crate) async fn assemble_from(
         plan_tier,
         plan_name,
         frequency,
-        plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
         descriptor_ext,
@@ -1297,7 +1296,6 @@ pub(crate) async fn assemble_from(
     shape.frequency = frequency;
     shape.plan_tier = plan_tier;
     shape.plan_name = plan_name;
-    shape.plan_tier_override = plan_tier_override;
     shape.available_from = available_from;
     shape.available_to = available_to;
     shape.purchase_min_qty = purchase_min_qty;

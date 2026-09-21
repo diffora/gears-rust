@@ -28,7 +28,6 @@ fn revision(plan_id: PlanId) -> PlanRevision {
             n: 45,
             unit: CustomIntervalUnit::Days,
         }),
-        plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
         descriptor_ext: std::collections::BTreeMap::new(),

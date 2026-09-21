@@ -606,7 +606,7 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
     // frequency and no interval, so moving one interval column on its own
     // leaves the pairing CHECK satisfied and the trigger is the only guard that
     // can refuse — which is what this case has to observe.
-    const FROZEN: [(&str, &str); 19] = [
+    const FROZEN: [(&str, &str); 18] = [
         ("plan_id", "'99999999-9999-9999-9999-999999999999'"),
         ("revision", "7"),
         ("tenant_id", "'88888888-8888-8888-8888-888888888888'"),
@@ -616,7 +616,6 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
         ("frequency", "'quarterly'"),
         ("custom_interval_n", "3"),
         ("custom_interval_unit", "'months'"),
-        ("plan_tier_override", "1"),
         ("purchase_min_qty", "5"),
         ("purchase_max_qty", "9"),
         ("descriptor_ext", "'{\"costCentre\":\"q3-bundle\"}'"),
@@ -724,8 +723,11 @@ async fn the_frozen_whitelist_names_every_content_column_the_table_holds() {
     let missing: Vec<&str> = columns
         .split(',')
         .filter(|column| !SANCTIONED_MUTABLE.contains(column))
-        // The trailing space is what keeps `plan_tier` from matching
-        // `plan_tier_override`'s line.
+        // The trailing space keeps a column from matching a longer sibling's
+        // line. The pair it was written for — `plan_tier` against
+        // `plan_tier_override` — is gone with **D-382**, and no column of this
+        // table is a prefix of another today; it stays because the next one
+        // added would not announce itself.
         .filter(|column| !predicate.contains(&format!("NEW.{column} ")))
         .collect();
     assert!(

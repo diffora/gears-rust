@@ -692,10 +692,6 @@ pub struct PlanShape {
     /// unchanged — it still writes the optional form with the value present —
     /// so the generation does not move.
     pub plan_name: String,
-    /// Whether the tier deliberately diverges from the parent SKU's under an
-    /// explicit audited override (P3). The equality half of the check needs the
-    /// registry; see [`crate::domain::plan_rules`].
-    pub plan_tier_override: bool,
     /// Start of the plan's availability window, UTC.
     pub available_from: Option<OffsetDateTime>,
     /// End of the plan's availability window, UTC.
@@ -814,7 +810,6 @@ impl PlanShape {
             frequency: None,
             plan_tier: None,
             plan_name: String::new(),
-            plan_tier_override: false,
             available_from: None,
             available_to: None,
             purchase_min_qty: None,

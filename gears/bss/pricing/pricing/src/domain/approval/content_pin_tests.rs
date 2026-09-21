@@ -347,7 +347,6 @@ fn base() -> PlanShape {
     });
     shape.plan_tier = Some("gold".to_owned());
     shape.plan_name = "Gold Plan".to_owned();
-    shape.plan_tier_override = true;
     shape.available_from = Some(at(1));
     shape.available_to = Some(at(23));
     shape.purchase_min_qty = Some(1);
@@ -769,7 +768,6 @@ fn plan_level_mutators() -> Vec<Mutator> {
         // name. The empty string is the only absence a shape can still carry
         // and it stays framed, so a preimage built from one is distinct.
         ("plan_name -> empty", |s| s.plan_name = String::new()),
-        ("plan_tier_override", |s| s.plan_tier_override = false),
         ("available_from", |s| s.available_from = Some(at(2))),
         ("available_to", |s| s.available_to = Some(at(22))),
         ("purchase_min_qty", |s| s.purchase_min_qty = Some(2)),
@@ -1865,7 +1863,7 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "28ad15a17f75ea1d48729e6d35ae50d43d8ba3b4c3eeff4e897368986984406e"
+        "ff7d768e48a7ad160db7e4310280309db623c09d62f2ef41b150c2540d1509c9"
     );
 }
 
@@ -2036,7 +2034,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v23\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v24\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

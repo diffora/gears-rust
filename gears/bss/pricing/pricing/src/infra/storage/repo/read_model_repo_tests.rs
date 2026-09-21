@@ -130,7 +130,6 @@ fn populated() -> PlanSubjectDelta {
         sku_id: Some(Uuid::from_u128(0x5_c1)),
         sale_sku_ids: vec![Uuid::from_u128(0x5_c1)],
         plan_tier: Some("gold".to_owned()),
-        plan_tier_override: true,
         frequency: Some(Frequency::CustomEveryN {
             n: 7,
             unit: CustomIntervalUnit::Months,
@@ -327,7 +326,6 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         "phaseGrantMap",
         "phases",
         "planTier",
-        "planTierOverride",
         "purchaseMaxQty",
         "purchaseMinQty",
         "revision",

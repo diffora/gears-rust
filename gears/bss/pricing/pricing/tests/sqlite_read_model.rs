@@ -371,7 +371,6 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
         sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some(tier.to_owned()),
         frequency: Some(Frequency::Monthly),
-        plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
         descriptor_ext: std::collections::BTreeMap::new(),

@@ -1175,7 +1175,6 @@ async fn abandoned_draft_intentions_never_activate() {
                 sku_id: SKU,
                 plan_tier: None,
                 frequency: Some(Frequency::Monthly),
-                plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
                 descriptor_ext: std::collections::BTreeMap::new(),

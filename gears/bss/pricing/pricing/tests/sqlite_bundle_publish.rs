@@ -123,7 +123,6 @@ async fn seeded(h: &Harness) {
                 sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 frequency: None,
-                plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
                 descriptor_ext: std::collections::BTreeMap::new(),

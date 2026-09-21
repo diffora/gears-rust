@@ -98,7 +98,6 @@ fn new_draft(plan_id: PlanId) -> NewPlanDraft {
         sku_id: Uuid::from_u128(0x5_c1_11),
         plan_tier: Some("gold".to_owned()),
         frequency: Some(Frequency::Monthly),
-        plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
         descriptor_ext: std::collections::BTreeMap::new(),

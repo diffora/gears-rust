@@ -169,9 +169,6 @@ pub struct NewPlanDraft {
     /// The plan's billing cycle.
     /// The recurring frequency, interval and all.
     pub frequency: Option<Frequency>,
-    /// Whether the tier diverges from the parent SKU's under an audited
-    /// override (P3).
-    pub plan_tier_override: bool,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -798,7 +795,6 @@ impl PlanRepo {
             plan_tier: current.plan_tier,
             plan_name: current.plan_name,
             frequency: current.frequency,
-            plan_tier_override: current.plan_tier_override,
             purchase_min_qty: current.purchase_min_qty,
             purchase_max_qty: current.purchase_max_qty,
             descriptor_ext: current.descriptor_ext,
@@ -1235,7 +1231,6 @@ pub async fn create_granted_draft_on(
         plan_tier: draft.plan_tier,
         plan_name: draft.plan_name,
         frequency: draft.frequency,
-        plan_tier_override: draft.plan_tier_override,
         purchase_min_qty: draft.purchase_min_qty,
         purchase_max_qty: draft.purchase_max_qty,
         descriptor_ext: draft.descriptor_ext,
@@ -2157,7 +2152,6 @@ fn revision_model(
         frequency: Set(interval.token),
         custom_interval_n: Set(interval.n),
         custom_interval_unit: Set(interval.unit),
-        plan_tier_override: Set(revision.plan_tier_override),
         purchase_min_qty: Set(stored_qty("purchaseMinQty", revision.purchase_min_qty)?),
         purchase_max_qty: Set(stored_qty("purchaseMaxQty", revision.purchase_max_qty)?),
         descriptor_ext: Set(serde_json::json!(revision.descriptor_ext)),
@@ -2260,7 +2254,6 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
         plan_tier,
         plan_name,
         frequency,
-        plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
         descriptor_ext,
@@ -2290,12 +2283,6 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
         columns.push((plan::Column::Frequency, Expr::value(interval.token)));
         columns.push((plan::Column::CustomIntervalN, Expr::value(interval.n)));
         columns.push((plan::Column::CustomIntervalUnit, Expr::value(interval.unit)));
-    }
-    if let Some(plan_tier_override) = plan_tier_override {
-        columns.push((
-            plan::Column::PlanTierOverride,
-            Expr::value(plan_tier_override),
-        ));
     }
     if let Some(min_qty) = stored_qty("purchaseMinQty", purchase_min_qty)? {
         columns.push((plan::Column::PurchaseMinQty, Expr::value(min_qty)));
@@ -2661,7 +2648,6 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         plan_tier: row.plan_tier,
         plan_name: row.plan_name,
         frequency,
-        plan_tier_override: row.plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
         descriptor_ext: serde_json::from_value(row.descriptor_ext)

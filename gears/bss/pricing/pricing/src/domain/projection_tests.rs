@@ -96,7 +96,6 @@ fn shape_only() -> PlanSubjectDelta {
         sku_id: Some(uuid::Uuid::from_u128(0x5_c1)),
         sale_sku_ids: vec![uuid::Uuid::from_u128(0x5_c1)],
         plan_tier: Some("gold".to_owned()),
-        plan_tier_override: false,
         frequency: Some(Frequency::Monthly),
         available_from: Some(utc_ymd_hms(2026, 8, 1, 0, 0, 0)),
         available_to: None,
@@ -208,7 +207,6 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
         Some(&json!(uuid::Uuid::from_u128(0x5_c1)))
     );
     assert_eq!(value.get("planTier"), Some(&json!("gold")));
-    assert_eq!(value.get("planTierOverride"), Some(&json!(false)));
     assert_eq!(
         value.get("frequency"),
         Some(&json!({ "token": "monthly" })),
@@ -1602,7 +1600,9 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
         "no member is classified on both sides: {all:?}"
     );
     assert_eq!(
-        named, 25,
+        // 25 until **D-383** took `planTierOverride` out of the payload.
+        named,
+        24,
         "the payload's member count, read back: it moves with the payload on purpose, and a \
          member left unclassified is caught by the compiler before it reaches here"
     );

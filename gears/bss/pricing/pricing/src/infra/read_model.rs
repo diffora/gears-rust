@@ -1189,7 +1189,6 @@ async fn project_plan_subject(
         sku_id: Some(current.sku_id),
         sale_sku_ids,
         plan_tier: current.plan_tier,
-        plan_tier_override: current.plan_tier_override,
         frequency: current.frequency,
         available_from: current.available_from,
         available_to: current.available_to,

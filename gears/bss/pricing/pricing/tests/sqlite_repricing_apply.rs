@@ -318,7 +318,6 @@ async fn seed_plan(h: &Harness, plan_id: Uuid, phase_id: Uuid) {
                 sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 frequency: Some(Frequency::Monthly),
-                plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
                 descriptor_ext: std::collections::BTreeMap::new(),

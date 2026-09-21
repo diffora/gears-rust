@@ -91,9 +91,14 @@ pub struct CatalogSkuView {
     /// The registry's own word, passed through unparsed.
     pub status: String,
     pub plan_tier: Option<String>,
-    /// `product` | `service` | `bundle`, the registry's word — `type` on the
+    /// `offer` | `component` | `bundle` — the registry's word, and its **role**
+    /// since products' P-D-176 superseded `product`/`service`; `type` on the
     /// wire, as the registry's consumer contract (`dod-sdk-read-shape`) spells
-    /// it; the raw identifier is only Rust's spelling of the same name.
+    /// it, the raw identifier being only Rust's spelling of the same name.
+    ///
+    /// Passed through **unparsed**, as the whole of this view is: the registry
+    /// owns the roster, and a second copy of it here would be a second thing to
+    /// go stale — which is exactly what this line was until 2026-09-21.
     pub r#type: String,
     /// `false` is a composition- or metering-only member.
     pub sellable: bool,

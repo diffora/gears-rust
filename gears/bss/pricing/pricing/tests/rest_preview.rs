@@ -106,7 +106,6 @@ fn delta_of(
         sku_id: None,
         sale_sku_ids: Vec::new(),
         plan_tier: Some("gold".to_owned()),
-        plan_tier_override: false,
         frequency: None,
         available_from: Some(at()),
         available_to: None,

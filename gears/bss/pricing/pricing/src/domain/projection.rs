@@ -162,8 +162,9 @@
 //! consumer-contract family D-162 excludes by name (proration, anchoring,
 //! billing timing) and which no evaluator reads to derive a quantity — the
 //! quantity-derivation fields are the row's own `billing_granularity` and
-//! `aggregation_*`, already rostered; `plan_tier` and `plan_tier_override` are
-//! the registry taxonomy and its audited divergence; the purchase bounds gate a
+//! `aggregation_*`, already rostered; `plan_tier` is the registry taxonomy
+//! (its audited-divergence flag went with D-383, having audited
+//! nothing); the purchase bounds gate a
 //! purchase, not a rate; `descriptor_ext` carries Billing extensions;
 //! the phase set, the add-on rules and the descriptor set are composition and
 //! presentation. **None of them is rostered**, so the boundary analysis moves the
@@ -625,9 +626,6 @@ pub struct PlanSubjectDelta {
     pub sale_sku_ids: Vec<Uuid>,
     /// The plan's tier, from the registry taxonomy.
     pub plan_tier: Option<String>,
-    /// Whether the tier deliberately diverges from the parent SKU's under an
-    /// audited override.
-    pub plan_tier_override: bool,
     /// The plan's billing cycle.
     /// The recurring frequency, custom interval riding the variant.
     pub frequency: Option<Frequency>,
@@ -830,7 +828,6 @@ impl PlanSubjectDelta {
             sku_id,
             sale_sku_ids,
             plan_tier,
-            plan_tier_override,
             frequency,
             available_from,
             available_to,
@@ -858,7 +855,6 @@ impl PlanSubjectDelta {
             "skuId": sku_id,
             "saleSkuIds": sale_sku_ids,
             "planTier": plan_tier,
-            "planTierOverride": plan_tier_override,
             "frequency": frequency.map(frequency_value),
             "availableFrom": available_from.map(format_rfc3339),
             "availableTo": available_to.map(format_rfc3339),
@@ -1603,7 +1599,6 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         sku_id,
         sale_sku_ids,
         plan_tier,
-        plan_tier_override,
         frequency,
         available_from,
         available_to,
@@ -1659,7 +1654,6 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         // derivation — so it does not move `EVALUATION_POLICY_GENERATION`.
         named("sale_sku_ids", sale_sku_ids),
         named("plan_tier", plan_tier),
-        named("plan_tier_override", plan_tier_override),
         named("frequency", frequency),
         named("available_from", available_from),
         named("available_to", available_to),

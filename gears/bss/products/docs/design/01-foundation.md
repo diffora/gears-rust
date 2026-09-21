@@ -836,7 +836,9 @@ named bucket to any Foundation column after publish, and routes "other **descrip
 rather than in the catch-all)). **Bucket iv stood empty until `PlanTier` was demoted into it
 (P-D-179)** — no Foundation column is in it still, and 03's tier is its only member; the bucket
 differs from iii *only* in the materiality slice 05 reads off the tag, which is what that
-decision moved and all it moved: `name` and `name_normalized` are **bucket-iii** — a published Product
+decision moved and all it moved.
+
+The Foundation columns' own assignment is unchanged by it: `name` and `name_normalized` are **bucket-iii** — a published Product
 can be renamed,
 and the rename comes out as version N+1 under governance rather than forcing retire-and-clone;
 `region_scope` and `brand_scope` are **bucket-iii in both directions**, widening and narrowing

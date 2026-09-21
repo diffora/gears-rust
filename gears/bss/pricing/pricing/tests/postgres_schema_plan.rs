@@ -870,7 +870,6 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         "frequency = 'monthly'".to_owned(),
         "custom_interval_n = 3".to_owned(),
         "custom_interval_unit = 'days'".to_owned(),
-        "plan_tier_override = true".to_owned(),
         "purchase_min_qty = 1".to_owned(),
         "purchase_max_qty = 9".to_owned(),
         "descriptor_ext = '{\"costCentre\":\"group/1\"}'::jsonb".to_owned(),

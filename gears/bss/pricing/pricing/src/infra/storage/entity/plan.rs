@@ -43,10 +43,6 @@ pub struct Model {
     pub custom_interval_n: Option<i32>,
     /// `days` | `months` — what [`Model::custom_interval_n`] counts.
     pub custom_interval_unit: Option<String>,
-    /// Whether the tier deliberately diverges from the parent SKU's under an
-    /// explicit audited override (§6, P3). `NOT NULL DEFAULT false`, so a plan
-    /// that never mentions it is not overriding anything.
-    pub plan_tier_override: bool,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<i64>,
     /// Maximum purchasable quantity (one-time plans), `>=`

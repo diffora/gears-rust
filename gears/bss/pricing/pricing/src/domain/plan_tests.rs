@@ -37,7 +37,6 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
             n: 45,
             unit: CustomIntervalUnit::Days,
         }),
-        plan_tier_override: Some(true),
         purchase_min_qty: Some(2),
         purchase_max_qty: Some(10),
         descriptor_ext: Some(std::collections::BTreeMap::new()),
@@ -53,11 +52,14 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
     // would turn the identity edit into a write nobody asked for, and is the one
     // way this encoding can lie.
     //
-    // `plan_tier_override` is the field where this matters most and reads least
-    // like it: it is the only `Option` here over a `NOT NULL` column, so a
-    // `Default` of `Some(false)` would be indistinguishable from "leave alone"
-    // to a reader and would silently withdraw an audited override (P3) on every
-    // unrelated edit.
+    // The field this mattered most for was `plan_tier_override` — the only
+    // `Option` here over a `NOT NULL` column, where a `Default` of
+    // `Some(false)` would have read as "leave alone" and silently withdrawn an
+    // audited override on every unrelated edit. It went with **D-383**, and the
+    // rule it illustrated did not: every remaining member is an `Option` over a
+    // nullable column, so the encoding can no longer lie in that particular
+    // way — which is a narrower guarantee than the one this case asserts, and
+    // the reason the case still asserts every field rather than a sample.
     let empty = PlanShapePatch::default();
     assert!(empty.sku_id.is_none());
     assert!(empty.plan_tier.is_none());
@@ -68,7 +70,6 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
     // break.
     assert!(empty.plan_name.is_none());
     assert!(empty.frequency.is_none());
-    assert!(empty.plan_tier_override.is_none());
     assert!(empty.purchase_min_qty.is_none());
     assert!(empty.purchase_max_qty.is_none());
     assert!(empty.descriptor_ext.is_none());

@@ -669,7 +669,29 @@ use time::OffsetDateTime;
 /// absence; D-379 had spelled it `global`, an ordinary taxonomy value, which is
 /// a different preimage. Drain-fail as before, and no v23 pin was ever taken
 /// against a `global` row.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v23\x1f";
+///
+/// # `v24`: the tier's audited-divergence flag leaves the preimage
+///
+/// `plan_tier_override` is removed from the encoding because it is removed from
+/// the plan (**D-383**). It framed one bool that was never true: on the stand
+/// all 137 plans diverged from their parent SKU's tier and the flag read
+/// `false` on every one, because nothing computes the equality it overrides —
+/// the caller sets it for itself, and `domain/plan_rules/composition.rs` names
+/// the two rules still waiting on a registry client to make the comparison
+/// possible at all.
+///
+/// **Two generations in one day, and the number is why they are two.** D-381's
+/// re-framing and this removal were authored in parallel sessions and both
+/// first claimed v23; a shared tag over two different preimages is precisely
+/// what this separator exists to prevent, so the later one moved rather than
+/// the earlier one being reused.
+///
+/// **Drain-fail**, as every generation before it. Every open `pricing_approval`
+/// unit answers `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and
+/// resubmitted under v24; a stored v23 digest cannot be translated, the bytes
+/// it was taken over no longer existing to re-derive. Measured on the benidorm
+/// stand when this landed: **16 open units**.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v24\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1236,7 +1258,6 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         frequency,
         plan_tier,
         plan_name,
-        plan_tier_override,
         available_from,
         available_to,
         purchase_min_qty,
@@ -1271,12 +1292,7 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_uuid(buf, Some(*sku_id));
     put_frequency(buf, *frequency);
     put_opt_str(buf, plan_tier.as_deref());
-    // **The optional framing is kept deliberately** (D-382). `plan_name` is
-    // total now, but framing it as a bare string would move every plan's
-    // preimage and cost a pin generation for a type change that adds no
-    // information: `Some(name)` writes the bytes it always wrote.
     put_opt_str(buf, Some(plan_name.as_str()));
-    put_bool(buf, *plan_tier_override);
     put_opt_instant(buf, *available_from);
     put_opt_instant(buf, *available_to);
     put_opt_u64(buf, *purchase_min_qty);

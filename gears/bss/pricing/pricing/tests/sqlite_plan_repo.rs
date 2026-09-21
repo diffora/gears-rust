@@ -107,7 +107,6 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
             n: 45,
             unit: CustomIntervalUnit::Days,
         }),
-        plan_tier_override: true,
         purchase_min_qty: Some(2),
         purchase_max_qty: Some(10),
         descriptor_ext: std::collections::BTreeMap::from([(
@@ -209,7 +208,6 @@ async fn a_created_draft_reads_back_whole() {
             unit: CustomIntervalUnit::Days,
         })
     );
-    assert!(read.plan_tier_override);
     assert_eq!(read.purchase_min_qty, Some(2));
     assert_eq!(read.purchase_max_qty, Some(10));
     assert_eq!(
@@ -535,7 +533,6 @@ async fn every_patched_column_reaches_the_row_it_names() {
                 sku_id: Some(sku_id),
                 plan_tier: Some("platinum".to_owned()),
                 frequency: Some(Frequency::Annual),
-                plan_tier_override: Some(false),
                 purchase_min_qty: Some(3),
                 purchase_max_qty: Some(4),
                 descriptor_ext: Some(std::collections::BTreeMap::from([(
@@ -565,13 +562,6 @@ async fn every_patched_column_reaches_the_row_it_names() {
         Some("apac-bundle")
     );
     assert_eq!(updated.row_version, RowVersion::new(1));
-
-    // `plan_tier_override` is the one `Option` here over a `NOT NULL` column, so
-    // `Some(false)` is a real withdrawal of an audited override (P3) rather than
-    // an omission. The seed set it, this patch clears it, and a patch encoding
-    // that dropped `Some(false)` as "nothing to do" would leave the override
-    // standing while telling the author it was gone.
-    assert!(!updated.plan_tier_override);
 
     // The frequency moved from the custom one to a fixed one, and that is a
     // **three-column** write: `custom_interval_n` and `custom_interval_unit`
@@ -868,7 +858,6 @@ async fn a_new_revision_copies_the_current_shape_forward() {
     assert_eq!(opened.sku_id, published.sku_id);
     assert_eq!(opened.plan_tier, published.plan_tier);
     assert_eq!(opened.frequency, published.frequency);
-    assert_eq!(opened.plan_tier_override, published.plan_tier_override);
     assert_eq!(opened.purchase_min_qty, published.purchase_min_qty);
     assert_eq!(opened.purchase_max_qty, published.purchase_max_qty);
     assert_eq!(opened.descriptor_ext, published.descriptor_ext);
@@ -906,7 +895,6 @@ async fn a_new_revision_copies_the_current_shape_forward() {
             unit: CustomIntervalUnit::Days,
         })
     );
-    assert!(opened.plan_tier_override);
 
     // Both links of the chain are readable, and each is what it should be.
     assert_eq!(
@@ -3085,7 +3073,6 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
         frequency: sea_orm::ActiveValue::Set(None),
         custom_interval_n: sea_orm::ActiveValue::Set(None),
         custom_interval_unit: sea_orm::ActiveValue::Set(None),
-        plan_tier_override: sea_orm::ActiveValue::Set(false),
         purchase_min_qty: sea_orm::ActiveValue::Set(None),
         purchase_max_qty: sea_orm::ActiveValue::Set(None),
         descriptor_ext: sea_orm::ActiveValue::Set(serde_json::json!({})),

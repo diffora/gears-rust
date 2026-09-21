@@ -847,8 +847,9 @@ impl FrozenColumns {
             .iter()
             .map(String::as_str)
             // The trailing space is what keeps `min_qty_usage` from matching
-            // `min_qty_usage_fallback`'s line, and `plan_tier` from matching
-            // `plan_tier_override`'s.
+            // `min_qty_usage_fallback`'s line. It guarded `plan_tier` against
+            // `plan_tier_override` too, until **D-383** removed the latter —
+            // the mechanism stands on the pair that remains.
             .filter(|column| !self.predicate.contains(&format!("NEW.{column} ")))
             .collect()
     }
