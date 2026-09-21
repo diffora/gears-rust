@@ -83,7 +83,8 @@ pub struct Model {
     /// `CorrectionDoor`, in the same statement as the `published_version`
     /// bump; the head guard refuses it anywhere else.
     pub correction_ref: Option<Uuid>,
-    /// 03's `TypeProfile` (`product` | `service` | `bundle`), bucket ii —
+    /// 03's `TypeProfile` — the SKU's **role**, `offer` | `component` |
+    /// `bundle` (P-D-176, superseding `product` | `service`). Bucket ii:
     /// required at create, correctable after first publish only through the
     /// correction door (P-D-145).
     pub sku_type: Option<String>,

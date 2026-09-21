@@ -172,8 +172,9 @@ pub enum DomainError {
     /// usage SKUs only (**P-D-131**).
     #[error("usage type unavailable: {0}")]
     UsageTypeUnavailable(String),
-    /// `sku_type` is outside `product | service | bundle`, or absent at publish
-    /// (`03 inst-cl-type-profile`, P-D-145).
+    /// `sku_type` is outside the role set `offer | component | bundle`
+    /// (P-D-176, superseding `product | service` — both now answer this), or
+    /// absent at publish (`03 inst-cl-type-profile`, P-D-145).
     #[error("unknown sku type: {0}")]
     SkuTypeUnknown(String),
     /// A tier the tenant's `PlanTier` set does not carry — unknown or

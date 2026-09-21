@@ -107,7 +107,14 @@ pub struct NewSku {
     pub region_scope: Option<String>,
     /// Brand scope; `None` is unrestricted.
     pub brand_scope: Option<String>,
-    /// `product` | `service` | `bundle`; may be left for a later save.
+    /// The SKU's **role**: `offer` | `component` | `bundle` (P-D-176,
+    /// superseding `product` | `service`).
+    ///
+    /// `Option` is the wire shape, not permission to omit it: a create
+    /// carrying `None` is refused `VALIDATION`, on this door and on the bulk
+    /// path alike — design/03's *"every creation path names a role, bulk
+    /// included"*. It may be **corrected** after first publish, through 07's
+    /// correction door; it may not be left for a later save.
     pub sku_type: Option<String>,
     /// Whether the SKU is offered on its own; the door defaults it `true`.
     pub sellable: Option<bool>,

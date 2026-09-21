@@ -1010,7 +1010,16 @@ pub struct CreateSkuRequest {
     pub region_scope: Option<String>,
     /// The brand value set. Same three-state reading as `region_scope`.
     pub brand_scope: Option<String>,
-    /// 03's type profile — `product`, `service` or `bundle`; required (P-D-145).
+    /// 03's **role**: `offer`, `component` or `bundle` (P-D-176, superseding
+    /// `product`/`service` — both are now unknown tokens and answer
+    /// `SKU_TYPE_UNKNOWN`).
+    ///
+    /// **Optional on the wire and required in substance** (P-D-145): omitted
+    /// or `null` is refused `VALIDATION`, never defaulted — design/03's
+    /// *"every creation path names a role, bulk included"*. The field is an
+    /// `Option` so that the shape phase can say which field is missing and
+    /// why; declaring it `required` in the schema would hand the refusal to
+    /// the deserializer, which names neither.
     pub sku_type: Option<String>,
     /// Defaults `true` (`inst-cl-sellable`).
     pub sellable: Option<bool>,
@@ -7697,11 +7706,15 @@ async fn recheck_meter_declaration(
 }
 
 /// 03's classification re-check (P-D-145), beside the meter's: at publish
-/// (`publishing = true`) the type profile must be present and known, the tier
-/// present and active-or-kept, and a `product`/`service` must carry both
-/// accounting codes; at save only the fields the save moves are judged. A
-/// **new** assignment is one the image carries and the head did not — a first
-/// publish counts every carried value as new (`inst-pt-assign`'s draft clause).
+/// (`publishing = true`) the role must be present and inside `offer |
+/// component | bundle` (P-D-176) and the tier present and active-or-kept; at
+/// save only the fields the save moves are judged. A **new** assignment is one
+/// the image carries and the head did not — a first publish counts every
+/// carried value as new (`inst-pt-assign`'s draft clause).
+///
+/// The per-type **accounting-code** arm this header used to name is gone:
+/// P-D-169 took both codes out of the registry, so the profile constrains the
+/// type alone. The body's own comment has said so since; the header had not.
 async fn recheck_classification(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
