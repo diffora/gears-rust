@@ -23,7 +23,7 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         revision: 3,
         sku_id: Uuid::nil(),
         plan_tier: Some("gold".to_owned()),
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         frequency: Some(Frequency::CustomEveryN {
             n: 45,
             unit: CustomIntervalUnit::Days,

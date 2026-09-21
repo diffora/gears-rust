@@ -164,6 +164,8 @@ fn base_row(plan: &str, revision: u32) -> Vec<(String, String)> {
         ("lifecycle_state", "'draft'".to_owned()),
         ("created_by", format!("'{ACTOR}'")),
         ("created_at_utc", "'2026-08-03 09:00:00+00'".to_owned()),
+        // `NOT NULL` since D-382, for the same reason `sku_id` is above it.
+        ("plan_name", "'Fixture Plan'".to_owned()),
     ]
     .into_iter()
     .map(|(column, value)| (column.to_owned(), value))

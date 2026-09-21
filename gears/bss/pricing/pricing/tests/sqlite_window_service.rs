@@ -2091,7 +2091,7 @@ async fn a_currency_wide_price_covering_part_of_the_span_does_not_excuse_the_voi
     let seeded = rest_support::seed_publishable_plan_with(
         &h,
         plan_id,
-        |plan, phase| rest_support::publishable_scope_key_currency_wide(plan, phase),
+        rest_support::publishable_scope_key_currency_wide,
         rest_support::publishable_row_currency_wide(),
     )
     .await;

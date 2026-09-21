@@ -260,6 +260,7 @@ async fn seed_published_price_row_n(harness: &Harness, region: &str, nth: u128) 
         sku_id: Set(uuid::Uuid::from_u128(5)),
         created_by: Set(uuid::Uuid::from_u128(0x4444)),
         created_at_utc: Set(stamped),
+        plan_name: Set("Fixture Plan".to_owned()),
         ..Default::default()
     };
     // One plan carries every seeded row, so a second call finds it already

@@ -96,7 +96,7 @@ fn at(hour: u32) -> OffsetDateTime {
 /// observed.
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id,
         tenant_id,
         created_by: Uuid::from_u128(0xac_10),
@@ -324,7 +324,7 @@ async fn an_empty_patch_is_a_request_and_still_moves_the_tag() {
     // Named, because `new_draft` leaves it unset and a field left at its default
     // cannot show a `None` arm clearing it.
     let seeded = NewPlanDraft {
-        plan_name: Some("Platinum EMEA".to_owned()),
+        plan_name: "Platinum EMEA".to_owned(),
         ..new_draft(plan_id, tenant)
     };
     let created = repo.create_draft(&scope, seeded).await.expect("create");
@@ -529,7 +529,7 @@ async fn every_patched_column_reaches_the_row_it_names() {
             0,
             RowVersion::new(0),
             PlanShapePatch {
-                plan_name: None,
+                plan_name: Some("Fixture Plan".to_owned()),
                 entitlement_grants: Option::default(),
                 change_contract: Option::default(),
                 sku_id: Some(sku_id),
@@ -879,8 +879,7 @@ async fn a_new_revision_copies_the_current_shape_forward() {
     // than against `published.*`, so a copy-forward that carried two `None`s
     // faithfully still fails.
     assert_eq!(
-        opened.plan_name.as_deref(),
-        Some("Gold, EMEA"),
+        opened.plan_name, "Gold, EMEA",
         "the display name comes forward: a successor that lost it appears in the \
          operator's list unnamed"
     );
@@ -3070,7 +3069,7 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
     // A second revision row, fabricated straight at the table: `open_revision`
     // refuses a retired plan first, and what is under test is the publish.
     let opened = plan::ActiveModel {
-        plan_name: Set(None),
+        plan_name: Set("Fabricated Revision".to_owned()),
         cloned_from: Set(None),
         entitlement_grants: Set(None),
         allowed_change_targets: Set(None),

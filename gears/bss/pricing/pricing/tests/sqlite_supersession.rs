@@ -195,7 +195,7 @@ async fn composed(repo: &PriceRepo, provider: &DBProvider<DbError>, scope: &Acce
         .create_draft(
             scope,
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: plan(),
                 tenant_id: tenant(),
                 created_by: Uuid::from_u128(0xac_20),

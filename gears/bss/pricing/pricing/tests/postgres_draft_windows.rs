@@ -118,7 +118,7 @@ fn owner() -> DraftWindowOwner {
 
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id,
         tenant_id,
         created_by: ACTOR,
@@ -740,7 +740,7 @@ async fn seed_publishable_draft() -> (Store, u64) {
         .create_draft(
             &scope(),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: PlanId::new(PLAN),
                 tenant_id: TENANT,
                 created_by: ACTOR,

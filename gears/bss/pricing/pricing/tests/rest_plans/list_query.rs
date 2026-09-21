@@ -59,8 +59,14 @@ async fn name(h: &Harness, id: Uuid, label: &str) -> Value {
     body_json(response).await
 }
 
+/// Sorting by name across pages, with **equal** keys as the hard case.
+///
+/// The NULL half of this case is gone with D-382: every plan carries a name,
+/// so the fixture states five of them rather than leaving two for the sort to
+/// place. Two pairs are deliberately equal — the tie is what a cursor loses
+/// when the sort is not total, and it is the half that survived.
 #[tokio::test]
-async fn names_nulls_and_equal_sort_keys_are_not_lost_between_pages() {
+async fn names_and_equal_sort_keys_are_not_lost_between_pages() {
     let h = Harness::new().await;
     let ids: Vec<_> = (1..=5).map(Uuid::from_u128).collect();
     for id in &ids {
@@ -69,14 +75,21 @@ async fn names_nulls_and_equal_sort_keys_are_not_lost_between_pages() {
     name(&h, ids[0], "Beta").await;
     name(&h, ids[1], "Alpha").await;
     name(&h, ids[2], "Alpha").await;
+    // Named rather than left at the seeder's default: a fixture that inherits
+    // its sort key from a helper is one a change to that helper re-orders
+    // silently.
+    name(&h, ids[3], "Zeta").await;
+    name(&h, ids[4], "Zeta").await;
     for (order, expected) in [
         (
             "plan_name asc",
             vec![ids[1], ids[2], ids[0], ids[3], ids[4]],
         ),
         (
+            // Descending on the name; each tie broken by `plan_id` ascending,
+            // which is the stable order the walk appends.
             "plan_name desc",
-            vec![ids[0], ids[1], ids[2], ids[3], ids[4]],
+            vec![ids[3], ids[4], ids[0], ids[1], ids[2]],
         ),
         (
             "plan_name asc,plan_id desc",
@@ -105,7 +118,9 @@ async fn names_nulls_and_equal_sort_keys_are_not_lost_between_pages() {
     assert_eq!(
         null_filter.status(),
         StatusCode::BAD_REQUEST,
-        "the existing toolkit does not admit null literals for String fields"
+        "the existing toolkit does not admit null literals for String fields - a statement \
+         about the filter grammar, and since D-382 there is no null-named plan for such a \
+         filter to have found anyway"
     );
     name(&h, ids[0], "literal_%!").await;
     assert_eq!(

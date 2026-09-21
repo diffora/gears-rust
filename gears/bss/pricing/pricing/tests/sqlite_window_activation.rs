@@ -1167,7 +1167,7 @@ async fn abandoned_draft_intentions_never_activate() {
         .create_draft(
             &scope_of(TENANT),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id,
                 tenant_id: TENANT,
                 created_by: ACTOR,

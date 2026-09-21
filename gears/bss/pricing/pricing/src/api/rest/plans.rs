@@ -490,8 +490,9 @@ pub struct PlanView {
     pub sku_id: Uuid,
     /// The plan's tier (a registry-owned taxonomy, so a string).
     pub plan_tier: Option<String>,
-    /// The plan's human label (D-318), absent until an operator names it.
-    pub plan_name: Option<String>,
+    /// The plan's human label (D-318). Always present since D-382: every door
+    /// that creates a plan names it, so no surface falls back to the tier.
+    pub plan_name: String,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
     /// Whether the tier diverges from the parent SKU's under an audited
@@ -708,8 +709,8 @@ pub struct PlanSummaryView {
     pub sku_id: Uuid,
     /// The plan's tier (a registry-owned taxonomy, so a string).
     pub plan_tier: Option<String>,
-    /// The plan's human label (D-318), absent until an operator names it.
-    pub plan_name: Option<String>,
+    /// The plan's human label (D-318). Always present since D-382.
+    pub plan_name: String,
     /// Start of the availability window, UTC.
     #[serde(default, with = "rfc3339::option")]
     pub available_from: Option<OffsetDateTime>,
@@ -843,6 +844,24 @@ pub struct PlanShapeRequest {
     pub change_contract: Option<PlanChangeContractRequest>,
 }
 
+/// What a clone's operator names the copy.
+///
+/// The clone takes a body at all because of D-382: `pricing_plan.plan_name` is
+/// `NOT NULL`, and D-318's ruling that a clone must **not** carry its source's
+/// name still stands — a copy under the source's name puts two identically
+/// named plans in every list, which is the state the column exists to remove.
+/// So the name is supplied by the act that makes the copy, which is also the
+/// moment its operator knows what to call it.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
+pub struct ClonePlanRequest {
+    /// The copy's human label. Free text, judged by the same predicate the
+    /// create and the patch are judged by: blank and over-long are
+    /// `PLAN_NAME_INVALID`.
+    pub plan_name: String,
+}
+
 /// Initial plan shape. D-372 requires the sold offer SKU at creation.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request)]
@@ -855,9 +874,13 @@ pub struct CreatePlanRequest {
     /// The plan's human label (D-318). Free text an operator chose, distinct
     /// from the tier, which is a classification the catalog reasons about.
     ///
-    /// Absent leaves it alone; the empty string is **refused**, not stored, so
-    /// `NULL` stays the only spelling of "unnamed".
-    pub plan_name: Option<String>,
+    /// **Required since D-382.** Omitting it used to leave the plan unnamed,
+    /// and every surface that has to show a plan to a person then fell back to
+    /// the tier — the state D-318 minted this column to remove, reachable by
+    /// leaving one member out. Absence is refused by the transport rather than
+    /// by a rule: there is no `Option` here for a body to omit. Blank and
+    /// over-long are still `PLAN_NAME_INVALID`.
+    pub plan_name: String,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
     /// Declare or withdraw the audited tier override (P3).
@@ -895,7 +918,9 @@ impl From<CreatePlanRequest> for PlanShapeRequest {
         Self {
             sku_id: Some(value.sku_id),
             plan_tier: value.plan_tier,
-            plan_name: value.plan_name,
+            // The create's name is required, the patch facet's is optional
+            // ("absent leaves it alone"), so the conversion widens it.
+            plan_name: Some(value.plan_name),
             frequency: value.frequency,
             plan_tier_override: value.plan_tier_override,
             purchase_min_qty: value.purchase_min_qty,
@@ -1565,7 +1590,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .authenticated()
         .no_license_required()
         .param(idempotency_key_param())
-        .json_request::<CreatePlanRequest>(openapi, "The plan's initial shape; SKU is required.")
+        .json_request::<CreatePlanRequest>(
+            openapi,
+            "The plan's initial shape; the SKU and the name are both required.",
+        )
         .handler(create_plan)
         .json_response_with_schema::<PlanView>(
             openapi,
@@ -1702,6 +1730,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              revision and answers `CLONE_SOURCE_NOT_FOUND`.",
         )
         .param(idempotency_key_param())
+        .json_request::<ClonePlanRequest>(
+            openapi,
+            "What to call the copy. Required: the column is NOT NULL and a clone does not \
+             carry its source's name (D-382).",
+        )
         .handler(clone_plan)
         .json_response_with_schema::<CloneReceiptView>(
             openapi,
@@ -2991,6 +3024,7 @@ async fn clone_plan(
     extension_correlation: Option<Extension<CorrelationId>>,
     Path(plan_id): Path<Uuid>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(extension_correlation)?;
@@ -2998,9 +3032,20 @@ async fn clone_plan(
     let source = PlanId::new(plan_id);
     let scope = write_scope(&enforcer, &ctx, source.get(), tenant).await?;
 
+    // **The copy is named here** (D-382). The column is `NOT NULL`, and D-318's
+    // ruling that a clone must not carry its source's name still stands, so the
+    // only place left for the name is the act that makes the copy.
+    let request: ClonePlanRequest = preconditions::parse_body(&body)?;
+    require_well_formed_plan_name(Some(&request.plan_name))?;
+
     let client_key = preconditions::idempotency_key(&headers)?;
-    let request_hash =
-        preconditions::request_digest(&serde_json::json!({ "source_plan_id": source.get() }))?;
+    // The name is part of what the request asked for, so it is part of what a
+    // replay must match: two clones of one source under one key are the same
+    // act only if they would produce the same plan.
+    let request_hash = preconditions::request_digest(&serde_json::json!({
+        "source_plan_id": source.get(),
+        "plan_name": request.plan_name,
+    }))?;
     let now = OffsetDateTime::now_utc();
     let stamp = audit_stamp(&ctx, now, correlation);
 
@@ -3013,6 +3058,7 @@ async fn clone_plan(
         now,
     };
     let scope_for_body = scope.clone();
+    let plan_name = request.plan_name;
     let outcome = idempotent::guarded(
         &state.db,
         &state.idempotency,
@@ -3030,6 +3076,7 @@ async fn clone_plan(
                     tenant,
                     source,
                     PlanId::new(Uuid::now_v7()),
+                    plan_name,
                     now,
                     stamp,
                 ))
@@ -3107,7 +3154,7 @@ struct DraftShape {
     sku_id: Uuid,
     /// The plan's tier.
     plan_tier: Option<String>,
-    plan_name: Option<String>,
+    plan_name: String,
     /// The plan's billing cycle.
     /// The recurring frequency, interval and all.
     frequency: Option<Frequency>,
@@ -3356,7 +3403,17 @@ fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
             DomainError::ValidationFailed(report)
         })?,
         plan_tier: body.plan_tier.clone(),
-        plan_name: body.plan_name.clone(),
+        // `CreatePlanRequest` requires the name, so the conversion into this
+        // facet always fills it and the transport refuses a body that does
+        // not. The arm is `sku_id`'s, and it is here for `sku_id`'s reason: the
+        // facet type is shared with the patch, where absence is legal, so the
+        // create's own obligation has to be re-stated where the create parses
+        // rather than left to the caller's discipline (D-382).
+        plan_name: body.plan_name.clone().ok_or_else(|| {
+            let mut report = crate::domain::validation::ValidationReport::default();
+            report.violate_at_write("VALIDATION", "plan_name", "a plan must be named");
+            DomainError::ValidationFailed(report)
+        })?,
         frequency: frequency_of(body.frequency.as_ref())?,
         plan_tier_override: body.plan_tier_override.unwrap_or(false),
         purchase_min_qty: body.purchase_min_qty,

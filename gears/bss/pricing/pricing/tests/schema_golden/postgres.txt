@@ -252,7 +252,7 @@ COLUMN bss.pricing_plan entitlement_grants jsonb NULL DEFAULT -
 COLUMN bss.pricing_plan frequency text NULL DEFAULT -
 COLUMN bss.pricing_plan lifecycle_state text NOT NULL DEFAULT -
 COLUMN bss.pricing_plan plan_id uuid NOT NULL DEFAULT -
-COLUMN bss.pricing_plan plan_name text NULL DEFAULT -
+COLUMN bss.pricing_plan plan_name text NOT NULL DEFAULT -
 COLUMN bss.pricing_plan plan_tier text NULL DEFAULT -
 COLUMN bss.pricing_plan plan_tier_override boolean NOT NULL DEFAULT false
 COLUMN bss.pricing_plan purchase_max_qty bigint NULL DEFAULT -

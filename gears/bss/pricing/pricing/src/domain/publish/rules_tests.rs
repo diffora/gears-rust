@@ -195,6 +195,10 @@ fn a_row_shape_fault_and_a_plan_shape_fault_appear_in_one_report_in_the_fixed_or
     // looked at it. `inst-pl-sku-role` does, and a nil id is a SKU the registry
     // has never heard of.
     shape.sku_id = Uuid::from_u128(5);
+    // `inst-cmp-planname` (D-382): every plan carries a name, and
+    // `PlanShape::new` leaves it empty. Same class as the nil SKU above — a
+    // fixture the aggregate now judges on an axis it used to skip.
+    shape.plan_name = "Aggregate Fixture Plan".to_owned();
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -242,6 +246,10 @@ fn one_awful_plan_produces_every_expected_violation_rather_than_the_first() {
     // looked at it. `inst-pl-sku-role` does, and a nil id is a SKU the registry
     // has never heard of.
     shape.sku_id = Uuid::from_u128(5);
+    // `inst-cmp-planname` (D-382): every plan carries a name, and
+    // `PlanShape::new` leaves it empty. Same class as the nil SKU above — a
+    // fixture the aggregate now judges on an axis it used to skip.
+    shape.plan_name = "Aggregate Fixture Plan".to_owned();
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -697,6 +705,10 @@ fn clean_plan() -> PlanShape {
     // looked at it. `inst-pl-sku-role` does, and a nil id is a SKU the registry
     // has never heard of.
     shape.sku_id = Uuid::from_u128(5);
+    // `inst-cmp-planname` (D-382): every plan carries a name, and
+    // `PlanShape::new` leaves it empty. Same class as the nil SKU above — a
+    // fixture the aggregate now judges on an axis it used to skip.
+    shape.plan_name = "Aggregate Fixture Plan".to_owned();
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.

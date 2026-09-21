@@ -687,7 +687,11 @@ pub struct PlanShape {
     /// unframed would let a reviewer approve "Business Starter" and the commit
     /// publish "Enterprise Unlimited" with every digest equal — and the name is
     /// what a consumer surface shows the plan as.
-    pub plan_name: Option<String>,
+    ///
+    /// **Total since D-382**: every plan has one. The pin's framing is
+    /// unchanged — it still writes the optional form with the value present —
+    /// so the generation does not move.
+    pub plan_name: String,
     /// Whether the tier deliberately diverges from the parent SKU's under an
     /// explicit audited override (P3). The equality half of the check needs the
     /// registry; see [`crate::domain::plan_rules`].
@@ -809,7 +813,7 @@ impl PlanShape {
             sku_id: Uuid::nil(),
             frequency: None,
             plan_tier: None,
-            plan_name: None,
+            plan_name: String::new(),
             plan_tier_override: false,
             available_from: None,
             available_to: None,

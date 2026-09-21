@@ -363,7 +363,7 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
 
 fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Read Model Plan".to_owned(),
         plan_id,
         tenant_id: tenant,
         created_by: ACTOR,

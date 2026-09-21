@@ -78,8 +78,8 @@ async fn insert_revision(conn: &DatabaseConnection, revision: i64) {
         &format!(
             "INSERT INTO pricing_plan (
                 plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc,
-                sku_id)
-             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')"
+                sku_id, plan_name)
+             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}', 'Fixture Plan')"
         ),
     )
     .await;

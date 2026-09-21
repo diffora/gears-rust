@@ -32,7 +32,7 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
     let _every_column = PlanShapePatch {
         sku_id: Some(Uuid::from_u128(1)),
         plan_tier: Some("silver".to_owned()),
-        plan_name: None,
+        plan_name: Some("Fixture Plan".to_owned()),
         frequency: Some(Frequency::CustomEveryN {
             n: 45,
             unit: CustomIntervalUnit::Days,

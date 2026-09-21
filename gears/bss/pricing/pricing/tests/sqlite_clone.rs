@@ -171,6 +171,7 @@ async fn clone_it(h: &Harness) -> Result<CloneReceipt, DomainError> {
                     TENANT,
                     source_plan(),
                     target_plan(),
+                    "Cloned Plan".to_owned(),
                     at(11),
                     stamp(),
                 ))
@@ -310,7 +311,7 @@ async fn seed_phaseless_source(h: &Harness, row_phases: &[PhaseId]) {
         .create_draft(
             &h.scope,
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: source_plan(),
                 tenant_id: TENANT,
                 created_by: ACTOR,
@@ -490,7 +491,7 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
                 // all: `clone.rs` writes its clone's draft with `plan_name: None`
                 // on purpose, and a seed whose source is also unnamed makes that
                 // `None == None` and the exclusion untestable.
-                plan_name: Some("Source Plan".to_owned()),
+                plan_name: "Source Plan".to_owned(),
                 plan_id: source_plan(),
                 tenant_id: TENANT,
                 created_by: ACTOR,
@@ -1120,26 +1121,28 @@ async fn the_clone_is_a_draft_that_names_its_source() {
     assert_eq!(revision.lifecycle_state, LifecycleState::Draft);
     assert_eq!(revision.revision, 0, "a clone starts a fresh plan at 0");
     assert_eq!(revision.plan_tier.as_deref(), Some("gold"));
-    // **And the display name does not** (D-318). The source is seeded
-    // `Some("Source Plan")` precisely so this is a measurement rather than
-    // `None == None`: a `plan_name` wired into the clone's `NewPlanDraft` would
-    // put a second identically-named plan in the operator's list, which is the
-    // state the column was added to remove.
+    // **And the display name is the caller's, not the source's** (D-318,
+    // amended by D-382). The source is seeded "Source Plan" precisely so this
+    // is a measurement rather than two equal defaults: a clone carrying its
+    // source's name would put a second identically-named plan in the
+    // operator's list, which is the state the column was added to remove. The
+    // column is `NOT NULL` now, so the name comes from the act that makes the
+    // copy instead of being left absent for a later `PATCH`.
     assert_eq!(
-        revision.plan_name, None,
-        "a clone does not inherit its source's display name"
+        revision.plan_name, "Cloned Plan",
+        "a clone carries the name its caller gave it, never its source's"
     );
-    // The operand, read back: without this the line above is `None == None`,
-    // which is exactly the state that made D-318's exclusion untestable.
+    // The operand, read back: without this the line above could pass on two
+    // equal fixtures, which is the state that made D-318's exclusion
+    // untestable.
     assert_eq!(
         plan_repo::load_current(&conn, &h.scope, TENANT, source_plan())
             .await
             .expect("read the source")
             .expect("the source is published")
-            .plan_name
-            .as_deref(),
-        Some("Source Plan"),
-        "the source really does carry a display name for the clone to have dropped"
+            .plan_name,
+        "Source Plan",
+        "the source really does carry a different name for the clone not to have taken"
     );
     assert_eq!(
         revision
@@ -1700,6 +1703,7 @@ async fn an_id_shaped_scope_refuses_the_clone_rather_than_emptying_it() {
                     TENANT,
                     source_plan(),
                     target_plan(),
+                    "Cloned Plan".to_owned(),
                     at(11),
                     stamp(),
                 ))
@@ -1793,6 +1797,7 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
                     TENANT,
                     source_plan(),
                     target_plan(),
+                    "Cloned Plan".to_owned(),
                     at(11),
                     stamp(),
                 ))

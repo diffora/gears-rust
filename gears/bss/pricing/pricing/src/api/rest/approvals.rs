@@ -596,7 +596,7 @@ pub struct PinnedContentView {
     /// catalog will call this plan, a reviewer's signature covers it, and the
     /// module doc above makes showing-or-not an explicit decision rather than an
     /// omission.
-    pub plan_name: Option<String>,
+    pub plan_name: String,
     /// Whether the tier diverges from the parent SKU's under an audited
     /// override.
     pub plan_tier_override: bool,

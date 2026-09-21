@@ -708,6 +708,7 @@ async fn seed_published_revision_naming(harness: &Harness, plan_id: Uuid, gl_cod
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(rest_support::SEED_ACTOR),
         created_at_utc: Set(rest_support::at(9)),
+        plan_name: Set("Fixture Plan".to_owned()),
         ..Default::default()
     };
     plan::Entity::insert(plan_row.clone())

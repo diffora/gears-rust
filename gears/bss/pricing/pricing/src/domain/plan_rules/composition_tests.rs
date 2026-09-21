@@ -68,6 +68,14 @@ fn cutover(day: u32) -> Cohort {
 }
 
 fn shape() -> PlanShape {
+    let mut shape = shape_unnamed();
+    shape.plan_name = "A Named Plan".to_owned();
+    shape
+}
+
+/// [`shape`] as `PlanShape::new` leaves it: the name at its empty default,
+/// which since D-382 is the only unnamed state a shape can be in.
+fn shape_unnamed() -> PlanShape {
     let mut shape = PlanShape::new(plan(), 3, now());
     shape.plan_tier = Some("standard".to_owned());
     shape
@@ -210,32 +218,36 @@ fn composition(rules: Vec<AddonRule>) -> ValidationReport {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn an_unnamed_plan_is_silent() {
-    // The column is nullable and the overwhelming majority of plans in any
-    // catalog predate the name. Refusing absence would make every one of them
-    // unpublishable, which is not what a label is worth.
-    let mut subject = shape();
-    subject.plan_name = None;
+fn an_unnamed_plan_is_refused_at_publish() {
+    // **The inverse of what this case asserted under D-318**, and the publish
+    // half of D-382. The column was nullable and this rule skipped absence, so
+    // a plan created without the member published unnamed and every surface
+    // fell back to the tier. `PlanShape::new` leaves the field at its empty
+    // default, which is the only unnamed state a shape can now be in, and it is
+    // refused.
+    let subject = shape_unnamed();
 
-    assert!(findings(&PlanNameWellFormed, &subject).is_publishable());
+    assert_eq!(
+        codes(&findings(&PlanNameWellFormed, &subject)),
+        vec![PLAN_NAME_INVALID]
+    );
 }
 
 #[test]
 fn a_named_plan_is_silent() {
     let mut subject = shape();
-    subject.plan_name = Some("Managed WordPress".to_owned());
+    subject.plan_name = "Managed WordPress".to_owned();
 
     assert!(findings(&PlanNameWellFormed, &subject).is_publishable());
 }
 
 #[test]
 fn an_empty_plan_name_is_refused_rather_than_read_as_unnamed() {
-    // The whole reason the rule exists: `NULL` already means unnamed, and
-    // storing `""` beside it gives one state two spellings. Every surface would
-    // then have to treat them alike, and the first that forgot would render a
-    // plan whose name is nothing at all.
+    // The whole reason the rule exists: a plan must carry a name, and `""` is
+    // the absence of one wearing the type of a value. The first surface to
+    // render it would show a plan whose name is nothing at all.
     let mut subject = shape();
-    subject.plan_name = Some(String::new());
+    subject.plan_name = String::new();
 
     let report = findings(&PlanNameWellFormed, &subject);
 
@@ -255,7 +267,7 @@ fn a_whitespace_only_plan_name_is_refused_too() {
     // between "unnamed" and a row that looks named in the database and blank on
     // every screen.
     let mut subject = shape();
-    subject.plan_name = Some(" \t ".to_owned());
+    subject.plan_name = " \t ".to_owned();
 
     assert_eq!(
         codes(&findings(&PlanNameWellFormed, &subject)),
@@ -268,11 +280,11 @@ fn a_plan_name_at_the_bound_is_silent_and_one_over_is_not() {
     // The pair, in one test: a bound tested only from the failing side passes
     // just as well when it is off by one in the permissive direction.
     let mut at_bound = shape();
-    at_bound.plan_name = Some("n".repeat(PLAN_NAME_MAX_CHARS));
+    at_bound.plan_name = "n".repeat(PLAN_NAME_MAX_CHARS);
     assert!(findings(&PlanNameWellFormed, &at_bound).is_publishable());
 
     let mut over = shape();
-    over.plan_name = Some("n".repeat(PLAN_NAME_MAX_CHARS + 1));
+    over.plan_name = "n".repeat(PLAN_NAME_MAX_CHARS + 1);
     assert_eq!(
         codes(&findings(&PlanNameWellFormed, &over)),
         vec![PLAN_NAME_INVALID]
@@ -287,7 +299,7 @@ fn the_bound_counts_characters_and_not_bytes() {
     // Escaped rather than literal: the workspace forbids non-ASCII in source
     // (`clippy::non_ascii_literal`), and a Cyrillic П is exactly the character
     // this case is about — three bytes, one character.
-    subject.plan_name = Some("\u{041f}".repeat(PLAN_NAME_MAX_CHARS));
+    subject.plan_name = "\u{041f}".repeat(PLAN_NAME_MAX_CHARS);
 
     assert!(findings(&PlanNameWellFormed, &subject).is_publishable());
 }

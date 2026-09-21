@@ -229,7 +229,7 @@ async fn seed(pg: &Pg) {
         .create_draft(
             &scope,
             bss_pricing::infra::storage::repo::plan_repo::NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: plan_id(),
                 tenant_id: TENANT,
                 created_by: SUBMITTER,

@@ -62,7 +62,7 @@ fn at(hour: u32) -> OffsetDateTime {
 
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id,
         tenant_id,
         created_by: Uuid::from_u128(0xac_11),

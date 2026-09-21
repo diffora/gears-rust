@@ -27,9 +27,11 @@ pub struct Model {
     pub tenant_id: Uuid,
     pub sku_id: Uuid,
     pub plan_tier: Option<String>,
-    /// The plan's human label (D-318). `NULL` is "not named", and the empty
-    /// string is refused at the write stage rather than stored beside it.
-    pub plan_name: Option<String>,
+    /// The plan's human label (D-318), `NOT NULL` since D-382: every door that
+    /// creates a plan names it, so there is no unnamed state. The empty string
+    /// is refused at the write stage rather than stored as a second spelling of
+    /// one.
+    pub plan_name: String,
     /// `monthly` | `quarterly` | `semiannual` | `annual` | `custom_every_n`.
     ///
     /// The custom token is the bare discriminator: its interval rides the two

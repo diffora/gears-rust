@@ -88,7 +88,11 @@
 //!
 //! `allowed_change_targets`, `comparability_rank` and `usage_counter_on_plan_change`
 //! are D-113's plan-change contract; `entitlement_grants` is D-41's grant set;
-//! `cloned_from` records D-19's clone provenance; `plan_name` is the authored label;
+//! `cloned_from` records D-19's clone provenance; `plan_name` is the authored
+//! label, `NOT NULL` and with **no default** since D-382 — every door that
+//! creates a plan names it, so there is no unnamed state for a default to
+//! stand for and an `INSERT` that forgets the label must fail rather than
+//! invent one;
 //! `row_version` is the optimistic-concurrency counter. Each is `NOT NULL` with a
 //! fail-safe default where the absent reading is a decision, and nullable where
 //! absence is a state.
@@ -129,7 +133,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             frequency                    text,
             descriptor_ext               jsonb       NOT NULL DEFAULT '{}'::jsonb,
             lifecycle_state              text        NOT NULL,
-            plan_name                    text,
+            plan_name                    text        NOT NULL,
             plan_tier                    text,
             plan_tier_override           boolean     NOT NULL DEFAULT false,
             purchase_max_qty             bigint,
@@ -248,7 +252,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             frequency                    text,
             descriptor_ext               text    NOT NULL DEFAULT '{}',
             lifecycle_state              text    NOT NULL,
-            plan_name                    text,
+            plan_name                    text    NOT NULL,
             plan_tier                    text,
             plan_tier_override           boolean NOT NULL DEFAULT 0,
             purchase_max_qty             bigint,

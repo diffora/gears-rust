@@ -346,7 +346,7 @@ fn base() -> PlanShape {
         unit: CustomIntervalUnit::Days,
     });
     shape.plan_tier = Some("gold".to_owned());
-    shape.plan_name = Some("Gold Plan".to_owned());
+    shape.plan_name = "Gold Plan".to_owned();
     shape.plan_tier_override = true;
     shape.available_from = Some(at(1));
     shape.available_to = Some(at(23));
@@ -763,10 +763,12 @@ fn plan_level_mutators() -> Vec<Mutator> {
         ("plan_tier -> None", |s| s.plan_tier = None),
         ("plan_tier -> empty", |s| s.plan_tier = Some(String::new())),
         ("plan_name", |s| {
-            s.plan_name = Some("Silver Plan".to_owned());
+            s.plan_name = "Silver Plan".to_owned();
         }),
-        ("plan_name -> None", |s| s.plan_name = None),
-        ("plan_name -> empty", |s| s.plan_name = Some(String::new())),
+        // The `-> None` arm is gone with the `Option` (D-382): a plan has a
+        // name. The empty string is the only absence a shape can still carry
+        // and it stays framed, so a preimage built from one is distinct.
+        ("plan_name -> empty", |s| s.plan_name = String::new()),
         ("plan_tier_override", |s| s.plan_tier_override = false),
         ("available_from", |s| s.available_from = Some(at(2))),
         ("available_to", |s| s.available_to = Some(at(22))),
@@ -1414,11 +1416,11 @@ fn an_absent_field_and_an_empty_one_pin_differently() {
 fn a_character_cannot_be_moved_across_a_field_boundary() {
     let mut left = base();
     left.plan_tier = Some("ab".to_owned());
-    left.plan_name = Some("c".to_owned());
+    left.plan_name = "c".to_owned();
 
     let mut right = base();
     right.plan_tier = Some("a".to_owned());
-    right.plan_name = Some("bc".to_owned());
+    right.plan_name = "bc".to_owned();
 
     assert_ne!(content_hash(&left), content_hash(&right));
 }

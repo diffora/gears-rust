@@ -308,12 +308,21 @@ impl CopiedRows {
 /// mint its own error variants, but a **wire code** is the design set's to
 /// declare, and minting one ahead of its route is how a code ends up in two
 /// spellings. Otherwise whatever the repository forms refuse with.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "every argument is a fact only the caller holds: the transaction the whole clone \
+              commits in, the scope, the tenant, the source, the minted target id, the name the \
+              operator gave the copy (D-382), the instant and the D-135 stamp. Bundling them \
+              would put values that are never carried together anywhere else into a type \
+              existing only to satisfy a count"
+)]
 pub async fn clone_plan_on(
     runner: &DbTx<'_>,
     scope: &AccessScope,
     tenant_id: Uuid,
     source: PlanId,
     target: PlanId,
+    plan_name: String,
     now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<CloneReceipt, DomainError> {
@@ -363,15 +372,17 @@ pub async fn clone_plan_on(
         available_to,
         entitlement_grants,
         change_contract,
-        // **Not copied, and this is an exception `inst-cl-copy` now names**
-        // (D-318). A name is an identity label rather than configuration: a
-        // clone carrying its source's name puts two identically-named plans in
-        // every list, which is the state the column was added to remove. The
-        // clone's operator names it with an ordinary draft `PATCH`, and until
-        // then it displays by tier exactly as every plan did before the column
-        // existed. Its sibling exceptions are `effective_share_bp` and the
-        // compiled-allowance grant, both left behind for the same kind of
-        // reason: the value belongs to the act, not to the shape.
+        // **Not copied, and this is an exception `inst-cl-copy` names**
+        // (D-318, amended by D-382). A name is an identity label rather than
+        // configuration: a clone carrying its source's name puts two
+        // identically-named plans in every list, which is the state the column
+        // was added to remove. D-318 left the clone unnamed and had its
+        // operator `PATCH` a name on afterwards; with the column `NOT NULL`
+        // that state no longer exists, so the **clone door takes the name**
+        // and the operator names the copy at the moment they make it. Its
+        // sibling exceptions are `effective_share_bp` and the compiled-
+        // allowance grant, both left behind for the same kind of reason: the
+        // value belongs to the act, not to the shape.
         plan_name: _,
         lifecycle_state: _,
         created_by: _,
@@ -411,7 +422,7 @@ pub async fn clone_plan_on(
             created_at_utc: now,
             sku_id,
             plan_tier,
-            plan_name: None,
+            plan_name,
             frequency,
             plan_tier_override,
             purchase_min_qty,

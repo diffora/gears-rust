@@ -212,7 +212,7 @@ async fn seeded_plan() -> (Store, RowVersion) {
         .create_draft(
             &scope(),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Cutover Plan".to_owned(),
                 plan_id: PlanId::new(PLAN),
                 tenant_id: TENANT,
                 created_by: ACTOR,

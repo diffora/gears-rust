@@ -322,6 +322,9 @@ fn one_awful_plan_produces_every_finding_in_one_report() {
             INVALID_CUSTOM_INTERVAL,
             PURCHASE_QTY_RANGE_INVALID,
             AVAILABLE_FROM_IN_PAST,
+            // The fixture names the plan nothing, which since D-382 is a fault
+            // of its own rather than the ordinary unnamed state.
+            PLAN_NAME_INVALID,
             PLANTIER_MISSING,
             ADDON_CYCLE,
             ADDON_INCOMPATIBLE,

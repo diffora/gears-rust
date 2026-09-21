@@ -68,11 +68,23 @@ fn stamp() -> AuditStamp {
 /// went through the publish pipeline would make a pipeline failure look like a
 /// listing failure.
 async fn seed_published_plan(provider: &DBProvider<DbError>, plan_id: PlanId) {
+    seed_published_plan_named(provider, plan_id, "Fixture Plan").await;
+}
+
+/// [`seed_published_plan`] with the name stated, for the cases that sort by it.
+///
+/// A fixture that inherits its sort key from a helper is one a change to that
+/// helper re-orders silently, which is why the listing cases name theirs.
+async fn seed_published_plan_named(
+    provider: &DBProvider<DbError>,
+    plan_id: PlanId,
+    plan_name: &str,
+) {
     let created = PlanRepo::new(provider.clone())
         .create_draft(
             &scope(),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: plan_name.to_owned(),
                 plan_id,
                 tenant_id: TENANT,
                 created_by: ACTOR,
@@ -366,7 +378,7 @@ async fn the_authoring_counts_group_in_the_engine_and_subtract_the_draft_shadow(
         .create_draft(
             &scope(),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: drafted,
                 tenant_id: TENANT,
                 created_by: ACTOR,

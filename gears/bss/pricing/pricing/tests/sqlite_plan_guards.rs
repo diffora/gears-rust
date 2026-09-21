@@ -103,12 +103,15 @@ fn insert_with(plan: &str, revision: u32, state: &str, extra: &[(&str, &str)]) -
     // trigger-enforced here, so every seeded revision names one. A case that is
     // *about* the SKU column overrides it through `extra`, which is last-wins in
     // neither direction -- `pricing_plan` has no such case today.
+    // `plan_name` since D-382: the column is `NOT NULL`, so every seeded
+    // revision names the plan for the same reason it names the SKU.
     let mut columns = String::from(
         "plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, created_at_utc, \
-         sku_id",
+         sku_id, plan_name",
     );
     let mut values = format!(
-        "'{plan}', {revision}, '{TENANT}', 'gold', '{state}', '{ACTOR}', '{AUTHORED}', '{SKU}'"
+        "'{plan}', {revision}, '{TENANT}', 'gold', '{state}', '{ACTOR}', '{AUTHORED}', '{SKU}', \
+         'Fixture Plan'"
     );
     for &(column, value) in extra {
         columns.push_str(", ");
@@ -574,8 +577,9 @@ async fn every_counter_column_refuses_a_negative() {
         &format!(
             "INSERT INTO pricing_plan \
              (plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, \
-              created_at_utc, sku_id) \
-             VALUES ('{}', -1, '{TENANT}', 'gold', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')",
+              created_at_utc, sku_id, plan_name) \
+             VALUES ('{}', -1, '{TENANT}', 'gold', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}', \
+              'Fixture Plan')",
             plan_of(9)
         ),
         "chk_pricing_plan_revision",

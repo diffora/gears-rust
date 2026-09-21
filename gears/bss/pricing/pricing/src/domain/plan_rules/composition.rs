@@ -122,15 +122,23 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 // D-318 - the plan name
 // ---------------------------------------------------------------------------
 
-/// The plan's name, if it carries one, is a name (D-318).
+/// The plan's name is a name (D-318, amended by D-382).
+///
+/// **Every plan has one.** D-318 left the column nullable and this rule
+/// skipped a plan that carried no name, so the unnamed state was reachable by
+/// leaving one member out of a create — and every surface that has to show a
+/// plan to a person then fell back to the tier, which is the state the column
+/// was minted to remove. D-382 makes the column `NOT NULL` and the create's
+/// member required; this rule is the publish-side half of that, and it fires
+/// on the empty string a shape assembled outside the doors could still carry.
 ///
 /// Two refusals and no third. **Blank** — empty or whitespace-only — because
-/// `NULL` already means "unnamed" and a second spelling of one state is a defect
-/// this gear has paid for before: a list would then have to treat `""` and
-/// absent alike everywhere, and the first surface that forgot would show a plan
-/// with a name made of nothing. **Over the bound**, because a name is rendered
-/// in a table cell and a nav breadcrumb, and there is no length at which a
-/// caller's intent is served by 8 KiB of text in a column meant for a label.
+/// it is no longer a second spelling of "unnamed" but the absence of a name on
+/// a plan that must have one, and because the first surface to render it would
+/// show a plan with a name made of nothing. **Over the bound**, because a name
+/// is rendered in a table cell and a nav breadcrumb, and there is no length at
+/// which a caller's intent is served by 8 KiB of text in a column meant for a
+/// label.
 ///
 /// [`Stage::Write`](crate::domain::validation::Stage) by D-312's criterion:
 /// every operand of the fault is in the request the author just sent, and none
@@ -169,8 +177,8 @@ pub const PLAN_NAME_MAX_CHARS: usize = 120;
 pub fn plan_name_fault(name: &str) -> Option<String> {
     if name.trim().is_empty() {
         return Some(
-            "planName is blank: a plan with no name is spelled by omitting the field, and \
-             storing an empty one would give the unnamed state two spellings"
+            "planName is blank: every plan carries a name (D-382), and a name made of \
+             nothing is one every surface would render as an empty cell"
                 .to_owned(),
         );
     }
@@ -190,10 +198,7 @@ impl ValidationRule<PlanShape> for PlanNameWellFormed {
     }
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
-        let Some(name) = subject.plan_name.as_deref() else {
-            return;
-        };
-        if let Some(detail) = plan_name_fault(name) {
+        if let Some(detail) = plan_name_fault(&subject.plan_name) {
             report.violate_at_write(PLAN_NAME_INVALID, subject.subject(), detail);
         }
     }

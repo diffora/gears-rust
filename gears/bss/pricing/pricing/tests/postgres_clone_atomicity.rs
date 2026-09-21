@@ -162,7 +162,7 @@ async fn seed(provider: &DBProvider<DbError>) {
         .create_draft(
             &scope(),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: source_plan(),
                 tenant_id: TENANT,
                 created_by: ACTOR,
@@ -376,6 +376,7 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
                     TENANT,
                     source_plan(),
                     target_plan(),
+                    "Cloned Plan".to_owned(),
                     at(11),
                     stamp(),
                 ))
@@ -518,6 +519,7 @@ async fn the_same_clone_committed_writes_every_class_the_rollback_removed() {
                     TENANT,
                     source_plan(),
                     target_plan(),
+                    "Cloned Plan".to_owned(),
                     at(11),
                     stamp(),
                 ))

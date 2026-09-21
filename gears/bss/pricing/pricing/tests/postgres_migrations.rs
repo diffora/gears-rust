@@ -1673,8 +1673,9 @@ async fn a_negative_add_on_quantity_bound_is_refused() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, \
+              plan_name) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00', 'Fixture Plan')"
         ),
     )
     .await;
@@ -1909,8 +1910,9 @@ async fn the_composite_output_unit_refuses_ascii_whitespace_alone() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, \
+              plan_name) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00', 'Fixture Plan')"
         ),
     )
     .await;
@@ -2057,8 +2059,9 @@ async fn the_absorber_predicate_refuses_a_blank_and_a_padded_sentinel() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, \
+              plan_name) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00', 'Fixture Plan')"
         ),
     )
     .await;
@@ -2118,8 +2121,9 @@ async fn seed_revshare_group(
         conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{plan}', 0, '{tenant}', 'draft', '{actor}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, \
+              plan_name) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{plan}', 0, '{tenant}', 'draft', '{actor}', '2026-08-17 09:00:00+00', 'Fixture Plan')"
         ),
     )
     .await;

@@ -2644,9 +2644,9 @@ async fn the_composite_output_unit_refuses_ascii_whitespace_alone() {
             // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
             // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
+             created_by, created_at_utc, sku_id, plan_name) \
              VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
-             '00000000-0000-0000-0000-000000000005')"
+             '00000000-0000-0000-0000-000000000005', 'Fixture Plan')"
         ),
     )
     .await;
@@ -2769,9 +2769,9 @@ async fn the_revshare_party_predicate_refuses_a_blank_and_a_padded_sentinel() {
             // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
             // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
+             created_by, created_at_utc, sku_id, plan_name) \
              VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
-             '00000000-0000-0000-0000-000000000005')"
+             '00000000-0000-0000-0000-000000000005', 'Fixture Plan')"
         ),
     )
     .await;
@@ -2863,9 +2863,9 @@ async fn the_absorber_predicate_refuses_a_blank_and_a_padded_sentinel() {
             // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
             // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
+             created_by, created_at_utc, sku_id, plan_name) \
              VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
-             '00000000-0000-0000-0000-000000000005')"
+             '00000000-0000-0000-0000-000000000005', 'Fixture Plan')"
         ),
     )
     .await;
@@ -3017,9 +3017,9 @@ async fn a_negative_add_on_quantity_bound_is_refused() {
             // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
             // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
+             created_by, created_at_utc, sku_id, plan_name) \
              VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
-             '00000000-0000-0000-0000-000000000005')"
+             '00000000-0000-0000-0000-000000000005', 'Fixture Plan')"
         ),
     )
     .await;
@@ -3133,9 +3133,9 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
         &conn,
         &format!(
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
+             created_by, created_at_utc, sku_id, plan_name) \
              VALUES ('{PLAN}', 0, '{TENANT_A}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
-             '00000000-0000-0000-0000-000000000005')"
+             '00000000-0000-0000-0000-000000000005', 'Fixture Plan')"
         ),
     )
     .await;

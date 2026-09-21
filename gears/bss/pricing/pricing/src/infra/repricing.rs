@@ -2830,7 +2830,7 @@ mod ordinary_failure_release {
                     // the value the suite's other seeds do.
                     sku_id: Uuid::from_u128(5),
                     plan_tier: None,
-                    plan_name: None,
+                    plan_name: "Fixture Plan".to_owned(),
                     frequency: None,
                     plan_tier_override: false,
                     purchase_min_qty: None,
@@ -3134,7 +3134,7 @@ mod step0_probe {
                     // the value the suite's other seeds do.
                     sku_id: Uuid::from_u128(5),
                     plan_tier: None,
-                    plan_name: None,
+                    plan_name: "Fixture Plan".to_owned(),
                     frequency: None,
                     plan_tier_override: false,
                     purchase_min_qty: None,

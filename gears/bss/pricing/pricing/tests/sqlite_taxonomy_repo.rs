@@ -963,6 +963,7 @@ async fn publish_price_row_in(provider: &DBProvider<DbError>, region: &str) {
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
+        plan_name: Set("Fixture Plan".to_owned()),
         ..Default::default()
     };
     plan::Entity::insert(plan_row.clone())
@@ -2092,6 +2093,7 @@ async fn publish_price_row_resolving(provider: &DBProvider<DbError>, resolved: &
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
+        plan_name: Set("Fixture Plan".to_owned()),
         ..Default::default()
     };
     plan::Entity::insert(plan_row.clone())
@@ -2901,6 +2903,7 @@ async fn seed_revision_naming_gl_code(
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
+        plan_name: Set("Fixture Plan".to_owned()),
         ..Default::default()
     };
     plan::Entity::insert(plan_row.clone())

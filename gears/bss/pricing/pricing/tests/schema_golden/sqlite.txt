@@ -591,7 +591,7 @@ TABLE pricing_plan
   COLUMN frequency TEXT NULL DEFAULT - PK 0
   COLUMN lifecycle_state TEXT NOT NULL DEFAULT - PK 0
   COLUMN plan_id TEXT NOT NULL DEFAULT - PK 1
-  COLUMN plan_name TEXT NULL DEFAULT - PK 0
+  COLUMN plan_name TEXT NOT NULL DEFAULT - PK 0
   COLUMN plan_tier TEXT NULL DEFAULT - PK 0
   COLUMN plan_tier_override boolean NOT NULL DEFAULT 0 PK 0
   COLUMN purchase_max_qty bigint NULL DEFAULT - PK 0

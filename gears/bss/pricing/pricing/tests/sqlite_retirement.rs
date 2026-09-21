@@ -90,7 +90,7 @@ async fn run_migrations(db: &toolkit_db::Db) {
 
 fn new_draft(plan_id: PlanId) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id,
         tenant_id: TENANT,
         created_by: Uuid::from_u128(0xac_11),

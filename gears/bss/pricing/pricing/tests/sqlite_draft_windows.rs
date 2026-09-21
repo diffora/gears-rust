@@ -86,7 +86,7 @@ fn owner() -> DraftWindowOwner {
 
 fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id,
         tenant_id,
         created_by: ACTOR,
@@ -578,8 +578,8 @@ async fn at_publish_cannot_carry_an_authored_start() {
     must_succeed(
         &conn,
         &format!(
-            "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, sku_id)
-             VALUES ('{PLAN}', 0, '{}', 'draft', '{ACTOR}', '2026-09-18 10:00:00 +00:00', '{SKU}')",
+            "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, sku_id, plan_name)
+             VALUES ('{PLAN}', 0, '{}', 'draft', '{ACTOR}', '2026-09-18 10:00:00 +00:00', '{SKU}', 'Fixture Plan')",
             tenant_s()
         ),
     )
@@ -633,8 +633,8 @@ async fn a_non_draft_revision_refuses_insert() {
     must_succeed(
         &conn,
         &format!(
-            "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, sku_id)
-             VALUES ('{PLAN}', 0, '{}', 'draft', '{ACTOR}', '2026-09-18 10:00:00 +00:00', '{SKU}')",
+            "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, sku_id, plan_name)
+             VALUES ('{PLAN}', 0, '{}', 'draft', '{ACTOR}', '2026-09-18 10:00:00 +00:00', '{SKU}', 'Fixture Plan')",
             tenant_s()
         ),
     )

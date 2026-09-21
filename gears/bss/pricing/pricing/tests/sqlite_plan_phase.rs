@@ -104,8 +104,8 @@ async fn insert_revision(conn: &DatabaseConnection, revision: i64) {
         &format!(
             "INSERT INTO pricing_plan (
                 plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc,
-                sku_id)
-             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')"
+                sku_id, plan_name)
+             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}', 'Fixture Plan')"
         ),
     )
     .await;
@@ -381,8 +381,8 @@ async fn insert_draft_of(conn: &DatabaseConnection, tenant: &str, plan: &str) {
         &format!(
             "INSERT INTO pricing_plan (
                 plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc,
-                sku_id)
-             VALUES ('{plan}', 0, '{tenant}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')"
+                sku_id, plan_name)
+             VALUES ('{plan}', 0, '{tenant}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}', 'Fixture Plan')"
         ),
     )
     .await;
@@ -839,7 +839,7 @@ fn at(hour: u32) -> OffsetDateTime {
 
 fn draft_of(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id,
         tenant_id,
         created_by: Uuid::from_u128(0xac_10),

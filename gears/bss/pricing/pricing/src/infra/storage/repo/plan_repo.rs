@@ -163,8 +163,9 @@ pub struct NewPlanDraft {
     pub sku_id: Uuid,
     /// The plan's tier.
     pub plan_tier: Option<String>,
-    /// The plan's human label (D-318), or `None` when it has never been named.
-    pub plan_name: Option<String>,
+    /// The plan's human label (D-318). Required since D-382: every door that
+    /// creates a plan names it, and the column is `NOT NULL`.
+    pub plan_name: String,
     /// The plan's billing cycle.
     /// The recurring frequency, interval and all.
     pub frequency: Option<Frequency>,

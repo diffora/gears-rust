@@ -171,7 +171,7 @@ async fn harness() -> Harness {
 
 fn new_plan_draft(id: PlanId) -> NewPlanDraft {
     NewPlanDraft {
-        plan_name: None,
+        plan_name: "Fixture Plan".to_owned(),
         plan_id: id,
         tenant_id: TENANT,
         created_by: SUBMITTER,

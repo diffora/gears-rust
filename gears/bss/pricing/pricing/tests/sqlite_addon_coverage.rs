@@ -56,6 +56,7 @@ async fn seed_plan(provider: &DBProvider<DbError>, tenant: Uuid, plan_id: u128, 
         sku_id: Set(SKU),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
+        plan_name: Set("Fixture Plan".to_owned()),
         ..Default::default()
     };
     plan::Entity::insert(row.clone())

@@ -227,8 +227,9 @@ async fn seed_draft_for(conn: &DatabaseConnection, tenant: &str, plan: &str) {
         conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{plan}', 0, '{tenant}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, \
+              plan_name) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{plan}', 0, '{tenant}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', 'Fixture Plan')"
         ),
     )
     .await;
@@ -636,8 +637,9 @@ async fn one_phase_id_is_one_row_per_revision_and_no_more() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN_A}', 1, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc, \
+              plan_name) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN_A}', 1, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', 'Fixture Plan')"
         ),
     )
     .await;

@@ -1271,7 +1271,11 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_uuid(buf, Some(*sku_id));
     put_frequency(buf, *frequency);
     put_opt_str(buf, plan_tier.as_deref());
-    put_opt_str(buf, plan_name.as_deref());
+    // **The optional framing is kept deliberately** (D-382). `plan_name` is
+    // total now, but framing it as a bare string would move every plan's
+    // preimage and cost a pin generation for a type change that adds no
+    // information: `Some(name)` writes the bytes it always wrote.
+    put_opt_str(buf, Some(plan_name.as_str()));
     put_bool(buf, *plan_tier_override);
     put_opt_instant(buf, *available_from);
     put_opt_instant(buf, *available_to);

@@ -291,7 +291,7 @@ async fn an_override_that_ends_reports_the_currency_wide_key_it_falls_back_to() 
     let seeded = rest_support::seed_publishable_plan_with(
         &h,
         plan_id,
-        |plan, phase| rest_support::publishable_scope_key_currency_wide(plan, phase),
+        rest_support::publishable_scope_key_currency_wide,
         rest_support::publishable_row_currency_wide(),
     )
     .await;

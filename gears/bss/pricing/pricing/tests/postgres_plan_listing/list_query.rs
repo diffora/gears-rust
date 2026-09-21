@@ -2,7 +2,7 @@
 
 use super::{
     ACTOR, AccessScope, DBProvider, DbError, NewPlanDraft, OffsetDateTime, Pg, PlanId, PlanRepo,
-    TENANT, Uuid, at, scope, seed_published_plan, stamp,
+    TENANT, Uuid, at, scope, stamp,
 };
 use bss_pricing::domain::plan::PlanShapePatch;
 use toolkit_odata::{CursorV1, ODataOrderBy, ODataQuery, OrderKey, SortDir, parse_filter_string};
@@ -39,14 +39,19 @@ async fn walk(plans: &PlanRepo, initial: ODataQuery) -> Vec<Uuid> {
 
 #[tokio::test]
 #[ignore = "requires Postgres; run with --ignored"]
-async fn nullable_multi_page_order_and_canonical_revision_filters_on_postgres() {
+async fn multi_page_order_and_canonical_revision_filters_on_postgres() {
     let pg = Pg::applied().await;
     let provider = DBProvider::<DbError>::new(pg.db().await);
     let plans = PlanRepo::new(provider.clone());
     let ids: Vec<_> = (1..=4).map(Uuid::from_u128).collect();
     for (index, id) in ids.iter().enumerate() {
         let plan = PlanId::new(*id);
-        seed_published_plan(&provider, plan).await;
+        // Named here rather than left to the seeder's default: this case
+        // sorts by the name, and since D-382 there is no NULL half for the
+        // sort to place — what is left is the **tie**, which is what a cursor
+        // loses when the order is not total.
+        super::seed_published_plan_named(&provider, plan, if index < 2 { "Seed" } else { "Zeta" })
+            .await;
         if index < 2 {
             let draft = plans
                 .open_revision(&scope(), TENANT, plan, stamp())
@@ -73,7 +78,11 @@ async fn nullable_multi_page_order_and_canonical_revision_filters_on_postgres() 
         walk(&plans, query("plan_name", SortDir::Asc)).await,
         vec![ids[1], ids[0], ids[2], ids[3]]
     );
-    assert_eq!(walk(&plans, query("plan_name", SortDir::Desc)).await, ids);
+    assert_eq!(
+        walk(&plans, query("plan_name", SortDir::Desc)).await,
+        vec![ids[2], ids[3], ids[0], ids[1]],
+        "descending on the name; each tie broken by the walk's stable order"
+    );
     assert_eq!(
         walk(&plans, query("price_row_count", SortDir::Desc)).await,
         ids
@@ -114,7 +123,7 @@ async fn draft_at(plans: &PlanRepo, id: Uuid, created: OffsetDateTime) {
         .create_draft(
             &scope(),
             NewPlanDraft {
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 plan_id: PlanId::new(id),
                 tenant_id: TENANT,
                 created_by: ACTOR,

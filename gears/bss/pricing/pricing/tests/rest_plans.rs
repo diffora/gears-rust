@@ -30,6 +30,12 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::plans::{PLANS, PLANS_COUNTS};
 use std::collections::HashMap;
 
+/// What a clone's operator names the copy. Required since D-382: the column is
+/// `NOT NULL` and a clone does not carry its source's name.
+fn clone_body() -> serde_json::Value {
+    serde_json::json!({ "plan_name": "The Copy" })
+}
+
 fn clone_path(plan_id: Uuid) -> String {
     format!("{PLANS}/{plan_id}/clone")
 }
@@ -292,10 +298,11 @@ async fn a_plan_whose_only_revision_is_abandoned_is_not_readable() {
 // The writes.
 // ---------------------------------------------------------------------------
 
-/// A minimal well-formed create body.
+/// A minimal well-formed create body. The name is **required** (D-382), so a
+/// minimal body carries one.
 fn create_body(tier: &str) -> serde_json::Value {
     serde_json::json!({
-        "sku_id": Uuid::from_u128(0x5_c1), "plan_tier": tier })
+        "sku_id": Uuid::from_u128(0x5_c1), "plan_tier": tier, "plan_name": "A Named Plan" })
 }
 
 fn keyed(key: &str) -> Vec<(&str, &str)> {
@@ -349,9 +356,14 @@ async fn a_plan_can_be_created_with_a_name_and_reads_back_with_it() {
     );
 }
 
-/// An unnamed plan answers `null`, not an empty string (D-318).
+/// **Every plan answers a name, never `null`** (D-382, amending D-318).
+///
+/// D-318 kept the column nullable and this case pinned the `null` an unnamed
+/// plan answered. There is no unnamed plan now: the create requires the member
+/// and the column is `NOT NULL`, so the claim worth pinning is the inverse —
+/// a read never hands a consumer a name-shaped hole to fall back from.
 #[tokio::test]
-async fn a_plan_created_without_a_name_answers_null_for_it() {
+async fn a_created_plan_always_answers_a_name() {
     let harness = Harness::new().await;
 
     let response = harness
@@ -360,17 +372,28 @@ async fn a_plan_created_without_a_name_answers_null_for_it() {
             "POST",
             PLANS,
             Some(create_body("gold")),
-            &keyed("create-unnamed"),
+            &keyed("create-named-default"),
         ))
         .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
-    // The distinction the whole `PLAN_NAME_INVALID` rule exists to keep: absent
-    // is `null`, and `""` is never stored, so a client testing truthiness and a
-    // client testing `=== null` agree.
+    let created = body_json(response).await;
+    assert_eq!(created["plan_name"], serde_json::json!("A Named Plan"));
+
+    let plan_id: Uuid = created["plan_id"]
+        .as_str()
+        .expect("an id")
+        .parse()
+        .expect("a uuid");
+    let read = harness
+        .allowed()
+        .send(with_headers("GET", &plan_path(plan_id), None, &[]))
+        .await;
+    assert_eq!(read.status(), StatusCode::OK);
     assert_eq!(
-        body_json(response).await["plan_name"],
-        serde_json::Value::Null
+        body_json(read).await["plan_name"],
+        serde_json::json!("A Named Plan"),
+        "and the read agrees with the write"
     );
 }
 
@@ -498,6 +521,39 @@ async fn an_empty_plan_name_is_refused_at_the_write() {
     // as 400 — the same status every `rest_prices` write-stage refusal asserts.
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(problem_code(response).await, "PLAN_NAME_INVALID");
+}
+
+/// **A create with no `plan_name` at all is refused** (D-382).
+///
+/// The write stage already refused a *blank* name, which left the unnamed
+/// state reachable by simply leaving the member out — and every surface that
+/// has to show a plan to a person then fell back to the tier, which is the
+/// state D-318 minted the column to remove. Absence is the member's own
+/// refusal now, and it is the transport's rather than a rule's: the field has
+/// no `Option` for a body to omit.
+#[tokio::test]
+async fn a_create_with_no_name_is_refused() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(serde_json::json!({
+                "sku_id": Uuid::from_u128(0x5_c1),
+                "plan_tier": "gold",
+            })),
+            &keyed("create-unnamed"),
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let rendered = format!("{}", body_json(response).await);
+    assert!(
+        rendered.contains("plan_name") || rendered.contains("planName"),
+        "the refusal names the missing member: {rendered}"
+    );
 }
 
 #[tokio::test]
@@ -644,7 +700,7 @@ async fn a_clone_answers_201_with_the_new_plans_location_and_its_receipt() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-1"),
         ))
         .await;
@@ -688,7 +744,7 @@ async fn a_replayed_clone_answers_the_first_callers_plan_and_clones_nothing() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-2"),
         ))
         .await;
@@ -699,7 +755,7 @@ async fn a_replayed_clone_answers_the_first_callers_plan_and_clones_nothing() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-2"),
         ))
         .await;
@@ -732,7 +788,7 @@ async fn one_key_against_two_different_sources_is_refused_by_its_code() {
         .send(with_headers(
             "POST",
             &clone_path(first_source),
-            None,
+            Some(clone_body()),
             &keyed("clone-3"),
         ))
         .await;
@@ -741,7 +797,7 @@ async fn one_key_against_two_different_sources_is_refused_by_its_code() {
         .send(with_headers(
             "POST",
             &clone_path(second_source),
-            None,
+            Some(clone_body()),
             &keyed("clone-3"),
         ))
         .await;
@@ -764,7 +820,12 @@ async fn a_clone_without_an_idempotency_key_is_refused_and_writes_nothing() {
 
     let response = harness
         .allowed()
-        .send(with_headers("POST", &clone_path(source), None, &[]))
+        .send(with_headers(
+            "POST",
+            &clone_path(source),
+            Some(clone_body()),
+            &[],
+        ))
         .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -795,7 +856,7 @@ async fn a_plan_with_nothing_published_cannot_be_cloned() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-4"),
         ))
         .await;
@@ -836,7 +897,7 @@ async fn the_receipt_carries_its_counts_and_names_what_stayed_behind() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-5"),
         ))
         .await;
@@ -902,7 +963,7 @@ async fn a_clone_that_seeds_its_terminal_phase_names_the_act_in_its_receipt() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-9"),
         ))
         .await;
@@ -944,7 +1005,7 @@ async fn the_clone_answers_no_etag_because_its_body_is_not_the_resource() {
         .send(with_headers(
             "POST",
             &clone_path(source),
-            None,
+            Some(clone_body()),
             &keyed("clone-6"),
         ))
         .await;
@@ -970,7 +1031,7 @@ async fn a_foreign_tenants_plan_cannot_be_cloned_and_reads_like_an_absent_one() 
         .send(with_headers(
             "POST",
             &clone_path(foreign),
-            None,
+            Some(clone_body()),
             &keyed("clone-7"),
         ))
         .await;
@@ -979,7 +1040,7 @@ async fn a_foreign_tenants_plan_cannot_be_cloned_and_reads_like_an_absent_one() 
         .send(with_headers(
             "POST",
             &clone_path(absent),
-            None,
+            Some(clone_body()),
             &keyed("clone-8"),
         ))
         .await;
@@ -3511,6 +3572,7 @@ async fn a_create_carrying_entitlement_grants_and_a_change_contract_stores_them(
             Some(serde_json::json!({
                 "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
+                "plan_name": "A Named Plan",
                 "entitlement_grants": {
                     "plan_tier_ref": "tier-gold",
                     "feature_flags": { "sso": true },
@@ -3870,6 +3932,7 @@ async fn a_create_whose_purchase_window_admits_no_quantity_is_refused_at_the_wri
             Some(serde_json::json!({
                 "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
+                "plan_name": "A Named Plan",
                 "purchase_min_qty": 5,
                 "purchase_max_qty": 2
             })),

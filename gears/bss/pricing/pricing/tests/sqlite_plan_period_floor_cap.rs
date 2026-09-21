@@ -91,8 +91,8 @@ async fn insert_revision(conn: &DatabaseConnection, revision: i64) {
         &format!(
             "INSERT INTO pricing_plan (
                 plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc,
-                sku_id)
-             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')"
+                sku_id, plan_name)
+             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}', 'Fixture Plan')"
         ),
     )
     .await;
@@ -511,7 +511,7 @@ async fn the_bound_set_round_trips_in_market_order_and_replaces_wholesale() {
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: None,
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,
@@ -604,7 +604,7 @@ async fn an_empty_bound_set_is_how_every_bound_is_withdrawn() {
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: None,
-                plan_name: None,
+                plan_name: "Fixture Plan".to_owned(),
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,

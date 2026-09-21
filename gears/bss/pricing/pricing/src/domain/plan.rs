@@ -84,7 +84,11 @@ pub struct PlanRevision {
     /// compared, overridden and inherited from the SKU, and a name is none of
     /// those things. Every surface showed the tier only because there was
     /// nothing else to show.
-    pub plan_name: Option<String>,
+    ///
+    /// **Total since D-382.** Every door that creates a plan requires a name,
+    /// so there is no revision without one and no fallback-to-tier state for a
+    /// reader to handle.
+    pub plan_name: String,
     /// The recurring frequency, with a custom interval riding the variant.
     ///
     /// One field, three columns. `frequency`, `custom_interval_n` and
