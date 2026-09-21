@@ -215,7 +215,7 @@ multi-action row would otherwise read as if the whole row were doored.
 
 | Resource × action | Door(s) | Slice |
 |---|---|---|
-| `product × read`, `sku × read` | `GET /bss-products/v1/{products\|skus}/{id}`, `GET /bss-products/v1/{products\|skus}/{id}/versions` | 01, 08 |
+| `product × read`, `sku × read` | `GET /bss-products/v1/{products\|skus}/{id}`, `GET /bss-products/v1/{products\|skus}/{id}/versions`, `GET /bss-products/v1/{products\|skus}` (01's authoring collections, owner-approved 2026-09-18; paired here on lint 3's run of 2026-09-21, the same omission P-D-151 records for `catalog_version × read`) | 01, 08 |
 | `product × write`, `sku × write` | `POST /bss-products/v1/products`, `POST /bss-products/v1/skus`, `PATCH /bss-products/v1/{products\|skus}/{id}`, `POST /bss-products/v1/{products\|skus}/{id}/clone`, `POST /bss-products/v1/{products\|skus}/{id}/discard` | 01, 11 |
 | `product × publish`, `sku × publish` | `POST /bss-products/v1/{products\|skus}/{id}/publish`; the dry-run `POST /bss-products/v1/{products\|skus}/{id}/validate` (P-D-148) and 06's `POST /bss-products/v1/skus/{skuId}/composition-clears` (P-D-148) spend the same action — paired at P-D-159 | 01 |
 | `metadata × write` | `PATCH /bss-products/v1/{products\|skus}/{id}/metadata` | 02 |

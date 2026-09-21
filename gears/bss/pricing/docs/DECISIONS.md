@@ -4986,3 +4986,30 @@ cite each other.
 - **Taken, and reversible — eligibility against region.** The owner did not rank them. Each line (a charge *in one eligibility class*) resolves its own region, then W3's most-specific-wins ranks the resolved lines — the unit the completeness rule obliges. A new `DE` subscriber facing `(new_subscriptions_only, global)` and `(all_subscriptions, DE)` is sold the first.
 - **Owed to whoever owns Tax.** Tax on a `global` row is undecided — there is no Tax gear — and this entry touches neither C4 nor `RegionTaxReadiness`. A consequence follows and is **not** fixed: `MarketBasisUniform` (D-110) and `BUNDLE_TAX_BASIS_MIXED` (D-119) group by the exact pair, so a `DE` invoice mixing a tax-inclusive `DE` line with a tax-exclusive `global` one is seen by neither. `taxInclusive` is regional by nature, and one USD row sold into inclusive and exclusive territories is a real case.
 - **Propagated**: S2 `inst-ph-coverage`; S4 `inst-mc-nofx`, `inst-cb-addon`; S6; S7; S9; `ui-read-contracts.md`; PRD currency coverage; D-95 (amendment recorded there). **Owed**: the SUB-D and T-D counterparts of the resolution order are amended jointly and are not in this workspace's gate.
+
+## I. Asks from the products gear (filed 2026-09-05 — products P-D-160)
+
+The registry gear's design set carries five **OWED** seam fixtures: joint scenarios whose
+registry half already runs (`products/tests/seam_suite.rs`, each `#[ignore]`d with its ask as the
+reason) and whose pricing half cannot be written because no rule in this gear raises the code it
+would assert. They are listed in
+[`../../products/docs/design/12-consumer-contracts.md`](../../products/docs/design/12-consumer-contracts.md)
+§2.2 *Counterpart asks (P-D-160)*, and the products seam suite asserts that both documents name
+all five — the entry below is what makes that assertion true on this side.
+
+**This section was a table-of-contents line and nothing else until 2026-09-21**, which is how the
+products gate stayed red for sixteen days: a pointer is not a filing, and the lint that catches it
+reads this file rather than the TOC.
+
+| Fixture | Ask of this gear | Code it must raise | Measured here at `a4a5d8a1a` |
+|---|---|---|---|
+| `watermark` | produce the `SkuReferenceCount` watermark, calling `WatermarkPosts::post` per watermark (products P-D-03) | none — a post, acked or refused by the registry's four watermark codes | **still owed, unchanged**: no type or call site in this gear names `SkuReferenceCount` or `WatermarkPost` |
+| `adoption-block` | refuse adoption of a `deprecated` SKU at retirement or unpublishing | `SKU_NOT_PUBLISHED` | **half closed since the original measurement.** The *introduction* refusals now exist and are raised — `inst-pr-sku-published` and `inst-pl-sku-published` raise `SKU_NOT_PUBLISHED` at write, and D-370/D-376 mint `ROW_SKU_DEPRECATED` / `PLAN_SKU_DEPRECATED` for a SKU that is `published` **plus** `deprecated: true`. The **retirement / unpublishing** half — the parent SKU's publication state re-read when the registry retires under a live plan — is still unraised and still owed (`domain/rules.rs`'s own doc on `SKU_NOT_PUBLISHED` says so) |
+| `usage-binding` | the meter-binding rule, the `deprecated` bound unit included (products P-D-05) | `METER_USAGE_TYPE_UNBOUND`, `METER_DIMENSION_UNDECLARED` | **still owed, unchanged**: both codes appear in this gear only inside module docs; no rule raises either |
+| `grandfathered-resolution` | a `CatalogVersionRegistryV1` implementor on the posted-use path | none — byte identity across registry churn (06 `inst-gf-invariant`) | **still owed, unchanged**: the only implementors are `LocalDevCatalogVersionRegistryV1` and test stubs |
+| `correction` | consume `SkuImmutableFieldCorrected` and re-validate (07 `inst-cr-republish`) | this gear's re-validation refusal, unminted | **still owed, unchanged**: no type or call site names a bss-products event payload |
+
+**The register rows these answer** are products P-D-160's rows 13, 2, 5/6, 7 and 8. Ownership is
+unchanged by this filing: the asks are the registry gear's, dated 2026-09-05; what is dated
+2026-09-21 is the measurement column and the fact that this section now exists. Closing any row is
+a decision of this gear's owner and mints a `D-` entry of its own — **do not tick one here**.
