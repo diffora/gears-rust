@@ -73,11 +73,10 @@
 //!    violation rather than a report line naming the phase.
 //!
 //! A **floor** is none of those three rules, and it does sit here.
-//! `chk_pricing_plan_phase_duration_non_negative` and
-//! `chk_pricing_plan_phase_trial_projection_non_negative` refuse a negative day
-//! count and nothing else: neither requires a duration nor forbids one, so the
-//! half-authored draft point 1 protects still saves. What they close is the
-//! poisoned row. Both columns are read back through `u32::try_from` and a
+//! `chk_pricing_plan_phase_duration_non_negative` refuses a negative day count
+//! and nothing else: it neither requires a duration nor forbids one, so the
+//! half-authored draft point 1 protects still saves. What it closes is the
+//! poisoned row. The column is read back through `u32::try_from` and a
 //! negative answers `CorruptRow`, which is an internal fault on **every** later
 //! read of the revision — past the point where the pipeline's report could be
 //! reached at all, and unreachable by any correction this gear offers.

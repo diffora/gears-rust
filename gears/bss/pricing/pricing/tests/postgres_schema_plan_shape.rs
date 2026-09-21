@@ -470,18 +470,16 @@ async fn a_phase_kind_outside_the_three_is_refused() {
     }
 }
 
-/// Neither day-count column admits a negative.
+/// The duration column admits no negative.
 ///
-/// Both are read back through `u32::try_from` and answer `CorruptRow` for
-/// anything else, so a poisoned row is a revision no typed path reads at all.
+/// It is read back through `u32::try_from` and answers `CorruptRow` for anything
+/// else, so a poisoned row is a revision no typed path reads at all.
 ///
-/// **Each is reachable alone**, which is what keeps the two cases apart:
-/// `chk_pricing_plan_phase_display_trial_days` is satisfied whenever either side
-/// is NULL, so a duration of `-1` under an untaken projection and a projection of
-/// `-1` over an absent duration each leave one constraint able to answer.
+/// The projection half of this case went with `display_trial_days`: it probed a
+/// second day-count column that no longer exists.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn neither_day_count_column_admits_a_negative() {
+async fn the_duration_column_admits_no_negative() {
     let conn = applied().await;
     seed_draft(&conn, PLAN_A).await;
     must_be_rejected(
@@ -490,86 +488,22 @@ async fn neither_day_count_column_admits_a_negative() {
         "chk_pricing_plan_phase_duration_non_negative",
     )
     .await;
-    must_be_rejected(
-        &conn,
-        &insert_phase(PHASE_1, PLAN_A, &[("display_trial_days", "-1")]),
-        "chk_pricing_plan_phase_trial_projection_non_negative",
-    )
-    .await;
-    // Zero days is a real phase — one that converts the moment it opens — so
-    // neither bound is `> 0`.
+    // Zero days is a real phase — one that converts the moment it opens — so the
+    // bound is not `> 0`.
     must_succeed(
         &conn,
-        &insert_phase(
-            PHASE_1,
-            PLAN_A,
-            &[("phase_duration_days", "0"), ("display_trial_days", "0")],
-        ),
+        &insert_phase(PHASE_1, PLAN_A, &[("phase_duration_days", "0")]),
     )
     .await;
 }
 
-/// The persisted projection may not drift from its source (`inst-ph-trial`).
-///
-/// Subscriptions reads the published `displayTrialDays` as its single source for
-/// trial runtime, so a drift here is a trial that ends on a different day than
-/// the catalog says it does.
-///
-/// The accepting cases are in the same test rather than a sibling because they
-/// are the same fact seen from the other side, and the second of them is the
-/// **hole the migration's own doc argues for**: a `display_trial_days` set
-/// against a NULL `phase_duration_days` makes the comparison NULL, which both
-/// engines count as satisfied. The constraint's name promises more than the
-/// constraint delivers, and a reader who trusted the name would believe that
-/// shape unstorable. It is not; publish refuses it instead, as
-/// `PHASE_DURATION_INVALID` or `TERMINAL_PHASE_KIND_INVALID`.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn a_display_trial_days_that_disagrees_with_its_duration_is_refused() {
-    let conn = applied().await;
-    seed_draft(&conn, PLAN_A).await;
-    must_be_rejected(
-        &conn,
-        &insert_phase(
-            PHASE_1,
-            PLAN_A,
-            &[
-                ("kind", "'trial'"),
-                ("phase_duration_days", "30"),
-                ("display_trial_days", "7"),
-            ],
-        ),
-        "chk_pricing_plan_phase_display_trial_days",
-    )
-    .await;
-    // Agreeing is what the constraint admits.
-    must_succeed(
-        &conn,
-        &insert_phase(
-            PHASE_1,
-            PLAN_A,
-            &[
-                ("kind", "'trial'"),
-                ("phase_duration_days", "14"),
-                ("display_trial_days", "14"),
-            ],
-        ),
-    )
-    .await;
-    // An untaken projection.
-    must_succeed(
-        &conn,
-        &insert_phase(PHASE_2, PLAN_A, &[("phase_duration_days", "14")]),
-    )
-    .await;
-    // And the NULL hole, pinned so that closing it is a decision rather than an
-    // accident.
-    must_succeed(
-        &conn,
-        &insert_phase(PHASE_3, PLAN_A, &[("display_trial_days", "7")]),
-    )
-    .await;
-}
+// The trial-length projection is gone, and with it this table's drift guard.
+//
+// What stood here probed `chk_pricing_plan_phase_display_trial_days`, the CHECK
+// over two persisted columns holding one value. A trial's length is now
+// `phase_duration_days` on a phase whose `kind` is `trial`; there is no second
+// column to drift from, and the shape the CHECK could not catch — a projection
+// set over a NULL duration — is unrepresentable.
 
 // ---------------------------------------------------------------------------
 // `pricing_plan_phase` — the parent revision's tenancy
