@@ -78,9 +78,21 @@ use toolkit_macros::domain_model;
 use crate::domain::bucket::{self, FieldBucket};
 use crate::domain::error::DomainError;
 
-/// `N`'s default — two, the retained name behind `quorumReduced`
-/// (`design/05` C1, P-D-11).
-pub const DEFAULT_APPROVER_COUNT: u32 = 2;
+/// `N`'s default — **one**: the author plus one approver is the two-person
+/// rule C1 and C2 are named after (**P-D-177**, 2026-09-21).
+///
+/// **It was two until then**, and that two was inherited rather than decided —
+/// this doc used to call it *"the retained name behind `quorumReduced`"*, which
+/// is a provenance and not an argument. At two the constraint was a
+/// three-person rule under a two-person name, and the marker it feeds said so:
+/// `quorum_reduced = required < DEFAULT` fired on an ordinary one-approver
+/// tenant, so the flag an auditor filters on marked the ordinary case. A tenant
+/// that wants two approvers configures two.
+///
+/// Not to be confused with [`crate::domain::approval::PLATFORM_QUORUM_FLOOR`],
+/// which stays **2**: that constant's own doc separated the two in advance
+/// precisely so this edit could not move it.
+pub const DEFAULT_APPROVER_COUNT: u32 = 1;
 
 /// `N`'s floor. **Zero is reachable** (P-D-11) and only by explicit
 /// configuration; it is safe by reason, evidence and tripwire rather than by

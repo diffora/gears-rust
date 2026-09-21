@@ -863,6 +863,11 @@ async fn a_transition_on_an_unknown_member_is_not_found() {
 #[tokio::test]
 async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     let harness = harness().await;
+    // **`N = 2` explicitly, because this test's subject is the discount**
+    // (P-D-177): the relabel closes on `min(N, 1)` while the full act spends
+    // `N`, and at the default of one those are the same number. The default
+    // is no longer a value this distinction can be read off.
+    set_quorum(&harness, 2).await;
     let opened = add_member_via(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
     assert_eq!(opened.status(), axum::http::StatusCode::ACCEPTED);
     let unit = body_json(opened).await;
@@ -1207,6 +1212,11 @@ async fn the_first_call_opens_the_unit_and_the_approved_re_send_applies_it() {
 #[tokio::test]
 async fn a_re_send_before_approval_answers_the_same_unit() {
     let harness = harness().await;
+    // **`N = 2` explicitly, because this test's subject is the discount**
+    // (P-D-177): the relabel closes on `min(N, 1)` while the full act spends
+    // `N`, and at the default of one those are the same number. The default
+    // is no longer a value this distinction can be read off.
+    set_quorum(&harness, 2).await;
     let first =
         body_json(add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await).await;
     let approval_id = first["approval_id"].as_str().expect("a unit").to_owned();

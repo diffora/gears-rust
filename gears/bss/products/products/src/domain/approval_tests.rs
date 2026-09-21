@@ -143,15 +143,27 @@ fn the_descriptor_carries_both_counts_apart() {
 /// "reduced means non-material" shortcut would miss.
 #[test]
 fn quorum_reduced_tracks_the_effective_count_not_the_verdict() {
-    assert!(describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced());
-    assert!(describe_quorum(Materiality::Material, 0, false, Vec::new()).quorum_reduced());
     assert!(
-        describe_quorum(Materiality::NonMaterial, 5, false, Vec::new()).quorum_reduced(),
-        "a non-material change at N = 5 closes on one, and one is below two"
+        describe_quorum(Materiality::Material, 0, false, Vec::new()).quorum_reduced(),
+        "no approver at all is below the two-person rule"
+    );
+    assert!(
+        !describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced(),
+        "one approver beside the author IS the two-person rule, not a reduction of it \
+         (P-D-177 — at the old default of two this read `true`, so the marker fired on \
+         the ordinary case)"
+    );
+    // The subject of this test: the marker follows the **effective** count. A
+    // non-material change at `N = 5` closes on one, and a material one at zero
+    // closes on none — same verdict distinction, opposite markers, and neither
+    // is read off the verdict.
+    assert!(
+        !describe_quorum(Materiality::NonMaterial, 5, false, Vec::new()).quorum_reduced(),
+        "min(5, 1) is one, which is the rule and not a reduction"
     );
     assert!(
         !describe_quorum(Materiality::Material, 2, false, Vec::new()).quorum_reduced(),
-        "the default itself is not reduced"
+        "a tenant that configured a third person is not reduced either"
     );
 }
 
@@ -209,7 +221,7 @@ fn the_stored_descriptor_is_canonical_and_names_all_five_fields() {
     // column is compared byte-for-byte, so the bytes are the assertion.
     assert_eq!(
         stored,
-        r#"{"configuredQuorum":3,"financeRequired":true,"overrideConditions":[],"predicateUnsatisfiable":null,"quorumReduced":true,"required":1}"#,
+        r#"{"configuredQuorum":3,"financeRequired":true,"overrideConditions":[],"predicateUnsatisfiable":null,"quorumReduced":false,"required":1}"#,
         "sorted keys, an explicit null, and the five names section 4 gives"
     );
 }
@@ -394,18 +406,25 @@ fn the_platform_floor_is_fixed_where_the_tenant_count_is_not() {
 /// trail that says "two-person" is telling the truth and the marker is
 /// correctly silent — which is only meaningful next to a case where it fires.
 #[test]
-fn the_floor_is_not_a_reduced_quorum_and_a_one_person_tenant_is() {
+fn the_platform_floor_is_not_a_reduced_quorum_and_no_longer_shares_the_defaults_value() {
     assert!(
         !describe_platform_quorum().quorum_reduced(),
-        "the floor IS the retained-name default, so nothing was reduced"
+        "two platform principals is above the two-person rule, so nothing was reduced"
     );
-    assert_eq!(
+    // **They used to be the same number, and P-D-177 parted them.**
+    // `PLATFORM_QUORUM_FLOOR`'s own doc separated the two constants while both
+    // read 2, precisely so a change to either could not silently move the
+    // other. This is that change, and the separation is now visible rather
+    // than latent.
+    assert_eq!(PLATFORM_QUORUM_FLOOR, 2, "the platform floor is untouched");
+    assert_eq!(DEFAULT_APPROVER_COUNT, 1, "the tenant default moved");
+    assert_ne!(
         PLATFORM_QUORUM_FLOOR, DEFAULT_APPROVER_COUNT,
-        "same value, two facts"
+        "two facts, and since 2026-09-21 two values"
     );
     assert!(
-        describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced(),
-        "a tenant ceremony at N = 1 is below the default and must say so"
+        !describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced(),
+        "a tenant ceremony at N = 1 is the two-person rule itself"
     );
 }
 

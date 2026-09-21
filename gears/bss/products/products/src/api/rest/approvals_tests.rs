@@ -335,9 +335,9 @@ async fn the_born_state_follows_the_tenants_configured_quorum() {
         .await,
     )
     .await;
-    assert_eq!(pending["state"], "pending", "the default N is 2");
-    assert_eq!(pending["required"], 2);
-    assert_eq!(pending["configured_quorum"], 2);
+    assert_eq!(pending["state"], "pending", "the default N is 1 (P-D-177)");
+    assert_eq!(pending["required"], 1);
+    assert_eq!(pending["configured_quorum"], 1);
 
     set_quorum(&harness, 0).await;
     let satisfied = body_of(
@@ -378,6 +378,11 @@ async fn the_born_state_follows_the_tenants_configured_quorum() {
 #[tokio::test]
 async fn a_declared_relabel_closes_on_one_approver_and_a_transition_still_needs_two() {
     let harness = harness().await;
+    // **`N = 2` explicitly, because this test's subject is the discount**
+    // (P-D-177): the relabel closes on `min(N, 1)` while the full act spends
+    // `N`, and at the default of one those are the same number. The default
+    // is no longer a value this distinction can be read off.
+    set_quorum(&harness, 2).await;
 
     let relabel = body_of(
         post(
@@ -402,7 +407,11 @@ async fn a_declared_relabel_closes_on_one_approver_and_a_transition_still_needs_
         relabel["configured_quorum"], 2,
         "the tenant's N is untouched: only the effective count moves"
     );
-    assert_eq!(relabel["quorum_reduced"], true);
+    assert_eq!(
+        relabel["quorum_reduced"], false,
+        "one approver beside the author is the two-person rule itself (P-D-177); at the \
+         old default of two this read `true`"
+    );
     let relabel_id: Uuid = relabel["approval_id"]
         .as_str()
         .expect("the receipt names the record")
@@ -478,6 +487,11 @@ async fn a_declared_relabel_closes_on_one_approver_and_a_transition_still_needs_
 #[tokio::test]
 async fn a_live_op_payload_that_declares_no_known_op_keeps_the_full_quorum() {
     let harness = harness().await;
+    // **`N = 2` explicitly, because this test's subject is the discount**
+    // (P-D-177): the relabel closes on `min(N, 1)` while the full act spends
+    // `N`, and at the default of one those are the same number. The default
+    // is no longer a value this distinction can be read off.
+    set_quorum(&harness, 2).await;
 
     for (label, snapshot) in [
         (
@@ -519,6 +533,11 @@ async fn a_live_op_payload_that_declares_no_known_op_keeps_the_full_quorum() {
 #[tokio::test]
 async fn the_relabel_discount_needs_the_subject_as_well_as_the_token() {
     let harness = harness().await;
+    // **`N = 2` explicitly, because this test's subject is the discount**
+    // (P-D-177): the relabel closes on `min(N, 1)` while the full act spends
+    // `N`, and at the default of one those are the same number. The default
+    // is no longer a value this distinction can be read off.
+    set_quorum(&harness, 2).await;
     let required_for = |subject: &'static str, snapshot: &'static str| {
         let harness = &harness;
         async move {

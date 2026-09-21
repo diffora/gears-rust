@@ -398,12 +398,19 @@ fn the_policy_field_set_cannot_disable_a_refusal() {
     assert!(matches!(err, MaterialityRefusal::Registry(_)), "{err:?}");
 }
 
-/// `N`'s default is two and its floor is zero, reachable only by explicit
+/// `N`'s default is **one** and its floor is zero, reachable only by explicit
 /// configuration — nothing clamps a configured zero upward.
+///
+/// **The default was two until P-D-177 (2026-09-21)**, an inherited value
+/// rather than a decided one — `DEFAULT_APPROVER_COUNT`'s own doc called it
+/// *"the retained name behind `quorumReduced`"*. C1 and C2 name this the
+/// two-person rule, and at `N = 2` it is a three-person one. A tenant that
+/// wants two approvers configures two; what the default owes is the rule the
+/// constraint is named after.
 #[test]
-fn n_defaults_to_two_and_zero_is_reachable() {
-    assert_eq!(DEFAULT_APPROVER_COUNT, 2);
-    assert_eq!(MaterialityPolicy::default().approver_count(), 2);
+fn n_defaults_to_one_and_zero_is_reachable() {
+    assert_eq!(DEFAULT_APPROVER_COUNT, 1);
+    assert_eq!(MaterialityPolicy::default().approver_count(), 1);
     assert_eq!(APPROVER_COUNT_FLOOR, 0);
     let floor = MaterialityPolicy::new(
         Vec::new(),
