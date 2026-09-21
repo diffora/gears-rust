@@ -494,6 +494,10 @@ async fn put_threshold_policy(
                 tenant,
                 Uuid::now_v7(),
                 at,
+                // D-380-PENDING-SURFACE: the request's `approverCount` lands here
+                // once the DTO carries it; until then a retirement keeps the
+                // tenant's count where the surface cannot yet move it.
+                crate::domain::materiality::DEFAULT_APPROVER_COUNT,
                 asserted,
                 materiality,
                 stamp,
@@ -525,6 +529,9 @@ async fn put_threshold_policy(
                 Uuid::now_v7(),
                 effective_from,
                 entries,
+                // D-380-PENDING-SURFACE: as above — the DTO's `approverCount`
+                // replaces this in the surface task.
+                crate::domain::materiality::DEFAULT_APPROVER_COUNT,
                 asserted,
                 materiality,
                 stamp,

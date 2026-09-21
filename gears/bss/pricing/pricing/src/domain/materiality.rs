@@ -685,6 +685,13 @@ pub struct ThresholdVersion {
     version: u64,
     effective_from: OffsetDateTime,
     entries: Vec<ThresholdEntry>,
+    /// The tenant's `N` as this version sets it (**D-380**).
+    ///
+    /// Part of the version rather than beside it, which is the whole safety
+    /// argument: D-10 makes any policy diff always material, so a change to
+    /// `N` is material under the then-current `N`, and it inherits D-188's
+    /// `effective_from` and D-186's tag for free.
+    approver_count: u32,
 }
 
 /// Every field of a [`ThresholdVersion`], handed over at once so a consumer that
@@ -705,6 +712,9 @@ pub(crate) struct ThresholdVersionParts<'a> {
     pub effective_from: OffsetDateTime,
     /// The entries, in the order the pin frames them.
     pub entries: &'a [ThresholdEntry],
+    /// The tenant's `N` this version sets (**D-380**) — framed by the pin, so
+    /// an approver signs the count they are approving.
+    pub approver_count: u32,
 }
 
 impl ThresholdVersion {
@@ -726,6 +736,7 @@ impl ThresholdVersion {
         version: u64,
         effective_from: OffsetDateTime,
         entries: Vec<ThresholdEntry>,
+        approver_count: u32,
     ) -> Result<Self, ThresholdRefusal> {
         if entries.is_empty() {
             return Err(ThresholdRefusal::NoEntries);
@@ -744,7 +755,14 @@ impl ThresholdVersion {
             version,
             effective_from,
             entries,
+            approver_count,
         })
+    }
+
+    /// The tenant's `N` as this version sets it (**D-380**).
+    #[must_use]
+    pub const fn approver_count(&self) -> u32 {
+        self.approver_count
     }
 
     /// **The tombstone (D-185)**: a version that positively says this tenant has no
@@ -771,11 +789,16 @@ impl ThresholdVersion {
     /// side for the same reason there is no `state` column on
     /// `pricing_approval_threshold`.
     #[must_use]
-    pub const fn tombstone(version: u64, effective_from: OffsetDateTime) -> Self {
+    pub const fn tombstone(
+        version: u64,
+        effective_from: OffsetDateTime,
+        approver_count: u32,
+    ) -> Self {
         Self {
             version,
             effective_from,
             entries: Vec::new(),
+            approver_count,
         }
     }
 
@@ -855,11 +878,13 @@ impl ThresholdVersion {
             version,
             effective_from,
             entries,
+            approver_count,
         } = self;
         ThresholdVersionParts {
             version: *version,
             effective_from: *effective_from,
             entries,
+            approver_count: *approver_count,
         }
     }
 

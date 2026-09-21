@@ -672,7 +672,7 @@ pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v22\x1f
 /// are re-frozen by different changes, so one counter would make every bump of
 /// either invalidate the pending units of both. See the note on that constant for
 /// why the arrival of this one did not move it.
-pub const THRESHOLD_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-THRESHOLD-PIN-v1\x1f";
+pub const THRESHOLD_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-THRESHOLD-PIN-v2\x1f";
 
 /// The domain separator of the **overlay** pin (D-225).
 ///
@@ -1975,9 +1975,22 @@ fn put_threshold_version(buf: &mut Vec<u8>, version: &ThresholdVersion) {
         version,
         effective_from,
         entries,
+        approver_count,
     } = version.parts();
     put_u64(buf, version);
     put_instant(buf, effective_from);
+    // **The approver count, framed before the entry count (D-380).** An approver
+    // signs the `N` they are approving: without it a proposal could be approved at
+    // one count and stored at another, and the pin — whose whole promise is that
+    // identical bytes mean identical content — would not notice.
+    //
+    // Before the entry count on purpose. Two lengths in a row are two numbers a
+    // reader must keep apart, and putting the scalar first means the collection's
+    // count stays immediately adjacent to the collection it counts.
+    //
+    // Widened to `u64` rather than given a `put_u32` of its own: a second integer
+    // width is a second encoding rule, and the widening is lossless and total.
+    put_u64(buf, u64::from(approver_count));
     // The count precedes the elements, as every collection's does: without it two
     // versions differing only in where one entry ends and the next begins could
     // frame alike.

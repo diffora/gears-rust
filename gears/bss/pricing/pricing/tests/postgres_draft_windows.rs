@@ -909,6 +909,7 @@ async fn install_eur_threshold(store: &Store) {
                 currency: CurrencyCode::new("EUR").expect("a valid code"),
                 basis: ThresholdBasis::Absolute { minor: 500 },
             }],
+            bss_pricing::domain::materiality::DEFAULT_APPROVER_COUNT,
             asserted,
             json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
             race_stamp(),

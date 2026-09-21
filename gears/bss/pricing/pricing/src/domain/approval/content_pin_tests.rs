@@ -1873,6 +1873,16 @@ fn threshold_version(
     effective_from: OffsetDateTime,
     entries: Vec<(&str, ThresholdBasis)>,
 ) -> ThresholdVersion {
+    threshold_version_with_count(version, effective_from, entries, 1)
+}
+
+/// The same, with the tenant's `N` named — the operand D-380 added to the pin.
+fn threshold_version_with_count(
+    version: u64,
+    effective_from: OffsetDateTime,
+    entries: Vec<(&str, ThresholdBasis)>,
+    approver_count: u32,
+) -> ThresholdVersion {
     ThresholdVersion::new(
         version,
         effective_from,
@@ -1883,6 +1893,7 @@ fn threshold_version(
                 basis,
             })
             .collect(),
+        approver_count,
     )
     .expect("a well-formed version")
 }
@@ -2023,7 +2034,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-THRESHOLD-PIN-v1\x1f"
+        b"VHP-BSS-PRICING-THRESHOLD-PIN-v2\x1f"
     );
 }
 
@@ -2034,11 +2045,18 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
 /// every pending D-10 unit in every tenant, and the remedy is a
 /// `THRESHOLD_PIN_DOMAIN_SEP` bump with the drain the other constant's doc
 /// describes — not a new constant pasted in from a failing run.
+///
+/// **It moved once, on 2026-09-21, and this is that remedy rather than an
+/// exception to it.** D-380 put the tenant's `N` inside the version, so an
+/// approver now signs the count they are approving; the separator went to `v2`
+/// in the same change. A decision against a unit pinned under `v1` answers
+/// `APPROVAL_CONTENT_MISMATCH` — withdraw and resubmit it. The value below was
+/// read off the encoder, which is the only way it may ever be obtained.
 #[test]
 fn the_threshold_encoding_is_frozen() {
     assert_eq!(
         hex32(&threshold_content_hash(&threshold_base())),
-        "3f9d99001744c4974c955d3c882f686bf7d971250d4468b89fe82a54e400799f"
+        "c32d5c891e1e47ec1cbb6e701997539093ddf280f27fbff8f1ec9aa3ff3a2ade"
     );
 }
 
@@ -2057,14 +2075,16 @@ fn the_threshold_encoding_is_frozen() {
 /// * two tombstones agreeing on both fields pin **identically**, which is what makes
 ///   the re-derivation at approve time verifiable at all.
 ///
-/// **No re-freeze, and that is measured rather than assumed.** No token was added to
-/// the preimage: `ThresholdVersion::new` refuses an empty entry set, so a framed count
-/// of zero is a preimage no non-tombstone version can produce, and the entry versions'
-/// bytes are untouched — `the_threshold_encoding_is_frozen` above is unmoved, so
-/// `THRESHOLD_PIN_DOMAIN_SEP` stays at `v1` and no pending unit is invalidated.
+/// **The tombstone is still distinguishable, and it no longer rides the same
+/// separator.** `ThresholdVersion::new` refuses an empty entry set, so a framed entry
+/// count of zero remains a preimage no non-tombstone version can produce — that half
+/// is unchanged. What did change is the whole encoding: D-380 frames the approver
+/// count, so `THRESHOLD_PIN_DOMAIN_SEP` moved to **`v2`** and every version's bytes
+/// moved with it. A decision against a unit pinned under `v1` answers
+/// `APPROVAL_CONTENT_MISMATCH`; withdraw and resubmit it.
 #[test]
 fn a_tombstone_pins_distinguishably_from_every_entry_set() {
-    let retirement = ThresholdVersion::tombstone(3, at(9));
+    let retirement = ThresholdVersion::tombstone(3, at(9), 1);
     assert!(
         retirement.is_tombstone(),
         "the fixture has to be the tombstone or this case proves nothing"
@@ -2096,14 +2116,16 @@ fn a_tombstone_pins_distinguishably_from_every_entry_set() {
         hex32(&threshold_content_hash(&retirement)),
         hex32(&threshold_content_hash(&ThresholdVersion::tombstone(
             4,
-            at(9)
+            at(9),
+            1
         ))),
     );
     assert_ne!(
         hex32(&threshold_content_hash(&retirement)),
         hex32(&threshold_content_hash(&ThresholdVersion::tombstone(
             3,
-            at(10)
+            at(10),
+            1
         ))),
         "the instant the two-person rule comes back is inside the pin, so a proposer cannot move \
          it after the reviewer signed"
@@ -2114,7 +2136,8 @@ fn a_tombstone_pins_distinguishably_from_every_entry_set() {
         hex32(&threshold_content_hash(&retirement)),
         hex32(&threshold_content_hash(&ThresholdVersion::tombstone(
             3,
-            at(9)
+            at(9),
+            1
         ))),
         "a tombstone read back out of the store must digest to what was pinned, or every approve \
          of a retirement answers APPROVAL_CONTENT_MISMATCH"

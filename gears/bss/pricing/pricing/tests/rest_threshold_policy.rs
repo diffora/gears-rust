@@ -965,6 +965,7 @@ async fn a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_stora
             taken,
             effective_from,
             vec![entry.clone()],
+            bss_pricing::domain::materiality::DEFAULT_APPROVER_COUNT,
             asserted_now(&h).await,
             materiality.clone(),
             rest_support::stamp_of(PROPOSER, rest_support::at(9)),
@@ -982,6 +983,7 @@ async fn a_policy_unit_whose_id_is_taken_is_a_retriable_conflict_and_not_a_stora
             taken,
             effective_from,
             vec![entry],
+            bss_pricing::domain::materiality::DEFAULT_APPROVER_COUNT,
             // Re-read, because the approval above moved the policy: a tag captured
             // before it would refuse `STALE_VERSION` and this case would assert the
             // precondition instead of the store's key.

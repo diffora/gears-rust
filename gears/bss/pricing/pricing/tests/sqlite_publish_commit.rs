@@ -2271,6 +2271,7 @@ async fn drive_the_threshold_policy_plane(h: &Harness) {
                     .expect("a valid code"),
                 basis: bss_pricing::domain::materiality::ThresholdBasis::Absolute { minor: 500 },
             }],
+            bss_pricing::domain::materiality::DEFAULT_APPROVER_COUNT,
             asserted,
             serde_json::json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
             stamp_of(ACTOR, at(16)),

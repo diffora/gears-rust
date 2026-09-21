@@ -463,6 +463,10 @@ impl ThresholdService {
         approval_id: Uuid,
         effective_from: OffsetDateTime,
         entries: Vec<ThresholdEntry>,
+        // The tenant's `N` this version sets (D-380). The caller resolves
+        // "unchanged" against the policy in force before it gets here, so this
+        // is always the value the version should carry.
+        approver_count: u32,
         asserted: AssertedPolicy,
         materiality: JsonValue,
         stamp: AuditStamp,
@@ -491,8 +495,9 @@ impl ThresholdService {
                              hold"
                         ))
                     })?;
-                    let version = ThresholdVersion::new(number, effective_from, entries)
-                        .map_err(|refusal| DomainError::ThresholdInvalid(refusal.detail()))?;
+                    let version =
+                        ThresholdVersion::new(number, effective_from, entries, approver_count)
+                            .map_err(|refusal| DomainError::ThresholdInvalid(refusal.detail()))?;
                     let rows: Vec<ThresholdEntryRow> = version
                         .entries()
                         .iter()
@@ -597,6 +602,10 @@ impl ThresholdService {
         tenant_id: Uuid,
         approval_id: Uuid,
         effective_from: OffsetDateTime,
+        // The tenant's `N` the tombstone carries (D-380). A tombstone is a
+        // version: it returns the tenant to the fail-safe and still says how
+        // many approvers a material change costs.
+        approver_count: u32,
         asserted: AssertedPolicy,
         materiality: JsonValue,
         stamp: AuditStamp,
@@ -624,7 +633,8 @@ impl ThresholdService {
                              hold"
                         ))
                     })?;
-                    let version = ThresholdVersion::tombstone(number, effective_from);
+                    let version =
+                        ThresholdVersion::tombstone(number, effective_from, approver_count);
                     // The unit before the row, for [`Self::propose`]'s reason. The
                     // tombstone table is keyed `(tenant, version)` rather than by
                     // currency, so a loser here would meet *its* key on any collision

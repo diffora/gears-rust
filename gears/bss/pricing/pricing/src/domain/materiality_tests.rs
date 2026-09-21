@@ -918,7 +918,7 @@ fn a_version_with_no_entries_is_refused_and_the_store_is_why() {
     // approval unit pinning it would cover nothing. It is refused where the
     // operator hears about it rather than written and lost.
     assert_eq!(
-        ThresholdVersion::new(0, at_utc(9), Vec::new()),
+        ThresholdVersion::new(0, at_utc(9), Vec::new(), 1),
         Err(ThresholdRefusal::NoEntries)
     );
 }
@@ -933,7 +933,8 @@ fn a_version_naming_one_currency_twice_is_refused_and_names_it() {
         ThresholdVersion::new(
             0,
             at_utc(9),
-            vec![version_entry("EUR", 1), version_entry("EUR", 2)]
+            vec![version_entry("EUR", 1), version_entry("EUR", 2)],
+            1
         ),
         Err(ThresholdRefusal::DuplicateCurrency("EUR".to_owned()))
     );
@@ -957,6 +958,7 @@ fn a_version_keeps_the_entry_order_it_was_given() {
         7,
         at_utc(9),
         vec![version_entry("USD", 1), version_entry("EUR", 2)],
+        1,
     )
     .expect("well formed");
     assert_eq!(version.entries()[0].currency.as_str(), "USD");
@@ -970,8 +972,8 @@ fn a_versions_policy_is_the_one_the_evaluator_compares_against() {
     // The bridge between the pinned subject and the evaluator, asserted so that a
     // version whose entries reached the pin but not the comparison is caught. It is
     // `Some` for every version the constructor admits.
-    let version =
-        ThresholdVersion::new(0, at_utc(9), vec![version_entry("EUR", 500)]).expect("well formed");
+    let version = ThresholdVersion::new(0, at_utc(9), vec![version_entry("EUR", 500)], 1)
+        .expect("well formed");
     let policy = version.policy().expect("a non-empty version is a policy");
     assert_eq!(
         policy.entry(&CurrencyCode::new("EUR").expect("a valid code")),
@@ -1272,4 +1274,30 @@ fn quorum_reduced_is_set_exactly_below_the_two_person_rule() {
         !describe_quorum(&m, 2).quorum_reduced,
         "a tenant that configured a third person is not reduced either"
     );
+}
+
+/// A version carries the tenant's `N`, and a tombstone carries one too.
+///
+/// **A tombstone is a version.** It returns the tenant to the G1 fail-safe —
+/// everything material — and still has to say how many approvers a material
+/// change costs; a tombstone with no `N` would make the type partial and leave
+/// the walk with nothing to read on the way back to the fail-safe.
+#[test]
+fn a_version_and_its_tombstone_both_carry_an_approver_count() {
+    let at = utc_ymd_hms(2026, 1, 1, 0, 0, 0);
+    let v = ThresholdVersion::new(
+        0,
+        at,
+        vec![ThresholdEntry {
+            currency: CurrencyCode::new("USD").expect("a currency"),
+            basis: ThresholdBasis::Absolute { minor: 100 },
+        }],
+        0,
+    )
+    .expect("a valid version");
+    assert_eq!(v.approver_count(), 0);
+
+    let t = ThresholdVersion::tombstone(1, at, 0);
+    assert_eq!(t.approver_count(), 0);
+    assert!(t.is_tombstone());
 }

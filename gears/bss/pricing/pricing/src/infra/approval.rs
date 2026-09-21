@@ -3138,7 +3138,14 @@ pub(crate) async fn read_threshold_version(
     // refusal would fold the authored retirement back into "no such version" and leave
     // the tenant on the thresholds they had approved the removal of.
     if entries.is_empty() {
-        return Ok(Some(ThresholdVersion::tombstone(version, effective_from)));
+        // D-380-PENDING-STORE: the stored `approver_count` replaces this default
+        // once the column exists; until then every stored version reads as the
+        // gear's shipped rule, which is what the backfill will also give it.
+        return Ok(Some(ThresholdVersion::tombstone(
+            version,
+            effective_from,
+            crate::domain::materiality::DEFAULT_APPROVER_COUNT,
+        )));
     }
     // The version's own rows are ordered by currency in SQL, which is the order the
     // pin was taken over; `ThresholdVersion::new` keeps the caller's order for
@@ -3149,7 +3156,13 @@ pub(crate) async fn read_threshold_version(
     // whose thresholds may be higher — a change that should be material is judged
     // immaterial and commits on one principal. The `CorruptRow` arm above warns
     // for the same class of stored fault; this one is the same fact one layer in.
-    match ThresholdVersion::new(version, effective_from, entries) {
+    // D-380-PENDING-STORE: as above — the stored count lands here in the store task.
+    match ThresholdVersion::new(
+        version,
+        effective_from,
+        entries,
+        crate::domain::materiality::DEFAULT_APPROVER_COUNT,
+    ) {
         Ok(built) => Ok(Some(built)),
         Err(why) => {
             tracing::warn!(

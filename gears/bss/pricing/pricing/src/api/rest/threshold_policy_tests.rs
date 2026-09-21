@@ -188,7 +188,7 @@ fn an_empty_entry_list_parses_here_and_is_refused_one_layer_in() {
     // because it is the half that makes the acceptance above safe rather than a
     // hole, and a reader of this file has no way to reach the other suite.
     let refusal =
-        crate::domain::materiality::ThresholdVersion::new(0, OffsetDateTime::now_utc(), vec![])
+        crate::domain::materiality::ThresholdVersion::new(0, OffsetDateTime::now_utc(), vec![], 1)
             .expect_err("an empty set is refused where the rule lives");
     assert!(
         matches!(
