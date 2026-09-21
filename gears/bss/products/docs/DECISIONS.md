@@ -434,6 +434,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   restated the substance without citing the decision until the 2026-08-26 branch review;
   `DESIGN.md` slice row + status line.
 
+- **Amended by P-D-177 (2026-09-21)**: the default `N` is **1**, not 2 — author + 1 approver is the two-person rule C1 and C2 name. The floor, the self-approval refusal at every `N ≥ 1`, the explicit-configuration rule and the provisioning-time origin are unchanged. `PLATFORM_QUORUM_FLOOR` stays 2.
+
 #### P-D-12 — The `SchemaPin`'s membership is a rule, not a list
 
 - **Date**: 2026-08-26 (product call, answering the flagged L1 item in design slice 12)
@@ -541,6 +543,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   §4 `products_approval`/`products_breakglass_session`; `design/03-sku-classification.md` `inst-cl-bundle-override`;
   `design/04-lifecycle.md` `inst-lc-undeprecate`; `design/06-catalog-version.md` `inst-fz-force`; **`design/07-reference-signal.md` C4, C5,
   `inst-cr-republish`, `inst-bc-ceremony`**; `DESIGN.md` decision register summary.
+
+- **Amended by P-D-177 (2026-09-21)**: `quorumReduced` is now set below **one**, so it marks a tenant publishing with no approver rather than every tenant publishing with one. At the old default it fired on the ordinary case.
 
 #### P-D-14 — `system_signal` is an approval subject kind, not an exemption; the authorizing principal is the signal
 
@@ -1568,6 +1572,17 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
   (the re-publish step).
 
+
+#### P-D-177 — The approver count converges with plan-price: default 1, and eligibility is RBAC's alone
+
+- **Date**: 2026-09-21 (product call; the registry half of plan-price's **D-380**, and the two entries cite each other)
+- **Decision**: `N` keeps its meaning — approvers **beside** the author, floor 0 (**P-D-11**, unchanged) — and its **default moves 2 → 1**. Approver eligibility is decided by **RBAC alone**: the `catalog_admin` / `finance_reviewer` token-claim gate is removed as an independent authority.
+- **Why the default moves.** C1 and C2 name this the two-person rule; at `N = 2` it is a three-person rule. The 2 is inherited, not decided — `DEFAULT_APPROVER_COUNT`'s own doc calls it *"the retained name behind `quorumReduced`"*. It also mis-sets the marker an auditor filters on: `quorum_reduced = required < DEFAULT` flags an ordinary one-approver tenant as *reduced*, so the flag fires on the ordinary case and says nothing. At default 1 it means exactly "below the two-person rule". **`PLATFORM_QUORUM_FLOOR` stays 2** and is untouched: its own doc separated the two constants in advance for precisely this edit — *"sharing the constant would make a change to either silently move the other"* — so break-glass keeps its fixed two platform principals.
+- **Why the claim gate goes.** Measured 2026-09-21 at `738da4993`: the gateway treats `*` as unrestricted and returns early on it (`api-gateway/src/middleware/scope_enforcement.rs:126`), and a first-party client's token **is** `["*"]` (`oidc-authn-plugin/src/domain/claim_mapper.rs:141`), but `roles_from_claims` matches literally (`api/rest/approvals.rs:608`), so the platform's own unrestricted token comes out **roleless in this gear alone**. The gear had already recorded that the policy point mints these roles on no surface (**P-D-134** row 25). The result is not a strict control but a dead one: **no principal on a deployed stand can decide any approval**, and the downstream e2e writes the policy row with `psql` to get past it (`tests/e2e/tests/lib/products.py`, whose docstring says *"nothing governed can ever run on a fresh tenant through the wire"*). A gate nothing can satisfy is not a gate.
+- **What replaces it.** A first-party (`*`) caller holds every approver role; a third-party caller keeps the literal claim reading. RBAC's `approval × decide` remains the authorization, unchanged, and self-approval stays refused on identity at every `N ≥ 1`.
+- **What this costs, named rather than absorbed.** For a first-party caller the **FinanceReviewer predicate** on finance-material fields is satisfied by anyone holding `approval × decide`, because `*` carries both roles. That is a real loosening of a control which **today cannot fire at all**. Its right home is its own RBAC action (`approval × decide_finance`), and that is **owed, not built here**: minting a catalog pair is a change this slice may not make alone — the same question `features/governance.md` §7 row 24 already asks about who mints a pair when the owning slice names none.
+- **Not changed**: the floor, the refusal of self-approval at every `N ≥ 1`, that `N` is reached only by explicit configuration (absent ⇒ default, so 0 is never reached by omission), and that every later change to `N` is material under the then-current quorum.
+- **Propagated**: `design/05-governance.md` §1.6 C1 (the default), §3.2 (the `approval` row's door column), §9 (a new AC); `api/rest/approvals.rs` (the module doc on what the predicate now rests on). Plan-price's twin is **D-380**.
 
 #### P-D-176 — A SKU's `type` is its role — `offer`, `component`, `bundle` — and `sellable` is permission to sell it at all
 
