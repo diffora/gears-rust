@@ -1680,6 +1680,58 @@ impl ApprovalService {
             )));
         }
         let set = approval_repo::subject_membership_move(approved).map_err(|e| repo_failure(&e))?;
+        Self::apply_membership_move_in(runner, registry, ctx, scope, tenant_id, &set, stamp).await
+    }
+
+    /// Apply a membership-move set with **no unit at all** (**D-380**) — the
+    /// direct twin of [`Self::commit_membership_move_in`], and
+    /// `commit_taxonomy_value_direct_in`'s shape one plane over.
+    ///
+    /// A move is always material (`inst-mm-immediate`, `inst-mm-bulk`), so
+    /// before the tenant's `N` existed the only answer to "no approved unit"
+    /// was *open one*, which a tenant with a single principal can never close.
+    /// At `N = 0` the set applies on the call and the audit each
+    /// `move_payer_in` writes is the whole record of it — there is no
+    /// `approval_ref`, because there is no approval.
+    ///
+    /// The **replay guard is the same one**, and it has to be: this arm writes
+    /// no record either, so a retry finds nothing in `pricing_approval` to
+    /// answer out of and would otherwise try to end the row it just created at
+    /// the instant it starts. [`already_applied`] is what makes a second call
+    /// idempotent on both arms.
+    ///
+    /// # Errors
+    /// Whatever [`crate::infra::membership_publish::move_payer_in`] refuses,
+    /// per proposal not already applied;
+    /// [`DomainError::CatalogVersionUnavailable`] when the registry cannot be
+    /// reached on a replayed proposal.
+    pub async fn commit_membership_move_direct_in(
+        runner: &impl DBRunner,
+        registry: &dyn CatalogVersionRegistryV1,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        set: &MembershipMoveSet,
+        stamp: AuditStamp,
+    ) -> Result<Vec<crate::infra::membership_publish::MembershipMoveReceipt>, DomainError> {
+        Self::apply_membership_move_in(runner, registry, ctx, scope, tenant_id, set, stamp).await
+    }
+
+    /// The set's application, shared by the two arms above.
+    ///
+    /// Extracted rather than copied because the replay guard, the deterministic
+    /// request id and the canonical order are the whole of what makes a move
+    /// idempotent, and two copies of them would be two chances for one arm to
+    /// stop being.
+    async fn apply_membership_move_in(
+        runner: &impl DBRunner,
+        registry: &dyn CatalogVersionRegistryV1,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        set: &MembershipMoveSet,
+        stamp: AuditStamp,
+    ) -> Result<Vec<crate::infra::membership_publish::MembershipMoveReceipt>, DomainError> {
         let mut receipts = Vec::with_capacity(set.proposals().len());
         for proposal in set.proposals() {
             if let Some(existing) = already_applied(runner, scope, tenant_id, proposal).await? {
@@ -1880,39 +1932,7 @@ impl ApprovalService {
     ) -> Result<TaxonomyEntry, DomainError> {
         let next = change.next();
         let class = change.proposal.class;
-        // **The `If-Match` premise, re-tested inside this transaction.**
-        //
-        // The handler compared `tag_of_value` against the header on a plain
-        // connection, and `update_entry` below is an unconditional `UPDATE`
-        // filtered on `(tenant_id, value)` over tables that carry no row
-        // version — so the handler-side comparison alone is the shape
-        // `taxonomy_repo::apply_replace` refuses in writing: two callers whose
-        // reads both precede either commit each pass it, the second write
-        // overwrites the first, and both callers are answered `200`. The
-        // governed twin cannot reach that state because it re-reads the value
-        // and re-derives the pin here; this arm has no unit to re-derive, so it
-        // tests the premise directly.
-        //
-        // Compared against `change.held` — the value the caller's tag described
-        // — and not against a freshly rendered tag, because `held` is what the
-        // patch was authored over and what the audit record names as `before`.
-        let standing = crate::infra::storage::repo::taxonomy_repo::find_value_on(
-            runner,
-            scope,
-            tenant_id,
-            class,
-            &change.proposal.value,
-        )
-        .await
-        .map_err(|e| repo_failure(&e))?;
-        if standing.as_ref() != Some(&change.held) {
-            return Err(DomainError::StaleVersion(format!(
-                "`{}` in the {} taxonomy moved after you read it and before this edit could \
-                commit; nothing was written. Re-read the value and author against the tag it \
-                hands back",
-                change.proposal.value, class
-            )));
-        }
+        refuse_a_moved_value(runner, scope, tenant_id, change).await?;
         // **The governance premise, re-tested inside this transaction.**
         //
         // The handler chose this arm because `references_to` answered zero on a
@@ -1976,6 +1996,90 @@ impl ApprovalService {
             "bss-pricing: taxonomy value edited on a single principal; no published price row \
              or overlay scope names it, so D-355 makes the edit the operator's own and no \
              approval unit was opened"
+        );
+        crate::infra::storage::repo::taxonomy_repo::write_value_patch(
+            runner,
+            scope,
+            tenant_id,
+            class,
+            &change.held,
+            &next,
+            None,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        Ok(next)
+    }
+
+    /// **D-380**: commit a **governed** taxonomy edit for a tenant whose
+    /// approver count is zero — the quorum twin of
+    /// [`Self::commit_taxonomy_value_direct_in`].
+    ///
+    /// The two are not one function and must not become one. D-355's arm is
+    /// authorized by *nothing published naming the value*, and it re-tests
+    /// exactly that premise inside the transaction. This arm is authorized by
+    /// the tenant's `N`, over a value a published row **does** name — so
+    /// running it through D-355's guard refuses every call, which is how this
+    /// was found.
+    ///
+    /// The premise it re-tests is therefore its own: the handler read the
+    /// count on a plain connection, and a policy version approved between that
+    /// read and this write makes the very same edit one the dual control owns.
+    /// Same hazard as D-355's, same remedy — `ConcurrentMutation`, whose whole
+    /// cure is to re-send, because the retry reads the count that now applies
+    /// and opens the unit.
+    ///
+    /// # Errors
+    /// [`DomainError::StaleVersion`] when the value moved after the caller read
+    /// it; [`DomainError::ConcurrentMutation`] when the tenant's approver count
+    /// rose while this edit was committing;
+    /// [`DomainError::TaxonomyValueInUse`] when a guard refuses the edit;
+    /// [`DomainError::Internal`] when the store fails.
+    pub async fn commit_taxonomy_value_at_quorum_zero_in(
+        runner: &impl DBRunner,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        change: &TaxonomyValueChange,
+        now: OffsetDateTime,
+        stamp: AuditStamp,
+    ) -> Result<TaxonomyEntry, DomainError> {
+        let class = change.proposal.class;
+        refuse_a_moved_value(runner, scope, tenant_id, change).await?;
+        let required =
+            crate::infra::threshold::effective_approver_count_at(runner, scope, tenant_id, now)
+                .await?;
+        if required > 0 {
+            return Err(DomainError::ConcurrentMutation(format!(
+                "the tenant's approver count rose to {required} while this edit of `{}` in the                  {class} taxonomy was committing, so it is no longer an edit one operator may                  make alone; nothing was written. Re-send it and it will open an approval unit",
+                change.proposal.value
+            )));
+        }
+        let next = change.next();
+        let report = crate::infra::storage::repo::taxonomy_repo::judge_value_patch(
+            runner,
+            tenant_id,
+            class,
+            &change.held,
+            &next,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+        if let Some(violation) = report.violations.first() {
+            return Err(DomainError::TaxonomyValueInUse(violation.detail.clone()));
+        }
+        // `commit_taxonomy_value_direct_in`'s argument, one authorization over:
+        // which door a request took is not recoverable from the record
+        // afterwards, and a control that did not run is not routine traffic
+        // even when not running it was correct.
+        tracing::warn!(
+            tenant_id = %tenant_id,
+            actor_principal_id = %stamp.actor_principal_id,
+            correlation_id = %stamp.correlation_id,
+            class = %class,
+            value = %change.proposal.value,
+            "bss-pricing: governed taxonomy value edited on a single principal; the tenant's \
+             approver count is zero (D-380) and no approval unit was opened"
         );
         crate::infra::storage::repo::taxonomy_repo::write_value_patch(
             runner,
@@ -2180,6 +2284,51 @@ impl ApprovalService {
         approval_repo::find_approved_for_content(&conn, scope, tenant_id, subject_ref, content_hash)
             .await
             .map_err(|e| repo_failure(&e))
+    }
+
+    /// [`Self::approved_unit`], with the tenant's approver count consulted when
+    /// no unit is found (**D-380**).
+    ///
+    /// The surface-side twin of [`act_authorization`], and it exists rather than
+    /// reusing that function because the four routes it serves — a bundle
+    /// composition, an overlay revision, a taxonomy value and a membership move
+    /// — pin something other than a [`PlanShape`]. The free function derives the
+    /// pin from a shape; these callers already hold theirs, so the pin is an
+    /// argument here and the rest of the question is the same one.
+    ///
+    /// The record is looked for **first** and on its own terms, for
+    /// [`act_authorization`]'s reason: a tenant that lowered `N` to zero after a
+    /// unit was opened and approved is still authorized by that unit, and the
+    /// trail keeps naming both principals.
+    ///
+    /// # Errors
+    /// [`DomainError::Internal`] on a storage failure, including a failure to
+    /// read the effective count.
+    pub(crate) async fn act_authorization(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        subject_ref: &str,
+        content_hash: &[u8],
+        now: OffsetDateTime,
+    ) -> Result<ActAuthorization, DomainError> {
+        if let Some(record) = self
+            .approved_unit(scope, tenant_id, subject_ref, content_hash)
+            .await?
+        {
+            return Ok(ActAuthorization::ByRecord(Box::new(record)));
+        }
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("bss-pricing: quorum read: {e}")))?;
+        let required =
+            crate::infra::threshold::effective_approver_count_at(&conn, scope, tenant_id, now)
+                .await?;
+        if required == 0 {
+            return Ok(ActAuthorization::ByPolicy);
+        }
+        Ok(ActAuthorization::Owed)
     }
 
     /// Decide a pending unit, or refuse and record the attempt.
@@ -2567,6 +2716,56 @@ pub(crate) async fn act_authorization(
         return Ok(ActAuthorization::ByPolicy);
     }
     Ok(ActAuthorization::Owed)
+}
+
+/// The `If-Match` premise of a taxonomy edit, re-tested **inside the writing
+/// transaction**.
+///
+/// The handler compared `tag_of_value` against the header on a plain
+/// connection, and `write_value_patch`'s update is an unconditional `UPDATE`
+/// filtered on `(tenant_id, value)` over tables that carry no row version — so
+/// the handler-side comparison alone is the shape `taxonomy_repo::apply_replace`
+/// refuses in writing: two callers whose reads both precede either commit each
+/// pass it, the second write overwrites the first, and both callers are
+/// answered `200`. The **governed** commit cannot reach that state because it
+/// re-reads the value and re-derives the pin; the two unit-less arms
+/// ([`ApprovalService::commit_taxonomy_value_direct_in`] and
+/// [`ApprovalService::commit_taxonomy_value_at_quorum_zero_in`]) have no unit to
+/// re-derive, so they test the premise directly — through this one function,
+/// because two copies of it would be two chances for one arm to stop doing it.
+///
+/// Compared against `change.held` — the value the caller's tag described — and
+/// not against a freshly rendered tag, because `held` is what the patch was
+/// authored over and what the audit record names as `before`.
+///
+/// # Errors
+/// [`DomainError::StaleVersion`] when the value moved; [`DomainError::Internal`]
+/// on a storage failure.
+async fn refuse_a_moved_value(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    change: &TaxonomyValueChange,
+) -> Result<(), DomainError> {
+    let class = change.proposal.class;
+    let standing = crate::infra::storage::repo::taxonomy_repo::find_value_on(
+        runner,
+        scope,
+        tenant_id,
+        class,
+        &change.proposal.value,
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
+    if standing.as_ref() != Some(&change.held) {
+        return Err(DomainError::StaleVersion(format!(
+            "`{}` in the {class} taxonomy moved after you read it and before this edit could \
+             commit; nothing was written. Re-read the value and author against the tag it \
+             hands back",
+            change.proposal.value
+        )));
+    }
+    Ok(())
 }
 
 /// `inst-co-single-pending` over a set of keys: refuse if a pending unit holds one.

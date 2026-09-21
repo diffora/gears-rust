@@ -603,6 +603,16 @@ pub struct MembershipState {
     pub idempotency: IdempotencyGate,
     /// The sole incrementer of `CatalogVersion` this plane requests from.
     pub registry: Arc<dyn CatalogVersionRegistryV1>,
+    /// The approval workflow, for the one question this plane asks it: is this
+    /// move authorized — by an approved unit, or by the tenant's `N` (D-380).
+    ///
+    /// Here as well as on [`GovernanceState`](super::state::GovernanceState),
+    /// and the duplication is the `overlays` field's: a service is a handle on
+    /// a provider rather than state, so two holders are two readers of one
+    /// store. Derivable from `db` — but a handle built at the call site would
+    /// be a second place deciding which provider the approval plane reads,
+    /// which is exactly what a field on the state prevents.
+    pub approvals: crate::infra::approval::ApprovalService,
 }
 
 /// One membership, as a caller reads it back.
@@ -1661,12 +1671,58 @@ async fn move_membership_set(
         .await
         .map_err(CanonicalError::from)?;
 
-    let approved =
-        approval_repo::find_approved_for_content(&conn, scope, tenant, &subject_ref, &pin)
-            .await
-            .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    // **D-380.** A move is always material — `inst-mm-immediate` and
+    // `inst-mm-bulk` are both registered triggers — so "no approved unit" used
+    // to mean *open one*, and `inst-mm-pending` then writes nothing to the
+    // membership plane until a second principal decides it. A tenant with a
+    // single principal therefore had no way to move a payer at all.
+    // `ByPolicy` is that tenant: the set applies on this call, through the
+    // arm below that shares its whole body with the approved one.
+    let authorization = state
+        .approvals
+        .act_authorization(scope, tenant, &subject_ref, &pin, OffsetDateTime::now_utc())
+        .await
+        .map_err(CanonicalError::from)?;
 
-    if let Some(approved) = approved {
+    if matches!(
+        authorization,
+        crate::infra::approval::ActAuthorization::ByPolicy
+    ) {
+        let stamp = audit_stamp(ctx, OffsetDateTime::now_utc(), correlation);
+        let registry = Arc::clone(&state.registry);
+        let commit_ctx = ctx.clone();
+        let commit_scope = scope.clone();
+        let set_for_commit = set.clone();
+        let (_, outcome) = state
+            .db
+            .db()
+            .in_transaction::<Vec<membership_publish::MembershipMoveReceipt>, DomainError, _>(
+                move |txn| {
+                    Box::pin(async move {
+                        ApprovalService::commit_membership_move_direct_in(
+                            txn,
+                            registry.as_ref(),
+                            &commit_ctx,
+                            &commit_scope,
+                            tenant,
+                            &set_for_commit,
+                            stamp,
+                        )
+                        .await
+                    })
+                },
+            )
+            .await;
+        let receipts = outcome.map_err(|err| {
+            err.into_domain(|infra| {
+                DomainError::Internal(format!("bss-pricing: {door} quorum-zero commit: {infra}"))
+            })
+        })?;
+        return Ok(MembershipMoveOutcome::Committed(receipts));
+    }
+
+    if let crate::infra::approval::ActAuthorization::ByRecord(approved) = authorization {
+        let approved = *approved;
         let stamp = audit_stamp(ctx, OffsetDateTime::now_utc(), correlation);
         let registry = Arc::clone(&state.registry);
         let commit_ctx = ctx.clone();

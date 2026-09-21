@@ -20,7 +20,8 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_SUBMIT, PRICE_OVERLAYS};
 use rest_support::{
-    Harness, body_json, code_in, etag_of, location_of, problem_code, request, with_headers,
+    Harness, body_json, code_in, effective_approver_count, etag_of, location_of, problem_code,
+    request, set_approver_count, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -1871,4 +1872,73 @@ async fn a_limit_bounds_the_page_and_names_where_to_resume() {
         second["page_info"]["next_cursor"].is_null(),
         "an exhausted walk says so rather than pointing at an empty page: {second}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the overlay submit door.
+// ---------------------------------------------------------------------------
+
+/// **An overlay submit at `N = 0` publishes on the first call.**
+///
+/// D-50 makes the submit always material, so this route's two acts were two
+/// calls with a second principal's decision between them — and for a tenant
+/// with one principal there was no second call to make. At `N = 0` the same
+/// first call opens no unit and takes the publish path's `AutoPublishable`
+/// arm: no approval reference, no pinned content to re-derive against, and the
+/// same commit the approved arm runs.
+#[tokio::test]
+async fn an_overlay_at_quorum_zero_publishes_on_the_first_call() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+    set_approver_count(&harness, 0).await;
+    assert_eq!(effective_approver_count(&harness).await, 0);
+
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+
+    let status = response.status();
+    let published = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{published}");
+    assert_eq!(published["outcome"], "published", "{published}");
+    assert!(
+        published["approval"].is_null(),
+        "no unit was opened, so there is none to name: {published}"
+    );
+    assert!(
+        published["pending_version_ref"].is_string(),
+        "and the commit's own handle is present: {published}"
+    );
+    assert_eq!(
+        published["materiality"], "alwaysMaterialTrigger",
+        "the act's own reason stands where a record's stored token would: {published}"
+    );
+}
+
+/// **The same submit at the default still opens a unit.**
+#[tokio::test]
+async fn an_overlay_at_the_default_still_opens_a_unit() {
+    let harness = Harness::new().await;
+    let overlay = seed_overlay(&harness, 10).await;
+    set_approver_count(&harness, 1).await;
+
+    let response = harness
+        .allowed()
+        .send(request(
+            "POST",
+            &submit_path(overlay),
+            Some(serde_json::json!({ "revision": 0 })),
+        ))
+        .await;
+
+    let status = response.status();
+    let opened = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{opened}");
+    assert_eq!(opened["outcome"], "submitted_for_approval", "{opened}");
+    assert!(opened["approval"]["approval_id"].is_string(), "{opened}");
 }

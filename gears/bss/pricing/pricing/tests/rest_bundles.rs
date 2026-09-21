@@ -21,9 +21,10 @@ mod rest_support;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::bundles::BUNDLES;
 use rest_support::{
-    Harness, approval_row, approval_rows, body_json, etag_of, location_of, problem_code,
-    seed_current_plan, seed_draft_bundle_plan, seed_draft_plan, seed_foreign_bundle_plan,
-    seed_foreign_current_plan, seed_price, with_headers,
+    Harness, approval_row, approval_rows, body_json, effective_approver_count, etag_of,
+    location_of, problem_code, seed_current_plan, seed_draft_bundle_plan, seed_draft_plan,
+    seed_foreign_bundle_plan, seed_foreign_current_plan, seed_price, set_approver_count,
+    with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -2397,4 +2398,102 @@ async fn a_one_time_component_is_outside_the_common_frequency_rule() {
         serde_json::json!(["one_time", "recurring"]),
         "the union of both components' lines"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the composition door.
+// ---------------------------------------------------------------------------
+
+/// The smallest publishable composition, staged and ready for the publish call.
+async fn a_composition_ready_to_publish(harness: &Harness) -> Uuid {
+    let (plan_id, bundle_id) = seed_bundle_with(harness, "own_price").await;
+    let tag = harness.plan_etag(plan_id).await;
+    harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "components": [] })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    bundle_id
+}
+
+/// **A composition publish at `N = 0` publishes on the first call.**
+///
+/// D-104 makes a composition change always material, so the door's two-call
+/// shape — stage, then publish on a second principal's decision — was the only
+/// shape there was. A tenant with one principal could stage and never publish:
+/// the unit it opened had nobody to decide it and
+/// `chk_pricing_approval_approver` admits no `approved` row without an
+/// approver, so it would sit `submitted` forever holding the composition.
+#[tokio::test]
+async fn a_composition_publish_at_quorum_zero_publishes_on_the_first_call() {
+    let harness = Harness::new().await;
+    let bundle_id = a_composition_ready_to_publish(&harness).await;
+    set_approver_count(&harness, 0).await;
+    assert_eq!(effective_approver_count(&harness).await, 0);
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "publish refused: {body}");
+    assert_eq!(
+        body["outcome"].as_str(),
+        Some("published"),
+        "one principal's call is the whole act at N = 0: {body}"
+    );
+    assert_eq!(
+        body["materiality"].as_str(),
+        Some("alwaysMaterialTrigger"),
+        "the verdict is unchanged - the count prices it, it does not reclassify it"
+    );
+    assert!(
+        body["approval"].is_null(),
+        "no unit was opened, so there is none to name: {body}"
+    );
+
+    assert!(
+        approval_rows(&harness)
+            .await
+            .into_iter()
+            .all(|row| !row.subject_ref.contains("/composition/")),
+        "and no composition unit was opened at N = 0"
+    );
+}
+
+/// **The same publish at the default still stages.**
+#[tokio::test]
+async fn a_composition_publish_at_the_default_still_stages() {
+    let harness = Harness::new().await;
+    let bundle_id = a_composition_ready_to_publish(&harness).await;
+    set_approver_count(&harness, 1).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
+            &[],
+        ))
+        .await;
+
+    let body = body_json(response).await;
+    assert_eq!(
+        body["outcome"].as_str(),
+        Some("submitted_for_approval"),
+        "{body}"
+    );
+    assert!(body["approval"]["approval_id"].is_string(), "{body}");
 }

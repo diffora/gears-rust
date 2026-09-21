@@ -1529,6 +1529,7 @@ impl Gear for BssPricingGear {
             db: db.clone(),
             idempotency: IdempotencyGate::new(config.limits.idempotency_key_ttl()),
             registry: Arc::clone(&catalog_version_registry),
+            approvals: crate::infra::approval::ApprovalService::new(db.clone()),
         });
 
         self.runtime.store(Some(Arc::new(PricingRuntime {

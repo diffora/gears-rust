@@ -893,12 +893,67 @@ async fn patch_taxonomy_value(
     let subject_ref = approval_repo::taxonomy_value_subject_ref(&change.proposal)
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
     let pin = taxonomy_value_content_hash(&change);
-    let approved =
-        approval_repo::find_approved_for_content(&conn, &scope, tenant, &subject_ref, &pin)
-            .await
-            .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    // **D-380.** A governed taxonomy edit is always material (D-353), so the
+    // absence of an approved unit used to mean *open one* — and a tenant with a
+    // single principal could never decide it. `ByPolicy` is that tenant, and
+    // what it takes is the arm D-355 already built for an edit nothing
+    // published names: the same write, the same guards re-judged inside the
+    // transaction, and `approval_ref = None` because there is no unit.
+    let authorization = state
+        .approvals
+        .act_authorization(
+            &scope,
+            tenant,
+            &subject_ref,
+            &pin,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .map_err(CanonicalError::from)?;
 
-    if let Some(approved) = approved {
+    if matches!(
+        authorization,
+        crate::infra::approval::ActAuthorization::ByPolicy
+    ) {
+        let now = OffsetDateTime::now_utc();
+        let stamp = audit_stamp(&ctx, now, correlation);
+        let commit_scope = scope.clone();
+        let committed_change = change.clone();
+        // **Not D-355's arm**, though it writes the same row with the same
+        // absent `approval_ref`. That one is authorized by nothing published
+        // naming the value and re-tests exactly that premise inside its
+        // transaction, which refuses every call made here — this value *is*
+        // named, and what authorizes the edit is the tenant's `N`. The twin
+        // re-tests that premise instead.
+        let (_, outcome) = state
+            .db
+            .db()
+            .in_transaction::<TaxonomyEntry, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    ApprovalService::commit_taxonomy_value_at_quorum_zero_in(
+                        txn,
+                        &commit_scope,
+                        tenant,
+                        &committed_change,
+                        now,
+                        stamp,
+                    )
+                    .await
+                })
+            })
+            .await;
+        let committed = outcome.map_err(|err| {
+            err.into_domain(|infra| {
+                DomainError::Internal(format!(
+                    "bss-pricing: taxonomy value quorum-zero commit: {infra}"
+                ))
+            })
+        })?;
+        return Ok(render_value(class, &committed, StatusCode::OK, None, None));
+    }
+
+    if let crate::infra::approval::ActAuthorization::ByRecord(approved) = authorization {
+        let approved = *approved;
         // Compatibility for previously approved but unapplied units only. New
         // approvals already applied the patch and moved the original value tag.
         let stamp = audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation);

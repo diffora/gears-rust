@@ -780,15 +780,31 @@ async fn publish_bundle(
     // Matched on the **content** and not merely on the subject: an approval whose
     // composition moved after the decision covers content that no longer exists,
     // so answering with it would authorize a component set nobody reviewed.
-    let approved = state
+    //
+    // **And the tenant's `N` decides what the absence of one means** (D-380).
+    // D-104 makes a composition change always material, so before the count
+    // existed "no approved unit" could only mean *open one* — which a
+    // one-person tenant can never close, `chk_pricing_approval_approver`
+    // admitting no `approved` row without an approver. `ByPolicy` is that
+    // tenant: the composition publishes on this call, under the quorum they
+    // configured while the two-person rule was still in force.
+    let authorization = state
         .approvals
-        .approved_unit(&scope, tenant, &subject_ref, &pin)
+        .act_authorization(&scope, tenant, &subject_ref, &pin, now)
         .await
         .map_err(CanonicalError::from)?;
 
-    if let Some(record) = approved {
+    if !matches!(
+        authorization,
+        crate::infra::approval::ActAuthorization::Owed
+    ) {
+        let record = match authorization {
+            crate::infra::approval::ActAuthorization::ByRecord(record) => Some(*record),
+            crate::infra::approval::ActAuthorization::ByPolicy
+            | crate::infra::approval::ActAuthorization::Owed => None,
+        };
         // The publish arm: a second, independent person has seen exactly this
-        // composition.
+        // composition — or the tenant owes no second person at all.
         state
             .bundle_service
             // `draft.row_version` is the version the pin above was computed over
@@ -828,7 +844,9 @@ async fn publish_bundle(
                 plan_revision: body.plan_revision,
                 outcome: OUTCOME_PUBLISHED.to_owned(),
                 materiality: reason,
-                approval: Some(ApprovalView::from(&record)),
+                // `None` at `N = 0`: there is no record to name, and naming
+                // one that does not exist is what an auditor would follow.
+                approval: record.as_ref().map(ApprovalView::from),
             }),
         )
             .into_response());

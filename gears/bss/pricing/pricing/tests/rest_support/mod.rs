@@ -660,6 +660,7 @@ impl Harness {
                 LimitsConfig::default().idempotency_key_ttl(),
             ),
             registry: Arc::clone(&registry) as Arc<_>,
+            approvals: ApprovalService::new(db.clone()),
         });
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),

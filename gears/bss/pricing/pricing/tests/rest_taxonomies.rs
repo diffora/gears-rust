@@ -32,8 +32,8 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
 use bss_pricing::authz::{actions, labels};
 use rest_support::{
-    Harness, approval_row, approval_rows, audit_rows, body_json, etag_of, location_of,
-    problem_code, request, with_headers,
+    Harness, approval_row, approval_rows, audit_rows, body_json, effective_approver_count, etag_of,
+    location_of, problem_code, request, set_approver_count, with_headers,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -2515,4 +2515,102 @@ async fn submit_overlay_scoped_to(
             Some(json!({ "revision": 0 })),
         ))
         .await
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the governed taxonomy edit.
+// ---------------------------------------------------------------------------
+
+/// A declared value a published overlay references — the state in which an
+/// edit is the **governed** door rather than D-355's direct one.
+async fn a_referenced_value(harness: &Harness) -> String {
+    declare(
+        harness,
+        "brand",
+        json!({ "value": "acme", "display_name": "Acme" }),
+    )
+    .await;
+    seed_published_overlay(harness, "brand", "acme").await;
+    let (_, tag) = read_value(harness, "brand", "acme").await;
+    tag
+}
+
+/// **A governed taxonomy edit at `N = 0` commits on the call.**
+///
+/// D-353 makes the edit always material once a published row names the value,
+/// so before the tenant's `N` existed this door could only open a unit — one a
+/// single-principal tenant could never decide. At `N = 0` the edit takes the
+/// arm D-355 already built for an unreferenced value: the same write, the same
+/// guards re-judged inside the transaction, and `approval_ref = None`.
+#[tokio::test]
+async fn a_governed_taxonomy_edit_at_quorum_zero_commits_on_the_call() {
+    let harness = Harness::new().await;
+    let tag = a_referenced_value(&harness).await;
+    set_approver_count(&harness, 0).await;
+    assert_eq!(effective_approver_count(&harness).await, 0);
+
+    let response = patch(
+        &harness,
+        "brand",
+        "acme",
+        &tag,
+        json!({ "display_name": "ACME Ltd" }),
+    )
+    .await;
+
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a tenant at zero edits on the call rather than staging: {body}"
+    );
+    assert_eq!(
+        body["display_name"], "ACME Ltd",
+        "and the answer is the value as it now stands: {body}"
+    );
+
+    let (stored, _) = read_value(&harness, "brand", "acme").await;
+    assert_eq!(
+        stored["display_name"], "ACME Ltd",
+        "read back off the store, not off the response: {stored}"
+    );
+    assert!(
+        approval_rows(&harness)
+            .await
+            .into_iter()
+            .all(|row| row.subject_kind != "taxonomy_value"),
+        "and no taxonomy unit was opened at N = 0"
+    );
+}
+
+/// **The same edit at the default still opens a unit and writes nothing.**
+#[tokio::test]
+async fn a_governed_taxonomy_edit_at_the_default_still_opens_a_unit() {
+    let harness = Harness::new().await;
+    let tag = a_referenced_value(&harness).await;
+    set_approver_count(&harness, 1).await;
+
+    let response = patch(
+        &harness,
+        "brand",
+        "acme",
+        &tag,
+        json!({ "display_name": "ACME Ltd" }),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let (stored, _) = read_value(&harness, "brand", "acme").await;
+    assert_eq!(
+        stored["display_name"], "Acme",
+        "nothing is written until the second principal signs: {stored}"
+    );
+    assert!(
+        approval_rows(&harness)
+            .await
+            .into_iter()
+            .any(|row| row.subject_kind == "taxonomy_value"),
+        "and the unit is open over it"
+    );
 }

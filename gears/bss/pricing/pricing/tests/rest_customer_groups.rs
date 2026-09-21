@@ -39,8 +39,9 @@ use bss_pricing::infra::storage::repo::audit_repo;
 use bss_pricing::infra::storage::repo::group_membership_repo;
 use bss_pricing::infra::storage::repo::{NewApproval, approval_repo};
 use rest_support::{
-    Harness, approval_row, approval_rows, audit_rows, body_json, etag_of, membership_row,
-    pending_version_refs, problem_code, refused_by, request, stamp_of, with_headers,
+    Harness, approval_row, approval_rows, audit_rows, body_json, effective_approver_count, etag_of,
+    membership_row, pending_version_refs, problem_code, refused_by, request, set_approver_count,
+    stamp_of, with_headers,
 };
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::json;
@@ -2427,4 +2428,149 @@ async fn a_bulk_move_into_an_undeclared_group_is_refused_group_unknown() {
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(problem_code(response).await, "GROUP_UNKNOWN");
+}
+
+// ---------------------------------------------------------------------------
+// D-380: the tenant's approver count on the two move doors.
+// ---------------------------------------------------------------------------
+
+/// Move one payer immediately, as [`MEMBERSHIP_ADMIN`], under a fresh key.
+async fn move_immediately(
+    harness: &Harness,
+    payer_tenant_id: Uuid,
+    key: &str,
+) -> axum::http::Response<axum::body::Body> {
+    harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &CUSTOMER_GROUP_MEMBER_MOVE
+                .replace("{group}", "gold")
+                .replace("{payerId}", &payer_tenant_id.to_string()),
+            Some(json!({
+                "effective_from": "2026-06-01T00:00:00.000000Z",
+                "immediate": true
+            })),
+            &[("idempotency-key", key)],
+        ))
+        .await
+}
+
+/// **An immediate move at `N = 0` commits on the call.**
+///
+/// `inst-mm-immediate` is a registered trigger, so the move is always
+/// material and `inst-mm-pending` writes **nothing** to the membership plane
+/// until a second principal approves. For a tenant with one principal that
+/// meant the payer could never be moved at all: the unit had nobody to decide
+/// it and no row was ever written.
+#[tokio::test]
+async fn an_immediate_move_at_quorum_zero_commits_without_a_second_principal() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    rest_support::declare_customer_group(&harness, "gold").await;
+    set_approver_count(&harness, 0).await;
+    assert_eq!(effective_approver_count(&harness).await, 0);
+    let units_before = approval_rows(&harness).await.len();
+
+    let response = move_immediately(&harness, payer_tenant_id, "move-quorum-zero-1").await;
+
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert!(
+        body["moved"].is_object() || body["moved"].is_array(),
+        "the answer carries the move it made: {body}"
+    );
+    assert!(
+        body["approval"].is_null(),
+        "no unit was opened, so there is none to name: {body}"
+    );
+
+    assert_eq!(
+        approval_rows(&harness).await.len(),
+        units_before,
+        "and no membership unit was opened at N = 0"
+    );
+    let held = group_membership_repo::intervals_for_payer(
+        &harness.db.conn().expect("conn"),
+        &AccessScope::allow_all(),
+        harness.tenant,
+        payer_tenant_id,
+    )
+    .await
+    .expect("read the payer's intervals");
+    assert_eq!(
+        held.len(),
+        1,
+        "the row inst-mm-pending withholds until approval exists now: {held:?}"
+    );
+}
+
+/// **The same move at the default still opens a unit and writes no row.**
+#[tokio::test]
+async fn an_immediate_move_at_the_default_still_opens_a_unit() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    rest_support::declare_customer_group(&harness, "gold").await;
+    set_approver_count(&harness, 1).await;
+
+    let response = move_immediately(&harness, payer_tenant_id, "move-quorum-one-1").await;
+
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "body: {body}");
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    let held = group_membership_repo::intervals_for_payer(
+        &harness.db.conn().expect("conn"),
+        &AccessScope::allow_all(),
+        harness.tenant,
+        payer_tenant_id,
+    )
+    .await
+    .expect("read the payer's intervals");
+    assert!(
+        held.is_empty(),
+        "inst-mm-pending: no row until a second principal approves: {held:?}"
+    );
+}
+
+/// **A replayed move at `N = 0` is idempotent.**
+///
+/// The arm that writes no record is the one with no unit to answer a retry
+/// out of, so `already_applied` is the whole of its idempotency — and it is
+/// the guard the direct commit shares with the approved one precisely so this
+/// cannot hold on one arm and not the other. A second call under a fresh key
+/// must find the interval it created rather than try to end it at the instant
+/// it starts.
+#[tokio::test]
+async fn a_replayed_move_at_quorum_zero_writes_one_interval() {
+    let harness = Harness::new().await;
+    let payer_tenant_id = Uuid::now_v7();
+    rest_support::declare_customer_group(&harness, "gold").await;
+    set_approver_count(&harness, 0).await;
+
+    assert_eq!(
+        move_immediately(&harness, payer_tenant_id, "move-replay-a")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let second = move_immediately(&harness, payer_tenant_id, "move-replay-b").await;
+    let status = second.status();
+    let body = body_json(second).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the retry is answered, not refused: {body}"
+    );
+
+    let held = group_membership_repo::intervals_for_payer(
+        &harness.db.conn().expect("conn"),
+        &AccessScope::allow_all(),
+        harness.tenant,
+        payer_tenant_id,
+    )
+    .await
+    .expect("read the payer's intervals");
+    assert_eq!(held.len(), 1, "one enrolment, one interval: {held:?}");
 }

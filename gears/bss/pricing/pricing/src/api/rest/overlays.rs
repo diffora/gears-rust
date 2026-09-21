@@ -930,13 +930,32 @@ async fn submit_overlay(
         record.revision,
     );
     let pin = crate::domain::approval::content_pin::overlay_content_hash(&content_for_pin);
-    if let Some(approved) = state
+    // **D-380 gives the absence of a unit a second meaning.** An overlay submit
+    // is always material (D-50), so "no approved unit" used to mean *open one* —
+    // the one answer a tenant with a single principal can never act on.
+    // `ByPolicy` is that tenant, and the commit it takes is the publish path's
+    // `AutoPublishable` arm: no approval reference, no pinned content to
+    // re-derive against, and the same audit row the approved arm writes.
+    let now = OffsetDateTime::now_utc();
+    let act_authorization = state
         .approvals
-        .approved_unit(&scope, tenant, &subject_ref, &pin)
-        .await?
-    {
-        let authorization =
-            crate::api::rest::publish::authorization_of(&approved).map_err(CanonicalError::from)?;
+        .act_authorization(&scope, tenant, &subject_ref, &pin, now)
+        .await?;
+    if !matches!(
+        act_authorization,
+        crate::infra::approval::ActAuthorization::Owed
+    ) {
+        let approved = match act_authorization {
+            crate::infra::approval::ActAuthorization::ByRecord(record) => Some(*record),
+            crate::infra::approval::ActAuthorization::ByPolicy
+            | crate::infra::approval::ActAuthorization::Owed => None,
+        };
+        let authorization = match approved.as_ref() {
+            Some(record) => {
+                crate::api::rest::publish::authorization_of(record).map_err(CanonicalError::from)?
+            }
+            None => crate::domain::publish::PublishAuthorization::auto_publishable(),
+        };
         let receipt = state
             .overlay_publish
             .commit(
@@ -955,11 +974,17 @@ async fn submit_overlay(
                 revision: record.revision,
                 outcome: OUTCOME_PUBLISHED.to_owned(),
                 pending_version_ref: Some(receipt.pending_ref),
-                materiality: ApprovalView::from(&approved)
-                    .materiality
+                // At `N = 0` there is no record to read the stored token off,
+                // so the act's own reason stands — which is what the
+                // `unwrap_or_else` below has always said for a record that
+                // carried none.
+                materiality: approved
+                    .as_ref()
+                    .map(ApprovalView::from)
+                    .and_then(|view| view.materiality)
                     .and_then(|view| view.reason)
                     .unwrap_or_else(|| OVERLAY_ACT_REASON.to_owned()),
-                approval: Some(ApprovalView::from(&approved)),
+                approval: approved.as_ref().map(ApprovalView::from),
                 warnings: Vec::new(),
             }),
         )

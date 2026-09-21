@@ -481,9 +481,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
     // fail-closed registry per field: registration happens while the router is
     // built and this test sends no request.
     let membership_state = Arc::new(bss_pricing::api::rest::customer_groups::MembershipState {
-        db,
+        db: db.clone(),
         idempotency: IdempotencyGate::new(Duration::from_hours(1)),
         registry: unconfigured_registry(),
+        approvals: bss_pricing::infra::approval::ApprovalService::new(db),
     });
 
     drop(
