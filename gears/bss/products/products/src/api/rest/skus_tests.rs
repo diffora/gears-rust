@@ -4838,6 +4838,234 @@ mod meter_declaration_tests {
         .await
     }
 
+    /// A save driven through the router with a catalog this case supplies, so the
+    /// changed-ref rule can be probed at each of its three answers.
+    async fn patch_with_catalog(
+        harness: &TestHarness,
+        sku_id: Uuid,
+        etag: &str,
+        body: &serde_json::Value,
+        catalog: Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+        source: &'static str,
+    ) -> axum::http::Response<Body> {
+        let mut state = api_state(harness);
+        state.usage_type_catalog = catalog;
+        state.usage_type_catalog_source = source;
+        let openapi = OpenApiRegistryImpl::new();
+        let app = crate::api::rest::skus::router(Arc::new(state), &openapi)
+            .layer(axum::Extension(flat_in_enforcer(TENANT)));
+        patch_sku(app, TENANT, sku_id, body, &[("If-Match", etag)]).await
+    }
+
+    /// **The dry-run door reports an unresolvable ref, and refuses nothing.**
+    ///
+    /// Until this landed `POST .../validate` judged the *unit* and left the ref
+    /// to publish, so the one door whose whole job is "tell me what publish
+    /// will say" did not say this.
+    #[tokio::test]
+    async fn validate_reports_an_unresolvable_ref_as_a_finding() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let saved = patch_with_catalog(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            Arc::new(crate::test_support::StubUsageTypes::always(
+                crate::domain::recognized::UsageTypeAnswer::Resolved(
+                    crate::test_support::probe_binding(),
+                ),
+            )),
+            "registry",
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+
+        let mut state = api_state(&harness);
+        state.usage_type_catalog = Arc::new(crate::test_support::StubUsageTypes::always(
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+        ));
+        state.usage_type_catalog_source = "registry";
+        let openapi = OpenApiRegistryImpl::new();
+        let response = crate::api::rest::skus::router(Arc::new(state), &openapi)
+            .layer(axum::Extension(flat_in_enforcer(TENANT)))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/skus/{sku_id}/validate"))
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::empty())
+                    .expect("build the validate request"),
+            )
+            .await
+            .expect("the router answers");
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the dry-run door reports; it refuses nothing"
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["clean"], false, "{body}");
+        assert!(
+            body.to_string().contains("USAGE_TYPE_UNRESOLVED"),
+            "the finding names the catalog's own no: {body}"
+        );
+    }
+
+    /// **A save that changes the ref to an id the catalog rejects is refused
+    /// there, not at publish.**
+    ///
+    /// The asymmetry this closes: an unrecognised *unit* was always refused at the
+    /// save door, while a mistyped ref saved cleanly and surfaced only when the
+    /// author published.
+    #[tokio::test]
+    async fn a_save_that_changes_the_ref_to_an_unknown_id_is_refused_at_the_save_door() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let stub = Arc::new(crate::test_support::StubUsageTypes::always(
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+        ));
+
+        let refused = patch_with_catalog(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:typo" }),
+            Arc::clone(&stub) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+            "registry",
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(refused).await;
+        assert!(
+            body.to_string().contains("USAGE_TYPE_UNRESOLVED"),
+            "the catalog's own no, named: {body}"
+        );
+        assert_eq!(
+            stub.asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "asked exactly once, before the transaction"
+        );
+    }
+
+    /// **An unreachable catalog does not block a draft save.**
+    ///
+    /// A catalog that could not be reached has said nothing, and blocking a save on
+    /// an outage is the coupling this gear avoids. Publish still fails closed on
+    /// the same answer.
+    #[tokio::test]
+    async fn a_save_proceeds_when_the_catalog_does_not_answer() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let response = patch_with_catalog(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            Arc::new(crate::test_support::StubUsageTypes::always(
+                crate::domain::recognized::UsageTypeAnswer::Unavailable,
+            )),
+            "registry",
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a non-answer is not a no: {}",
+            body_json(response).await
+        );
+    }
+
+    /// **An unchanged ref spends no call**, so an autosave touching anything else
+    /// does not reach across a gear boundary.
+    #[tokio::test]
+    async fn a_save_that_does_not_change_the_ref_asks_the_catalog_nothing() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        seed_unit(&harness, "vcpu_hour", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let stub = Arc::new(crate::test_support::StubUsageTypes::always(
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+        ));
+        let catalog = Arc::clone(&stub) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>;
+
+        // Write the pair once through a catalog that accepts it.
+        let saved = patch_with_catalog(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            Arc::new(crate::test_support::StubUsageTypes::always(
+                crate::domain::recognized::UsageTypeAnswer::Resolved(
+                    crate::test_support::probe_binding(),
+                ),
+            )),
+            "registry",
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+        let next = format!(
+            "\"{}\"",
+            body_json(saved).await["internal_revision"]
+                .as_i64()
+                .expect("a revision")
+        );
+
+        // Now re-send the identical ref beside a changed unit, through a catalog
+        // that would refuse it. It is never asked.
+        let again = patch_with_catalog(
+            &harness,
+            sku_id,
+            &next,
+            &json!({ "metering_unit": "vcpu_hour", "usage_type_ref": "usage:storage" }),
+            catalog,
+            "registry",
+        )
+        .await;
+        assert_eq!(
+            again.status(),
+            StatusCode::OK,
+            "the ref did not move, so the refusing catalog was never consulted: {}",
+            body_json(again).await
+        );
+        assert_eq!(
+            stub.asked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "not asked at all"
+        );
+    }
+
+    /// **With no catalog configured the save asks nothing and proceeds** — there
+    /// is nothing to check against, and publish still fails closed.
+    #[tokio::test]
+    async fn a_save_asks_nothing_when_no_catalog_is_configured() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let stub = Arc::new(crate::test_support::StubUsageTypes::always(
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+        ));
+        let response = patch_with_catalog(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            Arc::clone(&stub) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+            "unconfigured",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            stub.asked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "nothing configured means nothing asked"
+        );
+    }
+
     /// **The atomic pair**: half a declaration is refused with the code the
     /// taxonomy names, and the paired `CHECK` refuses the same shape at the
     /// physical layer — probed on the resulting ROW, so a save completing a

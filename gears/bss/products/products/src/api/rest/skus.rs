@@ -8448,6 +8448,54 @@ pub(crate) async fn save_sku(
 /// Every refusal this door raises, each audited on its own transaction
 /// through [`audit_act_refusal`]; the bare `404` a miss answers; the `500` a
 /// storage or gate-host failure raises.
+/// Resolve a `usageTypeRef` this save **changes**, and refuse only a
+/// definitive no (2026-09-22).
+///
+/// `Ok(())` - the save proceeds - when the field is not named, when it names
+/// what the head already stores, when it clears the pair, when no catalog is
+/// configured, or when the catalog did not answer. The publish gate is
+/// unchanged and still fails closed on that last one.
+///
+/// # Errors
+///
+/// [`DomainError`] carrying `USAGE_TYPE_UNRESOLVED` when the catalog answered
+/// that it does not know the id.
+async fn judge_changed_usage_type(
+    state: &ApiState,
+    ctx: &SecurityContext,
+    head: &SkuRecord,
+    request: &SaveSkuRequest,
+) -> Result<(), DomainError> {
+    use crate::domain::recognized::UsageTypeAnswer;
+
+    if state.usage_type_catalog_source == crate::gear::USAGE_TYPE_SOURCE_UNCONFIGURED {
+        return Ok(());
+    }
+    let Some(raw) = request.fields.get("usage_type_ref") else {
+        return Ok(());
+    };
+    // A cleared pair has nothing to ask about; `inst-mt-atomic-pair` judges
+    // the clearing itself inside the act.
+    let Some(asked) = raw.as_str().filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    if head.usage_type_ref.as_deref() == Some(asked) {
+        return Ok(());
+    }
+    match state.usage_type_catalog.resolve(ctx, asked).await {
+        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unavailable => Ok(()),
+        UsageTypeAnswer::Unresolved => {
+            let mut report = ValidationReport::new();
+            report.violate(
+                "USAGE_TYPE_UNRESOLVED",
+                "usage_type_ref",
+                format!("the usage-type catalog does not know `{asked}`"),
+            );
+            Err(DomainError::Validation(report))
+        }
+    }
+}
+
 async fn save_sku_gated(
     state: &ApiState,
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
@@ -8509,6 +8557,24 @@ async fn save_sku_gated(
             DomainError::Validation(report),
         )
         .await);
+    }
+
+    // **A changed `usageTypeRef` is judged here, before the transaction**
+    // (2026-09-22). Until this landed the ref was resolved only at publish, so
+    // a typo saved cleanly and surfaced at the end, while an unrecognised
+    // *unit* was refused immediately - an asymmetry that tracks something real
+    // (the unit is a local table read, the ref is a cross-gear call) and was
+    // worth narrowing rather than erasing.
+    //
+    // Three conditions, each load-bearing. **Before the transaction**, for
+    // `publish_sku_gated`'s reason: a 503 must leave no idempotency claim
+    // behind. **Only when the ref changed**, so an autosave touching anything
+    // else spends no call. **Only a definitive no refuses**: a catalog that
+    // could not be reached has said nothing, and blocking a draft save on an
+    // outage is the coupling this gear deliberately avoids - publish still
+    // fails closed on it.
+    if let Err(refusal) = judge_changed_usage_type(state, ctx, &head, &request).await {
+        return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
     }
 
     let inputs = HeadActInputs {
@@ -8701,9 +8767,19 @@ async fn validate_sku(
         .db
         .conn()
         .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
-    let findings = lint_sku_publish(&conn, &act.scope, act.tenant_id, sku_id)
+    let mut findings = lint_sku_publish(&conn, &act.scope, act.tenant_id, sku_id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
+    // **The dry-run door resolves the ref, and it is the only lint caller that
+    // does** (2026-09-22). `lint_sku_publish` judges the *unit* — a local table
+    // read — and left `usageTypeRef` to the publish, so until now an author had
+    // no way to learn about a mistyped id short of publishing. Adding it here
+    // rather than inside the lint is deliberate: the lint's other two callers
+    // are the bulk worker, which runs it **per row**, and the approvals door,
+    // and neither should pay a cross-gear call.
+    //
+    // It refuses nothing. This door reports.
+    findings.extend(usage_type_findings(&state, &ctx, &conn, &act, sku_id).await?);
     Ok((
         StatusCode::OK,
         Json(LintReportView {
@@ -8712,6 +8788,65 @@ async fn validate_sku(
         }),
     )
         .into_response())
+}
+
+/// The head's `usageTypeRef` as the catalog answers for it, rendered as
+/// findings (2026-09-22).
+///
+/// **Two findings, not one**, because the route one door over keeps the same
+/// two facts apart: a catalog that says *no* is an author's typo, and a catalog
+/// that says *nothing* is an operator's outage. Collapsing them would tell an
+/// author to fix an id that may be perfectly good.
+///
+/// A head with no meter, and a deployment with no catalog, both produce none:
+/// there is nothing to ask and nobody to ask.
+///
+/// # Errors
+///
+/// [`CanonicalError`] only from the head read; the resolve itself never fails
+/// the door.
+async fn usage_type_findings(
+    state: &ApiState,
+    ctx: &SecurityContext,
+    conn: &impl toolkit_db::secure::DBRunner,
+    act: &ActContext,
+    sku_id: Uuid,
+) -> Result<Vec<crate::api::rest::LintFinding>, CanonicalError> {
+    use crate::api::rest::LintFinding;
+    use crate::domain::recognized::UsageTypeAnswer;
+
+    if state.usage_type_catalog_source == crate::gear::USAGE_TYPE_SOURCE_UNCONFIGURED {
+        return Ok(Vec::new());
+    }
+    let Some(head) = repo::find_sku(conn, &act.scope, act.tenant_id, sku_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(usage_type_ref) = head.usage_type_ref.as_deref() else {
+        return Ok(Vec::new());
+    };
+    Ok(
+        match state.usage_type_catalog.resolve(ctx, usage_type_ref).await {
+            UsageTypeAnswer::Resolved(_) => Vec::new(),
+            UsageTypeAnswer::Unresolved => vec![LintFinding {
+                code: "USAGE_TYPE_UNRESOLVED".to_owned(),
+                subject: "usage_type_ref".to_owned(),
+                detail: format!(
+                    "the usage-type catalog does not know `{usage_type_ref}`; publish will refuse it"
+                ),
+            }],
+            UsageTypeAnswer::Unavailable => vec![LintFinding {
+                code: "USAGE_TYPE_CATALOG_UNAVAILABLE".to_owned(),
+                subject: "usage_type_ref".to_owned(),
+                detail: format!(
+                    "the usage-type catalog did not answer for `{usage_type_ref}`, so it is \
+                 unchecked here; publish fails closed on the same answer"
+                ),
+            }],
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
