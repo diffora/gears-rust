@@ -37,12 +37,13 @@ use uuid::Uuid;
 use super::{
     AssignmentWrite, AttributeCoordinate, CategoryWrite, DefinitionFlip, NewAttributeDefinition,
     NewCategory, attribute_definition_by_key, attribute_definitions, attribute_values_of,
-    category_assignments, category_mutation_seq, category_parents, category_tree_page,
-    classify_assignment_write, definition_value_holders, delete_attribute_value, delete_census,
-    delete_metadata_key, delete_retired_category, flip_definition_state,
-    insert_attribute_definition, insert_category, metadata_of, rename_category,
-    replace_category_assignments, retire_category, retire_census, seed_well_known_definitions,
-    upsert_attribute_value, upsert_metadata, write_category_display_value,
+    category_assignments, category_mutation_seq, category_nodes, category_parents,
+    category_tree_page, classify_assignment_write, default_category, definition_value_holders,
+    delete_attribute_value, delete_census, delete_metadata_key, delete_retired_category,
+    flip_definition_state, insert_attribute_definition, insert_category, metadata_of,
+    rename_category, replace_category_assignments, retire_category, retire_census,
+    seed_well_known_definitions, set_default_category, upsert_attribute_value, upsert_metadata,
+    write_category_display_value,
 };
 use crate::domain::taxonomy::{
     AssignmentRole, DefinitionState, REGISTRY_SEEDED_BY, WELL_KNOWN_SEEDS,
@@ -2329,4 +2330,155 @@ async fn the_tree_page_serves_every_node_in_name_order_retired_included() {
         "and the child names its parent"
     );
     assert_eq!(page.page_info.next_cursor, None, "two nodes, one page");
+}
+
+// -- The default flag (`inst-tx-default`, P-D-182) --
+
+/// [`new_category`] with the default flag set — the seed's own shape.
+fn default_new_category(category_id: Uuid, tenant_id: Uuid, name: &str) -> NewCategory<'_> {
+    NewCategory {
+        is_default: true,
+        ..new_category(category_id, tenant_id, name)
+    }
+}
+
+/// **Moving the flag is one act: the previous holder loses it in the same
+/// call.**
+///
+/// Two statements with a window between them would leave the tenant holding
+/// two defaults for that window — which `uq_products_category_default`
+/// refuses — so the clear-then-set order is load-bearing rather than tidy.
+#[tokio::test]
+async fn setting_the_default_clears_the_previous_holder() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    let general = Uuid::from_u128(0xca_20);
+    let compute = Uuid::from_u128(0xca_21);
+    insert_category(
+        &conn,
+        &scope,
+        default_new_category(general, TENANT, "general"),
+        at(9),
+    )
+    .await
+    .expect("insert the seed")
+    .expect("the name is free");
+    insert_category(
+        &conn,
+        &scope,
+        new_category(compute, TENANT, "compute"),
+        at(9),
+    )
+    .await
+    .expect("insert the operator's own root")
+    .expect("the name is free");
+
+    assert_eq!(
+        default_category(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .map(|c| c.category_id),
+        Some(general),
+        "the seeded node holds the flag"
+    );
+
+    assert_eq!(
+        set_default_category(&conn, &scope, TENANT, compute, at(10))
+            .await
+            .expect("the move applies"),
+        CategoryWrite::Applied
+    );
+
+    assert_eq!(
+        default_category(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .map(|c| c.category_id),
+        Some(compute),
+        "the flag moved, and the index would have refused a second holder"
+    );
+    assert_eq!(
+        category_nodes(&conn, &scope, TENANT)
+            .await
+            .expect("read the tree")
+            .len(),
+        2,
+        "and nothing else changed"
+    );
+}
+
+/// **A tenant with no default reads `None`, not an error.** The create door
+/// branches on this, and an error would make a fresh tenant's first create
+/// fail on a taxonomy detail.
+#[tokio::test]
+async fn a_tenant_with_no_default_reads_none() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    assert!(
+        default_category(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .is_none()
+    );
+
+    // And a category that exists but carries no flag is not mistaken for one.
+    insert_category(
+        &conn,
+        &scope,
+        new_category(Uuid::from_u128(0xca_22), TENANT, "compute"),
+        at(9),
+    )
+    .await
+    .expect("insert")
+    .expect("the name is free");
+    assert!(
+        default_category(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .is_none(),
+        "the read is on the flag, never on the presence of a category"
+    );
+}
+
+/// **A retired node cannot take the flag.** It would become the landing place
+/// for new Products while being closed to new assignment, which the create
+/// door would then meet as `CATEGORY_RETIRED` on every silent create.
+#[tokio::test]
+async fn a_retired_node_cannot_become_the_default() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    let retired = Uuid::from_u128(0xca_23);
+    insert_category(
+        &conn,
+        &scope,
+        new_category(retired, TENANT, "compute"),
+        at(9),
+    )
+    .await
+    .expect("insert")
+    .expect("the name is free");
+    retire_category(&conn, &scope, TENANT, retired, at(10))
+        .await
+        .expect("retire it");
+
+    assert_eq!(
+        set_default_category(&conn, &scope, TENANT, retired, at(11))
+            .await
+            .expect("no storage failure"),
+        CategoryWrite::Unmatched,
+        "the write is filtered on `active`, so a retired target matches no row"
+    );
+    assert!(
+        default_category(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .is_none(),
+        "and the tenant still has no default"
+    );
 }

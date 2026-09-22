@@ -82,8 +82,9 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    DeleteCensus, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits, ancestors_of, cycle_verdict,
-    delete_verdict, depth_of, limit_verdict, retire_verdict, subtree_height,
+    CategoryReferenced, DeleteCensus, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits,
+    ancestors_of, cycle_verdict, delete_verdict, depth_of, limit_verdict, retire_verdict,
+    subtree_height,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::broker::EventSink;
@@ -635,6 +636,22 @@ pub async fn retire_under_lock(
         .conn()
         .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
 
+    // **P-D-182**: the flag's holder is the create door's landing place, so
+    // retiring it would take that door's silent path down with it. The exit
+    // is `set_default` onto another category, and the refusal names it —
+    // this is a holder like any other, which is why it reuses
+    // `CATEGORY_REFERENCED` rather than minting a code for one arm.
+    if repo::default_category(&conn, scope, tenant_id)
+        .await?
+        .is_some_and(|held| held.category_id == category_id)
+    {
+        return Ok(Err(DomainError::from(CategoryReferenced {
+            detail: "this category carries the tenant's default flag; move it with `set_default` \
+                     onto another category before retiring this one"
+                .to_owned(),
+        })));
+    }
+
     let census: RetireCensus =
         repo::retire_census(&conn, scope, tenant_id, category_id, sample).await?;
     if let Err(referenced) = retire_verdict(&census) {
@@ -680,6 +697,67 @@ pub async fn retire_under_lock(
                             .await?;
                         }
                         Ok(written)
+                    })
+                },
+            )
+            .await,
+    )
+}
+
+/// Move the tenant's default flag onto one category under the writer lock
+/// (**P-D-182**, `inst-tx-default`).
+///
+/// The fifth act of the ops door, **material like the other four**: it spends
+/// its `GateAuthorization` in the same transaction as the write
+/// (`inst-gv-one-shot`), exactly as the retire above does.
+///
+/// **It announces nothing**, which is the one way it parts from its four
+/// siblings: an event is a consumer contract and none was minted for this act
+/// (P-D-182, *Owed*). The flag changes no path the browse projection renders,
+/// so no consumer re-projects on it, and the trail of the act is the approval
+/// record its own gate keeps.
+///
+/// A target that is absent or `retired` answers
+/// [`repo::CategoryWrite::Unmatched`] — the storage filter's doing, not a
+/// check here — and the door renders it: a retired node must not become the
+/// landing place for new Products.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage failure or on lock contention; the inner
+/// `Result` carries the gate's own refusal.
+pub async fn set_default_under_lock(
+    db: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    now: OffsetDateTime,
+    authorization: &crate::domain::governance::GateAuthorization,
+) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
+    let _guard = take_writer_lock(db, tenant_id).await?;
+    let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
+    settle(
+        db.db()
+            .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
+                TxConfig::default(),
+                taxonomy_contention_db_err,
+                move |tx| {
+                    let authorization = authorization_tx.clone();
+                    let scope = scope_tx.clone();
+                    Box::pin(async move {
+                        repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                            .await
+                            .map_err(|error| match error {
+                                repo::SettleError::Refused(refusal) => {
+                                    TaxonomyTxError::Refused(refusal)
+                                }
+                                repo::SettleError::Repo(error) => TaxonomyTxError::Repo(error),
+                            })?;
+                        Ok(
+                            repo::set_default_category(tx, &scope, tenant_id, category_id, now)
+                                .await?,
+                        )
                     })
                 },
             )

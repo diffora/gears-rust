@@ -1963,3 +1963,96 @@ pub async fn category_tree_page(
     )
     .await
 }
+
+/// The tenant's default category, or `None` when it has none (**P-D-182**).
+///
+/// `None` is an answer and not a failure: a fresh tenant has no default until
+/// its first Product create seeds one, and the create door branches on it
+/// rather than refusing. The read is on the **flag** and never on a name, so
+/// a tenant holding a category called `General` without the flag still reads
+/// `None`.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn default_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Option<category::Model>, RepoError> {
+    category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::IsDefault.eq(true)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("default category of {tenant_id}"), e))
+}
+
+/// Move the default flag onto `category_id`, clearing whoever held it.
+///
+/// **One call, clear then set, and the order is load-bearing.**
+/// `uq_products_category_default` admits one `true` per tenant, so a set that
+/// ran before the clear would be refused by the engine rather than applied.
+///
+/// The set is filtered on `state = 'active'` for the retire path's own
+/// reason: a retired node must not become the landing place for new Products,
+/// and making that the engine's answer rather than a check the door performs
+/// keeps the two from drifting. A retired or absent target therefore answers
+/// [`CategoryWrite::Unmatched`], which the door renders.
+///
+/// `mutation_seq` bumps on both rows — it counts **acts** on a category, and
+/// gaining or losing the flag is one.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn set_default_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    now: OffsetDateTime,
+) -> Result<CategoryWrite, RepoError> {
+    category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(category::Column::IsDefault, Expr::value(false))
+        .col_expr(
+            category::Column::MutationSeq,
+            Expr::col(category::Column::MutationSeq).add(1),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::IsDefault.eq(true)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("clear the default of {tenant_id}"), e))?;
+
+    let result = category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(category::Column::IsDefault, Expr::value(true))
+        .col_expr(
+            category::Column::MutationSeq,
+            Expr::col(category::Column::MutationSeq).add(1),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.eq(category_id))
+                .add(category::Column::State.eq(ACTIVE_CATEGORY_STATE)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("set the default to {category_id}"), e))?;
+    Ok(CategoryWrite::from_rows(result.rows_affected))
+}
