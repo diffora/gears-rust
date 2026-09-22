@@ -104,13 +104,12 @@ discovered weeks later at ERP export or rating time.
 | `TypeProfile` | The closed `type` set the define/publish validators run: the SKU's **role**, `offer`/`component`/`bundle` (**P-D-176**, superseding `product`/`service`/`bundle`). It carried a per-type required-code set until **P-D-169**; with both accounting codes out of the registry the profile constrains the type alone, and `bundle`'s exemption from the override gate is its remaining per-type rule |
 | `MeterDeclaration` | The value object `(unit, usageTypeRef)` — always both or neither |
 | `RecognizedSet` | The generic governed vocabulary (units; tax categories; GL codes; the PlanTier taxonomy) with `active|deprecated|removed` states and reference-guarded removal — a removal is the `removed` state, never a DELETE (**P-D-47**) |
-| `UsageTypeResolver` | The publish-time port to the usage-collector's `get_usage_type` (P-D-05) |
+| `UsageTypeCatalog` | The port to whatever supplies usage types, in `products-sdk` so a module that is **not** the usage collector can register one and be preferred over the built-in adapter (**P-D-183**). Carries `resolve` — the publish-time question, P-D-05 — **and** `list`, the authoring pick-list behind `GET /catalog/usage-types`. One trait for both on purpose: a supplier that fills the list also answers the gate, and two ports could disagree. Named `UsageTypeResolver` while it was in-crate and resolve-only |
 
 ### 1.8 Context & Dependencies
 
 **Consumed**: Foundation doors/pipeline (01); `GovernedLiveOp` (02); slice-05 gate (materiality
-of bucket-iii fields; elevated approval for new units; the bundle override); usage-collector SDK
-(`get_usage_type`). **Produced**: `PlanTierUpdated`, `RecognizedUnitUpdated`,
+of bucket-iii fields; elevated approval for new units; the bundle override); the **`UsageTypeCatalog` port** (P-D-183) — filled by a registered supplier, else by this gear's adapter over the usage-collector SDK's `get_usage_type` and `list_usage_types`, else by a configured fallback. **Produced**: `PlanTierUpdated`, `RecognizedUnitUpdated`,
 `RecognizedCodeUpdated` events; the classification validators registered on SKU save/publish;
 the SDK read shape fields (`type`, `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`,
 ) — including **`sellable`, `usage_type_ref` and `type` — this slice's three of the four members
@@ -138,7 +137,7 @@ actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - A `MeterDeclaration` is atomic: `unit` and `usageTypeRef` together or not at all (`METER_DECLARATION_INCOMPLETE`); exactly one unit (C2); registered on SKU save and publish (§1.8) - `inst-mt-atomic-pair`
 2. [ ] - `p1` - The unit **MUST** be in the recognized-unit set and `active`: unknown — or `removed`, which is outside the set (§3.1) — fails `UNRECOGNIZED_UNIT` (the path to a new unit is `RecognizedSet` elevated approval, never inline); a `deprecated` unit fails new declarations (`UNIT_DEPRECATED`) — including a draft whose unit was deprecated before its first publish (PRD: treated as a new declaration and rejected) - `inst-mt-recognized`
-3. [ ] - `p1` - At publish, `UsageTypeResolver` **MUST** resolve `usageTypeRef` in the collector's platform-global catalog (P-D-05 — resolvability only, no lifecycle check, no dimension check): unresolvable fails `USAGE_TYPE_UNRESOLVED`; **collector unavailable fails closed** with the distinct retryable `USAGE_TYPE_UNAVAILABLE` — a publish never proceeds on an unverified binding - `inst-mt-resolve`
+3. [ ] - `p1` - **The ref is judged at three moments (P-D-183, 2026-09-22), and each has its own posture.** At **save**, when the ref *changed* in this save and a catalog is configured: a definitive unresolved answer is refused there, exactly as an unrecognised unit is by the step above, while a catalog that did **not answer** lets the save through — the unit is a local table read and the ref is a cross-gear call, and blocking a draft save on another gear's outage is the coupling this set avoids. At **validate**, always, as a finding that refuses nothing, with the catalog's *no* and its *silence* kept apart as two findings. At **publish**, unchanged and fail-closed. In every case the resolve runs **before** the transaction. At publish, `UsageTypeCatalog` **MUST** resolve `usageTypeRef` in the configured catalog (P-D-05 — resolvability only, no lifecycle check, no dimension check): unresolvable fails `USAGE_TYPE_UNRESOLVED`; **collector unavailable fails closed** with the distinct retryable `USAGE_TYPE_UNAVAILABLE` — a publish never proceeds on an unverified binding - `inst-mt-resolve`
 4. [ ] - `p2` - The declaration is bucket ii: immutable after publish, correctable only through slice 07's `CorrectionDoor` (`inst-cr-door` — one door, three admission gates, one of them added for exactly this field); the draft plane edits freely **through 01 `inst-fd-save-txn`** (01 **P-D-41** names it) - `inst-mt-bucket`
 
 ### Govern the recognized-unit set

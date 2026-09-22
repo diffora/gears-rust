@@ -233,8 +233,17 @@ today an ordinary re-publish of a composed bundle would demand the override agai
   one unit is declared; a composite meter declares its **output** unit
 - Declaring a unit is what makes a SKU a usage SKU: the property is **defined, not detected**, and
   no separate flag exists
-- At publish, `usageTypeRef` resolves in the collector's platform-global catalog — resolvability
-  only, with no lifecycle and no dimension check
+- At publish, `usageTypeRef` resolves in the configured catalog — resolvability only, with no
+  lifecycle and no dimension check
+- **The catalog is a port a deployment can fill** (**P-D-183**): a registered `UsageTypeCatalog`
+  wins over this gear's adapter over the usage collector, which wins over a configured fallback,
+  and the pick-list reports which answered as `source`
+- **The ref has a pick-list**: `GET /catalog/usage-types`, on the unit vocabulary's own
+  `recognized_set x read` grant, narrowing by substring of the id and by kind. No catalog answers
+  **501**, a configured one that did not reply answers **503**, and a configured empty one answers
+  **200** with no items — three facts a caller acts on differently
+- **A ref this save changes is judged at the save door** when a catalog is configured, so a typo no
+  longer travels to publish unseen; `POST .../validate` reports it at any time and refuses nothing
 - The draft plane edits the declaration freely through the Foundation's save transaction
 
 **Error Scenarios**:
@@ -243,9 +252,12 @@ today an ordinary re-publish of a composed bundle would demand the override agai
   to a new unit is an elevated `RecognizedSet` approval, never an inline mint
 - The unit is `deprecated` — `UNIT_DEPRECATED`, including a draft whose unit was deprecated before
   its first publish, which counts as a new declaration
-- `usageTypeRef` does not resolve — `USAGE_TYPE_UNRESOLVED`
-- The collector is unreachable — `USAGE_TYPE_UNAVAILABLE`, **fail-closed and retryable**; a
-  publish never proceeds on an unverified binding
+- `usageTypeRef` does not resolve — `USAGE_TYPE_UNRESOLVED`, at publish **and**, since P-D-183, at
+  a save that changed it
+- The catalog is unreachable — `USAGE_TYPE_UNAVAILABLE`, **fail-closed and retryable at publish**;
+  a publish never proceeds on an unverified binding. **A save is not blocked by it**: a catalog
+  that could not be reached has said nothing, the unit is a local read while the ref is a
+  cross-gear call, and an outage in another gear must not stop a draft being written
 
 **Boundary**: the declaration is **bucket ii** — immutable after publish, correctable only
 through `07-reference-signal`'s correction door. Dimension sets are plan-price's, never this
