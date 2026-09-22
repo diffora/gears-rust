@@ -32,6 +32,7 @@ pub mod events;
 pub mod freeze;
 pub mod increments;
 pub mod models;
+pub mod usage_types;
 
 // Lints 1–8 (`dod-lint-prd-universe`, `dod-lint-declarations`,
 // `dod-lint-surfaces`); test-only, under `src/` for lint 9's reason.
