@@ -1793,6 +1793,16 @@ async fn seed_draft(harness: &TestHarness, product_id: Uuid) -> repo::ProductRec
 /// name collides the second time a case calls this, which is exactly what
 /// that index is for.
 async fn assign_primary_category(harness: &TestHarness, product_id: Uuid) {
+    // Since **P-D-182** the create door assigns the tenant's default, so a
+    // Product created **through the door** already carries a primary and this
+    // helper has nothing to add — the partial unique index would refuse the
+    // second one. It still fills the gap for a head seeded past the door
+    // (`seed_draft` writes the row directly), which is what the publish cases
+    // below need. Returning early rather than widening the index keeps the
+    // at-most-one rule exactly where it was.
+    if primary_category_of(harness, product_id).await.is_some() {
+        return;
+    }
     let conn = Database::connect(&harness.dsn)
         .await
         .expect("open an auxiliary connection to seed the assignment");
@@ -9454,6 +9464,234 @@ async fn an_over_long_idempotency_key_is_refused_and_the_cap_is_admitted() {
         admitted.status(),
         StatusCode::CREATED,
         "the cap is admitted"
+    );
+}
+
+// ------------------------------------------- the default category (P-D-182)
+
+/// The tenant's categories as `(name, is_default)`, read through the
+/// repository: this file's router carries the Product doors alone, so the
+/// taxonomy read door is not reachable from here.
+async fn categories_of(harness: &TestHarness) -> Vec<(String, bool)> {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let page = repo::category_tree_page(
+        &conn,
+        &scope,
+        TENANT,
+        &toolkit_odata::ODataQuery::new(),
+        crate::api::rest::odata::LISTING_LIMIT_CFG,
+    )
+    .await
+    .expect("read the tree");
+    page.items
+        .into_iter()
+        .map(|row| (row.name, row.is_default))
+        .collect()
+}
+
+/// The Product's primary category, or `None` when it carries no assignment.
+async fn primary_category_of(harness: &TestHarness, product_id: Uuid) -> Option<Uuid> {
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::category_assignments(&conn, &scope, TENANT, product_id)
+        .await
+        .expect("read the assignment set")
+        .into_iter()
+        .find(|a| a.role == crate::domain::taxonomy::AssignmentRole::Primary)
+        .map(|a| a.category_id)
+}
+
+/// Create one Product through the door and answer its id.
+async fn create_product(harness: &TestHarness, name: &str) -> Uuid {
+    let response = post_create_product(
+        app_for(harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": name }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the create succeeds"
+    );
+    let body = json_body(response).await;
+    Uuid::parse_str(body["product_id"].as_str().expect("a product id")).expect("a uuid")
+}
+
+/// **A tenant's first create seeds `General` and lands the Product in it; the
+/// second create seeds nothing and lands in the same node** (`inst-tx-default`).
+#[tokio::test]
+async fn the_first_create_seeds_the_default_and_the_second_reuses_it() {
+    let harness = harness().await;
+
+    let first = create_product(&harness, "Fibre 300").await;
+    let second = create_product(&harness, "Fibre 600").await;
+
+    let tree = categories_of(&harness).await;
+    assert_eq!(
+        tree,
+        vec![("General".to_owned(), true)],
+        "one seed, not one per create"
+    );
+
+    let seeded = primary_category_of(&harness, first)
+        .await
+        .expect("the first create landed somewhere");
+    assert_eq!(
+        primary_category_of(&harness, second).await,
+        Some(seeded),
+        "and the second landed in the same node"
+    );
+}
+
+/// **A tenant that already has a default of its own is never re-seeded**,
+/// even when nothing is named `General`: the seed's condition is the flag.
+#[tokio::test]
+async fn an_existing_default_is_never_re_seeded() {
+    let harness = harness().await;
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let mine = Uuid::now_v7();
+    repo::insert_category(
+        &conn,
+        &scope,
+        repo::NewCategory {
+            tenant_id: TENANT,
+            category_id: mine,
+            parent_id: None,
+            name: "Compute",
+            name_normalized: "compute",
+            is_default: true,
+        },
+        crate::test_support::at(9),
+    )
+    .await
+    .expect("insert")
+    .expect("the name is free");
+
+    let product = create_product(&harness, "Fibre 300").await;
+
+    assert_eq!(
+        categories_of(&harness).await,
+        vec![("Compute".to_owned(), true)],
+        "no `General` appeared"
+    );
+    assert_eq!(
+        primary_category_of(&harness, product).await,
+        Some(mine),
+        "the Product landed in the operator's own default"
+    );
+}
+
+/// **A named category wins, and the default is not consulted.**
+#[tokio::test]
+async fn a_create_naming_a_category_uses_it_and_not_the_default() {
+    let harness = harness().await;
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let chosen = Uuid::now_v7();
+    repo::insert_category(
+        &conn,
+        &scope,
+        repo::NewCategory {
+            tenant_id: TENANT,
+            category_id: chosen,
+            parent_id: None,
+            name: "Storage",
+            name_normalized: "storage",
+            is_default: false,
+        },
+        crate::test_support::at(9),
+    )
+    .await
+    .expect("insert")
+    .expect("the name is free");
+
+    let response = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({
+            "brand_id": BRAND,
+            "name": "Fibre 300",
+            "primary_category_id": chosen,
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let product = Uuid::parse_str(
+        json_body(response).await["product_id"]
+            .as_str()
+            .expect("an id"),
+    )
+    .expect("a uuid");
+
+    assert_eq!(
+        primary_category_of(&harness, product).await,
+        Some(chosen),
+        "the caller's answer, not the default"
+    );
+    assert_eq!(
+        categories_of(&harness).await,
+        vec![("Storage".to_owned(), false)],
+        "and no seed ran: the door never consulted the default"
+    );
+}
+
+/// **A create that cannot seed succeeds carrying no assignment**, and the
+/// publish rule is still the guard.
+///
+/// Reachable through the doors: an operator's own root named `General` holds
+/// the name without the flag, so the seed's insert loses to
+/// `uq_products_category_root_name` and answers nothing.
+#[tokio::test]
+async fn a_create_that_cannot_seed_succeeds_unassigned() {
+    let harness = harness().await;
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::insert_category(
+        &conn,
+        &scope,
+        repo::NewCategory {
+            tenant_id: TENANT,
+            category_id: Uuid::now_v7(),
+            parent_id: None,
+            name: "General",
+            name_normalized: "general",
+            is_default: false,
+        },
+        crate::test_support::at(9),
+    )
+    .await
+    .expect("insert the operator's own `General`")
+    .expect("the name is free");
+
+    let product = create_product(&harness, "Fibre 300").await;
+
+    assert_eq!(
+        primary_category_of(&harness, product).await,
+        None,
+        "the seed could not take the name, so nothing was assigned"
+    );
+    assert_eq!(
+        categories_of(&harness).await,
+        vec![("General".to_owned(), false)],
+        "and the operator's node was left alone"
     );
 }
 

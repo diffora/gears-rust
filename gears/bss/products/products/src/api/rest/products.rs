@@ -1332,6 +1332,16 @@ pub struct CreateProductRequest {
     /// The brand value set, written from the payload when present; empty
     /// (unrestricted) when omitted.
     pub brand_scope: Option<String>,
+    /// The primary category this Product lands in. **Absent means the
+    /// tenant's default** (**P-D-182**), seeded as `General` on the tenant's
+    /// first create; a tenant with no default lands the Product nowhere and
+    /// `inst-tx-primary-at-publish` refuses the publish until one is
+    /// assigned. Naming a category here never consults the default.
+    ///
+    /// Only the **primary** is settable at create. Secondary assignments are
+    /// ordinary draft content and ride the save door's `categories` set,
+    /// which is also how the primary is changed afterwards.
+    pub primary_category_id: Option<Uuid>,
 }
 
 /// The digest of one parsed create request, as the claim is taken against
@@ -1384,6 +1394,68 @@ fn payload_digest(request: &CreateProductRequest) -> Vec<u8> {
     idempotency::payload_digest(&JsonValue::Object(fields))
 }
 
+/// The primary category a create lands its Product in (**P-D-182**).
+///
+/// Two paths, and the first never consults the second: a caller that **named**
+/// a category gets that one, validated by `02`'s own assignment rules — the
+/// `content_save_pipeline`, which is what the save door runs, so the two doors
+/// refuse an unknown or retired category with one voice rather than two
+/// spellings. A caller that named none gets the tenant's default, seeded on
+/// the first create that needs it.
+///
+/// `Ok(None)` is a create that lands nowhere: the tenant has no default and
+/// the seed could not take one (a root already holds the name without the
+/// flag). That is deliberately not a refusal — a create must not fail on a
+/// taxonomy detail, and `inst-tx-primary-at-publish` still guards the entity
+/// at publish.
+///
+/// # Errors
+///
+/// The outer arm is storage, the inner one the caller's: [`RepoError`] on a
+/// failure underneath, and [`DomainError::Validation`] carrying `02`'s own
+/// rule codes when the named category does not resolve in the tenant or is
+/// retired. The two are kept apart because the door audits a refusal and
+/// answers a storage failure as a `500`.
+async fn resolve_create_category(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    named: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<Result<Option<Uuid>, DomainError>, RepoError> {
+    let Some(category_id) = named else {
+        // The seed takes the taxonomy writer lock; see this call's placement
+        // in `create_product` for why it is not inside the create
+        // transaction.
+        return crate::infra::taxonomy::ensure_default_under_lock(&state.db, scope, tenant_id, now)
+            .await
+            .map(Ok);
+    };
+
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("category resolution connection: {e}")))?;
+    let states = repo::category_states(&conn, scope, tenant_id, &[category_id]).await?;
+    let subject = ContentSaveSubject {
+        assignments: vec![AssignmentCandidate {
+            category_id,
+            role: AssignmentRole::Primary,
+            resolved: states
+                .iter()
+                .find(|(id, _)| *id == category_id)
+                .map(|(_, state)| *state),
+        }],
+        values: Vec::new(),
+        entity_region_scope: String::new(),
+        entity_brand_scope: String::new(),
+    };
+    match content_save_pipeline().run(&subject) {
+        None => Ok(Ok(Some(category_id))),
+        Some((_, report)) => Ok(Err(DomainError::Validation(report))),
+    }
+}
+
 /// The door-facing face of [`crate::infra::create::insert_product_with_event`]
 /// — the shared create transaction lives in infra so the batch worker calls
 /// it without importing this layer; this wrapper supplies the door's own
@@ -1395,6 +1467,7 @@ pub(crate) async fn insert_product_with_event(
     new: NewProduct,
     claim: Option<IdempotencyClaimInput>,
     actor_ref: Uuid,
+    content: Option<crate::domain::disposition::CloneContent>,
 ) -> Result<CreateOutcome, DbError> {
     crate::infra::create::insert_product_with_event(
         &state.db,
@@ -1404,7 +1477,13 @@ pub(crate) async fn insert_product_with_event(
         crate::infra::create::JoinedRecords {
             claim,
             stamp: None,
-            content: None,
+            // Carries the primary assignment on an ordinary create
+            // (**P-D-182**) and a clone's copied content on the clone path.
+            // One seam rather than two: both write rows beside the head
+            // **inside its transaction**, which is the property that matters
+            // — a Product created with half its content would be a new
+            // defect, not a partial success.
+            content,
         },
         actor_ref,
         render_created_product,
@@ -1521,6 +1600,7 @@ pub(crate) async fn create_product(
         product_code: raw_product_code,
         region_scope,
         brand_scope,
+        primary_category_id,
     } = body;
     let trimmed_name = raw_name.trim().to_owned();
 
@@ -1725,11 +1805,45 @@ pub(crate) async fn create_product(
         cloned_from_version: None,
     };
 
+    // -- 5b. The primary category (**P-D-182**, `02` `inst-tx-default`).
+    //
+    // Resolved **before** the mutation opens, because seeding the default
+    // takes the per-tenant taxonomy writer lock and taking a second lock
+    // inside the create transaction is the ordering hazard this placement
+    // avoids. A named category is validated by 02's own assignment rules —
+    // the same pipeline the save door runs — so the create and the save
+    // refuse an unknown or retired category with one voice. --
+    let assignment =
+        match resolve_create_category(&state, &scope, tenant_id, primary_category_id, now).await {
+            Ok(Ok(resolved)) => resolved,
+            Ok(Err(domain_err)) => {
+                return Err(crate::api::rest::audit_refusal_and_report(
+                    &state,
+                    &scope,
+                    crate::api::rest::RefusalAuditContext {
+                        tenant_id,
+                        actor_ref,
+                        subject_kind: crate::authz::labels::PRODUCT,
+                        error_code: domain_err.code(),
+                    },
+                    RefusalSubject::Attempted(trimmed_name.clone()),
+                    CanonicalError::from(domain_err),
+                )
+                .await);
+            }
+            Err(repo_err) => return Err(repo_error_to_canonical(&repo_err)),
+        };
+    let content = assignment.map(|category_id| crate::domain::disposition::CloneContent {
+        assignments: vec![(category_id, AssignmentRole::Primary)],
+        values: Vec::new(),
+        metadata: Vec::new(),
+    });
+
     // -- 6. The mutation: the idempotency claim, the entity row, its
     // creation outbox row and the answer written back into the claim, one
     // transaction, nothing else written. --
     let insert_outcome =
-        insert_product_with_event(&state, scope.clone(), new, claim, actor_ref).await;
+        insert_product_with_event(&state, scope.clone(), new, claim, actor_ref, content).await;
 
     match insert_outcome {
         Ok(CreateOutcome::Created {

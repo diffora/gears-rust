@@ -191,6 +191,12 @@ impl Authoring for InProcessAuthoring {
                 product_code: product.product_code,
                 region_scope: product.region_scope,
                 brand_scope: product.brand_scope,
+                // The SDK's authoring shape names no category, so an
+                // in-process create takes the tenant's default exactly as a
+                // wire create with the field omitted does (**P-D-182**).
+                // Widening the SDK type is a contract change and waits on a
+                // consumer asking for it, which is P-D-170's own rule.
+                primary_category_id: None,
             }),
         )
         .await?;
