@@ -109,6 +109,7 @@ fn new_category(category_id: Uuid, tenant_id: Uuid, name: &str) -> NewCategory<'
         parent_id: None,
         name,
         name_normalized: name,
+        is_default: false,
     }
 }
 
@@ -1331,6 +1332,7 @@ async fn a_retired_child_is_invisible_to_the_retire_census_and_counted_by_the_de
             parent_id: Some(CATEGORY_A),
             name: "fibre",
             name_normalized: "fibre",
+            is_default: false,
         },
         at(9),
     )
@@ -1448,6 +1450,7 @@ async fn an_active_child_blocks_the_retire_and_a_retired_child_does_not() {
             parent_id: Some(CATEGORY_A),
             name: "fibre",
             name_normalized: "fibre",
+            is_default: false,
         },
         at(9),
     )
@@ -1595,6 +1598,7 @@ async fn a_retired_child_clears_the_census_and_the_foreign_key_still_refuses() {
             parent_id: Some(CATEGORY_A),
             name: "fibre",
             name_normalized: "fibre",
+            is_default: false,
         },
         at(9),
     )
@@ -2286,6 +2290,7 @@ async fn the_tree_page_serves_every_node_in_name_order_retired_included() {
             parent_id: Some(compute),
             name: "virtual machines",
             name_normalized: "virtual machines",
+            is_default: false,
         },
         at(9),
     )

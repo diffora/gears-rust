@@ -31,6 +31,11 @@ pub struct Model {
     /// The live-value door's `If-Match` operand (P-D-50). Counts **acts**,
     /// not row writes.
     pub mutation_seq: i64,
+    /// The tenant's default category (**P-D-182**) — where a Product created
+    /// with no category lands. At most one row per tenant carries `true`, and
+    /// the partial unique index `uq_products_category_default` is what says
+    /// so; nothing here checks it.
+    pub is_default: bool,
     pub created_at: TimeDateTimeWithTimeZone,
     pub updated_at: TimeDateTimeWithTimeZone,
 }

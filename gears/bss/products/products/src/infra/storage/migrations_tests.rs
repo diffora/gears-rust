@@ -5939,6 +5939,53 @@ mod taxonomy_store_guard_tests {
         );
     }
 
+    /// **At most one default category per tenant, and the index is what says
+    /// so** (**P-D-182**).
+    ///
+    /// Three arms, and the second and third are what make it a probe rather
+    /// than one insert: the index is **partial**, so it must constrain only
+    /// the flagged rows, and it is **per tenant**, so the same flag in a
+    /// second tenant is not a collision. A convention living in the door
+    /// would pass an assertion that inserted a single row.
+    #[tokio::test]
+    async fn at_most_one_category_carries_the_default_flag() {
+        let db = harness().await;
+        let insert = |tenant: &str, id: &str, name: &str, default_flag: u8| {
+            format!(
+                "INSERT INTO products_category \
+                 (tenant_id, category_id, parent_id, name, name_normalized, state, is_default, \
+                  created_at, updated_at) \
+                 VALUES ('{tenant}', '{id}', NULL, '{name}', '{name}', 'active', {default_flag}, \
+                  '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+            )
+        };
+
+        exec(&db, &insert("t-a", "c-general", "general", 1))
+            .await
+            .expect("the tenant's first default");
+        let err = exec(&db, &insert("t-a", "c-compute", "compute", 1))
+            .await
+            .expect_err("a second default in one tenant must be refused");
+        // The two engines word the same refusal differently — `SQLite` names
+        // the constrained columns, Postgres names the index — which is the
+        // divergence `classify_category_write` already carries for the name
+        // indexes. Asserting one wording alone would pass on one engine and
+        // fail on the other for a schema that is correct on both.
+        let message = err.to_string();
+        assert!(
+            message.contains("uq_products_category_default")
+                || message.contains("UNIQUE constraint failed: products_category.tenant_id"),
+            "the partial unique index is what refuses it: {message}"
+        );
+
+        exec(&db, &insert("t-a", "c-storage", "storage", 0))
+            .await
+            .expect("the index is partial: unflagged rows are unconstrained");
+        exec(&db, &insert("t-b", "c-general-b", "general", 1))
+            .await
+            .expect("the index is per tenant");
+    }
+
     /// The schema oracle for both tables, with its perturbation case.
     #[tokio::test]
     async fn the_taxonomy_schema_oracle_pins_both_rosters_and_can_fail() {
@@ -5950,6 +5997,10 @@ mod taxonomy_store_guard_tests {
             vec![
                 "category_id",
                 "created_at",
+                // P-D-182's flag. The roster is alphabetical because the
+                // oracle reads `pragma_table_info` ordered by name, not
+                // because the DDL puts it here.
+                "is_default",
                 "mutation_seq",
                 "name",
                 "name_normalized",

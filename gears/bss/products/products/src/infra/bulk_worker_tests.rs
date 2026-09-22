@@ -966,6 +966,7 @@ mod batch_machine_tests {
                 parent_id: None,
                 name: "Fixture",
                 name_normalized: "fixture",
+                is_default: false,
             },
             OffsetDateTime::now_utc(),
         )

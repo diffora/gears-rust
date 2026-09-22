@@ -120,6 +120,7 @@ async fn seed_two_roots(pg: &Pg) {
                 parent_id: None,
                 name: label,
                 name_normalized: &normalized,
+                is_default: false,
             },
             at(9),
         )
@@ -344,6 +345,7 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
                 parent_id: Some(parent),
                 name: "Tier",
                 name_normalized: &normalized,
+                is_default: false,
             },
             at(9),
         )
@@ -367,6 +369,7 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
             parent_id: Some(B),
             name: "Tier Two",
             name_normalized: &name::normalize("Tier Two"),
+            is_default: false,
         },
         at(9),
     )

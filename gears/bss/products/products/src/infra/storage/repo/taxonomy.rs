@@ -76,6 +76,11 @@ pub struct NewCategory<'a> {
     /// `domain::name::normalize`'s output — computed application-side,
     /// because the index compares this column and the engine has no NFKC.
     pub name_normalized: &'a str,
+    /// Whether this node is the tenant's default (**P-D-182**). `false` for
+    /// every door-driven create; only the seed sets it, and afterwards the
+    /// flag moves through `set_default`. A second `true` in one tenant is
+    /// refused by `uq_products_category_default`, not by this code.
+    pub is_default: bool,
 }
 
 /// Create one category, letting the index decide the name race.
@@ -99,6 +104,7 @@ pub async fn insert_category(
         name_normalized: Set(new.name_normalized.to_owned()),
         state: Set("active".to_owned()),
         mutation_seq: Set(0),
+        is_default: Set(new.is_default),
         created_at: Set(now),
         updated_at: Set(now),
     };

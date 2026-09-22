@@ -161,6 +161,7 @@ pub(super) async fn draft_product(harness: &Harness, name: &str, region: &str) -
             parent_id: None,
             name: "Fixture",
             name_normalized: "fixture",
+            is_default: false,
         },
         now,
     )

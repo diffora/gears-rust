@@ -14,6 +14,15 @@
 //! equivalent, so partial indexes are the one candidate that holds
 //! identically on both engines.
 //!
+//! # The default flag is a third index, and P-D-182's only enforcement
+//!
+//! `UNIQUE (tenant_id) WHERE is_default` is at-most-one stated the way this
+//! schema states it elsewhere — `uq_products_product_category_primary` is the
+//! same shape one table over. A door that read before writing would lose the
+//! race the index decides. The column ships in this create for fresh
+//! installs; estates that already applied this migration converge through
+//! `m20260922_000031_add_category_is_default`.
+//!
 //! # `mutation_seq` counts acts, not row writes
 //!
 //! The category live-value door's `If-Match` operand (**P-D-50**): the door
@@ -86,6 +95,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             name_normalized text        NOT NULL,
             state           text        NOT NULL,
             mutation_seq    bigint      NOT NULL DEFAULT 0,
+            is_default      boolean     NOT NULL DEFAULT false,
             created_at      timestamptz NOT NULL,
             updated_at      timestamptz NOT NULL,
             CONSTRAINT products_category_pkey PRIMARY KEY (tenant_id, category_id),
@@ -99,6 +109,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
         )",
     "CREATE UNIQUE INDEX uq_products_category_name_in_parent ON bss.products_category USING btree (tenant_id, parent_id, name_normalized)",
     "CREATE UNIQUE INDEX uq_products_category_root_name ON bss.products_category USING btree (tenant_id, name_normalized) WHERE parent_id IS NULL",
+    "CREATE UNIQUE INDEX uq_products_category_default ON bss.products_category USING btree (tenant_id) WHERE is_default",
     "CREATE TABLE bss.products_product_category (
             tenant_id   uuid NOT NULL,
             product_id  uuid NOT NULL,
@@ -130,6 +141,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             name_normalized text    NOT NULL,
             state           text    NOT NULL,
             mutation_seq    integer NOT NULL DEFAULT 0,
+            is_default      integer NOT NULL DEFAULT 0,
             created_at      text    NOT NULL,
             updated_at      text    NOT NULL,
             PRIMARY KEY (tenant_id, category_id),
@@ -143,6 +155,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         )",
     "CREATE UNIQUE INDEX uq_products_category_name_in_parent ON products_category (tenant_id, parent_id, name_normalized)",
     "CREATE UNIQUE INDEX uq_products_category_root_name ON products_category (tenant_id, name_normalized) WHERE parent_id IS NULL",
+    "CREATE UNIQUE INDEX uq_products_category_default ON products_category (tenant_id) WHERE is_default",
     "CREATE TABLE products_product_category (
             tenant_id   text NOT NULL,
             product_id  text NOT NULL,

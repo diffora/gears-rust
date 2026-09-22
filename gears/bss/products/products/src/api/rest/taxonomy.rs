@@ -1150,6 +1150,10 @@ async fn create_category(
             parent_id: body.parent_id,
             name: &name,
             name_normalized: &normalized,
+            // A door-driven create never mints the default (**P-D-182**):
+            // the flag arrives with the seed and moves with `set_default`,
+            // so the create door has no way to make a second one.
+            is_default: false,
         },
         actor_ref,
         limits_of(&state),

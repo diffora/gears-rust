@@ -576,6 +576,9 @@ pub async fn create_under_lock(
                                 parent_id,
                                 name: &name,
                                 name_normalized: &normalized,
+                                // The locked create is the door's path; the
+                                // default flag is the seed's alone (P-D-182).
+                                is_default: false,
                             },
                             now,
                         )
