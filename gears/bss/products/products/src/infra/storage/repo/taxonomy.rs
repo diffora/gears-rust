@@ -41,9 +41,14 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use time::OffsetDateTime;
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::{ODataQuery, Page, SortDir};
+use toolkit_odata_macros::ODataFilterable;
 use uuid::Uuid;
 
 use super::{TERMINAL_HEAD_STATES, driver_failure};
@@ -1832,4 +1837,123 @@ pub async fn category_nodes(
         .into_iter()
         .map(|row| (row.category_id, row.parent_id, row.name))
         .collect())
+}
+
+/// The tree's **filterable vocabulary** (`inst-tx-read`, **P-D-165**).
+///
+/// A declaration read by the derive macro; see `read_models::BrowseRowQuery`
+/// for the shape and the rules.
+///
+/// # What is deliberately absent
+///
+/// * `tenant_id` — the [`AccessScope`]'s, never the caller's.
+/// * `name_normalized` — the Foundation's operand (NFKC, casefold, collapse),
+///   computed application-side. A caller comparing it would be comparing a
+///   normalization it cannot see.
+/// * `mutation_seq` — answered per row, because the live-value door asserts
+///   it back, but not a surface anyone narrows by.
+/// * `created_at` / `updated_at` — no declared use on a picker's read.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `CategoryTreeQueryFilterField` is ever named in code"
+)]
+pub struct CategoryTreeQuery {
+    /// The node. Also the walk's unique tiebreaker.
+    #[odata(filter(kind = "Uuid"))]
+    pub category_id: Uuid,
+    /// The parent. `parent_id eq null` is how a caller asks for the roots.
+    #[odata(filter(kind = "Uuid"))]
+    pub parent_id: Uuid,
+    /// The operator-facing name. The default order.
+    #[odata(filter(kind = "String"))]
+    pub name: String,
+    /// `active` or `retired`. Narrowing only — the door serves both
+    /// (**P-D-181**: a tombstone still holds its name against the create
+    /// door, so a list that hid it would contradict the next write).
+    #[odata(filter(kind = "String"))]
+    pub state: String,
+}
+
+/// The tree vocabulary under the name the rest of the gear uses.
+pub use CategoryTreeQueryFilterField as CategoryTreeFilterField;
+
+/// The tree vocabulary's storage mapping.
+pub struct CategoryTreeODataMapper;
+
+impl FieldToColumn<CategoryTreeFilterField> for CategoryTreeODataMapper {
+    type Column = category::Column;
+
+    fn map_field(field: CategoryTreeFilterField) -> category::Column {
+        match field {
+            CategoryTreeFilterField::CategoryId => category::Column::CategoryId,
+            CategoryTreeFilterField::ParentId => category::Column::ParentId,
+            CategoryTreeFilterField::Name => category::Column::Name,
+            CategoryTreeFilterField::State => category::Column::State,
+        }
+    }
+
+    /// `parent_id` is nullable, and `read_models::BrowseODataMapper`'s own
+    /// note gives the reason a nullable column cannot be a keyset order key:
+    /// the predicate `col > :value` is NULL — hence false — for every root,
+    /// so a root would be unreachable by any continuation page and a cursor
+    /// taken from one would end the walk early. It stays filterable.
+    fn is_orderable(field: CategoryTreeFilterField) -> bool {
+        !matches!(field, CategoryTreeFilterField::ParentId)
+    }
+}
+
+impl ODataFieldMapping<CategoryTreeFilterField> for CategoryTreeODataMapper {
+    type Entity = category::Entity;
+
+    fn extract_cursor_value(
+        model: &category::Model,
+        field: CategoryTreeFilterField,
+    ) -> sea_orm::Value {
+        match field {
+            CategoryTreeFilterField::CategoryId => sea_orm::Value::from(model.category_id),
+            CategoryTreeFilterField::ParentId => sea_orm::Value::from(model.parent_id),
+            CategoryTreeFilterField::Name => sea_orm::Value::from(model.name.clone()),
+            CategoryTreeFilterField::State => sea_orm::Value::from(model.state.clone()),
+        }
+    }
+}
+
+/// The order the tree answers in when the caller names none.
+pub const CATEGORY_TREE_DEFAULT_ORDER: (&str, SortDir) = ("name", SortDir::Asc);
+
+/// The walk's unique tiebreaker: the node's own id.
+///
+/// Not decorative — two siblings cannot share a normalized name, but two
+/// nodes under **different** parents can, so `name` is not unique over the
+/// tenant and a keyset over it alone would straddle the tie.
+pub const CATEGORY_TREE_TIEBREAKER: (&str, SortDir) = ("category_id", SortDir::Asc);
+
+/// One page of the tenant's category tree, `active` and `retired` alike.
+///
+/// # Errors
+///
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
+pub async fn category_tree_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    odata: &ODataQuery,
+    limits: LimitCfg,
+) -> Result<Page<category::Model>, toolkit_odata::Error> {
+    let base = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(category::Column::TenantId.eq(tenant_id)));
+    let effective = super::effective_odata(odata, CATEGORY_TREE_DEFAULT_ORDER, None);
+    paginate_odata::<CategoryTreeFilterField, CategoryTreeODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        CATEGORY_TREE_TIEBREAKER,
+        limits,
+        |model| model,
+    )
+    .await
 }

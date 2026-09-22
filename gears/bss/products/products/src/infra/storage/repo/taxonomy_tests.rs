@@ -37,12 +37,12 @@ use uuid::Uuid;
 use super::{
     AssignmentWrite, AttributeCoordinate, CategoryWrite, DefinitionFlip, NewAttributeDefinition,
     NewCategory, attribute_definition_by_key, attribute_definitions, attribute_values_of,
-    category_assignments, category_mutation_seq, category_parents, classify_assignment_write,
-    definition_value_holders, delete_attribute_value, delete_census, delete_metadata_key,
-    delete_retired_category, flip_definition_state, insert_attribute_definition, insert_category,
-    metadata_of, rename_category, replace_category_assignments, retire_category, retire_census,
-    seed_well_known_definitions, upsert_attribute_value, upsert_metadata,
-    write_category_display_value,
+    category_assignments, category_mutation_seq, category_parents, category_tree_page,
+    classify_assignment_write, definition_value_holders, delete_attribute_value, delete_census,
+    delete_metadata_key, delete_retired_category, flip_definition_state,
+    insert_attribute_definition, insert_category, metadata_of, rename_category,
+    replace_category_assignments, retire_category, retire_census, seed_well_known_definitions,
+    upsert_attribute_value, upsert_metadata, write_category_display_value,
 };
 use crate::domain::taxonomy::{
     AssignmentRole, DefinitionState, REGISTRY_SEEDED_BY, WELL_KNOWN_SEEDS,
@@ -2241,4 +2241,87 @@ async fn the_seeds_are_per_tenant() {
         .await
         .expect("read it back");
     assert_eq!(other.len(), WELL_KNOWN_SEEDS.len());
+}
+
+// -- The read door's page (`inst-tx-read`, P-D-181) --
+
+/// **The page serves the tenant's whole tree in name order, retired nodes
+/// included.**
+///
+/// The tombstone arm is the load-bearing one: both name-uniqueness indexes
+/// are state-agnostic, so a retired node still holds its name against the
+/// create door's `DUPLICATE_CATEGORY_NAME`, and a page that hid it would
+/// contradict the very next write.
+///
+/// The cursor walk is **not** asserted here: `ODataQuery::with_cursor` takes a
+/// `CursorV1`, not the opaque string `page_info.next_cursor` hands out, so a
+/// repository-level continuation would have to mint a cursor no caller mints.
+/// The walk is asserted at the door, where the cursor is the query-string
+/// value a client sends back.
+#[tokio::test]
+async fn the_tree_page_serves_every_node_in_name_order_retired_included() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    let compute = Uuid::from_u128(0xca_10);
+    let vms = Uuid::from_u128(0xca_11);
+    insert_category(
+        &conn,
+        &scope,
+        new_category(compute, TENANT, "compute"),
+        at(9),
+    )
+    .await
+    .expect("insert the root")
+    .expect("the name is free");
+    // The child is a literal rather than `new_category`, whose `parent_id` is
+    // `None` by construction.
+    insert_category(
+        &conn,
+        &scope,
+        NewCategory {
+            tenant_id: TENANT,
+            category_id: vms,
+            parent_id: Some(compute),
+            name: "virtual machines",
+            name_normalized: "virtual machines",
+        },
+        at(9),
+    )
+    .await
+    .expect("insert the child")
+    .expect("the name is free");
+    retire_category(&conn, &scope, TENANT, compute, at(10))
+        .await
+        .expect("retire the root");
+
+    let page = category_tree_page(
+        &conn,
+        &scope,
+        TENANT,
+        &toolkit_odata::ODataQuery::new(),
+        crate::api::rest::odata::LISTING_LIMIT_CFG,
+    )
+    .await
+    .expect("the page is servable");
+
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["compute", "virtual machines"],
+        "name ascending is the default order"
+    );
+    assert_eq!(
+        page.items[0].state, "retired",
+        "a tombstone is listed, carrying its state"
+    );
+    assert_eq!(
+        page.items[1].parent_id,
+        Some(compute),
+        "and the child names its parent"
+    );
+    assert_eq!(page.page_info.next_cursor, None, "two nodes, one page");
 }

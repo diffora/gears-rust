@@ -1650,3 +1650,26 @@ fn the_block_is_the_single_raiser_of_its_code() {
         "one construction, and it is the hook's"
     );
 }
+
+/// **One renderer, two surfaces.** The browse projection and the read door
+/// both render `Root > Child`, and the separator is not a thing either of
+/// them may hold privately (**P-D-181**).
+#[test]
+fn a_path_is_the_ancestor_chain_joined_root_first() {
+    let root = Uuid::from_u128(0x01);
+    let child = Uuid::from_u128(0x02);
+    let mut nodes = std::collections::BTreeMap::new();
+    nodes.insert(root, (None, "Compute".to_owned()));
+    nodes.insert(child, (Some(root), "Virtual Machines".to_owned()));
+
+    assert_eq!(
+        super::render_path(child, &nodes).as_deref(),
+        Some("Compute > Virtual Machines"),
+    );
+    assert_eq!(super::render_path(root, &nodes).as_deref(), Some("Compute"));
+    assert_eq!(
+        super::render_path(Uuid::from_u128(0x03), &nodes),
+        None,
+        "a node the map does not hold renders nothing, never a partial path"
+    );
+}

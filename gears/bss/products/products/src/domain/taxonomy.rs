@@ -269,6 +269,49 @@ pub fn depth_of(start: Uuid, parent_of: &impl Fn(Uuid) -> Option<Uuid>) -> u32 {
         .saturating_sub(1)
 }
 
+/// Render one node's browse path — `Root > Child`, root first.
+///
+/// Extracted from `infra::projector`'s `category_paths_for` (**P-D-181**)
+/// because the read door renders the same value for a single node, and a
+/// separator held privately by two surfaces is a separator they can come to
+/// disagree about. The projector keeps the *set* of a Product's paths and
+/// their JSON encoding; this is the one-node rendering underneath it.
+///
+/// The map is `id -> (parent, name)` — `repo::category_nodes`' answer,
+/// collected. Answers `None` when the map does not hold `node`, which is what
+/// the projector already did rather than emitting a partial chain: a path
+/// missing its root reads as a different category.
+///
+/// The hop guard is the projector's own. A parent map is written under the
+/// taxonomy writer lock and the cycle rule runs there, so a cycle should be
+/// unreachable — but a renderer that would hang on one is a renderer that
+/// turns a storage defect into an unavailable read door.
+#[must_use]
+pub fn render_path(
+    node: Uuid,
+    nodes: &std::collections::BTreeMap<Uuid, (Option<Uuid>, String)>,
+) -> Option<String> {
+    let mut segments = Vec::new();
+    let mut cursor = Some(node);
+    let mut hops = 0;
+    while let Some(id) = cursor {
+        let Some((parent, name)) = nodes.get(&id) else {
+            break;
+        };
+        segments.push(name.clone());
+        cursor = *parent;
+        hops += 1;
+        if hops > 64 {
+            break;
+        }
+    }
+    if segments.is_empty() {
+        return None;
+    }
+    segments.reverse();
+    Some(segments.join(" > "))
+}
+
 /// How many children one parent holds, `None` counting the roots.
 ///
 /// Takes the same edge list [`ancestors_of`]'s `parent_of` is built from, so

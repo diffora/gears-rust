@@ -547,29 +547,20 @@ async fn apply_event(
 /// Render the browse paths of one Product from the live tree: every assigned
 /// category, primary and secondary alike (`inst-rb-facets`), as
 /// `Root > Child` strings, sorted, JSON-encoded.
+///
+/// The one-node rendering is [`crate::domain::taxonomy::render_path`]'s since
+/// **P-D-181**: the read door answers the same string per row, and the
+/// separator is not a thing two surfaces may each hold. What stays here is
+/// what is this projection's alone — the **set** of a Product's paths, sorted
+/// and JSON-encoded for the `category_paths` column.
 fn category_paths_for(
     assignments: &[Uuid],
     nodes: &BTreeMap<Uuid, (Option<Uuid>, String)>,
 ) -> Option<String> {
     let mut paths = BTreeSet::new();
     for category in assignments {
-        let mut segments = Vec::new();
-        let mut cursor = Some(*category);
-        let mut hops = 0;
-        while let Some(id) = cursor {
-            let Some((parent, name)) = nodes.get(&id) else {
-                break;
-            };
-            segments.push(name.clone());
-            cursor = *parent;
-            hops += 1;
-            if hops > 64 {
-                break;
-            }
-        }
-        if !segments.is_empty() {
-            segments.reverse();
-            paths.insert(segments.join(" > "));
+        if let Some(path) = crate::domain::taxonomy::render_path(*category, nodes) {
+            paths.insert(path);
         }
     }
     if paths.is_empty() {
