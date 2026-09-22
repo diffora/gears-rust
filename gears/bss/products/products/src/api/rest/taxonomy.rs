@@ -44,11 +44,13 @@ use axum::response::{IntoResponse, Response};
 use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
-use toolkit::api::operation_builder::OperationBuilder;
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
 use toolkit_db::secure::{AccessScope, TxConfig};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::odata as odata_seam;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
@@ -123,7 +125,7 @@ impl Gate {
     }
 }
 
-/// One category as every door here answers it.
+/// One category as every **write** door here answers it.
 #[toolkit_macros::api_dto(response)]
 pub struct CategoryView {
     /// The row's own id.
@@ -133,6 +135,46 @@ pub struct CategoryView {
     /// The parent, absent for a root.
     pub parent_id: Option<Uuid>,
 }
+
+/// One node as the read door answers it (`inst-tx-read`, **P-D-181**).
+///
+/// Wider than [`CategoryView`] on purpose, and the two extra fields are the
+/// point of the door: `path` because a caller holding one page has no
+/// ancestor chain to join, and `mutation_seq` because the live-value door
+/// asserts it back as `expectedSeq` and its own response was the only surface
+/// that ever answered it.
+#[toolkit_macros::api_dto(response)]
+pub struct CategoryRowView {
+    /// The row's own id — the operand `PATCH /bss-products/v1/products/{id}`'s
+    /// `categories[].categoryId` needs, and which the `201` was the only
+    /// source of.
+    pub category_id: Uuid,
+    /// The parent, `null` for a root.
+    pub parent_id: Option<Uuid>,
+    /// The operator-facing name.
+    pub name: String,
+    /// `Root > Child` — the browse facets' own rendering, from the same
+    /// renderer ([`crate::domain::taxonomy::render_path`]).
+    pub path: String,
+    /// `active` or `retired`. A retired node is listed: its name is still
+    /// held against the create door.
+    pub state: String,
+    /// The live-value door's `If-Match` operand, counting acts (**P-D-50**).
+    pub mutation_seq: i64,
+}
+
+/// One page of the tenant's tree.
+#[toolkit_macros::api_dto(response)]
+pub struct CategoryPage {
+    pub items: Vec<CategoryRowView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at —
+    /// the envelope every paginated read on the platform answers with.
+    pub page_info: toolkit_odata::PageInfo,
+}
+
+/// The non-`OData` keys the read door declares: none. The tree is addressed
+/// whole and narrowed with `$filter` (**P-D-165**).
+const CATEGORY_LIST_PARAMS: [&str; 0] = [];
 
 /// Create one category.
 #[toolkit_macros::api_dto(request)]
@@ -246,9 +288,57 @@ pub struct MetadataView {
     pub entries: BTreeMap<String, String>,
 }
 
-/// Register the four doors' seven routes.
+/// Register the five doors' eight routes.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = Router::new();
+    let router = OperationBuilder::get("/bss-products/v1/categories")
+        .operation_id("bss_products.list_categories")
+        .summary("Read the category tree")
+        .description(
+            "One keyset page of the tenant's categories under `category x read` — the grant's \
+             first spender in code (P-D-181). A row carries `category_id`, `parent_id` (`null` \
+             for a root), `name`, the rendered `path`, `state` and `mutation_seq`: the id \
+             because a Product's assignment payload needs it and the create response was its \
+             only source, and `mutation_seq` because the live-value door asserts it back as \
+             `expectedSeq`. Retired nodes are listed with `state: retired`, the name-uniqueness \
+             indexes being state-agnostic so a tombstone still holds its name against \
+             `DUPLICATE_CATEGORY_NAME`. The answer is a flat page and not a nested tree, \
+             narrowed with `$filter`, ordered with `$orderby` and paged with `$top`/`limit` and \
+             `$skiptoken`/`cursor` (P-D-165); `parent_id eq null` asks for the roots and \
+             `$orderby=parent_id` is refused, the column being nullable. No `ETag`: no door on \
+             this surface takes a set-level precondition.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Rows per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled $skiptoken. A \
+             caller MUST NOT change $filter or $orderby between continuation requests carrying \
+             the same cursor.",
+        )
+        .with_odata_filter::<repo::CategoryTreeFilterField>()
+        .with_odata_orderby::<repo::CategoryTreeFilterField>()
+        .handler(list_categories)
+        .json_response_with_schema::<CategoryPage>(
+            openapi,
+            StatusCode::OK,
+            "One page of the tenant's category tree.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
     let router = OperationBuilder::post("/bss-products/v1/categories")
         .operation_id("bss_products.create_category")
         .summary("Create a category")
@@ -926,6 +1016,89 @@ fn limits_of(state: &ApiState) -> TaxonomyLimits {
         max_depth: Some(state.taxonomy_caps.max_depth),
         max_children: Some(state.taxonomy_caps.max_children_per_node),
     }
+}
+
+/// `GET /bss-products/v1/categories` — the tree's read door (`inst-tx-read`).
+///
+/// `Query<HashMap<..>>` rides beside the `OData` extractor for the reason the
+/// browse door's own doc gives: it is the only way to see the keys **nothing**
+/// claimed, and Axum drops an unclaimed key silently — a dropped filter reads
+/// as a correct unfiltered answer.
+///
+/// The node map is loaded whole, one statement over the tenant's categories
+/// (the projector's own input), because a page cannot carry its rows'
+/// ancestors and `path` is an ancestor chain.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-taxonomy-read:p1
+async fn list_categories(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
+    OData(odata): OData,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    odata_seam::reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::Odata,
+        &CATEGORY_LIST_PARAMS,
+    )?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
+    let tenant_id = ctx.subject_tenant_id();
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::CATEGORY,
+        crate::authz::actions::READ,
+        Some(tenant_id),
+        None,
+        true,
+    )
+    .await
+    .map_err(|e| {
+        crate::api::rest::authz_error_to_canonical(e, |reason| {
+            CategoryResource::permission_denied()
+                .with_reason(reason)
+                .create()
+        })
+    })?;
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let page = repo::category_tree_page(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("category tree", &e))?;
+    let nodes: BTreeMap<Uuid, (Option<Uuid>, String)> =
+        repo::category_nodes(&conn, &scope, tenant_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?
+            .into_iter()
+            .map(|(id, parent, name)| (id, (parent, name)))
+            .collect();
+    let page_info = page.page_info;
+    let items = page
+        .items
+        .into_iter()
+        .map(|row| CategoryRowView {
+            // The map holds every node of the tenant, so the fallback is
+            // unreachable; it is the node's own name rather than a panic
+            // because a read door does not 500 over a rendering.
+            path: crate::domain::taxonomy::render_path(row.category_id, &nodes)
+                .unwrap_or_else(|| row.name.clone()),
+            category_id: row.category_id,
+            parent_id: row.parent_id,
+            name: row.name,
+            state: row.state,
+            mutation_seq: row.mutation_seq,
+        })
+        .collect();
+    Ok((StatusCode::OK, Json(CategoryPage { items, page_info })).into_response())
 }
 
 async fn create_category(

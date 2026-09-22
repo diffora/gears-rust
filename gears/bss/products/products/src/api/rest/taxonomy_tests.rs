@@ -1602,3 +1602,234 @@ async fn a_live_value_patch_over_the_coordinate_cap_is_refused_before_the_transa
         "the token moved once, for the admitted patch alone"
     );
 }
+
+// ---------------------------------------------------------------- read door
+
+/// Percent-encode one query value, `approvals_tests.rs`' own encoder: a
+/// cursor is opaque base64 and carries `=` and `+`.
+fn qval(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// **The door hands back what the write doors never did: the id, the path and
+/// the token the live-value door asserts** (`inst-tx-read`, P-D-181).
+///
+/// One case over the whole row shape, because a door that answered a name
+/// alone would pass a narrower one.
+#[tokio::test]
+async fn the_tree_read_answers_the_id_the_path_and_the_token() {
+    let h = harness().await;
+    let compute = create_category(app(&h), "Compute", None).await;
+    let compute_id = compute["category_id"].as_str().expect("an id").to_owned();
+    let child = create_category(
+        app(&h),
+        "Virtual Machines",
+        Some(Uuid::parse_str(&compute_id).expect("a uuid")),
+    )
+    .await;
+
+    let page =
+        body_json(send_via(app(&h), "GET", "/bss-products/v1/categories", &json!({})).await).await;
+
+    let rows = page["items"].as_array().expect("an items array");
+    assert_eq!(rows.len(), 2, "both nodes: {page}");
+    let vm = rows
+        .iter()
+        .find(|r| r["category_id"] == child["category_id"])
+        .expect("the child is served");
+    assert_eq!(vm["parent_id"], json!(compute_id), "its parent, by id");
+    assert_eq!(
+        vm["path"],
+        json!("Compute > Virtual Machines"),
+        "the path is rendered server-side, root first"
+    );
+    assert_eq!(vm["state"], json!("active"));
+    assert_eq!(
+        vm["mutation_seq"],
+        json!(0),
+        "the live-value door's `expectedSeq` operand, on the row that carries it"
+    );
+    assert_eq!(
+        page["page_info"]["next_cursor"],
+        json!(null),
+        "one page holds both"
+    );
+}
+
+/// **The page is a page, and `next_cursor` is the token that continues it.**
+///
+/// `limit` bounds the rows, the cursor is `null` on the last page and only
+/// there, and the continuation serves the rest rather than the first row
+/// again — which `has_more: bool` could not do.
+#[tokio::test]
+async fn the_tree_page_continues_through_its_cursor() {
+    let h = harness().await;
+    create_category(app(&h), "Compute", None).await;
+    create_category(app(&h), "Storage", None).await;
+
+    let first = body_json(
+        send_via(
+            app(&h),
+            "GET",
+            "/bss-products/v1/categories?limit=1",
+            &json!({}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        first["items"].as_array().expect("an items array").len(),
+        1,
+        "the page is the limit: {first}"
+    );
+    assert_eq!(
+        first["items"][0]["name"],
+        json!("Compute"),
+        "name ascending"
+    );
+    assert_eq!(first["page_info"]["limit"], json!(1));
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two roots, one per page: the walk continues")
+        .to_owned();
+
+    let second = body_json(
+        send_via(
+            app(&h),
+            "GET",
+            &format!(
+                "/bss-products/v1/categories?limit=1&cursor={}",
+                qval(&cursor)
+            ),
+            &json!({}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        second["items"][0]["name"],
+        json!("Storage"),
+        "the second page is the next node, not the first again: {second}"
+    );
+    assert_eq!(
+        second["page_info"]["next_cursor"],
+        json!(null),
+        "two nodes, one per page: the second page is the last"
+    );
+}
+
+/// **A retired node is listed, carrying its state.** Both name-uniqueness
+/// indexes are state-agnostic, so the create door still refuses the name — a
+/// list that hid the holder would tell a caller two different things one call
+/// apart.
+#[tokio::test]
+async fn a_retired_category_is_listed_with_its_state() {
+    let h = harness().await;
+    let created = create_category(app(&h), "Storage", None).await;
+    let id = created["category_id"].as_str().expect("an id").to_owned();
+
+    let retired = send(
+        &h,
+        "POST",
+        &format!("/bss-products/v1/categories/{id}/operations"),
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(retired.status(), axum::http::StatusCode::OK);
+
+    let page =
+        body_json(send_via(app(&h), "GET", "/bss-products/v1/categories", &json!({})).await).await;
+    assert_eq!(page["items"][0]["state"], json!("retired"), "{page}");
+}
+
+/// **The roots are not addressable by filter, and the refusal is the
+/// platform's, not this door's** (P-D-181, *Owed*).
+///
+/// Measured 2026-09-22 rather than assumed: `$filter=parent_id eq null`
+/// parses and then fails the type check — *"Type mismatch for field
+/// parent_id: expected Uuid, got null"* — because `toolkit_odata::FieldKind`
+/// has nine scalar variants and no nullable one, so a `Uuid` field admits no
+/// null literal. The door does not work around it: inventing a `roots=true`
+/// operand would put back the per-door parameter P-D-165 took away, and
+/// declaring the column as a `String` would compare a uuid as text.
+///
+/// Nothing is lost that the page does not give: the tree is served whole and
+/// paged, so a caller selects `parent_id == null` over the rows it already
+/// has. The case is kept pointing at the refusal so the day the platform
+/// gains a nullable kind, this test is what notices.
+#[tokio::test]
+async fn the_roots_are_not_addressable_by_a_null_parent_filter() {
+    let h = harness().await;
+    let root = create_category(app(&h), "Compute", None).await;
+    let root_id = Uuid::parse_str(root["category_id"].as_str().expect("an id")).expect("a uuid");
+    create_category(app(&h), "Virtual Machines", Some(root_id)).await;
+
+    let response = send_via(
+        app(&h),
+        "GET",
+        "/bss-products/v1/categories?$filter=parent_id%20eq%20null",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(response).await, "INVALID_FILTER");
+
+    // The paired positive control: the same field IS filterable by value, so
+    // the refusal above is the null literal's and not the field's.
+    let page = body_json(
+        send_via(
+            app(&h),
+            "GET",
+            &format!("/bss-products/v1/categories?$filter=parent_id%20eq%20{root_id}"),
+            &json!({}),
+        )
+        .await,
+    )
+    .await;
+    let rows = page["items"].as_array().expect("an items array");
+    assert_eq!(rows.len(), 1, "the root's children alone: {page}");
+    assert_eq!(rows[0]["name"], json!("Virtual Machines"));
+}
+
+/// **`parent_id` is refused as an order key**, because it is nullable and a
+/// root would be unreachable by any continuation page.
+#[tokio::test]
+async fn ordering_by_the_nullable_parent_is_refused() {
+    let h = harness().await;
+    create_category(app(&h), "Compute", None).await;
+
+    let response = send_via(
+        app(&h),
+        "GET",
+        "/bss-products/v1/categories?$orderby=parent_id",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(response).await, "INVALID_ORDERBY");
+}
+
+/// **An undeclared query key is refused, never dropped.** A dropped key reads
+/// as a correct unfiltered answer, which is the failure this seam exists to
+/// prevent.
+#[tokio::test]
+async fn an_undeclared_query_key_is_refused() {
+    let h = harness().await;
+    let response = send_via(
+        app(&h),
+        "GET",
+        "/bss-products/v1/categories?parent=root",
+        &json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(response).await, "UNDECLARED_QUERY_PARAM");
+}
