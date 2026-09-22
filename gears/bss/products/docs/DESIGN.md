@@ -597,6 +597,7 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `POST` | `/bss-products/v1/skus/{id}/retire` | schedule retirement; the approval is consumed at schedule (P-D-139) | 04 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/retire/cancel` | cancel a scheduled retirement | 04 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/clone` | clone a SKU into a new draft with a new code | 11 | v1 |
+| `GET` | `/bss-products/v1/categories` | read the category tree, one keyset page (P-D-181) | 02 | v1 |
 | `POST` | `/bss-products/v1/categories` | create a category (governed live entity) | 02 | v1 |
 | `POST` | `/bss-products/v1/categories/{categoryId}/operations` | rename, re-parent, retire or delete a category | 02 | v1 |
 | `PATCH` | `/bss-products/v1/categories/{categoryId}/attribute-values` | set attribute values on a category | 02 | v1 |

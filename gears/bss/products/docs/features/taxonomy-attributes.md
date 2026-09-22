@@ -245,6 +245,28 @@ pipeline and its rows land inside the save door's transaction. `products_product
 **single source of truth** for assignments; the Foundation's entity tables carry no inline
 category columns.
 
+### Read the taxonomy
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-read-taxonomy`
+
+**Actor**: `cpt-cf-bss-products-actor-product-manager`
+
+**Success Scenarios**:
+- The tenant's categories are answered as a keyset page, each row carrying its id, its
+  parent, its name, its rendered path, its state and its `mutation_seq`
+- Retired categories are listed, carrying their state, because a tombstone still holds
+  its name against the create door
+- The roots are reachable as `parent_id eq null`, and a page continues through
+  `page_info.next_cursor`
+
+**Error Scenarios**:
+- A caller without `category × read` — `403`, deny-by-default
+- A query key the door does not declare, or a `$`-prefixed option it does not support —
+  `400`, never a silently unfiltered page
+
+**Boundary**: this flow reads. It writes no row, emits no event and takes no
+precondition (**P-D-181**); the tree's mutations stay the governed-live-op doors'.
+
 ### Manage attribute definitions
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-attribute-definitions`
@@ -560,6 +582,27 @@ clause read off the engine's catalogue; row 21 was the last hold.
 **Touches**:
 - DB Table: `products_product_category`
 - Entities: `Product`, `Category`
+
+### Taxonomy read door
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-read`
+
+The system **MUST** serve `GET /bss-products/v1/categories` under `category × read`
+(**P-D-181**), answering one keyset page of the tenant's categories with `category_id`, `parent_id`,
+`name`, `path`, `state` and `mutation_seq` per row and `toolkit_odata::PageInfo` beside
+them. Retired nodes **MUST** be listed with their state. `parent_id` **MUST** be
+filterable and **MUST NOT** be orderable. The door **MUST** refuse an undeclared query
+key and an unsupported `$`-option rather than answer an unfiltered page. `path`
+**MUST** be rendered by the same code the browse projection renders its facet paths
+with.
+
+**Implements**: `cpt-cf-bss-products-flow-read-taxonomy`
+
+**Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
+
+**Touches**:
+- REST: `GET /bss-products/v1/categories`
+- DB Table: `products_category`
 
 ### Attribute definition table
 
