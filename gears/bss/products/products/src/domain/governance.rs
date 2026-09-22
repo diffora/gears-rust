@@ -436,9 +436,20 @@ pub enum GateMode {
 #[domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApprovalDisposition {
-    /// No record authorized this act, because none was required. The only
-    /// answer [`NoMaterialityPolicyGate`] can give: nothing to consume,
-    /// nothing to store in `approval_ref`.
+    /// No record authorized this act, because none was required: nothing to
+    /// consume, nothing to store in `approval_ref`.
+    ///
+    /// **Two hosts give it.** [`NoMaterialityPolicyGate`] gives it always,
+    /// and the stored host gives it for a **governed** act at an effective
+    /// quorum of zero (**P-D-180**) — so the sentence this doc used to carry,
+    /// that under the real host a governed act never gets this answer, is no
+    /// longer true and was deleted rather than qualified. An `Ungoverned` act
+    /// gets it too, from the same stored host.
+    ///
+    /// On this disposition nothing on the success path records *how* the act
+    /// was authorized: `approval_ref` is null and P-D-21 keeps the ceremony
+    /// off the event. That gap is P-D-180's stated debt against the platform
+    /// audit capability (P-D-08 S1-S9, PRD §15), not an omission here.
     NoRecord,
     /// A `satisfied` record authorized this act and **must be flipped
     /// `consumed` in the same transaction as the act**

@@ -761,7 +761,9 @@ fn an_ungoverned_act_is_authorized_with_nothing_to_spend() {
 /// different correct answers.
 #[test]
 fn a_governed_act_with_no_record_is_refused_on_the_same_triple() {
-    let refused = StoredApprovalGate::governed(Vec::new())
+    // **At a quorum of one**, which is what makes this the refusal case:
+    // P-D-180 moves the zero only, and the case below this one is its pair.
+    let refused = StoredApprovalGate::governed(Vec::new(), 1)
         .evaluate(gate_subject(), GateMode::Gate)
         .expect("a verdict, not a host failure");
     assert!(
@@ -782,7 +784,10 @@ fn a_governed_act_with_no_record_is_refused_on_the_same_triple() {
 /// names the record **to consume**.
 #[test]
 fn a_satisfied_record_at_the_pinned_revision_is_spent() {
-    let host = StoredApprovalGate::governed(vec![candidate(0xf1, 3, ApprovalState::Satisfied)]);
+    let host = StoredApprovalGate::governed(
+        vec![candidate(0xf1, 3, ApprovalState::Satisfied)],
+        DEFAULT_APPROVER_COUNT,
+    );
     let verdict = host
         .evaluate(subject_at(3), GateMode::Gate)
         .expect("a verdict");
@@ -805,7 +810,10 @@ fn a_satisfied_record_at_the_pinned_revision_is_spent() {
 /// a host ignoring the revision passes every other probe here.
 #[test]
 fn a_record_pinned_to_another_revision_does_not_authorize() {
-    let host = StoredApprovalGate::governed(vec![candidate(0xf2, 2, ApprovalState::Satisfied)]);
+    let host = StoredApprovalGate::governed(
+        vec![candidate(0xf2, 2, ApprovalState::Satisfied)],
+        DEFAULT_APPROVER_COUNT,
+    );
     assert!(matches!(
         host.evaluate(gate_subject(), GateMode::Gate)
             .expect("a verdict"),
@@ -824,7 +832,8 @@ fn no_state_but_satisfied_authorizes_under_gate() {
         ApprovalState::Rejected,
         ApprovalState::Superseded,
     ] {
-        let host = StoredApprovalGate::governed(vec![candidate(0xf3, 3, state)]);
+        let host =
+            StoredApprovalGate::governed(vec![candidate(0xf3, 3, state)], DEFAULT_APPROVER_COUNT);
         assert!(
             matches!(
                 host.evaluate(gate_subject(), GateMode::Gate)
@@ -846,7 +855,10 @@ fn no_state_but_satisfied_authorizes_under_gate() {
 #[test]
 fn preauthorized_verifies_a_consumed_record_and_spends_nothing() {
     let id = ApprovalId::new(Uuid::from_u128(0xf4));
-    let host = StoredApprovalGate::governed(vec![candidate(0xf4, 3, ApprovalState::Consumed)]);
+    let host = StoredApprovalGate::governed(
+        vec![candidate(0xf4, 3, ApprovalState::Consumed)],
+        DEFAULT_APPROVER_COUNT,
+    );
     let verdict = host
         .evaluate(subject_at(3), GateMode::PreAuthorized(id))
         .expect("a verdict");
@@ -877,7 +889,10 @@ fn preauthorized_verifies_a_consumed_record_and_spends_nothing() {
 /// unbounded bearer token (§7 row 27's own words).
 #[test]
 fn preauthorized_refuses_a_consumed_record_it_did_not_name() {
-    let host = StoredApprovalGate::governed(vec![candidate(0xf5, 3, ApprovalState::Consumed)]);
+    let host = StoredApprovalGate::governed(
+        vec![candidate(0xf5, 3, ApprovalState::Consumed)],
+        DEFAULT_APPROVER_COUNT,
+    );
     let refused = host
         .evaluate(
             gate_subject(),
@@ -897,8 +912,10 @@ fn preauthorized_refuses_a_consumed_record_it_did_not_name() {
 #[test]
 fn the_two_modes_read_disjoint_states() {
     let id = ApprovalId::new(Uuid::from_u128(0xf7));
-    let satisfied =
-        StoredApprovalGate::governed(vec![candidate(0xf7, 3, ApprovalState::Satisfied)]);
+    let satisfied = StoredApprovalGate::governed(
+        vec![candidate(0xf7, 3, ApprovalState::Satisfied)],
+        DEFAULT_APPROVER_COUNT,
+    );
     assert!(matches!(
         satisfied
             .evaluate(gate_subject(), GateMode::PreAuthorized(id))
@@ -906,7 +923,10 @@ fn the_two_modes_read_disjoint_states() {
         GateVerdict::Refused { .. }
     ));
 
-    let consumed = StoredApprovalGate::governed(vec![candidate(0xf7, 3, ApprovalState::Consumed)]);
+    let consumed = StoredApprovalGate::governed(
+        vec![candidate(0xf7, 3, ApprovalState::Consumed)],
+        DEFAULT_APPROVER_COUNT,
+    );
     assert!(matches!(
         consumed
             .evaluate(gate_subject(), GateMode::Gate)
@@ -924,7 +944,7 @@ fn the_two_modes_read_disjoint_states() {
 fn the_override_acknowledgment_travels_and_defaults_false_with_no_record() {
     let mut acked = candidate(0xf8, 3, ApprovalState::Satisfied);
     acked.override_acknowledged = true;
-    match StoredApprovalGate::governed(vec![acked])
+    match StoredApprovalGate::governed(vec![acked], DEFAULT_APPROVER_COUNT)
         .evaluate(subject_at(3), GateMode::Gate)
         .expect("a verdict")
     {
@@ -984,11 +1004,14 @@ fn the_state_roster_round_trips_and_refuses_an_unknown_token() {
 #[test]
 fn preauthorized_finds_the_named_record_behind_a_newer_consumed_one() {
     let named = ApprovalId::new(Uuid::from_u128(0x9b));
-    let host = StoredApprovalGate::governed(vec![
-        // The shadow: same subject, same revision, same state, different id.
-        candidate(0x9a, 3, ApprovalState::Consumed),
-        candidate(0x9b, 3, ApprovalState::Consumed),
-    ]);
+    let host = StoredApprovalGate::governed(
+        vec![
+            // The shadow: same subject, same revision, same state, different id.
+            candidate(0x9a, 3, ApprovalState::Consumed),
+            candidate(0x9b, 3, ApprovalState::Consumed),
+        ],
+        DEFAULT_APPROVER_COUNT,
+    );
     match host
         .evaluate(subject_at(3), GateMode::PreAuthorized(named))
         .expect("a verdict")
@@ -1049,7 +1072,7 @@ fn a_candidate_on_another_subject_authorizes_nothing() {
         ] {
             let mut foreign = candidate(0x9c, 3, state);
             foreign.subject = other.clone();
-            let host = StoredApprovalGate::governed(vec![foreign]);
+            let host = StoredApprovalGate::governed(vec![foreign], DEFAULT_APPROVER_COUNT);
             assert!(
                 matches!(
                     host.evaluate(gate_subject(), mode).expect("a verdict"),
@@ -1096,7 +1119,7 @@ fn an_ungoverned_host_refuses_a_preauthorized_stage() {
 #[test]
 fn preauthorized_over_no_candidates_refuses() {
     assert!(matches!(
-        StoredApprovalGate::governed(Vec::new())
+        StoredApprovalGate::governed(Vec::new(), DEFAULT_APPROVER_COUNT)
             .evaluate(
                 gate_subject(),
                 GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0x9d)))
@@ -1116,7 +1139,7 @@ fn the_override_acknowledgment_travels_under_preauthorized() {
     let id = ApprovalId::new(Uuid::from_u128(0x9e));
     let mut acked = candidate(0x9e, 3, ApprovalState::Consumed);
     acked.override_acknowledged = true;
-    match StoredApprovalGate::governed(vec![acked])
+    match StoredApprovalGate::governed(vec![acked], DEFAULT_APPROVER_COUNT)
         .evaluate(subject_at(3), GateMode::PreAuthorized(id))
         .expect("a verdict")
     {
@@ -1329,9 +1352,12 @@ fn a_scheduled_flip_verifies_the_pin_across_a_different_subject_and_revision() {
     // The same candidate under the ordinary governed host still fails both
     // clauses — the drop is scoped to this act and to no other.
     assert!(matches!(
-        StoredApprovalGate::governed(vec![candidate(0x105a, 7, ApprovalState::Consumed)])
-            .evaluate(gate_subject(), GateMode::PreAuthorized(pinned))
-            .expect("a verdict"),
+        StoredApprovalGate::governed(
+            vec![candidate(0x105a, 7, ApprovalState::Consumed)],
+            DEFAULT_APPROVER_COUNT
+        )
+        .evaluate(gate_subject(), GateMode::PreAuthorized(pinned))
+        .expect("a verdict"),
         GateVerdict::Refused { .. }
     ));
 }
@@ -1539,4 +1565,76 @@ fn each_subject_kind_carries_its_own_pin_shape() {
         SubjectPin::Revision(InternalRevision::new(4)),
         SubjectPin::MutationSeq(4)
     );
+}
+
+/// **P-D-180: at an effective quorum of zero a governed act is authorized
+/// with no record at all.**
+///
+/// The pair of [`a_governed_act_with_no_record_is_refused_on_the_same_triple`]:
+/// same subject, same mode, same empty candidate list, and the construction
+/// operand — the tenant's count — is the whole of what decides it.
+#[test]
+fn a_governed_act_at_quorum_zero_is_authorized_with_no_record() {
+    match StoredApprovalGate::governed(Vec::new(), 0)
+        .evaluate(gate_subject(), GateMode::Gate)
+        .expect("a verdict, not a host failure")
+    {
+        GateVerdict::Authorized(authorization) => {
+            assert_eq!(
+                authorization.disposition,
+                ApprovalDisposition::NoRecord,
+                "nothing to consume and nothing to store in approval_ref"
+            );
+            assert_eq!(
+                authorization.approval_to_consume(),
+                None,
+                "the one-shot flip has no record to spend here"
+            );
+            assert!(
+                authorization.reason.contains("quorum"),
+                "the reason is the whole of what this act can say about its own \
+                 authorization until the platform audit capability lands: {}",
+                authorization.reason
+            );
+        }
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// **The record-free arm carries no override acknowledgment**, which is what
+/// keeps the uncomposed-bundle carve-out standing at zero: the bundle is
+/// refused here and reaches publish only through a submission whose record
+/// carries the author's acknowledgment (P-D-68 arm 1).
+#[test]
+fn the_record_free_arm_carries_no_bundle_override() {
+    match StoredApprovalGate::governed(Vec::new(), 0)
+        .evaluate(gate_subject(), GateMode::Gate)
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => assert!(
+            !authorization.uncomposed_bundle_override,
+            "an override nobody granted is not one the door may apply"
+        ),
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// **The `satisfied` match runs before the quorum test**, so a tenant at zero
+/// that submitted anyway still spends its record.
+///
+/// This is what makes the submission door a live path at zero rather than a
+/// dead end, and it is the mechanism the bundle carve-out rides.
+#[test]
+fn a_satisfied_record_is_still_spent_at_quorum_zero() {
+    match StoredApprovalGate::governed(vec![candidate(0xfa, 3, ApprovalState::Satisfied)], 0)
+        .evaluate(subject_at(3), GateMode::Gate)
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => assert_eq!(
+            authorization.approval_to_consume(),
+            Some(ApprovalId::new(Uuid::from_u128(0xfa))),
+            "the Consume arm is matched first, so inst-gv-one-shot is unchanged here"
+        ),
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
 }

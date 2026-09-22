@@ -677,19 +677,41 @@ pub(crate) async fn resolve_host(
     if let GateHost::Given(gate) = host {
         return Ok(gate);
     }
+    // **Resolved once, for two different questions** (**P-D-180**). The
+    // `Publish` arm below has always needed the policy to form its materiality
+    // verdict; every governed act now also needs the tenant's approver count,
+    // because at zero the stored host authorizes with no record at all. One
+    // read answers both rather than two reading the same row.
+    //
+    // **This is not the re-evaluation `inst-gv-gate` forbids.** That rule is
+    // about the *verdict*, which stays the submission's. The count answers a
+    // different question: whether the tenant has any approver for a record to
+    // hold. The same resolve is already performed one door over by 06's
+    // composition-clear.
+    //
+    // Hoisting it makes the `Governed` arm able to fail on an unreadable
+    // policy where it previously could not. That is the fail-closed direction
+    // and it is forced: without the count there is no arm to choose. An absent
+    // row is **not** that failure - `resolve_materiality_policy` answers
+    // `Resolved(default)` for one (P-D-11), so a fresh tenant keeps the
+    // default count and P-D-180 moves the *configured* zero only.
+    let policy = match repo::resolve_materiality_policy(runner, scope, tenant_id)
+        .await
+        .map_err(HostError::Repo)?
+    {
+        Resolution::Resolved(policy) => policy,
+        Resolution::Unresolvable => {
+            return Err(HostError::Repo(RepoError::Db(
+                "the materiality policy could not be read: a failed read is not a verdict \
+                 (P-D-119 row 3), so the act does not run"
+                    .to_owned(),
+            )));
+        }
+    };
+    let effective_quorum = policy.approver_count();
     let subject = match act {
         HostFor::Governed(subject) => subject,
         HostFor::Publish { entity, revision } => {
-            let policy = repo::resolve_materiality_policy(runner, scope, tenant_id)
-                .await
-                .map_err(HostError::Repo)?;
-            let Resolution::Resolved(policy) = policy else {
-                return Err(HostError::Repo(RepoError::Db(
-                    "the materiality policy could not be read: a failed read is not a verdict \
-                     (P-D-119 row 3), so the act does not run"
-                        .to_owned(),
-                )));
-            };
             let resolved =
                 crate::api::rest::approvals::resolve_entity_subject(runner, scope, entity)
                     .await
@@ -734,6 +756,7 @@ pub(crate) async fn resolve_host(
         .map_err(HostError::Repo)?;
     Ok(std::sync::Arc::new(StoredApprovalGate::governed(
         candidates,
+        effective_quorum,
     )))
 }
 

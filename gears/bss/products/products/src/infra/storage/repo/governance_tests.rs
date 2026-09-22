@@ -1901,7 +1901,8 @@ async fn a_bulk_batch_records_pin_is_its_ledger_digest() {
         SubjectPin::LedgerDigest("d1".to_owned()),
         "the digest is read off the snapshot, not the bigint column"
     );
-    let host = crate::domain::approval::StoredApprovalGate::governed(candidates);
+    let host =
+        crate::domain::approval::StoredApprovalGate::governed(candidates, DEFAULT_APPROVER_COUNT);
     let same = host
         .evaluate(subject.clone(), GateMode::Gate)
         .expect("the host answers");
@@ -1962,7 +1963,8 @@ async fn a_live_op_record_with_no_pin_matches_an_unpinned_subject() {
         .expect("candidates");
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].subject.pin, SubjectPin::Unpinned);
-    let host = crate::domain::approval::StoredApprovalGate::governed(candidates);
+    let host =
+        crate::domain::approval::StoredApprovalGate::governed(candidates, DEFAULT_APPROVER_COUNT);
     let verdict = host
         .evaluate(subject, GateMode::Gate)
         .expect("the host answers");

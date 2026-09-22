@@ -2139,9 +2139,12 @@ mod governance_tests;
 ///   is what rolls the act's own writes back with it.
 /// - `Verified(id)` — the `PreAuthorized` answer: the id is pinned, nothing is
 ///   consumed. The type already makes that so.
-/// - `NoRecord` — nothing to pin. The caller keeps whatever placeholder its
-///   `NOT NULL` column requires and says so at the call site; under the real
-///   host a governed act never gets this answer.
+/// - `NoRecord` — nothing to pin. `products_entity_version.approval_ref` is
+///   nullable and takes `NULL`; a caller whose own column is `NOT NULL` keeps
+///   its placeholder and says so at the call site. **A governed act does get
+///   this answer under the real host** since P-D-180: at an effective quorum
+///   of zero the stored host authorizes with no record, so this arm is no
+///   longer the ungoverned path alone.
 ///
 /// The scheduled-transition pin (`dod-scheduled-publish-pin`) is this
 /// function called from the two retire doors: the row's `approval_ref` is the

@@ -1114,8 +1114,25 @@ impl ApprovalState {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum GatedAct {
     /// A publish, a lifecycle transition, or any other act P-D-30 put the
-    /// gate phase on: a record is required and is spent.
-    Governed,
+    /// gate phase on: a record is required and is spent — **unless the
+    /// tenant's effective quorum is zero, where P-D-180 authorizes the act
+    /// with no record at all**.
+    ///
+    /// # Why the count rides the variant
+    ///
+    /// It is the same argument this enum's own doc makes about the act kind:
+    /// the seam cannot be widened, so the operand rides **construction**,
+    /// where the door already chooses what to load. Putting it on the variant
+    /// rather than on the host makes it a compile-time obligation for exactly
+    /// the act that needs it — `Ungoverned` spends no record and the two
+    /// composite arms answer on the row's own pin, so none of the three has a
+    /// quorum to state, and none of their constructors changed.
+    Governed {
+        /// The tenant's effective approver count as the door resolved it.
+        /// Zero is P-D-180's record-free arm; every other value demands a
+        /// `satisfied` record exactly as before.
+        effective_quorum: u32,
+    },
     /// A save or a discard. `inst-gv-materiality` leaves `draft -> discarded`
     /// *"ungated beyond its own authz"* (M-1) and a save is not a transition
     /// at all, so no ceremony applies and no record is spent.
@@ -1192,7 +1209,24 @@ impl GatedAct {
             Self::ScheduledFlip { row_approval_ref } | Self::Bulk { row_approval_ref } => {
                 Some(row_approval_ref)
             }
-            Self::Governed | Self::Ungoverned => None,
+            Self::Governed { .. } | Self::Ungoverned => None,
+        }
+    }
+
+    /// The tenant's effective approver count, for the one act kind that has
+    /// one (**P-D-180**).
+    ///
+    /// `None` for the three kinds that do not: `Ungoverned` spends no record,
+    /// and the two composite arms are decided by the row's own pin and return
+    /// before the quorum is ever consulted. An `Option` rather than a `0`
+    /// default, because "this act has no quorum" and "this tenant has no
+    /// approver" are different facts and a `0` would spell them alike — which
+    /// is the direction that would make an ungoverned host record-free by
+    /// accident.
+    const fn governed_quorum(self) -> Option<u32> {
+        match self {
+            Self::Governed { effective_quorum } => Some(effective_quorum),
+            Self::ScheduledFlip { .. } | Self::Bulk { .. } | Self::Ungoverned => None,
         }
     }
 }
@@ -1241,9 +1275,9 @@ impl StoredApprovalGate {
     /// [`GateMode::PreAuthorized`] names one of those, so the host takes a
     /// list rather than an `Option` and does not assume the index's shape.
     #[must_use]
-    pub fn governed(candidates: Vec<CandidateApproval>) -> Self {
+    pub fn governed(candidates: Vec<CandidateApproval>, effective_quorum: u32) -> Self {
         Self {
-            act: GatedAct::Governed,
+            act: GatedAct::Governed { effective_quorum },
             candidates,
         }
     }
@@ -1449,11 +1483,42 @@ impl GovernanceGate for StoredApprovalGate {
             GateMode::Gate => self
                 .matching(&subject, ApprovalState::Satisfied, None)
                 .map_or_else(
-                    || GateVerdict::Refused {
-                        reason: format!(
-                            "no satisfied approval record for {} at pin {:?}",
-                            subject.reference, subject.pin
+                    || match self.act.governed_quorum() {
+                        // **P-D-180.** At zero there is no approver for a
+                        // record to hold, and the record was buying one fact
+                        // - *authorized under a zero quorum* - at the price
+                        // of a mandatory second round trip. The `satisfied`
+                        // lookup above ran first, so a tenant that submitted
+                        // anyway still spends its record and the submission
+                        // door stays a live path; that is what keeps the
+                        // uncomposed-bundle acknowledgment reachable, since
+                        // this arm carries `false` and 05's
+                        // `inst-cl-bundle-override` needs a `true`.
+                        //
+                        // **The trace is owed, not free.** P-D-21 puts
+                        // committed acts on the event stream and
+                        // `SkuPublished` carries no `approval_ref`, so the
+                        // reason string below is the whole of what this act
+                        // can say about its own authorization until the
+                        // platform audit capability lands (P-D-08 S1-S9,
+                        // PRD §15). A reader looking for the ceremony in the
+                        // approval store will find nothing, by decision.
+                        Some(0) => GateVerdict::authorized(
+                            ApprovalDisposition::NoRecord,
+                            false,
+                            format!(
+                                "the tenant's effective quorum is zero, so {} at pin {:?} is \
+                                 authorized with no approval record (P-D-180): nothing is \
+                                 consumed and approval_ref stays null",
+                                subject.reference, subject.pin
+                            ),
                         ),
+                        _ => GateVerdict::Refused {
+                            reason: format!(
+                                "no satisfied approval record for {} at pin {:?}",
+                                subject.reference, subject.pin
+                            ),
+                        },
                     },
                     |candidate| {
                         GateVerdict::authorized(

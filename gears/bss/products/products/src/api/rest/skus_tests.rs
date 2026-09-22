@@ -6573,6 +6573,10 @@ async fn governed_host_over(
     );
     Arc::new(crate::domain::approval::StoredApprovalGate::governed(
         candidates,
+        // A record is required here: each of these harnesses asserts its own
+        // seeded candidate is the subject's one record, so the act under test
+        // is the `Consume` arm and never P-D-180's record-free one.
+        crate::domain::materiality::DEFAULT_APPROVER_COUNT,
     ))
 }
 

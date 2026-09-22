@@ -205,13 +205,16 @@ fn a_host_refusal_defers_even_when_the_row_pin_holds() {
         "P-D-105 admits a leg that names the parent's consumed record"
     );
 
-    let host = StoredApprovalGate::governed(vec![CandidateApproval {
-        approval_id: ApprovalId::new(approval),
-        subject: parent_subject,
-        internal_revision: 1,
-        state: ApprovalState::Consumed,
-        override_acknowledged: false,
-    }]);
+    let host = StoredApprovalGate::governed(
+        vec![CandidateApproval {
+            approval_id: ApprovalId::new(approval),
+            subject: parent_subject,
+            internal_revision: 1,
+            state: ApprovalState::Consumed,
+            override_acknowledged: false,
+        }],
+        crate::domain::materiality::DEFAULT_APPROVER_COUNT,
+    );
     let old = host
         .evaluate(
             child_subject.clone(),

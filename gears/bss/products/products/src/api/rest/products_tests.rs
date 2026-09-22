@@ -6330,6 +6330,10 @@ async fn two_publishes_off_one_satisfied_record_spend_it_once_and_the_second_is_
         );
         Arc::new(crate::domain::approval::StoredApprovalGate::governed(
             candidates,
+            // A record is required here: each of these harnesses asserts its own
+            // seeded candidate is the subject's one record, so the act under test
+            // is the `Consume` arm and never P-D-180's record-free one.
+            crate::domain::materiality::DEFAULT_APPROVER_COUNT,
         ))
     };
     let state = api_state(&harness);

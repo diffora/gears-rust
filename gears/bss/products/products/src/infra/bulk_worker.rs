@@ -241,6 +241,16 @@ fn payload_brand(payload: &JsonValue) -> Option<Uuid> {
 }
 
 /// Stage one Product row through the Foundation's own insert path.
+/// The approver count this module states when it builds a governed host
+/// (**P-D-180**).
+///
+/// Any nonzero value selects the arm that **demands a record**, which is the
+/// only arm a batch commit may take: its authorization is the record
+/// `products_bulk_batch.approval_ref` names. One, rather than a larger
+/// number, because the host compares it against zero and nothing here reads
+/// it as a quorum to satisfy.
+const QUORUM_REQUIRING_A_RECORD: u32 = 1;
+
 async fn stage_product(
     ctx: &BulkWorkerContext,
     scope: &AccessScope,
@@ -1239,7 +1249,19 @@ async fn begin_commit(
                         return Ok(false);
                     };
                     let subject = candidate.subject.clone();
-                    let gate = StoredApprovalGate::governed(vec![candidate]);
+                    // **Never the record-free arm here** (**P-D-180**). This
+                    // commit's authorization *is* the batch's own record -
+                    // loaded by id from `products_bulk_batch.approval_ref`
+                    // three statements up, and absent means `Ok(false)` rather
+                    // than a publish - so the quorum-zero arm must be
+                    // unreachable on this path. It is, because the candidate
+                    // is always present; the count is stated anyway rather
+                    // than left to that invariant, since a later edit that
+                    // loosened the `let Some(candidate)` guard would otherwise
+                    // turn a missing batch record into an approver-less
+                    // commit.
+                    let gate =
+                        StoredApprovalGate::governed(vec![candidate], QUORUM_REQUIRING_A_RECORD);
                     let authorization = gate
                         .evaluate(subject, GateMode::Gate)
                         .and_then(crate::domain::governance::GateVerdict::into_authorization)
