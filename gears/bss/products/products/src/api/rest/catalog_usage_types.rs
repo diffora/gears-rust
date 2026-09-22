@@ -33,13 +33,13 @@
 //! caller that cannot tell the three apart renders silence as a clean verdict,
 //! which is the whole failure this surface was built against.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
 use axum::extract::{Extension, Query};
 use axum::http::StatusCode;
-use serde::Deserialize;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
@@ -52,30 +52,12 @@ const TAG: &str = "BSS Products";
 /// This door's path, named once.
 pub const CATALOG_USAGE_TYPES: &str = "/bss-products/v1/catalog/usage-types";
 
-/// The page size a caller gets when it names none, and the ceiling it may not
-/// pass — the gear's own `design/01` D-125 walk shape.
-const DEFAULT_LIMIT: u32 = 100;
-const MAX_LIMIT: u32 = 1_000;
+/// The four keys this door serves. Anything else is refused by name rather
+/// than dropped, because a dropped filter reads as a correct unfiltered answer.
+const DECLARED: [&str; 4] = ["q", "kind", "limit", "cursor"];
 
 #[resource_error(toolkit_gts::gts_id!("cf.bss.products.recognized_set.v1~"))]
 struct UsageTypeCatalogDoor;
-
-/// `?q=&kind=&limit=&cursor=`.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UsageTypeQuery {
-    /// Narrows by substring of the id. The distinguishing part of a usage
-    /// type's GTS path is at its **end**, so this is `contains` and not a
-    /// prefix match.
-    pub q: Option<String>,
-    /// `counter` or `gauge`, by equality.
-    pub kind: Option<String>,
-    /// Page size; absent is [`DEFAULT_LIMIT`], `0` is refused, above
-    /// [`MAX_LIMIT`] is refused.
-    pub limit: Option<u32>,
-    /// The continuation token a previous page handed back.
-    pub cursor: Option<String>,
-}
 
 /// One usage type as the pick-list renders it.
 #[derive(Debug, Clone)]
@@ -114,7 +96,10 @@ pub struct UsageTypePageInfoView {
     pub next_cursor: Option<String>,
     /// Absent on the first.
     pub prev_cursor: Option<String>,
-    /// The page size actually applied.
+    /// The page size the **catalog applied**, which need not be the one the
+    /// caller asked for: a catalog may hold a ceiling of its own, and a screen
+    /// that sized its pager off the request would size it off a number nobody
+    /// honoured.
     pub limit: u32,
 }
 
@@ -122,19 +107,29 @@ async fn list_usage_types(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-    Query(query): Query<UsageTypeQuery>,
+    Query(raw): Query<HashMap<String, String>>,
 ) -> Result<Json<UsageTypeListView>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     read_gate(&enforcer, &ctx).await?;
-    let limit = resolve_limit(query.limit)?;
+    // **The gear's own guard, not serde's.** A typed `deny_unknown_fields`
+    // fails inside the extractor, so the handler never runs and the caller
+    // gets axum's plain-text rejection instead of the problem body this
+    // operation declares - and it names the first offender where this one
+    // names every offender at once (P-D-37).
+    crate::api::rest::odata::reject_undeclared_query_params(
+        &raw,
+        crate::api::rest::odata::QueryFamily::OperandsOnly,
+        &DECLARED,
+    )?;
+    let limit = resolve_limit(raw.get("limit").map(String::as_str))?;
     let page = state
         .usage_type_catalog
         .list(
             &ctx,
-            query.q.as_deref(),
-            query.kind.as_deref(),
+            raw.get("q").map(String::as_str),
+            raw.get("kind").map(String::as_str),
             limit,
-            query.cursor.as_deref(),
+            raw.get("cursor").map(String::as_str),
         )
         .await?;
     Ok(Json(UsageTypeListView {
@@ -151,7 +146,7 @@ async fn list_usage_types(
         page_info: UsageTypePageInfoView {
             next_cursor: page.next_cursor,
             prev_cursor: page.prev_cursor,
-            limit,
+            limit: page.limit,
         },
     }))
 }
@@ -181,24 +176,40 @@ async fn read_gate(
     })
 }
 
-/// A caller's `limit`, or the default; `0` and anything past the ceiling are
-/// refused rather than clamped, so a screen is never silently given a page it
-/// did not ask for.
-fn resolve_limit(asked: Option<u32>) -> Result<u32, CanonicalError> {
-    match asked {
-        None => Ok(DEFAULT_LIMIT),
-        Some(0) => Err(UsageTypeCatalogDoor::invalid_argument()
-            .with_field_violation("limit", "limit must be at least 1", "out_of_range")
-            .create()),
-        Some(n) if n > MAX_LIMIT => Err(UsageTypeCatalogDoor::invalid_argument()
-            .with_field_violation(
-                "limit",
-                format!("limit must not exceed {MAX_LIMIT}"),
-                "out_of_range",
-            )
-            .create()),
-        Some(n) => Ok(n),
+/// A caller's `limit`, or the gear's default; `0` and anything past the
+/// gear's ceiling are refused rather than clamped, so a screen is never
+/// silently handed a page it did not ask for.
+///
+/// **The numbers are `LISTING_LIMIT_CFG`'s**, not this door's own. That
+/// constant is declared as *"the page every list door in this gear serves"*,
+/// with the rationale that two doors answering different numbers to the same
+/// `$top` is a difference a caller has to learn for no return - and the first
+/// cut of this door minted 100/1000 against the gear's 50/200 while its
+/// comment claimed conformance.
+fn resolve_limit(asked: Option<&str>) -> Result<u32, CanonicalError> {
+    use crate::api::rest::odata::LISTING_LIMIT_CFG;
+
+    let Some(raw) = asked.filter(|s| !s.is_empty()) else {
+        return Ok(u32::try_from(LISTING_LIMIT_CFG.default).unwrap_or(u32::MAX));
+    };
+    let parsed: u32 = raw
+        .parse()
+        .map_err(|_| refuse_limit(format!("`{raw}` is not a page size")))?;
+    if parsed == 0 {
+        return Err(refuse_limit("limit must be at least 1".to_owned()));
     }
+    let ceiling = u32::try_from(LISTING_LIMIT_CFG.max).unwrap_or(u32::MAX);
+    if parsed > ceiling {
+        return Err(refuse_limit(format!("limit must not exceed {ceiling}")));
+    }
+    Ok(parsed)
+}
+
+/// One spelling of this door's `limit` refusal.
+fn refuse_limit(detail: String) -> CanonicalError {
+    UsageTypeCatalogDoor::invalid_argument()
+        .with_field_violation("limit", detail, "invalid_limit")
+        .create()
 }
 
 /// The one read this module registers.
@@ -218,11 +229,30 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param("q", false, "Narrow by substring of the usage type's id.")
+        .query_param("kind", false, "Narrow by kind: `counter` or `gauge`.")
+        .query_param(
+            "limit",
+            false,
+            "Page size. Absent takes the gear's default; `0` and anything past its ceiling are \
+             refused rather than clamped.",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The continuation token a previous page handed back.",
+        )
         .handler(list_usage_types)
         .json_response_with_schema::<UsageTypeListView>(
             openapi,
             StatusCode::OK,
             "The catalog's page, with the provenance of the answer.",
+        )
+        .problem_response(
+            openapi,
+            StatusCode::NOT_IMPLEMENTED,
+            "No usage-type catalog is configured, so there is nothing to list. This is not an \
+             empty page and must not be rendered as one.",
         )
         .error_400(openapi)
         .error_401(openapi)

@@ -126,6 +126,15 @@ pub mod labels {
     /// The recognized sets — the three non-tier families behind
     /// `POST /config/vocabularies/{class}/values` (P-D-90 arm 2: the tier set
     /// spends its own grant below).
+    ///
+    /// **Its `read` has a second spender since P-D-183**:
+    /// `GET /bss-products/v1/catalog/usage-types`, the pick-list for the
+    /// *other* half of a meter declaration. The pair was reused rather than a
+    /// new one minted — minting a catalog pair is a joint decision no single
+    /// slice takes — and the consequence belongs here rather than only at that
+    /// door: a holder of `recognized_set × read` can now also enumerate the
+    /// configured usage-type catalog, which is where anyone auditing what this
+    /// grant exposes will look.
     pub const RECOGNIZED_SET: &str = gts_id!("cf.bss.products.recognized_set.v1~");
 
     /// The plan-tier taxonomy — its own grant, event and refusal code by

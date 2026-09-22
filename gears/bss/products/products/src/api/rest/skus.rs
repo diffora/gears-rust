@@ -8405,49 +8405,6 @@ pub(crate) async fn save_sku(
     .await
 }
 
-/// The save door, with its governance host as an explicit argument —
-/// [`discard_sku_gated`]'s twin, and a parameter for that function's stated
-/// reason: the gate phase runs here (`inst-fd-pipeline-gate-phase`) and the
-/// gear's only host never refuses under [`GateMode::Gate`], so the refusal
-/// arm is unreachable through [`save_sku`] and a phase nothing can exercise
-/// is one a reader cannot tell from a phase that is absent.
-///
-/// The **mode** is not a parameter, on [`run_discard`]'s measured asymmetry:
-/// the explicit-mode requirement is `dod-publish-door`'s, and no slice
-/// schedules or cascades a save.
-///
-/// The door's own steps are [`publish_sku_gated`]'s: the `sku x write` grant
-/// ([`open_act`]), the key ([`build_claim`], here with the **body's** digest
-/// rather than the bodiless constant), the `If-Match`, the head read, then
-/// [`run_save`] on one transaction and [`answer_head_act`].
-///
-/// # What this door does not build, and which slice owns each
-///
-/// `cpt-cf-bss-products-dod-save-door` covers a **content-row half this slice
-/// cannot build**, and the `DoD` therefore reads as *partial* rather than
-/// met. None of it is silently omitted:
-///
-/// - **Category assignments** — `products_product_category` is **slice 02**'s
-///   table and does not exist at this commit, so there is no row for this
-///   transaction to write and no field for this door to route.
-/// - **Attribute values** — `products_attribute_value`, likewise **slice
-///   02**'s.
-/// - **The metering declaration** — **slice 03**'s, which owns both the
-///   column set and the rules over it.
-///
-/// Each joins **this** transaction when it lands, beside the single head-row
-/// `UPDATE` rather than after it: a content row written on a runner of its
-/// own would survive a rolled-back save.
-///
-/// **Bucket ii and bucket iv have no columns** (`crate::domain::bucket`'s
-/// module doc: §4.1 assigns none), so both arms are built and neither is
-/// reachable today.
-///
-/// # Errors
-///
-/// Every refusal this door raises, each audited on its own transaction
-/// through [`audit_act_refusal`]; the bare `404` a miss answers; the `500` a
-/// storage or gate-host failure raises.
 /// Resolve a `usageTypeRef` this save **changes**, and refuse only a
 /// definitive no (2026-09-22).
 ///
@@ -8496,6 +8453,49 @@ async fn judge_changed_usage_type(
     }
 }
 
+/// The save door, with its governance host as an explicit argument —
+/// [`discard_sku_gated`]'s twin, and a parameter for that function's stated
+/// reason: the gate phase runs here (`inst-fd-pipeline-gate-phase`) and the
+/// gear's only host never refuses under [`GateMode::Gate`], so the refusal
+/// arm is unreachable through [`save_sku`] and a phase nothing can exercise
+/// is one a reader cannot tell from a phase that is absent.
+///
+/// The **mode** is not a parameter, on [`run_discard`]'s measured asymmetry:
+/// the explicit-mode requirement is `dod-publish-door`'s, and no slice
+/// schedules or cascades a save.
+///
+/// The door's own steps are [`publish_sku_gated`]'s: the `sku x write` grant
+/// ([`open_act`]), the key ([`build_claim`], here with the **body's** digest
+/// rather than the bodiless constant), the `If-Match`, the head read, then
+/// [`run_save`] on one transaction and [`answer_head_act`].
+///
+/// # What this door does not build, and which slice owns each
+///
+/// `cpt-cf-bss-products-dod-save-door` covers a **content-row half this slice
+/// cannot build**, and the `DoD` therefore reads as *partial* rather than
+/// met. None of it is silently omitted:
+///
+/// - **Category assignments** — `products_product_category` is **slice 02**'s
+///   table and does not exist at this commit, so there is no row for this
+///   transaction to write and no field for this door to route.
+/// - **Attribute values** — `products_attribute_value`, likewise **slice
+///   02**'s.
+/// - **The metering declaration** — **slice 03**'s, which owns both the
+///   column set and the rules over it.
+///
+/// Each joins **this** transaction when it lands, beside the single head-row
+/// `UPDATE` rather than after it: a content row written on a runner of its
+/// own would survive a rolled-back save.
+///
+/// **Bucket ii and bucket iv have no columns** (`crate::domain::bucket`'s
+/// module doc: §4.1 assigns none), so both arms are built and neither is
+/// reachable today.
+///
+/// # Errors
+///
+/// Every refusal this door raises, each audited on its own transaction
+/// through [`audit_act_refusal`]; the bare `404` a miss answers; the `500` a
+/// storage or gate-host failure raises.
 async fn save_sku_gated(
     state: &ApiState,
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
@@ -8762,7 +8762,7 @@ async fn validate_sku(
         now,
     )
     .await?;
-    load_head(&state, &act, sku_id).await?;
+    let head = load_head(&state, &act, sku_id).await?;
     let conn = state
         .db
         .conn()
@@ -8779,7 +8779,13 @@ async fn validate_sku(
     // and neither should pay a cross-gear call.
     //
     // It refuses nothing. This door reports.
-    findings.extend(usage_type_findings(&state, &ctx, &conn, &act, sku_id).await?);
+    // **The connection goes back before the cross-gear call.** `resolve` is
+    // bounded only by `usage_type_resolver_timeout_ms`, so holding a pinned
+    // connection across it would park one per concurrent dry-run on another
+    // gear's latency and drain the pool - the hazard `return_pinned` exists
+    // for. The ref is already in hand; the resolve needs no store.
+    return_pinned(conn);
+    findings.extend(usage_type_findings(&state, &ctx, head.usage_type_ref.as_deref()).await);
     Ok((
         StatusCode::OK,
         Json(LintReportView {
@@ -8798,55 +8804,45 @@ async fn validate_sku(
 /// that says *nothing* is an operator's outage. Collapsing them would tell an
 /// author to fix an id that may be perfectly good.
 ///
+/// Takes the ref rather than the id, and no connection at all: the caller has
+/// already loaded the head, and a second read of the same row per dry-run buys
+/// nothing - while holding a pinned connection across the resolve would park
+/// one on another gear's latency.
+///
 /// A head with no meter, and a deployment with no catalog, both produce none:
 /// there is nothing to ask and nobody to ask.
-///
-/// # Errors
-///
-/// [`CanonicalError`] only from the head read; the resolve itself never fails
-/// the door.
 async fn usage_type_findings(
     state: &ApiState,
     ctx: &SecurityContext,
-    conn: &impl toolkit_db::secure::DBRunner,
-    act: &ActContext,
-    sku_id: Uuid,
-) -> Result<Vec<crate::api::rest::LintFinding>, CanonicalError> {
+    usage_type_ref: Option<&str>,
+) -> Vec<crate::api::rest::LintFinding> {
     use crate::api::rest::LintFinding;
     use crate::domain::recognized::UsageTypeAnswer;
 
     if state.usage_type_catalog_source == crate::gear::USAGE_TYPE_SOURCE_UNCONFIGURED {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-    let Some(head) = repo::find_sku(conn, &act.scope, act.tenant_id, sku_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?
-    else {
-        return Ok(Vec::new());
+    let Some(usage_type_ref) = usage_type_ref else {
+        return Vec::new();
     };
-    let Some(usage_type_ref) = head.usage_type_ref.as_deref() else {
-        return Ok(Vec::new());
-    };
-    Ok(
-        match state.usage_type_catalog.resolve(ctx, usage_type_ref).await {
-            UsageTypeAnswer::Resolved(_) => Vec::new(),
-            UsageTypeAnswer::Unresolved => vec![LintFinding {
-                code: "USAGE_TYPE_UNRESOLVED".to_owned(),
-                subject: "usage_type_ref".to_owned(),
-                detail: format!(
-                    "the usage-type catalog does not know `{usage_type_ref}`; publish will refuse it"
-                ),
-            }],
-            UsageTypeAnswer::Unavailable => vec![LintFinding {
-                code: "USAGE_TYPE_CATALOG_UNAVAILABLE".to_owned(),
-                subject: "usage_type_ref".to_owned(),
-                detail: format!(
-                    "the usage-type catalog did not answer for `{usage_type_ref}`, so it is \
+    match state.usage_type_catalog.resolve(ctx, usage_type_ref).await {
+        UsageTypeAnswer::Resolved(_) => Vec::new(),
+        UsageTypeAnswer::Unresolved => vec![LintFinding {
+            code: "USAGE_TYPE_UNRESOLVED".to_owned(),
+            subject: "usage_type_ref".to_owned(),
+            detail: format!(
+                "the usage-type catalog does not know `{usage_type_ref}`; publish will refuse it"
+            ),
+        }],
+        UsageTypeAnswer::Unavailable => vec![LintFinding {
+            code: "USAGE_TYPE_CATALOG_UNAVAILABLE".to_owned(),
+            subject: "usage_type_ref".to_owned(),
+            detail: format!(
+                "the usage-type catalog did not answer for `{usage_type_ref}`, so it is \
                  unchecked here; publish fails closed on the same answer"
-                ),
-            }],
-        },
-    )
+            ),
+        }],
+    }
 }
 
 // ---------------------------------------------------------------------------

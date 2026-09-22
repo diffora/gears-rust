@@ -276,16 +276,6 @@ pub fn declaration_verdict(unit: &str, member: Option<MemberState>) -> Result<()
     }
 }
 
-/// What the collector said a `usageTypeRef` is bound to, frozen beside the
-/// version row at publish (`dod-binding-snapshot`, **P-D-134** row 6,
-/// **P-D-146**).
-///
-/// Provenance, not content: the snapshot lives in its own nullable column on
-/// `products_entity_version`, outside the digested rendering, so
-/// `DIGEST_VERSION` does not move with it and a re-verification of the digest
-/// never reads it. The three fields are the three the definition of done names; the
-/// collector's own types are flattened to strings here so the domain owes the
-/// collector SDK nothing.
 /// **The two types are the SDK port's since 2026-09-22.** They were declared
 /// here while the port was in-crate; moving the port to `products-sdk` so
 /// another module can register a catalog moved its operands with it, and a
@@ -294,9 +284,22 @@ pub fn declaration_verdict(unit: &str, member: Option<MemberState>) -> Result<()
 /// `crate::domain::recognized::UsageType*` path keeps resolving.
 pub use bss_products_sdk::usage_types::{UsageTypeAnswer, UsageTypeBinding};
 
-/// The stored form of a binding: one JSON object, keys in alphabetical order,
-/// the metadata keys sorted — so two publishes of the same binding store the
-/// same bytes.
+/// What the catalog said a `usageTypeRef` is bound to, in the stored form
+/// frozen beside the version row at publish (`dod-binding-snapshot`,
+/// **P-D-134** row 6, **P-D-146**): one JSON object, keys in alphabetical
+/// order, the metadata keys sorted — so two publishes of the same binding
+/// store the same bytes.
+///
+/// **Provenance, not content**: the snapshot lives in its own nullable column
+/// on `products_entity_version`, outside the digested rendering, so
+/// `DIGEST_VERSION` does not move with it and a re-verification of the digest
+/// never reads it. The three fields are the three the definition of done
+/// names; the catalog's own types are flattened to strings at the port so the
+/// domain owes the collector SDK nothing.
+///
+/// This paragraph moved here with the types (2026-09-22): it argues about the
+/// **snapshot**, which is this function's business, not about the shape of the
+/// binding, which is now the port's.
 ///
 /// A free function rather than an inherent method, because the type is the
 /// SDK's now and this rendering is the **domain's** business: the snapshot is

@@ -1330,9 +1330,6 @@ impl crate::domain::governance::GovernanceGate for RefusingGate {
     }
 }
 
-/// The `ApiState` `app_for` layers, on its own so a case that calls a door's
-/// inner function directly (rather than through the router) builds the same
-/// state a mounted router would.
 /// The pick-list door over a catalog this case supplies, on the same harness
 /// the meter cases use — the two belong together, and the door needs no store
 /// of its own.
@@ -1399,7 +1396,10 @@ async fn the_pick_list_carries_its_source_and_narrows() {
     assert!(all >= 3, "{body}");
     assert!(body["items"][0]["kind"].is_string(), "{body}");
     assert!(body["items"][0]["metadata_fields"].is_array(), "{body}");
-    assert_eq!(body["page_info"]["limit"], 100, "the default page size");
+    assert_eq!(
+        body["page_info"]["limit"], 50,
+        "the gear's shared default, not a number this door minted: {body}"
+    );
 
     let narrowed = usage_type_list(
         &harness,
@@ -1414,6 +1414,24 @@ async fn the_pick_list_carries_its_source_and_narrows() {
         1,
         "{narrowed}"
     );
+}
+
+/// **A configured catalog that cannot be reached answers 503, never an empty
+/// page.**
+///
+/// The third of the three facts the door keeps apart, and the one no other
+/// probe could reach: both of the other stubs answer `Ok`.
+#[tokio::test]
+async fn an_unreachable_catalog_is_a_503_and_not_an_empty_page() {
+    let harness = harness().await;
+    let response = usage_type_list(
+        &harness,
+        Arc::new(crate::test_support::UnreachableUsageTypes),
+        "usage_collector",
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 /// **A configured catalog with nothing in it answers 200 and an empty array**,
@@ -1458,6 +1476,9 @@ async fn the_pick_list_refuses_a_limit_it_will_not_honour() {
     }
 }
 
+/// The `ApiState` `app_for` layers, on its own so a case that calls a door's
+/// inner function directly (rather than through the router) builds the same
+/// state a mounted router would.
 fn api_state(harness: &TestHarness) -> ApiState {
     ApiState {
         db: harness.db.clone(),
@@ -4911,6 +4932,59 @@ mod meter_declaration_tests {
         assert!(
             body.to_string().contains("USAGE_TYPE_UNRESOLVED"),
             "the finding names the catalog's own no: {body}"
+        );
+    }
+
+    /// **The validate door's second finding**: a catalog that did not answer
+    /// is reported as unchecked, not as a rejection.
+    ///
+    /// The pair of the case below it. Two findings, because an author fixes a
+    /// rejection and an operator fixes an outage.
+    #[tokio::test]
+    async fn validate_reports_an_unreachable_catalog_as_its_own_finding() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let saved = patch_with_catalog(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            Arc::new(crate::test_support::StubUsageTypes::always(
+                crate::domain::recognized::UsageTypeAnswer::Resolved(
+                    crate::test_support::probe_binding(),
+                ),
+            )),
+            "registry",
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK);
+
+        let mut state = api_state(&harness);
+        state.usage_type_catalog = Arc::new(crate::test_support::UnreachableUsageTypes);
+        state.usage_type_catalog_source = "usage_collector";
+        let openapi = OpenApiRegistryImpl::new();
+        let response = crate::api::rest::skus::router(Arc::new(state), &openapi)
+            .layer(axum::Extension(flat_in_enforcer(TENANT)))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/skus/{sku_id}/validate"))
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::empty())
+                    .expect("build the validate request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "it reports, it refuses nothing"
+        );
+        let body = body_json(response).await;
+        assert!(
+            body.to_string().contains("USAGE_TYPE_CATALOG_UNAVAILABLE"),
+            "silence gets its own code, not the rejection's: {body}"
         );
     }
 

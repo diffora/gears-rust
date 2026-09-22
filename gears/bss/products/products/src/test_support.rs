@@ -651,3 +651,42 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for EmptyUsageTypes {
         Ok(bss_products_sdk::usage_types::UsageTypePage::default())
     }
 }
+
+/// A configured catalog that cannot be reached — the 503 leg, which no other
+/// stub here can produce because both answer `Ok`.
+///
+/// Without it the door's `.error_503` and the `USAGE_TYPE_CATALOG_UNAVAILABLE`
+/// finding are asserted nowhere, and a regression collapsing either into an
+/// empty 200 — the exact failure the surface exists to prevent — would stay
+/// green.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnreachableUsageTypes;
+
+#[async_trait::async_trait]
+impl bss_products_sdk::usage_types::UsageTypeCatalog for UnreachableUsageTypes {
+    async fn resolve(
+        &self,
+        _ctx: &SecurityContext,
+        _usage_type_ref: &str,
+    ) -> crate::domain::recognized::UsageTypeAnswer {
+        crate::domain::recognized::UsageTypeAnswer::Unavailable
+    }
+
+    async fn list(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _kind: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<
+        bss_products_sdk::usage_types::UsageTypePage,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        Err(
+            bss_products_sdk::usage_types::usage_type_catalog_unreachable(
+                "the probe's catalog is unreachable by construction",
+            ),
+        )
+    }
+}

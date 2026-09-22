@@ -141,6 +141,25 @@ pub const READ_DASHBOARD_POLL_SECS_DEFAULT: u32 = 30;
 /// consumed inbox rows are kept for replay before the sweep takes them.
 pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
 
+/// The usage-type catalogs a deployment may name as a **fallback**.
+///
+/// Only reached when `ClientHub` carries neither a `UsageTypeCatalog` nor a
+/// `UsageCollectorClientV1`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageTypeCatalogSource {
+    /// No catalog to ask. The default, and the honest one: the pick-list
+    /// answers **501** and every usage-SKU publish keeps failing closed.
+    #[default]
+    Unconfigured,
+    /// Serve a **fabricated** set from this process. Named at length so it
+    /// cannot be selected without saying so: a deployment carrying this value
+    /// is showing operators usage types no collector issued, and a meter
+    /// declared against one names a stream nothing will ever report. See
+    /// [`crate::infra::usage_types::LocalDevStaticUsageTypes`].
+    LocalDevStaticUsageTypes,
+}
+
 /// The gear's boot configuration.
 ///
 /// @cpt-cf-bss-products-fr-idempotent-authoring
@@ -178,25 +197,6 @@ pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
 /// A typo in a *value* has no such spelling, which is why
 /// [`Self::resolved_idempotency_retention_hours`] exists: `deny_unknown_fields`
 /// catches `idempotency_retention_hous`, and nothing in serde catches a `0`.
-/// The usage-type catalogs a deployment may name as a **fallback**.
-///
-/// Only reached when `ClientHub` carries neither a `UsageTypeCatalog` nor a
-/// `UsageCollectorClientV1`.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum UsageTypeCatalogSource {
-    /// No catalog to ask. The default, and the honest one: the pick-list
-    /// answers **501** and every usage-SKU publish keeps failing closed.
-    #[default]
-    Unconfigured,
-    /// Serve a **fabricated** set from this process. Named at length so it
-    /// cannot be selected without saying so: a deployment carrying this value
-    /// is showing operators usage types no collector issued, and a meter
-    /// declared against one names a stream nothing will ever report. See
-    /// [`crate::infra::usage_types::LocalDevStaticUsageTypes`].
-    LocalDevStaticUsageTypes,
-}
-
 #[allow(clippy::struct_excessive_bools)] // the operator switches are booleans by nature
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]

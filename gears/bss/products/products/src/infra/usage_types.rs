@@ -50,8 +50,9 @@ use toolkit_security::SecurityContext;
 use usage_collector_sdk::{UsageCollectorClientV1, UsageCollectorError, UsageTypeGtsId};
 
 use bss_products_sdk::usage_types::{
-    UsageTypeAnswer, UsageTypeBinding, UsageTypeCatalog, UsageTypePage,
-    unconfigured_usage_type_catalog, usage_type_catalog_unreachable,
+    UsageTypeAnswer, UsageTypeBinding, UsageTypeCatalog, UsageTypePage, invalid_usage_type_cursor,
+    unconfigured_usage_type_catalog, usage_type_catalog_denied,
+    usage_type_catalog_rejected_the_query, usage_type_catalog_unreachable,
 };
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_odata::{CursorV1, ODataQuery, parse_filter_string};
@@ -139,13 +140,31 @@ impl UsageTypeCatalog for CollectorUsageTypes {
                 items: page.items.iter().map(binding_of).collect(),
                 next_cursor: page.page_info.next_cursor,
                 prev_cursor: page.page_info.prev_cursor,
+                // The catalog's own, not the caller's ask: it may have a
+                // ceiling this gear does not know.
+                limit: u32::try_from(page.page_info.limit).unwrap_or(limit),
             }),
-            // **Never an empty page on a failure.** The 503 is what lets a
-            // caller tell "this deployment has no usage types" from "the
-            // catalog did not answer".
+            // **Never an empty page on a failure**, and never one class for
+            // every failure. The 503 is what lets a caller tell "this
+            // deployment has no usage types" from "the catalog did not
+            // answer" - but a denial and a malformed filter are neither, and
+            // reporting them as an outage sends an operator to retry forever
+            // against a permission problem.
+            //
+            // **The PDP detail never reaches the wire.** The collector SDK's
+            // own `PermissionDenied` doc says it is "kept for operator logs;
+            // the host lift drops it from the public wire body", so it is
+            // logged here and the caller is told only that authorization was
+            // refused.
             Ok(Err(error)) => {
                 tracing::warn!(%error, "bss-products: usage-type catalog list failed");
-                Err(usage_type_catalog_unreachable(error.to_string()))
+                Err(match error {
+                    UsageCollectorError::PermissionDenied { .. } => usage_type_catalog_denied(),
+                    UsageCollectorError::InvalidArgument { .. } => {
+                        usage_type_catalog_rejected_the_query()
+                    }
+                    other => usage_type_catalog_unreachable(other.to_string()),
+                })
             }
             Err(_elapsed) => Err(usage_type_catalog_unreachable(format!(
                 "the usage-type catalog did not answer within {}ms",
@@ -204,15 +223,17 @@ fn list_query(
     }
     let mut odata = ODataQuery::new().with_limit(u64::from(limit));
     if !clauses.is_empty() {
-        let parsed = parse_filter_string(&clauses.join(" and ")).map_err(|e| {
-            CanonicalError::internal(format!("bss-products: usage-type filter: {e}")).create()
-        })?;
+        // **A caller's filter is a 400, not a 500.** The donor
+        // `catalog_provider::search_odata` raises `internal` because its
+        // cursor is one this gear minted for an in-process client; here both
+        // operands arrive on a public query string, and paging an on-call for
+        // somebody's typo is the wrong answer.
+        let parsed = parse_filter_string(&clauses.join(" and "))
+            .map_err(|_| usage_type_catalog_rejected_the_query())?;
         odata = odata.with_filter(parsed.into_expr());
     }
     if let Some(token) = cursor.filter(|s| !s.is_empty()) {
-        let decoded = CursorV1::decode(token).map_err(|e| {
-            CanonicalError::internal(format!("bss-products: usage-type cursor: {e}")).create()
-        })?;
+        let decoded = CursorV1::decode(token).map_err(|_| invalid_usage_type_cursor())?;
         odata = odata.with_cursor(decoded);
     }
     Ok(odata)
@@ -232,25 +253,28 @@ pub struct LocalDevStaticUsageTypes;
 pub const DEV_LOCAL_USAGE_TYPE_PREFIX: &str =
     "gts.cf.core.uc.usage_record.v1~cf.dev.local.usage_type.";
 
-impl LocalDevStaticUsageTypes {
-    fn fabricated() -> Vec<UsageTypeBinding> {
-        ["cpu.v1", "storage.v1", "requests.v1"]
-            .into_iter()
-            .map(|leaf| UsageTypeBinding {
-                gts_id: format!("{DEV_LOCAL_USAGE_TYPE_PREFIX}{leaf}"),
-                kind: "counter".to_owned(),
-                metadata_fields: Vec::new(),
-            })
-            .collect()
-    }
-}
+/// The fabricated set, built once.
+///
+/// `resolve` is called per SKU on the publish gate, so rebuilding three
+/// `String`s on every call was three allocations for a constant.
+static FABRICATED: std::sync::LazyLock<Vec<UsageTypeBinding>> = std::sync::LazyLock::new(|| {
+    ["cpu.v1", "storage.v1", "requests.v1"]
+        .into_iter()
+        .map(|leaf| UsageTypeBinding {
+            gts_id: format!("{DEV_LOCAL_USAGE_TYPE_PREFIX}{leaf}"),
+            kind: "counter".to_owned(),
+            metadata_fields: Vec::new(),
+        })
+        .collect()
+});
 
 #[async_trait]
 impl UsageTypeCatalog for LocalDevStaticUsageTypes {
     async fn resolve(&self, _ctx: &SecurityContext, usage_type_ref: &str) -> UsageTypeAnswer {
-        Self::fabricated()
-            .into_iter()
+        FABRICATED
+            .iter()
             .find(|binding| binding.gts_id == usage_type_ref)
+            .cloned()
             .map_or(UsageTypeAnswer::Unresolved, UsageTypeAnswer::Resolved)
     }
 
@@ -260,24 +284,34 @@ impl UsageTypeCatalog for LocalDevStaticUsageTypes {
         q: Option<&str>,
         kind: Option<&str>,
         limit: u32,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
     ) -> Result<UsageTypePage, CanonicalError> {
-        // The whole fabricated set fits one page, so the cursor is never
-        // minted and never read. Narrowing is applied so a screen driving this
-        // mode behaves as it will against a real catalog.
-        let items = Self::fabricated()
-            .into_iter()
+        // **A cursor is refused, not ignored.** The whole fabricated set fits
+        // one page, so this type never mints one - but only the minting half
+        // is under its control, and the port's own `list` doc says an
+        // implementation "must not answer a page it did not narrow as though
+        // it had". Handing page one back to a caller that asked to continue is
+        // exactly that.
+        if cursor.is_some_and(|token| !token.is_empty()) {
+            return Err(invalid_usage_type_cursor());
+        }
+        // Narrowing is applied so a screen driving this mode behaves as it
+        // will against a real catalog.
+        let items = FABRICATED
+            .iter()
             .filter(|b| {
                 q.filter(|s| !s.is_empty())
                     .is_none_or(|n| b.gts_id.contains(n))
             })
             .filter(|b| kind.filter(|s| !s.is_empty()).is_none_or(|k| b.kind == k))
             .take(limit as usize)
+            .cloned()
             .collect();
         Ok(UsageTypePage {
             items,
             next_cursor: None,
             prev_cursor: None,
+            limit,
         })
     }
 }

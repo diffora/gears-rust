@@ -40,9 +40,60 @@ pub fn unconfigured_usage_type_catalog() -> CanonicalError {
     UsageTypeCatalogResource::unimplemented("no usage-type catalog is configured").create()
 }
 
+/// The canonical error when the catalog refused the caller — a **403**.
+///
+/// **Carries no detail.** The collector SDK's own `PermissionDenied` says its
+/// PDP reason is "kept for operator logs; the host lift drops it from the
+/// public wire body", so an implementation logs it and tells the caller only
+/// that authorization was refused. Distinct from the 503 below because an
+/// operator retries an outage and cannot retry a denial.
+#[must_use]
+pub fn usage_type_catalog_denied() -> CanonicalError {
+    UsageTypeCatalogResource::permission_denied()
+        .with_reason("the usage-type catalog refused this caller")
+        .create()
+}
+
+/// The canonical error when the catalog rejected the query itself — a **400**.
+///
+/// A malformed filter or an unusable page size is the caller's, not an outage,
+/// and reporting it as one sends an operator to retry something that will never
+/// succeed.
+#[must_use]
+pub fn usage_type_catalog_rejected_the_query() -> CanonicalError {
+    UsageTypeCatalogResource::invalid_argument()
+        .with_field_violation(
+            "q",
+            "the usage-type catalog rejected this query",
+            "invalid_filter",
+        )
+        .create()
+}
+
+/// The canonical error for a continuation token this walk did not mint — a
+/// **400**, because it arrives on a public query string.
+#[must_use]
+pub fn invalid_usage_type_cursor() -> CanonicalError {
+    UsageTypeCatalogResource::invalid_argument()
+        .with_field_violation(
+            "cursor",
+            "not a continuation token this walk minted",
+            "invalid_cursor",
+        )
+        .create()
+}
+
 /// The canonical error when a configured catalog did not answer — a **503**,
 /// and distinct from the 501 above because the operator's next act differs:
 /// configure one, versus retry or go and look at the one that is configured.
+///
+/// **This one carries no resource identity, and the other three do**, because
+/// the canonical `service_unavailable` builder takes none — it is an outage of
+/// the transport rather than a verdict about a resource. Recorded rather than
+/// smoothed over: a client keying off the resource type sees
+/// `recognized_set.v1~` on three failures of this port and nothing on the
+/// fourth. Giving all four a matching identity needs a resource of this port's
+/// own, which is a catalog pair no single slice mints.
 #[must_use]
 pub fn usage_type_catalog_unreachable(detail: impl Into<String>) -> CanonicalError {
     CanonicalError::service_unavailable()
@@ -94,6 +145,11 @@ pub struct UsageTypePage {
     pub next_cursor: Option<String>,
     /// The cursor that walks back, absent on the first.
     pub prev_cursor: Option<String>,
+    /// The page size the catalog **actually applied**, which need not be the
+    /// one the caller asked for: a catalog may have a ceiling of its own, and
+    /// a screen that sizes its pager off the requested number would size it
+    /// off something nobody honoured.
+    pub limit: u32,
 }
 
 /// The catalog a deployment binds this registry to.
