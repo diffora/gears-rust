@@ -325,9 +325,23 @@ gts_instance! {
         display_name: "Read the plan-tier taxonomy".to_owned(),
     }
 }
-// -- taxonomy & attributes -- `02`'s three grants, arriving with their doors
+// -- taxonomy & attributes -- `02`'s grants, arriving with their doors
 // (P-D-106: `authz_tests`' census forbids declaring a grant whose door does
-// not ship, so these land in the same commit as the four routes).
+// not ship, so these land in the same commit as the routes that spend them).
+//
+// `category × read` is **P-D-181**'s, and it arrives late for a measured
+// reason: `design/05` §3.2 carried the pair from the start, but its cell
+// named browse for the read half and browse asks for `product|sku × read`
+// alone — so the action had a row in the catalog, no instance here, and no
+// spender anywhere. It gets both with the read door.
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_read.v1"),
+        resource_type: labels::CATEGORY.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "Read the category taxonomy".to_owned(),
+    }
+}
 gts_instance! {
     AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_write.v1"),
@@ -427,6 +441,7 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.attribute_definition_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.metadata_write.v1"),
