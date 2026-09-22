@@ -704,6 +704,40 @@ pub async fn retire_under_lock(
     )
 }
 
+/// The tenant's default category, seeding `General` when it has none
+/// (**P-D-182**, `inst-tx-default`).
+///
+/// Takes the per-tenant taxonomy writer lock like every other write into the
+/// tree, so two first-creates racing are serialized and the second finds the
+/// first's row rather than meeting `uq_products_category_default` head-on.
+///
+/// **It announces nothing**, for the reason [`set_default_under_lock`] gives:
+/// no event was minted for this act (P-D-182, *Owed*), and the seeded node
+/// changes no path the browse projection renders.
+///
+/// Answers `None` when the tenant has no default and the seed could not take
+/// one — a root already carries the name without the flag. The caller then
+/// writes no assignment; a create must not fail on a taxonomy detail.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage failure or on lock contention.
+pub async fn ensure_default_under_lock(
+    db: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: OffsetDateTime,
+) -> Result<Option<Uuid>, RepoError> {
+    let _guard = take_writer_lock(db, tenant_id).await?;
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+    if let Some(existing) = repo::default_category(&conn, scope, tenant_id).await? {
+        return Ok(Some(existing.category_id));
+    }
+    repo::seed_default_category(&conn, scope, tenant_id, now).await
+}
+
 /// Move the tenant's default flag onto one category under the writer lock
 /// (**P-D-182**, `inst-tx-default`).
 ///

@@ -1964,6 +1964,59 @@ pub async fn category_tree_page(
     .await
 }
 
+/// The name the seeded default carries (**P-D-182**).
+///
+/// Operator-facing and operator-changeable: a rename is an ordinary taxonomy
+/// op, and nothing re-creates this node afterwards because the seed's
+/// condition is the **flag**, never the name.
+pub const DEFAULT_CATEGORY_NAME: &str = "General";
+
+/// Seed the tenant's default category — a root `General` carrying the flag.
+///
+/// Called only when [`default_category`] answered `None`, under the taxonomy
+/// writer lock the tree's other writes take, so a concurrent pair is
+/// serialized rather than racing `uq_products_category_default`.
+///
+/// Answers `None` when the tenant already holds a root of that name
+/// **without** the flag — an operator's own node. The seed does not fight it
+/// and does not rename around it: the create then writes no assignment, and
+/// `inst-tx-primary-at-publish` stays the guard at publish.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure. A refusal that is not the
+/// name race is returned as the failure it is, never folded into `None`.
+pub async fn seed_default_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: OffsetDateTime,
+) -> Result<Option<Uuid>, RepoError> {
+    let category_id = Uuid::now_v7();
+    let normalized = crate::domain::name::normalize(DEFAULT_CATEGORY_NAME);
+    let written = insert_category(
+        runner,
+        scope,
+        NewCategory {
+            tenant_id,
+            category_id,
+            parent_id: None,
+            name: DEFAULT_CATEGORY_NAME,
+            name_normalized: &normalized,
+            is_default: true,
+        },
+        now,
+    )
+    .await?;
+    match written {
+        Ok(()) => Ok(Some(category_id)),
+        Err(DomainError::DuplicateCategoryName(_)) => Ok(None),
+        Err(other) => Err(RepoError::Db(format!(
+            "seed the default category of {tenant_id}: {other}"
+        ))),
+    }
+}
+
 /// The tenant's default category, or `None` when it has none (**P-D-182**).
 ///
 /// `None` is an answer and not a failure: a fresh tenant has no default until
