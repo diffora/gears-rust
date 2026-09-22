@@ -268,6 +268,15 @@ decision, so it survives an empty quorum instead of vanishing with it.
   uncomposed-bundle override acknowledgment
 - A stage entering in `PreAuthorized` mode naming a **consumed** record that authorized this
   subject at this pinned revision answers yes and **consumes nothing further**
+- **No record and an effective quorum of zero answers yes with nothing to consume** (**P-D-180**):
+  a governed publish at `N = 0` is **one call**, writes no approval row and leaves `approval_ref`
+  null. The `satisfied` match runs first, so an act that was submitted anyway still spends its
+  record
+- An uncomposed `bundle` at `N = 0` is **refused** `BUNDLE_OVERRIDE_REQUIRED`, because the
+  record-free arm carries no override acknowledgment; its author submits with `author_override_ack`
+  and the same publish call then succeeds on the `satisfied` arm
+- A publish at `N >= 1` with no record is still `APPROVAL_REQUIRED` — P-D-180 moves the configured
+  zero only, and a tenant with no policy row keeps the default count of one
 - A `system_signal` subject — a publish whose sole content is a system-owned flag cleared by an
   inbound governed signal — is auto-satisfied with the signal reference as the authorizing
   principal, audited like any decision
@@ -280,7 +289,11 @@ decision, so it survives an empty quorum instead of vanishing with it.
 - Anything else — `APPROVAL_REQUIRED`, which stays `01-foundation`'s code raised through this gate
 
 **Boundary**: the gate **never re-evaluates materiality at publish** — the verdict was fixed at
-submission. One approval never authorizes two **human** acts, but a **scheduled act is one
+submission. Reading the tenant's approver count for P-D-180's record-free arm is **not** that
+re-evaluation: it answers whether the tenant has any approver for a record to hold, not whether the
+change is material. And the record-free arm leaves **no trace that the act was authorized at zero**
+until the platform audit capability lands (P-D-08 S1-S9, PRD §15); that debt is P-D-180's and is
+filed there. One approval never authorizes two **human** acts, but a **scheduled act is one
 composite act**: a retirement approval authorizes initiation and the `effectiveAt` flip, a cascade
 approval authorizes the whole plan including its per-child legs, and a bulk batch is one composite
 act. The later mechanical stages re-enter through `PreAuthorized` rather than demanding a fresh
