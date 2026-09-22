@@ -98,6 +98,7 @@ use crate::domain::containment::{ResolvedScope, ScopeContainment, ScopeDimension
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
     ApprovalDisposition, ApprovalId, GateMode, GateSubject, GateVerdict, GovernanceGate,
+    SubjectKind,
 };
 use crate::domain::materiality::{DEFAULT_APPROVER_COUNT, Materiality};
 
@@ -1503,16 +1504,32 @@ impl GovernanceGate for StoredApprovalGate {
                         // platform audit capability lands (P-D-08 S1-S9,
                         // PRD §15). A reader looking for the ceremony in the
                         // approval store will find nothing, by decision.
-                        Some(0) => GateVerdict::authorized(
-                            ApprovalDisposition::NoRecord,
-                            false,
-                            format!(
-                                "the tenant's effective quorum is zero, so {} at pin {:?} is \
+                        // **Scoped to the publish subject, and that scoping is
+                        // the decision's own** (**P-D-180**). Four of the six
+                        // kinds are not the tenant's `N` to waive:
+                        // `SystemSignal`'s principal is the signal, and 05
+                        // `inst-gv-one-shot` says outright that *"`N` has no
+                        // standing over it — so `N = 0` neither weakens nor
+                        // strengthens it"*; `MaterialityPolicy` is the subject
+                        // that governs `N` itself, so waiving its record at
+                        // zero would let the count excuse its own change (C4);
+                        // `BulkBatch`'s authorization *is* the batch's record;
+                        // and `SkuCorrection`'s door pins an id into its own
+                        // chain and refuses without one. `GovernedLiveOp` set
+                        // doors already answer in one call under P-D-173 and
+                        // open their own unit, which is a different mechanism.
+                        Some(0) if subject.kind == SubjectKind::EntityPublish => {
+                            GateVerdict::authorized(
+                                ApprovalDisposition::NoRecord,
+                                false,
+                                format!(
+                                    "the tenant's effective quorum is zero, so {} at pin {:?} is \
                                  authorized with no approval record (P-D-180): nothing is \
                                  consumed and approval_ref stays null",
-                                subject.reference, subject.pin
-                            ),
-                        ),
+                                    subject.reference, subject.pin
+                                ),
+                            )
+                        }
                         _ => GateVerdict::Refused {
                             reason: format!(
                                 "no satisfied approval record for {} at pin {:?}",

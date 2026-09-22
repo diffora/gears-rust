@@ -370,10 +370,13 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
    - [ ] - `p1` - What crosses the seam: the Foundation knows only "the gate answered yes/no +
      reason, and on yes the authorizing `ApprovalRecord`'s id, plus whether that record carried the
      two-person uncomposed-bundle override (§4.2's `composition_pending` operand)". **On the
-     record-free arm there is no id and no override** (**P-D-180**): at an effective quorum of zero a
-     governed act is authorized with nothing to consume, `approval_ref` is written `NULL` — the
+     record-free arm there is no id and no override** (**P-D-180**): at an effective quorum of zero an
+     **`entity_publish`** act is authorized with nothing to consume, `approval_ref` is written `NULL` — the
      column is already nullable — and the override is `false`, so an uncomposed bundle is refused
-     here and reaches publish only through a submission. The id being
+     here and reaches publish only through a submission. **A door that pins the id into a column
+     of its own refuses the record-free arm rather than minting one** — either retire door's
+     `products_scheduled_transition.approval_ref`, which §4.3's runner resolves at `effectiveAt`.
+     The id being
      what
      `inst-fd-publish-consume` consumes and what §4.3's `approval_ref`
      stores - `inst-fd-gate-verdict`

@@ -4472,7 +4472,26 @@ pub(crate) async fn run_retire(
         crate::api::rest::SettleError::Repo(error) => HeadActError::from_repo(&error),
     })?;
 
-    let approval_ref = pinned.map_or_else(Uuid::now_v7, ApprovalId::get);
+    // **Never a fabricated id** (found by review of P-D-180). This used to read
+    // `pinned.map_or_else(Uuid::now_v7, ApprovalId::get)`, and the `None` arm was
+    // unreachable in production: the only host that answered `NoRecord` on a
+    // governed act was the no-policy default. P-D-180 made the real host answer it
+    // at an effective quorum of zero, and a minted id here is worse than a
+    // refusal - the column is append-only, the runner resolves the id at
+    // `effectiveAt`, finds nothing, defers and then fails, and
+    // `uq_products_scheduled_transition_live` blocks a clean replacement while the
+    // dead row sits there. So the retirement would wedge permanently.
+    let Some(approval_ref) = pinned.map(ApprovalId::get) else {
+        return Err(HeadActError::Refused(DomainError::ApprovalRequired(
+            "a scheduled retirement pins the authorizing record's id into \
+             products_scheduled_transition.approval_ref, which the activation runner \
+             verifies at effectiveAt (P-D-105) - so this act cannot be authorized \
+             record-free, whatever the tenant's quorum: submit an approval record for \
+             it. P-D-180 waives the record for a publish and deliberately not here; \
+             making the column admit 'no record' is owed."
+                .to_owned(),
+        )));
+    };
     let parent_transition_id = Uuid::now_v7();
     apply_cascade_plan(
         runner,

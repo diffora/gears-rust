@@ -268,13 +268,19 @@ decision, so it survives an empty quorum instead of vanishing with it.
   uncomposed-bundle override acknowledgment
 - A stage entering in `PreAuthorized` mode naming a **consumed** record that authorized this
   subject at this pinned revision answers yes and **consumes nothing further**
-- **No record and an effective quorum of zero answers yes with nothing to consume** (**P-D-180**):
+- **No record, an `entity_publish` subject and an effective quorum of zero answers yes with nothing
+  to consume** (**P-D-180**):
   a governed publish at `N = 0` is **one call**, writes no approval row and leaves `approval_ref`
   null. The `satisfied` match runs first, so an act that was submitted anyway still spends its
   record
 - An uncomposed `bundle` at `N = 0` is **refused** `BUNDLE_OVERRIDE_REQUIRED`, because the
   record-free arm carries no override acknowledgment; its author submits with `author_override_ack`
   and the same publish call then succeeds on the `satisfied` arm
+- A `system_signal`, `sku_correction`, `materiality_policy`, `bulk_batch` or `governed_live_op`
+  subject with no record is still refused **at zero**: the waiver is scoped to the publish subject,
+  and `inst-gv-one-shot` puts a signal's authority on the signal rather than on the tenant's `N`
+- A **scheduled retirement** at zero is refused `APPROVAL_REQUIRED` at its pin rather than
+  authorized with a minted `approval_ref`, because the runner resolves that id at `effectiveAt`
 - A publish at `N >= 1` with no record is still `APPROVAL_REQUIRED` — P-D-180 moves the configured
   zero only, and a tenant with no policy row keeps the default count of one
 - A `system_signal` subject — a publish whose sole content is a system-owned flag cleared by an

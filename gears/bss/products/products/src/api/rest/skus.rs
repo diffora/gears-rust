@@ -6672,6 +6672,23 @@ pub(crate) async fn run_retire(
         None => {}
     }
 
+    // **Never a fabricated id** - `products.rs`'s retire door carries the whole
+    // argument; the two must not diverge. In short: the `None` arm was unreachable
+    // until P-D-180 made the real host answer `NoRecord` at quorum zero, and a
+    // minted id wedges the retirement permanently behind the live-row unique index
+    // because the runner can never resolve it.
+    let Some(pinned_ref) = pinned.map(ApprovalId::get) else {
+        return Err(HeadActError::Refused(DomainError::ApprovalRequired(
+            "a scheduled retirement pins the authorizing record's id into \
+             products_scheduled_transition.approval_ref, which the activation runner \
+             verifies at effectiveAt (P-D-105) - so this act cannot be authorized \
+             record-free, whatever the tenant's quorum: submit an approval record for \
+             it. P-D-180 waives the record for a publish and deliberately not here; \
+             making the column admit 'no record' is owed."
+                .to_owned(),
+        )));
+    };
+
     repo::insert_scheduled_transition(
         runner,
         &inputs.scope,
@@ -6682,11 +6699,7 @@ pub(crate) async fn run_retire(
             entity_id: inputs.sku_id,
             kind: "retire".to_owned(),
             at,
-            // Host is NoRecord; mint a placeholder so the NOT NULL column writes.
-            // The consumed record's id where the host named one; under the
-            // default host (`NoRecord`) the placeholder P-D-105 records, which
-            // the runner defers fail-closed (P-D-139).
-            approval_ref: pinned.map_or_else(Uuid::now_v7, ApprovalId::get),
+            approval_ref: pinned_ref,
             retirement_reason: Some(request.reason.clone()),
             now: inputs.now,
         },

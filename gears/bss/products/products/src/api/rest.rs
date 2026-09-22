@@ -608,11 +608,21 @@ pub(crate) enum HostError {
 
 /// Build the host a door runs under (P-D-142).
 ///
-/// `Given` is returned as is. `Real` is built from the store:
-/// - `Ungoverned` → [`crate::domain::approval::StoredApprovalGate::ungoverned`].
+/// `Given` is returned as is. `Real` is built from the store. [`HostFor`] has
+/// two arms, not three — there is no `Ungoverned` one; a save or a discard
+/// never reaches here and builds
+/// [`crate::domain::approval::StoredApprovalGate::ungoverned`] at its own door.
+///
 /// - `Governed(subject)` → the stored host over `repo::gate_candidates` for
-///   that subject — the record must be `satisfied` and pinned to the subject,
-///   or the gate refuses `APPROVAL_REQUIRED`.
+///   that subject. The record must be `satisfied` and pinned to the subject, or
+///   the gate refuses `APPROVAL_REQUIRED` — **with one exception since P-D-180**:
+///   on an `EntityPublish` subject whose tenant carries an effective approver
+///   count of **zero**, the gate authorizes with `NoRecord` and the door
+///   publishes in one call. The waiver is scoped to that subject kind in the
+///   domain, so the other five kinds keep the sentence above exactly. A door
+///   that pins the authorizing id into a column of its own — either retire
+///   door's scheduled row — refuses a record-free authorization at the pin
+///   rather than minting one.
 /// - `Publish { entity, revision }` → the tenant's materiality policy is read
 ///   (an absent row is the default, P-D-112 arm 2), the touched set is
 ///   measured against the last frozen version through the submit door's own
@@ -677,41 +687,45 @@ pub(crate) async fn resolve_host(
     if let GateHost::Given(gate) = host {
         return Ok(gate);
     }
-    // **Resolved once, for two different questions** (**P-D-180**). The
-    // `Publish` arm below has always needed the policy to form its materiality
-    // verdict; every governed act now also needs the tenant's approver count,
-    // because at zero the stored host authorizes with no record at all. One
-    // read answers both rather than two reading the same row.
+    // **The policy read is lazy and tenant-scoped, and both halves were found by
+    // review of P-D-180** (the first cut read it eagerly for every governed act,
+    // under the door's own scope).
     //
-    // **This is not the re-evaluation `inst-gv-gate` forbids.** That rule is
-    // about the *verdict*, which stays the submission's. The count answers a
-    // different question: whether the tenant has any approver for a record to
-    // hold. The same resolve is already performed one door over by 06's
-    // composition-clear.
+    // *Tenant-scoped*: `products_materiality_policy` declares
+    // `resource_col = "tenant_id"`, so a real PDP scope carrying a resource-id
+    // filter compiles to `tenant_id IN (<entity id>)` and matches nothing — and
+    // `resolve_materiality_policy` cannot tell that from "no row", so it answers
+    // `Resolved(default)`. The quorum would then read 1 on a door whose scope is
+    // resource-pinned and 0 on one whose scope is tenant-only, i.e. P-D-180 would
+    // apply or not by authz shape. `governance_scope` is the posture
+    // `repo::gate_candidates`, `supersede_open_approval` and `apply_correction`
+    // already take for exactly this, and the materiality verdict one arm down was
+    // reading under the door's scope too.
     //
-    // Hoisting it makes the `Governed` arm able to fail on an unreadable
-    // policy where it previously could not. That is the fail-closed direction
-    // and it is forced: without the count there is no arm to choose. An absent
-    // row is **not** that failure - `resolve_materiality_policy` answers
-    // `Resolved(default)` for one (P-D-11), so a fresh tenant keeps the
-    // default count and P-D-180 moves the *configured* zero only.
-    let policy = match repo::resolve_materiality_policy(runner, scope, tenant_id)
-        .await
-        .map_err(HostError::Repo)?
-    {
-        Resolution::Resolved(policy) => policy,
-        Resolution::Unresolvable => {
-            return Err(HostError::Repo(RepoError::Db(
-                "the materiality policy could not be read: a failed read is not a verdict \
-                 (P-D-119 row 3), so the act does not run"
-                    .to_owned(),
-            )));
-        }
-    };
-    let effective_quorum = policy.approver_count();
+    // *Lazy*: only two paths need it — the `Publish` arm, for its materiality
+    // verdict, and an `EntityPublish` subject, for the record-free arm. Every other
+    // governed kind (live ops, the correction door, the composition clear, the
+    // policy door itself, a bulk batch) paid a SELECT for a number its own gate
+    // cannot use, because the waiver is scoped to `EntityPublish` in the domain.
+    let governance = governance_scope(tenant_id);
+    let mut policy: Option<crate::domain::materiality::MaterialityPolicy> = None;
     let subject = match act {
         HostFor::Governed(subject) => subject,
         HostFor::Publish { entity, revision } => {
+            let read = match repo::resolve_materiality_policy(runner, &governance, tenant_id)
+                .await
+                .map_err(HostError::Repo)?
+            {
+                Resolution::Resolved(read) => read,
+                Resolution::Unresolvable => {
+                    return Err(HostError::Repo(RepoError::Db(
+                        "the materiality policy could not be read: a failed read is not a verdict \
+                         (P-D-119 row 3), so the act does not run"
+                            .to_owned(),
+                    )));
+                }
+            };
+            let policy = policy.insert(read).clone();
             let resolved =
                 crate::api::rest::approvals::resolve_entity_subject(runner, scope, entity)
                     .await
@@ -750,6 +764,31 @@ pub(crate) async fn resolve_host(
                 }
             }
         }
+    };
+    // The count the record-free arm is keyed on, read only where that arm can
+    // apply. For every other subject kind the domain's own guard refuses a
+    // record-free authorization whatever this says, and the value passed is the
+    // **record-required** one so that widening the guard fails safe.
+    let effective_quorum = if subject.kind == crate::domain::governance::SubjectKind::EntityPublish
+    {
+        match policy {
+            Some(policy) => policy.approver_count(),
+            None => match repo::resolve_materiality_policy(runner, &governance, tenant_id)
+                .await
+                .map_err(HostError::Repo)?
+            {
+                Resolution::Resolved(policy) => policy.approver_count(),
+                Resolution::Unresolvable => {
+                    return Err(HostError::Repo(RepoError::Db(
+                        "the materiality policy could not be read: a failed read is not a verdict \
+                         (P-D-119 row 3), so the act does not run"
+                            .to_owned(),
+                    )));
+                }
+            },
+        }
+    } else {
+        crate::domain::materiality::DEFAULT_APPROVER_COUNT
     };
     let candidates = repo::gate_candidates(runner, scope, &subject)
         .await

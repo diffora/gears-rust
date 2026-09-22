@@ -1638,3 +1638,83 @@ fn a_satisfied_record_is_still_spent_at_quorum_zero() {
         GateVerdict::Refused { reason } => panic!("{reason}"),
     }
 }
+
+/// **The waiver is scoped to the publish subject** (**P-D-180**, found by
+/// review of the first cut, which keyed it on the quorum alone).
+///
+/// Four of the six kinds are not the tenant's `N` to waive, and one of them
+/// says so normatively: 05 `inst-gv-one-shot` puts a `system_signal`'s
+/// authority on the signal, *"so `N = 0` neither weakens nor strengthens it"*.
+/// A quorum that could waive the record of the subject that governs the quorum
+/// would also be a bootstrap hole.
+#[test]
+fn the_record_free_arm_is_refused_for_every_subject_but_a_publish() {
+    let others = [
+        GateSubject::system_signal(GATE_TENANT, "signal-1"),
+        GateSubject::sku_correction(GATE_TENANT, GATE_ENTITY, InternalRevision::new(1)),
+        GateSubject::materiality_policy(GATE_TENANT, 1),
+        GateSubject::bulk_batch(GATE_TENANT, GATE_ENTITY, "digest".to_owned()),
+        GateSubject::governed_live_op(
+            GATE_TENANT,
+            "target-1",
+            SubjectPin::Revision(InternalRevision::new(1)),
+        ),
+    ];
+    for subject in others {
+        let kind = subject.kind;
+        let verdict = StoredApprovalGate::governed(Vec::new(), 0)
+            .evaluate(subject, GateMode::Gate)
+            .expect("a verdict");
+        assert!(
+            matches!(verdict, GateVerdict::Refused { .. }),
+            "{kind:?} keeps demanding a record at quorum zero, and got {verdict:?}"
+        );
+    }
+
+    // The pair, on the one kind the decision was taken about.
+    assert!(matches!(
+        StoredApprovalGate::governed(Vec::new(), 0)
+            .evaluate(gate_subject(), GateMode::Gate)
+            .expect("a verdict"),
+        GateVerdict::Authorized(_)
+    ));
+}
+
+/// **At quorum zero a record pinned to another revision is bypassed, not
+/// refused — and it is left standing.**
+///
+/// The sibling of the `superseded` orphan the register books. Pinned here
+/// because it is a consequence rather than an intention: the act publishes on
+/// the record-free arm while the stale record stays open, and a reader meeting
+/// that row later should find it named somewhere.
+#[test]
+fn a_record_pinned_to_another_revision_is_bypassed_at_quorum_zero() {
+    let stale = candidate(0xfb, 2, ApprovalState::Satisfied);
+    let host = StoredApprovalGate::governed(vec![stale], 0);
+    match host
+        .evaluate(subject_at(3), GateMode::Gate)
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => {
+            assert_eq!(
+                authorization.disposition,
+                ApprovalDisposition::NoRecord,
+                "the pin did not match, so nothing was spent"
+            );
+            assert_eq!(authorization.approval_to_consume(), None);
+        }
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+
+    // The same shape above zero is still a refusal, which is what makes the
+    // bypass a property of the quorum rather than of the pin.
+    assert!(matches!(
+        StoredApprovalGate::governed(
+            vec![candidate(0xfc, 2, ApprovalState::Satisfied)],
+            DEFAULT_APPROVER_COUNT
+        )
+        .evaluate(subject_at(3), GateMode::Gate)
+        .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}

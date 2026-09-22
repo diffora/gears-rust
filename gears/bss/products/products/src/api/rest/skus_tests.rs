@@ -6960,9 +6960,33 @@ async fn an_unacknowledged_bundle_publish_is_refused_and_the_acknowledged_one_ra
     );
 }
 
-/// Put the tenant at `count` approvers, so a case can name the quorum it means
-/// rather than inherit the default (**P-D-180**).
-async fn set_approver_count(harness: &TestHarness, count: u32) {
+/// The revision an `ETag` names, parsed through the production precondition
+/// reader rather than by hand.
+///
+/// Hoisted out of `mod correction_door_tests` so the quorum-zero cases share it:
+/// a second parser for the gear's own tag format is a second thing to get wrong,
+/// and a hand-rolled `trim_matches('"')` panics on a weak or list validator
+/// inside a helper rather than failing the behaviour under test.
+fn revision_of(etag: &str) -> i64 {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        axum::http::HeaderValue::from_str(etag).expect("an ASCII etag"),
+    );
+    preconditions::if_match(&headers)
+        .expect("the etag names a revision")
+        .get()
+}
+
+/// Write a whole materiality policy whose approver count is `count`, so a case
+/// can name the quorum it means rather than inherit the default (**P-D-180**).
+///
+/// **It replaces the row, it does not patch one field.** `field_set` goes empty
+/// and `affected_entity_trigger` to 10, so a case that configured a tenant field
+/// set first would lose it — and lose it silently, because an act with no
+/// material touch routes to the *ungoverned* host rather than to the record-free
+/// arm, and would then pass for the wrong reason.
+async fn write_policy_with_approver_count(harness: &TestHarness, count: u32) {
     let conn = harness.db.conn().expect("scoped connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
     repo::write_materiality_policy(
@@ -6975,13 +6999,6 @@ async fn set_approver_count(harness: &TestHarness, count: u32) {
     )
     .await
     .expect("write the policy");
-}
-
-/// The revision an `ETag` this suite hands back names.
-fn revision_of(etag: &str) -> i64 {
-    etag.trim_matches('"')
-        .parse()
-        .expect("a products ETag is the internal revision")
 }
 
 /// **P-D-180 through the real host: at `N = 0` a publish is one call and
@@ -6997,7 +7014,7 @@ async fn a_governed_publish_at_quorum_zero_needs_no_submission() {
     let harness = harness().await;
     let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-N0-ONECALL")).await;
-    set_approver_count(&harness, 0).await;
+    write_policy_with_approver_count(&harness, 0).await;
 
     let published = post_head_act_via(
         app_for(&harness, TENANT),
@@ -7031,6 +7048,60 @@ async fn a_governed_publish_at_quorum_zero_needs_no_submission() {
     );
 }
 
+/// **A scheduled retirement at quorum zero is refused, not authorized with a
+/// minted `approval_ref`** (found by review of P-D-180; this is the shipping
+/// regression the first cut carried).
+///
+/// The retire door pins the authorizing record's id into
+/// `products_scheduled_transition.approval_ref`, which is `NOT NULL`, and the
+/// activation runner resolves that id at `effectiveAt`. Under the first cut the
+/// door reached `pinned.map_or_else(Uuid::now_v7, ...)` for the first time in
+/// production and wrote an id naming nothing: the runner would defer, then fail,
+/// and `uq_products_scheduled_transition_live` would block a clean replacement —
+/// a retirement wedged for good. The refusal restores exactly the pre-P-D-180
+/// behaviour for this door and names what is owed.
+#[tokio::test]
+async fn a_scheduled_retirement_at_quorum_zero_is_refused_rather_than_pinned_to_a_minted_id() {
+    let harness = harness().await;
+    let (sku_id, etag, _) = published_sku_for_retirement(&harness, "SKU-N0-RETIRE").await;
+    write_policy_with_approver_count(&harness, 0).await;
+
+    let refused = app_for(&harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, &etag)
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(
+                    json!({ "reason": "end of sale", "confirmed": true }).to_string(),
+                ))
+                .expect("build the retire request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let body = body_json(refused).await;
+    assert_eq!(
+        body["context"]["reason"],
+        json!("APPROVAL_REQUIRED"),
+        "the door refuses at the pin rather than minting an id: {body}"
+    );
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let head = repo::find_sku(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("read")
+        .expect("the head exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published,
+        "a refused retire flips nothing"
+    );
+}
+
 /// **The pair: at `N = 1` the same unsubmitted publish is still refused.**
 ///
 /// P-D-180 moves the configured zero and nothing else, so this is the case
@@ -7040,7 +7111,7 @@ async fn a_governed_publish_at_quorum_one_is_still_approval_required() {
     let harness = harness().await;
     let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-N1-REFUSED")).await;
-    set_approver_count(&harness, 1).await;
+    write_policy_with_approver_count(&harness, 1).await;
 
     let refused = post_head_act_via(
         app_for(&harness, TENANT),
@@ -7066,7 +7137,7 @@ async fn a_seeded_record_is_still_consumed_at_quorum_zero() {
     let harness = harness().await;
     let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-N0-SPENT")).await;
-    set_approver_count(&harness, 0).await;
+    write_policy_with_approver_count(&harness, 0).await;
     let revision = revision_of(&etag);
     let seeded = seed_satisfied_record(&harness, sku_id, revision).await;
 
@@ -7105,7 +7176,7 @@ async fn an_uncomposed_bundle_is_still_refused_at_quorum_zero() {
         &json!({ "product_id": parent, "sku_code": "SKU-BNDL-N0", "sku_type": "bundle" }),
     )
     .await;
-    set_approver_count(&harness, 0).await;
+    write_policy_with_approver_count(&harness, 0).await;
 
     let refused = post_head_act_via(
         app_for(&harness, TENANT),
@@ -7116,11 +7187,14 @@ async fn an_uncomposed_bundle_is_still_refused_at_quorum_zero() {
         None,
     )
     .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
     assert_eq!(
-        refused.status(),
-        StatusCode::BAD_REQUEST,
-        "no record means no acknowledgment, whatever the quorum: {}",
-        body_json(refused).await
+        violation_code(&body),
+        json!("BUNDLE_OVERRIDE_REQUIRED"),
+        "the code, not merely a 400: this bundle carries no meter or classification \
+         either, so a probe that accepts any 400 would pass on an unrelated refusal \
+         and leave the carve-out untested: {body}"
     );
 
     seed_acknowledged_publish(&harness, bundle_id, &etag).await;
@@ -7518,18 +7592,6 @@ mod correction_door_tests {
             .to_str()
             .expect("ASCII etag")
             .to_owned()
-    }
-
-    /// The revision an `ETag` names — the correction record's pin.
-    fn revision_of(etag: &str) -> i64 {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            axum::http::header::IF_MATCH,
-            axum::http::HeaderValue::from_str(etag).expect("an ASCII etag"),
-        );
-        preconditions::if_match(&headers)
-            .expect("the etag names a revision")
-            .get()
     }
 
     /// A published `product` SKU with both codes; the etag its publish minted.
