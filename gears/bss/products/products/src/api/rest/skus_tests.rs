@@ -6960,6 +6960,184 @@ async fn an_unacknowledged_bundle_publish_is_refused_and_the_acknowledged_one_ra
     );
 }
 
+/// Put the tenant at `count` approvers, so a case can name the quorum it means
+/// rather than inherit the default (**P-D-180**).
+async fn set_approver_count(harness: &TestHarness, count: u32) {
+    let conn = harness.db.conn().expect("scoped connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::write_materiality_policy(
+        &conn,
+        &scope,
+        TENANT,
+        &crate::domain::materiality::MaterialityPolicy::new(Vec::new(), 10, count),
+        Uuid::from_u128(0x5a_be),
+        crate::test_support::at(9),
+    )
+    .await
+    .expect("write the policy");
+}
+
+/// The revision an `ETag` this suite hands back names.
+fn revision_of(etag: &str) -> i64 {
+    etag.trim_matches('"')
+        .parse()
+        .expect("a products ETag is the internal revision")
+}
+
+/// **P-D-180 through the real host: at `N = 0` a publish is one call and
+/// writes no approval record.**
+///
+/// Driven with `post_head_act_via` rather than `post_publish`, because the
+/// latter seeds a `satisfied` record for the act and would take the `Consume`
+/// arm — which is the *other* case, two tests down. Nothing in this suite
+/// covered the quorum-zero publish door before this decision, in either
+/// direction, which is why the handshake it replaces had no failing test.
+#[tokio::test]
+async fn a_governed_publish_at_quorum_zero_needs_no_submission() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-N0-ONECALL")).await;
+    set_approver_count(&harness, 0).await;
+
+    let published = post_head_act_via(
+        app_for(&harness, TENANT),
+        TENANT,
+        sku_id,
+        "publish",
+        Some(&etag),
+        None,
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "one call, no submission first: {}",
+        body_json(published).await
+    );
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let head = repo::find_sku(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("read")
+        .expect("the head exists");
+    assert_eq!(head.published_version, 1, "the act really froze a version");
+    assert!(
+        repo::gate_candidates(&conn, &scope, &publish_subject(sku_id, revision_of(&etag)))
+            .await
+            .expect("read the candidates")
+            .is_empty(),
+        "the record is what P-D-180 removes; a row here is the old handshake surviving"
+    );
+}
+
+/// **The pair: at `N = 1` the same unsubmitted publish is still refused.**
+///
+/// P-D-180 moves the configured zero and nothing else, so this is the case
+/// that fails if the arm is ever widened past its own condition.
+#[tokio::test]
+async fn a_governed_publish_at_quorum_one_is_still_approval_required() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-N1-REFUSED")).await;
+    set_approver_count(&harness, 1).await;
+
+    let refused = post_head_act_via(
+        app_for(&harness, TENANT),
+        TENANT,
+        sku_id,
+        "publish",
+        Some(&etag),
+        None,
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    let body = body_json(refused).await;
+    assert_eq!(body["context"]["reason"], json!("APPROVAL_REQUIRED"));
+}
+
+/// **A record that exists is still spent at `N = 0`.**
+///
+/// The `satisfied` match runs before the quorum test, so the submission door
+/// stays a live path at zero rather than becoming a dead end — which is the
+/// mechanism the bundle carve-out below rides.
+#[tokio::test]
+async fn a_seeded_record_is_still_consumed_at_quorum_zero() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-N0-SPENT")).await;
+    set_approver_count(&harness, 0).await;
+    let revision = revision_of(&etag);
+    let seeded = seed_satisfied_record(&harness, sku_id, revision).await;
+
+    let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
+    assert_eq!(published.status(), StatusCode::OK);
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let states: Vec<_> = repo::gate_candidates(&conn, &scope, &publish_subject(sku_id, revision))
+        .await
+        .expect("read the candidates")
+        .into_iter()
+        .filter(|candidate| candidate.approval_id == seeded)
+        .map(|candidate| candidate.state)
+        .collect();
+    assert_eq!(
+        states,
+        vec![crate::domain::approval::ApprovalState::Consumed],
+        "inst-gv-one-shot is unchanged wherever a record was matched"
+    );
+}
+
+/// **The carve-out, at the door: an uncomposed bundle is still refused at
+/// `N = 0`.**
+///
+/// The record-free arm carries no override acknowledgment, so P-D-180 does not
+/// hand an uncomposed bundle a free publish. Its author still submits, and the
+/// acknowledged record then publishes through the `Consume` arm — which is the
+/// one act at zero that a submission is required for.
+#[tokio::test]
+async fn an_uncomposed_bundle_is_still_refused_at_quorum_zero() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (bundle_id, etag) = created_sku(
+        &harness,
+        &json!({ "product_id": parent, "sku_code": "SKU-BNDL-N0", "sku_type": "bundle" }),
+    )
+    .await;
+    set_approver_count(&harness, 0).await;
+
+    let refused = post_head_act_via(
+        app_for(&harness, TENANT),
+        TENANT,
+        bundle_id,
+        "publish",
+        Some(&etag),
+        None,
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "no record means no acknowledgment, whatever the quorum: {}",
+        body_json(refused).await
+    );
+
+    seed_acknowledged_publish(&harness, bundle_id, &etag).await;
+    let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let head = repo::find_sku(&conn, &scope, TENANT, bundle_id)
+        .await
+        .expect("read")
+        .expect("the head exists");
+    assert!(
+        head.composition_pending,
+        "the acknowledged record published it, so the carve-out's path is live at zero"
+    );
+}
+
 /// **A one-person tenant publishes their first `product` SKU**
 /// (`dod-finance-predicate`): at `N = 0` the finance predicate is recorded
 /// `predicateUnsatisfiable = finance_reviewer` on a record born satisfied, and
