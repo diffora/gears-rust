@@ -91,6 +91,15 @@ use time::OffsetDateTime;
 /// chain never created.
 use crate::infra::events::OUTBOX_TABLE_PREFIX;
 
+/// `source` on the pick-list: a supplier another module registered.
+pub const USAGE_TYPE_SOURCE_REGISTRY: &str = "registry";
+/// `source`: this crate's adapter over the usage collector's own client.
+pub const USAGE_TYPE_SOURCE_COLLECTOR: &str = "usage_collector";
+/// `source`: the fabricated set a stand opted into.
+pub const USAGE_TYPE_SOURCE_LOCAL_DEV: &str = "local_dev_static";
+/// `source`: nothing answers, so the pick-list is a 501 and not an empty page.
+pub const USAGE_TYPE_SOURCE_UNCONFIGURED: &str = "unconfigured";
+
 /// Per-process state built by [`Gear::init`] and read by
 /// [`RestApiCapability::register_rest`].
 ///
@@ -194,7 +203,10 @@ pub(crate) struct ProductsRuntime {
 
     /// `03`'s usage-type resolver (P-D-141), built once at `init` and shared
     /// by every `ApiState` this runtime hands out.
-    pub usage_type_resolver: Arc<dyn crate::infra::usage_types::UsageTypeResolver>,
+    pub usage_type_catalog: Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+    /// Where that catalog came from, decided once here and never re-derived
+    /// at a call site (the argument is pricing's `resolve_product_catalog`).
+    pub usage_type_catalog_source: &'static str,
 
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
@@ -241,6 +253,7 @@ pub(crate) struct ProductsRuntime {
     rest_client = crate::infra::catalog_rest_client::ProductCatalogRestClient,
     transports = [local, rest],
 )]
+
 pub struct BssProductsGear {
     /// `None` until `init()` completes, and on a boot where the gear is
     /// compiled in but not configured.
@@ -380,7 +393,7 @@ async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancel
         sink: rt.sdk_state.sink.clone(),
         idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
         reference_freshness: rt.reference_freshness,
-        usage_type_resolver: std::sync::Arc::clone(&rt.sdk_state.usage_type_resolver),
+        usage_type_catalog: std::sync::Arc::clone(&rt.sdk_state.usage_type_catalog),
     };
     if let Err(error) =
         crate::infra::activation_runner::sweep(&ctx, rt.system_actor_ref, now, cancel).await
@@ -712,6 +725,79 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
     }
 }
 
+/// `03`'s usage-type catalog and where it came from (**P-D-141**, and the
+/// plugin seam of 2026-09-22).
+///
+/// Extracted from `init` rather than inlined, for the reason pricing's
+/// `resolve_product_catalog` was: the two are the same shape and together they
+/// pushed `init` past its line budget.
+fn resolve_usage_type_catalog(
+    ctx: &GearCtx,
+    cfg: &crate::config::ProductsConfig,
+) -> (
+    Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+    &'static str,
+) {
+    // `03`'s usage-type catalog (P-D-141): one narrow port, four steps, and
+    // the provenance decided here rather than at a call site.
+    //
+    // **A registered catalog always wins over a config mode**, and the
+    // argument is pricing's `module::resolve_product_catalog`: a deployment
+    // that later gains a real supplier must take it even if a dev mode was
+    // left in its file, since the failure to avoid is a stand quietly
+    // serving types no supplier issued.
+    //
+    // **The `source` travels with the `Arc`.** Re-deriving it from the
+    // config mode at the read would report `unconfigured` — "nobody was
+    // asked" — for an answer a registered supplier gave, and would leave
+    // the `registry` value unreachable.
+    if let Ok(registered) = ctx
+        .client_hub()
+        .get::<dyn bss_products_sdk::usage_types::UsageTypeCatalog>()
+    {
+        (registered, USAGE_TYPE_SOURCE_REGISTRY)
+    } else if let Ok(client) = ctx
+        .client_hub()
+        .get::<dyn usage_collector_sdk::UsageCollectorClientV1>()
+    {
+        (
+            Arc::new(crate::infra::usage_types::CollectorUsageTypes::new(
+                client,
+                cfg.usage_type_resolver_timeout(),
+            )),
+            USAGE_TYPE_SOURCE_COLLECTOR,
+        )
+    } else {
+        match cfg.usage_type_catalog_mode {
+            crate::config::UsageTypeCatalogSource::LocalDevStaticUsageTypes => {
+                tracing::warn!(
+                    mode = "local_dev_static_usage_types",
+                    id_prefix = crate::infra::usage_types::DEV_LOCAL_USAGE_TYPE_PREFIX,
+                    "bss-products: serving a FABRICATED usage-type catalog. Operators are \
+                     being shown types no collector issued, and a meter declared against \
+                     one names a stream nothing will ever report. Every id is in the \
+                     reserved namespace above so the rows can be found later."
+                );
+                (
+                    Arc::new(crate::infra::usage_types::LocalDevStaticUsageTypes),
+                    USAGE_TYPE_SOURCE_LOCAL_DEV,
+                )
+            }
+            crate::config::UsageTypeCatalogSource::Unconfigured => {
+                tracing::warn!(
+                    "bss-products: no usage-type catalog registered and no mode configured; \
+                     the pick-list answers 501 and every usage-SKU publish fails closed \
+                     (P-D-131)"
+                );
+                (
+                    Arc::new(crate::infra::usage_types::UnconfiguredUsageTypes),
+                    USAGE_TYPE_SOURCE_UNCONFIGURED,
+                )
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl Gear for BssProductsGear {
     async fn init(&self, ctx: &GearCtx) -> anyhow::Result<()> {
@@ -868,28 +954,7 @@ impl Gear for BssProductsGear {
         // implementation package. The out-of-process binding is the REST
         // door `register_rest` merges; both run the identical
         // `catalog_version x request` gate.
-        // `03`'s usage-type resolver (P-D-141): the collector's client where
-        // `ClientHub` carries one, `NoCollector` — fail-closed, P-D-131 —
-        // where it does not, said once here so a deployment can read why
-        // its usage SKUs answer 503.
-        let usage_type_resolver: Arc<dyn crate::infra::usage_types::UsageTypeResolver> = match ctx
-            .client_hub()
-            .get::<dyn usage_collector_sdk::UsageCollectorClientV1>()
-        {
-            Ok(client) => Arc::new(crate::infra::usage_types::CollectorResolver::new(
-                client,
-                cfg.usage_type_resolver_timeout(),
-            )),
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "bss-products: UsageCollectorClientV1 absent from ClientHub; usage-type \
-                     resolution answers Unavailable and every usage-SKU publish fails closed \
-                     (P-D-131)"
-                );
-                Arc::new(crate::infra::usage_types::NoCollector)
-            }
-        };
+        let (usage_type_catalog, usage_type_catalog_source) = resolve_usage_type_catalog(ctx, &cfg);
         let sdk_state = Arc::new(crate::api::rest::ApiState {
             db: db_provider.clone(),
             sink: sink.clone(),
@@ -902,7 +967,8 @@ impl Gear for BssProductsGear {
             breakglass_window_hours: cfg.breakglass_window_hours,
             breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
             eol_enabled: cfg.eol_enabled,
-            usage_type_resolver: Arc::clone(&usage_type_resolver),
+            usage_type_catalog: Arc::clone(&usage_type_catalog),
+            usage_type_catalog_source,
         });
         ctx.client_hub()
             .register::<dyn bss_products_sdk::watermarks::WatermarkPosts>(Arc::new(
@@ -927,7 +993,8 @@ impl Gear for BssProductsGear {
                         breakglass_window_hours: cfg.breakglass_window_hours,
                         breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
                         eol_enabled: cfg.eol_enabled,
-                        usage_type_resolver: Arc::clone(&usage_type_resolver),
+                        usage_type_catalog: Arc::clone(&usage_type_catalog),
+                        usage_type_catalog_source,
                     }),
                     enforcer: (*enforcer).clone(),
                 },
@@ -979,7 +1046,8 @@ impl Gear for BssProductsGear {
             activation_attempt_budget: cfg.activation_attempt_budget,
             retirement_held_alert_hours: cfg.retirement_held_alert_hours,
             reference_freshness: cfg.reference_freshness(),
-            usage_type_resolver: Arc::clone(&usage_type_resolver),
+            usage_type_catalog: Arc::clone(&usage_type_catalog),
+            usage_type_catalog_source,
             pipeline,
             db: db_provider,
             idempotency_retention_hours,
@@ -1034,7 +1102,8 @@ impl RestApiCapability for BssProductsGear {
             breakglass_window_hours: rt.breakglass_window_hours,
             breakglass_review_sla_hours: rt.breakglass_review_sla_hours,
             eol_enabled: rt.eol_enabled,
-            usage_type_resolver: Arc::clone(&rt.usage_type_resolver),
+            usage_type_catalog: Arc::clone(&rt.usage_type_catalog),
+            usage_type_catalog_source: rt.usage_type_catalog_source,
         });
         Ok(router
             .merge(crate::api::rest::products::router(
@@ -1058,6 +1127,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::recognized_sets::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::catalog_usage_types::router(
                 Arc::clone(&api_state),
                 openapi,
             ))

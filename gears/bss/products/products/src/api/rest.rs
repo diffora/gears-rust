@@ -157,6 +157,7 @@ use crate::infra::storage::repo::{self, AuditCommon, RefusalSubject};
 
 pub mod approvals;
 pub mod bulk;
+pub mod catalog_usage_types;
 pub mod catalog_version;
 pub mod dto;
 pub mod materiality_policy;
@@ -325,8 +326,11 @@ pub(crate) struct ApiState {
     /// wired. Carried here for the same reason the detector is built per
     /// door: the policy has an operand outside the process, and a literal in
     /// the door would be a second program under test.
-    pub(crate) usage_type_resolver:
-        std::sync::Arc<dyn crate::infra::usage_types::UsageTypeResolver>,
+    pub(crate) usage_type_catalog:
+        std::sync::Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+    /// Where that catalog came from, decided once in `gear.rs` and read by
+    /// the pick-list rather than re-derived there.
+    pub(crate) usage_type_catalog_source: &'static str,
 }
 
 /// Extract the authenticated [`SecurityContext`] from the request

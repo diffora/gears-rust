@@ -317,7 +317,7 @@ pub async fn audit_error_code(dsn: &str) -> Option<String> {
 /// `ApiState` carries unless a probe injects [`StubUsageTypes`] to script the
 /// other two answers. Production never sees it: `gear.rs` installs the
 /// collector's client or `NoCollector` (P-D-141).
-pub fn resolved_usage_types() -> Arc<dyn crate::infra::usage_types::UsageTypeResolver> {
+pub fn resolved_usage_types() -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
     Arc::new(StubUsageTypes::always(
         crate::domain::recognized::UsageTypeAnswer::Resolved(probe_binding()),
     ))
@@ -367,7 +367,7 @@ impl StubUsageTypes {
 }
 
 #[async_trait]
-impl crate::infra::usage_types::UsageTypeResolver for StubUsageTypes {
+impl bss_products_sdk::usage_types::UsageTypeCatalog for StubUsageTypes {
     async fn resolve(
         &self,
         _ctx: &SecurityContext,
@@ -376,6 +376,23 @@ impl crate::infra::usage_types::UsageTypeResolver for StubUsageTypes {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let next = self.answers.lock().expect("stub lock").pop_front();
         next.unwrap_or_else(|| self.last.clone())
+    }
+
+    async fn list(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        _q: Option<&str>,
+        _kind: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<
+        bss_products_sdk::usage_types::UsageTypePage,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        // The stub exists for the publish gate; a case that needs the
+        // pick-list builds its own catalog and says so, rather than inheriting
+        // an answer this one never meant.
+        Ok(bss_products_sdk::usage_types::UsageTypePage::default())
     }
 }
 
@@ -603,4 +620,34 @@ async fn seed_satisfied_record(
             .expect("stamp the acknowledgment");
     }
     approval_id
+}
+
+/// A catalog that is configured and holds nothing — the 200-with-no-items case
+/// a 501 must never be confused with.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EmptyUsageTypes;
+
+#[async_trait::async_trait]
+impl bss_products_sdk::usage_types::UsageTypeCatalog for EmptyUsageTypes {
+    async fn resolve(
+        &self,
+        _ctx: &SecurityContext,
+        _usage_type_ref: &str,
+    ) -> crate::domain::recognized::UsageTypeAnswer {
+        crate::domain::recognized::UsageTypeAnswer::Unresolved
+    }
+
+    async fn list(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _kind: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<
+        bss_products_sdk::usage_types::UsageTypePage,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        Ok(bss_products_sdk::usage_types::UsageTypePage::default())
+    }
 }

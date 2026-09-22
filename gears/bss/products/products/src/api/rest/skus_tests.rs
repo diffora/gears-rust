@@ -1333,6 +1333,131 @@ impl crate::domain::governance::GovernanceGate for RefusingGate {
 /// The `ApiState` `app_for` layers, on its own so a case that calls a door's
 /// inner function directly (rather than through the router) builds the same
 /// state a mounted router would.
+/// The pick-list door over a catalog this case supplies, on the same harness
+/// the meter cases use — the two belong together, and the door needs no store
+/// of its own.
+async fn usage_type_list(
+    harness: &TestHarness,
+    catalog: Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+    source: &'static str,
+    query: &str,
+) -> axum::http::Response<Body> {
+    let mut state = api_state(harness);
+    state.usage_type_catalog = catalog;
+    state.usage_type_catalog_source = source;
+    let openapi = OpenApiRegistryImpl::new();
+    crate::api::rest::catalog_usage_types::router(Arc::new(state), &openapi)
+        .layer(axum::Extension(flat_in_enforcer(TENANT)))
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/bss-products/v1/catalog/usage-types{query}"))
+                .extension(authed_ctx(TENANT))
+                .body(Body::empty())
+                .expect("build the pick-list request"),
+        )
+        .await
+        .expect("the router answers")
+}
+
+/// **No catalog configured answers 501, not an empty page.**
+///
+/// The door's reason for existing: a caller must be able to tell "this
+/// deployment has no usage types" from "nobody could be asked", and only the
+/// status and `source` say which.
+#[tokio::test]
+async fn the_pick_list_refuses_when_no_catalog_is_configured() {
+    let harness = harness().await;
+    let response = usage_type_list(
+        &harness,
+        Arc::new(crate::infra::usage_types::UnconfiguredUsageTypes),
+        "unconfigured",
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+}
+
+/// A configured catalog lists, carries its provenance, and narrows.
+#[tokio::test]
+async fn the_pick_list_carries_its_source_and_narrows() {
+    let harness = harness().await;
+    let response = usage_type_list(
+        &harness,
+        Arc::new(crate::infra::usage_types::LocalDevStaticUsageTypes),
+        "local_dev_static",
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["source"], "local_dev_static",
+        "read before items: {body}"
+    );
+    let all = body["items"].as_array().expect("items").len();
+    assert!(all >= 3, "{body}");
+    assert!(body["items"][0]["kind"].is_string(), "{body}");
+    assert!(body["items"][0]["metadata_fields"].is_array(), "{body}");
+    assert_eq!(body["page_info"]["limit"], 100, "the default page size");
+
+    let narrowed = usage_type_list(
+        &harness,
+        Arc::new(crate::infra::usage_types::LocalDevStaticUsageTypes),
+        "local_dev_static",
+        "?q=storage",
+    )
+    .await;
+    let narrowed = body_json(narrowed).await;
+    assert_eq!(
+        narrowed["items"].as_array().expect("items").len(),
+        1,
+        "{narrowed}"
+    );
+}
+
+/// **A configured catalog with nothing in it answers 200 and an empty array**,
+/// which is the case a 501 must never be confused with.
+#[tokio::test]
+async fn an_empty_catalog_is_a_200_with_no_items() {
+    let harness = harness().await;
+    let response = usage_type_list(
+        &harness,
+        Arc::new(crate::test_support::EmptyUsageTypes),
+        "registry",
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["source"], "registry");
+    assert!(
+        body["items"].as_array().expect("items").is_empty(),
+        "configured and empty is not the same fact as unconfigured: {body}"
+    );
+}
+
+/// `limit` is refused rather than clamped, so a screen never quietly gets a
+/// page it did not ask for.
+#[tokio::test]
+async fn the_pick_list_refuses_a_limit_it_will_not_honour() {
+    let harness = harness().await;
+    for query in ["?limit=0", "?limit=100000"] {
+        let response = usage_type_list(
+            &harness,
+            Arc::new(crate::infra::usage_types::LocalDevStaticUsageTypes),
+            "local_dev_static",
+            query,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{query} is refused, not clamped"
+        );
+    }
+}
+
 fn api_state(harness: &TestHarness) -> ApiState {
     ApiState {
         db: harness.db.clone(),
@@ -1347,7 +1472,8 @@ fn api_state(harness: &TestHarness) -> ApiState {
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
+        usage_type_catalog_source: "registry",
     }
 }
 
@@ -5023,8 +5149,8 @@ mod meter_declaration_tests {
         stub: &Arc<crate::test_support::StubUsageTypes>,
     ) -> Result<axum::response::Response, toolkit::api::canonical_prelude::CanonicalError> {
         let mut state = api_state(harness);
-        state.usage_type_resolver =
-            Arc::clone(stub) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+        state.usage_type_catalog =
+            Arc::clone(stub) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>;
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             axum::http::header::IF_MATCH,
@@ -5094,7 +5220,7 @@ mod meter_declaration_tests {
         .expect("a metered SKU's publish stores its binding");
         assert_eq!(
             snapshot,
-            crate::test_support::probe_binding().snapshot_json(),
+            crate::domain::recognized::binding_snapshot_json(&crate::test_support::probe_binding()),
             "the snapshot is the resolved (gts_id, kind, metadata_fields), sorted"
         );
         let content = crate::test_support::raw_string_opt(
@@ -7556,8 +7682,8 @@ mod correction_door_tests {
     ) -> Router {
         let mut state = api_state(harness);
         if let Some(stub) = stub {
-            state.usage_type_resolver =
-                Arc::clone(stub) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+            state.usage_type_catalog =
+                Arc::clone(stub) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>;
         }
         state.reference.breakglass_correction_enabled = breakglass_enabled;
         let state = Arc::new(state);
@@ -8151,7 +8277,7 @@ mod correction_door_tests {
         .expect("the corrected meter re-resolved and froze its binding");
         assert_eq!(
             snapshot,
-            crate::test_support::probe_binding().snapshot_json()
+            crate::domain::recognized::binding_snapshot_json(&crate::test_support::probe_binding())
         );
     }
 }
@@ -8883,8 +9009,8 @@ mod clone_revalidation_tests {
             crate::domain::recognized::UsageTypeAnswer::Unresolved,
         ));
         let mut state = api_state(&harness);
-        state.usage_type_resolver =
-            Arc::clone(&stub) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+        state.usage_type_catalog =
+            Arc::clone(&stub) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>;
         let openapi = OpenApiRegistryImpl::new();
         let app =
             router(Arc::new(state), &openapi).layer(axum::Extension(flat_in_enforcer(TENANT)));

@@ -28,10 +28,19 @@
 //!   `usage_type_resolver_timeout_ms`: fail-closed, the gear's `503` channel,
 //!   for usage SKUs only (P-D-131 — a latency coupling, not a lock).
 //!
-//! [`NoCollector`] is what a deployment without the collector's client gets:
-//! `Unavailable`, always, and `gear.rs` says so once at boot. That keeps the
-//! decided posture — a usage SKU cannot publish without a collector — instead
-//! of a `Resolved` nobody asked the collector for.
+//! [`UnconfiguredUsageTypes`] is what a deployment with no catalog at all gets:
+//! `Unavailable` from `resolve`, always, and a **501** from `list` — never an
+//! empty page, because "this deployment has no usage types" and "nobody could
+//! be asked" are opposite facts. `gear.rs` says so once at boot. That keeps the
+//! decided posture — a usage SKU cannot publish without a catalog — instead
+//! of a `Resolved` nobody asked for.
+//!
+//! # The port itself lives in the SDK now
+//!
+//! [`UsageTypeCatalog`] is `bss_products_sdk::usage_types`'s, so a module that
+//! is not this collector can register one and be preferred over the adapter
+//! below. This module is the two implementations this crate ships plus the
+//! fabricated one a stand may opt into.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,35 +49,48 @@ use async_trait::async_trait;
 use toolkit_security::SecurityContext;
 use usage_collector_sdk::{UsageCollectorClientV1, UsageCollectorError, UsageTypeGtsId};
 
-use crate::domain::recognized::{UsageTypeAnswer, UsageTypeBinding};
+use bss_products_sdk::usage_types::{
+    UsageTypeAnswer, UsageTypeBinding, UsageTypeCatalog, UsageTypePage,
+    unconfigured_usage_type_catalog, usage_type_catalog_unreachable,
+};
+use toolkit_canonical_errors::CanonicalError;
+use toolkit_odata::{CursorV1, ODataQuery, parse_filter_string};
 
-/// The publish door's view of the collector.
-#[async_trait]
-pub trait UsageTypeResolver: Send + Sync {
-    /// Ask whether `usage_type_ref` names a usage type the collector knows.
-    async fn resolve(&self, ctx: &SecurityContext, usage_type_ref: &str) -> UsageTypeAnswer;
-}
-
-/// No collector is wired: every answer is `Unavailable`, fail-closed
-/// (P-D-131). Installed by `gear.rs` when `ClientHub` carries no
-/// [`UsageCollectorClientV1`], with a boot-time warning naming this type.
+/// No catalog is wired: `resolve` is `Unavailable`, fail-closed (P-D-131), and
+/// `list` is a **501**. Installed by `gear.rs` when nothing answers, with a
+/// boot-time warning naming this type.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct NoCollector;
+pub struct UnconfiguredUsageTypes;
 
 #[async_trait]
-impl UsageTypeResolver for NoCollector {
+impl UsageTypeCatalog for UnconfiguredUsageTypes {
     async fn resolve(&self, _ctx: &SecurityContext, _usage_type_ref: &str) -> UsageTypeAnswer {
         UsageTypeAnswer::Unavailable
     }
+
+    async fn list(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _kind: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<UsageTypePage, CanonicalError> {
+        // **Not an empty page.** A caller that cannot tell "no types" from
+        // "no catalog" will render silence as a clean answer, which is the
+        // failure this whole surface exists to avoid.
+        Err(unconfigured_usage_type_catalog())
+    }
 }
 
-/// The collector's own client, bounded by the configured timeout.
-pub struct CollectorResolver {
+/// The adapter over the usage collector's own client, bounded by the
+/// configured timeout.
+pub struct CollectorUsageTypes {
     client: Arc<dyn UsageCollectorClientV1>,
     timeout: Duration,
 }
 
-impl CollectorResolver {
+impl CollectorUsageTypes {
     /// `timeout` is `ProductsConfig::usage_type_resolver_timeout()` — read,
     /// never inlined (P-D-107, P-D-121 row 12).
     #[must_use]
@@ -78,25 +100,13 @@ impl CollectorResolver {
 }
 
 #[async_trait]
-impl UsageTypeResolver for CollectorResolver {
+impl UsageTypeCatalog for CollectorUsageTypes {
     async fn resolve(&self, ctx: &SecurityContext, usage_type_ref: &str) -> UsageTypeAnswer {
         let Ok(gts_id) = UsageTypeGtsId::new(usage_type_ref) else {
             return UsageTypeAnswer::Unresolved;
         };
         match tokio::time::timeout(self.timeout, self.client.get_usage_type(ctx, gts_id)).await {
-            Ok(Ok(usage_type)) => UsageTypeAnswer::Resolved(UsageTypeBinding {
-                gts_id: usage_type_ref.to_owned(),
-                kind: match usage_type.kind {
-                    usage_collector_sdk::models::UsageKind::Counter => "counter",
-                    usage_collector_sdk::models::UsageKind::Gauge => "gauge",
-                }
-                .to_owned(),
-                metadata_fields: usage_type
-                    .metadata_fields
-                    .iter()
-                    .map(|key| key.as_str().to_owned())
-                    .collect(),
-            }),
+            Ok(Ok(usage_type)) => UsageTypeAnswer::Resolved(binding_of(&usage_type)),
             Ok(Err(UsageCollectorError::NotFound { .. })) => UsageTypeAnswer::Unresolved,
             Ok(Err(error)) => {
                 tracing::warn!(%error, usage_type_ref, "bss-products: usage-type collector failed");
@@ -112,4 +122,166 @@ impl UsageTypeResolver for CollectorResolver {
             }
         }
     }
+
+    async fn list(
+        &self,
+        ctx: &SecurityContext,
+        q: Option<&str>,
+        kind: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<UsageTypePage, CanonicalError> {
+        let query = list_query(q, kind, limit, cursor)?;
+        // The same deadline `resolve` runs under. A pick-list that hangs is a
+        // screen that hangs, and the operator learns nothing either way.
+        match tokio::time::timeout(self.timeout, self.client.list_usage_types(ctx, &query)).await {
+            Ok(Ok(page)) => Ok(UsageTypePage {
+                items: page.items.iter().map(binding_of).collect(),
+                next_cursor: page.page_info.next_cursor,
+                prev_cursor: page.page_info.prev_cursor,
+            }),
+            // **Never an empty page on a failure.** The 503 is what lets a
+            // caller tell "this deployment has no usage types" from "the
+            // catalog did not answer".
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "bss-products: usage-type catalog list failed");
+                Err(usage_type_catalog_unreachable(error.to_string()))
+            }
+            Err(_elapsed) => Err(usage_type_catalog_unreachable(format!(
+                "the usage-type catalog did not answer within {}ms",
+                u64::try_from(self.timeout.as_millis()).unwrap_or(u64::MAX)
+            ))),
+        }
+    }
 }
+
+/// One collector [`UsageType`](usage_collector_sdk::models::UsageType) as the
+/// port's binding.
+///
+/// **One spelling for both methods.** `resolve` used to build this inline; a
+/// second copy for `list` is how a picker comes to disagree with the gate about
+/// what a type's `kind` is.
+fn binding_of(usage_type: &usage_collector_sdk::models::UsageType) -> UsageTypeBinding {
+    UsageTypeBinding {
+        gts_id: usage_type.gts_id.to_string(),
+        kind: match usage_type.kind {
+            usage_collector_sdk::models::UsageKind::Counter => "counter",
+            usage_collector_sdk::models::UsageKind::Gauge => "gauge",
+        }
+        .to_owned(),
+        metadata_fields: usage_type
+            .metadata_fields
+            .iter()
+            .map(|key| key.as_str().to_owned())
+            .collect(),
+    }
+}
+
+/// The pick-list's `OData` paging, on `infra::catalog_provider::search_odata`'s
+/// terms exactly — the sibling browse walk in this same crate.
+///
+/// `q` is `contains` rather than `startswith` because a usage type's id is a
+/// long GTS path whose distinguishing part is at the **end**
+/// (`…usage_type.vcpuhours.v1`), so a prefix search would match everything or
+/// nothing. `kind` is equality over the collector's own closed two-value set.
+///
+/// # Errors
+///
+/// [`CanonicalError`] when the narrowed filter will not parse or the
+/// continuation token is not a `CursorV1`.
+fn list_query(
+    q: Option<&str>,
+    kind: Option<&str>,
+    limit: u32,
+    cursor: Option<&str>,
+) -> Result<ODataQuery, CanonicalError> {
+    let mut clauses: Vec<String> = Vec::new();
+    if let Some(needle) = q.filter(|s| !s.is_empty()) {
+        clauses.push(format!("contains(gts_id,'{}')", needle.replace('\'', "''")));
+    }
+    if let Some(wanted) = kind.filter(|s| !s.is_empty()) {
+        clauses.push(format!("kind eq '{}'", wanted.replace('\'', "''")));
+    }
+    let mut odata = ODataQuery::new().with_limit(u64::from(limit));
+    if !clauses.is_empty() {
+        let parsed = parse_filter_string(&clauses.join(" and ")).map_err(|e| {
+            CanonicalError::internal(format!("bss-products: usage-type filter: {e}")).create()
+        })?;
+        odata = odata.with_filter(parsed.into_expr());
+    }
+    if let Some(token) = cursor.filter(|s| !s.is_empty()) {
+        let decoded = CursorV1::decode(token).map_err(|e| {
+            CanonicalError::internal(format!("bss-products: usage-type cursor: {e}")).create()
+        })?;
+        odata = odata.with_cursor(decoded);
+    }
+    Ok(odata)
+}
+
+/// A **fabricated** usage-type catalog, for a stand with no supplier at all.
+///
+/// Selected only by an explicit config mode named at length, and warned about
+/// at boot: a deployment running this is showing operators usage types no
+/// collector issued, and a meter declared against one names a stream nothing
+/// will ever report. Every id sits under a reserved prefix so the rows can be
+/// found and swept when a real supplier arrives.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LocalDevStaticUsageTypes;
+
+/// The reserved namespace every fabricated id sits under.
+pub const DEV_LOCAL_USAGE_TYPE_PREFIX: &str =
+    "gts.cf.core.uc.usage_record.v1~cf.dev.local.usage_type.";
+
+impl LocalDevStaticUsageTypes {
+    fn fabricated() -> Vec<UsageTypeBinding> {
+        ["cpu.v1", "storage.v1", "requests.v1"]
+            .into_iter()
+            .map(|leaf| UsageTypeBinding {
+                gts_id: format!("{DEV_LOCAL_USAGE_TYPE_PREFIX}{leaf}"),
+                kind: "counter".to_owned(),
+                metadata_fields: Vec::new(),
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl UsageTypeCatalog for LocalDevStaticUsageTypes {
+    async fn resolve(&self, _ctx: &SecurityContext, usage_type_ref: &str) -> UsageTypeAnswer {
+        Self::fabricated()
+            .into_iter()
+            .find(|binding| binding.gts_id == usage_type_ref)
+            .map_or(UsageTypeAnswer::Unresolved, UsageTypeAnswer::Resolved)
+    }
+
+    async fn list(
+        &self,
+        _ctx: &SecurityContext,
+        q: Option<&str>,
+        kind: Option<&str>,
+        limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<UsageTypePage, CanonicalError> {
+        // The whole fabricated set fits one page, so the cursor is never
+        // minted and never read. Narrowing is applied so a screen driving this
+        // mode behaves as it will against a real catalog.
+        let items = Self::fabricated()
+            .into_iter()
+            .filter(|b| {
+                q.filter(|s| !s.is_empty())
+                    .is_none_or(|n| b.gts_id.contains(n))
+            })
+            .filter(|b| kind.filter(|s| !s.is_empty()).is_none_or(|k| b.kind == k))
+            .take(limit as usize)
+            .collect();
+        Ok(UsageTypePage {
+            items,
+            next_cursor: None,
+            prev_cursor: None,
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "usage_types_tests.rs"]
+mod usage_types_tests;

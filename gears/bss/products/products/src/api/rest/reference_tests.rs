@@ -99,7 +99,8 @@ fn app(harness: &TestHarness) -> Router {
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
+        usage_type_catalog_source: "registry",
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(TENANT)))
@@ -570,7 +571,8 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
             breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
             breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
             eol_enabled: false,
-            usage_type_resolver: crate::test_support::resolved_usage_types(),
+            usage_type_catalog: crate::test_support::resolved_usage_types(),
+            usage_type_catalog_source: "registry",
         }),
         enforcer: flat_in_enforcer(TENANT),
     };

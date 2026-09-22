@@ -286,43 +286,32 @@ pub fn declaration_verdict(unit: &str, member: Option<MemberState>) -> Result<()
 /// never reads it. The three fields are the three the definition of done names; the
 /// collector's own types are flattened to strings here so the domain owes the
 /// collector SDK nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageTypeBinding {
-    /// The resolved usage type's GTS id, as the collector spells it.
-    pub gts_id: String,
-    /// `counter` or `gauge`.
-    pub kind: String,
-    /// The metadata keys the usage type declares.
-    pub metadata_fields: Vec<String>,
-}
+/// **The two types are the SDK port's since 2026-09-22.** They were declared
+/// here while the port was in-crate; moving the port to `products-sdk` so
+/// another module can register a catalog moved its operands with it, and a
+/// second declaration of the same three fields is how a picker comes to
+/// disagree with the gate about what a usage type is. Every
+/// `crate::domain::recognized::UsageType*` path keeps resolving.
+pub use bss_products_sdk::usage_types::{UsageTypeAnswer, UsageTypeBinding};
 
-impl UsageTypeBinding {
-    /// The stored form: one JSON object, keys in alphabetical order, the
-    /// metadata keys sorted — so two publishes of the same binding store the
-    /// same bytes.
-    #[must_use]
-    pub fn snapshot_json(&self) -> String {
-        let mut fields = self.metadata_fields.clone();
-        fields.sort();
-        serde_json::json!({
-            "gts_id": self.gts_id,
-            "kind": self.kind,
-            "metadata_fields": fields,
-        })
-        .to_string()
-    }
-}
-
-/// The collector's three answers (`dod-usage-type-resolution`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UsageTypeAnswer {
-    /// The ref resolved, to this binding. Validators receive it and never
-    /// call out.
-    Resolved(UsageTypeBinding),
-    /// The collector answered not-found.
-    Unresolved,
-    /// The collector was unreachable or unwired (**P-D-131**).
-    Unavailable,
+/// The stored form of a binding: one JSON object, keys in alphabetical order,
+/// the metadata keys sorted — so two publishes of the same binding store the
+/// same bytes.
+///
+/// A free function rather than an inherent method, because the type is the
+/// SDK's now and this rendering is the **domain's** business: the snapshot is
+/// what `binding_snapshot` freezes and what a re-verification reads, and the
+/// port has no opinion about it.
+#[must_use]
+pub fn binding_snapshot_json(binding: &UsageTypeBinding) -> String {
+    let mut fields = binding.metadata_fields.clone();
+    fields.sort();
+    serde_json::json!({
+        "gts_id": binding.gts_id,
+        "kind": binding.kind,
+        "metadata_fields": fields,
+    })
+    .to_string()
 }
 
 /// Map a pre-transaction resolve onto the publish refusal

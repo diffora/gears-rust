@@ -147,7 +147,7 @@ fn the_kind_roster_and_its_refusal_codes() {
 fn a_binding_snapshot_renders_sorted_and_flat() {
     let binding = crate::test_support::probe_binding();
     assert_eq!(
-        binding.snapshot_json(),
+        crate::domain::recognized::binding_snapshot_json(&binding),
         r#"{"gts_id":"usage:storage","kind":"counter","metadata_fields":["region","zone"]}"#
     );
 }

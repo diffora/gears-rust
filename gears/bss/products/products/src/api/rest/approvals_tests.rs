@@ -119,7 +119,8 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
+        usage_type_catalog_source: "registry",
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))
@@ -1596,7 +1597,8 @@ fn elevated_app(harness: &TestHarness, tenant: Uuid) -> Router {
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
+        usage_type_catalog_source: "registry",
     });
     let openapi = OpenApiRegistryImpl::new();
     router(Arc::clone(&state), &openapi)

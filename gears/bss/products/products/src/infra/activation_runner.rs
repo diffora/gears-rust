@@ -57,8 +57,8 @@ pub(crate) struct ActivationContext {
     /// The same resolver the REST publish door asks (P-D-141), so a usage
     /// SKU's scheduled publish resolves its `usageTypeRef` too (P-D-157):
     /// `Unavailable` joins the `deferred` set, `Unresolved` fails the run.
-    pub(crate) usage_type_resolver:
-        std::sync::Arc<dyn crate::infra::usage_types::UsageTypeResolver>,
+    pub(crate) usage_type_catalog:
+        std::sync::Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
 }
 
 /// The context the scheduled lane resolves a `usageTypeRef` under: the
@@ -899,7 +899,7 @@ async fn resolve_usage_type_for_scheduled_publish(
         return Ok(None);
     };
     let answer = ctx
-        .usage_type_resolver
+        .usage_type_catalog
         .resolve(&system_security_context(tenant_id), usage_type_ref)
         .await;
     crate::domain::recognized::judge_usage_type(answer, usage_type_ref).map(Some)
@@ -944,7 +944,7 @@ fn map_sku_door(
 /// **Reachable since P-D-157.** P-D-146 measured that this lane entered
 /// `run_publish` without resolving `usageTypeRef`, the resolve living in the
 /// REST door with the caller's `SecurityContext`. The runner now carries the
-/// resolver (`ActivationContext::usage_type_resolver`) and resolves under the
+/// resolver (`ActivationContext::usage_type_catalog`) and resolves under the
 /// gear's system principal (`resolve_usage_type_for_scheduled_publish`), so a
 /// collector that does not answer lands the row here, in the `deferred` set.
 ///

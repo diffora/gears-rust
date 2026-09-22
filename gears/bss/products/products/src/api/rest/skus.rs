@@ -3052,7 +3052,9 @@ fn freeze_for(
         approval_ref,
         actor_ref,
         published_at: now,
-        binding_snapshot: binding.map(crate::domain::recognized::UsageTypeBinding::snapshot_json),
+        binding_snapshot: binding
+            .as_ref()
+            .map(|b| crate::domain::recognized::binding_snapshot_json(b)),
     }
 }
 
@@ -4350,7 +4352,7 @@ async fn resolve_usage_type_before_publish(
     // The resolver is `ApiState`'s (P-D-141): the collector's client in
     // production, a scripted stub in the probes — one program, no
     // `cfg(test)` in the path.
-    let answer = state.usage_type_resolver.resolve(ctx, usage_type_ref).await;
+    let answer = state.usage_type_catalog.resolve(ctx, usage_type_ref).await;
     crate::domain::recognized::judge_usage_type(answer, usage_type_ref)
         .map(Some)
         .map_err(HeadActError::Refused)
@@ -5264,7 +5266,7 @@ async fn resolve_new_meter(
     else {
         return Ok(None);
     };
-    let answer = state.usage_type_resolver.resolve(ctx, new_ref).await;
+    let answer = state.usage_type_catalog.resolve(ctx, new_ref).await;
     match crate::domain::recognized::judge_usage_type(answer, new_ref) {
         Ok(binding) => Ok(Some(binding)),
         Err(refusal) => Err(audit_act_refusal(state, act, subject, refusal).await),
@@ -5349,7 +5351,7 @@ async fn correct_sku_gated(
     let current_answer = match head.usage_type_ref.as_deref() {
         Some(target) => Some((
             target.to_owned(),
-            state.usage_type_resolver.resolve(ctx, target).await,
+            state.usage_type_catalog.resolve(ctx, target).await,
         )),
         None => None,
     };

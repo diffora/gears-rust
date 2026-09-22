@@ -94,7 +94,8 @@ fn app_for(harness: &TestHarness, tenant: Uuid, max_rows: u32, max_batches: u32)
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
+        usage_type_catalog_source: "registry",
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))

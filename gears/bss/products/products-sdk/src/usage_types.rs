@@ -23,8 +23,32 @@
 //! and map onto these types, so a wire concern stays out of the contract.
 
 use async_trait::async_trait;
-use toolkit_canonical_errors::CanonicalError;
+use toolkit_canonical_errors::{CanonicalError, resource_error};
 use toolkit_security::SecurityContext;
+
+#[resource_error(gts_id!("cf.bss.products.recognized_set.v1~"))]
+struct UsageTypeCatalogResource;
+
+/// The canonical error every implementation owes when no catalog is configured
+/// — a **501**, never an empty page.
+///
+/// Public, and public for pricing's reason one gear over: every implementation
+/// of the port owes the same answer to the same fact, and a second spelling of
+/// it is a second thing a caller has to recognise.
+#[must_use]
+pub fn unconfigured_usage_type_catalog() -> CanonicalError {
+    UsageTypeCatalogResource::unimplemented("no usage-type catalog is configured").create()
+}
+
+/// The canonical error when a configured catalog did not answer — a **503**,
+/// and distinct from the 501 above because the operator's next act differs:
+/// configure one, versus retry or go and look at the one that is configured.
+#[must_use]
+pub fn usage_type_catalog_unreachable(detail: impl Into<String>) -> CanonicalError {
+    CanonicalError::service_unavailable()
+        .with_detail(detail)
+        .create()
+}
 
 /// One usage type, in the three fields this registry reads.
 ///

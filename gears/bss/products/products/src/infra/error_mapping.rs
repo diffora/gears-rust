@@ -440,7 +440,7 @@ impl From<DomainError> for CanonicalError {
             }
             D::UsageTypeUnavailable(detail) => {
                 tracing::error!(
-                    dependency = "usage_type_resolver",
+                    dependency = "usage_type_catalog",
                     detail,
                     "bss-products: dependency unavailable"
                 );

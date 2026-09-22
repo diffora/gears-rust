@@ -178,6 +178,25 @@ pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
 /// A typo in a *value* has no such spelling, which is why
 /// [`Self::resolved_idempotency_retention_hours`] exists: `deny_unknown_fields`
 /// catches `idempotency_retention_hous`, and nothing in serde catches a `0`.
+/// The usage-type catalogs a deployment may name as a **fallback**.
+///
+/// Only reached when `ClientHub` carries neither a `UsageTypeCatalog` nor a
+/// `UsageCollectorClientV1`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageTypeCatalogSource {
+    /// No catalog to ask. The default, and the honest one: the pick-list
+    /// answers **501** and every usage-SKU publish keeps failing closed.
+    #[default]
+    Unconfigured,
+    /// Serve a **fabricated** set from this process. Named at length so it
+    /// cannot be selected without saying so: a deployment carrying this value
+    /// is showing operators usage types no collector issued, and a meter
+    /// declared against one names a stream nothing will ever report. See
+    /// [`crate::infra::usage_types::LocalDevStaticUsageTypes`].
+    LocalDevStaticUsageTypes,
+}
+
 #[allow(clippy::struct_excessive_bools)] // the operator switches are booleans by nature
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
@@ -481,6 +500,14 @@ pub struct ProductsConfig {
     /// latency on the publish path and not a held lock.
     pub usage_type_resolver_timeout_ms: u32,
 
+    /// Which usage-type catalog to fall back to when **nothing is registered**
+    /// (**P-D-180's sibling decision, 2026-09-22**).
+    ///
+    /// A registered `UsageTypeCatalog`, or the usage collector's own client,
+    /// wins over this: the value is the last step of `gear.rs`'s four, not the
+    /// first. Default [`UsageTypeCatalogSource::Unconfigured`].
+    pub usage_type_catalog_mode: UsageTypeCatalogSource,
+
     /// The break-glass elevation window, in hours. **Interim 4 — P-D-132**,
     /// `PRD` §17.1's row made configuration. Hard expiry and **no renewal**:
     /// a second window is a second session and a second two-person ceremony.
@@ -546,6 +573,7 @@ impl Default for ProductsConfig {
             // verifies nothing and says so, which is the honest state.
             drill_target_dsn: None,
             usage_type_resolver_timeout_ms: USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT,
+            usage_type_catalog_mode: UsageTypeCatalogSource::Unconfigured,
             breakglass_window_hours: BREAKGLASS_WINDOW_HOURS_DEFAULT,
             breakglass_review_sla_hours: BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
             retirement_held_alert_hours: RETIREMENT_HELD_ALERT_HOURS_DEFAULT,

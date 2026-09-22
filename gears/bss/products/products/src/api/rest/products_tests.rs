@@ -1761,7 +1761,8 @@ fn api_state(harness: &TestHarness) -> Arc<ApiState> {
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
+        usage_type_catalog_source: "registry",
     })
 }
 

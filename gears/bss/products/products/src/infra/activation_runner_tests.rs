@@ -88,7 +88,7 @@ fn context(harness: &Harness) -> ActivationContext {
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(harness.outbox_handle.outbox())),
         idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
         reference_freshness: crate::config::ProductsConfig::default().reference_freshness(),
-        usage_type_resolver: crate::test_support::resolved_usage_types(),
+        usage_type_catalog: crate::test_support::resolved_usage_types(),
     }
 }
 
@@ -348,8 +348,8 @@ async fn a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailabl
         crate::domain::recognized::UsageTypeAnswer::Unavailable,
     ));
     let mut ctx = context(&harness);
-    ctx.usage_type_resolver =
-        Arc::clone(&unavailable) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+    ctx.usage_type_catalog =
+        Arc::clone(&unavailable) as Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>;
     sweep(&ctx, ACTOR, now, &CancellationToken::new())
         .await
         .expect("sweep");
