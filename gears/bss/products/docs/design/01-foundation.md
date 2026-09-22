@@ -369,7 +369,11 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      publishable* - `inst-fd-gate-revalidation`
    - [ ] - `p1` - What crosses the seam: the Foundation knows only "the gate answered yes/no +
      reason, and on yes the authorizing `ApprovalRecord`'s id, plus whether that record carried the
-     two-person uncomposed-bundle override (§4.2's `composition_pending` operand)" — the id being
+     two-person uncomposed-bundle override (§4.2's `composition_pending` operand)". **On the
+     record-free arm there is no id and no override** (**P-D-180**): at an effective quorum of zero a
+     governed act is authorized with nothing to consume, `approval_ref` is written `NULL` — the
+     column is already nullable — and the override is `false`, so an uncomposed bundle is refused
+     here and reaches publish only through a submission. The id being
      what
      `inst-fd-publish-consume` consumes and what §4.3's `approval_ref`
      stores - `inst-fd-gate-verdict`
@@ -419,7 +423,9 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      enqueues, so nothing is inherited or owed under P-D-34's act unit - `inst-fd-publish-reannounce`
    - [ ] - `p1` - Mark the gate's `satisfied` `ApprovalRecord` `consumed` (05
      `inst-gv-one-shot` requires the flip **in the same transaction as the authorized act**; nothing is consumed under
-     `PreAuthorized`); **no event of its own** - `inst-fd-publish-consume`
+     `PreAuthorized`, **and nothing is consumed or verified on the record-free arm — P-D-180's
+     quorum-zero authorization names no record at all, which is a third case beside this step's
+     flip and `PreAuthorized`'s verify**); **no event of its own** - `inst-fd-publish-consume`
 6. [ ] - `p1` - Post-commit, slice 06 consumes the publish event **as content only** (what became publishable); an entity publish **never enqueues a CatalogVersion increment** — addressability comes from downstream requests or an operator catalog-publish act (06 `inst-cv-request`; M1 fix of the 06 review), and the Foundation itself requests nothing (06 `inst-cv-request`'s trigger set names pricing, this gear's slice-09 bulk commits and the operator act — not this slice) - `inst-fd-publish-fanout`
 
 ### Transition an entity (state-machine floor)
