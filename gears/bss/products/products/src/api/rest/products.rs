@@ -1416,6 +1416,8 @@ fn payload_digest(request: &CreateProductRequest) -> Vec<u8> {
 /// rule codes when the named category does not resolve in the tenant or is
 /// retired. The two are kept apart because the door audits a refusal and
 /// answers a storage failure as a `500`.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-default-category:p1
 async fn resolve_create_category(
     state: &ApiState,
     scope: &AccessScope,

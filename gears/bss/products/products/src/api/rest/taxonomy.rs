@@ -296,14 +296,17 @@ pub struct MetadataView {
     pub entries: BTreeMap<String, String>,
 }
 
-/// Register the five doors' eight routes.
-pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
-    let router = Router::new();
-    let router = OperationBuilder::get("/bss-products/v1/categories")
+/// Register the read door (`inst-tx-read`, **P-D-181**).
+///
+/// Its own function because [`router`] is at clippy's line ceiling: the five
+/// doors' registrations are one long list of builder chains, and the read
+/// door is the one that arrived last. Nothing else is different about it.
+fn register_read_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::get("/bss-products/v1/categories")
         .operation_id("bss_products.list_categories")
         .summary("Read the category tree")
         .description(
-            "One keyset page of the tenant's categories under `category x read` — the grant's \
+            "One keyset page of the tenant's categories under `category x read` - the grant's \
              first spender in code (P-D-181). A row carries `category_id`, `parent_id` (`null` \
              for a root), `name`, the rendered `path`, `state` and `mutation_seq`: the id \
              because a Product's assignment payload needs it and the create response was its \
@@ -345,7 +348,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_403(openapi)
         .error_500(openapi)
         .error_503(openapi)
-        .register(router, openapi);
+        .register(router, openapi)
+}
+
+/// Register the five doors' eight routes.
+pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = register_read_door(Router::new(), openapi);
 
     let router = OperationBuilder::post("/bss-products/v1/categories")
         .operation_id("bss_products.create_category")
@@ -1098,18 +1106,21 @@ async fn list_categories(
     let items = page
         .items
         .into_iter()
-        .map(|row| CategoryRowView {
+        .map(|row| {
             // The map holds every node of the tenant, so the fallback is
             // unreachable; it is the node's own name rather than a panic
             // because a read door does not 500 over a rendering.
-            path: crate::domain::taxonomy::render_path(row.category_id, &nodes)
-                .unwrap_or_else(|| row.name.clone()),
-            category_id: row.category_id,
-            parent_id: row.parent_id,
-            name: row.name,
-            state: row.state,
-            mutation_seq: row.mutation_seq,
-            is_default: row.is_default,
+            let path = crate::domain::taxonomy::render_path(row.category_id, &nodes)
+                .unwrap_or_else(|| row.name.clone());
+            CategoryRowView {
+                category_id: row.category_id,
+                parent_id: row.parent_id,
+                name: row.name,
+                path,
+                state: row.state,
+                mutation_seq: row.mutation_seq,
+                is_default: row.is_default,
+            }
         })
         .collect();
     Ok((StatusCode::OK, Json(CategoryPage { items, page_info })).into_response())

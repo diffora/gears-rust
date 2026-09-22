@@ -28,6 +28,10 @@ struct ColumnRow {
 const CATEGORY: &[(&str, bool)] = &[
     ("category_id", false),
     ("created_at", false),
+    // P-D-182's flag, `NOT NULL DEFAULT false` — the same roster the SQLite
+    // oracle pins, and this is the half that proves the two engines got the
+    // same column rather than one of them getting it.
+    ("is_default", false),
     ("mutation_seq", false),
     ("name", false),
     ("name_normalized", false),
@@ -126,4 +130,53 @@ async fn a_duplicate_root_name_is_refused_on_postgres() {
         err.to_string().contains("uq_products_category_root_name"),
         "the refusal must be the partial index's, by name: {err}"
     );
+}
+
+/// **P-D-182's at-most-one rule on Postgres**, which is where the refusal
+/// names the index rather than the columns — the `SQLite` half asserts the
+/// other wording, and the `DoD` requires the rule on both engines.
+///
+/// The third insert is what makes it a probe of a **partial** index: an
+/// unflagged row under the same tenant must land, or the index would be
+/// constraining the whole table.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn at_most_one_default_category_per_tenant_on_postgres() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+
+    let seed = |tenant: &str, name: &str, is_default: bool| {
+        format!(
+            "INSERT INTO bss.products_category \
+             (tenant_id, category_id, parent_id, name, name_normalized, state, is_default, \
+              created_at, updated_at) \
+             VALUES ('{tenant}', gen_random_uuid(), NULL, \
+              '{name}', '{name}', 'active', {is_default}, now(), now())"
+        )
+    };
+    let run = |sql: String| {
+        conn.execute_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            sql,
+        ))
+    };
+    const TENANT: &str = "00000000-0000-0000-0000-0000000d0e00";
+    const OTHER: &str = "00000000-0000-0000-0000-0000000d0e01";
+
+    run(seed(TENANT, "general", true))
+        .await
+        .expect("the tenant's first default lands");
+    let err = run(seed(TENANT, "compute", true))
+        .await
+        .expect_err("a second default in one tenant must be refused");
+    assert!(
+        err.to_string().contains("uq_products_category_default"),
+        "the refusal must be the partial index's, by name: {err}"
+    );
+    run(seed(TENANT, "storage", false))
+        .await
+        .expect("the index is partial: unflagged rows are unconstrained");
+    run(seed(OTHER, "general", true))
+        .await
+        .expect("the index is per tenant");
 }

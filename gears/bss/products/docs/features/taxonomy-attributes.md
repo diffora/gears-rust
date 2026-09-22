@@ -15,6 +15,7 @@
 - [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
   - [Manage the taxonomy](#manage-the-taxonomy)
   - [Assign categories to a Product](#assign-categories-to-a-product)
+  - [Read the taxonomy](#read-the-taxonomy)
   - [Manage attribute definitions](#manage-attribute-definitions)
   - [Author localized attribute values](#author-localized-attribute-values)
   - [Write the metadata map](#write-the-metadata-map)
@@ -29,6 +30,8 @@
 - [5. Definitions of Done](#5-definitions-of-done)
   - [Category table and its guards](#category-table-and-its-guards)
   - [Category assignment table](#category-assignment-table)
+  - [Default category](#default-category)
+  - [Taxonomy read door](#taxonomy-read-door)
   - [Attribute definition table](#attribute-definition-table)
   - [Attribute value table](#attribute-value-table)
   - [Metadata table](#metadata-table)
@@ -595,7 +598,7 @@ clause read off the engine's catalogue; row 21 was the last hold.
 
 ### Default category
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-default-category`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-default-category`
 
 The system **MUST** carry `is_default` on `products_category` under a partial unique index
 admitting at most one per tenant on both engines, with a perturbation case proving the index
@@ -619,7 +622,7 @@ still refuses after `"categories": []` clears the set.
 
 ### Taxonomy read door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-read`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-read`
 
 The system **MUST** serve `GET /bss-products/v1/categories` under `category × read`
 (**P-D-181**), answering one keyset page of the tenant's categories with `category_id`, `parent_id`,

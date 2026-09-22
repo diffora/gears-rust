@@ -1755,7 +1755,7 @@ async fn a_retired_category_is_listed_with_its_state() {
 ///
 /// Measured 2026-09-22 rather than assumed: `$filter=parent_id eq null`
 /// parses and then fails the type check — *"Type mismatch for field
-/// parent_id: expected Uuid, got null"* — because `toolkit_odata::FieldKind`
+/// `parent_id`: expected Uuid, got null"* — because `toolkit_odata::FieldKind`
 /// has nine scalar variants and no nullable one, so a `Uuid` field admits no
 /// null literal. The door does not work around it: inventing a `roots=true`
 /// operand would put back the per-door parameter P-D-165 took away, and
