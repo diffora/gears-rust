@@ -161,6 +161,14 @@ pub struct CategoryRowView {
     pub state: String,
     /// The live-value door's `If-Match` operand, counting acts (**P-D-50**).
     pub mutation_seq: i64,
+    /// Whether this node is the tenant's default — where a Product created
+    /// with no category lands (**P-D-182**). At most one row per page, and
+    /// per tenant, carries `true`; a picker preselects it.
+    ///
+    /// It is answered **here** and not by the ops door, whose view echoes the
+    /// request rather than the row: seeing the flag is a read, and this is
+    /// the read surface.
+    pub is_default: bool,
 }
 
 /// One page of the tenant's tree.
@@ -370,9 +378,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
 
     let router = OperationBuilder::post("/bss-products/v1/categories/{categoryId}/operations")
         .operation_id("bss_products.execute_category_operation")
-        .summary("Rename, re-parent, retire or delete a category")
+        .summary("Rename, re-parent, retire, delete or default a category")
         .description(
-            "One door for the four acts, because they ride one `GovernedLiveOp` envelope, one \
+            "One door for the five acts, because they ride one `GovernedLiveOp` envelope, one \
              gate and one apply path (P-D-106): the act is the payload's `op`, not the path. \
              The envelope pins the category's state at submission and re-validates it \
              immediately before the mutation, a mismatch being `STALE_LIVE_OP`. A re-parent \
@@ -380,7 +388,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              ceiling - at the leaves of the moved subtree, not only at the moved node - is \
              `TAXONOMY_LIMIT`. A retire with a live product assignment or an active child is \
              `CATEGORY_REFERENCED`, naming a bounded sample. A delete applies only to a \
-             retired category.",
+             retired category. `set_default` (P-D-182) moves the tenant's default flag onto \
+             this category and clears the previous holder in the same transaction - at most \
+             one per tenant, which a partial unique index and not this door enforces; a \
+             retired target matches no row and answers 404, and retiring the holder is \
+             `CATEGORY_REFERENCED` naming the flag. The flag itself is read at \
+             `GET /bss-products/v1/categories`, this door's answer echoing the request.",
         )
         .tag(TAG)
         .authenticated()
@@ -1096,6 +1109,7 @@ async fn list_categories(
             name: row.name,
             state: row.state,
             mutation_seq: row.mutation_seq,
+            is_default: row.is_default,
         })
         .collect();
     Ok((StatusCode::OK, Json(CategoryPage { items, page_info })).into_response())
@@ -1320,6 +1334,19 @@ async fn execute_category_operation(
         )
         .await
         .map(|r| r.map(|_| repo::CategoryWrite::Applied)),
+        // The fifth act (**P-D-182**): the act is the payload's and not the
+        // path's, so it needs no route of its own (P-D-106).
+        "set_default" => {
+            crate::infra::taxonomy::set_default_under_lock(
+                &state.db,
+                &scope,
+                tenant_id,
+                category_id,
+                now,
+                &authorization,
+            )
+            .await
+        }
         "delete" => {
             crate::infra::taxonomy::delete_under_lock(
                 &state.db,

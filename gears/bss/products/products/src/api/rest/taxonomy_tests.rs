@@ -1833,3 +1833,150 @@ async fn an_undeclared_query_key_is_refused() {
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(error_code(response).await, "UNDECLARED_QUERY_PARAM");
 }
+
+// ------------------------------------------------------- the default flag
+
+/// Every category the tenant holds, by name, with its flag — read through the
+/// door that exists for reading.
+async fn flags(h: &TestHarness) -> Vec<(String, bool)> {
+    let page =
+        body_json(send_via(app(h), "GET", "/bss-products/v1/categories", &json!({})).await).await;
+    page["items"]
+        .as_array()
+        .expect("an items array")
+        .iter()
+        .map(|row| {
+            (
+                row["name"].as_str().expect("a name").to_owned(),
+                row["is_default"].as_bool().expect("a flag"),
+            )
+        })
+        .collect()
+}
+
+/// **The fifth act moves the flag, and the previous holder loses it in the
+/// same act** (`inst-tx-default`, P-D-182).
+#[tokio::test]
+async fn the_default_flag_moves_through_the_operations_door() {
+    let h = harness().await;
+    let general = create_category(app(&h), "General", None).await;
+    let compute = create_category(app(&h), "Compute", None).await;
+
+    // A door-driven create never mints the flag.
+    assert_eq!(
+        flags(&h).await,
+        vec![("Compute".to_owned(), false), ("General".to_owned(), false)],
+        "name ascending, and neither carries the flag"
+    );
+
+    for id in [&general, &compute] {
+        let response = send(
+            &h,
+            "POST",
+            &format!(
+                "/bss-products/v1/categories/{}/operations",
+                id["category_id"].as_str().expect("an id")
+            ),
+            &json!({ "op": "set_default", "expected_state": "active" }),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    assert_eq!(
+        flags(&h).await,
+        vec![("Compute".to_owned(), true), ("General".to_owned(), false)],
+        "the second act moved the flag; the first holder lost it rather than \
+         the index refusing the write"
+    );
+}
+
+/// **A retired node cannot take the flag** — it would be the landing place
+/// for new Products while closed to new assignment.
+#[tokio::test]
+async fn a_retired_category_cannot_become_the_default() {
+    let h = harness().await;
+    let created = create_category(app(&h), "Storage", None).await;
+    let id = created["category_id"].as_str().expect("an id").to_owned();
+
+    let retired = send(
+        &h,
+        "POST",
+        &format!("/bss-products/v1/categories/{id}/operations"),
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(retired.status(), axum::http::StatusCode::OK);
+
+    let refused = send(
+        &h,
+        "POST",
+        &format!("/bss-products/v1/categories/{id}/operations"),
+        &json!({ "op": "set_default", "expected_state": "retired" }),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "the write matched no active row, which the door renders as a 404"
+    );
+    assert_eq!(flags(&h).await, vec![("Storage".to_owned(), false)]);
+}
+
+/// **The flag's holder cannot be retired, and the refusal names the exit.**
+///
+/// Without this the create door's silent path would lose its landing place to
+/// an ordinary retire, and every later create would answer
+/// `PRIMARY_CATEGORY_REQUIRED` at publish with nothing explaining why.
+#[tokio::test]
+async fn the_default_category_cannot_be_retired() {
+    let h = harness().await;
+    let created = create_category(app(&h), "General", None).await;
+    let id = created["category_id"].as_str().expect("an id").to_owned();
+
+    let set = send(
+        &h,
+        "POST",
+        &format!("/bss-products/v1/categories/{id}/operations"),
+        &json!({ "op": "set_default", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(set.status(), axum::http::StatusCode::OK);
+
+    let refused = send(
+        &h,
+        "POST",
+        &format!("/bss-products/v1/categories/{id}/operations"),
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(refused.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(conflict_code(refused).await, "CATEGORY_REFERENCED");
+
+    // The paired control: the flag moved away, the same retire is admitted.
+    let other = create_category(app(&h), "Compute", None).await;
+    let moved = send(
+        &h,
+        "POST",
+        &format!(
+            "/bss-products/v1/categories/{}/operations",
+            other["category_id"].as_str().expect("an id")
+        ),
+        &json!({ "op": "set_default", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(moved.status(), axum::http::StatusCode::OK);
+
+    let admitted = send(
+        &h,
+        "POST",
+        &format!("/bss-products/v1/categories/{id}/operations"),
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        axum::http::StatusCode::OK,
+        "the refusal was the flag's, not the node's"
+    );
+}
