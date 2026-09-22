@@ -82,9 +82,9 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    CategoryReferenced, DeleteCensus, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits,
-    ancestors_of, cycle_verdict, delete_verdict, depth_of, limit_verdict, retire_verdict,
-    subtree_height,
+    CategoryReferenced, CategoryState, DeleteCensus, RetireCensus, TaxonomyLimitExceeded,
+    TaxonomyLimits, ancestors_of, cycle_verdict, delete_verdict, depth_of, limit_verdict,
+    retire_verdict, subtree_height,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::broker::EventSink;
@@ -728,10 +728,31 @@ pub async fn ensure_default_under_lock(
     tenant_id: Uuid,
     now: OffsetDateTime,
 ) -> Result<Option<Uuid>, RepoError> {
+    // **The lock is taken only when there is something to write.** In steady
+    // state every Product create takes this path and the default already
+    // exists, so acquiring the per-tenant taxonomy lock first would serialize
+    // every create of a tenant behind every taxonomy op — and a create would
+    // `500` on a lock budget exhausted by a re-parent it had no business
+    // waiting for. The unlocked read below is safe to lose a race with: a
+    // concurrent seeder either has not written yet, in which case the locked
+    // read repeats this one, or has, in which case this one already sees it.
+    {
+        let conn = db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+        if let Some(existing) = repo::default_category(&conn, scope, tenant_id).await? {
+            return Ok(Some(existing.category_id));
+        }
+    }
+
     let _guard = take_writer_lock(db, tenant_id).await?;
     let conn = db
         .conn()
         .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+    // Re-read under the lock: between the unlocked read and the lock, a peer
+    // may have seeded. Without this the loser writes a second `General` and
+    // meets `uq_products_category_default` — a refusal reported as a name
+    // collision, which is not what happened.
     if let Some(existing) = repo::default_category(&conn, scope, tenant_id).await? {
         return Ok(Some(existing.category_id));
     }
@@ -769,6 +790,34 @@ pub async fn set_default_under_lock(
     authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+
+    // A retired target is refused **by name**, not as a 404. The storage
+    // write is filtered on `active` and would answer `Unmatched`, which the
+    // door renders as "no category with this id in this tenant" — false, and
+    // the design says the refusal is `CATEGORY_RETIRED` (`inst-tx-default`).
+    // An absent target still falls through to the write's own `Unmatched`,
+    // which is the 404 it should be.
+    let states = repo::category_states(&conn, scope, tenant_id, &[category_id]).await?;
+    if states
+        .iter()
+        .any(|(id, state)| *id == category_id && *state == CategoryState::Retired)
+    {
+        let mut report = ValidationReport::new();
+        report.violate(
+            crate::domain::taxonomy::CategoryNotRetiredRule::CODE,
+            "categoryId",
+            format!(
+                "category {category_id} is retired and cannot become the tenant's default: a \
+                 retired node is closed to new assignment, so every Product created without a \
+                 category would land somewhere it may not be filed"
+            ),
+        );
+        return Ok(Err(DomainError::Validation(report)));
+    }
+
     let scope_tx = scope.clone();
     let authorization_tx = authorization.clone();
     settle(

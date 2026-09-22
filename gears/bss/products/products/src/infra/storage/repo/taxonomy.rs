@@ -278,6 +278,24 @@ fn classify_category_write(
     error: RepoError,
 ) -> Result<Result<(), DomainError>, RepoError> {
     let message = error.to_string().to_ascii_lowercase();
+    // **P-D-182's index is a third uniqueness rule on this table, and it is
+    // not a name collision.** The two generic arms below match any uniqueness
+    // refusal, so without this the seed losing `uq_products_category_default`
+    // would be reported as a duplicate *name* — a message about the wrong
+    // index, which the seed then reads as "an operator's own `General` holds
+    // the name" and answers `None` for. It is returned as the storage failure
+    // it is instead.
+    //
+    // Both engines' wordings are matched, because they word it differently:
+    // Postgres names the index, `SQLite` names the constrained columns and
+    // the default index's column list is `tenant_id` **alone** — the two name
+    // indexes both carry `name_normalized` beside it.
+    if message.contains("uq_products_category_default")
+        || (message.contains("unique constraint failed: products_category.tenant_id")
+            && !message.contains("name_normalized"))
+    {
+        return Err(error);
+    }
     let unique = message.contains("unique constraint")
         || message.contains("duplicate key")
         || message.contains("uq_products_category_name_in_parent")
@@ -1869,7 +1887,11 @@ pub struct CategoryTreeQuery {
     /// The node. Also the walk's unique tiebreaker.
     #[odata(filter(kind = "Uuid"))]
     pub category_id: Uuid,
-    /// The parent. `parent_id eq null` is how a caller asks for the roots.
+    /// The parent, filterable **by value** — `parent_id eq <uuid>` is a
+    /// node's children. The roots are **not** reachable this way:
+    /// `parent_id eq null` parses and then fails the platform's type check,
+    /// `FieldKind` carrying no nullable variant (measured 2026-09-22,
+    /// **P-D-181** *Owed*). A caller selects them over the page instead.
     #[odata(filter(kind = "Uuid"))]
     pub parent_id: Uuid,
     /// The operator-facing name. The default order.
@@ -2071,6 +2093,29 @@ pub async fn set_default_category(
     category_id: Uuid,
     now: OffsetDateTime,
 ) -> Result<CategoryWrite, RepoError> {
+    // **Nothing is cleared until the target is known to be settable.** The
+    // set is filtered on `active`, so a retired or absent target matches no
+    // row — and a clear that ran ahead of it took the incumbent's flag with
+    // it, leaving the tenant with **no** default behind a refusal the caller
+    // read as "nothing happened". The read cannot be folded into the set
+    // because the index admits one `true` per tenant, so the incumbent must
+    // lose the flag before the target gains it.
+    let settable = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.eq(category_id))
+                .add(category::Column::State.eq(ACTIVE_CATEGORY_STATE)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the default's target {category_id}"), e))?;
+    if settable.is_none() {
+        return Ok(CategoryWrite::Unmatched);
+    }
+
     category::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -2083,7 +2128,12 @@ pub async fn set_default_category(
         .filter(
             Condition::all()
                 .add(category::Column::TenantId.eq(tenant_id))
-                .add(category::Column::IsDefault.eq(true)),
+                .add(category::Column::IsDefault.eq(true))
+                // The target itself is excluded: re-setting the flag on its
+                // own holder is **one** act, and `mutation_seq` counts acts.
+                // Without this the clear and the set both match it and the
+                // token moves by two on an idempotent-looking retry.
+                .add(category::Column::CategoryId.ne(category_id)),
         )
         .exec(runner)
         .await

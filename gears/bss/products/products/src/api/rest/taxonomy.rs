@@ -315,9 +315,12 @@ fn register_read_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              indexes being state-agnostic so a tombstone still holds its name against \
              `DUPLICATE_CATEGORY_NAME`. The answer is a flat page and not a nested tree, \
              narrowed with `$filter`, ordered with `$orderby` and paged with `$top`/`limit` and \
-             `$skiptoken`/`cursor` (P-D-165); `parent_id eq null` asks for the roots and \
-             `$orderby=parent_id` is refused, the column being nullable. No `ETag`: no door on \
-             this surface takes a set-level precondition.",
+             `$skiptoken`/`cursor` (P-D-165). `parent_id` is filterable **by value** and is \
+             refused as an `$orderby` key, the column being nullable; the roots are **not** \
+             addressable by filter, because `parent_id eq null` fails the platform's type check \
+             (no nullable field kind) - the page is served whole, so a caller selects \
+             `parent_id == null` over the rows it already holds. No `ETag`: no door on this \
+             surface takes a set-level precondition.",
         )
         .tag(TAG)
         .authenticated()
@@ -1383,7 +1386,9 @@ async fn execute_category_operation(
                 violation(
                     "VALIDATION",
                     "op",
-                    format!("`{other}` is not one of rename, reparent, retire, delete"),
+                    format!(
+                        "`{other}` is not one of rename, reparent, retire, delete, set_default"
+                    ),
                 ),
             )
             .await);

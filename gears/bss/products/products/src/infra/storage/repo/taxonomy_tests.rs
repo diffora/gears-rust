@@ -2453,7 +2453,20 @@ async fn a_retired_node_cannot_become_the_default() {
     let scope = AccessScope::for_tenant(TENANT);
     let conn = provider.conn().expect("scoped connection");
 
+    let general = Uuid::from_u128(0xca_24);
     let retired = Uuid::from_u128(0xca_23);
+    // The incumbent. Its absence is what made the first version of this case
+    // vacuous: with no default to lose, "the tenant still has no default"
+    // holds however badly the write behaves.
+    insert_category(
+        &conn,
+        &scope,
+        default_new_category(general, TENANT, "general"),
+        at(9),
+    )
+    .await
+    .expect("insert the incumbent")
+    .expect("the name is free");
     insert_category(
         &conn,
         &scope,
@@ -2474,11 +2487,63 @@ async fn a_retired_node_cannot_become_the_default() {
         CategoryWrite::Unmatched,
         "the write is filtered on `active`, so a retired target matches no row"
     );
-    assert!(
+    assert_eq!(
         default_category(&conn, &scope, TENANT)
             .await
             .expect("read")
-            .is_none(),
-        "and the tenant still has no default"
+            .map(|c| c.category_id),
+        Some(general),
+        "and the incumbent still holds it: a set that matched nothing must \
+         not have cleared the flag on its way past"
+    );
+
+    // An absent target is the same class as a retired one.
+    assert_eq!(
+        set_default_category(&conn, &scope, TENANT, Uuid::from_u128(0xca_99), at(12))
+            .await
+            .expect("no storage failure"),
+        CategoryWrite::Unmatched
+    );
+    assert_eq!(
+        default_category(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .map(|c| c.category_id),
+        Some(general)
+    );
+}
+
+/// **Re-setting the flag on its current holder costs one act, not two.**
+///
+/// `mutation_seq` counts acts, and a clear-then-set pair that matches the
+/// incumbent twice moves a token the client is holding as `expectedSeq` by
+/// two — with no event to explain the jump.
+#[tokio::test]
+async fn re_setting_the_default_on_its_holder_bumps_the_token_once() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    let general = Uuid::from_u128(0xca_25);
+    insert_category(
+        &conn,
+        &scope,
+        default_new_category(general, TENANT, "general"),
+        at(9),
+    )
+    .await
+    .expect("insert")
+    .expect("the name is free");
+
+    set_default_category(&conn, &scope, TENANT, general, at(10))
+        .await
+        .expect("the re-set applies");
+
+    assert_eq!(
+        category_mutation_seq(&conn, &scope, TENANT, general)
+            .await
+            .expect("read the token"),
+        Some(1),
+        "one act, one bump"
     );
 }

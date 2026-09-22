@@ -142,6 +142,9 @@ async fn a_duplicate_root_name_is_refused_on_postgres() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn at_most_one_default_category_per_tenant_on_postgres() {
+    const TENANT: &str = "00000000-0000-0000-0000-0000000d0e00";
+    const OTHER: &str = "00000000-0000-0000-0000-0000000d0e01";
+
     let pg = Pg::applied().await;
     let conn = pg.raw().await;
 
@@ -160,8 +163,6 @@ async fn at_most_one_default_category_per_tenant_on_postgres() {
             sql,
         ))
     };
-    const TENANT: &str = "00000000-0000-0000-0000-0000000d0e00";
-    const OTHER: &str = "00000000-0000-0000-0000-0000000d0e01";
 
     run(seed(TENANT, "general", true))
         .await

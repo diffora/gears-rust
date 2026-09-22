@@ -295,14 +295,22 @@ pub fn render_path(
     let mut cursor = Some(node);
     let mut hops = 0;
     while let Some(id) = cursor {
-        let Some((parent, name)) = nodes.get(&id) else {
-            break;
-        };
+        // A chain that does not reach a root renders **nothing**, at any
+        // depth — not the part of it that resolved. A truncated chain is not
+        // a shorter answer, it is a different one: `Compute > Virtual
+        // Machines` with `Compute` missing renders as `Virtual Machines`,
+        // which reads as a root category that does not exist. The map is one
+        // statement's worth of rows and a node's parent can be gone from it
+        // (a delete between the page and the map), so this is reachable
+        // rather than defensive.
+        let (parent, name) = nodes.get(&id)?;
         segments.push(name.clone());
         cursor = *parent;
         hops += 1;
         if hops > 64 {
-            break;
+            // The same rule for the cycle guard: a walk this long is a
+            // storage defect, and half of its chain is not the answer.
+            return None;
         }
     }
     if segments.is_empty() {

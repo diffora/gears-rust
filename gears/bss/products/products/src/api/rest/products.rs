@@ -1385,6 +1385,17 @@ fn payload_digest(request: &CreateProductRequest) -> Vec<u8> {
     if let Some(code) = request.product_code.clone() {
         fields.insert("product_code".to_owned(), JsonValue::String(code));
     }
+    // **P-D-182's field digests like every other optional one.** Omitting it
+    // would make two materially different creates — the same name under two
+    // categories — hash identically, so a retry under one `Idempotency-Key`
+    // with a corrected category would *replay* the first answer and report
+    // success for a placement it did not make.
+    if let Some(category) = request.primary_category_id {
+        fields.insert(
+            "primary_category_id".to_owned(),
+            JsonValue::String(category.to_string()),
+        );
+    }
     if let Some(region) = request.region_scope.clone() {
         fields.insert("region_scope".to_owned(), JsonValue::String(region));
     }

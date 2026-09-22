@@ -269,8 +269,10 @@ category columns.
   parent, its name, its rendered path, its state and its `mutation_seq`
 - Retired categories are listed, carrying their state, because a tombstone still holds
   its name against the create door
-- The roots are reachable as `parent_id eq null`, and a page continues through
-  `page_info.next_cursor`
+- A node's children are reachable as `parent_id eq <uuid>`, and a page continues through
+  `page_info.next_cursor`. The **roots** are not addressable by filter — `parent_id eq null`
+  fails the platform's type check, which carries no nullable field kind — so a caller
+  selects them over the page the door already served (**P-D-181**)
 
 **Error Scenarios**:
 - A caller without `category × read` — `403`, deny-by-default

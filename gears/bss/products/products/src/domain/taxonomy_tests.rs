@@ -1672,4 +1672,12 @@ fn a_path_is_the_ancestor_chain_joined_root_first() {
         None,
         "a node the map does not hold renders nothing, never a partial path"
     );
+
+    // And the arm that matters more, because it is the one a race reaches: a
+    // node whose **parent** is missing renders nothing either. A truncated
+    // chain would render the child as a root — a different category, not a
+    // shorter answer.
+    let orphan = Uuid::from_u128(0x04);
+    nodes.insert(orphan, (Some(Uuid::from_u128(0x99)), "Orphan".to_owned()));
+    assert_eq!(super::render_path(orphan, &nodes), None);
 }

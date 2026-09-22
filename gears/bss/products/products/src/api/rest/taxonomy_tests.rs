@@ -1917,9 +1917,11 @@ async fn a_retired_category_cannot_become_the_default() {
     .await;
     assert_eq!(
         refused.status(),
-        axum::http::StatusCode::NOT_FOUND,
-        "the write matched no active row, which the door renders as a 404"
+        axum::http::StatusCode::BAD_REQUEST,
+        "refused by name rather than as a 404: the category exists, and \
+         `no category with this id` would be false"
     );
+    assert_eq!(error_code(refused).await, "CATEGORY_RETIRED");
     assert_eq!(flags(&h).await, vec![("Storage".to_owned(), false)]);
 }
 

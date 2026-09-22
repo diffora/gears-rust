@@ -5974,8 +5974,16 @@ mod taxonomy_store_guard_tests {
         let message = err.to_string();
         assert!(
             message.contains("uq_products_category_default")
-                || message.contains("UNIQUE constraint failed: products_category.tenant_id"),
+                || message.ends_with("UNIQUE constraint failed: products_category.tenant_id"),
             "the partial unique index is what refuses it: {message}"
+        );
+        // `ends_with` and not `contains`: the root-name index words its own
+        // refusal as `…products_category.tenant_id, products_category.\
+        // name_normalized`, a strict superstring, so a `contains` here would
+        // go green on the wrong index the day this one was dropped.
+        assert!(
+            !message.contains("name_normalized"),
+            "the refusal must not be the root-name index's: {message}"
         );
 
         exec(&db, &insert("t-a", "c-storage", "storage", 0))
