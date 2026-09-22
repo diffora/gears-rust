@@ -128,6 +128,7 @@ actor, the scenarios and the boundary.
 3. [ ] - `p1` - `TaxonomyWalk` inside the write transaction, under the per-tenant taxonomy writer lock (§3.4): a re-parent whose new ancestor chain contains the node itself fails `TAXONOMY_CYCLE`; a create/re-parent exceeding configured max depth or max children fails `TAXONOMY_LIMIT` naming the limit - `inst-tx-walk`
 4. [ ] - `p1` - Retire/delete **MUST** be refused while any **non-terminal** Product (`draft`/`published`/`deprecated` — the PRD's operand is "active", and `retired` *and* `discarded` are both terminal) references the category (primary or secondary) or any active child exists. **The guard reads the referencing Product's lifecycle state, never the presence of a `products_product_category` row** (item 17 of the review: discard releases the code and name reservations but leaves the category link, so on the old "non-`retired`" operand one discarded draft blocked the category permanently) — `CATEGORY_REFERENCED`, with a sample of holders named; retire marks the node closed to new assignment, delete is admitted only on a retired, empty, unreferenced node — where for the **delete** *unreferenced* means **no `products_product_category` row names the node, in any Product state** (P-D-116 row 21, 2026-09-03: the lifecycle-state operand is the retire's; a category with history is retired, never deleted) - `inst-tx-retire-guard`
 5. [ ] - `p1` - Each applied op emits its event (`CategoryCreated`/`CategoryRenamed`/`CategoryReparented`/`CategoryRetired`/`CategoryDeleted`) in the same transaction (**P-D-21**: the event is the success-path audit record); the op envelope id rides the event for approval traceability — **P-D-122 (2026-09-03): the envelope carries no id today**, so the event carries the envelope's **kind** (`operationKind`) and the request's `traceparent` is the correlation channel; minting an envelope id is `05`'s with the approval subject - `inst-tx-event`
+6. [ ] - `p1` - **One default per tenant, and it is a row rather than a setting** (**P-D-182**): `products_category.is_default` under `UNIQUE (tenant_id) WHERE is_default` — at-most-one is an index here as it is for the primary assignment, never a convention. The flag is moved by the ops door's fifth act, `set_default`, **material like the other four** and riding the same `GovernedLiveOp` envelope, one gate and one apply path; it clears the previous holder in the same transaction, the index refusing two `true` rows in one tenant. A `retired` node cannot take the flag (`CATEGORY_RETIRED`), and **retiring the holder is refused** `CATEGORY_REFERENCED` naming the flag, the move being the exit. The tenant's first Product create seeds a root `General`, `active`, carrying the flag, when no default exists — lazily and under the taxonomy writer lock, §4.2's own seeding shape, and the seed's condition is *the flag*, not the name, so nothing re-creates it once an operator has renamed it or moved the flag elsewhere - `inst-tx-default`
 
 ### Assign categories to a Product
 
@@ -253,8 +254,12 @@ actor, the scenarios and the boundary.
   this roster carried none. It counts **acts, not row writes**, following the donor's
   `pricing_price_window.mutation_seq` (D-190/D-191): the category door spends a `GovernedLiveOp`,
   and an approval subject built from an act identity has to render the same subject on the
-  approved retry, which a counter advanced by non-operator writes would break) · timestamps. Indexes:
-  `UNIQUE (tenant_id, parent_id, name_normalized)`, **plus the root half that UNIQUE cannot hold**
+  approved retry, which a counter advanced by non-operator writes would break) · **`is_default`**
+  (boolean `NOT NULL DEFAULT false` — the tenant's landing place for a Product created without a
+  category, **P-D-182**) · timestamps. Indexes:
+  `UNIQUE (tenant_id, parent_id, name_normalized)`, `UNIQUE (tenant_id) WHERE is_default` (the
+  at-most-one rule, an index and never a convention — the shape
+  `uq_products_product_category_primary` already carries one table over), **plus the root half that UNIQUE cannot hold**
   (**P-D-88** arm 1): both engines treat NULLs as distinct, so root categories carry their own
   partial `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL` — a sentinel cannot
   satisfy a self-referencing FK and `NULLS NOT DISTINCT` has no `SQLite` equivalent; FK children
@@ -299,6 +304,14 @@ is deprecatable but not removable): `displayName` (localized, per Product/SKU/Ca
 `description` (localized), `imageUri` (URI string, non-localized), `unitDisplayLabel`
 (localized — the sales-facing unit label, display only, never the metering-unit identity),
 `marketingFeatures` (localized string list). PRD `fr-localized-attributes` + the industry-parity widening.
+
+**And one category** (**P-D-182**): a root named `General`, `active`, `is_default = true`, seeded on
+the tenant's first Product create when no default exists. It carries no `seeded_by` marker — this
+table has no such column, and the flag is the thing that matters — so an operator may rename it,
+re-parent it, or move the flag to a category of their own, and nothing re-creates it: the seed's
+condition is *"this tenant has no default"*, never *"this tenant has no `General`"*. A tenant that
+already holds a root of that name without the flag is not fought over: the insert loses the name
+race, the seed answers nothing, and the create writes no assignment.
 
 ### 4.3 Events
 

@@ -265,6 +265,7 @@ status with no code); optional `productCode` reserves under the same rules as `s
 5. [ ] - `p1` - `region_scope`/`brand_scope` are **optional payload value sets** written by this door, **absent meaning the empty set and the empty set meaning unrestricted** (**P-D-39**; PRD §10's operator flow already puts brand/region scope on this surface, and nothing wrote it). Unlike `brand_id` they are **not** validated against the caller's claims: they say where the Product may be sold, not who owns it - `inst-fd-scope-write`
 6. [ ] - `p1` - Persist as `draft`, `published_version = 0`, `internal_revision = 1`; write the `ProductCreated` outbox row in the same transaction (**P-D-21**: the event is the
 success-path audit record; no audit row is written on a committed act); the transaction emits `ProductCreated` / `SkuCreated` (the `EventRegister`'s rows, P-D-151) - `inst-fd-create-txn`
+7. [ ] - `p1` - The Product create door admits an **optional `primary_category_id`** and writes that assignment inside the same transaction; **absent, the tenant's default category is resolved and assigned instead** (**P-D-182**, `02` `inst-tx-default`), and a tenant that has none leaves the Product unassigned rather than failing the create — `inst-tx-primary-at-publish` stays the guard. `02`'s assignment validators run on either path: the target must resolve in the tenant and must not be retired (`CATEGORY_RETIRED`). Only the **primary** is settable here; secondary assignments are ordinary draft content on the save door - `(cont. inst-tx-default)`
 
 ### Define a SKU
 

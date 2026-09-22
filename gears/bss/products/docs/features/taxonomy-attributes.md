@@ -196,9 +196,15 @@ failure look like, and where its boundary runs.
 **Actor**: `cpt-cf-bss-products-actor-catalog-admin`
 
 **Success Scenarios**:
-- A category is created, renamed, re-parented, retired or deleted only after the wrapping
-  `GovernedLiveOp` clears the `05-governance` gate; **all five ops are material**, so none of
-  them reaches the store un-approved
+- A category is created, renamed, re-parented, retired, deleted or made the tenant's default only
+  after the wrapping `GovernedLiveOp` clears the `05-governance` gate; **all six ops are
+  material** (`set_default` is the sixth, **P-D-182**), so none of them reaches the store
+  un-approved
+- Exactly one category carries the default flag, and setting it on another clears the previous
+  holder in the same act — the partial unique index `UNIQUE (tenant_id) WHERE is_default` is what
+  says "at most one", never a check the door performs
+- The tenant's first Product create seeds a root `General` carrying the flag when no default
+  exists, and never re-seeds once one does — the condition is the flag, not the name
 - The applied op emits its event — `CategoryCreated`, `CategoryRenamed`, `CategoryReparented`,
   `CategoryRetired` or `CategoryDeleted` — in the same transaction as the mutation, carrying the
   op envelope id for approval traceability
@@ -213,6 +219,10 @@ failure look like, and where its boundary runs.
   `TAXONOMY_LIMIT`, naming which limit was exceeded
 - A retire or delete while any **non-terminal** Product references the node, or while an active
   child exists — `CATEGORY_REFERENCED`, naming a sample of the holders
+- A retire of the node carrying the default flag — `CATEGORY_REFERENCED` naming the flag; the
+  flag is moved with `set_default` first, that move being the exit (**P-D-182**)
+- A `set_default` onto a retired node — `CATEGORY_RETIRED`: a retired node must not become the
+  landing place for new Products
 - The world moved between approval and apply — `STALE_LIVE_OP`
 
 **Boundary**: this flow mutates the category tree and emits its event. It does **not** implement
@@ -582,6 +592,30 @@ clause read off the engine's catalogue; row 21 was the last hold.
 **Touches**:
 - DB Table: `products_product_category`
 - Entities: `Product`, `Category`
+
+### Default category
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-default-category`
+
+The system **MUST** carry `is_default` on `products_category` under a partial unique index
+admitting at most one per tenant on both engines, with a perturbation case proving the index
+refuses the second (**P-D-182**). It **MUST** seed a root `General` carrying the flag on the
+tenant's first Product create when no default exists, and **MUST NOT** re-seed once a default
+exists under any name. A Product create naming no category **MUST** receive the default as its
+primary assignment; one naming `primary_category_id` **MUST** receive that and **MUST NOT**
+consult the default; a create in a tenant with no default **MUST** succeed carrying no
+assignment. Retiring the flag's holder **MUST** be refused `CATEGORY_REFERENCED`, and a
+`set_default` onto a retired node **MUST** be refused `CATEGORY_RETIRED`.
+`inst-tx-primary-at-publish` **MUST NOT** be relaxed: a paired case **MUST** prove a publish
+still refuses after `"categories": []` clears the set.
+
+**Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`
+
+**Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
+
+**Touches**:
+- DB Table: `products_category`, `products_product_category`
+- REST: `POST /bss-products/v1/products`, `POST /bss-products/v1/categories/{categoryId}/operations`
 
 ### Taxonomy read door
 
