@@ -355,3 +355,20 @@ async fn interim_outbox_retains_driver_error() {
     assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
     handle.stop().await;
 }
+
+#[test]
+fn sdk_producer_errors_preserve_any_exposed_database_cause() {
+    let sdk_error = event_broker_sdk::EventBrokerError::OffsetManager(
+        event_broker_sdk::error::OffsetManagerError::persist_failed(
+            "retry probe",
+            "",
+            sea_orm::DbErr::Custom("driver cause".into()),
+        ),
+    );
+    let error = crate::api::rest::TxError::from(events::EventsError::from(sdk_error));
+    assert!(crate::api::rest::contention_db_err(&error).is_some());
+    let opaque = events::EventsError::from(event_broker_sdk::EventBrokerError::Internal(
+        "producer outbox enqueue: opaque upstream error".into(),
+    ));
+    assert!(matches!(opaque, events::EventsError::Producer(_)));
+}

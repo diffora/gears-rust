@@ -78,7 +78,7 @@ pub(crate) async fn enqueue_typed<E: TypedEvent>(
             .enqueue(runner, event)
             .await
             .map(|_| ())
-            .map_err(|e| EventsError::Producer(e.to_string())),
+            .map_err(EventsError::from),
         EventSink::Interim(outbox) => {
             // The SDK constructor is crate-private and DbProducer::outbox_envelope
             // needs a prepared broker/schema cache. Persist its v1 wire format here.
@@ -134,5 +134,24 @@ impl From<EventsError> for bss_approval::ApprovalError {
             EventsError::Db(source) => Self::Db(source),
             other => Self::Store(other.to_string()),
         }
+    }
+}
+
+impl From<event_broker_sdk::EventBrokerError> for EventsError {
+    fn from(error: event_broker_sdk::EventBrokerError) -> Self {
+        // Recover any typed source the SDK does expose. Its local enqueue
+        // Internal(String) case has already lost the source and stays opaque.
+        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        while let Some(error) = cause {
+            if let Some(db) = error.downcast_ref::<sea_orm::DbErr>() {
+                return Self::Db(db.clone());
+            }
+            // SDK offset-manager errors store their source in an Arc. Walking
+            // Arc::source directly would skip the wrapped error itself.
+            cause = error
+                .downcast_ref::<std::sync::Arc<dyn std::error::Error + Send + Sync>>()
+                .map_or_else(|| error.source(), |shared| Some(shared.as_ref()));
+        }
+        Self::Producer(error.to_string())
     }
 }
