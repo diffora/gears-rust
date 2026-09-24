@@ -736,6 +736,70 @@ impl TenantRepo for FakeTenantRepo {
         })
     }
 
+    async fn list_descendants(
+        &self,
+        visible: &AccessScope,
+        enumeration: &AccessScope,
+        root_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<TenantModel>, DomainError> {
+        // Mirrors production: a row is listed iff its parent is in
+        // `closure(root_id, barrier = 0)` AND visible under the caller's
+        // PDP scope (`visible`), and the row itself is inside the
+        // barrier-relaxed `enumeration` scope; hidden-status default
+        // and the `status eq …` predicate exactly as in the fake
+        // `list_children`. Richer `$filter` shapes, `$orderby` and
+        // cursors are ignored here and covered on the real DB by
+        // `tests/list_descendants_integration.rs`.
+        let state = self.state.lock().expect("lock");
+        let parent_scope = visible_ids_for(&state, visible);
+        let row_scope = visible_ids_for(&state, enumeration);
+        let respect_visible_parents: HashSet<Uuid> = state
+            .closure
+            .iter()
+            .filter(|r| r.ancestor_id == root_id && r.barrier == 0)
+            .map(|r| r.descendant_id)
+            .filter(|id| match &parent_scope {
+                Some(vis) => vis.contains(id),
+                None => true,
+            })
+            .collect();
+        let status_filter: Option<i16> = query.filter().and_then(extract_status_eq);
+        let caller_filters_status = status_filter.is_some();
+        let mut items: Vec<TenantModel> = state
+            .tenants
+            .values()
+            .filter(|t| {
+                t.parent_id
+                    .is_some_and(|p| respect_visible_parents.contains(&p))
+            })
+            .filter(|t| t.status.is_sdk_visible())
+            .filter(|t| match &row_scope {
+                Some(vis) => vis.contains(&t.id),
+                None => true,
+            })
+            .filter(|t| match status_filter {
+                Some(code) => t.status.as_smallint() == code,
+                None if caller_filters_status => true,
+                None => !matches!(t.status, TenantStatus::Deleted),
+            })
+            .cloned()
+            .collect();
+        items.sort_by_key(|t| (t.created_at, t.id));
+
+        let limit_u64 = query.limit.unwrap_or(50);
+        let take_n = usize::try_from(limit_u64).unwrap_or(usize::MAX);
+        let paged: Vec<TenantModel> = items.into_iter().take(take_n).collect();
+        Ok(Page {
+            items: paged,
+            page_info: PageInfo {
+                next_cursor: None,
+                prev_cursor: None,
+                limit: limit_u64,
+            },
+        })
+    }
+
     async fn insert_provisioning(
         &self,
         _scope: &AccessScope,

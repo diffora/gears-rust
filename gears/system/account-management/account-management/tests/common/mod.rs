@@ -1650,6 +1650,92 @@ pub async fn seed_active_child(
 // END E2E HTTP harness
 // =====================================================================
 
+// =====================================================================
+// Barrier topology shared by the carve-out and recursive-listing suites
+// =====================================================================
+
+/// Fixed ids for the barrier topology described in
+/// `docs/superpowers/specs/2026-09-24-am-recursive-children-search-design.md` §5:
+///
+/// ```text
+/// root ─ x (managed, depth 1) ─ y (self-managed, depth 2) ─ yc (depth 3)
+///      │                      └ xc (managed, depth 2)
+///      └ s (self-managed, depth 1) ─ sc (managed, depth 2)
+/// ```
+pub struct BarrierTopology {
+    pub root: Uuid,
+    pub x: Uuid,
+    pub xc: Uuid,
+    pub s: Uuid,
+    pub sc: Uuid,
+    pub y: Uuid,
+    pub yc: Uuid,
+}
+
+impl BarrierTopology {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            root: Uuid::from_u128(0x7000_0001),
+            x: Uuid::from_u128(0x7000_0002),
+            xc: Uuid::from_u128(0x7000_0003),
+            s: Uuid::from_u128(0x7000_0004),
+            sc: Uuid::from_u128(0x7000_0005),
+            y: Uuid::from_u128(0x7000_0006),
+            yc: Uuid::from_u128(0x7000_0007),
+        }
+    }
+}
+
+impl Default for BarrierTopology {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Seed the topology with hand-pinned closure rows (`barrier = 1` iff a
+/// self-managed tenant sits on the strict `(ancestor, descendant]`
+/// path). Provider-based so the SQLite and Postgres harnesses share it.
+/// Every tenant is `active`; `tenant_type_uuid` is nil.
+pub async fn seed_barrier_topology(
+    provider: &Arc<AmDbProvider>,
+    t: &BarrierTopology,
+) -> Result<()> {
+    // root
+    insert_tenant(provider, t.root, None, "root", ACTIVE, false, 0).await?;
+    insert_closure(provider, t.root, t.root, 0, ACTIVE).await?;
+    // x — managed direct child of root
+    insert_tenant(provider, t.x, Some(t.root), "x", ACTIVE, false, 1).await?;
+    insert_closure(provider, t.x, t.x, 0, ACTIVE).await?;
+    insert_closure(provider, t.root, t.x, 0, ACTIVE).await?;
+    // s — self-managed direct child of root (barrier from root)
+    insert_tenant(provider, t.s, Some(t.root), "s", ACTIVE, true, 1).await?;
+    insert_closure(provider, t.s, t.s, 0, ACTIVE).await?;
+    insert_closure(provider, t.root, t.s, 1, ACTIVE).await?;
+    // xc — managed grandchild via x
+    insert_tenant(provider, t.xc, Some(t.x), "xc", ACTIVE, false, 2).await?;
+    insert_closure(provider, t.xc, t.xc, 0, ACTIVE).await?;
+    insert_closure(provider, t.x, t.xc, 0, ACTIVE).await?;
+    insert_closure(provider, t.root, t.xc, 0, ACTIVE).await?;
+    // sc — managed child under self-managed s (barrier from root)
+    insert_tenant(provider, t.sc, Some(t.s), "sc", ACTIVE, false, 2).await?;
+    insert_closure(provider, t.sc, t.sc, 0, ACTIVE).await?;
+    insert_closure(provider, t.s, t.sc, 0, ACTIVE).await?;
+    insert_closure(provider, t.root, t.sc, 1, ACTIVE).await?;
+    // y — self-managed direct child of x (barrier from root and x)
+    insert_tenant(provider, t.y, Some(t.x), "y", ACTIVE, true, 2).await?;
+    insert_closure(provider, t.y, t.y, 0, ACTIVE).await?;
+    insert_closure(provider, t.x, t.y, 1, ACTIVE).await?;
+    insert_closure(provider, t.root, t.y, 1, ACTIVE).await?;
+    // yc — managed child under y (barrier from root and x, not from y)
+    insert_tenant(provider, t.yc, Some(t.y), "yc", ACTIVE, false, 3).await?;
+    insert_closure(provider, t.yc, t.yc, 0, ACTIVE).await?;
+    insert_closure(provider, t.y, t.yc, 0, ACTIVE).await?;
+    insert_closure(provider, t.x, t.yc, 1, ACTIVE).await?;
+    insert_closure(provider, t.root, t.yc, 1, ACTIVE).await?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------
 // Postgres bring-up (testcontainers).
 // ---------------------------------------------------------------------

@@ -93,6 +93,16 @@ impl TenantRepo for TenantRepoImpl {
         reads::list_children(self, scope, parent_id, query).await
     }
 
+    async fn list_descendants(
+        &self,
+        visible: &AccessScope,
+        enumeration: &AccessScope,
+        root_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<TenantModel>, DomainError> {
+        reads::list_descendants(self, visible, enumeration, root_id, query).await
+    }
+
     async fn insert_provisioning(
         &self,
         scope: &AccessScope,

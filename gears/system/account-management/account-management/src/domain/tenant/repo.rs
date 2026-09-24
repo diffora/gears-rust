@@ -131,6 +131,41 @@ pub trait TenantRepo: Send + Sync {
         query: &ODataQuery,
     ) -> Result<Page<TenantModel>, DomainError>;
 
+    /// Recursive counterpart of [`Self::list_children`]: every tenant
+    /// whose parent is Respect-visible from `root_id`, i.e.
+    ///
+    /// ```text
+    /// tenants.parent_id IN (SELECT descendant_id FROM tenant_closure
+    ///                       WHERE ancestor_id = root_id AND barrier = 0)
+    /// ```
+    ///
+    /// This is the `/children` direct-child carve-out generalised over
+    /// the whole subtree: a row is returned iff its parent is visible
+    /// under `visible` (the caller's PDP-emitted, barrier-respecting
+    /// scope — including any `descendant_status` list it carries) and
+    /// sits in `closure(root_id, barrier = 0)`; the row itself is
+    /// bounded by `enumeration` (the barrier-relaxed clone of the same
+    /// scope, see `scope_util::relax_barriers`). A self-managed direct
+    /// child of any visible tenant is therefore returned as an
+    /// identity, nothing below a barrier ever is, and `root_id` itself
+    /// is never returned. The parent set is a subquery of the page
+    /// statement so gate and page observe one snapshot. Same
+    /// `Provisioning` exclusion, hidden-status default, default order
+    /// `(created_at ASC, id ASC)` and cursor contract as
+    /// `list_children`.
+    ///
+    /// Known limitation: a `descendant_status` list is per-descendant,
+    /// not per-path, so a status-hidden ancestor two or more levels
+    /// above a row does not hide the row (barrier constraints are
+    /// path-monotone and exact). AM's own PEP requests no status list.
+    async fn list_descendants(
+        &self,
+        visible: &AccessScope,
+        enumeration: &AccessScope,
+        root_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<TenantModel>, DomainError>;
+
     // ---- Write operations ----------------------------------------------
 
     /// Saga step 1: insert a new tenant row with `status = Provisioning`.

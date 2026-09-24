@@ -324,29 +324,41 @@ pub(super) async fn find_many(
     Ok(out)
 }
 
-pub(super) async fn list_children(
-    repo: &TenantRepoImpl,
-    scope: &AccessScope,
-    parent_id: Uuid,
-    query: &ODataQuery,
-) -> Result<Page<TenantModel>, DomainError> {
-    let conn = repo.db.conn()?;
+/// Map a pagination failure of one tenant listing onto the domain
+/// taxonomy. Filter / order / cursor rejections are the caller's fault
+/// (`Validation`, HTTP 400, detail forwarded); a database failure or a
+/// missing parser is ours (`Internal`, HTTP 500 — the diagnostic is
+/// audit-only and never leaks driver text into a public `Problem`).
+/// Row-shape drift from `entity_to_model` is preserved verbatim.
+fn map_listing_error(label: &'static str, e: PaginateOdataTryError<DomainError>) -> DomainError {
+    match e {
+        PaginateOdataTryError::OData(
+            odata_err @ (toolkit_odata::Error::Db(_) | toolkit_odata::Error::ParsingUnavailable(_)),
+        ) => DomainError::Internal {
+            diagnostic: format!("{label}: pagination failed: {odata_err}"),
+            cause: None,
+        },
+        PaginateOdataTryError::OData(odata_err) => DomainError::Validation {
+            detail: format!("{label} query rejected: {odata_err}"),
+        },
+        PaginateOdataTryError::MapError(domain_err) => domain_err,
+    }
+}
 
-    // Base filter: parent_id pin + provisioning-exclusion + optional
-    // hidden-AND status default. The OData `$filter` (over the SDK-
-    // declared filter columns) is applied on top by `paginate_odata`.
-    //
-    // Hidden-AND default: when the caller has not mentioned `status`
-    // in `$filter`, AND the base condition with `status IN (Active,
-    // Suspended)` so soft-deleted rows stay invisible by default.
-    // Callers wanting to see deleted rows pass
-    // `$filter=status eq 'deleted'` explicitly (the string form is the
-    // SDK contract; the impl-side `TenantODataMapper::map_value` hook
-    // translates it into the storage SMALLINT before binding). This
-    // preserves the legacy `ListChildrenQuery::status_filter = None
-    // -> Active+Suspended only` contract.
+/// Base condition shared by `list_children` and `list_descendants`:
+/// `Provisioning` exclusion plus the hidden `status IN (Active,
+/// Suspended)` default when the caller's `$filter` does not mention
+/// `status`. The depth pin (`parent_id = …` for the direct listing,
+/// `parent_id IN (…)` for the recursive one) is added by the caller.
+///
+/// Hidden-AND default: callers wanting to see deleted rows pass
+/// `$filter=status eq 'deleted'` explicitly (the string form is the
+/// SDK contract; `TenantODataMapper::map_value` translates it into the
+/// storage SMALLINT before binding). This preserves the legacy
+/// `ListChildrenQuery::status_filter = None -> Active+Suspended only`
+/// contract.
+fn listing_base_condition(query: &ODataQuery) -> Condition {
     let mut base_cond = Condition::all()
-        .add(tenants::Column::ParentId.eq(parent_id))
         // Defence-in-depth: `Provisioning` rows never cross the public
         // listing boundary; the service layer also retains a final
         // post-page filter on `is_sdk_visible` for the same reason.
@@ -362,33 +374,48 @@ pub(super) async fn list_children(
                 .add(tenants::Column::Status.eq(TenantStatus::Suspended.as_smallint())),
         );
     }
+    base_cond
+}
+
+/// Page `tenants` rows matching `pin` (the depth condition) under
+/// `scope`, with the shared base condition, the caller's `OData`
+/// `$filter` / `$orderby` / cursor, and the AM listing cap.
+///
+/// Cursor stability:
+///
+/// * The unique tiebreaker passed to `paginate_odata` is
+///   `id ASC` — the primary key. Using a column with a UNIQUE
+///   constraint guarantees the effective order is a total order,
+///   so the cursor predicate `(a, b) > (a0, b0)` cannot silently
+///   skip rows on a duplicate-key collision (e.g. two siblings
+///   sharing a `created_at` microsecond on batch INSERT).
+///
+/// * Chronological default — when the caller supplies no
+///   `$orderby`, we inject `created_at ASC` into `query.order`
+///   here (not via the tiebreaker, which is reserved for the
+///   unique key). `ensure_tiebreaker` inside `paginate_odata`
+///   then appends `id ASC`, yielding effective order
+///   `(created_at ASC, id ASC)`.
+///
+/// * Cursor pages — when a cursor is present, `paginate_odata`
+///   re-derives the effective order from the cursor's signed
+///   tokens, so the injection here is skipped.
+///
+/// `label` names the calling listing in the `Validation` detail.
+async fn paginate_tenant_listing(
+    repo: &TenantRepoImpl,
+    scope: &AccessScope,
+    pin: Condition,
+    query: &ODataQuery,
+    label: &'static str,
+) -> Result<Page<TenantModel>, DomainError> {
+    let conn = repo.db.conn()?;
 
     let base = tenants::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(base_cond);
+        .filter(listing_base_condition(query).add(pin));
 
-    // Cursor stability:
-    //
-    // * The unique tiebreaker passed to `paginate_odata` is
-    //   `id ASC` — the primary key. Using a column with a UNIQUE
-    //   constraint guarantees the effective order is a total order,
-    //   so the cursor predicate `(a, b) > (a0, b0)` cannot silently
-    //   skip rows on a duplicate-key collision (e.g. two siblings
-    //   sharing a `created_at` microsecond on batch INSERT).
-    //
-    // * Chronological default — when the caller supplies no
-    //   `$orderby`, we inject `created_at ASC` into `query.order`
-    //   here (not via the tiebreaker, which is reserved for the
-    //   unique key). `ensure_tiebreaker` inside `paginate_odata`
-    //   then appends `id ASC`, yielding effective order
-    //   `(created_at ASC, id ASC)` — the legacy chronological
-    //   default plus a UNIQUE tiebreaker.
-    //
-    // * Cursor pages — when a cursor is present, `paginate_odata`
-    //   re-derives the effective order from the cursor's signed
-    //   tokens, so the injection here is skipped (the helper
-    //   ignores `query.order` on cursor pages).
     let query = if query.cursor.is_none() && query.order.is_empty() {
         let mut adjusted = query.clone();
         adjusted.order = adjusted.order.ensure_tiebreaker("created_at", SortDir::Asc);
@@ -398,13 +425,8 @@ pub(super) async fn list_children(
     };
     // `paginate_odata_try` because `entity_to_model` is fallible —
     // a `tenants` row with an out-of-domain `status` SMALLINT or a
-    // negative `depth` (structurally pinned by DDL `CHECK` +
-    // column-type but theoretically reachable via legacy / manually-
-    // repaired databases) surfaces as `DomainError::Internal` (HTTP
-    // 500) rather than panicking the worker. The fallible variant
-    // shares the cursor / filter / ordering machinery with the
-    // plain `paginate_odata` — only the `model → domain` projection
-    // step is allowed to fail per-row.
+    // negative `depth` surfaces as `DomainError::Internal` (HTTP 500)
+    // rather than panicking the worker.
     let page = paginate_odata_try::<TenantInfoFilterField, TenantODataMapper, _, _, _, _, _>(
         base,
         &conn,
@@ -414,19 +436,81 @@ pub(super) async fn list_children(
         entity_to_model,
     )
     .await
-    .map_err(|e| match e {
-        PaginateOdataTryError::OData(odata_err) => DomainError::Validation {
-            detail: format!("list_children query rejected: {odata_err}"),
-        },
-        // Caller's domain error (`Internal { diagnostic, cause }`)
-        // is preserved verbatim — the canonical envelope at the AM
-        // boundary maps it to HTTP 500 with the drift diagnostic
-        // payload so operators see the bad row identifier.
-        PaginateOdataTryError::MapError(domain_err) => domain_err,
-    })?;
+    .map_err(|e| map_listing_error(label, e))?;
 
     Ok(page)
 }
+
+pub(super) async fn list_children(
+    repo: &TenantRepoImpl,
+    scope: &AccessScope,
+    parent_id: Uuid,
+    query: &ODataQuery,
+) -> Result<Page<TenantModel>, DomainError> {
+    // Depth-1 pin: direct children only. The `OData` `$filter` (over the
+    // SDK-declared filter columns) is applied on top by `paginate_odata`.
+    paginate_tenant_listing(
+        repo,
+        scope,
+        Condition::all().add(tenants::Column::ParentId.eq(parent_id)),
+        query,
+        "list_children",
+    )
+    .await
+}
+
+// @cpt-begin:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-page
+pub(super) async fn list_descendants(
+    repo: &TenantRepoImpl,
+    visible: &AccessScope,
+    enumeration: &AccessScope,
+    root_id: Uuid,
+    query: &ODataQuery,
+) -> Result<Page<TenantModel>, DomainError> {
+    // The parents a row may hang from: tenants that are (a) in
+    // `closure(root_id, barrier = 0)` — Respect-descendants of the
+    // listing root, root included through its self-row — and (b)
+    // visible under the caller's PDP-emitted scope, `descendant_status`
+    // list included. Composed as SUBQUERIES of the page statement so
+    // gate and page observe one database snapshot (same construction
+    // as `count_children_grouped`'s `reachable_parents`).
+    // `tenant_closure` carries no ownership column (`no_*` entity), so
+    // `allow_all` is the only scope it takes.
+    let respect_descendants_of_root = tenant_closure::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(tenant_closure::Column::AncestorId.eq(root_id))
+                .add(tenant_closure::Column::Barrier.eq(0_i16)),
+        )
+        .into_inner()
+        .select_only()
+        .column(tenant_closure::Column::DescendantId)
+        .into_query();
+    let visible_parents = tenants::Entity::find()
+        .secure()
+        .scope_with(visible)
+        .filter(Condition::all().add(tenants::Column::Id.in_subquery(respect_descendants_of_root)))
+        .into_inner()
+        .select_only()
+        .column(tenants::Column::Id)
+        .into_query();
+
+    // The rows themselves run under the barrier-relaxed scope, exactly
+    // like `list_children`: a self-managed direct child of a visible
+    // parent must surface as an identity, and the relaxed scope still
+    // bounds every row to the caller's own subtree.
+    paginate_tenant_listing(
+        repo,
+        enumeration,
+        Condition::all().add(tenants::Column::ParentId.in_subquery(visible_parents)),
+        query,
+        "list_descendants",
+    )
+    .await
+}
+// @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-page
 
 pub(super) async fn count_children(
     repo: &TenantRepoImpl,
@@ -709,3 +793,8 @@ mod tenant_type_filter_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "reads_tests.rs"]
+mod reads_tests;
