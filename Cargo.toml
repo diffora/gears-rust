@@ -162,6 +162,7 @@ members = [
     "gears/bss/rate-provider/plugins/ecb-plugin",
     "gears/bss/rate-provider/plugins/http-json-plugin",
     "gears/bss/libs/coord",
+    "gears/bss/libs/approval",
     "gears/bss/fixtures/bss-fixtures",
     "gears/bss/fixtures/bss-fixtures-conformance",
     "gears/system/event-broker/event-broker-sdk",
@@ -401,6 +402,7 @@ bss-products-sdk = { package = "cf-gears-bss-products-sdk", path = "gears/bss/pr
 unicode-normalization = "0.1"
 bss-rate-provider-sdk = { package = "cf-gears-bss-rate-provider-sdk", version = "0.1.5", path = "gears/bss/rate-provider/rate-provider-sdk" }
 coord = { package = "cf-gears-bss-coord", path = "gears/bss/libs/coord" }
+bss-approval = { package = "cf-gears-bss-approval", path = "gears/bss/libs/approval" }
 # The joint golden conformance fixture corpus. `bss-fixtures` carries no charge
 # arithmetic and is the only one a gear may depend on in production; the
 # conformance harness is a dev-dependency only.

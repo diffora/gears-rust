@@ -1857,6 +1857,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-approval"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-db",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "cf-gears-bss-coord"
 version = "0.0.0"
 dependencies = [
