@@ -582,8 +582,6 @@ impl TenantDto {
 
     /// Converts a recursive listing item while preserving ancestor order.
     #[must_use]
-    // Remove when Task 7 wires the recursive children handler.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn from_sdk_node(node: TenantNode) -> Self {
         let ancestors = node
             .ancestors

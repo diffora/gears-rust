@@ -51,6 +51,26 @@ pub(super) fn reject_non_odata_params(query: &HashMap<String, String>) -> Result
     Ok(())
 }
 
+/// Parse the `recursive` flag of `GET /tenants/{tenant_id}/children`.
+///
+/// Absent → `false`. Exactly the lowercase literals `true` / `false`
+/// are accepted; anything else is a `validation` error so a typo
+/// (`recursive=True`, `recursive=1`) never silently degrades to the
+/// non-recursive listing. Other keys are not inspected: the `OData`
+/// extractor owns the `$` namespace and `limit` / `cursor`, and
+/// `/children` has always ignored unrecognised non-`$` keys.
+pub(super) fn parse_recursive_flag(query: &HashMap<String, String>) -> Result<bool, DomainError> {
+    match query.get("recursive").map(String::as_str) {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(other) => Err(DomainError::Validation {
+            detail: format!(
+                "invalid `recursive` value `{other}`; expected exactly `true` or `false`"
+            ),
+        }),
+    }
+}
+
 #[cfg(test)]
 #[path = "common_tests.rs"]
 mod tests;

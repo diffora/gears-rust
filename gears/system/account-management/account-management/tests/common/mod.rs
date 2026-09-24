@@ -1451,6 +1451,44 @@ pub fn build_services_full_with_sa_enforcer(
     types_registry: Arc<dyn types_registry_sdk::TypesRegistryClient>,
     sa_enforcer: PolicyEnforcer,
 ) -> TestServices {
+    build_services_with_enforcers(
+        harness,
+        idp,
+        metadata_registry,
+        types_registry,
+        mock_enforcer(),
+        sa_enforcer,
+    )
+}
+
+/// Default fakes everywhere except the tenant service's enforcer.
+#[must_use]
+pub fn build_services_with_tenant_enforcer(
+    harness: &Harness,
+    tenant_enforcer: PolicyEnforcer,
+) -> TestServices {
+    build_services_with_enforcers(
+        harness,
+        fake_idp(),
+        empty_metadata_registry(),
+        types_registry_for_users(),
+        tenant_enforcer,
+        mock_enforcer(),
+    )
+}
+
+/// Full variant that also takes the tenant service's enforcer. Every
+/// other service keeps `mock_enforcer()` unless `sa_enforcer` says
+/// otherwise. Used to prove a listing verb is independently required.
+#[must_use]
+pub fn build_services_with_enforcers(
+    harness: &Harness,
+    idp: Arc<dyn IdpPluginClient>,
+    metadata_registry: Arc<dyn MetadataSchemaRegistry>,
+    types_registry: Arc<dyn types_registry_sdk::TypesRegistryClient>,
+    tenant_enforcer: PolicyEnforcer,
+    sa_enforcer: PolicyEnforcer,
+) -> TestServices {
     use account_management::config::AccountManagementConfig;
 
     let cfg = AccountManagementConfig::default();
@@ -1461,7 +1499,7 @@ pub fn build_services_full_with_sa_enforcer(
             Arc::clone(&idp),
             inert_resource_checker(),
             inert_tenant_type_checker(),
-            mock_enforcer(),
+            tenant_enforcer,
             cfg,
         )
         .with_types_registry(Arc::clone(&types_registry)),
