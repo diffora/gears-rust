@@ -23,6 +23,9 @@ mod approvals_tests;
 
 pub(crate) mod change;
 pub(crate) mod publish;
+// Integration probes use the real subject; consumers use the SDK.
+#[doc(hidden)]
+pub use publish::SkuPublish;
 pub(crate) mod retire;
 
 use crate::infra::storage::{RepoError, repo};
