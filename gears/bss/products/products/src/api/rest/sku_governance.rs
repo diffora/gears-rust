@@ -4,20 +4,15 @@
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{EmptyRequest, SkuChangeRequest, SkuDto, SubmitReceipt},
-    governance as g, idempotency_key, json_body, replay_response, require_authenticated,
-    tx_to_canonical,
+    governance as g, json_body, replay, require_authenticated, tx_to_canonical,
 };
 use crate::{
     authz::actions,
     domain::{
         approvals::{Subject, change::SkuChange, publish::SkuPublish, retire::SkuRetire},
-        idempotency::payload_digest,
         sku::{SkuPatch, apply_patch},
     },
-    infra::{
-        idempotency::{ClaimVerdict, IdempotencyClaimInput, claim_idempotency},
-        storage::repo,
-    },
+    infra::{idempotency::IdempotencyClaimInput, storage::repo},
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
@@ -64,7 +59,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
-        .param(idempotency_param())
+        .param(replay::param())
         .handler(submit)
         .json_response_with_schema::<SubmitReceipt>(openapi, StatusCode::OK, "Receipt")
         .error_400(openapi)
@@ -83,7 +78,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .no_license_required()
         .path_param("id", "SKU id")
         .json_request::<SkuChangeRequest>(openapi, "Request")
-        .param(idempotency_param())
+        .param(replay::param())
         .handler(changes)
         .json_response_with_schema::<SubmitReceipt>(openapi, StatusCode::OK, "Receipt")
         .error_400(openapi)
@@ -101,7 +96,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
-        .param(idempotency_param())
+        .param(replay::param())
         .handler(retire)
         .json_response_with_schema::<SubmitReceipt>(openapi, StatusCode::OK, "Receipt")
         .error_400(openapi)
@@ -119,6 +114,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
+        .param(replay::param())
         .handler(unfence)
         .json_response_with_schema::<SkuDto>(openapi, StatusCode::OK, "Receipt")
         .error_400(openapi)
@@ -281,75 +277,23 @@ async fn run(
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
         (SkuPatch::default(), None)
     };
-    let claim = idempotency_key(&headers)?.map(|key| {
-        IdempotencyClaimInput::new(
-            format!("/bss-products/v1/skus/{id}/{}", kind.suffix()),
-            key,
-            payload_digest(&payload),
-            now,
-            state.idempotency_retention_hours,
-        )
-    });
-    if let Some(input) = claim.clone() {
-        let scope = scope.clone();
-        let verdict = state
-            .db
-            .db()
-            .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-                let scope = scope.clone();
-                let input = input.clone();
-                Box::pin(async move {
-                    claim_idempotency(tx, &scope, tenant, &input)
-                        .await
-                        .map_err(TxError::Repo)
-                })
-            })
-            .await
-            .map_err(tx_to_canonical)?;
-        match verdict {
-            ClaimVerdict::Replay { status, body } => return Ok(replay_response(status, body)),
-            ClaimVerdict::Refused(e) => return Err(e.into()),
-            ClaimVerdict::Proceed => {}
-        }
-    }
-    let result = execute(
-        state.clone(),
-        scope.clone(),
-        ctx,
-        id,
-        kind,
-        patch,
-        date,
-        now,
-        claim.clone(),
-    )
-    .await;
-    if (result.is_err() || result.as_ref().is_ok_and(|r| !r.status().is_success()))
-        && let Some(input) = claim
+    let claim = replay::input(
+        &state,
+        &headers,
+        format!("/bss-products/v1/skus/{id}/{}", kind.suffix()),
+        &payload,
+    )?;
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    g::find(&conn, &scope, tenant, id)
+        .await
+        .map_err(tx_to_canonical)?;
+    if let Some(response) = replay::lookup(&conn, tenant, claim.as_ref())
+        .await
+        .map_err(tx_to_canonical)?
     {
-        // The small claim transaction already committed. A failed operation releases its claim.
-        state
-            .db
-            .db()
-            .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-                let scope = scope.clone();
-                let input = input.clone();
-                Box::pin(async move {
-                    repo::release_idempotency_claim(
-                        tx,
-                        &scope,
-                        tenant,
-                        &input.endpoint,
-                        &input.client_key,
-                    )
-                    .await
-                    .map_err(TxError::Repo)
-                })
-            })
-            .await
-            .map_err(tx_to_canonical)?;
+        return Ok(response);
     }
-    result
+    execute(state, scope, ctx, id, kind, patch, date, now, claim).await
 }
 #[allow(
     clippy::too_many_arguments,
@@ -392,6 +336,12 @@ async fn execute(
             let proposed = proposed.clone();
             let claim = claim.clone();
             Box::pin(async move {
+                g::find(tx, &scope, tenant, id).await?;
+                if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
+                    return Ok(response);
+                }
+                // The authorized SKU anchors unit, policy and reference work.
+                let scope = AccessScope::for_tenant(tenant);
                 g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
                 let current = g::find(tx, &scope, tenant, id).await?;
                 if !matches!(kind, SubmitKind::Retire)
@@ -404,7 +354,9 @@ async fn execute(
                     ));
                 }
                 if matches!(kind, SubmitKind::Change)
-                    && patch.r#type.is_none()
+                    && !patch
+                        .r#type
+                        .is_some_and(|proposed| proposed != current.r#type)
                     && current.type_change_pending
                 {
                     return Err(g::conflict(
@@ -428,7 +380,10 @@ async fn execute(
                             .await?,
                     }),
                     SubmitKind::Change => {
-                        let fence_op_id = if patch.r#type.is_some() {
+                        let fence_op_id = if patch
+                            .r#type
+                            .is_some_and(|proposed| proposed != current.r#type)
+                        {
                             Some(fence(tx, &scope, tenant, id, repo::Fence::TypeChange, now).await?)
                         } else {
                             None
@@ -493,33 +448,12 @@ async fn execute(
                     unit: submitted.unit.into(),
                     sku: g::find(tx, &scope, tenant, id).await?.into(),
                 };
-                if let Some(input) = claim {
-                    let body = serde_json::to_value(&receipt).map_err(|e| {
-                        TxError::Repo(crate::infra::storage::RepoError::Db(e.to_string()))
-                    })?;
-                    if matches!(
-                        repo::answer_idempotency_key(
-                            tx,
-                            &scope,
-                            tenant,
-                            &input.endpoint,
-                            &input.client_key,
-                            200,
-                            body
-                        )
-                        .await
-                        .map_err(TxError::Repo)?,
-                        repo::IdempotencyAnswer::NotHeld
-                    ) {
-                        return Err(g::conflict("IDEMPOTENCY_CONFLICT", "claim lost"));
-                    }
-                }
-                Ok(receipt)
+                replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await
             })
         })
         .await;
     match receipt {
-        Ok(receipt) => Ok(Json(receipt).into_response()),
+        Ok(receipt) => Ok(receipt),
         Err(TxError::FencedReferences { code, rows }) => {
             let error = crate::domain::error::DomainError::Conflict {
                 code,
@@ -538,17 +472,30 @@ async fn unfence(
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, false).await?;
+    let claim = replay::input(
+        &state,
+        &headers,
+        format!("/bss-products/v1/skus/{id}/unfence"),
+        &serde_json::json!({}),
+    )?;
     let sku = state
         .db
         .db()
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
             let scope = scope.clone();
             let ctx = ctx.clone();
+            let claim = claim.clone();
             Box::pin(async move {
                 g::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
+                if let Some(response) =
+                    replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
+                {
+                    return Ok(response);
+                }
                 let result = repo::unfence_sku(tx, &scope, ctx.subject_tenant_id(), id, None)
                     .await
                     .map_err(TxError::Repo)?;
@@ -569,25 +516,20 @@ async fn unfence(
                     OffsetDateTime::now_utc(),
                 )
                 .await?;
-                Ok(sku)
+                replay::finish(
+                    tx,
+                    ctx.subject_tenant_id(),
+                    claim.as_ref(),
+                    StatusCode::OK,
+                    &SkuDto::from(sku),
+                )
+                .await
             })
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(SkuDto::from(sku)).into_response())
+    Ok(sku)
 }
 #[cfg(test)]
 #[path = "sku_governance_tests.rs"]
 mod sku_governance_tests;
-
-/// Optional replay header in the generated API contract.
-fn idempotency_param() -> toolkit::api::operation_builder::ParamSpec {
-    toolkit::api::operation_builder::ParamSpec {
-        name: "Idempotency-Key".into(),
-        location: toolkit::api::operation_builder::ParamLocation::Header,
-        required: false,
-        description: Some("Replay this concrete endpoint's stored receipt for 24 hours".into()),
-        param_type: "string".into(),
-        array: false,
-    }
-}

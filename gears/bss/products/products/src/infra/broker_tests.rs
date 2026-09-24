@@ -173,6 +173,26 @@ async fn persisted<E: TypedEvent + Clone + PartialEq + std::fmt::Debug>(
     )
     .await
     .unwrap();
+    let raw = crate::test_support::raw_string_opt(
+        dsn,
+        "SELECT CAST(payload AS TEXT) AS v FROM bss_products_outbox_body ORDER BY id DESC LIMIT 1",
+    )
+    .await
+    .unwrap();
+    let envelope: event_broker_sdk::producer::ProducerOutboxEnvelope =
+        serde_json::from_str(&raw).expect("interim backlog must decode with the SDK decoder");
+    let wire = serde_json::to_value(envelope).unwrap();
+    assert_eq!(wire["version"], 1);
+    assert_eq!(wire["type"], E::TYPE_ID);
+    assert_eq!(wire["topic"], TOPIC);
+    assert_eq!(wire["source"], E::SOURCE);
+    assert_eq!(wire["subject"], expected.subject().as_ref());
+    assert_eq!(wire["tenant_id"], expected.tenant_id().unwrap().to_string());
+    assert_eq!(wire["producer_mode"], "stateless");
+    assert_eq!(
+        serde_json::from_value::<E>(wire["data"].clone()).unwrap(),
+        expected
+    );
     assert_eq!(enqueued_event_count(dsn, E::TYPE_ID).await, 1);
     assert_eq!(
         serde_json::from_value::<E>(enqueued_event_envelope(dsn, E::TYPE_ID).await).unwrap(),
@@ -285,5 +305,53 @@ async fn every_event_round_trips_through_the_interim_outbox_and_rollback_leaves_
         u16::from_le_bytes([tenant.as_bytes()[14], tenant.as_bytes()[15]]) % events::PARTITIONS,
     );
     assert_eq!(crate::test_support::raw_i64(&dsn,&format!("SELECT COUNT(*) AS v FROM (SELECT body_id, partition_id FROM bss_products_outbox_incoming UNION SELECT body_id, partition_id FROM bss_products_outbox_outgoing) b JOIN bss_products_outbox_partitions p ON p.id=b.partition_id WHERE p.partition={partition} AND p.queue='bss_products_events'")).await,5);
+    let approval = bss_approval::ApprovalError::from(events::EventsError::from(
+        toolkit_db::outbox::OutboxError::Database(sea_orm::DbErr::Custom("retry probe".into())),
+    ));
+    let tx_error = crate::api::rest::TxError::from(approval);
+    assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
+    handle.stop().await;
+}
+
+#[tokio::test]
+async fn interim_outbox_retains_driver_error() {
+    use std::error::Error;
+    let (db, _, tenant, dsn) = test_db().await;
+    let handle = toolkit_db::outbox::Outbox::builder(db.db())
+        .table_prefix(events::OUTBOX_TABLE_PREFIX)
+        .unwrap()
+        .queue(
+            events::QUEUE_NAME,
+            toolkit_db::outbox::Partitions::of(events::PARTITIONS),
+        )
+        .leased(events::PendingBrokerProducer)
+        .start()
+        .await
+        .unwrap();
+    crate::test_support::drop_table(&dsn, "bss_products_outbox_body").await;
+    let error = enqueue_typed(
+        &EventSink::Interim(Arc::clone(handle.outbox())),
+        &db.conn().unwrap(),
+        SkuPublished {
+            tenant_id: tenant,
+            sku_id: Uuid::new_v4(),
+            published_version: 1,
+            actor_ref: tenant,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        error
+            .source()
+            .and_then(|e| e.downcast_ref::<sea_orm::DbErr>())
+            .is_some(),
+        "{error}"
+    );
+    let approval = bss_approval::ApprovalError::from(events::EventsError::from(
+        toolkit_db::outbox::OutboxError::Database(sea_orm::DbErr::Custom("retry probe".into())),
+    ));
+    let tx_error = crate::api::rest::TxError::from(approval);
+    assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
     handle.stop().await;
 }

@@ -60,55 +60,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
                 "effective date is in the past",
             ));
         }
-        for i in items {
-            let s = sku(tx, &b.scope, b.tenant_id, i.item_id).await?;
-            if !matches!(s.lifecycle, Lifecycle::Published | Lifecycle::Deprecated) {
-                return Err(invalid(
-                    "ILLEGAL_TRANSITION",
-                    "lifecycle",
-                    "only published or deprecated SKUs can change",
-                ));
-            }
-            let proposed: SkuProposal = decode(&i.after)?;
-            if let Some(target) = proposed.lifecycle
-                && (!matches!(target, Lifecycle::Published | Lifecycle::Deprecated)
-                    || !lifecycle_edge(s.lifecycle, target))
-            {
-                return Err(invalid(
-                    "ILLEGAL_TRANSITION",
-                    "lifecycle",
-                    "use the fenced retire operation to retire",
-                ));
-            }
-            if self.patch.r#type.is_some() {
-                let fence = repo::find_sku_fence(tx, &b.scope, b.tenant_id, s.id)
-                    .await
-                    .map_err(store_err)?;
-                if !s.type_change_pending
-                    || self.fence_op_id.is_none()
-                    || fence.as_ref().and_then(|f| f.fence_op_id) != self.fence_op_id
-                {
-                    return Err(invalid(
-                        "SKU_FENCED",
-                        "type",
-                        "type change requires its matching fence",
-                    ));
-                }
-                if !repo::live_references(tx, &b.scope, b.tenant_id, s.id)
-                    .await
-                    .map_err(store_err)?
-                    .is_empty()
-                {
-                    return Err(invalid(
-                        "SKU_TYPE_FROZEN",
-                        "type",
-                        "live references prevent type changes",
-                    ));
-                }
-            }
-            b.validate_content(&proposed.content)?;
-        }
-        Ok(())
+        self.validate_change(tx, items).await
     }
     async fn lock(
         &self,
@@ -127,13 +79,14 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
         unit: &Unit,
         items: &[ItemRef],
     ) -> Result<(), ApprovalError> {
-        self.validate_submit(tx, items).await.map_err(apply_error)?;
+        self.validate_change(tx, items).await.map_err(apply_error)?;
         if unit.common_effective_date != Some(self.effective_from) {
             return Err(ApprovalError::Store(
                 "change effective date disagrees with unit".into(),
             ));
         }
         let b = &self.base;
+        let applied_date = self.effective_from.max(b.now.date());
         for i in items {
             let proposal: SkuProposal = decode(&i.after)?;
             let current = sku(tx, &b.scope, b.tenant_id, i.item_id).await?;
@@ -178,7 +131,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
                 b.tenant_id,
                 s.id,
                 s.published_version,
-                self.effective_from,
+                applied_date,
                 &proposal.content,
                 b.now,
             )
@@ -191,13 +144,13 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
                     tenant_id: b.tenant_id,
                     sku_id: s.id,
                     changed,
-                    effective_from: self.effective_from,
+                    effective_from: applied_date,
                     published_version: s.published_version,
                     actor_ref: b.actor,
                 },
             )
             .await
-            .map_err(|e| ApprovalError::Store(e.to_string()))?;
+            .map_err(ApprovalError::from)?;
         }
         Ok(())
     }
@@ -233,5 +186,61 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
         } else {
             b.unlock(tx, unit, items, approved).await
         }
+    }
+}
+
+/// Recheck durable content and fence constraints at both submit and apply.
+impl SkuChange {
+    async fn validate_change(&self, tx: &DbTx<'_>, items: &[ItemRef]) -> Result<(), ApprovalError> {
+        let b = &self.base;
+        for i in items {
+            let s = sku(tx, &b.scope, b.tenant_id, i.item_id).await?;
+            if !matches!(s.lifecycle, Lifecycle::Published | Lifecycle::Deprecated) {
+                return Err(invalid(
+                    "ILLEGAL_TRANSITION",
+                    "lifecycle",
+                    "only published or deprecated SKUs can change",
+                ));
+            }
+            let proposed: SkuProposal = decode(&i.after)?;
+            if let Some(target) = proposed.lifecycle
+                && (!matches!(target, Lifecycle::Published | Lifecycle::Deprecated)
+                    || !lifecycle_edge(s.lifecycle, target))
+            {
+                return Err(invalid(
+                    "ILLEGAL_TRANSITION",
+                    "lifecycle",
+                    "use the fenced retire operation to retire",
+                ));
+            }
+            if proposed.content.r#type != s.r#type || self.fence_op_id.is_some() {
+                let fence = repo::find_sku_fence(tx, &b.scope, b.tenant_id, s.id)
+                    .await
+                    .map_err(store_err)?;
+                if !s.type_change_pending
+                    || self.fence_op_id.is_none()
+                    || fence.as_ref().and_then(|f| f.fence_op_id) != self.fence_op_id
+                {
+                    return Err(invalid(
+                        "SKU_FENCED",
+                        "type",
+                        "type change requires its matching fence",
+                    ));
+                }
+                if !repo::live_references(tx, &b.scope, b.tenant_id, s.id)
+                    .await
+                    .map_err(store_err)?
+                    .is_empty()
+                {
+                    return Err(invalid(
+                        "SKU_TYPE_FROZEN",
+                        "type",
+                        "live references prevent type changes",
+                    ));
+                }
+            }
+            b.validate_content(&proposed.content)?;
+        }
+        Ok(())
     }
 }

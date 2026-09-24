@@ -4,7 +4,7 @@
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{ReferenceReceipt, ReleaseRequest, ReserveRequest},
-    governance as g, json_body, require_authenticated, tx_to_canonical,
+    governance as g, json_body, replay, require_authenticated, tx_to_canonical,
 };
 use crate::{
     authz::actions,
@@ -21,7 +21,7 @@ use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Json, Router,
     extract::{Path, rejection::JsonRejection},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use std::sync::Arc;
@@ -40,6 +40,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .no_license_required()
         .path_param("id", "Resource id")
         .json_request::<ReserveRequest>(openapi, "Request")
+        .param(replay::param())
         .handler(reserve)
         .json_response_with_schema::<ReferenceReceipt>(openapi, StatusCode::OK, "Reference")
         .json_response_with_schema::<ReferenceReceipt>(
@@ -62,6 +63,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "Resource id")
+        .param(replay::param())
         .handler(confirm)
         .json_response_with_schema::<ReferenceReceipt>(openapi, StatusCode::OK, "Reference")
         .error_400(openapi)
@@ -110,11 +112,20 @@ async fn reserve(
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
-    body: Result<Json<ReserveRequest>, JsonRejection>,
+    headers: HeaderMap,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::REFERENCE, false).await?;
-    let body = json_body(body)?;
+    let payload = json_body(body)?;
+    let claim = replay::input(
+        &state,
+        &headers,
+        format!("/bss-products/v1/skus/{id}/references/reserve"),
+        &payload,
+    )?;
+    let body: ReserveRequest = serde_json::from_value(payload)
+        .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
     if owner(&state, &ctx) != Some(body.owner.as_str()) {
         return Err(forbidden().into());
     }
@@ -125,119 +136,127 @@ async fn reserve(
         _ => return Err(g::validation("kind", "unknown reference kind").into()),
     };
     let db = state.db.db();
-    let replay_scope = scope.clone();
-    let replay_owner = body.owner.clone();
-    let replay_tenant = ctx.subject_tenant_id();
-    let result = db
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let state = state.clone();
-            let scope = scope.clone();
-            let ctx = ctx.clone();
-            let owner = body.owner.clone();
-            Box::pin(async move {
-                let tenant = ctx.subject_tenant_id();
-                let now = time::OffsetDateTime::now_utc();
-                g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
-                let s = g::find(tx, &scope, tenant, id).await?;
-                if let Some(row) =
-                    repo::find_live_reference(tx, &scope, tenant, &owner, kind, body.ref_id)
-                        .await
-                        .map_err(TxError::Repo)?
-                {
-                    if row.sku_id != id {
-                        return Err(g::conflict(
-                            "REFERENCE_EXISTS",
-                            "logical reference already belongs to another SKU",
-                        ));
+    // A unique loser rolls back before retrying the logical-reference read.
+    for attempt in 0..2 {
+        let state_tx = state.clone();
+        let scope_tx = scope.clone();
+        let ctx_tx = ctx.clone();
+        let claim_tx = claim.clone();
+        let owner_tx = body.owner.clone();
+        let result = db
+            .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
+                let state = state_tx.clone();
+                let scope = scope_tx.clone();
+                let ctx = ctx_tx.clone();
+                let claim = claim_tx.clone();
+                let owner = owner_tx.clone();
+                Box::pin(async move {
+                    let tenant = ctx.subject_tenant_id();
+                    let now = time::OffsetDateTime::now_utc();
+                    let s = g::find(tx, &scope, tenant, id).await?;
+                    if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
+                        return Ok(response);
                     }
-                    return Ok((false, row));
-                }
-                reservation_allowed(
-                    s.lifecycle,
-                    s.type_change_pending
-                        || s.lifecycle == bss_products_sdk::models::Lifecycle::Retiring,
-                )
-                .map_err(TxError::Refused)?;
-                let row = repo::reserve_reference(
-                    tx,
-                    &scope,
-                    tenant,
-                    id,
-                    &owner,
-                    kind,
-                    body.ref_id,
-                    ctx.subject_id(),
-                    now,
-                )
-                .await
-                .map_err(TxError::Repo)?;
-                g::audit(
-                    tx,
-                    &scope,
-                    &ctx,
-                    "reference.reserve",
-                    "sku_reference",
-                    row.id,
-                    None,
-                    now,
-                )
-                .await?;
-                Ok((true, row))
+                    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+                    g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
+                    if let Some(row) =
+                        repo::find_live_reference(tx, &scope, tenant, &owner, kind, body.ref_id)
+                            .await
+                            .map_err(TxError::Repo)?
+                    {
+                        if row.sku_id != id {
+                            return Err(g::conflict(
+                                "REFERENCE_EXISTS",
+                                "logical reference already belongs to another SKU",
+                            ));
+                        }
+                        return replay::finish(
+                            tx,
+                            tenant,
+                            claim.as_ref(),
+                            StatusCode::OK,
+                            &ReferenceReceipt::from(row),
+                        )
+                        .await;
+                    }
+                    // Re-read after orphan-fence recovery.
+                    let s = if s.type_change_pending
+                        || s.lifecycle == bss_products_sdk::models::Lifecycle::Retiring
+                    {
+                        g::find(tx, &scope, tenant, id).await?
+                    } else {
+                        s
+                    };
+                    reservation_allowed(
+                        s.lifecycle,
+                        s.type_change_pending
+                            || s.lifecycle == bss_products_sdk::models::Lifecycle::Retiring,
+                    )
+                    .map_err(TxError::Refused)?;
+                    let row = repo::reserve_reference(
+                        tx,
+                        &scope,
+                        tenant,
+                        id,
+                        &owner,
+                        kind,
+                        body.ref_id,
+                        ctx.subject_id(),
+                        now,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?;
+                    g::audit(
+                        tx,
+                        &scope,
+                        &ctx,
+                        "reference.reserve",
+                        "sku_reference",
+                        row.id,
+                        None,
+                        now,
+                    )
+                    .await?;
+                    replay::finish(
+                        tx,
+                        tenant,
+                        claim.as_ref(),
+                        StatusCode::CREATED,
+                        &ReferenceReceipt::from(row),
+                    )
+                    .await
+                })
             })
-        })
-        .await;
-    // A unique loser must roll back before reading the winner on PostgreSQL.
-    let (created, row) = match result {
-        Ok(result) => result,
-        Err(TxError::Repo(RepoError::Db(code))) if code == "REFERENCE_EXISTS" => {
-            let conn = db.conn().map_err(|e| tx_to_canonical(e.into()))?;
-            let row = repo::find_live_reference(
-                &conn,
-                &replay_scope,
-                replay_tenant,
-                &replay_owner,
-                kind,
-                body.ref_id,
-            )
-            .await
-            .map_err(|e| tx_to_canonical(TxError::Repo(e)))?
-            .ok_or_else(|| {
-                tx_to_canonical(g::conflict(
-                    "REFERENCE_EXISTS",
-                    "winning reference was released; retry",
-                ))
-            })?;
-            if row.sku_id != id {
-                return Err(tx_to_canonical(g::conflict(
-                    "REFERENCE_EXISTS",
-                    "logical reference belongs to another SKU",
-                )));
-            }
-            (false, row)
+            .await;
+        match result {
+            Err(TxError::Repo(RepoError::Db(code)))
+                if code == "REFERENCE_EXISTS" && attempt == 0 => {}
+            other => return other.map_err(tx_to_canonical),
         }
-        Err(e) => return Err(tx_to_canonical(e)),
-    };
-    Ok((
-        if created {
-            StatusCode::CREATED
-        } else {
-            StatusCode::OK
-        },
-        Json(ReferenceReceipt::from(row)),
-    )
-        .into_response())
+    }
+    Err(tx_to_canonical(g::conflict(
+        "REFERENCE_EXISTS",
+        "logical reference changed; retry",
+    )))
 }
 async fn confirm(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::REFERENCE, false).await?;
     let owner = owner(&state, &ctx)
         .ok_or_else(|| CanonicalError::from(forbidden()))?
         .to_owned();
+    let claim = replay::input(
+        &state,
+        &headers,
+        format!("/bss-products/v1/references/{id}/confirm"),
+        &serde_json::json!({}),
+    )?;
     let ttl = state.fence_ttl_minutes;
     let row = state
         .db
@@ -246,6 +265,7 @@ async fn confirm(
             let scope = scope.clone();
             let ctx = ctx.clone();
             let owner = owner.clone();
+            let claim = claim.clone();
             Box::pin(async move {
                 let tenant = ctx.subject_tenant_id();
                 let now = time::OffsetDateTime::now_utc();
@@ -256,10 +276,15 @@ async fn confirm(
                         what: "reference",
                         id,
                     }))?;
-                g::expire(tx, &scope, tenant, row.sku_id, ttl, now).await?;
+
                 if row.owner_gear != owner {
                     return Err(TxError::Refused(forbidden()));
                 }
+                if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
+                    return Ok(response);
+                }
+                let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+                g::expire(tx, &scope, tenant, row.sku_id, ttl, now).await?;
                 match repo::confirm_reference(tx, &scope, tenant, id, now)
                     .await
                     .map_err(TxError::Repo)?
@@ -291,18 +316,26 @@ async fn confirm(
                     }
                     repo::ConfirmOutcome::AlreadyConfirmed => {}
                 }
-                repo::find_reference(tx, &scope, tenant, id)
+                let row = repo::find_reference(tx, &scope, tenant, id)
                     .await
                     .map_err(TxError::Repo)?
                     .ok_or(TxError::Refused(DomainError::NotFound {
                         what: "reference",
                         id,
-                    }))
+                    }))?;
+                replay::finish(
+                    tx,
+                    tenant,
+                    claim.as_ref(),
+                    StatusCode::OK,
+                    &ReferenceReceipt::from(row),
+                )
+                .await
             })
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(ReferenceReceipt::from(row)).into_response())
+    Ok(row)
 }
 /// @cpt-cf-bss-products-fr-reference-registry
 async fn release(
@@ -408,7 +441,7 @@ async fn release(
                         },
                     )
                     .await
-                    .map_err(|e| TxError::Repo(RepoError::Db(e.to_string())))?;
+                    .map_err(TxError::from)?;
                 }
                 Ok(row)
             })

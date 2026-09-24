@@ -103,8 +103,8 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 1. [ ] - `p1` - Propose Storage's gl_code from 4010-STOR to 4012-STOR with effective_from October 1 via the changes door on a published or deprecated SKU - `inst-ap-gl-propose`
 2. [ ] - `p1` - Validate the proposed date and content, record a sku_change snapshot with before/after/date and acquire pending ownership; only a type change needs the type fence - `inst-ap-gl-submit`
-3. [ ] - `p1` - An independent reviewer approves the generation; at quorum append the dated SkuVersion, update the head and emit SkuChanged atomically with the terminal unit - `inst-ap-gl-apply`
-4. [ ] - `p1` - Pricing's period-start version read binds the new GL on or after October 1; earlier bindings keep the old GL without any Pricing unit - `inst-ap-gl-consume`
+3. [ ] - `p1` - An independent reviewer approves the generation; at quorum append SkuVersion and emit SkuChanged with max(requested date, apply date), retaining the requested date in the unit snapshot, atomically with the head and terminal unit - `inst-ap-gl-apply`
+4. [ ] - `p1` - Pricing's period-start version read binds the new GL on or after the later of October 1 and the approval date; earlier bindings keep the old GL without any Pricing unit - `inst-ap-gl-consume`
 
 ### Administrator retires a SKU
 
@@ -122,7 +122,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-lifecycle-approvals-lifecycle-edges`
 
 1. [ ] - `p1` - sku_publish accepts draft and installs published with a new immediate snapshot; sku_change accepts published/deprecated content and the published ↔ deprecated edges - `inst-ap-lifecycle-kind`
-2. [ ] - `p1` - For a change default effective_from to today and reject dates before the latest stored version with VERSION_ORDER; equal dates append a higher published_version - `inst-ap-lifecycle-date`
+2. [ ] - `p1` - For a change default the requested effective_from to today and refuse a past date at submit; apply max(requested date, apply date) and reject applied dates before the latest stored version with VERSION_ORDER; equal dates append a higher published_version - `inst-ap-lifecycle-date`
 3. [ ] - `p1` - Retirement of a draft, published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation - `inst-ap-lifecycle-retire`
 4. [ ] - `p1` - Reject unsupported lifecycle edges, edits while pending and any return from retired; rejected/withdrawn publication or ordinary change leaves prior business content intact - `inst-ap-lifecycle-refuse`
 
@@ -223,7 +223,7 @@ POST submit validates a draft, resolves usage metering and records sku_publish w
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/domain/approvals/change.rs`.
 
-POST changes accepts proposed content and/or lifecycle for a published or deprecated SKU as sku_change with effective_from defaulting to today. Apply revalidates the timeline, updates the latest head, appends the dated snapshot and emits SkuChanged in the terminal transaction; a date before the latest version is VERSION_ORDER and equal dates advance published_version. Products serves the stored snapshots by as_of (spec §2 decision 14, §2.2, §6, §7.2; DESIGN §3.1, §3.6).
+POST changes accepts proposed content and/or lifecycle for a published or deprecated SKU as sku_change with effective_from defaulting to today. Submit refuses a past requested date. Apply uses max(requested effective_from, apply date) for the version and SkuChanged, retains the requested date in the unit snapshot, revalidates the timeline and updates the latest head in the terminal transaction; an applied date before the latest version is VERSION_ORDER and equal dates advance published_version. Products serves the stored snapshots by as_of (spec §2 decision 14, §2.2, §6, §7.2; DESIGN §3.1, §3.6).
 
 ### Retirement is fenced and resumable
 

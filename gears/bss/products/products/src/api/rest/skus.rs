@@ -10,7 +10,7 @@ use super::{
     },
     json_body,
     preconditions::{etag, if_match, if_match_param},
-    repo_error_to_canonical, require_authenticated, tx_to_canonical,
+    replay, repo_error_to_canonical, require_authenticated, tx_to_canonical,
 };
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -125,6 +125,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .json_request::<SkuRequest>(openapi, "Draft business fields")
+        .param(replay::param())
         .handler(create_sku)
         .json_response_with_schema::<SkuDto>(openapi, StatusCode::CREATED, "Create a draft SKU.")
         .error_400(openapi)
@@ -334,13 +335,28 @@ async fn create_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-    body: Result<Json<SkuRequest>, JsonRejection>,
+    headers: HeaderMap,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
     let scope_tx = scope(&enforcer, &ctx, true).await?;
-    let new_tx = NewSku::try_from(json_body(body)?).map_err(DomainError::Validation)?;
+    let payload = json_body(body)?;
+    let claim = replay::input(&state, &headers, "/bss-products/v1/skus".into(), &payload)?;
+    if let Some(response) = replay::lookup(
+        &state.db.conn().map_err(|e| tx_to_canonical(e.into()))?,
+        tenant_id,
+        claim.as_ref(),
+    )
+    .await
+    .map_err(tx_to_canonical)?
+    {
+        return Ok(response);
+    }
+    let body: SkuRequest = serde_json::from_value(payload)
+        .map_err(|e| CanonicalError::from(super::governance::validation("body", e.to_string())))?;
+    let new_tx = NewSku::try_from(body).map_err(DomainError::Validation)?;
     let report = validate_new(&new_tx);
     if !report.is_empty() {
         return Err(DomainError::Validation(report).into());
@@ -350,25 +366,36 @@ async fn create_sku(
     let created = state
         .db
         .db()
-        .transaction_with_retry::<Sku, TxError, _, _>(
+        .transaction_with_retry::<Response, TxError, _, _>(
             category_tx_config(&state),
             contention_db_err,
             move |tx| {
                 let scope = scope_tx.clone();
                 let new = new_tx.clone();
+                let claim = claim.clone();
                 Box::pin(async move {
+                    if let Some(response) = replay::begin(tx, tenant_id, claim.as_ref()).await? {
+                        return Ok(response);
+                    }
                     let category = new.category_id;
                     let s = repo::insert_sku(tx, &scope, tenant_id, new, actor, now)
                         .await
                         .map_err(|e| write_error(e, category))?;
                     audit(tx, &scope, tenant_id, actor, "sku.create", &s, now).await?;
-                    Ok(s)
+                    replay::finish(
+                        tx,
+                        tenant_id,
+                        claim.as_ref(),
+                        StatusCode::CREATED,
+                        &SkuDto::from(s),
+                    )
+                    .await
                 })
             },
         )
         .await
         .map_err(tx_to_canonical)?;
-    Ok(response(StatusCode::CREATED, created))
+    Ok(created)
 }
 /// Read a head with a scoped 404 for absence or a foreign tenant.
 async fn find(
@@ -499,7 +526,8 @@ async fn get_sku(
     let s = find(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(tx_to_canonical)?;
-    let refs = repo::reference_summary(&conn, &scope, ctx.subject_tenant_id(), id)
+    let reference_scope = AccessScope::for_tenant(ctx.subject_tenant_id());
+    let refs = repo::reference_summary(&conn, &reference_scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
     Ok((
@@ -650,6 +678,7 @@ async fn sku_references(
     find(&conn, &scope, tenant, id)
         .await
         .map_err(tx_to_canonical)?;
+    let scope = AccessScope::for_tenant(tenant);
     let summary = repo::reference_summary(&conn, &scope, tenant, id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;

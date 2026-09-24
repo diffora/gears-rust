@@ -174,8 +174,10 @@ Pricing plan, never priced or included as a plan item (P-D-184–185).
 The `sku` row holds the latest applied content, possibly future-effective. `revision` is the SKU concurrency
 version for ETag, If-Match and compare-and-swap; `published_version` identifies each published
 snapshot. A publish is effective immediately. A change defaults
-`effective_from` to today and cannot precede the latest version date; equal dates are allowed and the
-higher published version wins. Consumers use the dated read, not the current SKU row (P-D-191).
+`effective_from` to today and rejects a past requested date at submit. At apply, the version and
+SkuChanged carry `max(requested_effective_from, apply_date)`; the unit snapshot retains the requested
+date. The applied date cannot precede the latest stored version date (VERSION_ORDER); equal dates
+are allowed and the higher published version wins. Consumers use the dated read, not the current SKU row (P-D-191).
 
 Fence state on `Sku` comprises `type_change_pending`, `fence_prior_lifecycle`, `fenced_at` and
 `fence_op_id`. Retirement stores the prior lifecycle before setting `retiring`; type change sets
@@ -317,8 +319,11 @@ SKU reads/writes expose `ETag` from `revision`, its concurrency version; categor
 requires `If-Match`; compare-and-swap guards the write and increments the version. Stale versions return
 409 `STALE_REVISION`; missing required preconditions use the toolkit precondition response. Every POST
 accepts optional `Idempotency-Key`, with 24-hour replay keyed by tenant, concrete endpoint and client key.
-Authenticate and authorize first, then check replay before any fence or unit work. There is no approval-unit
-idempotency key; reserve also deduplicates live logical references independently (P-D-193–194).
+Authenticate and authorize first, then perform a read-only replay lookup before external resolution.
+Claim, mutation and receipt commit in the same transaction for every POST, including decisions and
+reference reserve/confirm. A keyed approval replays after the decision; a keyed reserve replays its
+original attempt even after release. Policy PUT remains If-Match only. There is no approval-unit
+idempotency column; reserve also deduplicates live logical references independently (P-D-193–194).
 
 Permissions deny by default: `products:read` covers scoped reads, `products:author` draft/category and
 reference mutations plus orphan recovery, `products:submit` lifecycle proposals and withdrawal,

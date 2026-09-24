@@ -66,15 +66,15 @@ reuses toolkit infrastructure. Phase 0 specifies implementation; the checkboxes 
 
 ### idempotency-key
 
-1. [ ] - `p1` - A keyless POST bypasses the client-key store; a keyed POST addresses tenant_id, concrete endpoint and client_key, checking a retained answer before any fence or unit work - `inst-fnd-replay-lookup`
+1. [ ] - `p1` - Every POST accepts an optional Idempotency-Key; a keyless POST bypasses the client-key store and a keyed POST addresses tenant_id, concrete endpoint and client_key, checking a retained answer before any fence or unit work - `inst-fnd-replay-lookup`
 2. [ ] - `p1` - Compare payload_hash before replay; different content cannot execute or replay another request's answer under the same retained key - `inst-fnd-replay-hash`
 3. [ ] - `p1` - Claim the key conditionally within the guarded transaction, with expires_at set for 24-hour retention; concurrent claims cannot both perform the mutation - `inst-fnd-replay-claim`
 4. [ ] - `p1` - Answer with response_status and response_body in that same transaction; rollback removes the uncommitted claim, and replay returns the saved answer without new domain writes - `inst-fnd-replay-answer`
-5. [ ] - `p1` - For a fence followed by submit, use fence_op_id as the durable operation identity across the two transactions; an interrupted request resumes the existing fence instead of starting an independent operation - `inst-fnd-replay-fence`
+5. [ ] - `p1` - Commit fence, submission, claim and answer in one transaction; when an existing orphan fence is resumed, retain its fence_op_id instead of starting an independent operation - `inst-fnd-replay-fence`
 
 A committed `UNIT_STALE` refresh is a domain outcome, not a database rollback. The approval service
-must commit it before constructing the error response. It must not pin every future attempt with that
-key to an obsolete generation: a changed decision body is a new request, subject to the payload check.
+commits the refresh and its keyed receipt together. Repeating that key replays UNIT_STALE; a decision
+on the refreshed generation uses a new key because a changed body under the retained key conflicts.
 There is no approval-unit idempotency column and no second replay store (spec §2.2).
 
 ### audit-row

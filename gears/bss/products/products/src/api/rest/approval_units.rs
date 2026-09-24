@@ -5,7 +5,7 @@
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{UnitDto, UnitList, VoteReceipt, VoteRequest},
-    governance as g, json_body, require_authenticated, tx_to_canonical,
+    governance as g, json_body, replay, require_authenticated, tx_to_canonical,
 };
 use crate::{
     authz::actions,
@@ -27,7 +27,7 @@ use axum::{
         Path, Query,
         rejection::{JsonRejection, QueryRejection},
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use bss_approval::{
@@ -102,6 +102,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .no_license_required()
         .path_param("id", "Unit id")
         .json_request::<VoteRequest>(openapi, "Generation reviewed and optional note")
+        .param(replay::param())
         .handler(approve)
         .json_response_with_schema::<VoteReceipt>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -120,6 +121,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .no_license_required()
         .path_param("id", "Unit id")
         .json_request::<VoteRequest>(openapi, "Generation reviewed and optional note")
+        .param(replay::param())
         .handler(reject)
         .json_response_with_schema::<VoteReceipt>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -137,6 +139,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "Unit id")
+        .param(replay::param())
         .handler(withdraw)
         .json_response_with_schema::<VoteReceipt>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -154,34 +157,37 @@ async fn approve(
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
-    body: Result<Json<VoteRequest>, JsonRejection>,
+    headers: HeaderMap,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::APPROVE, true).await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Approve, Some(body)).await
+    vote(state, scope, ctx, id, Vote::Approve, Some(body), headers).await
 }
 async fn reject(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
-    body: Result<Json<VoteRequest>, JsonRejection>,
+    headers: HeaderMap,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::APPROVE, true).await?;
     let body = json_body(body)?;
-    vote(state, scope, ctx, id, Vote::Reject, Some(body)).await
+    vote(state, scope, ctx, id, Vote::Reject, Some(body), headers).await
 }
 async fn withdraw(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, true).await?;
-    vote(state, scope, ctx, id, Vote::Withdraw, None).await
+    vote(state, scope, ctx, id, Vote::Withdraw, None, headers).await
 }
 async fn list(
     Extension(state): Extension<Arc<ApiState>>,
@@ -265,6 +271,7 @@ async fn get(
                     tenant_id: ctx.subject_tenant_id(),
                 };
                 let unit = load(tx, &store, id).await?;
+                let scope = AccessScope::for_tenant(unit.tenant_id);
                 g::expire(
                     tx,
                     &scope,
@@ -347,15 +354,16 @@ async fn subject(
     unit: &Unit,
     usage: Option<UsageTypeAnswer>,
 ) -> Result<Subject, TxError> {
+    let sku_scope = AccessScope::for_tenant(store.tenant_id);
     let base = SkuPublish {
-        scope: store.scope.clone(),
+        scope: sku_scope.clone(),
         tenant_id: store.tenant_id,
         sink: state.sink.clone(),
         actor: ctx.subject_id(),
         now: OffsetDateTime::now_utc(),
         usage_type: usage,
     };
-    let fence = repo::find_sku_fence(tx, &store.scope, store.tenant_id, unit.ref_id)
+    let fence = repo::find_sku_fence(tx, &sku_scope, store.tenant_id, unit.ref_id)
         .await
         .map_err(TxError::Repo)?
         .ok_or(TxError::Refused(DomainError::NotFound {
@@ -459,39 +467,47 @@ async fn vote(
     ctx: SecurityContext,
     id: Uuid,
     action: Vote,
-    body: Option<VoteRequest>,
+    body: Option<serde_json::Value>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
+    let suffix = match action {
+        Vote::Approve => "approve",
+        Vote::Reject => "reject",
+        Vote::Withdraw => "withdraw",
+    };
+    let claim = replay::input(
+        &state,
+        &headers,
+        format!("/bss-products/v1/approval-units/{id}/{suffix}"),
+        &body.clone().unwrap_or_else(|| serde_json::json!({})),
+    )?;
+    let body: Option<VoteRequest> = body
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
+    // Check resource authorization even for a receipt replay, without requiring Pending.
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    if repo::find_unit(&conn, &scope, ctx.subject_tenant_id(), id)
+        .await
+        .map_err(|e| tx_to_canonical(e.into()))?
+        .is_none()
+    {
+        return Err(DomainError::NotFound {
+            what: "approval_unit",
+            id,
+        }
+        .into());
+    }
+    if let Some(response) = replay::lookup(&conn, ctx.subject_tenant_id(), claim.as_ref())
+        .await
+        .map_err(tx_to_canonical)?
+    {
+        return Ok(response);
+    }
     let mut resolved_ref = None;
     let mut usage = None;
     if matches!(action, Vote::Approve) {
-        let s = state.clone();
-        let scope = scope.clone();
-        let ctx_tx = ctx.clone();
-        let content = state
-            .db
-            .db()
-            .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-                let s = s.clone();
-                let scope = scope.clone();
-                let ctx = ctx_tx.clone();
-                Box::pin(async move {
-                    let store = repo::ProductsApprovalStore {
-                        scope,
-                        tenant_id: ctx.subject_tenant_id(),
-                    };
-                    let unit = load(tx, &store, id).await?;
-                    if unit.state != UnitState::Pending {
-                        return Err(ApprovalError::AlreadyDecided.into());
-                    }
-                    if unit.kind == KIND_SKU_RETIRE {
-                        return Ok(None);
-                    }
-                    let sub = subject(&s, tx, &store, &ctx, &unit, None).await?;
-                    Ok(Some(proposed(&sub, tx, &unit).await?))
-                })
-            })
-            .await
-            .map_err(tx_to_canonical)?;
+        let content = review_content(&state, &scope, &ctx, id).await?;
         if let Some(content) = content {
             resolved_ref = content.usage_type_ref.clone();
             usage = g::resolve(&state, &ctx, &content).await?;
@@ -508,12 +524,18 @@ async fn vote(
             let usage = usage.clone();
             let resolved_ref = resolved_ref.clone();
             let note = note.clone();
+            let claim = claim.clone();
             Box::pin(async move {
                 let store = repo::ProductsApprovalStore {
                     scope: scope.clone(),
                     tenant_id: ctx.subject_tenant_id(),
                 };
                 let mut unit = load(tx, &store, id).await?;
+                if let Some(response) =
+                    replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
+                {
+                    return Ok(response);
+                }
                 if unit.state != UnitState::Pending {
                     return Err(ApprovalError::AlreadyDecided.into());
                 }
@@ -579,7 +601,18 @@ async fn vote(
                             now,
                         )
                         .await?;
-                        return Ok(Err(generation));
+                        let mut problem = toolkit::api::canonical_prelude::Problem::from(
+                            CanonicalError::from(DomainError::StaleUnit { generation }),
+                        );
+                        problem.context["generation"] = serde_json::json!(generation);
+                        return replay::finish(
+                            tx,
+                            ctx.subject_tenant_id(),
+                            claim.as_ref(),
+                            StatusCode::BAD_REQUEST,
+                            &problem,
+                        )
+                        .await;
                     }
                     ApproveOutcome::Pending { have, need } => ("pending", Some(have), Some(need)),
                     ApproveOutcome::Applied => (
@@ -603,25 +636,66 @@ async fn vote(
                     unit = load(tx, &store, id).await?;
                     g::decided(&state, tx, &store, &unit, ctx.subject_id()).await?;
                 }
-                Ok(Ok(VoteReceipt {
+                let receipt = VoteReceipt {
                     have,
                     need,
                     outcome: label.into(),
                     unit: with_decisions(tx, &store, unit).await?,
-                }))
+                };
+                replay::finish(
+                    tx,
+                    ctx.subject_tenant_id(),
+                    claim.as_ref(),
+                    StatusCode::OK,
+                    &receipt,
+                )
+                .await
             })
         })
         .await;
     match result {
-        Ok(Ok(receipt)) => Ok(Json(receipt).into_response()),
-        Ok(Err(generation)) => Ok(g::generation_problem(
-            DomainError::StaleUnit { generation }.into(),
-            generation,
-        )),
+        Ok(receipt) => Ok(receipt),
         Err(TxError::GenerationMismatch { seen, current }) => Ok(g::generation_problem(
             DomainError::from(ApprovalError::GenerationMismatch { seen, current }).into(),
             current,
         )),
         Err(e) => Err(tx_to_canonical(e)),
     }
+}
+
+/// Load the authorized unit's proposed content before external catalog resolution.
+async fn review_content(
+    state: &Arc<ApiState>,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    id: Uuid,
+) -> Result<Option<SkuContent>, CanonicalError> {
+    let s = state.clone();
+    let scope = scope.clone();
+    let ctx_tx = ctx.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry(category_tx_config(state), contention_db_err, move |tx| {
+            let s = s.clone();
+            let scope = scope.clone();
+            let ctx = ctx_tx.clone();
+            Box::pin(async move {
+                let store = repo::ProductsApprovalStore {
+                    scope,
+                    tenant_id: ctx.subject_tenant_id(),
+                };
+                let unit = load(tx, &store, id).await?;
+                if unit.state != UnitState::Pending {
+                    return Err(ApprovalError::AlreadyDecided.into());
+                }
+                if unit.kind == KIND_SKU_RETIRE {
+                    return Ok(None);
+                }
+                let sub = subject(&s, tx, &store, &ctx, &unit, None).await?;
+                Ok(Some(proposed(&sub, tx, &unit).await?))
+            })
+        })
+        .await
+        .map_err(tx_to_canonical)
 }

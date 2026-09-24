@@ -74,7 +74,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuRetire {
                 },
             )
             .await
-            .map_err(|e| ApprovalError::Store(e.to_string()))?;
+            .map_err(ApprovalError::from)?;
         }
         Ok(())
     }

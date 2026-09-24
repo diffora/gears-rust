@@ -221,6 +221,120 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
         enqueued_event_envelope(&dsn, SkuChanged::TYPE_ID).await["changed"],
         serde_json::json!(["gl_code"])
     );
+    // Submit on the requested date, then decide using tomorrow's clock.
+    let requested = utc(2026, 10, 1, 9, 0, 0);
+    let apply_at = requested + time::Duration::days(1);
+    let op = Uuid::new_v4();
+    let mut dated_base = base.clone();
+    dated_base.now = requested;
+    let dated = SkuChange {
+        base: dated_base,
+        patch: crate::domain::sku::SkuPatch {
+            r#type: Some(SkuType::OneTime),
+            ..Default::default()
+        },
+        effective_from: requested.date(),
+        fence_op_id: Some(op),
+    };
+    let submit = dated.clone();
+    let pending = in_tx(&db.db(), move |tx| {
+        let s = submit.clone();
+        Box::pin(async move {
+            repo::fence_sku(
+                tx,
+                &s.base.scope,
+                tenant,
+                id,
+                repo::Fence::TypeChange,
+                op,
+                requested,
+            )
+            .await
+            .map_err(super::store_err)?;
+            Engine::submit(
+                &repo::ProductsApprovalStore {
+                    scope: s.base.scope.clone(),
+                    tenant_id: tenant,
+                },
+                &s,
+                tx,
+                SubmitRequest {
+                    tenant_id: tenant,
+                    ref_id: id,
+                    item_ids: &[id],
+                    actor: s.base.actor,
+                    policy: &Policy {
+                        default_quorum: 1,
+                        overrides: std::collections::BTreeMap::default(),
+                    },
+                    common_effective_date: Some(requested.date()),
+                    now: requested,
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .ok()
+    .unwrap();
+    assert_eq!(
+        pending.unit.snapshot["effective_from"],
+        requested.date().to_string()
+    );
+    let unit_id = pending.unit.id;
+    let mut approved = dated;
+    approved.base.now = apply_at;
+    in_tx(&db.db(), move |tx| {
+        let s = approved.clone();
+        Box::pin(async move {
+            Engine::approve(
+                &repo::ProductsApprovalStore {
+                    scope: s.base.scope.clone(),
+                    tenant_id: tenant,
+                },
+                &s,
+                tx,
+                unit_id,
+                Uuid::new_v4(),
+                1,
+                None,
+                apply_at,
+            )
+            .await
+        })
+    })
+    .await
+    .ok()
+    .unwrap();
+    let versions = repo::versions(&conn, &scope, tenant, id).await.unwrap();
+    assert_eq!(versions.last().unwrap().effective_from, apply_at.date());
+    assert_eq!(
+        repo::version_as_of(&conn, &scope, tenant, id, requested.date())
+            .await
+            .unwrap()
+            .unwrap()
+            .published_version,
+        2
+    );
+    assert_eq!(
+        enqueued_event_envelope(&dsn, SkuChanged::TYPE_ID).await["effectiveFrom"],
+        apply_at.date().to_string()
+    );
+    assert!(
+        !repo::find_sku(&conn, &scope, tenant, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .type_change_pending
+    );
+    assert!(
+        repo::find_sku_fence(&conn, &scope, tenant, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .fence_op_id
+            .is_none()
+    );
     let op = Uuid::new_v4();
     let retire = SkuRetire {
         base: base.clone(),

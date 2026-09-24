@@ -18,6 +18,7 @@ pub mod dto;
 mod governance;
 pub mod preconditions;
 pub mod references;
+mod replay;
 pub mod sku_governance;
 pub mod skus;
 
@@ -224,4 +225,10 @@ pub(crate) fn json_body<T>(
         report.violate("VALIDATION", "body", error.body_text());
         DomainError::Validation(report).into()
     })
+}
+
+impl From<crate::infra::events::EventsError> for TxError {
+    fn from(error: crate::infra::events::EventsError) -> Self {
+        bss_approval::ApprovalError::from(error).into()
+    }
 }

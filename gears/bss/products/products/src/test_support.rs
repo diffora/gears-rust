@@ -237,7 +237,7 @@ pub async fn table_columns(dsn: &str, table: &str) -> Vec<String> {
     joined.split(',').map(ToOwned::to_owned).collect()
 }
 
-/// How many outbox rows carry `payload_type`.
+/// How many SDK-envelope outbox rows carry this event type.
 ///
 /// Counted on `_body` rather than `_incoming`: `_incoming` is a staging table
 /// the running sequencer drains, so a count taken after the response has raced
@@ -246,12 +246,12 @@ pub async fn enqueued_event_count(dsn: &str, payload_type: &str) -> i64 {
     let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
     raw_i64(
         dsn,
-        &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type = '{payload_type}'"),
+        &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE json_extract(CAST(payload AS TEXT), '$.type') = '{payload_type}'"),
     )
     .await
 }
 
-/// The full envelope of the **newest** enqueued row carrying `payload_type`.
+/// The business data of the newest SDK envelope carrying this event type.
 ///
 /// `ORDER BY id DESC LIMIT 1` rather than a bare filter, so a case that
 /// enqueued the same token twice reads the one it just wrote. The `payload`
@@ -266,12 +266,14 @@ pub async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_jso
         dsn,
         &format!(
             "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
-             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
+             WHERE json_extract(CAST(payload AS TEXT), '$.type') = '{payload_type}' ORDER BY id DESC LIMIT 1"
         ),
     )
     .await
     .expect("the enqueued row carries a payload");
-    serde_json::from_str(&payload).expect("the door enqueues a JSON envelope")
+    serde_json::from_str::<serde_json::Value>(&payload).expect("the door enqueues a JSON envelope")
+        ["data"]
+        .clone()
 }
 
 /// How many idempotency rows carry `client_key`.

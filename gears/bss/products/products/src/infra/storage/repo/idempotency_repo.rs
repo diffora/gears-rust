@@ -229,15 +229,40 @@ pub async fn claim_idempotency_key(
             .await;
     }
 
+    held_claim(held)
+}
+
+/// Read a live receipt without acquiring a claim.
+/// # Errors
+/// Returns scope, database or corrupt-row errors.
+pub async fn lookup_idempotency_key(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    endpoint: &str,
+    client_key: &str,
+    now: OffsetDateTime,
+) -> Result<Option<IdempotencyClaim>, RepoError> {
+    let held = idempotency::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(idempotency_key_of(tenant_id, endpoint, client_key))
+        .filter(idempotency::Column::ExpiresAt.gte(now).into())
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure("lookup idempotency".into(), e))?;
+    held.map(held_claim).transpose()
+}
+
+fn held_claim(held: idempotency::Model) -> Result<IdempotencyClaim, RepoError> {
     match held.state.as_str() {
         "answered" => {
             let (Some(response_status), Some(response_body)) =
                 (held.response_status, held.response_body)
             else {
-                return Err(RepoError::CorruptRow(format!(
-                    "products_idempotency {tenant_id}/{endpoint}/{client_key} answered \
-                     with an incomplete response"
-                )));
+                return Err(RepoError::CorruptRow(
+                    "products_idempotency stored key answered with an incomplete response".into(),
+                ));
             };
             Ok(IdempotencyClaim::Answered {
                 payload_hash: held.payload_hash,
@@ -250,7 +275,7 @@ pub async fn claim_idempotency_key(
             entity_ref: held.entity_ref,
         }),
         other => Err(RepoError::CorruptRow(format!(
-            "products_idempotency.state `{other}` on {tenant_id}/{endpoint}/{client_key}"
+            "products_idempotency.state `{other}` on stored key"
         ))),
     }
 }

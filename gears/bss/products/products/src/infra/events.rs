@@ -53,6 +53,8 @@ pub enum EventsError {
     Serialize(String),
     #[error("broker producer: {0}")]
     Producer(String),
+    #[error("event database: {0}")]
+    Db(#[source] sea_orm::DbErr),
     #[error("interim outbox: {0}")]
     Outbox(String),
 }
@@ -70,22 +72,67 @@ pub(crate) async fn enqueue_typed<E: TypedEvent>(
     event: E,
 ) -> Result<(), EventsError> {
     match sink {
+        // SDK ProducerOutbox::enqueue currently erases OutboxError into
+        // EventBrokerError::Internal(String), exposing no DbErr/source to recover.
         EventSink::Broker(producer) => producer
             .enqueue(runner, event)
             .await
             .map(|_| ())
             .map_err(|e| EventsError::Producer(e.to_string())),
         EventSink::Interim(outbox) => {
+            // The SDK constructor is crate-private and DbProducer::outbox_envelope
+            // needs a prepared broker/schema cache. Persist its v1 wire format here.
+            // Stateless backlog needs no producer registration; the later processor
+            // honors the mode in each envelope and publishes this durable event id.
+            let envelope = serde_json::json!({
+                "version": 1,
+                "event_id": uuid::Uuid::now_v7(),
+                "type": E::TYPE_ID,
+                "topic": crate::infra::broker::TOPIC,
+                "tenant_id": event.tenant_id(),
+                "source": E::SOURCE,
+                "subject": event.subject(),
+                "subject_type": E::SUBJECT_TYPE,
+                "occurred_at": time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).map_err(|e| EventsError::Serialize(e.to_string()))?,
+                "trace_parent": event.trace_parent(),
+                "data": serde_json::to_value(&event).map_err(|e| EventsError::Serialize(e.to_string()))?,
+                "broker_partition": 0,
+                "producer_mode": "stateless",
+                "diagnostic_metadata": {"sdk_client_agent": crate::infra::broker::SOURCE}
+            });
             let payload =
-                serde_json::to_vec(&event).map_err(|e| EventsError::Serialize(e.to_string()))?;
+                serde_json::to_vec(&envelope).map_err(|e| EventsError::Serialize(e.to_string()))?;
             let partition = event.tenant_id().map_or(0, |t| {
                 u32::from(u16::from_le_bytes([t.as_bytes()[14], t.as_bytes()[15]]) % PARTITIONS)
             });
             outbox
-                .enqueue(runner, QUEUE_NAME, partition, payload, E::TYPE_ID)
+                .enqueue(
+                    runner,
+                    QUEUE_NAME,
+                    partition,
+                    payload,
+                    "application/vnd.constructorfabric.event-broker.producer-outbox+json;version=1",
+                )
                 .await
                 .map(|_| ())
-                .map_err(|e| EventsError::Outbox(e.to_string()))
+                .map_err(EventsError::from)
+        }
+    }
+}
+
+impl From<toolkit_db::outbox::OutboxError> for EventsError {
+    fn from(error: toolkit_db::outbox::OutboxError) -> Self {
+        match error {
+            toolkit_db::outbox::OutboxError::Database(source) => Self::Db(source),
+            other => Self::Outbox(other.to_string()),
+        }
+    }
+}
+impl From<EventsError> for bss_approval::ApprovalError {
+    fn from(error: EventsError) -> Self {
+        match error {
+            EventsError::Db(source) => Self::Db(source),
+            other => Self::Store(other.to_string()),
         }
     }
 }

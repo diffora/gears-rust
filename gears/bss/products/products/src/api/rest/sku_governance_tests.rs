@@ -218,7 +218,18 @@ async fn quorum_zero_publishes_at_submit_and_records_the_unit() {
 #[tokio::test]
 async fn quorum_one_the_author_may_not_approve_and_an_independent_reviewer_publishes() {
     let f = Fixture::new(1).await;
-    let (_, u) = f.post("/submit", json!({})).await;
+    let submitter = authed_ctx(f.tenant);
+    let (status, u) = call(
+        &f.app,
+        &submitter,
+        Method::POST,
+        &format!("/skus/{}/submit", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_ne!(submitter.subject_id(), f.author.subject_id());
     let (status, b) = call(
         &f.app,
         &f.author,
@@ -391,9 +402,15 @@ async fn retire_is_refused_while_a_reservation_is_live_and_a_fenced_sku_refuses_
     let (status, b) = f.post("/retire", json!({})).await;
     assert_eq!(status, 409);
     assert_eq!(problem_code(&b), "SKU_REFERENCED");
-    assert_eq!(b["context"]["references"][0]["id"], r["id"]);
-    assert!(b.to_string().contains(r["id"].as_str().unwrap()));
-    assert_eq!(f.release(&r["id"]).await.0, 200);
+    assert_eq!(
+        b["context"]["references"][0]["reservation_id"],
+        r["reservation_id"]
+    );
+    assert!(
+        b.to_string()
+            .contains(r["reservation_id"].as_str().unwrap())
+    );
+    assert_eq!(f.release(&r["reservation_id"]).await.0, 200);
     let (status, u) = f.post("/retire", json!({})).await;
     assert_eq!(status, 200, "{u}");
     let (status, b) = f.reserve(Uuid::new_v4()).await;
@@ -413,7 +430,10 @@ async fn a_type_change_on_a_published_sku_is_frozen_by_a_confirmed_reference() {
             &f.app,
             &f.owner,
             Method::POST,
-            &format!("/references/{}/confirm", r["id"].as_str().unwrap()),
+            &format!(
+                "/references/{}/confirm",
+                r["reservation_id"].as_str().unwrap()
+            ),
             json!({}),
             None
         )
@@ -425,7 +445,7 @@ async fn a_type_change_on_a_published_sku_is_frozen_by_a_confirmed_reference() {
     assert_eq!(status, 409);
     assert_eq!(problem_code(&b), "SKU_TYPE_FROZEN");
     assert_eq!(f.card().await["type_change_pending"], false);
-    f.release(&r["id"]).await;
+    f.release(&r["reservation_id"]).await;
     let (_, u) = f.post("/changes", json!({"type":"recurring"})).await;
     assert_eq!(f.vote(&u, "reject", 1).await.0, 200);
     assert_eq!(f.card().await["type_change_pending"], false);
@@ -440,18 +460,18 @@ async fn an_unconfirmed_reservation_keeps_counting_until_released_and_reserve_is
     assert_eq!(status, 201, "{a}");
     let (status, b) = f.reserve(id).await;
     assert_eq!(status, 200);
-    assert_eq!(a["id"], b["id"]);
+    assert_eq!(a["reservation_id"], b["reservation_id"]);
     assert_eq!(f.post("/retire", json!({})).await.0, 409);
-    f.release(&a["id"]).await;
+    f.release(&a["reservation_id"]).await;
     let (status, b) = f.reserve(id).await;
     assert_eq!(status, 201);
-    assert_ne!(a["id"], b["id"]);
+    assert_ne!(a["reservation_id"], b["reservation_id"]);
     let confirm = |id: &Value| format!("/references/{}/confirm", id.as_str().unwrap());
     let (status, body) = call(
         &f.app,
         &f.owner,
         Method::POST,
-        &confirm(&a["id"]),
+        &confirm(&a["reservation_id"]),
         json!({}),
         None,
     )
@@ -464,7 +484,7 @@ async fn an_unconfirmed_reservation_keeps_counting_until_released_and_reserve_is
                 &f.app,
                 &f.owner,
                 Method::POST,
-                &confirm(&b["id"]),
+                &confirm(&b["reservation_id"]),
                 json!({}),
                 None
             )
@@ -479,7 +499,7 @@ async fn an_operator_release_needs_force_and_a_reason_and_is_evented() {
     let f = Fixture::new(0).await;
     f.publish().await;
     let (_, r) = f.reserve(Uuid::new_v4()).await;
-    let path = format!("/references/{}", r["id"].as_str().unwrap());
+    let path = format!("/references/{}", r["reservation_id"].as_str().unwrap());
     assert_eq!(
         call(&f.app, &f.author, Method::DELETE, &path, json!({}), None)
             .await
@@ -848,7 +868,10 @@ async fn reference_owner_is_bound_to_the_principal_and_cannot_be_spoofed() {
             &f.app,
             &f.author,
             Method::POST,
-            &format!("/references/{}/confirm", r["id"].as_str().unwrap()),
+            &format!(
+                "/references/{}/confirm",
+                r["reservation_id"].as_str().unwrap()
+            ),
             json!({}),
             None
         )
@@ -859,6 +882,7 @@ async fn reference_owner_is_bound_to_the_principal_and_cannot_be_spoofed() {
 }
 
 struct ActionResolver {
+    id: Option<Uuid>,
     allowed: Option<&'static str>,
     tenant: Uuid,
     seen: Arc<std::sync::atomic::AtomicUsize>,
@@ -892,7 +916,15 @@ impl authz_resolver_sdk::AuthZResolverApi for ActionResolver {
                     predicates: vec![Predicate::In(InPredicate::new(
                         toolkit_security::pep_properties::OWNER_TENANT_ID,
                         vec![self.tenant],
-                    ))],
+                    ))]
+                    .into_iter()
+                    .chain(self.id.map(|id| {
+                        Predicate::In(InPredicate::new(
+                            toolkit_security::pep_properties::RESOURCE_ID,
+                            vec![id],
+                        ))
+                    }))
+                    .collect(),
                 }],
                 deny_reason: None,
             },
@@ -904,6 +936,7 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
     let f = Fixture::new(1).await;
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let enforcer = authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
+        id: None,
         allowed: None,
         tenant: f.tenant,
         seen: seen.clone(),
@@ -1000,6 +1033,7 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
     let reviewer_app =
         routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new()).layer(axum::Extension(
             authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
+                id: None,
                 allowed: Some("approve"),
                 tenant: f.tenant,
                 seen,
@@ -1290,7 +1324,7 @@ async fn approved_type_change_clears_its_fence_and_retire_replays_before_fence_w
     assert!(row.fenced_at.is_none());
     assert!(row.fence_op_id.is_none());
     let (_, reference) = f.reserve(Uuid::new_v4()).await;
-    f.release(&reference["id"]).await;
+    f.release(&reference["reservation_id"]).await;
     let path = format!("/skus/{}/retire", f.id);
     let first = call(
         &f.app,
@@ -1313,5 +1347,342 @@ async fn approved_type_change_clears_its_fence_and_retire_replays_before_fence_w
         )
         .await,
         first
+    );
+}
+
+#[tokio::test]
+async fn unchanged_type_with_live_reference_does_not_fence() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    f.policy(1).await;
+    assert_eq!(f.reserve(Uuid::new_v4()).await.0, 201);
+    let (status, unit) = f
+        .post("/changes", json!({"type":"usage","gl_code":"4012"}))
+        .await;
+    assert_eq!(status, 200, "{unit}");
+    assert_eq!(f.card().await["type_change_pending"], false);
+    assert_eq!(f.vote(&unit, "approve", 1).await.0, 200);
+    assert_eq!(f.card().await["gl_code"], "4012");
+}
+#[tokio::test]
+async fn reserve_receipt_uses_literal_reservation_id() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let (status, row) = f.reserve(Uuid::new_v4()).await;
+    assert_eq!(status, 201);
+    assert!(row.get("id").is_none(), "{row}");
+    assert!(Uuid::parse_str(row["reservation_id"].as_str().unwrap()).is_ok());
+}
+
+struct PausedCatalog(Arc<tokio::sync::Notify>);
+#[async_trait::async_trait]
+impl bss_products_sdk::usage_types::UsageTypeCatalog for PausedCatalog {
+    async fn resolve(
+        &self,
+        _: &SecurityContext,
+        _: &str,
+    ) -> crate::domain::recognized::UsageTypeAnswer {
+        self.0.notify_one();
+        std::future::pending().await
+    }
+    async fn list(
+        &self,
+        _: &SecurityContext,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: u32,
+        _: Option<&str>,
+    ) -> Result<
+        bss_products_sdk::usage_types::UsageTypePage,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        Ok(bss_products_sdk::usage_types::UsageTypePage::default())
+    }
+}
+#[tokio::test]
+async fn cancelled_submission_does_not_strand_an_idempotency_claim() {
+    let f = Fixture::new(0).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let paused = second_app(&f, Arc::new(PausedCatalog(entered.clone()))).await;
+    let path = format!("/skus/{}/submit", f.id);
+    let mut request = Box::pin(call(
+        &paused,
+        &f.author,
+        Method::POST,
+        &path,
+        json!({}),
+        Some("crash"),
+    ));
+    tokio::select! {
+        () = entered.notified() => {},
+        result = &mut request => panic!("request should be paused: {result:?}"),
+    }
+    drop(request);
+    assert_eq!(idempotency_rows_for(&f.dsn, "crash").await, 0);
+    let retry = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &path,
+        json!({}),
+        Some("crash"),
+    )
+    .await;
+    assert_eq!(retry.0, 200, "{retry:?}");
+}
+#[tokio::test]
+async fn keyed_approve_replays_after_success() {
+    let f = Fixture::new(1).await;
+    let (_, unit) = f.post("/submit", json!({})).await;
+    let path = format!(
+        "/approval-units/{}/approve",
+        unit["unit"]["id"].as_str().unwrap()
+    );
+    let body = json!({"generation":1});
+    let first = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &path,
+        body.clone(),
+        Some("approve"),
+    )
+    .await;
+    assert_eq!(first.0, 200, "{first:?}");
+    assert_eq!(
+        call(
+            &f.app,
+            &f.reviewer,
+            Method::POST,
+            &path,
+            body,
+            Some("approve")
+        )
+        .await,
+        first
+    );
+    let conflict = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &path,
+        json!({"generation":2}),
+        Some("approve"),
+    )
+    .await;
+    assert_eq!(problem_code(&conflict.1), "IDEMPOTENCY_CONFLICT");
+}
+#[tokio::test]
+async fn keyed_reserve_and_confirm_replay_the_original_attempt_after_release() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let path = format!("/skus/{}/references/reserve", f.id);
+    let body = json!({"owner":"pricing","kind":"price","ref_id":Uuid::new_v4()});
+    let first = call(
+        &f.app,
+        &f.owner,
+        Method::POST,
+        &path,
+        body.clone(),
+        Some("attempt"),
+    )
+    .await;
+    assert_eq!(first.0, 201);
+    let confirm = format!(
+        "/references/{}/confirm",
+        first.1["reservation_id"].as_str().unwrap()
+    );
+    let confirmed = call(
+        &f.app,
+        &f.owner,
+        Method::POST,
+        &confirm,
+        json!({}),
+        Some("attempt"),
+    )
+    .await;
+    assert_eq!(confirmed.0, 200);
+    assert_eq!(f.release(&first.1["reservation_id"]).await.0, 200);
+    assert_eq!(
+        call(&f.app, &f.owner, Method::POST, &path, body, Some("attempt")).await,
+        first
+    );
+    assert_eq!(
+        call(
+            &f.app,
+            &f.owner,
+            Method::POST,
+            &confirm,
+            json!({}),
+            Some("attempt")
+        )
+        .await,
+        confirmed
+    );
+    assert_eq!(
+        raw_i64(&f.dsn, "SELECT count(*) AS v FROM products_sku_reference").await,
+        1
+    );
+}
+#[tokio::test]
+async fn all_other_posts_replay_with_endpoint_scoped_keys() {
+    let f = Fixture::new(1).await;
+    for (path, body) in [
+        ("/categories".to_owned(), json!({"code":"new","name":"New"})),
+        (
+            "/skus".to_owned(),
+            json!({"code":"new","name":"New","type":"recurring","category_id":f.card().await["category_id"]}),
+        ),
+        (format!("/skus/{}/unfence", f.id), json!({})),
+    ] {
+        let before = idempotency_rows_for(&f.dsn, "shared").await;
+        let first = call(
+            &f.app,
+            &f.author,
+            Method::POST,
+            &path,
+            body.clone(),
+            Some("shared"),
+        )
+        .await;
+        assert!([200, 201].contains(&first.0), "{first:?}");
+        assert_eq!(
+            call(&f.app, &f.author, Method::POST, &path, body, Some("shared")).await,
+            first,
+            "{path}"
+        );
+        assert_eq!(idempotency_rows_for(&f.dsn, "shared").await, before + 1);
+        if path == "/categories" {
+            let retire = format!("/categories/{}/retire", first.1["id"].as_str().unwrap());
+            let first = call(
+                &f.app,
+                &f.author,
+                Method::POST,
+                &retire,
+                json!({}),
+                Some("shared"),
+            )
+            .await;
+            assert_eq!(first.0, 200);
+            assert_eq!(
+                call(
+                    &f.app,
+                    &f.author,
+                    Method::POST,
+                    &retire,
+                    json!({}),
+                    Some("shared")
+                )
+                .await,
+                first
+            );
+        }
+    }
+    for action in ["reject", "withdraw"] {
+        let (_, unit) = f.post("/submit", json!({})).await;
+        let path = format!(
+            "/approval-units/{}/{action}",
+            unit["unit"]["id"].as_str().unwrap()
+        );
+        let actor = if action == "reject" {
+            &f.reviewer
+        } else {
+            &f.author
+        };
+        let body = json!({"generation":1,"note":"reviewed"});
+        let first = call(
+            &f.app,
+            actor,
+            Method::POST,
+            &path,
+            body.clone(),
+            Some("shared"),
+        )
+        .await;
+        assert_eq!(first.0, 200, "{first:?}");
+        assert_eq!(
+            call(&f.app, actor, Method::POST, &path, body, Some("shared")).await,
+            first
+        );
+    }
+}
+
+#[tokio::test]
+async fn unit_only_reviewer_can_approve() {
+    let f = Fixture::new(1).await;
+    let (_, unit) = f.post("/submit", json!({})).await;
+    let unit_id = Uuid::parse_str(unit["unit"]["id"].as_str().unwrap()).unwrap();
+    let restricted = |action, id| {
+        routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new()).layer(axum::Extension(
+            authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
+                id: Some(id),
+                allowed: Some(action),
+                tenant: f.tenant,
+                seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            })),
+        ))
+    };
+    let result = call(
+        &restricted("approve", unit_id),
+        &f.reviewer,
+        Method::POST,
+        &format!("/approval-units/{unit_id}/approve"),
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(result.0, 200, "{result:?}");
+}
+
+#[tokio::test]
+async fn sku_only_reader_sees_reference_counts() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let restricted = |action, id| {
+        routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new()).layer(axum::Extension(
+            authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
+                id: Some(id),
+                allowed: Some(action),
+                tenant: f.tenant,
+                seen: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            })),
+        ))
+    };
+    assert_eq!(f.reserve(Uuid::new_v4()).await.0, 201);
+    let app = restricted("read", f.id);
+    let (status, card) = call(
+        &app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(card["references"]["reserved"], 1, "{card}");
+    let (status, refs) = call(
+        &app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}/references", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(refs["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        call(
+            &app,
+            &f.author,
+            Method::GET,
+            &format!("/skus/{}", Uuid::new_v4()),
+            json!({}),
+            None
+        )
+        .await
+        .0,
+        404
     );
 }

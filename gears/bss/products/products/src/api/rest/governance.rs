@@ -135,9 +135,10 @@ pub(super) async fn touch(
     clippy::too_many_arguments,
     reason = "Audit inputs explicitly bind subject and actor to the caller transaction"
 )]
+/// Audit row identifiers belong to a separate aggregate from the authorized resource.
 pub(super) async fn audit(
     tx: &impl DBRunner,
-    scope: &AccessScope,
+    _scope: &AccessScope,
     ctx: &SecurityContext,
     action: &str,
     kind: &str,
@@ -147,7 +148,7 @@ pub(super) async fn audit(
 ) -> Result<(), TxError> {
     repo::write_eventless_act_audit(
         tx,
-        scope,
+        &AccessScope::for_tenant(ctx.subject_tenant_id()),
         repo::AuditCommon {
             audit_id: Uuid::now_v7(),
             tenant_id: ctx.subject_tenant_id(),
@@ -194,7 +195,7 @@ pub(super) async fn decided(
         },
     )
     .await
-    .map_err(|e| TxError::Repo(crate::infra::storage::RepoError::Db(e.to_string())))
+    .map_err(TxError::from)
 }
 
 /// Retain the canonical violation and expose a numeric generation for reviewer clients.

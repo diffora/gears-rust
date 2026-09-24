@@ -487,7 +487,7 @@ pub struct ReleaseRequest {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct ReferenceReceipt {
-    pub id: Uuid,
+    pub reservation_id: Uuid,
     pub sku_id: Uuid,
     pub owner: String,
     pub kind: String,
@@ -498,7 +498,7 @@ pub struct ReferenceReceipt {
 impl From<crate::infra::storage::repo::SkuReference> for ReferenceReceipt {
     fn from(r: crate::infra::storage::repo::SkuReference) -> Self {
         Self {
-            id: r.id,
+            reservation_id: r.id,
             sku_id: r.sku_id,
             owner: r.owner_gear,
             kind: r.ref_kind,

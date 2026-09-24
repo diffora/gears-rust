@@ -21,7 +21,7 @@ use bss_products::{
 };
 use bss_products_sdk::models::{Lifecycle, Sku, SkuType};
 use pg_support::Pg;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, DbErr, Statement};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -202,30 +202,48 @@ async fn unique_code_and_name_report_the_named_indexes() {
 #[ignore = "requires Docker (testcontainers)"]
 async fn conditional_lock_has_exactly_one_winner_on_two_connections() {
     let f = Fixture::new().await;
-    let first = f.pg.raw().await;
-    let second = f.pg.raw().await;
+    let first = f.pg.db().await;
+    let second = f.pg.db().await;
     let observer = f.pg.raw().await;
-    let tx = first.begin().await.unwrap();
-    let statement = || {
-        Statement::from_sql_and_values(
-            DbBackend::Postgres,
-            "UPDATE bss.products_sku SET pending_unit_id=$1 WHERE id=$2 AND tenant_id=$3 AND pending_unit_id IS NULL AND revision=$4",
-            [
-                Uuid::new_v4().into(),
-                f.sku.id.into(),
-                f.tenant.into(),
-                f.sku.revision.into(),
-            ],
-        )
+    let acquired = Arc::new(tokio::sync::Notify::new());
+    let ready = acquired.clone();
+    let first_scope = f.scope.clone();
+    let second_scope = f.scope.clone();
+    let tenant = f.tenant;
+    let id = f.sku.id;
+    let revision = f.sku.revision;
+    let winner = first.transaction_with_retry::<_, TxError, _, _>(
+        TxConfig::default(),
+        db_error,
+        move |tx| {
+            let scope = first_scope.clone();
+            let ready = ready.clone();
+            let observer = observer.clone();
+            Box::pin(async move {
+                let won =
+                    repo::try_lock_sku(tx, &scope, tenant, id, Uuid::new_v4(), revision).await?;
+                ready.notify_one();
+                pg_support::wait_until_a_backend_blocks(&observer).await;
+                Ok(won)
+            })
+        },
+    );
+    let loser = async {
+        acquired.notified().await;
+        second
+            .transaction_with_retry::<_, TxError, _, _>(TxConfig::default(), db_error, move |tx| {
+                let scope = second_scope.clone();
+                Box::pin(async move {
+                    Ok(
+                        repo::try_lock_sku(tx, &scope, tenant, id, Uuid::new_v4(), revision)
+                            .await?,
+                    )
+                })
+            })
+            .await
     };
-    let won = tx.execute_raw(statement()).await.unwrap().rows_affected();
-    let loser = second.execute_raw(statement());
-    let release = async {
-        pg_support::wait_until_a_backend_blocks(&observer).await;
-        tx.commit().await.unwrap();
-    };
-    let (lost, ()) = tokio::join!(loser, release);
-    assert_eq!((won, lost.unwrap().rows_affected()), (1, 0));
+    let (won, lost) = tokio::join!(winner, loser);
+    assert_eq!((won.unwrap(), lost.unwrap()), (true, false));
 }
 
 #[tokio::test]

@@ -167,13 +167,11 @@ pub(crate) enum ClaimVerdict {
 ///
 /// # `PriceBook` replay boundary (P-D-193)
 ///
-/// Governance doors call this in their own small transaction before any SKU
-/// fence or unit work. They answer the claim in the successful business
-/// transaction, or release it in a small cleanup transaction after refusal.
-/// This supersedes the backup's mutation-local claim contract. A process that
-/// dies after claiming remains in flight until the retained claim expires.
+/// Every claim, mutation and answer runs in one transaction. A read-only
+/// lookup may serve an existing answer before external catalog resolution.
+/// Dropping a request never leaves a separately committed claim.
 ///
-/// The payload comparison is made **here** and not in the repository: that
+////// The payload comparison is made **here** and not in the repository: that
 /// layer was never handed the incoming request to compare against the stored
 /// digest (`IdempotencyClaim::Answered`'s own doc), and the comparison is
 /// what separates a replay from `IDEMPOTENCY_CONFLICT`
@@ -223,7 +221,31 @@ pub(crate) async fn claim_idempotency(
     )
     .await?;
 
-    Ok(match claim {
+    Ok(verdict(claim, input))
+}
+
+/// Read-only replay before any external resolution; claim acquisition is still
+/// required inside the eventual mutation transaction.
+pub(crate) async fn lookup_idempotency(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    input: &IdempotencyClaimInput,
+) -> Result<ClaimVerdict, RepoError> {
+    Ok(repo::lookup_idempotency_key(
+        runner,
+        scope,
+        tenant_id,
+        &input.endpoint,
+        &input.client_key,
+        input.now,
+    )
+    .await?
+    .map_or(ClaimVerdict::Proceed, |claim| verdict(claim, input)))
+}
+
+fn verdict(claim: IdempotencyClaim, input: &IdempotencyClaimInput) -> ClaimVerdict {
+    match claim {
         IdempotencyClaim::Claimed => ClaimVerdict::Proceed,
         IdempotencyClaim::Answered {
             payload_hash,
@@ -254,7 +276,7 @@ pub(crate) async fn claim_idempotency(
                 input.client_key, input.endpoint
             )))
         }
-    })
+    }
 }
 
 /// [`ClaimVerdict`] for a **composite** door (P-D-79): identical in every

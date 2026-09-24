@@ -148,15 +148,7 @@ impl<'a> Store<DbTx<'a>> for ProductsApprovalStore {
         self.insert_items(runner, unit.id, items).await
     }
     async fn unit(&self, runner: &DbTx<'a>, id: Uuid) -> Result<Option<Unit>, ApprovalError> {
-        approval_unit::Entity::find()
-            .secure()
-            .scope_with(&self.scope)
-            .filter(unit_key(self.tenant_id, id))
-            .one(runner)
-            .await
-            .map_err(|e| store_err("read unit", e))?
-            .map(unit_from_model)
-            .transpose()
+        find_unit(runner, &self.scope, self.tenant_id, id).await
     }
     async fn bump_version(
         &self,
@@ -427,3 +419,23 @@ pub async fn decisions_of(
 #[cfg(test)]
 #[path = "approval_repo_tests.rs"]
 mod approval_repo_tests;
+
+/// Read an authorized unit without taking a write transaction.
+/// # Errors
+/// Returns typed storage or corrupt-row errors.
+pub async fn find_unit(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Option<Unit>, ApprovalError> {
+    approval_unit::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(unit_key(tenant, id))
+        .one(runner)
+        .await
+        .map_err(|e| store_err("read unit", e))?
+        .map(unit_from_model)
+        .transpose()
+}

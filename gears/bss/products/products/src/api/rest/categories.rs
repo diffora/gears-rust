@@ -6,7 +6,7 @@ use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{CategoryDto, CategoryList, CategoryPatchRequest, CategoryRequest},
     preconditions::{etag, if_match, if_match_param},
-    repo_error_to_canonical, require_authenticated, tx_to_canonical,
+    replay, repo_error_to_canonical, require_authenticated, tx_to_canonical,
 };
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -55,6 +55,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .json_request::<CategoryRequest>(openapi, "code, name, is_default, sort_order")
+        .param(replay::param())
         .handler(create_category)
         .json_response_with_schema::<CategoryDto>(
             openapi,
@@ -115,6 +116,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "Category id")
+        .param(replay::param())
         .handler(retire_category)
         .json_response_with_schema::<CategoryDto>(openapi, StatusCode::OK, "Retired category.")
         .error_401(openapi)
@@ -168,13 +170,22 @@ async fn create_category(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-    body: Result<Json<CategoryRequest>, axum::extract::rejection::JsonRejection>,
+    headers: HeaderMap,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
     let scope_tx = scope(&enforcer, &ctx, true).await?;
-    let body = super::json_body(body)?;
+    let payload = super::json_body(body)?;
+    let claim = replay::input(
+        &state,
+        &headers,
+        "/bss-products/v1/categories".into(),
+        &payload,
+    )?;
+    let body: CategoryRequest = serde_json::from_value(payload)
+        .map_err(|e| CanonicalError::from(super::governance::validation("body", e.to_string())))?;
     let new_tx = NewCategory {
         code: body.code.trim().to_owned(),
         name: body.name.trim().to_owned(),
@@ -189,13 +200,17 @@ async fn create_category(
     let created = state
         .db
         .db()
-        .transaction_with_retry::<Category, TxError, _, _>(
+        .transaction_with_retry::<Response, TxError, _, _>(
             TxConfig::default(),
             contention_db_err,
             move |tx| {
                 let scope = scope_tx.clone();
                 let new = new_tx.clone();
+                let claim = claim.clone();
                 Box::pin(async move {
+                    if let Some(response) = replay::begin(tx, tenant_id, claim.as_ref()).await? {
+                        return Ok(response);
+                    }
                     let c = repo::insert_category(tx, &scope, tenant_id, new, now)
                         .await
                         .map_err(|e| match e {
@@ -208,13 +223,20 @@ async fn create_category(
                             other => TxError::Repo(other),
                         })?;
                     audit(tx, &scope, tenant_id, actor, "category.create", &c, now).await?;
-                    Ok(c)
+                    replay::finish(
+                        tx,
+                        tenant_id,
+                        claim.as_ref(),
+                        StatusCode::CREATED,
+                        &CategoryDto::from(c),
+                    )
+                    .await
                 })
             },
         )
         .await
         .map_err(tx_to_canonical)?;
-    Ok(response(StatusCode::CREATED, created))
+    Ok(created)
 }
 /// Read categories in display order.
 async fn list_categories(
@@ -304,21 +326,42 @@ async fn retire_category(
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
     let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let claim = replay::input(
+        &state,
+        &headers,
+        format!("/bss-products/v1/categories/{id}/retire"),
+        &serde_json::json!({}),
+    )?;
     let now = OffsetDateTime::now_utc();
     let retired = state
         .db
         .db()
-        .transaction_with_retry::<Category, TxError, _, _>(
+        .transaction_with_retry::<Response, TxError, _, _>(
             category_tx_config(&state),
             contention_db_err,
             move |tx| {
                 let scope = scope_tx.clone();
+                let claim = claim.clone();
                 Box::pin(async move {
+                    if repo::find_category(tx, &scope, tenant_id, id)
+                        .await
+                        .map_err(TxError::Repo)?
+                        .is_none()
+                    {
+                        return Err(TxError::Refused(DomainError::NotFound {
+                            what: "category",
+                            id,
+                        }));
+                    }
+                    if let Some(response) = replay::begin(tx, tenant_id, claim.as_ref()).await? {
+                        return Ok(response);
+                    }
                     let c = match repo::retire_category_if_unused(tx, &scope, tenant_id, id, now)
                         .await
                         .map_err(TxError::Repo)?
@@ -338,13 +381,20 @@ async fn retire_category(
                         }
                     };
                     audit(tx, &scope, tenant_id, actor, "category.retire", &c, now).await?;
-                    Ok(c)
+                    replay::finish(
+                        tx,
+                        tenant_id,
+                        claim.as_ref(),
+                        StatusCode::OK,
+                        &CategoryDto::from(c),
+                    )
+                    .await
                 })
             },
         )
         .await
         .map_err(tx_to_canonical)?;
-    Ok(response(StatusCode::OK, retired))
+    Ok(retired)
 }
 /// Record the direct category act in the same transaction.
 async fn audit(

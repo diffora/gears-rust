@@ -620,6 +620,29 @@ async fn type_fence_and_retire_completion_clear_only_the_matching_ownership() {
             .await
             .unwrap()
     );
+    for (wrong_unit, wrong_op) in [(uuid::Uuid::new_v4(), op), (unit, uuid::Uuid::new_v4())] {
+        assert!(matches!(
+            unlock_and_unfence(
+                &conn,
+                &scope,
+                tenant,
+                s.id,
+                wrong_unit,
+                wrong_op,
+                Some(unit),
+                true
+            )
+            .await
+            .unwrap(),
+            HeadWrite::Unmatched
+        ));
+        let held = find_sku_fence(&conn, &scope, tenant, s.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.pending_unit_id, Some(unit));
+        assert_eq!(held.fence_op_id, Some(op));
+    }
     let HeadWrite::Written(f) =
         unlock_and_unfence(&conn, &scope, tenant, s.id, unit, op, Some(unit), true)
             .await
