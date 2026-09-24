@@ -36,7 +36,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_503(openapi)
         .register(Router::new(), openapi);
     OperationBuilder::put("/bss-products/v1/approval-policy")
-        .operation_id("bss_products.set_approval_policy")
+        .operation_id("bss_products.put_approval_policy")
         .summary("Set approval policy")
         .tag("Approval policy")
         .authenticated()

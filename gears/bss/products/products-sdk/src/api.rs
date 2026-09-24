@@ -8,7 +8,9 @@ use uuid::Uuid;
 /// Tenant-scoped registry SKU reads.
 #[async_trait]
 pub trait ProductsClient: Send + Sync {
-    /// Read a SKU within the caller's authorized scope.
+    /// Read a SKU head in any lifecycle within the caller's authorized scope.
+    /// The tenant argument narrows the lookup; it never grants access.
+    /// Published-only suggestions use pricing's kept catalog contract.
     ///
     /// # Errors
     /// A canonical authorization, not-found, or infrastructure error.
