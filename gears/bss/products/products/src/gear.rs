@@ -374,6 +374,7 @@ impl RestApiCapability for BssProductsGear {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -444,5 +445,89 @@ mod tests {
             StatusCode::OK,
             "nesting under the prefix must not shadow the host router's own paths"
         );
+    }
+    /// A configured skeleton has real storage/outbox resources but no HTTP operations.
+    #[tokio::test]
+    async fn configured_skeleton_boots_without_routes() -> anyhow::Result<()> {
+        use sea_orm_migration::MigratorTrait;
+        use toolkit::api::{OpenApiInfo, OpenApiRegistryImpl};
+        let (gear, ctx) = skeleton_harness().await?;
+        assert!(gear.runtime.load_full().is_some());
+        assert_eq!(
+            crate::infra::storage::migrations::Migrator::migrations().len(),
+            1
+        );
+        let openapi = OpenApiRegistryImpl::new();
+        let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
+        assert!(!router.has_routes(), "phase 1b mounts no routes");
+        assert!(
+            openapi
+                .build_openapi(&OpenApiInfo::default())?
+                .paths
+                .paths
+                .is_empty()
+        );
+        // The actual lifecycle entry must honor the retained cancellation token.
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            Arc::new(gear).serve(cancel),
+        )
+        .await??;
+        Ok(())
+    }
+
+    async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
+        use crate::infra::events::{PARTITIONS, PendingBrokerProducer, QUEUE_NAME};
+        use toolkit::contracts::DatabaseCapability;
+        use toolkit_db::{ConnectOpts, DBProvider, connect_db};
+
+        struct NoConfig;
+        impl toolkit::config::ConfigProvider for NoConfig {
+            fn get_gear_config(&self, _gear: &str) -> Option<&serde_json::Value> {
+                None
+            }
+        }
+        let gear = BssProductsGear::default();
+        let db = connect_db(
+            "sqlite::memory:",
+            ConnectOpts {
+                max_conns: Some(1),
+                min_conns: Some(1),
+                ..ConnectOpts::default()
+            },
+        )
+        .await?;
+        toolkit_db::migration_runner::run_migrations_for_testing(&db, gear.migrations()).await?;
+        let pipeline = toolkit_db::outbox::Outbox::builder(db.clone())
+            .table_prefix(OUTBOX_TABLE_PREFIX)?
+            .queue(QUEUE_NAME, toolkit_db::outbox::Partitions::of(PARTITIONS))
+            .leased(PendingBrokerProducer)
+            .start()
+            .await?;
+        let db = DBProvider::new(db);
+        let api_state = Arc::new(crate::api::rest::ApiState {
+            db: db.clone(),
+            sink: crate::infra::broker::EventSink::Interim(Arc::clone(pipeline.outbox())),
+            usage_type_catalog: Arc::new(crate::infra::usage_types::UnconfiguredUsageTypes),
+            usage_type_catalog_source: USAGE_TYPE_SOURCE_UNCONFIGURED,
+            idempotency_retention_hours: ProductsConfig::default()
+                .resolved_idempotency_retention_hours(),
+        });
+        gear.runtime.store(Some(Arc::new(ProductsRuntime {
+            enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),
+            api_state,
+            _pipeline: OutboxLifetime::Interim(pipeline),
+        })));
+        let ctx = GearCtx::new(
+            "bss-products",
+            uuid::Uuid::new_v4(),
+            Arc::new(NoConfig),
+            Arc::new(toolkit::ClientHub::new()),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .with_db(db);
+        Ok((gear, ctx))
     }
 }
