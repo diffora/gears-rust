@@ -200,6 +200,8 @@ pub enum UsageTypeCatalogSource {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct ProductsConfig {
+    /// Age of an abandoned SKU fence before recovery.
+    pub fence_ttl_minutes: u32,
     /// How long an idempotency key is retained, in hours, **as the operator
     /// wrote it**.
     ///
@@ -533,6 +535,7 @@ pub struct ProductsConfig {
 impl Default for ProductsConfig {
     fn default() -> Self {
         Self {
+            fence_ttl_minutes: 30,
             idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,

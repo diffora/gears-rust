@@ -540,3 +540,237 @@ pub async fn test_db() -> (
     .unwrap();
     (toolkit_db::DBProvider::new(db), scope, tenant, dsn)
 }
+
+/// Running outbox lifetime retained by every clone of a REST test router.
+struct RestOutbox {
+    _handle: toolkit_db::outbox::OutboxHandle,
+}
+
+/// Build a door with the production database/outbox migrations and a resolved catalog.
+pub async fn rest_app(
+    tenant: Uuid,
+    build: fn(Arc<crate::api::rest::ApiState>, &dyn toolkit::api::OpenApiRegistry) -> axum::Router,
+) -> (axum::Router, String) {
+    rest_app_with_catalog(tenant, build, resolved_usage_types(), "test").await
+}
+
+/// The same REST fixture with an explicitly selected catalog answer and provenance.
+/// # Panics
+/// Panics if fixture setup or the asserted operation fails.
+pub async fn rest_app_with_catalog(
+    tenant: Uuid,
+    build: fn(Arc<crate::api::rest::ApiState>, &dyn toolkit::api::OpenApiRegistry) -> axum::Router,
+    catalog: Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+    source: &'static str,
+) -> (axum::Router, String) {
+    let (db, _, _, dsn) = test_db().await;
+    let handle = toolkit_db::outbox::Outbox::builder(db.db().clone())
+        .table_prefix(events::OUTBOX_TABLE_PREFIX)
+        .unwrap()
+        .queue(
+            events::QUEUE_NAME,
+            toolkit_db::outbox::Partitions::of(events::PARTITIONS),
+        )
+        .leased(events::PendingBrokerProducer)
+        .start()
+        .await
+        .unwrap();
+    let state = Arc::new(crate::api::rest::ApiState {
+        db,
+        sink: crate::infra::broker::EventSink::Interim(Arc::clone(handle.outbox())),
+        usage_type_catalog: catalog,
+        usage_type_catalog_source: source,
+        idempotency_retention_hours: 24,
+        fence_ttl_minutes: 30,
+    });
+    let app = build(state, &toolkit::api::OpenApiRegistryImpl::new())
+        .layer(axum::Extension(flat_in_enforcer(tenant)))
+        .layer(axum::Extension(Arc::new(RestOutbox { _handle: handle })));
+    (app, dsn)
+}
+
+/// Open an auxiliary scoped provider to seed the REST fixture through repositories.
+/// # Panics
+/// Panics if fixture setup or the asserted operation fails.
+pub async fn repo_connection(
+    dsn: &str,
+    tenant: Uuid,
+) -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::secure::AccessScope,
+) {
+    let db = toolkit_db::connect_db(
+        dsn,
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let scope = crate::authz::access_scope(
+        &flat_in_enforcer(tenant),
+        &authed_ctx(tenant),
+        &crate::authz::resource_types::SKU,
+        crate::authz::actions::AUTHOR,
+        Some(tenant),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    (toolkit_db::DBProvider::new(db), scope)
+}
+
+/// Seed an unmetered draft for category and SKU door tests.
+/// # Panics
+/// Panics if fixture setup or the asserted operation fails.
+pub async fn seed_rest_sku(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    category_id: Uuid,
+    code: &str,
+) -> bss_products_sdk::models::Sku {
+    crate::infra::storage::repo::insert_sku(
+        runner,
+        scope,
+        tenant,
+        crate::domain::sku::NewSku {
+            code: code.to_owned(),
+            name: code.to_owned(),
+            r#type: bss_products_sdk::models::SkuType::Usage,
+            category_id,
+            description: String::new(),
+            sellable: true,
+            gl_code: None,
+            tax_category: None,
+            invoice_line_template: None,
+            billing_timing: None,
+            usage_type_ref: None,
+            unit: None,
+        },
+        authed_ctx(tenant).subject_id(),
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap()
+}
+
+/// Exercise the router with a request-scoped authenticated principal.
+/// # Panics
+/// Panics if fixture setup or the asserted operation fails.
+pub async fn request(
+    app: &axum::Router,
+    tenant: Uuid,
+    method: axum::http::Method,
+    uri: &str,
+    body: Option<serde_json::Value>,
+    etag: Option<&str>,
+) -> axum::response::Response {
+    use tower::ServiceExt;
+    let mut builder = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .extension(authed_ctx(tenant));
+    if let Some(etag) = etag {
+        builder = builder.header("If-Match", etag);
+    }
+    let body = body.map_or_else(axum::body::Body::empty, |b| {
+        axum::body::Body::from(b.to_string())
+    });
+    app.clone()
+        .oneshot(
+            builder
+                .header("Content-Type", "application/json")
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+/// POST a JSON request.
+pub async fn post(
+    app: &axum::Router,
+    tenant: Uuid,
+    uri: &str,
+    body: serde_json::Value,
+) -> axum::response::Response {
+    request(app, tenant, axum::http::Method::POST, uri, Some(body), None).await
+}
+/// PATCH under the supplied revision precondition.
+pub async fn patch(
+    app: &axum::Router,
+    tenant: Uuid,
+    uri: &str,
+    body: serde_json::Value,
+    etag: Option<&str>,
+) -> axum::response::Response {
+    request(
+        app,
+        tenant,
+        axum::http::Method::PATCH,
+        uri,
+        Some(body),
+        etag,
+    )
+    .await
+}
+/// GET with the request principal.
+pub async fn get(app: &axum::Router, tenant: Uuid, uri: &str) -> axum::response::Response {
+    request(app, tenant, axum::http::Method::GET, uri, None, None).await
+}
+/// Decode an HTTP response body.
+/// # Panics
+/// Panics if fixture setup or the asserted operation fails.
+pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// Read a machine code from a canonical reason or precondition violation.
+/// # Panics
+/// Panics if the response has no machine-readable error code.
+#[must_use]
+pub fn problem_code(body: &serde_json::Value) -> String {
+    find_code(body).expect("problem contains a machine-readable code")
+}
+fn find_code(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in ["reason", "type", "code"] {
+                if let Some(serde_json::Value::String(found)) = map.get(key)
+                    && found.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                    && found.len() > 3
+                {
+                    return Some(found.clone());
+                }
+            }
+            map.values().find_map(find_code)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_code),
+        _ => None,
+    }
+}
+
+/// Read the violation for a wire field.
+pub fn violation_for(body: &serde_json::Value, subject: &str) -> Option<String> {
+    fn violations(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+        match value {
+            serde_json::Value::Object(map) => map
+                .get("violations")
+                .and_then(serde_json::Value::as_array)
+                .or_else(|| map.values().find_map(violations)),
+            serde_json::Value::Array(items) => items.iter().find_map(violations),
+            _ => None,
+        }
+    }
+    violations(body)?
+        .iter()
+        .find(|violation| violation["subject"] == serde_json::json!(subject))
+        .and_then(|violation| violation["description"].as_str())
+        .map(ToOwned::to_owned)
+}

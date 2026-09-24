@@ -347,6 +347,7 @@ impl Gear for BssProductsGear {
             usage_type_catalog,
             usage_type_catalog_source,
             idempotency_retention_hours,
+            fence_ttl_minutes: cfg.fence_ttl_minutes,
         });
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
@@ -362,11 +363,15 @@ impl RestApiCapability for BssProductsGear {
         &self,
         _ctx: &GearCtx,
         router: Router,
-        _openapi: &dyn OpenApiRegistry,
+        openapi: &dyn OpenApiRegistry,
     ) -> anyhow::Result<Router> {
         if let Some(rt) = self.runtime.load_full() {
-            let _api_state = Arc::clone(&rt.api_state);
-            return Ok(router.layer(axum::Extension((*rt.enforcer).clone())));
+            return Ok(router
+                .merge(crate::api::rest::categories::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .layer(axum::Extension((*rt.enforcer).clone())));
         }
         Ok(router)
     }
@@ -446,9 +451,9 @@ mod tests {
             "nesting under the prefix must not shadow the host router's own paths"
         );
     }
-    /// A configured skeleton has real storage/outbox resources but no HTTP operations.
+    /// A configured gear registers every implemented operation.
     #[tokio::test]
-    async fn configured_skeleton_boots_without_routes() -> anyhow::Result<()> {
+    async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         use sea_orm_migration::MigratorTrait;
         use toolkit::api::{OpenApiInfo, OpenApiRegistryImpl};
         let (gear, ctx) = skeleton_harness().await?;
@@ -459,14 +464,24 @@ mod tests {
         );
         let openapi = OpenApiRegistryImpl::new();
         let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
-        assert!(!router.has_routes(), "phase 1b mounts no routes");
-        assert!(
-            openapi
-                .build_openapi(&OpenApiInfo::default())?
-                .paths
-                .paths
-                .is_empty()
-        );
+        assert!(router.has_routes());
+        let api = serde_json::to_value(openapi.build_openapi(&OpenApiInfo::default())?)?;
+        let mut actual: Vec<&str> = api["paths"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|p| p.as_object().unwrap().values())
+            .filter_map(|op| op["operationId"].as_str())
+            .collect();
+        actual.sort_unstable();
+        let mut expected = vec![
+            "bss_products.create_category",
+            "bss_products.list_categories",
+            "bss_products.update_category",
+            "bss_products.retire_category",
+        ];
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
         // The actual lifecycle entry must honor the retained cancellation token.
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
@@ -514,6 +529,7 @@ mod tests {
             usage_type_catalog_source: USAGE_TYPE_SOURCE_UNCONFIGURED,
             idempotency_retention_hours: ProductsConfig::default()
                 .resolved_idempotency_retention_hours(),
+            fence_ttl_minutes: 30,
         });
         gear.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),

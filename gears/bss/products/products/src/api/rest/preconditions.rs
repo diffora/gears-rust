@@ -68,6 +68,7 @@
 
 use axum::http::HeaderMap;
 use axum::http::header::IF_MATCH;
+use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
 
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
@@ -125,3 +126,18 @@ fn refuse(detail: &str) -> DomainError {
 #[cfg(test)]
 #[path = "preconditions_tests.rs"]
 mod preconditions_tests;
+
+/// Required revision precondition in `OpenAPI`.
+pub(crate) fn if_match_param() -> ParamSpec {
+    ParamSpec {
+        name: "If-Match".to_owned(),
+        location: ParamLocation::Header,
+        required: true,
+        description: Some("Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.".to_owned()),
+        param_type: "string".to_owned(),
+        // Scalar: every parameter this gear declares is single-valued.
+        // `array` arrived upstream for `?tag=a&tag=b` repeats, which no route
+        // here has.
+        array: false,
+    }
+}
