@@ -34,7 +34,9 @@ use toolkit_odata::{ODataQuery, Page};
 use crate::domain::error::DomainError;
 use crate::domain::tenant::closure::ClosureRow;
 use crate::domain::tenant::integrity::{IntegrityCategory, Violation};
-use crate::domain::tenant::model::{ChildCountFilter, NewTenant, TenantModel, TenantStatus};
+use crate::domain::tenant::model::{
+    ChildCountFilter, NewTenant, TenantAncestorRow, TenantModel, TenantStatus,
+};
 use crate::domain::tenant::retention::{
     HardDeleteEligibility, HardDeleteOutcome, TenantProvisioningRow, TenantRetentionRow,
 };
@@ -165,6 +167,30 @@ pub trait TenantRepo: Send + Sync {
         root_id: Uuid,
         query: &ODataQuery,
     ) -> Result<Page<TenantModel>, DomainError>;
+
+    /// Ancestor chains for a page of recursively listed tenants.
+    ///
+    /// For every id in `tenant_ids`: the tenants strictly between the
+    /// listing root (identified by its absolute `root_depth`) and that
+    /// tenant, ordered by depth ascending — the child of the root
+    /// first, the direct parent last. Ids with no such tenant (direct
+    /// children of the root) are absent from the map.
+    ///
+    /// Reads `tenant_closure` under `allow_all` (a `no_*` entity) and
+    /// the ancestors' `tenants` rows under `scope`. When a tenant was
+    /// listed by [`Self::list_descendants`], every tenant on the path
+    /// `(root, parent]` is Respect-visible by construction (`barrier`
+    /// is monotone along a path), so `scope` is defence-in-depth here,
+    /// not a filter. Both statements bind only `tenant_ids` (the
+    /// ancestor membership is a closure subquery), so a page-sized
+    /// input (≤ `listing.max_top`) stays under the bind-parameter
+    /// ceiling whatever the tree depth.
+    async fn ancestor_chains(
+        &self,
+        scope: &AccessScope,
+        root_depth: u32,
+        tenant_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<TenantAncestorRow>>, DomainError>;
 
     // ---- Write operations ----------------------------------------------
 

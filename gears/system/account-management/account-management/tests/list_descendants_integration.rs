@@ -513,3 +513,151 @@ async fn repo_list_descendants_cursor_survives_created_at_collision() {
         "equal timestamps fall back to id ASC; nothing lost or repeated"
     );
 }
+
+// ---- repo: ancestor chains ------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_ancestor_chains_returns_intermediates_ordered_top_down() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+    // One more level: xcc under xc, so a chain has two intermediates.
+    let xcc = Uuid::from_u128(0x7000_0011);
+    seed_visible_at(&h, &[t.root, t.x, t.xc], xcc, "xcc", 3, ts_at(9)).await;
+
+    let chains = h
+        .repo
+        .ancestor_chains(&allow_all(), 0, &[t.x, t.xc, t.y, xcc])
+        .await
+        .expect("chains");
+
+    assert!(
+        !chains.contains_key(&t.x),
+        "a direct child has no intermediates"
+    );
+    let xc_chain: Vec<Uuid> = chains[&t.xc].iter().map(|a| a.id).collect();
+    assert_eq!(xc_chain, vec![t.x]);
+    let y_chain: Vec<Uuid> = chains[&t.y].iter().map(|a| a.id).collect();
+    assert_eq!(y_chain, vec![t.x]);
+    let xcc_chain: Vec<(Uuid, u32)> = chains[&xcc].iter().map(|a| (a.id, a.depth)).collect();
+    assert_eq!(xcc_chain, vec![(t.x, 1), (t.xc, 2)], "top-down, by depth");
+    assert_eq!(chains[&xcc][1].name, "xc");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_ancestor_chains_stops_at_the_listing_root_depth() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+
+    // Listing rooted at `x` (depth 1): xc's chain relative to x is empty.
+    let chains = h
+        .repo
+        .ancestor_chains(&allow_all(), 1, &[t.xc])
+        .await
+        .expect("chains");
+    assert!(chains.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_ancestor_chains_empty_input_is_empty() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let chains = h
+        .repo
+        .ancestor_chains(&allow_all(), 0, &[])
+        .await
+        .expect("chains");
+    assert!(chains.is_empty());
+}
+
+// ---- service: end to end over the barrier topology -------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_list_descendants_from_root_returns_visible_subtree_with_chains() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+    let services = build_services(&h);
+
+    let page = services
+        .tenant_service
+        .list_descendants(&ctx_for(t.root), t.root, &ODataQuery::default())
+        .await
+        .expect("list");
+
+    let by_id: HashMap<Uuid, &account_management_sdk::TenantNode> =
+        page.items.iter().map(|n| (n.tenant.id.0, n)).collect();
+    assert_eq!(
+        sorted(by_id.keys().copied().collect()),
+        sorted(vec![t.x, t.xc, t.s, t.y])
+    );
+    let chain = |id: Uuid| -> Vec<Uuid> { by_id[&id].ancestors.iter().map(|a| a.id.0).collect() };
+    assert_eq!(chain(t.x), Vec::<Uuid>::new());
+    assert_eq!(chain(t.s), Vec::<Uuid>::new());
+    assert_eq!(chain(t.xc), vec![t.x]);
+    assert_eq!(chain(t.y), vec![t.x]);
+    assert_eq!(by_id[&t.xc].ancestors[0].name, "x");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_list_descendants_child_count_is_barrier_gated() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+    let services = build_services(&h);
+
+    let page = services
+        .tenant_service
+        .list_descendants(&ctx_for(t.root), t.root, &ODataQuery::default())
+        .await
+        .expect("list");
+    let counts: HashMap<Uuid, u32> = page
+        .items
+        .iter()
+        .map(|n| (n.tenant.id.0, n.tenant.child_count))
+        .collect();
+
+    assert_eq!(counts[&t.x], 2, "x: xc and its self-managed direct child y");
+    assert_eq!(counts[&t.xc], 0);
+    assert_eq!(
+        counts[&t.s], 0,
+        "s is an identity past its own barrier: nothing below leaks"
+    );
+    assert_eq!(counts[&t.y], 0, "same for y");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_list_descendants_from_intermediate_lists_its_subtree_only() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+    let services = build_services(&h);
+
+    let page = services
+        .tenant_service
+        .list_descendants(&ctx_for(t.root), t.x, &ODataQuery::default())
+        .await
+        .expect("list");
+
+    let ids: Vec<Uuid> = page.items.iter().map(|n| n.tenant.id.0).collect();
+    assert_eq!(sorted(ids), sorted(vec![t.xc, t.y]));
+    assert!(
+        page.items.iter().all(|n| n.ancestors.is_empty()),
+        "both are direct children of x"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_list_descendants_past_barrier_root_collapses_to_not_found() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+    let services = build_services(&h);
+
+    let err = services
+        .tenant_service
+        .list_descendants(&ctx_for(t.root), t.s, &ODataQuery::default())
+        .await
+        .expect_err("s is past root's barrier");
+    assert_eq!(err.code(), "not_found");
+}

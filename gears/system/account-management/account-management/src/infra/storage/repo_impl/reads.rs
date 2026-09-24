@@ -26,7 +26,9 @@ use toolkit_security::AccessScope;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::tenant::model::{ChildCountFilter, TenantModel, TenantStatus};
+use crate::domain::tenant::model::{
+    ChildCountFilter, TenantAncestorRow, TenantModel, TenantStatus,
+};
 use crate::infra::storage::entity::{tenant_closure, tenant_idp_metadata, tenants};
 
 use super::TenantRepoImpl;
@@ -511,6 +513,100 @@ pub(super) async fn list_descendants(
     .await
 }
 // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-page
+
+// @cpt-begin:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-chains
+pub(super) async fn ancestor_chains(
+    repo: &TenantRepoImpl,
+    scope: &AccessScope,
+    root_depth: u32,
+    tenant_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<TenantAncestorRow>>, DomainError> {
+    if tenant_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let conn = repo.db.conn()?;
+
+    // 1. Every strict ancestor of every listed tenant, from the closure
+    //    table. Self-rows `(id, id)` come back too and are dropped in
+    //    memory. `tenant_closure` has no ownership column (`no_*`
+    //    entity), so `allow_all` is the only scope it takes.
+    let edges = tenant_closure::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(tenant_closure::Column::DescendantId.is_in(tenant_ids.iter().copied())),
+        )
+        .all(&conn)
+        .await
+        .map_err(map_scope_err)?;
+
+    if edges.iter().all(|e| e.ancestor_id == e.descendant_id) {
+        return Ok(HashMap::new());
+    }
+
+    // 2. The ancestors' rows strictly below the listing root, under the
+    //    caller's (barrier-respecting) scope. Membership is a closure
+    //    SUBQUERY over the same `tenant_ids` — never an expanded `IN`
+    //    list of ancestor ids, whose size would scale with page size ×
+    //    tree depth. Depths at or above the root are the root itself
+    //    and its own ancestors — never part of a chain relative to that
+    //    root.
+    let ancestors_of_page = tenant_closure::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(tenant_closure::Column::DescendantId.is_in(tenant_ids.iter().copied())),
+        )
+        .into_inner()
+        .select_only()
+        .column(tenant_closure::Column::AncestorId)
+        .into_query();
+    let root_depth_i32 = i32::try_from(root_depth).unwrap_or(i32::MAX);
+    let rows = tenants::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(tenants::Column::Id.in_subquery(ancestors_of_page))
+                .add(tenants::Column::Depth.gt(root_depth_i32)),
+        )
+        .all(&conn)
+        .await
+        .map_err(map_scope_err)?;
+    let mut by_id: HashMap<Uuid, TenantAncestorRow> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        // `entity_to_model` validates `status` / `depth` domains the
+        // same way every other `tenants` read does.
+        let model = entity_to_model(row)?;
+        by_id.insert(
+            model.id,
+            TenantAncestorRow {
+                id: model.id,
+                name: model.name,
+                tenant_type_uuid: model.tenant_type_uuid,
+                depth: model.depth,
+            },
+        );
+    }
+
+    // 3. Group per listed tenant, top-down.
+    let mut out: HashMap<Uuid, Vec<TenantAncestorRow>> = HashMap::new();
+    for edge in edges {
+        if edge.ancestor_id == edge.descendant_id {
+            continue;
+        }
+        if let Some(anc) = by_id.get(&edge.ancestor_id) {
+            out.entry(edge.descendant_id).or_default().push(anc.clone());
+        }
+    }
+    for chain in out.values_mut() {
+        chain.sort_by_key(|a| a.depth);
+    }
+    Ok(out)
+}
+// @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-chains
 
 pub(super) async fn count_children(
     repo: &TenantRepoImpl,

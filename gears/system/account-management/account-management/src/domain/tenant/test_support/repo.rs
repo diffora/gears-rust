@@ -35,7 +35,9 @@ use toolkit_odata::{ODataQuery, Page, PageInfo};
 use crate::domain::error::DomainError;
 use crate::domain::tenant::closure::ClosureRow;
 use crate::domain::tenant::integrity::{IntegrityCategory, RepairReport, Violation};
-use crate::domain::tenant::model::{ChildCountFilter, NewTenant, TenantModel, TenantStatus};
+use crate::domain::tenant::model::{
+    ChildCountFilter, NewTenant, TenantAncestorRow, TenantModel, TenantStatus,
+};
 use crate::domain::tenant::repo::TenantRepo;
 use crate::domain::tenant::retention::{
     HardDeleteEligibility, HardDeleteOutcome, TenantProvisioningRow, TenantRetentionRow,
@@ -798,6 +800,42 @@ impl TenantRepo for FakeTenantRepo {
                 limit: limit_u64,
             },
         })
+    }
+
+    async fn ancestor_chains(
+        &self,
+        _scope: &AccessScope,
+        root_depth: u32,
+        tenant_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Vec<TenantAncestorRow>>, DomainError> {
+        // Walk `parent_id` upwards until the listing root's depth;
+        // production reads the same set through `tenant_closure`.
+        let state = self.state.lock().expect("lock");
+        let mut out: HashMap<Uuid, Vec<TenantAncestorRow>> = HashMap::new();
+        for id in tenant_ids {
+            let mut chain: Vec<TenantAncestorRow> = Vec::new();
+            let mut cursor = state.tenants.get(id).and_then(|t| t.parent_id);
+            while let Some(pid) = cursor {
+                let Some(p) = state.tenants.get(&pid) else {
+                    break;
+                };
+                if p.depth <= root_depth {
+                    break;
+                }
+                chain.push(TenantAncestorRow {
+                    id: p.id,
+                    name: p.name.clone(),
+                    tenant_type_uuid: p.tenant_type_uuid,
+                    depth: p.depth,
+                });
+                cursor = p.parent_id;
+            }
+            if !chain.is_empty() {
+                chain.reverse();
+                out.insert(*id, chain);
+            }
+        }
+        Ok(out)
     }
 
     async fn insert_provisioning(
