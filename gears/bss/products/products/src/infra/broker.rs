@@ -1,5 +1,7 @@
-//! Broker binding and outbox sink; typed registry events return in phase 1c.
-use event_broker_sdk::{ProducerOutbox, ProducerOutboxHandle};
+//! Typed registry events, broker binding and the transactional outbox sink.
+use event_broker_sdk::{ProducerOutbox, ProducerOutboxHandle, TypedEvent};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::sync::Arc;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -7,6 +9,140 @@ use uuid::Uuid;
 pub const TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.products.catalog.v1";
 pub const SOURCE: &str = "bss-products";
 pub const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.sku.v1";
+
+/// Approval-unit event subject; SKU events retain the existing subject type.
+pub const APPROVAL_UNIT_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.approval_unit.v1";
+
+/// A SKU was published.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkuPublished {
+    pub tenant_id: Uuid,
+    pub sku_id: Uuid,
+    pub published_version: i64,
+    pub actor_ref: Uuid,
+}
+impl TypedEvent for SkuPublished {
+    const TYPE_ID: &'static str = "gts.cf.core.events.event.v1~cf.bss.products.sku_published.v1~";
+    const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.sku_id.to_string())
+    }
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
+/// Approved business content took effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkuChanged {
+    pub tenant_id: Uuid,
+    pub sku_id: Uuid,
+    pub changed: Vec<String>,
+    #[serde(with = "crate::infra::serde_date")]
+    pub effective_from: time::Date,
+    pub published_version: i64,
+    pub actor_ref: Uuid,
+}
+impl TypedEvent for SkuChanged {
+    const TYPE_ID: &'static str = "gts.cf.core.events.event.v1~cf.bss.products.sku_changed.v1~";
+    const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.sku_id.to_string())
+    }
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
+/// A SKU completed retirement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkuRetired {
+    pub tenant_id: Uuid,
+    pub sku_id: Uuid,
+    pub actor_ref: Uuid,
+}
+impl TypedEvent for SkuRetired {
+    const TYPE_ID: &'static str = "gts.cf.core.events.event.v1~cf.bss.products.sku_retired.v1~";
+    const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.sku_id.to_string())
+    }
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
+/// A terminal decision, including withdrawal or quorum-zero approval.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApprovalUnitDecided {
+    pub tenant_id: Uuid,
+    pub unit_id: Uuid,
+    pub kind: String,
+    pub state: String,
+    pub generation: i32,
+    pub actors: Vec<Uuid>,
+}
+impl TypedEvent for ApprovalUnitDecided {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event.v1~cf.bss.products.approval_unit_decided.v1~";
+    const SUBJECT_TYPE: &'static str = APPROVAL_UNIT_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.unit_id.to_string())
+    }
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
+/// An operator released a reservation; its owner must reconcile the referenced object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReferenceForceReleased {
+    pub tenant_id: Uuid,
+    pub sku_id: Uuid,
+    pub reference_id: Uuid,
+    pub owner: String,
+    pub kind: String,
+    pub ref_id: Uuid,
+    pub actor_ref: Uuid,
+    pub reason: String,
+}
+impl TypedEvent for ReferenceForceReleased {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event.v1~cf.bss.products.reference_force_released.v1~";
+    const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.sku_id.to_string())
+    }
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
 
 fn producer_system_actor() -> SecurityContext {
     /// Hand-picked, version nibble `0`. `62 73 73 70` is `bssp`.
@@ -99,7 +235,12 @@ pub(crate) async fn bind_producer(
         .prepare_all()
         .await?;
 
-    // No typed events are prepared in phase 1b; phase 1c adds its four events.
+    // Resolve schemas before any business transaction enqueues an event.
+    producer.prepare::<SkuPublished>().await?;
+    producer.prepare::<SkuChanged>().await?;
+    producer.prepare::<SkuRetired>().await?;
+    producer.prepare::<ApprovalUnitDecided>().await?;
+    producer.prepare::<ReferenceForceReleased>().await?;
 
     // The queue name is the table prefix's own, so the producer's queue and
     // this gear's tables are named from one constant.
@@ -118,3 +259,7 @@ pub(crate) async fn bind_producer(
     let sink = EventSink::Broker(Box::new(handle.outbox().clone()));
     Ok(Some((sink, handle)))
 }
+
+#[cfg(test)]
+#[path = "broker_tests.rs"]
+mod broker_tests;

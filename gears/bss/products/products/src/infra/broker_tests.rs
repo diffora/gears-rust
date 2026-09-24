@@ -1,0 +1,289 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+use super::*;
+use crate::infra::events::{self, enqueue_typed};
+use crate::test_support::{at, enqueued_event_count, enqueued_event_envelope, test_db};
+use event_broker_sdk::TypedEvent;
+use serde::{Deserialize, Serialize};
+use toolkit_db::secure::TxConfig;
+use toolkit_db::{Db, DbError};
+
+#[test]
+fn five_event_contracts_have_stable_type_subject_source_and_tenant() {
+    fn check<E: TypedEvent>(
+        event: &E,
+        token: &str,
+        subject_type: &str,
+        subject: Uuid,
+        tenant: Uuid,
+    ) {
+        assert_eq!(
+            E::TYPE_ID,
+            format!("gts.cf.core.events.event.v1~cf.bss.products.{token}.v1~")
+        );
+        assert_eq!(E::SUBJECT_TYPE, subject_type);
+        assert_eq!(E::SOURCE, "bss-products");
+        assert_eq!(event.subject(), subject.to_string());
+        assert_eq!(event.tenant_id(), Some(tenant));
+        assert!(gts::GtsId::try_new(E::TYPE_ID).is_ok());
+    }
+    let tenant = Uuid::new_v4();
+    let sku = Uuid::new_v4();
+    let unit = Uuid::new_v4();
+    let actor = Uuid::new_v4();
+    check(
+        &SkuPublished {
+            tenant_id: tenant,
+            sku_id: sku,
+            published_version: 1,
+            actor_ref: actor,
+        },
+        "sku_published",
+        SKU_SUBJECT_TYPE,
+        sku,
+        tenant,
+    );
+    let changed = SkuChanged {
+        tenant_id: tenant,
+        sku_id: sku,
+        changed: vec!["gl_code".into()],
+        effective_from: at(9).date(),
+        published_version: 2,
+        actor_ref: actor,
+    };
+    check(&changed, "sku_changed", SKU_SUBJECT_TYPE, sku, tenant);
+    let json = serde_json::to_value(&changed).unwrap();
+    assert_eq!(json["effectiveFrom"], "2026-09-02");
+    assert_eq!(json["skuId"], sku.to_string());
+    assert_eq!(json["changed"], serde_json::json!(["gl_code"]));
+    assert!(json.get("effective_from").is_none());
+    assert_eq!(serde_json::from_value::<SkuChanged>(json).unwrap(), changed);
+    check(
+        &SkuRetired {
+            tenant_id: tenant,
+            sku_id: sku,
+            actor_ref: actor,
+        },
+        "sku_retired",
+        SKU_SUBJECT_TYPE,
+        sku,
+        tenant,
+    );
+    let decided = ApprovalUnitDecided {
+        tenant_id: tenant,
+        unit_id: unit,
+        kind: "sku_publish".into(),
+        state: "approved".into(),
+        generation: 2,
+        actors: vec![actor],
+    };
+    check(
+        &decided,
+        "approval_unit_decided",
+        APPROVAL_UNIT_SUBJECT_TYPE,
+        unit,
+        tenant,
+    );
+    assert_eq!(serde_json::to_value(&decided).unwrap()["generation"], 2);
+    let released = ReferenceForceReleased {
+        tenant_id: tenant,
+        sku_id: sku,
+        reference_id: Uuid::new_v4(),
+        owner: "pricing".into(),
+        kind: "price".into(),
+        ref_id: Uuid::new_v4(),
+        actor_ref: actor,
+        reason: "abandoned reservation".into(),
+    };
+    check(
+        &released,
+        "reference_force_released",
+        SKU_SUBJECT_TYPE,
+        sku,
+        tenant,
+    );
+    assert_eq!(
+        serde_json::from_value::<ReferenceForceReleased>(serde_json::to_value(&released).unwrap())
+            .unwrap(),
+        released
+    );
+}
+
+#[test]
+fn optional_dates_and_timestamps_have_literal_wire_strings_and_reject_bad_dates() {
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Dates {
+        #[serde(with = "crate::infra::serde_date::option")]
+        date: Option<time::Date>,
+        #[serde(with = "time::serde::rfc3339")]
+        at: time::OffsetDateTime,
+    }
+    let dates = Dates {
+        date: Some(at(9).date()),
+        at: at(9),
+    };
+    let json = serde_json::to_value(&dates).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"date":"2026-09-02","at":"2026-09-02T09:00:00Z"})
+    );
+    assert_eq!(serde_json::from_value::<Dates>(json).unwrap(), dates);
+    let none = Dates {
+        date: None,
+        at: at(9),
+    };
+    let json = serde_json::to_value(&none).unwrap();
+    assert!(json["date"].is_null());
+    assert_eq!(serde_json::from_value::<Dates>(json).unwrap(), none);
+    assert!(
+        serde_json::from_value::<Dates>(
+            serde_json::json!({"date":"2026-02-30","at":"2026-09-02T09:00:00Z"})
+        )
+        .is_err()
+    );
+}
+
+#[derive(Debug, thiserror::Error)]
+enum TxError {
+    #[error(transparent)]
+    Db(#[from] DbError),
+    #[error(transparent)]
+    Event(#[from] events::EventsError),
+    #[error("rollback probe")]
+    Rollback,
+}
+async fn persisted<E: TypedEvent + Clone + PartialEq + std::fmt::Debug>(
+    db: &Db,
+    sink: &EventSink,
+    dsn: &str,
+    event: E,
+) {
+    let expected = event.clone();
+    let sink = sink.clone();
+    db.transaction_with_retry::<(), TxError, _, _>(
+        TxConfig::default(),
+        |_| None,
+        move |tx| {
+            let sink = sink.clone();
+            let event = event.clone();
+            Box::pin(async move {
+                enqueue_typed(&sink, tx, event).await?;
+                Ok(())
+            })
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(enqueued_event_count(dsn, E::TYPE_ID).await, 1);
+    assert_eq!(
+        serde_json::from_value::<E>(enqueued_event_envelope(dsn, E::TYPE_ID).await).unwrap(),
+        expected
+    );
+}
+#[tokio::test]
+async fn every_event_round_trips_through_the_interim_outbox_and_rollback_leaves_none() {
+    let (db, _, tenant, dsn) = test_db().await;
+    let handle = toolkit_db::outbox::Outbox::builder(db.db())
+        .table_prefix(events::OUTBOX_TABLE_PREFIX)
+        .unwrap()
+        .queue(
+            events::QUEUE_NAME,
+            toolkit_db::outbox::Partitions::of(events::PARTITIONS),
+        )
+        .leased(events::PendingBrokerProducer)
+        .start()
+        .await
+        .unwrap();
+    let sink = EventSink::Interim(Arc::clone(handle.outbox()));
+    let sku = Uuid::new_v4();
+    let actor = Uuid::new_v4();
+    let changed = SkuChanged {
+        tenant_id: tenant,
+        sku_id: sku,
+        changed: vec!["gl_code".into()],
+        effective_from: at(9).date(),
+        published_version: 2,
+        actor_ref: actor,
+    };
+    let failed_sink = sink.clone();
+    let failed_event = changed.clone();
+    let result = db
+        .db()
+        .transaction_with_retry::<(), TxError, _, _>(
+            TxConfig::default(),
+            |_| None,
+            move |tx| {
+                let sink = failed_sink.clone();
+                let event = failed_event.clone();
+                Box::pin(async move {
+                    enqueue_typed(&sink, tx, event).await?;
+                    Err(TxError::Rollback)
+                })
+            },
+        )
+        .await;
+    assert!(matches!(result, Err(TxError::Rollback)));
+    assert_eq!(enqueued_event_count(&dsn, SkuChanged::TYPE_ID).await, 0);
+    persisted(
+        &db.db(),
+        &sink,
+        &dsn,
+        SkuPublished {
+            tenant_id: tenant,
+            sku_id: sku,
+            published_version: 1,
+            actor_ref: actor,
+        },
+    )
+    .await;
+    persisted(&db.db(), &sink, &dsn, changed).await;
+    persisted(
+        &db.db(),
+        &sink,
+        &dsn,
+        SkuRetired {
+            tenant_id: tenant,
+            sku_id: sku,
+            actor_ref: actor,
+        },
+    )
+    .await;
+    persisted(
+        &db.db(),
+        &sink,
+        &dsn,
+        ApprovalUnitDecided {
+            tenant_id: tenant,
+            unit_id: Uuid::new_v4(),
+            kind: "sku_publish".into(),
+            state: "approved".into(),
+            generation: 1,
+            actors: vec![actor],
+        },
+    )
+    .await;
+    persisted(
+        &db.db(),
+        &sink,
+        &dsn,
+        ReferenceForceReleased {
+            tenant_id: tenant,
+            sku_id: sku,
+            reference_id: Uuid::new_v4(),
+            owner: "pricing".into(),
+            kind: "price".into(),
+            ref_id: Uuid::new_v4(),
+            actor_ref: actor,
+            reason: "abandoned reservation".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        enqueued_event_envelope(&dsn, SkuChanged::TYPE_ID).await["effectiveFrom"],
+        "2026-09-02"
+    );
+    let partition = u32::from(
+        u16::from_le_bytes([tenant.as_bytes()[14], tenant.as_bytes()[15]]) % events::PARTITIONS,
+    );
+    assert_eq!(crate::test_support::raw_i64(&dsn,&format!("SELECT COUNT(*) AS v FROM (SELECT body_id, partition_id FROM bss_products_outbox_incoming UNION SELECT body_id, partition_id FROM bss_products_outbox_outgoing) b JOIN bss_products_outbox_partitions p ON p.id=b.partition_id WHERE p.partition={partition} AND p.queue='bss_products_events'")).await,5);
+    handle.stop().await;
+}

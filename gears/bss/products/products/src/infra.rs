@@ -6,5 +6,6 @@ pub mod catalog_rest_client;
 pub mod error_mapping;
 pub mod events;
 pub mod idempotency;
+pub mod serde_date;
 pub mod storage;
 pub mod usage_types;

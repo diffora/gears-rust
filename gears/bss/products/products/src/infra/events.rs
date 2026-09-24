@@ -1,4 +1,7 @@
-//! Toolkit outbox plumbing retained for phase 1c event producers.
+//! Typed event enqueueing on the caller's transaction runner.
+use crate::infra::broker::EventSink;
+use event_broker_sdk::TypedEvent;
+use toolkit_db::secure::DBRunner;
 
 pub const OUTBOX_TABLE_PREFIX: &str = "bss_products_outbox";
 pub const QUEUE_NAME: &str = "bss_products_events";
@@ -41,6 +44,46 @@ pub fn traceparent() -> Option<String> {
     })
 }
 
-/// Event error vocabulary; phase 1c adds the enqueue failure variants.
+/// Serialization or durable enqueue failure.
 #[derive(Debug, thiserror::Error)]
-pub enum EventsError {}
+pub enum EventsError {
+    #[error("event serialization: {0}")]
+    Serialize(String),
+    #[error("broker producer: {0}")]
+    Producer(String),
+    #[error("interim outbox: {0}")]
+    Outbox(String),
+}
+
+/// Write a typed event through the bound broker producer or the interim outbox.
+/// # Errors
+/// Returns serialization or enqueue failures; the caller must roll back its transaction.
+#[allow(
+    dead_code,
+    reason = "Called by the business doors introduced in Tasks 7-10"
+)]
+pub(crate) async fn enqueue_typed<E: TypedEvent>(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    event: E,
+) -> Result<(), EventsError> {
+    match sink {
+        EventSink::Broker(producer) => producer
+            .enqueue(runner, event)
+            .await
+            .map(|_| ())
+            .map_err(|e| EventsError::Producer(e.to_string())),
+        EventSink::Interim(outbox) => {
+            let payload =
+                serde_json::to_vec(&event).map_err(|e| EventsError::Serialize(e.to_string()))?;
+            let partition = event.tenant_id().map_or(0, |t| {
+                u32::from(u16::from_le_bytes([t.as_bytes()[14], t.as_bytes()[15]]) % PARTITIONS)
+            });
+            outbox
+                .enqueue(runner, QUEUE_NAME, partition, payload, E::TYPE_ID)
+                .await
+                .map(|_| ())
+                .map_err(|e| EventsError::Outbox(e.to_string()))
+        }
+    }
+}
