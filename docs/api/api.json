@@ -18249,6 +18249,30 @@
         ],
         "type": "object"
       },
+      "TenantAncestorDto": {
+        "description": "One node on the path from the listing's `tenant_id` down to a\nrecursively listed descendant\n(`GET /tenants/{tenant_id}/children?recursive=true`).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tenant_type": {
+            "description": "Chained GTS tenant-type identifier; omitted on a transient\ntypes-registry blip (same policy as `TenantDto.tenant_type`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
       "TenantContext": {
         "description": "Tenant context for the evaluation.",
         "properties": {
@@ -18320,6 +18344,16 @@
       "TenantDto": {
         "description": "AM-internal projection. Wider than `tenant_resolver_sdk::TenantInfo` for\nadmin/UI consumers (carries lifecycle timestamps + depth).\n\nInternal columns (raw `tenant_type_uuid`, retention/claim columns) never\ncross this boundary. `tenant_type: None` only on a transient registry\nblip — reads do not block on it.",
         "properties": {
+          "ancestors": {
+            "description": "Ancestor chain relative to the listing's `tenant_id`, ordered\nfrom the child of `tenant_id` down to this tenant's direct\nparent; empty for a direct child. Present only on\n`GET /tenants/{tenant_id}/children?recursive=true` -- omitted\nfrom every other response (the key is absent, not `null`).",
+            "items": {
+              "$ref": "#/components/schemas/TenantAncestorDto"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "child_count": {
             "description": "Number of **direct** children visible to the caller, resolved at\nread time: scope-filtered (children behind a self-managed barrier\nthe caller cannot penetrate are not counted), excludes\nAM-internal `provisioning` rows, includes soft-`deleted`\nchildren. `0` for a leaf. Derived field (not a stored column) —\nnot available in `$filter` / `$orderby`.",
             "format": "int32",
@@ -21382,7 +21416,7 @@
     },
     "/account-management/v1/tenants/{tenant_id}/children": {
       "get": {
-        "description": "List direct children of the given tenant. Cursor-paginated with `(created_at ASC, id ASC)` as the effective sort so siblings sharing a `created_at` timestamp stay disambiguated across pages. Soft-deleted rows are hidden by default -- opt in with `?$filter=status eq 'deleted'`. AM-internal `provisioning` rows are never surfaced. The parent must exist and be SDK-visible, otherwise the call collapses to `not_found`.",
+        "description": "List the children of the given tenant. Default: direct children only. With `recursive=true`: every descendant visible to the caller under the same visibility rules (a self-managed direct child of any visible tenant is listed as an identity; nothing below a barrier is), and every item carries `ancestors` -- the chain from the child of `tenant_id` down to the item's direct parent, empty for a direct child; the key is absent without the flag. Cursor-paginated with `(created_at ASC, id ASC)` as the effective sort so rows sharing a `created_at` timestamp stay disambiguated across pages; a cursor is only meaningful with the same `recursive` value it was minted with. Soft-deleted rows are hidden by default -- opt in with `?$filter=status eq 'deleted'`. AM-internal `provisioning` rows are never surfaced. The parent must exist and be SDK-visible, otherwise the call collapses to `not_found`. `$filter` operators: `name` -- `eq`, `ne`, `in`, `contains(name,'...')`, `startswith(name,'...')`, `endswith(name,'...')` (case-sensitive; `%` and `_` in the literal are escaped); `status`, `tenant_type` -- `eq`, `ne`, `in`; `id`, `tenant_type_uuid` -- `eq`, `ne`, `in`; `self_managed` -- `eq`, `ne`; `created_at`, `updated_at` -- `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `in`; `and`, `or`, `not`, parentheses. The generated `$filter` / `$orderby` parameter metadata lists operators by field kind only; the per-field restrictions above are enforced by the server and win.",
         "operationId": "account_management.list_tenant_children",
         "parameters": [
           {
@@ -21413,6 +21447,15 @@
             }
           },
           {
+            "description": "When `true`, list every descendant visible to the caller instead of direct children only, and carry `ancestors` on every item. Exactly `true` or `false`; anything else is 400 `validation`. Default `false`.",
+            "in": "query",
+            "name": "recursive",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "description": "OData v4 filter expression\n- id: eq|ne|in\n- name: eq|ne|contains|startswith|endswith|in\n- status: eq|ne|contains|startswith|endswith|in\n- tenant_type_uuid: eq|ne|in\n- tenant_type: eq|ne|contains|startswith|endswith|in\n- self_managed: eq|ne\n- created_at: eq|ne|gt|ge|lt|le|in\n- updated_at: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
@@ -21440,7 +21483,7 @@
                 }
               }
             },
-            "description": "Paginated list of direct child tenants"
+            "description": "Paginated list of child tenants (direct, or the visible subtree with recursive=true)"
           },
           "400": {
             "content": {
@@ -21528,7 +21571,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "List direct children of a tenant",
+        "summary": "List children of a tenant",
         "tags": [
           "Tenants"
         ],
