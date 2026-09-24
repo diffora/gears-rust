@@ -430,9 +430,12 @@ pub async fn unlock_and_unfence(
     approved_by: Option<Uuid>,
     retired: bool,
 ) -> Result<HeadWrite<Sku>, RepoError> {
-    let r = clear_fence(scope, retired)
-        .col_expr(sku::Column::PendingUnitId, Expr::value(None::<Uuid>))
-        .col_expr(sku::Column::ApprovedByUnitId, Expr::value(approved_by))
+    let mut q =
+        clear_fence(scope, retired).col_expr(sku::Column::PendingUnitId, Expr::value(None::<Uuid>));
+    if let Some(approved_by) = approved_by {
+        q = q.col_expr(sku::Column::ApprovedByUnitId, Expr::value(approved_by));
+    }
+    let r = q
         .filter(
             key(tenant_id, id)
                 .add(sku::Column::PendingUnitId.eq(unit_id))
@@ -515,3 +518,21 @@ pub async fn count_skus_in_category(
 #[cfg(test)]
 #[path = "sku_repo_tests.rs"]
 mod sku_repo_tests;
+
+/// Read private fence ownership without putting it in business snapshots.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn find_sku_fence(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+) -> Result<Option<sku::Model>, RepoError> {
+    sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(key(tenant_id, id))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure("find SKU fence".into(), e))
+}
