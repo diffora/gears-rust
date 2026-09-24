@@ -202,7 +202,9 @@ The tenant-scoped registry stores price/plan_item/sold_as attempts with a unique
 
 ### Reserve and fence exclude each other
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reserve-refused-when-fenced`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reserve-refused-when-fenced`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/references.rs`.
 
 New reservations check retiring, type_change_pending and retired in the same transaction as insertion, returning SKU_FENCED for a fenced SKU. Fence acquisition checks no reserved/confirmed row in its own conditional write; Postgres serializable isolation and SQLite writer serialization enforce reciprocal exclusion with bounded retry. Neither an unconfirmed age nor a remote count weakens the predicate (spec §2 decision 17, §2.2, §4, §13; DESIGN §3.7).
 
@@ -214,7 +216,9 @@ GET /bss-products/v1/browse preserves ProductCatalogClientV1's transport through
 
 ### Domain and decision events share the act transaction
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-events-in-outbox-tx`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-events-in-outbox-tx`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/infra/events.rs`.
 
 SkuPublished, SkuChanged, SkuRetired and ApprovalUnitDecided use Foundation's outbox with state and audit, including every terminal decision and quorum zero. Operator force-release additionally records ReferenceForceReleased in its release transaction; submission alone has audit without an event. Failed apply/rollback cannot emit a successful domain or terminal event and stale refresh cannot announce apply (spec §4, §6, §7.3; DESIGN §3.4).
 

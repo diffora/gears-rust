@@ -169,13 +169,17 @@ The version table stores tenant, SKU, published_version, effective_from and the 
 
 ### Append-only audit records
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-audit-append-only`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-audit-append-only`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/infra/storage/repo/audit_repo.rs`.
 
 The audit table retains the backup column types, nullability and guards documented in DESIGN §3.7 and slice 01 §6. Acts append attributed records, including submission, every terminal unit path and operator force-release; deletion and record-field updates are refused, with only the reserved unsealed-to-sealed metadata transition permitted (spec §3 item 27, §4, §6; P-D-193).
 
 ### Single client-key replay store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-key-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-idempotency-key-store`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/infra/idempotency.rs`.
 
 The only replay store is keyed by `(tenant_id, endpoint, client_key)` with payload_hash, claimed/answered state and the retained response shape in DESIGN §3.7. A keyed POST checks its 24-hour replay before fence or unit work; a keyless POST is valid, and a changed payload cannot reuse a retained answer. Approval units carry no idempotency key, and fence_op_id preserves operation identity across interrupted fence/submission transactions (spec §2.2, §7.2; P-D-193).
 
@@ -187,7 +191,9 @@ SKU/category reads and successful writes expose ETag from concurrency version, d
 
 ### Outbox shares the state transaction
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-outbox-same-tx`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-outbox-same-tx`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/infra/events.rs`.
 
 The event writer accepts the act's existing scoped transaction and records required outbox rows beside state and audit. Commit makes all visible together and dispatch follows commit; rollback, APPLY_REFUSED and stale refresh cannot publish successful apply events (spec §6, §7.3; DESIGN §3.4).
 

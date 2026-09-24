@@ -1,3 +1,5 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-usage-type-resolves:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-terminal-audit-and-event:p1
 //! Shared scoped transaction plumbing for approval and reference operations.
 use super::{ApiState, TxError, authz_error_to_canonical, contention_db_err, tx_to_canonical};
 use crate::{

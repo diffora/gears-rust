@@ -1,3 +1,4 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-edges:p1
 //! Pure SKU content validation, patching and lifecycle rules.
 use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;

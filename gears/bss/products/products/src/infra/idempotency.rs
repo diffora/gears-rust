@@ -1,3 +1,4 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-key-store:p1
 //! The idempotency phase — the claim input, the claim/answer walk and the
 //! verdicts the create and composite doors branch on (`design/01` §3.2,
 //! P-D-42). Infra-owned so the batch worker's shared create path

@@ -1,3 +1,5 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-events-in-outbox-tx:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-outbox-same-tx:p1
 //! Typed event enqueueing on the caller's transaction runner.
 use crate::infra::broker::EventSink;
 use event_broker_sdk::TypedEvent;

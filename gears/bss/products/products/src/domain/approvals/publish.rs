@@ -1,3 +1,4 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-publish-unit:p1
 //! Publishing a draft with a business-only review fingerprint.
 use super::{KIND_SKU_PUBLISH, apply_error, invalid, json, sku, store_err};
 use crate::{

@@ -1,3 +1,4 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-audit-append-only:p1
 //! Restored audit row construction, on the caller's runner.
 use super::driver_failure;
 use crate::infra::storage::{RepoError, entity::audit_log};

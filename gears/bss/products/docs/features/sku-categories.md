@@ -180,7 +180,9 @@ A type change uses the local reference barrier: any reserved or confirmed price,
 
 ### Usage metering resolves through the retained port
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-usage-type-resolves`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-usage-type-resolves`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/governance.rs`.
 
 Usage publication requires usage_type_ref and unit and resolves through the retained UsageTypeCatalog port at submit and apply. Draft save checks a changed ref when configured: definitive unresolved is 400 USAGE_TYPE_UNRESOLVED, while a catalog non-answer does not block saving; submit/apply fail closed, with an unreachable configured catalog returning 503. Resolution order/provenance and resolvability-only semantics remain as P-D-184 and DESIGN §3.5 specify (spec §4, §6, §15).
 
@@ -198,13 +200,17 @@ GET versions returns immutable history or, with as_of, the latest effective_from
 
 ### Flat category CRUD
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-category-flat-crud`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-category-flat-crud`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/categories.rs`.
 
 Categories expose code, name, is_default, sort_order and active/retired status, with one tenant-qualified category per SKU and no hierarchy. GET/POST/PATCH use scoped reads, tenant-unique code and If-Match on patch; creation and rename are direct operations without approval units (spec §2 decision 12, §4, §7.2; DESIGN §3.1, §3.3).
 
 ### Referenced categories cannot retire
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-category-retire-refused`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-category-retire-refused`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/categories.rs`.
 
 Category retirement refuses any referencing SKU with CATEGORY_IN_USE, regardless of that SKU's lifecycle. Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
 

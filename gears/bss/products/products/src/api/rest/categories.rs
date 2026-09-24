@@ -1,3 +1,5 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-category-retire-refused:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-category-flat-crud:p1
 //! Flat categories, direct authoring with revision checks and transactional audit.
 use super::authz_error_to_canonical;
 use super::{

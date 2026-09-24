@@ -203,13 +203,17 @@ Design constraints: `cpt-cf-bss-products-constraint-approval-shape`, `cpt-cf-bss
 
 ### Governed lifecycle edges
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-edges`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lifecycle-edges`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/domain/sku.rs`.
 
 The lifecycle is draft, published, deprecated, retiring or retired: sku_publish installs published, sku_change governs published/deprecated content and the reversible published/deprecated edge, and sku_retire installs retired behind a fence. Retired has no reopening transition; rejected/withdrawn publication or change preserves prior business content, and a retirement abort restores the saved lifecycle. Pending ownership prevents direct editing or a second unit, and the exposed lifecycle supports Pricing's SKU_RETIRING and ROW_SKU_DEPRECATED adoption guards (spec §3 item 35, §4, §6, §7.2; DESIGN §3.1).
 
 ### Publication creates and applies a unit
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-publish-unit`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-publish-unit`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/domain/approvals/publish.rs`.
 
 POST submit validates a draft, resolves usage metering and records sku_publish with items, author attribution, snapshot/hash, copied quorum and conditional pending ownership in one audited transaction. Quorum-reaching apply revalidates, publishes, increments published_version, appends the immediate snapshot, clears pending ownership and retains approved_by_unit_id with its terminal records. Invalid submit creates no unit and failed ownership acquisition rolls back its partial writes (spec §2.2, §4, §6, §7.2; DESIGN §3.2).
 
@@ -233,19 +237,25 @@ Type-change acquisition sets type_change_pending and durable fence metadata with
 
 ### Authors and submitters cannot approve
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sod-excludes-authors`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sod-excludes-authors`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/approval_units.rs`.
 
 Approval excludes submitted_by and every current item's created_by with 403 SOD_VIOLATION, including when another actor submitted the author's work. Author attribution survives collection and refresh; holding both grants does not bypass the check, while an independent approve-only reviewer is eligible (spec §6; DESIGN §3.2; P-D-190).
 
 ### Stale content commits a new generation
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-stale-refresh-generation`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-stale-refresh-generation`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/approval_units.rs`.
 
 Approve/reject names the reviewed generation; a mismatch returns GENERATION_MISMATCH with the current generation, and duplicate current-generation voting returns DUPLICATE_VOTE. Before a vote counts, re-collection fingerprints proposed business content and effective date, excluding lock/fence/version metadata; drift rewrites items/snapshot/hash, increments generation, preserves earlier decisions as stale and commits before returning UNIT_STALE with the new generation. Only current-generation non-stale approvals count, and an environment failure remains a rolled-back APPLY_REFUSED (spec §2.2, §6; DESIGN §3.2, §3.6).
 
 ### Every unit mutation checks version
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-contended`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-contended`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/approval_units.rs`.
 
 Every existing-unit mutation, including decisions, refresh and withdrawal, conditionally advances the observed version without database row locks. A lost race returns 409 UNIT_CONTENDED and rolls back that attempt's writes; non-pending units return UNIT_ALREADY_DECIDED, rejection requires a note and withdrawal requires the original submitter. GET detail returns stored snapshot, generation, history and live recomputation without silently refreshing stored content (spec §2.2, §6, §7.2; DESIGN §3.2–§3.3).
 
@@ -257,7 +267,9 @@ Policy reads choose the tenant kind override then the default, falling back to q
 
 ### All terminal paths record audit and decision event
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-terminal-audit-and-event`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-terminal-audit-and-event`
+
+Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/governance.rs`.
 
 Approve, reject, withdraw and quorum-zero approval clear pending ownership with state, audit and ApprovalUnitDecided in one transaction, with successful apply also recording its SKU event. Matching fence cleanup restores prior lifecycle on abort or installs the approved result, retaining approved_by_unit_id on approval. Submission alone is audited without an event; rollback and stale refresh emit no successful apply event (spec §6, §7.3; DESIGN §3.2, §3.4).
 

@@ -1,3 +1,6 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-unit-contended:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-stale-refresh-generation:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-sod-excludes-authors:p1
 //! Approval queue and generation-bound decisions on the caller's transaction.
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
