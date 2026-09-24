@@ -108,8 +108,8 @@ Pricing copies them into period bindings (P-D-185–187, P-D-191; spec §4).
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-principle-fence-before-count`
 
 A read-only count cannot authorize retirement or a type change. Acquire the fence using a conditional
-write guarded by absence of live local references, in one transaction; commit the fence before
-submitting its approval unit. Reserved and confirmed rows both count. Reserve performs the reciprocal
+write guarded by absence of live local references, in the same transaction that
+submits its approval unit. Reserved and confirmed rows both count. Reserve performs the reciprocal
 fence check in its own write transaction. The identifier names the barrier principle, not a remote
 count after an unguarded fence (P-D-188–189, P-D-194; spec decision 17 and §13).
 
@@ -149,7 +149,7 @@ permissions are held; category and policy edits are direct operations (P-D-190; 
 
 SecureORM exposes no `FOR UPDATE`. Every unit mutation is conditional on the observed `version` and
 increments it; a lost race returns `UNIT_CONTENDED`. Pending ownership is acquired conditionally on
-`pending_unit_id IS NULL` and the observed SKU version, or submit rolls back with `ROW_LOCKED_PENDING`.
+`pending_unit_id IS NULL` and the observed SKU revision, or submit rolls back with `ROW_LOCKED_PENDING`.
 A pending lock is business ownership, not a database row lock (P-D-192; spec §2.2, §6).
 
 ## 3. Technical Architecture
@@ -158,8 +158,8 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 
 | Type | Fields and invariants |
 | --- | --- |
-| `Sku` | Tenant, id, code, name, type, category, description, sellable, lifecycle, revision, published_version, concurrency version, descriptors, billing_timing, usage_type_ref, unit, pending_unit_id and approved_by_unit_id. Code and name are separately unique per tenant. Creator attribution supplies approval-item `created_by`. |
-| `SkuType` | `recurring`, `usage`, `one_time`, `bundle`. A priced SKU's type determines charge kind. Any live reference prevents a type-change fence, including on a draft. |
+| `Sku` | Tenant, id, code, name, type, category, description, sellable, lifecycle, revision (the concurrency version), published_version, descriptors, billing_timing, usage_type_ref, unit, pending_unit_id and approved_by_unit_id. Code and name are separately unique per tenant. Creator attribution supplies approval-item `created_by`. |
+| `SkuType` | `recurring`, `usage`, `one_time`, `bundle`. A priced SKU's type determines charge kind. Published/deprecated type changes are fenced against live references. Drafts cannot be reserved and change type without fencing. |
 | `Lifecycle` | `draft`, `published`, `deprecated`, `retiring`, `retired`. Publish takes draft to published; change governs published/deprecated content and the published ↔ deprecated edges. Retiring is a transient fence, retired is terminal. |
 | `Category` | Tenant, id, code, name, is_default, sort_order, active/retired status and concurrency version. One category per SKU, no parent. Any SKU reference blocks category retirement. |
 | `SkuVersion` | Tenant, sku_id, published_version, effective_from, snapshot. Immutable history appended by publication and every applied change. |
@@ -171,9 +171,9 @@ A usage SKU needs both `usage_type_ref` and `unit` at publication; submit and ap
 Metering fields are usage-only. Bundles reject metering, have no composition, and can only be sold as a
 Pricing plan, never priced or included as a plan item (P-D-184–185).
 
-The `sku` row holds the latest applied content, possibly future-effective. `revision` tracks content
-changes, `version` guards mutable storage writes, and `published_version` identifies each published
-snapshot; these counters are not interchangeable. A publish is effective immediately. A change defaults
+The `sku` row holds the latest applied content, possibly future-effective. `revision` is the SKU concurrency
+version for ETag, If-Match and compare-and-swap; `published_version` identifies each published
+snapshot. A publish is effective immediately. A change defaults
 `effective_from` to today and cannot precede the latest version date; equal dates are allowed and the
 higher published version wins. Consumers use the dated read, not the current SKU row (P-D-191).
 
@@ -194,9 +194,8 @@ classDiagram
         UUID id
         SkuType type
         Lifecycle lifecycle
-        int revision
+        bigint revision
         int published_version
-        bigint version
         bool type_change_pending
         Lifecycle fence_prior_lifecycle
         Timestamp fenced_at
@@ -302,7 +301,7 @@ registration and standardized errors.
 | Dated versions | `GET /skus/{id}/versions?as_of=<date>` | Greatest effective_from not after date, then greatest published_version; 404 before first version. Without as_of, list history. |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
-| Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Commit guarded fence then submit `sku_retire`; unfence only expired orphans. |
+| Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction; unfence only expired orphans. |
 | Reference reads | `GET /skus/{id}/references` | Local `{ owner, kind, ref_id, state }` rows and live counts grouped by owner/kind; show unresolved reservations. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
 | Confirm | `POST /references/{id}/confirm` | 200 also when already confirmed; released rows cannot reactivate. |
@@ -312,9 +311,9 @@ registration and standardized errors.
 | Decisions | `POST /approval-units/{id}/approve`; `POST /approval-units/{id}/reject`; `POST /approval-units/{id}/withdraw` | Approve/reject carry generation; reject requires note; withdraw is submitter-only. |
 | Approval policy | `GET /approval-policy`; `PUT /approval-policy` | Tenant default quorum and optional per-kind overrides; missing default is quorum 1. |
 | Settings | `GET /settings`; `PUT /settings` | Tenant settings, including fence TTL; approval-policy door uses the same tenant policy store. |
-| Retained browse | `GET /bss-products/v1/browse` (absolute) | Preserve `ProductCatalogClientV1` transport until phase 2; expose published catalog entries. |
+| Retained browse | `GET /bss-products/v1/browse` (absolute) | Preserve `ProductCatalogClientV1` transport until phase 2; serve Published and Deprecated with lifecycle status and deprecated flag; drafts, retiring and retired are absent. |
 
-SKU and category reads and successful writes expose `ETag` from the concurrency `version`. Every PATCH
+SKU reads/writes expose `ETag` from `revision`, its concurrency version; categories use `version`. Every PATCH
 requires `If-Match`; compare-and-swap guards the write and increments the version. Stale versions return
 409 `STALE_REVISION`; missing required preconditions use the toolkit precondition response. Every POST
 accepts optional `Idempotency-Key`, with 24-hour replay keyed by tenant, concrete endpoint and client key.
@@ -323,7 +322,7 @@ idempotency key; reserve also deduplicates live logical references independently
 
 Permissions deny by default: `products:read` covers scoped reads, `products:author` draft/category and
 reference mutations plus orphan recovery, `products:submit` lifecycle proposals and withdrawal,
-`products:approve` decisions, and `products:settings` settings/policy writes. Reference operations also
+`products:approve` decisions, and `products:settings` settings/policy writes and policy reads. Reference operations also
 check the authenticated owner gear; operator force-release requires explicit operator authorization and
 reason. SoD and submitter checks apply in the domain regardless of grants (spec §6, §7.3).
 
@@ -355,9 +354,11 @@ authoring behavior is defined in §3.5; these codes do not turn a catalog non-an
 | products-sdk / ClientHub | Public SKU/version/catalog contracts and usage-type port; consumers resolve typed clients without importing gear internals. |
 
 Outbound events are `SkuPublished`, `SkuChanged`, `SkuRetired`, `ApprovalUnitDecided` and
-`ReferenceForceReleased`. `SkuChanged` carries `sku_id`, `changed[]`, `effective_from` (the spec's
-conceptual `skuId` and `effectiveFrom`); the decision event carries `unit_id`, `kind`, `state`,
-`generation`, `actors[]`. Every terminal decision, including reject, withdraw and quorum zero,
+`ReferenceForceReleased`. Broker events follow this gear's camelCase convention. `SkuChanged` carries
+`tenantId`, `skuId`, `changed`, `effectiveFrom`, `publishedVersion` and `actorRef`, with type id
+`gts.cf.core.events.event.v1~cf.bss.products.sku_changed.v1~`. It identifies the committed version;
+consumers read its snapshot separately. `ApprovalUnitDecided` carries `tenantId`, `unitId`, `kind`,
+`state`, `generation` and `actors`. Every terminal decision, including reject, withdraw and quorum zero,
 writes audit and the decision event; successful apply adds its domain event. Submission is audited
 without an event unless quorum zero also applies. Stale refresh keeps stale votes but emits no successful
 apply event (P-D-193; spec §6–§7.3).
@@ -416,7 +417,8 @@ sequenceDiagram
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-seq-fenced-retire`
 
-The fence transaction commits before submission. A crash between the two leaves a recoverable orphan.
+Fence acquisition and submission commit in ONE transaction guarded by NOT EXISTS (live reference).
+A fence found without a unit is resumed; an expired orphan is lifted.
 The apply-reference check is defensive; ordinary reserve cannot pass the fence. Failure rolls back
 only the apply transaction, preserving the pending unit and fence until reject/withdraw restores the
 prior lifecycle (PRD use case “Retire a SKU”; P-D-189, P-D-194).
@@ -429,14 +431,13 @@ sequenceDiagram
     participant Pricing
     actor Reviewer
     Admin->>Products: POST retire
-    Products->>DB: Guarded fence transaction
+    Products->>DB: Begin fence and submission transaction
     alt Live reference
         DB-->>Admin: SKU_REFERENCED
     else Zero live references
         Note over Products,DB: Prior lifecycle, retiring, fenced_at, fence_op_id
-        DB-->>Products: Fence commit
-        Products->>DB: Retirement submission transaction
-        Note over Products,DB: Unit, items, pending lock, audit
+        Products->>DB: Submit retirement unit in the same transaction
+        Note over Products,DB: Commit fence, unit, items, pending lock, audit
         Pricing->>Products: Reserve
         Products-->>Pricing: SKU_FENCED
         Reviewer->>Products: Approve generation
@@ -547,7 +548,8 @@ The following is the Postgres schema shape for the new migration chain. Logical 
 §6 gain the `products_` prefix in schema `bss`. SQLite drops `bss.`, maps UUID/timestamp/date/JSONB to
 text and BYTEA to blob, preserving keys, checks, indexes and transaction behavior. SecureORM scopes
 every table by tenant; approval items and decisions are accessed only through their scoped parent unit.
-Composite tenant foreign keys prevent cross-tenant category, version, reference and approval links.
+Tenant isolation uses SecureORM scoping and scoped reads of the parent category within the write
+transaction; approval children are reached through the scoped unit. Foreign keys use entity ids.
 Creator attribution on SKU is included so approval items can enforce author SoD.
 
 The four approval tables implement spec §6 with the §2.2 correction: no `idempotency_key` column or
@@ -647,13 +649,12 @@ CREATE TABLE bss.products_sku (
     created_by uuid NOT NULL,
     created_at timestamptz NOT NULL,
     updated_at timestamptz NOT NULL,
-    version bigint NOT NULL DEFAULT 1,
     UNIQUE (tenant_id, id),
     UNIQUE (tenant_id, code),
     UNIQUE (tenant_id, name),
-    FOREIGN KEY (tenant_id, category_id) REFERENCES bss.products_category(tenant_id, id),
-    FOREIGN KEY (tenant_id, pending_unit_id) REFERENCES bss.products_approval_unit(tenant_id, id),
-    FOREIGN KEY (tenant_id, approved_by_unit_id) REFERENCES bss.products_approval_unit(tenant_id, id)
+    FOREIGN KEY (category_id) REFERENCES bss.products_category(id),
+    FOREIGN KEY (pending_unit_id) REFERENCES bss.products_approval_unit(id),
+    FOREIGN KEY (approved_by_unit_id) REFERENCES bss.products_approval_unit(id)
 );
 CREATE INDEX products_sku_browse
     ON bss.products_sku (tenant_id, lifecycle, type, category_id, id);
@@ -664,8 +665,8 @@ CREATE TABLE bss.products_sku_version (
     published_version integer NOT NULL,
     effective_from date NOT NULL,
     snapshot jsonb NOT NULL,
-    PRIMARY KEY (tenant_id, sku_id, published_version),
-    FOREIGN KEY (tenant_id, sku_id) REFERENCES bss.products_sku(tenant_id, id)
+    PRIMARY KEY (sku_id, published_version),
+    FOREIGN KEY (sku_id) REFERENCES bss.products_sku(id)
 );
 CREATE INDEX products_sku_version_as_of
     ON bss.products_sku_version (tenant_id, sku_id, effective_from, published_version);
@@ -683,7 +684,7 @@ CREATE TABLE bss.products_sku_reference (
     released_at timestamptz,
     released_by uuid,
     release_reason text,
-    FOREIGN KEY (tenant_id, sku_id) REFERENCES bss.products_sku(tenant_id, id)
+    FOREIGN KEY (sku_id) REFERENCES bss.products_sku(id)
 );
 CREATE UNIQUE INDEX products_sku_reference_live_key
     ON bss.products_sku_reference (tenant_id, owner_gear, ref_kind, ref_id)
@@ -815,7 +816,7 @@ CREATE INDEX idx_products_idempotency_expires ON bss.products_idempotency USING 
 The replay store is the only client-key store, checked before fence/unit work and retained for 24
 hours. `payload_hash` distinguishes request content; response status/body hold the replay result.
 Claim/answer writes use the same guarded operation's transaction; resumable fence operations retain
-`fence_op_id` so a crash before submission does not permit a second independent operation. Audit records
+`fence_op_id` so a resumed orphan does not permit a second independent operation. Audit records
 are append-only; retention/erasure remains outside this programme. Events use the existing toolkit
 outbox table rather than a second Products-specific outbox.
 

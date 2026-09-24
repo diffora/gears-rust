@@ -78,9 +78,9 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 1. [ ] - `p1` - Author reads the tenant's categories and creates an independent SKU with code, name, type, category and initial content; authenticate products:author and resolve optional POST replay first - `inst-sku-create-input`
 2. [ ] - `p1` - Resolve the category in tenant scope, validate type-specific fields, apply the draft-save catalog posture, then insert under the separate code/name unique indexes - `inst-sku-create-validate`
-3. [ ] - `p1` - Commit the draft with revision 1, published_version 0, concurrency version 1 and created_by; return its id and ETag - `inst-sku-create-commit`
-4. [ ] - `p1` - For subsequent PATCH, require If-Match, draft lifecycle and no pending unit; type changes additionally use the reference fence, including on drafts - `inst-sku-patch-guards`
-5. [ ] - `p1` - Conditionally update content and increment revision/version; preserve published_version until publication; hand publication to slice 03 - `inst-sku-patch-commit`
+3. [ ] - `p1` - Commit the draft with revision 1, published_version 0 (revision is the concurrency version) and created_by; return its id and ETag - `inst-sku-create-commit`
+4. [ ] - `p1` - For subsequent PATCH, require If-Match, draft lifecycle and no pending unit; draft type changes need no fence because drafts cannot be reserved - `inst-sku-patch-guards`
+5. [ ] - `p1` - Conditionally update content and increment revision; preserve published_version until publication; hand publication to slice 03 - `inst-sku-patch-commit`
 
 ### Administrator maintains categories
 
@@ -111,9 +111,9 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-sku-categories-sku-type-frozen`
 
-1. [ ] - `p1` - When type changes, reject pending ownership and require a fence guarded by absence of reserved/confirmed local references; any such reference yields 409 SKU_TYPE_FROZEN, even on a draft - `inst-sku-type-check`
-2. [ ] - `p1` - Set type_change_pending and durable fence metadata through slice 03's committed-fence protocol; concurrent reserve is excluded by slice 04's reciprocal transaction - `inst-sku-type-fence`
-3. [ ] - `p1` - For a draft, revalidate target-type fields and conditionally apply the direct edit, clear the owned fence and bump revision/version; published/deprecated changes instead submit sku_change - `inst-sku-type-apply`
+1. [ ] - `p1` - For published/deprecated type changes, reject pending ownership and require a fence guarded by absence of reserved/confirmed references; any live reference yields SKU_TYPE_FROZEN. Drafts cannot be reserved and change type without fencing - `inst-sku-type-check`
+2. [ ] - `p1` - Set type_change_pending and durable fence metadata through slice 03's atomic fence-and-submit protocol; concurrent reserve is excluded by slice 04's reciprocal transaction - `inst-sku-type-fence`
+3. [ ] - `p1` - For a draft, revalidate target-type fields and conditionally apply the direct edit without fencing, bumping revision; published/deprecated changes submit sku_change in the fence transaction - `inst-sku-type-apply`
 4. [ ] - `p1` - Interrupted operations recover using fence_op_id and the orphan TTL; failures must not silently remove another operation's fence - `inst-sku-type-recover`
 
 ### usage-type-resolves
@@ -156,7 +156,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-state-sku-categories`
 
-1. [ ] - `p1` - SKU create → draft; draft PATCH stays draft and changes revision/version, not published_version. A pending unit excludes direct edits.
+1. [ ] - `p1` - SKU create → draft; draft PATCH stays draft and changes revision, not published_version. A pending unit excludes direct edits.
 2. [ ] - `p1` - Published/deprecated content changes go through sku_change; no direct PATCH can bypass review. Slice 03 owns the lifecycle edges and fences.
 3. [ ] - `p1` - Category create → active; direct edits retain status; active → retired requires no referencing SKU. No category hierarchy or approval lifecycle exists.
 4. [ ] - `p1` - SKU version history grows only on publication/applied change; stored versions have no edit/delete transition.
@@ -170,13 +170,13 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-create-unique`
 
-Create persists an independent draft with tenant-scoped code and name uniqueness, creator attribution and the content/counter fields in DESIGN §3.1. Direct PATCH changes drafts only under If-Match and null pending ownership; unique-index collisions map to SKU_CODE_TAKEN or SKU_NAME_TAKEN and pending ownership to ROW_LOCKED_PENDING. Published/deprecated changes use sku_change (spec §4, §6, §7.2).
+Create persists an independent draft with tenant-scoped code and name uniqueness, creator attribution, revision as the ETag/If-Match/CAS concurrency version and published_version as the snapshot counter. Direct PATCH changes drafts only under If-Match and null pending ownership; unique-index collisions map to SKU_CODE_TAKEN or SKU_NAME_TAKEN and pending ownership to ROW_LOCKED_PENDING. Published/deprecated changes use sku_change (spec §4, §6, §7.2).
 
 ### Live references freeze SKU type
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-type-frozen`
 
-A type change uses the local reference barrier: any reserved or confirmed price, plan_item or sold_as reference refuses the fence with 409 SKU_TYPE_FROZEN. There is no draft exemption; an unreferenced draft changes directly behind its owned fence, while published/deprecated changes use sku_change and its apply validation. The lifecycle feature owns fence acquisition/recovery and the read-model feature supplies the reciprocal reserve guard (spec §2 decision 17, §2.2, §4; DESIGN §3.1).
+A draft is never priced and cannot have a reservation, so its type changes freely through draft PATCH without a fence, subject to content validation and pending ownership. Only published/deprecated type changes use the local reference barrier and sku_change: any reserved or confirmed price, plan_item or sold_as reference refuses the fence with SKU_TYPE_FROZEN. Fence and submission share one transaction, with apply revalidation (spec decision 17; DESIGN §3.1).
 
 ### Usage metering resolves through the retained port
 
@@ -190,7 +190,7 @@ Usage publication requires usage_type_ref and unit and resolves through the reta
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bundle-unpriced`
 
-A bundle exposes type and descriptors without composition or metering, and metering assignment fails with BUNDLE_HAS_NO_METER. The SKU contract identifies it as a plan's sold_as identity, never a price or plan item; sold_as uses the ordinary reference barrier (spec §3 items 13 and 39, §4, §13; DESIGN §3.1).
+Products stores and serves bundle identity, type and descriptors without composition or metering; metering assignment fails with BUNDLE_HAS_NO_METER. Products serves the bundle type to consumers and applies the ordinary reference barrier to sold_as reservations (spec §4, §13; DESIGN §3.1).
 
 ### Version history and as-of reads
 
@@ -214,6 +214,8 @@ Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in
 
 Category retirement refuses any referencing SKU with CATEGORY_IN_USE, regardless of that SKU's lifecycle. Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
 
+**Owed by pricing (phase 2).** Pricing must refuse bundle prices and plan items and allow a bundle only as a plan’s sold_as identity.
+
 ## 6. Acceptance Criteria
 
 Each criterion below corresponds to exactly one DoD above and cites [PRD §9](../PRD.md#9-acceptance-criteria).
@@ -224,7 +226,7 @@ obligations here and integration checks when its phase 2 caller path exists.
 | DoD | PRD trace | Given / When / Then |
 | --- | --- | --- |
 | `cpt-cf-bss-products-dod-sku-create-unique` | AC #1, #4, #19, #27; `cpt-cf-bss-products-fr-sku-define`, `cpt-cf-bss-products-fr-concurrency-idempotency` | Given a tenant category and unused SKU identity, when an author creates and patches a draft with current If-Match, then the draft and new ETag persist; concurrent code/name reuse fails with SKU_CODE_TAKEN/SKU_NAME_TAKEN, stale PATCH fails with STALE_REVISION, and a locked edit fails with ROW_LOCKED_PENDING. |
-| `cpt-cf-bss-products-dod-sku-type-frozen` | AC #2, #23; `cpt-cf-bss-products-fr-sku-type-frozen` | Given an unreferenced draft, when its type changes behind the owned fence, then target-type validation and the update succeed; given a reserved or confirmed price, plan_item or sold_as reference, the same request fails with SKU_TYPE_FROZEN without changing type or acquiring a fence. |
+| `cpt-cf-bss-products-dod-sku-type-frozen` | AC #2, #23; `cpt-cf-bss-products-fr-sku-type-frozen` | Given an unreferenced draft, when its type changes without a fence, then target-type validation and the update succeed; given a published/deprecated SKU with a reserved or confirmed price, plan_item or sold_as reference, a type-change request fails with SKU_TYPE_FROZEN without changing type or acquiring a fence. |
 | `cpt-cf-bss-products-dod-usage-type-resolves` | AC #5; `cpt-cf-bss-products-fr-sku-metering` | Given a usage draft and a resolving configured catalog, when complete metering is submitted and applied, then publication succeeds; missing fields give USAGE_NEEDS_METER, an unresolved ref gives USAGE_TYPE_UNRESOLVED, and catalog outage at submit/apply gives 503 without publication, while a draft-save non-answer remains saveable. |
 | `cpt-cf-bss-products-dod-bundle-unpriced` | AC #6, #23; `cpt-cf-bss-products-fr-sku-bundle` | Given a bundle SKU, when it is read for a sold_as relationship, then its bundle identity and descriptors are available without composition; assigning usage metering fails with BUNDLE_HAS_NO_METER, and Pricing contract checks refuse pricing or plan-item use rather than treating it as another charge kind. |
 | `cpt-cf-bss-products-dod-versions-as-of` | AC #8, #9; `cpt-cf-bss-products-fr-sku-versions` | Given publication September 24 and an applied change effective October 1, when as_of is September 30, October 1 or September 23, then return the old snapshot, new snapshot or NO_VERSION_IN_FORCE respectively; September 30 proposed after the October version fails with VERSION_ORDER, while another October 1 version wins by its higher number. |

@@ -70,8 +70,8 @@ Categories and settings remain direct edits. No materiality calculation or cross
 
 ### Administrator retires a SKU
 
-1. [ ] - `p1` - Authenticate products:submit and check replay, then acquire and commit the guarded retirement fence; a live local reference returns SKU_REFERENCED before a unit exists - `inst-ap-retire-fence`
-2. [ ] - `p1` - Submit sku_retire in a new transaction using the same fence_op_id; a retry after interruption rechecks the registry and resumes the orphan operation - `inst-ap-retire-submit`
+1. [ ] - `p1` - Authenticate products:submit and check replay, then acquire the guarded retirement fence inside the submission transaction; a live local reference returns SKU_REFERENCED before a unit exists - `inst-ap-retire-fence`
+2. [ ] - `p1` - Submit sku_retire in the same transaction using the same fence_op_id; a retry after interruption rechecks the registry and resumes the orphan operation - `inst-ap-retire-submit`
 3. [ ] - `p1` - At quorum revalidate zero references and conditionally apply retired; failed apply preserves retiring and the pending unit - `inst-ap-retire-apply`
 4. [ ] - `p1` - A reviewer rejects with a note or the submitter withdraws; the terminal transaction clears matching pending/fence ownership and restores the saved prior lifecycle - `inst-ap-retire-abort`
 
@@ -89,14 +89,14 @@ Categories and settings remain direct edits. No materiality calculation or cross
 1. [ ] - `p1` - Check replay before fence work; for an existing unexpired fence with no unit, retain fence_op_id and revalidate for resume rather than acquiring another fence - `inst-ap-fence-resume`
 2. [ ] - `p1` - For acquisition, conditionally update the scoped SKU on observed version, null pending ownership and absence of another fence, guarded by NOT EXISTS reserved/confirmed references in the same serializable transaction - `inst-ap-fence-acquire`
 3. [ ] - `p1` - If references exist, refuse retire with SKU_REFERENCED or type change with SKU_TYPE_FROZEN; do not set fence metadata or create a unit - `inst-ap-fence-referenced`
-4. [ ] - `p1` - Save fence_prior_lifecycle, fenced_at and fence_op_id, set retiring or type_change_pending, increment version and commit before approval submission - `inst-ap-fence-commit`
-5. [ ] - `p1` - Submit the unit against the owned fence in a second transaction; revalidate the reference environment again at apply without a remote count - `inst-ap-fence-submit`
+4. [ ] - `p1` - Save fence_prior_lifecycle, fenced_at and fence_op_id, set retiring or type_change_pending, increment revision and submit the approval unit before committing the transaction - `inst-ap-fence-commit`
+5. [ ] - `p1` - Submit the unit against the owned fence in that same transaction; revalidate the reference environment again at apply without a remote count - `inst-ap-fence-submit`
 6. [ ] - `p1` - If no pending unit exists and fenced_at exceeds fence_ttl_minutes, the next SKU request or explicit unfence conditionally restores the prior state and clears metadata; guard version, operation id and still-null ownership - `inst-ap-fence-expire`
-7. [ ] - `p1` - Rejection/withdrawal clears fence and pending ownership together, guarded by unit id, fence_op_id and version; successful apply clears them while installing the result and approved_by_unit_id - `inst-ap-fence-clear`
+7. [ ] - `p1` - Rejection/withdrawal clears fence and pending ownership together, guarded by unit id and fence_op_id; successful apply clears them while installing the result and approved_by_unit_id - `inst-ap-fence-clear`
 
 A zero-row acquisition is not success: re-read under tenant scope to distinguish a reference refusal,
 stale revision, pending ownership or resumable fence. Never submit against an unowned barrier. Draft
-type edits use the same barrier then apply directly in slice 02; published/deprecated edits use sku_change.
+type edits need no fence: drafts cannot be reserved. Published/deprecated edits use sku_change.
 Orphan expiry cannot clear a pending unit's fence, and environment refusal cannot undo an earlier commit.
 
 ### sod-excludes-authors
@@ -156,7 +156,7 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 | `POST /approval-units/{id}/approve` | products:approve; generation required, SoD enforced. |
 | `POST /approval-units/{id}/reject` | products:approve; generation and note required; one rejection closes the unit. |
 | `POST /approval-units/{id}/withdraw` | products:submit plus submitter identity; pending only. |
-| `GET /approval-policy`, `PUT /approval-policy` | products:read/settings respectively; direct tenant default/per-kind quorum management. |
+| `GET /approval-policy`, `PUT /approval-policy` | products:settings for both reads and writes; direct tenant default/per-kind quorum management. |
 | `GET /settings`, `PUT /settings` | products:read/settings respectively; includes fence_ttl_minutes; policy uses the same tenant settings source. |
 
 Submit validation failure returns 422 with no new unit. Conflicts include ROW_LOCKED_PENDING,

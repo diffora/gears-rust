@@ -122,7 +122,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-read-model-events-sku-changed-payload`
 
 1. [ ] - `p1` - Compare before and applied after business fields to obtain changed; include descriptor, type, metering or lifecycle changes as applicable, excluding lock/fence/version metadata - `inst-event-changed-fields`
-2. [ ] - `p1` - Serialize SkuChanged with sku_id, changed and effective_from from the approved change, using snake_case field names consistently - `inst-event-changed-payload`
+2. [ ] - `p1` - Serialize SkuChanged as tenantId, skuId, changed, effectiveFrom, publishedVersion and actorRef using the gear’s camelCase broker convention - `inst-event-changed-payload`
 3. [ ] - `p1` - Write it alongside the appended SkuVersion and new head; consumers fetch dated snapshots instead of inferring effective content from event delivery time - `inst-event-changed-date`
 
 ### reserve-refused-when-fenced
@@ -158,7 +158,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-read-model-events-browse-maps-published-only`
 
 1. [ ] - `p1` - Authenticate and scope the retained ProductCatalogClientV1 browse request before selecting source SKUs - `inst-read-browse-scope`
-2. [ ] - `p1` - Select only published SKU entries and map their identity/type/descriptors/metering to the retained catalog transport; exclude draft, deprecated, retiring and retired entries - `inst-read-browse-map`
+2. [ ] - `p1` - Serve Published and Deprecated SKUs with lifecycle status and deprecated flag; exclude draft, retiring and retired entries - `inst-read-browse-map`
 3. [ ] - `p1` - Preserve the transport's existing response contract until phase 2 without recreating Product parents, CatalogVersion freezes or a second catalog authority - `inst-read-browse-contract`
 
 Browse is the current published catalog surface; historical period binding always uses versions?as_of=.
@@ -186,7 +186,7 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-list-search`
 
-GET skus searches code/name and intersects type, category and lifecycle filters under tenant scope, with bounded limit and stable id-based after pagination. It reads current heads using the DESIGN §3.7 read indexes and exposes authorized lifecycle states; dated truth comes from versions rather than a future-effective head (spec §4, §7.2; DESIGN §3.3; slice 04 §5).
+GET skus searches code/name and intersects type, category and lifecycle filters under tenant scope, with bounded limit and an exclusive code cursor in after (codes are unique per tenant). It reads current heads using the DESIGN §3.7 read indexes and exposes authorized lifecycle states; dated truth comes from versions rather than a future-effective head (spec §4, §7.2; DESIGN §3.3; slice 04 §5).
 
 ### SKU card shows local reference facts
 
@@ -198,7 +198,7 @@ The SKU card and GET references return local registry rows and live counts group
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-registry`
 
-The tenant-scoped registry stores price/plan_item/sold_as attempts with a unique live logical key and retained released history; reserve retries return the same live ID, while a later attempt after release gets a fresh ID. Confirm is idempotent on confirmed and returns REFERENCE_RELEASED on released, and owner release follows durable cancellation/deletion; operator release requires force and reason and atomically records actor/reason, audit and ReferenceForceReleased. A timeout never releases a reservation, and Pricing's durable confirmation retry follows spec §13 without Products pretending to detect release beneath a live owner object (spec §4, §7.2, §13; DESIGN §3.7).
+Products stores tenant-scoped price/plan_item/sold_as attempts with a unique live logical key and retained released history. Reserve retries return the same live ID; a later attempt after release gets a fresh ID. Confirm is idempotent on confirmed and returns REFERENCE_RELEASED on released. Owner release checks authenticated ownership; operator release requires force and reason and atomically records actor/reason, audit and ReferenceForceReleased. Products never expires a reservation and cannot detect release beneath a live owner object (spec decision 17, §13; DESIGN §3.7).
 
 ### Reserve and fence exclude each other
 
@@ -212,7 +212,7 @@ New reservations check retiring, type_change_pending and retired in the same tra
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-browse-published-only`
 
-GET /bss-products/v1/browse preserves ProductCatalogClientV1's transport through phase 2 and maps only tenant-scoped published SKU identity/type/descriptors/metering. Draft, deprecated, retiring and retired entries are excluded; no Product parent or CatalogVersion authority is recreated, and historical binding remains a versions-as-of read (spec §3 item 43, §4; PRD §7.1; DESIGN §3.3; slice 04 §3).
+GET /bss-products/v1/browse preserves ProductCatalogClientV1 transport and serves Published and Deprecated SKUs with their lifecycle status and deprecated flag; drafts, retiring and retired are absent. Tenant scope applies and pricing can read deprecated SKUs it already references. No Product parent or CatalogVersion authority is recreated (DESIGN §3.3; slice 04 §3).
 
 ### Domain and decision events share the act transaction
 
@@ -226,7 +226,9 @@ SkuPublished, SkuChanged, SkuRetired and ApprovalUnitDecided use Foundation's ou
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-changed-payload`
 
-SkuChangedPayload serializes sku_id, changed and effective_from from the applied change in snake_case, alongside the new head and immutable version. Changed fields describe business content and exclude lock/fence/version metadata; Pricing refreshes type, descriptors, metering and versions without creating book units, then binds by the version in force at period start (spec §2.2, §6, §7.3; DESIGN §3.4).
+SkuChanged uses this gear’s camelCase broker convention: tenantId, skuId, changed, effectiveFrom, publishedVersion and actorRef; its type id is gts.cf.core.events.event.v1~cf.bss.products.sku_changed.v1~. The applied change supplies its date and business-field names in changed, excluding lock/fence/version metadata. The new head, immutable version and event commit together; consumers read the dated snapshot separately (spec §2.2, §6, §7.3; DESIGN §3.4).
+
+**Owed by pricing (phase 2).** Pricing must reserve, re-read the SKU, and commit its object, reservation id and confirmation work together; retry confirmation durably, never release on confirmation timeout, and release only after durable cancellation or deletion. Pricing must refresh its SKU read model from SkuChanged and bind descriptors from the version in force at period start.
 
 ## 6. Acceptance Criteria
 

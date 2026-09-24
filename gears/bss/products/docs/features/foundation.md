@@ -93,8 +93,8 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-foundation-if-match`
 
-1. [ ] - `p1` - Obtain the concurrency version from If-Match; use the toolkit precondition response if absent, never substitute the content revision or published_version - `inst-fnd-if-match-read`
-2. [ ] - `p1` - Apply a tenant/id/version conditional SKU or category update, checking pending ownership where relevant and incrementing version atomically - `inst-fnd-if-match-cas`
+1. [ ] - `p1` - Obtain the concurrency version from If-Match; use the toolkit precondition response if absent, use SKU revision or category version, never published_version - `inst-fnd-if-match-read`
+2. [ ] - `p1` - Apply a tenant/id and concurrency-token conditional SKU or category update, checking pending ownership where relevant and incrementing version atomically - `inst-fnd-if-match-cas`
 3. [ ] - `p1` - A stale version returns 409 STALE_REVISION and makes no write; a successful read or write exposes the concurrency version as ETag - `inst-fnd-if-match-result`
 
 ### idempotency-key
@@ -133,9 +133,9 @@ There is no approval-unit idempotency column and no second replay store (spec §
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-foundation-conditional-lock`
 
 1. [ ] - `p1` - Read the scoped SKU and its concurrency version; create the proposed unit and items inside the submit transaction - `inst-fnd-lock-read`
-2. [ ] - `p1` - Set pending_unit_id only where tenant/id match, pending_unit_id is null and version equals the observed value; increment version in the same write - `inst-fnd-lock-acquire`
+2. [ ] - `p1` - Set pending_unit_id only where tenant/id match, pending_unit_id is null and SKU revision equals the observed value - `inst-fnd-lock-acquire`
 3. [ ] - `p1` - If zero rows change, return ROW_LOCKED_PENDING and roll back unit/items/audit; otherwise continue with submission audit and quorum handling - `inst-fnd-lock-result`
-4. [ ] - `p1` - Clear ownership only with matching unit, current version and any fence_op_id; no FOR UPDATE or unscoped connection participates - `inst-fnd-lock-clear`
+4. [ ] - `p1` - Clear ownership only with matching unit and any fence_op_id; no FOR UPDATE or unscoped connection participates - `inst-fnd-lock-clear`
 
 ## 4. States (CDSL)
 
@@ -159,7 +159,7 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`, `cpt-cf-bss-p
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-tables-two-backends`
 
-Migrations `000001`–`000005` create category, SKU, immutable versions, four approval tables, audit and replay with the keys, types and tenant relationships of DESIGN §3.7. The scoped repositories, settings and canonical DomainError mapping use the same semantics on SQLite and Postgres, including bounded serialization retry without row locks. The reference registry is added by the fourth feature before fence integration is accepted (spec §2 decisions 1 and 10, §2.2, §4, §6; slice 01 §5).
+Migrations 000001–000006 create category, SKU, versions, four approval tables, audit, replay and reference registry on SQLite and Postgres. Tenant isolation uses SecureORM scoping and scoped parent-category reads inside the write transaction; it does not depend on composite tenant foreign keys. Repositories, settings and canonical DomainError mapping use the same semantics on both engines, including bounded serialization retry without row locks (DESIGN §3.7; slice 01 §5).
 
 ### Immutable SKU version table
 
@@ -187,7 +187,7 @@ The only replay store is keyed by `(tenant_id, endpoint, client_key)` with paylo
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-if-match-version`
 
-SKU/category reads and successful writes expose ETag from concurrency version, distinct from revision and published_version. PATCH requires If-Match, conditionally changes the scoped row and increments version; a stale comparison returns 409 STALE_REVISION without mutation, and a missing header uses the toolkit precondition response (spec §3 item 23, §4, §7.2; DESIGN §3.3).
+SKU revision IS its concurrency version for ETag, If-Match and compare-and-swap; published_version identifies published snapshots. Categories use their version field. PATCH requires If-Match, conditionally changes the scoped row and increments its concurrency token; stale comparison returns 409 STALE_REVISION without mutation and missing headers use the toolkit precondition response (DESIGN §3.1, §3.3).
 
 ### Outbox shares the state transaction
 

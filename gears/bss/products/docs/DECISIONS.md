@@ -77,8 +77,8 @@ Product entity and brand axis.
 A SKU with a price cannot change type (`SKU_TYPE_FROZEN`, 409). The final reservation protocol makes the
 guard broader: any `reserved` or `confirmed` reference, including `plan_item` and `sold_as`, refuses the
 type-change fence with the same error. Products checks its registry in the transaction that sets the fence
-(P-D-189 and P-D-194); pricing does not supply a remote count. There is no unconditional draft exemption
-from this barrier. Published or deprecated type changes use `sku_change`.
+(P-D-189 and P-D-194); pricing does not supply a remote count. Drafts cannot be priced or reserved and change type freely without a fence.
+Published or deprecated type changes use a fence and `sku_change` in one transaction.
 
 **Traceability:** [PRD `fr-sku-type-frozen`](PRD.md#fr-sku-type-frozen); spec §2 decision 17, §2.2, §4.
 Decision 17 and the registry rules supersede the earlier remote-count wording in §4 and the Task 5 example.

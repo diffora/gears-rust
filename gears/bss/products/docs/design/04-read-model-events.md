@@ -83,7 +83,7 @@ that integration gate. The retained ProductCatalogClientV1 transport is an inter
 ### sku-changed-payload
 
 1. [ ] - `p1` - Compare before and applied after business fields to obtain changed; include descriptor, type, metering or lifecycle changes as applicable, excluding lock/fence/version metadata - `inst-event-changed-fields`
-2. [ ] - `p1` - Serialize SkuChanged with sku_id, changed and effective_from from the approved change, using snake_case field names consistently - `inst-event-changed-payload`
+2. [ ] - `p1` - Serialize SkuChanged as tenantId, skuId, changed, effectiveFrom, publishedVersion and actorRef using the gear’s camelCase broker convention - `inst-event-changed-payload`
 3. [ ] - `p1` - Write it alongside the appended SkuVersion and new head; consumers fetch dated snapshots instead of inferring effective content from event delivery time - `inst-event-changed-date`
 
 ### reserve-refused-when-fenced
@@ -111,12 +111,12 @@ that integration gate. The retained ProductCatalogClientV1 transport is an inter
 ### browse-maps-published-only
 
 1. [ ] - `p1` - Authenticate and scope the retained ProductCatalogClientV1 browse request before selecting source SKUs - `inst-read-browse-scope`
-2. [ ] - `p1` - Select only published SKU entries and map their identity/type/descriptors/metering to the retained catalog transport; exclude draft, deprecated, retiring and retired entries - `inst-read-browse-map`
+2. [ ] - `p1` - Serve Published and Deprecated SKUs with lifecycle status and deprecated flag; exclude draft, retiring and retired entries - `inst-read-browse-map`
 3. [ ] - `p1` - Preserve the transport's existing response contract until phase 2 without recreating Product parents, CatalogVersion freezes or a second catalog authority - `inst-read-browse-contract`
 
 Browse is the current published catalog surface; historical period binding always uses versions?as_of=.
 Authoring list/card may show other lifecycle states in the authorized tenant and must not inherit the
-published-only predicate by accident.
+Published/Deprecated predicate by accident.
 
 ## 4. States (CDSL)
 
@@ -134,13 +134,13 @@ use snake_case, scoped SDK types and Foundation's Problem mapping.
 
 | Route | Contract |
 | --- | --- |
-| `GET /skus?q&type&category&lifecycle&limit&after` | products:read; search code/name, intersect provided filters, enforce bounded limit and stable id-based cursor ordering. Scope before filtering and cursor evaluation. |
+| `GET /skus?q&type&category&lifecycle&limit&after` | products:read; search code/name, intersect provided filters, enforce bounded limit and exclusive code cursor ordering (codes are tenant-unique). Scope before filtering and cursor evaluation. |
 | `GET /skus/{id}` | products:read; current card with ETag and reference summary, including unconfirmed reservations. Shares slice 02's head read. |
 | `GET /skus/{id}/references` | products:read; local rows `{ owner, kind, ref_id, state }`, with reservation identity/timestamps for inspection and live counts grouped by owner/kind. Released history does not count as live. |
 | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | products:author plus authenticated owner check; 201 `{ reservation_id }` or 200 for the same live attempt; 409 SKU_FENCED for a new reservation through a fence. |
 | `POST /references/{id}/confirm` | products:author plus owner check; 200 also when already confirmed; 409 REFERENCE_RELEASED for a released id. |
 | `DELETE /references/{id}` | products:author plus owner check, or explicit operator authorization with `force: true` and reason. Records release, never deletes history. |
-| `GET /bss-products/v1/browse` | Absolute retained ProductCatalogClientV1 transport; products:read; published-only catalog mapping until phase 2. |
+| `GET /bss-products/v1/browse` | Absolute retained ProductCatalogClientV1 transport; products:read; Published and Deprecated catalog mapping until phase 2. |
 
 Cross-tenant ids and cursors must not disclose another tenant's SKU/reference. Caller-provided owner
 must agree with authenticated ownership; a client cannot force-release by merely naming another gear.
@@ -168,15 +168,15 @@ removes a live reservation from a fence predicate. Audit and outbox use Foundati
 
 ## 7. Events & Alarms
 
-Domain payload fields are snake_case; the toolkit envelope supplies established tenant and correlation
+Broker payload fields are camelCase; the toolkit envelope supplies established tenant and correlation
 context. Use existing outbox delivery behavior rather than introducing a second dispatcher.
 
 | Event | Trigger and payload contract |
 | --- | --- |
 | `SkuPublished` | Successful sku_publish, with SKU identity and the newly published version available through the SDK/version read. |
-| `SkuChanged` | Successful sku_change; `SkuChangedPayload { sku_id, changed: [...], effective_from }`. changed names applied business fields; effective_from is the approved date, not delivery time. |
+| `SkuChanged` | Successful sku_change; `SkuChanged { tenantId, skuId, changed, effectiveFrom, publishedVersion, actorRef }`. changed names applied business fields; effectiveFrom is the approved date, not delivery time. |
 | `SkuRetired` | Successful retirement apply, identifying the retired SKU. No event on a refused fence/apply. |
-| `ApprovalUnitDecided` | Every terminal approval/reject/withdraw/quorum-zero outcome; `{ unit_id, kind, state, generation, actors: [...] }` from the recorded terminal action. |
+| `ApprovalUnitDecided` | Every terminal approval/reject/withdraw/quorum-zero outcome; `{ tenantId, unitId, kind, state, generation, actors: [...] }` from the recorded terminal action. |
 | `ReferenceForceReleased` | Operator release; identifies reservation, SKU, owner/kind/ref_id and actor/reason so the owner can reconcile; committed with the attributed release and audit. |
 
 Submission writes audit without an event unless quorum zero applies. A stale refresh does not announce
@@ -184,6 +184,9 @@ a successful apply. Pricing consumes SkuChanged to refresh its SKU read model, n
 changes. Dated version lookup protects bindings from delayed event delivery and future-effective heads.
 The SKU card exposes abandoned reservations; explicit release, rather than expiry or an alarm handler,
 changes their protection. No additional alarm contract is required by this slice.
+
+SkuChanged has type id `gts.cf.core.events.event.v1~cf.bss.products.sku_changed.v1~`;
+its payload is `tenantId`, `skuId`, `changed`, `effectiveFrom`, `publishedVersion`, `actorRef`.
 
 ## 8. Definitions of Done
 
@@ -202,13 +205,13 @@ Numbered criteria refer to [PRD §9](../PRD.md#9-acceptance-criteria).
 | Trace | Given / When / Then |
 | --- | --- |
 | `cpt-cf-bss-products-fr-read-model`; AC #22 | Given overlapping tenant names and mixed lifecycle/type/category data, when searching/paging and opening cards, then only scoped matching rows appear and live reference counts include both reserved and confirmed. Cross-tenant card/reference/version access exposes nothing. |
-| Same FR; AC #22 plus retained-interface boundary in PRD §7.1 | Given SKUs in every lifecycle, when using browse, then only published entries map to ProductCatalogClientV1; authoring list/card can still show authorized non-published heads. |
+| Same FR; AC #22 plus retained-interface boundary in PRD §7.1 | Given SKUs in every lifecycle, when using browse, then Published and Deprecated entries map to ProductCatalogClientV1 with status and deprecated flag; authoring list/card can still show authorized non-published heads. |
 | `cpt-cf-bss-products-fr-reference-registry`; AC #23 | Given reserve racing retire/type fencing on either backend, when transactions complete, then a winning reserve yields SKU_REFERENCED/SKU_TYPE_FROZEN on the fence, or a winning fence yields SKU_FENCED on reserve; both never succeed. |
 | Same FR; AC #24 | Given a live key, when reserved twice then released and attempted anew, then the live retry is 200 with the same id, the new attempt has a fresh id and old history remains. Confirming the old id returns REFERENCE_RELEASED. |
 | Same FR; AC #25 | Given Products outage before reserve, when Pricing writes, then REGISTRY_UNAVAILABLE leaves no object. Given timeout after Pricing commit, then confirmation_pending and durable retries remain, reservation stays live and repeated confirmed confirmation is 200. |
 | Same FR; `cpt-cf-bss-products-nfr-audit`; AC #26 | Given an abandoned reservation, when force-release lacks force/reason/authorization, then it remains live; valid operator release commits actor/reason, audit and ReferenceForceReleased together. |
 | `cpt-cf-bss-products-fr-events`; AC #20–21 | Given approve/reject/withdraw/quorum-zero paths, when committed, then each records terminal audit/ApprovalUnitDecided, with domain events only on apply. Injected outbox failure or APPLY_REFUSED leaves no success event. |
-| Same FR; `cpt-cf-bss-products-fr-sku-descriptors`; AC #3 | Given an October 1 GL change, when approved, then SkuChanged contains sku_id, changed including gl_code and effective_from October 1; Pricing refreshes without a book unit and earlier bindings keep the prior GL. |
+| Same FR; `cpt-cf-bss-products-fr-sku-descriptors`; AC #3 | Given an October 1 GL change, when approved, then SkuChanged contains skuId, changed including gl_code and effectiveFrom October 1; Pricing refreshes without a book unit and earlier bindings keep the prior GL. |
 
 ## 10. Non-Functional Considerations
 

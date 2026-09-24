@@ -110,8 +110,8 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-lifecycle-approvals-administrator-retires-a-sku`
 
-1. [ ] - `p1` - Authenticate products:submit and check replay, then acquire and commit the guarded retirement fence; a live local reference returns SKU_REFERENCED before a unit exists - `inst-ap-retire-fence`
-2. [ ] - `p1` - Submit sku_retire in a new transaction using the same fence_op_id; a retry after interruption rechecks the registry and resumes the orphan operation - `inst-ap-retire-submit`
+1. [ ] - `p1` - Authenticate products:submit and check replay, then acquire the guarded retirement fence inside the submission transaction; a live local reference returns SKU_REFERENCED before a unit exists - `inst-ap-retire-fence`
+2. [ ] - `p1` - Submit sku_retire in the same transaction using the same fence_op_id; a retry after interruption rechecks the registry and resumes the orphan operation - `inst-ap-retire-submit`
 3. [ ] - `p1` - At quorum revalidate zero references and conditionally apply retired; failed apply preserves retiring and the pending unit - `inst-ap-retire-apply`
 4. [ ] - `p1` - A reviewer rejects with a note or the submitter withdraws; the terminal transaction clears matching pending/fence ownership and restores the saved prior lifecycle - `inst-ap-retire-abort`
 
@@ -133,14 +133,14 @@ approve or settings permission and tenant scope; holding multiple grants never b
 1. [ ] - `p1` - Check replay before fence work; for an existing unexpired fence with no unit, retain fence_op_id and revalidate for resume rather than acquiring another fence - `inst-ap-fence-resume`
 2. [ ] - `p1` - For acquisition, conditionally update the scoped SKU on observed version, null pending ownership and absence of another fence, guarded by NOT EXISTS reserved/confirmed references in the same serializable transaction - `inst-ap-fence-acquire`
 3. [ ] - `p1` - If references exist, refuse retire with SKU_REFERENCED or type change with SKU_TYPE_FROZEN; do not set fence metadata or create a unit - `inst-ap-fence-referenced`
-4. [ ] - `p1` - Save fence_prior_lifecycle, fenced_at and fence_op_id, set retiring or type_change_pending, increment version and commit before approval submission - `inst-ap-fence-commit`
-5. [ ] - `p1` - Submit the unit against the owned fence in a second transaction; revalidate the reference environment again at apply without a remote count - `inst-ap-fence-submit`
+4. [ ] - `p1` - Save fence_prior_lifecycle, fenced_at and fence_op_id, set retiring or type_change_pending, increment revision and submit the approval unit before committing the transaction - `inst-ap-fence-commit`
+5. [ ] - `p1` - Submit the unit against the owned fence in that same transaction; revalidate the reference environment again at apply without a remote count - `inst-ap-fence-submit`
 6. [ ] - `p1` - If no pending unit exists and fenced_at exceeds fence_ttl_minutes, the next SKU request or explicit unfence conditionally restores the prior state and clears metadata; guard version, operation id and still-null ownership - `inst-ap-fence-expire`
-7. [ ] - `p1` - Rejection/withdrawal clears fence and pending ownership together, guarded by unit id, fence_op_id and version; successful apply clears them while installing the result and approved_by_unit_id - `inst-ap-fence-clear`
+7. [ ] - `p1` - Rejection/withdrawal clears fence and pending ownership together, guarded by unit id and fence_op_id; successful apply clears them while installing the result and approved_by_unit_id - `inst-ap-fence-clear`
 
 A zero-row acquisition is not success: re-read under tenant scope to distinguish a reference refusal,
 stale revision, pending ownership or resumable fence. Never submit against an unowned barrier. Draft
-type edits use the same barrier then apply directly in slice 02; published/deprecated edits use sku_change.
+type edits need no fence: drafts cannot be reserved. Published/deprecated edits use sku_change.
 Orphan expiry cannot clear a pending unit's fence, and environment refusal cannot undo an earlier commit.
 
 ### sod-excludes-authors
@@ -221,19 +221,19 @@ POST submit validates a draft, resolves usage metering and records sku_publish w
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-change-effective-from`
 
-POST changes accepts proposed content and/or lifecycle for a published or deprecated SKU as sku_change with effective_from defaulting to today. Apply revalidates the timeline, updates the latest head, appends the dated snapshot and emits SkuChanged in the terminal transaction; a date before the latest version is VERSION_ORDER and equal dates advance published_version. Pricing binds descriptors by period start, preserving earlier bindings without book approval or refreeze (spec §2 decision 14, §2.2, §6, §7.2; DESIGN §3.1, §3.6).
+POST changes accepts proposed content and/or lifecycle for a published or deprecated SKU as sku_change with effective_from defaulting to today. Apply revalidates the timeline, updates the latest head, appends the dated snapshot and emits SkuChanged in the terminal transaction; a date before the latest version is VERSION_ORDER and equal dates advance published_version. Products serves the stored snapshots by as_of (spec §2 decision 14, §2.2, §6, §7.2; DESIGN §3.1, §3.6).
 
 ### Retirement is fenced and resumable
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-retire-fenced`
 
-Retirement conditionally writes retiring, prior lifecycle, fenced_at and fence_op_id only with no reserved/confirmed reference, otherwise SKU_REFERENCED refuses the fence before unit creation. The fence commits before sku_retire submission, is resumed on retry without a unit, and is reverted only as an expired orphan via the next SKU request or explicit unfence. Apply rechecks the environment; APPLY_REFUSED with SKU_REFERENCED rolls back apply while retaining the fence, and reject/withdraw restores the prior lifecycle with ownership-guarded cleanup (spec §2.2, §4, §6, §13; DESIGN §3.1, §3.6).
+Retirement fences and submits sku_retire in ONE transaction: the conditional fence write is guarded by NOT EXISTS (live reserved/confirmed reference), otherwise SKU_REFERENCED refuses it. A fence found without a unit is resumed; an expired orphan is lifted by the next SKU request or explicit unfence. Apply rechecks the environment; APPLY_REFUSED with SKU_REFERENCED rolls back apply while retaining the pending fence. Reject/withdraw restores the prior lifecycle with ownership-guarded cleanup (spec decision 17, §2.2; DESIGN §3.1, §3.6).
 
 ### Type changes use the reciprocal fence
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-type-change-fenced`
 
-Type-change acquisition sets type_change_pending and durable fence metadata with the same atomic no-live-reference predicate, returning SKU_TYPE_FROZEN on refusal. The committed fence blocks new reservations until the owned direct draft edit or approved sku_change installs the type and clears it; interruption, expiration and abort use the retirement fence's guarded recovery rules. Neither reserve nor type fencing relies on a remote count, and both cannot win the race (spec §2 decision 17, §2.2, §4, §13; DESIGN §3.1, §3.7).
+Only published/deprecated SKU type changes acquire type_change_pending with durable fence metadata, guarded by NOT EXISTS (live reference), and submit sku_change in the same transaction. A live reference returns SKU_TYPE_FROZEN; the fence refuses new reservations until approved change or guarded abort clears it. Orphan resume and expiry follow retirement recovery. Draft type edits require no fence because drafts cannot be reserved or priced (spec decision 17, §2.2; DESIGN §3.1, §3.7).
 
 ### Authors and submitters cannot approve
 
@@ -263,7 +263,7 @@ Every existing-unit mutation, including decisions, refresh and withdrawal, condi
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-zero-records-unit`
 
-Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly under read/settings permissions. Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
+Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly with SETTINGS required for both reading and writing. Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
 
 ### All terminal paths record audit and decision event
 
@@ -272,6 +272,8 @@ Policy reads choose the tenant kind override then the default, falling back to q
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/governance.rs`.
 
 Approve, reject, withdraw and quorum-zero approval clear pending ownership with state, audit and ApprovalUnitDecided in one transaction, with successful apply also recording its SKU event. Matching fence cleanup restores prior lifecycle on abort or installs the approved result, retaining approved_by_unit_id on approval. Submission alone is audited without an event; rollback and stale refresh emit no successful apply event (spec §6, §7.3; DESIGN §3.2, §3.4).
+
+**Owed by pricing (phase 2).** Pricing must bind descriptors by period start, preserve earlier bindings and perform no book approval or refreeze for SKU descriptor changes.
 
 ## 6. Acceptance Criteria
 

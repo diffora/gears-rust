@@ -60,8 +60,8 @@ reuses toolkit infrastructure. Phase 0 specifies implementation; the checkboxes 
 
 ### if-match
 
-1. [ ] - `p1` - Obtain the concurrency version from If-Match; use the toolkit precondition response if absent, never substitute the content revision or published_version - `inst-fnd-if-match-read`
-2. [ ] - `p1` - Apply a tenant/id/version conditional SKU or category update, checking pending ownership where relevant and incrementing version atomically - `inst-fnd-if-match-cas`
+1. [ ] - `p1` - Obtain the concurrency version from If-Match; use the toolkit precondition response if absent, use SKU revision or category version, never published_version - `inst-fnd-if-match-read`
+2. [ ] - `p1` - Apply a tenant/id and concurrency-token conditional SKU or category update, checking pending ownership where relevant and incrementing version atomically - `inst-fnd-if-match-cas`
 3. [ ] - `p1` - A stale version returns 409 STALE_REVISION and makes no write; a successful read or write exposes the concurrency version as ETag - `inst-fnd-if-match-result`
 
 ### idempotency-key
@@ -110,15 +110,14 @@ The fresh migration allocation is:
 | Migration | Contents and ordering |
 | --- | --- |
 | `000001` | Category with tenant/code uniqueness. |
-| `000002` | SKU with identity indexes, category link, version counters, attribution and nullable approval/fence fields. |
-| `000003` | Immutable SKU versions and the as-of index. |
-| `000004` | Policy, unit, item and decision tables; finish SKU-to-unit referential constraints once their target exists. |
-| `000005` | Audit and replay tables and guards, preserving backup column types and nullability. |
+| `000002` | SKU heads and immutable versions, identity/as-of indexes and category foreign key by id. |
+| `000003` | Policy, unit, item and decision tables. |
+| `000004` | Audit table and append-only guards. |
+| `000005` | Replay table and response-state guards. |
+| `000006` | Reference registry and live-reference indexes. |
 
-On Postgres, add the deferred-in-chain SKU foreign keys in `000004`. SQLite may declare references to
-the later table in `000002`; enforce them when the chain completes. “Deferred-in-chain” describes DDL
-ordering, not weaker tenant integrity. Slice 04 owns the reference-registry addition and read indexes;
-the fence implementation is not releasable until that table and reciprocal guards are present.
+Tenant isolation uses SecureORM scopes and scoped parent-category reads in the write transaction.
+Approval children are accessed through a scoped unit; composite tenant foreign keys are not required.
 
 ## 6. Data Model
 
@@ -129,8 +128,8 @@ all checks and tenant keys. SKU details are in slice 02 and approval mutations i
 
 | Storage family | Repository obligation |
 | --- | --- |
-| `products_category`, `products_sku` | Tenant-qualified uniqueness and category links; distinguish content revision, published_version and concurrency version. |
-| `products_sku_version` | Key `(tenant_id, sku_id, published_version)`; immutable inserts; effective dates need not be unique. |
+| `products_category`, `products_sku` | Tenant-qualified uniqueness and category links; use revision as SKU concurrency version and published_version as its snapshot counter. |
+| `products_sku_version` | Key `(sku_id, published_version)` with tenant-scoped access; immutable inserts; effective dates need not be unique. |
 | Four `products_approval_*` tables | Unit version CAS; item author provenance; decision key `(unit_id, actor, generation)`; policy `'*'` default, absent means quorum 1; no unit replay key. |
 | `products_audit` | Append-only record with tenant/time, subject and actor indexes; only reserved sealing metadata may change as defined in DESIGN. |
 | `products_idempotency` | Primary key `(tenant_id, endpoint, client_key)` and tenant/expiry index; response-group check ties nullable response columns to claimed/answered state. |
