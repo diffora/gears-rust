@@ -12,7 +12,7 @@ pub mod rules;
 pub mod store;
 pub mod subject;
 
-// pub use engine::{ApproveOutcome, Engine, SubmitRequest, Submitted};
+pub use engine::{ApproveOutcome, Engine, SubmitRequest, Submitted};
 pub use model::{ApprovalError, Decision, ItemRef, Policy, Unit, UnitState, Verdict};
-// pub use store::Store;
-// pub use subject::ApprovalSubject;
+pub use store::Store;
+pub use subject::ApprovalSubject;
