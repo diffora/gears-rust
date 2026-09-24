@@ -514,6 +514,7 @@ async fn list_skus(
         return Err(DomainError::Validation(r).into());
     }
     let q = repo::SkuQuery {
+        catalog_filter: None,
         text: q.q,
         r#type: q
             .r#type

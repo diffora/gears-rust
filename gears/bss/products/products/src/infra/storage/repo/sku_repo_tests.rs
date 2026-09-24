@@ -658,6 +658,7 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
     .await
     .unwrap();
     let q = SkuQuery {
+        catalog_filter: None,
         text: None,
         r#type: Some(SkuType::Usage),
         category_id: Some(cat),
@@ -667,6 +668,7 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
     };
     assert_eq!(list_skus(&conn, &scope, tenant, &q).await.unwrap().len(), 2);
     let q = SkuQuery {
+        catalog_filter: None,
         text: Some("Bet".into()),
         after_code: Some("A".into()),
         ..q

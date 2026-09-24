@@ -52,14 +52,20 @@ impl Default for BssProductsGear {
 }
 
 impl BssProductsGear {
-    /// Keep the local catalog contract registered until phase 1c.
-    #[allow(clippy::unnecessary_wraps)] // The provides factory contract is fallible.
+    /// Build the authorized local catalog transport over this gear's database.
     fn build_catalog_provider(
-        _ctx: &GearCtx,
+        ctx: &GearCtx,
         _policies: Arc<toolkit::contract_support::policy::PolicyStack>,
     ) -> anyhow::Result<Arc<dyn bss_pricing_sdk::product_catalog::ProductCatalogClientV1>> {
+        let enforcer = authz_resolver_sdk::PolicyEnforcer::new(
+            ctx.client_hub()
+                .get::<dyn authz_resolver_sdk::AuthZResolverApi>()?,
+        );
         Ok(Arc::new(
-            crate::infra::catalog_provider::EmptyCatalogProvider,
+            crate::infra::catalog_provider::BrowseCatalogProvider::new(
+                ctx.db_required()?.db(),
+                Arc::new(enforcer),
+            ),
         ))
     }
 
@@ -392,6 +398,10 @@ impl RestApiCapability for BssProductsGear {
                     Arc::clone(&rt.api_state),
                     openapi,
                 ))
+                .merge(crate::api::rest::browse::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
                 .layer(axum::Extension((*rt.enforcer).clone())));
         }
         Ok(router)
@@ -520,6 +530,7 @@ mod tests {
             "bss_products.reserve_reference",
             "bss_products.confirm_reference",
             "bss_products.release_reference",
+            "bss_products.browse",
         ];
         expected.sort_unstable();
         assert_eq!(actual, expected);

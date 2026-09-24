@@ -12,6 +12,7 @@ use toolkit_security::SecurityContext;
 
 pub mod approval_policy;
 pub mod approval_units;
+pub mod browse;
 pub mod categories;
 pub mod dto;
 mod governance;

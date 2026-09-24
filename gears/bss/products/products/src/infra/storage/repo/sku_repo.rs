@@ -136,6 +136,8 @@ pub async fn find_sku(
 /// Filters and an exclusive code cursor; one extra row signals another page.
 #[derive(Debug, Clone)]
 pub struct SkuQuery {
+    /// Additional validated catalog predicate, composed inside the tenant scope.
+    pub catalog_filter: Option<Condition>,
     pub text: Option<String>,
     pub r#type: Option<SkuType>,
     pub category_id: Option<Uuid>,
@@ -153,6 +155,9 @@ pub async fn list_skus(
     q: &SkuQuery,
 ) -> Result<Vec<Sku>, RepoError> {
     let mut c = Condition::all().add(sku::Column::TenantId.eq(tenant_id));
+    if let Some(filter) = &q.catalog_filter {
+        c = c.add(filter.clone());
+    }
     if let Some(v) = &q.text {
         c = c.add(
             Condition::any()
