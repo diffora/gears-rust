@@ -20,6 +20,7 @@ mod common;
 
 use std::collections::HashMap;
 
+use account_management::domain::error::DomainError;
 use account_management::domain::tenant::TenantRepo;
 use sea_orm::ActiveValue;
 use time::OffsetDateTime;
@@ -659,5 +660,8 @@ async fn service_list_descendants_past_barrier_root_collapses_to_not_found() {
         .list_descendants(&ctx_for(t.root), t.s, &ODataQuery::default())
         .await
         .expect_err("s is past root's barrier");
-    assert_eq!(err.code(), "not_found");
+    assert!(
+        matches!(err, DomainError::NotFound { .. }),
+        "list_descendants(s) expected NotFound; got {err:?}"
+    );
 }
