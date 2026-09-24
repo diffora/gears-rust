@@ -1,4 +1,6 @@
 //! Governed submissions claim replay first, then fence and submit atomically.
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-retire-fenced:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-type-change-fenced:p1
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{EmptyRequest, SkuChangeRequest, SkuDto, SubmitReceipt},

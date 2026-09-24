@@ -1,5 +1,6 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-edges:p1
 //! Pure SKU content validation, patching and lifecycle rules.
+//! @cpt-dod:cpt-cf-bss-products-dod-bundle-unpriced:p1
 use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;
 use crate::domain::validation::ValidationReport;

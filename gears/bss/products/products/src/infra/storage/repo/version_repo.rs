@@ -1,4 +1,5 @@
 //! Append-only published content and deterministic date resolution.
+//! @cpt-dod:cpt-cf-bss-products-dod-versions-as-of:p1
 use super::{driver_failure, map_unique};
 use crate::infra::storage::{RepoError, entity::sku_version};
 use bss_products_sdk::models::{SkuContent, SkuVersion};

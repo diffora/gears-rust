@@ -297,7 +297,7 @@ registration and standardized errors.
 | Surface | Routes | Contract |
 | --- | --- | --- |
 | SKU authoring | `POST /skus`; `PATCH /skus/{id}` | Create independent draft; patch drafts only; reject edits while pending. |
-| SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters; SKU card. |
+| SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters, bounded limit and exclusive code cursor (tenant-unique codes); SKU card. |
 | Dated versions | `GET /skus/{id}/versions?as_of=<date>` | Greatest effective_from not after date, then greatest published_version; 404 before first version. Without as_of, list history. |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |

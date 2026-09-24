@@ -1,4 +1,5 @@
 //! SKU heads, conditional locks and local reference fences.
+//! @cpt-dod:cpt-cf-bss-products-dod-unit-store:p1
 #![allow(
     clippy::too_many_arguments,
     reason = "Repository commands keep the scoped key and compare-and-swap operands explicit"

@@ -1,4 +1,7 @@
 //! SKU draft authoring, registry reference counts, version history and scoped search.
+//! @cpt-dod:cpt-cf-bss-products-dod-list-search:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-card-with-references:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-create-unique:p1
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
     dto::{

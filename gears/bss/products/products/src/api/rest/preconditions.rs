@@ -65,6 +65,7 @@
 //! or a `304`. Adding a reader for it here would be inventing a contract
 //! nothing in this gear's design set asks for; a real request would be
 //! serving it and this module carries no handler yet.
+//! @cpt-dod:cpt-cf-bss-products-dod-if-match-version:p1
 
 use axum::http::HeaderMap;
 use axum::http::header::IF_MATCH;

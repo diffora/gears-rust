@@ -168,13 +168,17 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
 
 ### Unique SKU creation and draft editing
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-create-unique`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-create-unique`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/skus.rs`.
 
 Create persists an independent draft with tenant-scoped code and name uniqueness, creator attribution, revision as the ETag/If-Match/CAS concurrency version and published_version as the snapshot counter. Direct PATCH changes drafts only under If-Match and null pending ownership; unique-index collisions map to SKU_CODE_TAKEN or SKU_NAME_TAKEN and pending ownership to ROW_LOCKED_PENDING. Published/deprecated changes use sku_change (spec §4, §6, §7.2).
 
 ### Live references freeze SKU type
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-type-frozen`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-type-frozen`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/domain/approvals/change.rs`.
 
 A draft is never priced and cannot have a reservation, so its type changes freely through draft PATCH without a fence, subject to content validation and pending ownership. Only published/deprecated type changes use the local reference barrier and sku_change: any reserved or confirmed price, plan_item or sold_as reference refuses the fence with SKU_TYPE_FROZEN. Fence and submission share one transaction, with apply revalidation (spec decision 17; DESIGN §3.1).
 
@@ -188,13 +192,17 @@ Usage publication requires usage_type_ref and unit and resolves through the reta
 
 ### Bundle identity is unpriced
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bundle-unpriced`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bundle-unpriced`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/domain/sku.rs`.
 
 Products stores and serves bundle identity, type and descriptors without composition or metering; metering assignment fails with BUNDLE_HAS_NO_METER. Products serves the bundle type to consumers and applies the ordinary reference barrier to sold_as reservations (spec §4, §13; DESIGN §3.1).
 
 ### Version history and as-of reads
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-versions-as-of`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-versions-as-of`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/infra/storage/repo/version_repo.rs`.
 
 GET versions returns immutable history or, with as_of, the latest effective_from not after that date and then the highest published_version. Publish is immediate and applied changes append dated snapshots; earlier-than-latest dates fail with VERSION_ORDER, equal dates are allowed and dates before publication return NO_VERSION_IN_FORCE. The latest head may be future-effective and never replaces the dated read (spec §2.2, §4, §7.2; DESIGN §3.3, §3.7).
 

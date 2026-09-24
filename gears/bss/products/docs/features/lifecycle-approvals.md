@@ -22,7 +22,7 @@
   - [Administrator retires a SKU](#administrator-retires-a-sku)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [lifecycle-edges](#lifecycle-edges)
-  - [Fence then count](#fence-then-count)
+  - [Atomic fence and submission](#atomic-fence-and-submission)
   - [sod-excludes-authors](#sod-excludes-authors)
   - [quorum-zero-records-unit](#quorum-zero-records-unit)
   - [Stale refresh](#stale-refresh)
@@ -126,7 +126,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 3. [ ] - `p1` - Retirement of a draft, published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation - `inst-ap-lifecycle-retire`
 4. [ ] - `p1` - Reject unsupported lifecycle edges, edits while pending and any return from retired; rejected/withdrawn publication or ordinary change leaves prior business content intact - `inst-ap-lifecycle-refuse`
 
-### Fence then count
+### Atomic fence and submission
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-lifecycle-approvals-fence-commits-first`
 
@@ -219,19 +219,25 @@ POST submit validates a draft, resolves usage metering and records sku_publish w
 
 ### Changes carry an effective date
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-change-effective-from`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-change-effective-from`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/domain/approvals/change.rs`.
 
 POST changes accepts proposed content and/or lifecycle for a published or deprecated SKU as sku_change with effective_from defaulting to today. Apply revalidates the timeline, updates the latest head, appends the dated snapshot and emits SkuChanged in the terminal transaction; a date before the latest version is VERSION_ORDER and equal dates advance published_version. Products serves the stored snapshots by as_of (spec §2 decision 14, §2.2, §6, §7.2; DESIGN §3.1, §3.6).
 
 ### Retirement is fenced and resumable
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-retire-fenced`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-retire-fenced`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/sku_governance.rs`.
 
 Retirement fences and submits sku_retire in ONE transaction: the conditional fence write is guarded by NOT EXISTS (live reserved/confirmed reference), otherwise SKU_REFERENCED refuses it. A fence found without a unit is resumed; an expired orphan is lifted by the next SKU request or explicit unfence. Apply rechecks the environment; APPLY_REFUSED with SKU_REFERENCED rolls back apply while retaining the pending fence. Reject/withdraw restores the prior lifecycle with ownership-guarded cleanup (spec decision 17, §2.2; DESIGN §3.1, §3.6).
 
 ### Type changes use the reciprocal fence
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-type-change-fenced`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-type-change-fenced`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/sku_governance.rs`.
 
 Only published/deprecated SKU type changes acquire type_change_pending with durable fence metadata, guarded by NOT EXISTS (live reference), and submit sku_change in the same transaction. A live reference returns SKU_TYPE_FROZEN; the fence refuses new reservations until approved change or guarded abort clears it. Orphan resume and expiry follow retirement recovery. Draft type edits require no fence because drafts cannot be reserved or priced (spec decision 17, §2.2; DESIGN §3.1, §3.7).
 
@@ -261,7 +267,9 @@ Every existing-unit mutation, including decisions, refresh and withdrawal, condi
 
 ### Quorum zero preserves the approval record
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-zero-records-unit`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-zero-records-unit`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/approval_policy.rs`.
 
 Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly with SETTINGS required for both reading and writing. Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
 

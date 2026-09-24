@@ -1,5 +1,6 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-reserve-refused-when-fenced:p1
 //! Owner-bound reservations and explicit, audited operator release.
+//! @cpt-dod:cpt-cf-bss-products-dod-reference-registry:p1
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{ReferenceReceipt, ReleaseRequest, ReserveRequest},

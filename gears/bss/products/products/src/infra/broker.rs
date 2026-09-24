@@ -1,4 +1,5 @@
 //! Typed registry events, broker binding and the transactional outbox sink.
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-changed-payload:p1
 use event_broker_sdk::{ProducerOutbox, ProducerOutboxHandle, TypedEvent};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

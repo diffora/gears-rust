@@ -15,7 +15,7 @@
   - [Administrator retires a SKU](#administrator-retires-a-sku)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [lifecycle-edges](#lifecycle-edges)
-  - [fence-commits-first](#fence-commits-first)
+  - [Atomic fence and submission](#atomic-fence-and-submission)
   - [sod-excludes-authors](#sod-excludes-authors)
   - [quorum-zero-records-unit](#quorum-zero-records-unit)
   - [stale-refresh-generation](#stale-refresh-generation)
@@ -84,7 +84,7 @@ Categories and settings remain direct edits. No materiality calculation or cross
 3. [ ] - `p1` - Retirement of a draft, published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation - `inst-ap-lifecycle-retire`
 4. [ ] - `p1` - Reject unsupported lifecycle edges, edits while pending and any return from retired; rejected/withdrawn publication or ordinary change leaves prior business content intact - `inst-ap-lifecycle-refuse`
 
-### fence-commits-first
+### Atomic fence and submission
 
 1. [ ] - `p1` - Check replay before fence work; for an existing unexpired fence with no unit, retain fence_op_id and revalidate for resume rather than acquiring another fence - `inst-ap-fence-resume`
 2. [ ] - `p1` - For acquisition, conditionally update the scoped SKU on observed version, null pending ownership and absence of another fence, guarded by NOT EXISTS reserved/confirmed references in the same serializable transaction - `inst-ap-fence-acquire`

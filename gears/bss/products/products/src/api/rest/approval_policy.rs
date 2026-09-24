@@ -1,4 +1,5 @@
 //! Direct tenant quorum policy under SETTINGS, with atomic audit.
+//! @cpt-dod:cpt-cf-bss-products-dod-quorum-zero-records-unit:p1
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{PolicyDto, PolicyRequest},

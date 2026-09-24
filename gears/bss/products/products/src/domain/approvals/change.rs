@@ -1,4 +1,6 @@
 //! Changes preserve the proposed lifecycle and effective date in review content.
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-change-effective-from:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-type-frozen:p1
 use super::{
     KIND_SKU_CHANGE, SkuProposal, apply_error, decode, invalid, json, publish::SkuPublish, sku,
     store_err,

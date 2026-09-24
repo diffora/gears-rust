@@ -1,4 +1,5 @@
 //! Authorized pricing catalog reads over the SKU heads.
+//! @cpt-dod:cpt-cf-bss-products-dod-browse-published-only:p1
 use crate::{
     api::rest::authz_error_to_canonical,
     authz::{access_scope, actions, resource_types},

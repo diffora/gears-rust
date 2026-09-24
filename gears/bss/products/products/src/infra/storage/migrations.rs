@@ -1,4 +1,5 @@
 //! The coordination and `PriceBook` registry migration chain.
+//! @cpt-dod:cpt-cf-bss-products-dod-tables-two-backends:p1
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;

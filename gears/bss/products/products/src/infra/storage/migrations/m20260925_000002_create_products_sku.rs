@@ -1,4 +1,5 @@
 //! SKU heads and durable version snapshots.
+//! @cpt-dod:cpt-cf-bss-products-dod-sku-version-table:p1
 use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;

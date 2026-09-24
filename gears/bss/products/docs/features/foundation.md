@@ -157,13 +157,17 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`, `cpt-cf-bss-p
 
 ### Tables on both backends
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-tables-two-backends`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-tables-two-backends`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/infra/storage/migrations.rs`.
 
 Migrations 000001–000006 create category, SKU, versions, four approval tables, audit, replay and reference registry on SQLite and Postgres. Tenant isolation uses SecureORM scoping and scoped parent-category reads inside the write transaction; it does not depend on composite tenant foreign keys. Repositories, settings and canonical DomainError mapping use the same semantics on both engines, including bounded serialization retry without row locks (DESIGN §3.7; slice 01 §5).
 
 ### Immutable SKU version table
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-version-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sku-version-table`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/infra/storage/migrations/m20260925_000002_create_products_sku.rs`.
 
 The version table stores tenant, SKU, published_version, effective_from and the applied business snapshot under the composite primary key in DESIGN §3.7. Publish/change append and the head increment share one transaction; storage refuses updates/deletes and permits equal effective dates without a date-unique index (spec §2.2, §4).
 
@@ -185,7 +189,9 @@ The only replay store is keyed by `(tenant_id, endpoint, client_key)` with paylo
 
 ### If-Match uses the concurrency version
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-if-match-version`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-if-match-version`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/preconditions.rs`.
 
 SKU revision IS its concurrency version for ETag, If-Match and compare-and-swap; published_version identifies published snapshots. Categories use their version field. PATCH requires If-Match, conditionally changes the scoped row and increments its concurrency token; stale comparison returns 409 STALE_REVISION without mutation and missing headers use the toolkit precondition response (DESIGN §3.1, §3.3).
 
@@ -199,7 +205,9 @@ The event writer accepts the act's existing scoped transaction and records requi
 
 ### Conditional approval Store and pending ownership
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-store`
+
+Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/infra/storage/repo/sku_repo.rs`.
 
 The Products Store implements bss-approval persistence through scoped executors and conditional unit version updates, returning 409 UNIT_CONTENDED on a lost race. Submission acquires pending_unit_id only when null and the observed SKU version matches, otherwise ROW_LOCKED_PENDING rolls back the entire submit; terminal clearing checks the owner and any fence_op_id. Item authors and decision generations remain durable under tenant-scoped parent access (spec §2.2, §6; DESIGN §3.2, §3.7).
 
