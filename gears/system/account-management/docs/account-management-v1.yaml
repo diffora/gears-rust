@@ -991,8 +991,9 @@ components:
         When `true`, list every descendant of the tenant visible to the
         caller instead of its direct children only, and carry `ancestors`
         on every item. Exactly the literals `true` / `false` are accepted;
-        anything else is `400 validation`. A cursor is only meaningful with
-        the same `recursive` value it was minted with.
+        anything else is `400 validation`. A cursor is bound to the mode it
+        was minted in: replaying it with a different `recursive` value is
+        `400 FILTER_MISMATCH`, like a changed `$filter`.
       schema:
         type: boolean
         default: false

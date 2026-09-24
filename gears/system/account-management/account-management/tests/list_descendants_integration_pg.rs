@@ -20,47 +20,13 @@
 mod common;
 
 use account_management::domain::tenant::TenantRepo;
-use toolkit_odata::ast::{Expr, Value as OdataValue};
 use toolkit_odata::{CursorV1, ODataQuery};
-use toolkit_security::{
-    AccessScope, InTenantSubtreeScopeFilter, ScopeConstraint, ScopeFilter, pep_properties,
-};
 use uuid::Uuid;
 
 use common::pg::bring_up_postgres;
-use common::{BarrierTopology, seed_barrier_topology};
-
-fn respect_scope(root: Uuid) -> AccessScope {
-    AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::InTenantSubtree(
-        InTenantSubtreeScopeFilter::new(pep_properties::RESOURCE_ID, root),
-    )]))
-}
-
-fn relaxed_scope(root: Uuid) -> AccessScope {
-    AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::InTenantSubtree(
-        InTenantSubtreeScopeFilter::with_descendant_status(
-            pep_properties::RESOURCE_ID,
-            root,
-            false,
-            Vec::new(),
-        ),
-    )]))
-}
-
-fn contains_name(needle: &str) -> ODataQuery {
-    ODataQuery::default().with_filter(Expr::Function(
-        "contains".to_owned(),
-        vec![
-            Expr::Identifier("name".to_owned()),
-            Expr::Value(OdataValue::String(needle.to_owned())),
-        ],
-    ))
-}
-
-fn sorted(mut v: Vec<Uuid>) -> Vec<Uuid> {
-    v.sort();
-    v
-}
+use common::{
+    BarrierTopology, contains_name, relaxed_scope, respect_scope, seed_barrier_topology, sorted,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pg_list_descendants_visible_set_matches_the_topology_table() {

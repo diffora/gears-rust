@@ -96,7 +96,9 @@ use crate::domain::metrics::{
 use crate::domain::tenant::closure::build_activation_rows;
 use crate::domain::tenant::context::TenantContext;
 use crate::domain::tenant::hooks::TenantHardDeleteHook;
-use crate::domain::tenant::model::{ChildCountFilter, NewTenant, TenantModel, TenantStatus};
+use crate::domain::tenant::model::{
+    ChildCountFilter, NewTenant, TenantAncestorRow, TenantModel, TenantStatus,
+};
 use crate::domain::tenant::repo::TenantRepo;
 use crate::domain::tenant::resource_checker::ResourceOwnershipChecker;
 use crate::domain::tenant_type::checker::TenantTypeChecker;
@@ -442,23 +444,30 @@ impl<R: TenantRepo> TenantService<R> {
         out
     }
 
-    /// Batched lowering for `list_children`. Issues one
-    /// `get_type_schemas_by_uuid` round-trip for the page so latency
-    /// scales with number of pages, not number of rows.
+    /// Batched lowering of a listing page (`list_children`): one
+    /// types-registry round-trip and one grouped child-count query per
+    /// page, so latency scales with pages, not rows.
     async fn lower_to_tenant_page(
         &self,
         scope: &AccessScope,
         page: Page<TenantModel>,
     ) -> Result<Page<Tenant>, DomainError> {
-        let Page { items, page_info } = page;
-
-        // Fan out one batch lookup for distinct uuids in the page; we
-        // tolerate per-uuid registry failures by leaving `tenant_type`
-        // as `None` for the affected row (same policy as the
-        // single-row helper).
         let type_strings = self
-            .resolve_type_strings(items.iter().map(|m| m.tenant_type_uuid).collect())
+            .resolve_type_strings(page.items.iter().map(|m| m.tenant_type_uuid).collect())
             .await;
+        self.lower_page_with_types(scope, page, &type_strings).await
+    }
+
+    /// [`Self::lower_to_tenant_page`] with the tenant-type strings
+    /// already resolved, so `list_descendants` can resolve the page's
+    /// and the ancestor chains' types in a single registry round-trip.
+    async fn lower_page_with_types(
+        &self,
+        scope: &AccessScope,
+        page: Page<TenantModel>,
+        type_strings: &std::collections::HashMap<Uuid, String>,
+    ) -> Result<Page<Tenant>, DomainError> {
+        let Page { items, page_info } = page;
 
         // One grouped COUNT covers the whole page's direct-child tallies
         // (scope-filtered, excludes Provisioning, includes Deleted) — no
@@ -1571,17 +1580,23 @@ impl<R: TenantRepo> TenantService<R> {
 
     /// Implements the `recursive=true` mode of FEATURE `List Children`
     /// (`algo-recursive-visible-set`): every descendant of `root_id`
-    /// whose parent is Respect-visible to the caller, cursor-paginated,
-    /// each row with its ancestor chain relative to `root_id`.
+    /// that iterating `list_children` level by level would reach under
+    /// the caller's scope, cursor-paginated, each row with its ancestor
+    /// chain relative to `root_id`.
     ///
     /// Visibility is the `list_children` direct-child carve-out
-    /// generalised over the subtree: the repository pins
-    /// `parent_id IN (closure(root_id, barrier = 0))` and the
-    /// enumeration runs under the barrier-relaxed scope, exactly as the
-    /// depth-1 listing does, so a self-managed direct child of any
+    /// generalised over the subtree: the repository lists rows whose
+    /// parent is in `root_id`'s subtree AND visible under the
+    /// PDP-emitted scope, with the rows themselves under the
+    /// barrier-relaxed clone — so a self-managed direct child of any
     /// visible tenant is returned as an identity and nothing below a
     /// barrier ever is. `child_count` and the ancestor rows are read
-    /// under the original (Respect) scope.
+    /// under the original scope, and a row whose chain comes back with
+    /// a hole (an ancestor on the path not visible under that scope —
+    /// a per-descendant `descendant_status` list, or a barrier change
+    /// that committed between the page read and the chain read) is
+    /// dropped: iteration could not have reached it. The page may
+    /// therefore hold fewer than `limit` rows; `next_cursor` stays valid.
     ///
     /// # Errors
     ///
@@ -1613,17 +1628,35 @@ impl<R: TenantRepo> TenantService<R> {
 
         let ids: Vec<Uuid> = page.items.iter().map(|m| m.id).collect();
         let mut chains = self.repo.ancestor_chains(&scope, root.depth, &ids).await?;
-        let ancestor_types = self
+        // @cpt-begin:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-complete-chain
+        let listed = page.items.len();
+        page.items.retain(|m| {
+            chain_is_complete(root.depth, m.depth, chains.get(&m.id).map(Vec::as_slice))
+        });
+        if page.items.len() != listed {
+            tracing::debug!(
+                target: "am.tenant",
+                root_id = %root_id,
+                dropped = listed - page.items.len(),
+                "list_descendants dropped rows whose ancestor chain is not visible"
+            );
+        }
+        // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set:p1:inst-algo-rvs-complete-chain
+
+        // One registry round-trip for the rows' and the chains' types.
+        let type_strings = self
             .resolve_type_strings(
-                chains
-                    .values()
-                    .flatten()
-                    .map(|a| a.tenant_type_uuid)
+                page.items
+                    .iter()
+                    .map(|m| m.tenant_type_uuid)
+                    .chain(chains.values().flatten().map(|a| a.tenant_type_uuid))
                     .collect(),
             )
             .await;
 
-        let Page { items, page_info } = self.lower_to_tenant_page(&scope, page).await?;
+        let Page { items, page_info } = self
+            .lower_page_with_types(&scope, page, &type_strings)
+            .await?;
         let nodes: Vec<TenantNode> = items
             .into_iter()
             .map(|tenant| {
@@ -1634,7 +1667,7 @@ impl<R: TenantRepo> TenantService<R> {
                     .map(|a| TenantAncestor {
                         id: TenantId(a.id),
                         name: a.name,
-                        tenant_type: ancestor_types.get(&a.tenant_type_uuid).cloned(),
+                        tenant_type: type_strings.get(&a.tenant_type_uuid).cloned(),
                     })
                     .collect();
                 TenantNode { tenant, ancestors }
@@ -2015,6 +2048,17 @@ impl<R: TenantRepo> TenantService<R> {
     // @cpt-end:cpt-cf-account-management-dod-tenant-hierarchy-management-soft-delete-preconditions:p1:inst-dod-soft-delete-preconditions
     // @cpt-end:cpt-cf-account-management-algo-tenant-hierarchy-management-soft-delete-preconditions:p1:inst-algo-sdelpc-service
     // @cpt-end:cpt-cf-account-management-flow-tenant-hierarchy-management-soft-delete-tenant:p1:inst-flow-sdel-service
+}
+
+/// `true` when `chain` holds exactly one ancestor per depth strictly
+/// between the listing root and the row (`root_depth + 1 ..
+/// row_depth`), top-down. A missing depth means an ancestor on the path
+/// is not visible under the caller's scope, so level-by-level iteration
+/// of `list_children` could not have reached the row.
+fn chain_is_complete(root_depth: u32, row_depth: u32, chain: Option<&[TenantAncestorRow]>) -> bool {
+    let expected = root_depth.saturating_add(1)..row_depth;
+    let chain = chain.unwrap_or(&[]);
+    chain.len() == expected.len() && chain.iter().zip(expected).all(|(a, d)| a.depth == d)
 }
 
 #[cfg(test)]

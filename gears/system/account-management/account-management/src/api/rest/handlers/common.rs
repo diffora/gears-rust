@@ -71,6 +71,32 @@ pub(super) fn parse_recursive_flag(query: &HashMap<String, String>) -> Result<bo
     }
 }
 
+/// Bind the cursor fingerprint of a `/children` request to its mode.
+///
+/// The keyset cursor carries `f` = the query's `filter_hash`, and
+/// pagination rejects a cursor whose `f` differs from the follow-up
+/// request's hash (`400 FILTER_MISMATCH`) — but only when both are
+/// present, and the extractor sets the hash only when `$filter` is.
+/// Both modes share the effective order `(created_at ASC, id ASC)`, so
+/// a cursor minted in one mode and replayed in the other would
+/// silently skip rows of the other set. Folding the mode into the hash
+/// turns that into the same `FILTER_MISMATCH` a changed `$filter`
+/// produces:
+///
+/// * recursive: `recursive:<filter hash or empty>`;
+/// * direct, with `$filter`: the unchanged filter hash, so direct-mode
+///   cursors minted before this change keep working;
+/// * direct, without `$filter`: the constant `children`.
+pub(super) fn bind_cursor_to_children_mode(mut query: ODataQuery, recursive: bool) -> ODataQuery {
+    let filter_hash = query.filter_hash.take();
+    query.filter_hash = Some(match (recursive, filter_hash) {
+        (true, hash) => format!("recursive:{}", hash.as_deref().unwrap_or_default()),
+        (false, Some(hash)) => hash,
+        (false, None) => "children".to_owned(),
+    });
+    query
+}
+
 #[cfg(test)]
 #[path = "common_tests.rs"]
 mod tests;

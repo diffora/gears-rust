@@ -4683,3 +4683,40 @@ async fn list_descendants_honours_limit() {
     assert_eq!(page.items.len(), 2);
     assert_eq!(page.page_info.limit, 2);
 }
+
+fn ancestor_at(depth: u32) -> crate::domain::tenant::model::TenantAncestorRow {
+    crate::domain::tenant::model::TenantAncestorRow {
+        id: Uuid::from_u128(0x900 + u128::from(depth)),
+        name: format!("a{depth}"),
+        tenant_type_uuid: Uuid::from_u128(0xAA),
+        depth,
+    }
+}
+
+#[test]
+fn chain_is_complete_accepts_a_direct_child_with_no_chain() {
+    assert!(chain_is_complete(1, 2, None));
+    assert!(chain_is_complete(1, 2, Some(&[])));
+}
+
+#[test]
+fn chain_is_complete_accepts_one_ancestor_per_intermediate_depth() {
+    let chain = [ancestor_at(2), ancestor_at(3)];
+    assert!(chain_is_complete(1, 4, Some(&chain)));
+}
+
+#[test]
+fn chain_is_complete_rejects_a_hole() {
+    // Depth-2 ancestor not visible under the caller's scope (a
+    // status-constrained scope, or a barrier that appeared between the
+    // page read and the chain read): iteration could not reach the row.
+    let chain = [ancestor_at(3)];
+    assert!(!chain_is_complete(1, 4, Some(&chain)));
+    assert!(!chain_is_complete(1, 4, None));
+}
+
+#[test]
+fn chain_is_complete_rejects_a_chain_on_a_direct_child() {
+    let chain = [ancestor_at(2)];
+    assert!(!chain_is_complete(1, 2, Some(&chain)));
+}

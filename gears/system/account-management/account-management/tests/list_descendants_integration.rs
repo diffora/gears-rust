@@ -37,26 +37,6 @@ use common::*;
 
 // ---- helpers ---------------------------------------------------------
 
-/// `InTenantSubtree(root)` scope as the PDP emits it (barrier-respecting).
-fn respect_scope(root: Uuid) -> AccessScope {
-    AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::InTenantSubtree(
-        InTenantSubtreeScopeFilter::new(pep_properties::RESOURCE_ID, root),
-    )]))
-}
-
-/// Barrier-relaxed clone of [`respect_scope`] — what
-/// `scope_util::relax_barriers` produces for the enumeration query.
-fn relaxed_scope(root: Uuid) -> AccessScope {
-    AccessScope::single(ScopeConstraint::new(vec![ScopeFilter::InTenantSubtree(
-        InTenantSubtreeScopeFilter::with_descendant_status(
-            pep_properties::RESOURCE_ID,
-            root,
-            false,
-            Vec::new(),
-        ),
-    )]))
-}
-
 /// `InTenantSubtree(root)` with a `descendant_status IN (active)` list,
 /// respecting (`respect = true`) or relaxing barriers.
 fn status_scope(root: Uuid, respect: bool) -> AccessScope {
@@ -72,17 +52,6 @@ fn status_scope(root: Uuid, respect: bool) -> AccessScope {
 
 fn ts_at(secs: i64) -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_700_000_000 + secs).expect("epoch + offset")
-}
-
-/// `$filter=contains(name,'<needle>')`.
-fn contains_name(needle: &str) -> ODataQuery {
-    ODataQuery::default().with_filter(Expr::Function(
-        "contains".to_owned(),
-        vec![
-            Expr::Identifier("name".to_owned()),
-            Expr::Value(OdataValue::String(needle.to_owned())),
-        ],
-    ))
 }
 
 /// `$filter=startswith(name,'<prefix>')`.
@@ -116,11 +85,6 @@ fn status_eq(label: &str) -> ODataQuery {
 
 fn ids_of(items: &[account_management::domain::tenant::model::TenantModel]) -> Vec<Uuid> {
     items.iter().map(|m| m.id).collect()
-}
-
-fn sorted(mut v: Vec<Uuid>) -> Vec<Uuid> {
-    v.sort();
-    v
 }
 
 /// Seed an active managed tenant with an explicit `created_at`, its
@@ -192,6 +156,33 @@ async fn repo_list_descendants_from_root_returns_children_of_respect_visible_nod
         sorted(vec![t.x, t.xc, t.s, t.y]),
         "rows whose parent is Respect-visible from root: x, xc (via x), s and y as \
          self-managed identities; never yc or sc (their parents sit past a barrier)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_list_descendants_follows_a_barrier_ignoring_scope() {
+    // The parent set is gated by the caller's PDP scope, not by a
+    // hard-coded `barrier = 0`: under a barrier-ignoring scope rooted at
+    // `root`, iterating `/children` reaches `sc` (via `s`) and `yc` (via
+    // `y`), so the recursive listing must too.
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+
+    let page = h
+        .repo
+        .list_descendants(
+            &relaxed_scope(t.root),
+            &relaxed_scope(t.root),
+            t.root,
+            &ODataQuery::default(),
+        )
+        .await
+        .expect("list");
+
+    assert_eq!(
+        sorted(ids_of(&page.items)),
+        sorted(vec![t.x, t.xc, t.s, t.sc, t.y, t.yc])
     );
 }
 

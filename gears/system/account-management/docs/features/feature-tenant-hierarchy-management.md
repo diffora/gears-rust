@@ -341,19 +341,20 @@ Provides the core tenant CRUD surface the platform is built around: the hierarch
 
 - [ ] `p1` - **ID**: `cpt-cf-account-management-algo-tenant-hierarchy-management-recursive-visible-set`
 
-**Input**: `tenant_id` (listing root), the caller's PDP-emitted barrier-respecting `AccessScope`, its barrier-relaxed clone, the OData query.
+**Input**: `tenant_id` (listing root), the caller's PDP-emitted `AccessScope`, its barrier-relaxed clone, the OData query.
 
-**Output**: One cursor page of the tenants whose parent is Respect-visible from `tenant_id`, each with `child_count` and its ancestor chain relative to `tenant_id`.
+**Output**: One cursor page of the tenants that level-by-level iteration of `flow-list-children` would reach from `tenant_id` under the caller's scope, each with `child_count` and its ancestor chain relative to `tenant_id`.
 
 **Steps**:
 
-> Generalises the direct-child carve-out of `flow-list-children`: a row is returned iff its parent is visible under the caller's original PDP-emitted scope (including any `descendant_status` restriction) and belongs to `closure(tenant_id, barrier = 0)`; the row itself is bounded by the barrier-relaxed clone of that scope. A self-managed direct child of any visible tenant is therefore returned as an identity (its `child_count` reads `0`), and nothing below a barrier is ever returned — a tenant past a barrier has a parent whose closure row from `tenant_id` carries `barrier = 1`.
+> Generalises the direct-child carve-out of `flow-list-children`: a row is returned iff its parent is in `tenant_id`'s subtree and visible under the caller's original PDP-emitted scope — which carries its own barrier mode and any `descendant_status` restriction, so no barrier clamp is hard-coded — and every ancestor between `tenant_id` and the row is visible under that scope too; the row itself is bounded by the barrier-relaxed clone of the scope. Under the barrier-respecting scope AM's PEP requests, a self-managed direct child of any visible tenant is therefore returned as an identity (its `child_count` reads `0`), and nothing below a barrier is ever returned.
 
 1. [ ] - `p1` - Run the PEP gate and the parent-existence gate of `flow-list-children` (`list_children` action on `tenant_id`; the parent must exist and be SDK-visible under the barrier-respecting scope, otherwise `CanonicalError::NotFound`) - `inst-algo-rvs-gate`
-2. [ ] - `p1` - Resolve the Respect-visible parent set as a subquery of the page statement: intersect `SELECT descendant_id FROM dbtable-tenant-closure WHERE ancestor_id = {tenant_id} AND barrier = 0` with `dbtable-tenants.id` selected under the caller's original barrier-respecting scope, including any `descendant_status` restriction - `inst-algo-rvs-visible-set`
-3. [ ] - `p1` - Page `dbtable-tenants` with `parent_id IN (visible set)`, the `provisioning` exclusion, the hidden `status IN (active, suspended)` default, and the caller's `$filter` / `$orderby` / cursor, under the barrier-relaxed clone of the caller's scope (the closure subquery intersected with the scoped parent query is the authorization boundary; the relaxed scope bounds rows to the caller's own subtree and preserves the scope's other restrictions) - `inst-algo-rvs-page`
-4. [ ] - `p1` - For the page's rows, read their strict ancestors from `dbtable-tenant-closure`, keep those with `depth > depth({tenant_id})` under the caller's barrier-respecting scope, and order each chain by depth ascending - `inst-algo-rvs-chains`
-5. [ ] - `p1` - **RETURN** the page with `child_count` per row (barrier-gated, as in `flow-list-children`) and the ancestor chain per row - `inst-algo-rvs-return`
+2. [ ] - `p1` - Resolve the visible parent set as a subquery of the page statement: `dbtable-tenants.id` selected under the caller's original PDP-emitted scope (the authorization boundary; its barrier mode and any `descendant_status` restriction apply) and restricted to `SELECT descendant_id FROM dbtable-tenant-closure WHERE ancestor_id = {tenant_id}` - `inst-algo-rvs-visible-set`
+3. [ ] - `p1` - Page `dbtable-tenants` with `parent_id IN (visible set)`, the `provisioning` exclusion, the hidden `status IN (active, suspended)` default, and the caller's `$filter` / `$orderby` / cursor, under the barrier-relaxed clone of the caller's scope (the relaxed scope bounds rows to the caller's own subtree and preserves the scope's other restrictions) - `inst-algo-rvs-page`
+4. [ ] - `p1` - For the page's rows, read their strict ancestors from `dbtable-tenant-closure`, keep those with `depth > depth({tenant_id})` under the caller's original scope, and order each chain by depth ascending - `inst-algo-rvs-chains`
+5. [ ] - `p1` - Drop every row whose chain is missing a depth between `depth({tenant_id}) + 1` and the row's parent: an ancestor on its path is not visible under the caller's scope (a per-descendant `descendant_status` restriction, or a barrier change committed between steps 3 and 4), so iteration could not reach it. A page may therefore hold fewer than the requested rows; its cursor stays valid - `inst-algo-rvs-complete-chain`
+6. [ ] - `p1` - **RETURN** the page with `child_count` per row (barrier-gated, as in `flow-list-children`) and the ancestor chain per row - `inst-algo-rvs-return`
 
 ### Hard-Delete Leaf-First Scheduler
 
@@ -594,7 +595,7 @@ GET `/tenants/{tenant_id}` **MUST** return tenant details (`id`, `parent_id`, `t
 
 GET `/tenants/{tenant_id}/children` **MUST** return direct children by default and, with `recursive=true`, every descendant visible to the caller under the same visibility rules (`algo-recursive-visible-set`), each row carrying `ancestors` — the chain from the child of `{tenant_id}` down to the row's direct parent, empty for a direct child; the key **MUST** be absent without the flag. Both modes **MUST** be cursor-paginated with an optional `status` filter across `{active, suspended, deleted}`; `provisioning` children **MUST NOT** be surfaced; `name` **MUST** accept `eq`, `ne`, `in`, `contains`, `startswith`, `endswith` (case-sensitive). Page size **MUST** be capped by platform policy. The Tenant Resolver SDK facade remains the barrier-mode traversal primitive for gears; this endpoint does not replace it.
 
-**Known limitation**: A `descendant_status`-constrained scope (which AM's own PEP never requests) is not path-monotone: a status-hidden ancestor two or more levels above a row does not hide that row when its immediate parent passes the original scope. Such a scope can also omit status-hidden intermediate ancestors from the returned chain. Barrier constraints are path-monotone and are enforced exactly.
+The recursive set **MUST** equal what level-by-level iteration of the direct listing reaches under the same scope: a row whose path from `{tenant_id}` crosses a tenant the caller's scope hides (barrier or `descendant_status`) **MUST NOT** be returned, even when a concurrent mode conversion commits between the page read and the ancestor read. A cursor **MUST** be bound to the mode it was minted in; replaying it with a different `recursive` value **MUST** fail like a changed `$filter` (`400`, `FILTER_MISMATCH`).
 
 **Implements**:
 

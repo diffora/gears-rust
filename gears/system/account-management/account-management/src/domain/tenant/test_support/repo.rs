@@ -746,8 +746,8 @@ impl TenantRepo for FakeTenantRepo {
         query: &ODataQuery,
     ) -> Result<Page<TenantModel>, DomainError> {
         // Mirrors production: a row is listed iff its parent is in
-        // `closure(root_id, barrier = 0)` AND visible under the caller's
-        // PDP scope (`visible`), and the row itself is inside the
+        // `root_id`'s subtree AND visible under the caller's PDP scope
+        // (`visible`, which carries the barrier mode), and the row itself is inside the
         // barrier-relaxed `enumeration` scope; hidden-status default
         // and the `status eq …` predicate exactly as in the fake
         // `list_children`. Richer `$filter` shapes, `$orderby` and
@@ -759,7 +759,7 @@ impl TenantRepo for FakeTenantRepo {
         let respect_visible_parents: HashSet<Uuid> = state
             .closure
             .iter()
-            .filter(|r| r.ancestor_id == root_id && r.barrier == 0)
+            .filter(|r| r.ancestor_id == root_id)
             .map(|r| r.descendant_id)
             .filter(|id| match &parent_scope {
                 Some(vis) => vis.contains(id),

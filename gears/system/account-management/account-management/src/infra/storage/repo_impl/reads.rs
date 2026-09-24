@@ -329,17 +329,36 @@ pub(super) async fn find_many(
 /// Map a pagination failure of one tenant listing onto the domain
 /// taxonomy. Filter / order / cursor rejections are the caller's fault
 /// (`Validation`, HTTP 400, detail forwarded); a database failure or a
-/// missing parser is ours (`Internal`, HTTP 500 — the diagnostic is
-/// audit-only and never leaks driver text into a public `Problem`).
-/// Row-shape drift from `entity_to_model` is preserved verbatim.
+/// missing parser is ours (`Internal`, HTTP 500). Row-shape drift from
+/// `entity_to_model` is preserved verbatim.
+///
+/// A database failure cannot be split into availability (503) versus
+/// everything else here: `paginate_odata_try` hands the driver error
+/// back as `toolkit_odata::Error::Db(String)`, the typed `DbErr` is
+/// gone, and [`crate::infra::canonical_mapping::classify_db_err_to_domain`]
+/// deliberately never string-matches driver text. So it is `Internal`
+/// with a fixed, redacted diagnostic; the driver text goes to the
+/// `am.db` log only, like every other AM DB read.
 fn map_listing_error(label: &'static str, e: PaginateOdataTryError<DomainError>) -> DomainError {
     match e {
-        PaginateOdataTryError::OData(
-            odata_err @ (toolkit_odata::Error::Db(_) | toolkit_odata::Error::ParsingUnavailable(_)),
-        ) => DomainError::Internal {
-            diagnostic: format!("{label}: pagination failed: {odata_err}"),
-            cause: None,
-        },
+        PaginateOdataTryError::OData(toolkit_odata::Error::Db(driver_text)) => {
+            tracing::warn!(
+                target: "am.db",
+                listing = label,
+                error = %driver_text,
+                "tenant listing page query failed; mapped to DomainError::Internal"
+            );
+            DomainError::Internal {
+                diagnostic: format!("{label}: page query failed (driver text redacted)"),
+                cause: None,
+            }
+        }
+        PaginateOdataTryError::OData(odata_err @ toolkit_odata::Error::ParsingUnavailable(_)) => {
+            DomainError::Internal {
+                diagnostic: format!("{label}: {odata_err}"),
+                cause: None,
+            }
+        }
         PaginateOdataTryError::OData(odata_err) => DomainError::Validation {
             detail: format!("{label} query rejected: {odata_err}"),
         },
@@ -469,23 +488,22 @@ pub(super) async fn list_descendants(
     root_id: Uuid,
     query: &ODataQuery,
 ) -> Result<Page<TenantModel>, DomainError> {
-    // The parents a row may hang from: tenants that are (a) in
-    // `closure(root_id, barrier = 0)` — Respect-descendants of the
-    // listing root, root included through its self-row — and (b)
-    // visible under the caller's PDP-emitted scope, `descendant_status`
-    // list included. Composed as SUBQUERIES of the page statement so
-    // gate and page observe one database snapshot (same construction
-    // as `count_children_grouped`'s `reachable_parents`).
-    // `tenant_closure` carries no ownership column (`no_*` entity), so
-    // `allow_all` is the only scope it takes.
-    let respect_descendants_of_root = tenant_closure::Entity::find()
+    // The parents a row may hang from: tenants that are (a) in the
+    // listing root's subtree, root included through its closure
+    // self-row, and (b) visible under the caller's PDP-emitted scope.
+    // (b) is the authorization boundary and carries the scope's own
+    // barrier mode and `descendant_status` list, so the recursive set
+    // is exactly what iterating `list_children` level by level would
+    // reach under the same scope — no barrier clamp is hard-coded here.
+    // Composed as SUBQUERIES of the page statement so gate and page
+    // observe one database snapshot (same construction as
+    // `count_children_grouped`'s `reachable_parents`). `tenant_closure`
+    // carries no ownership column (`no_*` entity), so `allow_all` is
+    // the only scope it takes.
+    let subtree_of_root = tenant_closure::Entity::find()
         .secure()
         .scope_with(&AccessScope::allow_all())
-        .filter(
-            Condition::all()
-                .add(tenant_closure::Column::AncestorId.eq(root_id))
-                .add(tenant_closure::Column::Barrier.eq(0_i16)),
-        )
+        .filter(Condition::all().add(tenant_closure::Column::AncestorId.eq(root_id)))
         .into_inner()
         .select_only()
         .column(tenant_closure::Column::DescendantId)
@@ -493,7 +511,7 @@ pub(super) async fn list_descendants(
     let visible_parents = tenants::Entity::find()
         .secure()
         .scope_with(visible)
-        .filter(Condition::all().add(tenants::Column::Id.in_subquery(respect_descendants_of_root)))
+        .filter(Condition::all().add(tenants::Column::Id.in_subquery(subtree_of_root)))
         .into_inner()
         .select_only()
         .column(tenants::Column::Id)
@@ -527,21 +545,26 @@ pub(super) async fn ancestor_chains(
     let conn = repo.db.conn()?;
 
     // 1. Every strict ancestor of every listed tenant, from the closure
-    //    table. Self-rows `(id, id)` come back too and are dropped in
-    //    memory. `tenant_closure` has no ownership column (`no_*`
-    //    entity), so `allow_all` is the only scope it takes.
+    //    table; self-rows `(id, id)` are excluded in SQL.
+    //    `tenant_closure` has no ownership column (`no_*` entity), so
+    //    `allow_all` is the only scope it takes.
+    let strict_ancestor_edges = || {
+        Condition::all()
+            .add(tenant_closure::Column::DescendantId.is_in(tenant_ids.iter().copied()))
+            .add(
+                Expr::col(tenant_closure::Column::AncestorId)
+                    .ne(Expr::col(tenant_closure::Column::DescendantId)),
+            )
+    };
     let edges = tenant_closure::Entity::find()
         .secure()
         .scope_with(&AccessScope::allow_all())
-        .filter(
-            Condition::all()
-                .add(tenant_closure::Column::DescendantId.is_in(tenant_ids.iter().copied())),
-        )
+        .filter(strict_ancestor_edges())
         .all(&conn)
         .await
         .map_err(map_scope_err)?;
 
-    if edges.iter().all(|e| e.ancestor_id == e.descendant_id) {
+    if edges.is_empty() {
         return Ok(HashMap::new());
     }
 
@@ -555,10 +578,7 @@ pub(super) async fn ancestor_chains(
     let ancestors_of_page = tenant_closure::Entity::find()
         .secure()
         .scope_with(&AccessScope::allow_all())
-        .filter(
-            Condition::all()
-                .add(tenant_closure::Column::DescendantId.is_in(tenant_ids.iter().copied())),
-        )
+        .filter(strict_ancestor_edges())
         .into_inner()
         .select_only()
         .column(tenant_closure::Column::AncestorId)
@@ -594,9 +614,6 @@ pub(super) async fn ancestor_chains(
     // 3. Group per listed tenant, top-down.
     let mut out: HashMap<Uuid, Vec<TenantAncestorRow>> = HashMap::new();
     for edge in edges {
-        if edge.ancestor_id == edge.descendant_id {
-            continue;
-        }
         if let Some(anc) = by_id.get(&edge.ancestor_id) {
             out.entry(edge.descendant_id).or_default().push(anc.clone());
         }

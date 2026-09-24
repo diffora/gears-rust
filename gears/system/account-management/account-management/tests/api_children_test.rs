@@ -515,3 +515,75 @@ async fn list_children_recursive_unknown_root_is_404() {
     let resp = router.oneshot(req).await.expect("router");
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+/// Fetch the first page at `limit=1` and return its `next_cursor`.
+async fn first_cursor(router: &axum::Router, root: Uuid, recursive: bool) -> String {
+    let flag = if recursive { "&recursive=true" } else { "" };
+    let req = json_request(
+        "GET",
+        &format!("/account-management/v1/tenants/{root}/children?limit=1{flag}"),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.clone().oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_body(resp).await;
+    body["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn list_children_cursor_is_bound_to_the_mode_it_was_minted_in() {
+    // Both modes sort by `(created_at, id)`, so a cursor replayed in the
+    // other mode would silently skip rows; it must be a 400 instead.
+    let h = setup_sqlite().await.expect("sqlite");
+    let (root, ..) = seed_two_levels(&h).await;
+    let services = build_services(&h);
+    let router = build_test_router(&services);
+
+    let recursive_cursor = first_cursor(&router, root, true).await;
+    let direct_cursor = first_cursor(&router, root, false).await;
+
+    let send = |cursor: &str, recursive: bool| {
+        let flag = if recursive { "&recursive=true" } else { "" };
+        json_request(
+            "GET",
+            &format!(
+                "/account-management/v1/tenants/{root}/children?limit=1&cursor={cursor}{flag}"
+            ),
+            None,
+            ctx_for(root),
+        )
+    };
+
+    let same = router
+        .clone()
+        .oneshot(send(&recursive_cursor, true))
+        .await
+        .expect("router");
+    assert_eq!(same.status(), StatusCode::OK, "same mode keeps paging");
+
+    let cross = router
+        .clone()
+        .oneshot(send(&recursive_cursor, false))
+        .await
+        .expect("router");
+    assert_eq!(
+        cross.status(),
+        StatusCode::BAD_REQUEST,
+        "recursive cursor in direct mode"
+    );
+
+    let cross_back = router
+        .clone()
+        .oneshot(send(&direct_cursor, true))
+        .await
+        .expect("router");
+    assert_eq!(
+        cross_back.status(),
+        StatusCode::BAD_REQUEST,
+        "direct cursor in recursive mode"
+    );
+}

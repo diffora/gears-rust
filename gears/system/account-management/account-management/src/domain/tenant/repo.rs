@@ -134,32 +134,35 @@ pub trait TenantRepo: Send + Sync {
     ) -> Result<Page<TenantModel>, DomainError>;
 
     /// Recursive counterpart of [`Self::list_children`]: every tenant
-    /// whose parent is Respect-visible from `root_id`, i.e.
+    /// whose parent is in `root_id`'s subtree and visible under
+    /// `visible`, i.e.
     ///
     /// ```text
-    /// tenants.parent_id IN (SELECT descendant_id FROM tenant_closure
-    ///                       WHERE ancestor_id = root_id AND barrier = 0)
+    /// tenants.parent_id IN (SELECT id FROM tenants
+    ///                       WHERE <visible scope>
+    ///                         AND id IN (SELECT descendant_id FROM tenant_closure
+    ///                                    WHERE ancestor_id = root_id))
     /// ```
     ///
-    /// This is the `/children` direct-child carve-out generalised over
-    /// the whole subtree: a row is returned iff its parent is visible
-    /// under `visible` (the caller's PDP-emitted, barrier-respecting
-    /// scope — including any `descendant_status` list it carries) and
-    /// sits in `closure(root_id, barrier = 0)`; the row itself is
-    /// bounded by `enumeration` (the barrier-relaxed clone of the same
-    /// scope, see `scope_util::relax_barriers`). A self-managed direct
-    /// child of any visible tenant is therefore returned as an
-    /// identity, nothing below a barrier ever is, and `root_id` itself
-    /// is never returned. The parent set is a subquery of the page
-    /// statement so gate and page observe one snapshot. Same
-    /// `Provisioning` exclusion, hidden-status default, default order
+    /// with the rows themselves bounded by `enumeration`. `visible` is
+    /// the caller's PDP-emitted scope and is the authorization
+    /// boundary: it carries the scope's own barrier mode and any
+    /// `descendant_status` list. `enumeration` is its barrier-relaxed
+    /// clone (see `scope_util::relax_barriers`). This is the
+    /// `/children` direct-child carve-out generalised over the whole
+    /// subtree: under a barrier-respecting scope a self-managed direct
+    /// child of any visible tenant is returned as an identity and
+    /// nothing below a barrier ever is; `root_id` itself is never
+    /// returned. The parent set is a subquery of the page statement so
+    /// gate and page observe one snapshot. Same `Provisioning`
+    /// exclusion, hidden-status default, default order
     /// `(created_at ASC, id ASC)` and cursor contract as
     /// `list_children`.
     ///
-    /// Known limitation: a `descendant_status` list is per-descendant,
-    /// not per-path, so a status-hidden ancestor two or more levels
-    /// above a row does not hide the row (barrier constraints are
-    /// path-monotone and exact). AM's own PEP requests no status list.
+    /// A `descendant_status` list is per-descendant, not per-path, so
+    /// this set can hold a row whose grandparent is status-hidden; the
+    /// service drops such rows by checking the ancestor chain (see
+    /// `TenantService::list_descendants`).
     async fn list_descendants(
         &self,
         visible: &AccessScope,

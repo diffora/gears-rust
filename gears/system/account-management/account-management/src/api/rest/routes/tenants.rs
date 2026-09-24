@@ -242,7 +242,8 @@ pub(super) fn register_tenants_routes(mut router: Router, openapi: &dyn OpenApiR
              direct parent, empty for a direct child; the key is absent without the flag. \
              Cursor-paginated with `(created_at ASC, id ASC)` as the effective sort so rows \
              sharing a `created_at` timestamp stay disambiguated across pages; a cursor is \
-             only meaningful with the same `recursive` value it was minted with. \
+             bound to the mode it was minted in, and replaying it with a different \
+             `recursive` value is 400 `FILTER_MISMATCH`, like a changed `$filter`. \
              Soft-deleted rows are hidden by default -- opt in with \
              `?$filter=status eq 'deleted'`. AM-internal `provisioning` rows are never \
              surfaced. The parent must exist and be SDK-visible, otherwise the call \

@@ -1692,8 +1692,60 @@ pub async fn seed_active_child(
 // Barrier topology shared by the carve-out and recursive-listing suites
 // =====================================================================
 
-/// Fixed ids for the barrier topology described in
-/// `docs/superpowers/specs/2026-09-24-am-recursive-children-search-design.md` §5:
+/// `InTenantSubtree(root)` scope as the PDP emits it (barrier-respecting).
+#[must_use]
+pub fn respect_scope(root: Uuid) -> AccessScope {
+    AccessScope::single(toolkit_security::ScopeConstraint::new(vec![
+        toolkit_security::ScopeFilter::InTenantSubtree(
+            toolkit_security::InTenantSubtreeScopeFilter::new(
+                toolkit_security::pep_properties::RESOURCE_ID,
+                root,
+            ),
+        ),
+    ]))
+}
+
+/// Barrier-relaxed clone of [`respect_scope`] — what
+/// `scope_util::relax_barriers` produces for the enumeration query, and
+/// what a barrier-ignoring PDP scope looks like.
+#[must_use]
+pub fn relaxed_scope(root: Uuid) -> AccessScope {
+    AccessScope::single(toolkit_security::ScopeConstraint::new(vec![
+        toolkit_security::ScopeFilter::InTenantSubtree(
+            toolkit_security::InTenantSubtreeScopeFilter::with_descendant_status(
+                toolkit_security::pep_properties::RESOURCE_ID,
+                root,
+                false,
+                Vec::new(),
+            ),
+        ),
+    ]))
+}
+
+/// `$filter=contains(name,'<needle>')`.
+#[must_use]
+pub fn contains_name(needle: &str) -> toolkit_odata::ODataQuery {
+    use toolkit_odata::ast::{Expr, Value};
+    toolkit_odata::ODataQuery::default().with_filter(Expr::Function(
+        "contains".to_owned(),
+        vec![
+            Expr::Identifier("name".to_owned()),
+            Expr::Value(Value::String(needle.to_owned())),
+        ],
+    ))
+}
+
+/// Sort a set of ids so order-insensitive assertions compare equal.
+#[must_use]
+pub fn sorted(mut ids: Vec<Uuid>) -> Vec<Uuid> {
+    ids.sort();
+    ids
+}
+
+/// Fixed ids for the barrier topology the recursive children listing is
+/// pinned against (FEATURE `tenant-hierarchy-management`, section
+/// "Recursive Visible-Set Resolution"; the expected visible sets are the
+/// table at the top of `tests/list_descendants_integration.rs`):
 ///
 /// ```text
 /// root ─ x (managed, depth 1) ─ y (self-managed, depth 2) ─ yc (depth 3)

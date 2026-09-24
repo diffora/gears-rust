@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use super::{clamp_listing_top, parse_recursive_flag, reject_non_odata_params};
+use super::{
+    bind_cursor_to_children_mode, clamp_listing_top, parse_recursive_flag, reject_non_odata_params,
+};
 use crate::domain::error::DomainError;
 use toolkit_odata::ODataQuery;
 
@@ -158,4 +160,21 @@ fn parse_recursive_flag_ignores_other_keys() {
     q.insert("limit".to_owned(), "10".to_owned());
     q.insert("$filter".to_owned(), "name eq 'x'".to_owned());
     assert!(!parse_recursive_flag(&q).expect("other keys are not this parser's business"));
+}
+
+#[test]
+fn bind_cursor_to_children_mode_separates_the_two_modes() {
+    // No `$filter`: the extractor leaves `filter_hash` unset.
+    let direct = bind_cursor_to_children_mode(ODataQuery::new(), false);
+    let recursive = bind_cursor_to_children_mode(ODataQuery::new(), true);
+    assert_eq!(direct.filter_hash.as_deref(), Some("children"));
+    assert_eq!(recursive.filter_hash.as_deref(), Some("recursive:"));
+
+    // With `$filter`: direct keeps the extractor's hash verbatim.
+    let filtered = ODataQuery::new().with_filter_hash("abc123".to_owned());
+    let direct = bind_cursor_to_children_mode(filtered.clone(), false);
+    let recursive = bind_cursor_to_children_mode(filtered, true);
+    assert_eq!(direct.filter_hash.as_deref(), Some("abc123"));
+    assert_eq!(recursive.filter_hash.as_deref(), Some("recursive:abc123"));
+    assert_ne!(direct.filter_hash, recursive.filter_hash);
 }

@@ -18,7 +18,9 @@ use toolkit::api::odata::OData;
 use toolkit_security::SecurityContext;
 
 use crate::api::rest::dto::{TenantCreateRequestDto, TenantDto, TenantUpdateRequestDto};
-use crate::api::rest::handlers::common::{clamp_listing_top, parse_recursive_flag};
+use crate::api::rest::handlers::common::{
+    bind_cursor_to_children_mode, clamp_listing_top, parse_recursive_flag,
+};
 use crate::domain::tenant::service::TenantService;
 use crate::infra::storage::repo_impl::TenantRepoImpl;
 
@@ -219,17 +221,24 @@ pub async fn unsuspend_tenant(
 
 /// `GET /account-management/v1/tenants/{tenant_id}/children`
 ///
-/// Soft-deleted rows are hidden by default — callers opt in with
+/// Direct children by default; with `recursive=true` every descendant
+/// visible to the caller, each item carrying `ancestors`. Soft-deleted
+/// rows are hidden by default — callers opt in with
 /// `?$filter=status eq 'deleted'`. AM-internal `provisioning` rows are never
 /// surfaced. Effective sort is `(created_at ASC, id ASC)` for stable
-/// cursor pagination across `created_at` ties.
+/// cursor pagination across `created_at` ties; a cursor is bound to the
+/// mode it was minted in (see `bind_cursor_to_children_mode`).
 ///
 /// # Errors
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
-/// `validation` (400 — malformed `$filter` / `$orderby`, or `recursive` not `true`/`false`),
+/// `validation` (400 — malformed `$filter` / `$orderby`, `recursive` not
+/// `true`/`false`, or a cursor replayed with a different `$filter` or mode),
 /// `cross_tenant_denied` (403), parent tenant `not_found` (404),
-/// `service_unavailable` (503 — PDP / DB transport failure).
+/// `service_unavailable` (503 — PDP failure, or the DB unavailable for the
+/// parent read), `internal` (500 — the page query itself failed: the
+/// pagination helper does not keep the typed DB error, so availability
+/// cannot be told apart there).
 // `Query<HashMap<String, String>>` is the canonical Axum form for
 // scanning unmodelled query keys (see `list_own_conversions`); the
 // generic-hasher lint has no pay-off on Axum's default hasher.
@@ -246,7 +255,10 @@ pub async fn list_tenant_children(
     OData(query): OData,
 ) -> ApiResult<Json<toolkit_odata::Page<TenantDto>>> {
     let recursive = parse_recursive_flag(&extras)?;
-    let query = clamp_listing_top(query, svc.max_list_children_top());
+    let query = bind_cursor_to_children_mode(
+        clamp_listing_top(query, svc.max_list_children_top()),
+        recursive,
+    );
     // @cpt-begin:cpt-cf-account-management-flow-tenant-hierarchy-management-list-children:p1:inst-flow-listch-ancestors
     if recursive {
         let page = svc.list_descendants(&ctx, tenant_id, &query).await?;
