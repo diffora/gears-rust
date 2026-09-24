@@ -1,6 +1,5 @@
 //! Product & SKU Registry authorization: PEP resource-type labels, action
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-rbac-catalog:p1
 //! names and the authz-label stub type-schemas that let RBAC role-definitions
 //! target this gear's authz labels.
 //!
@@ -255,13 +254,11 @@ pub mod actions {
     /// first publish (`dod-reference-authz`; P-D-147). An action on the
     /// existing `sku` label, not a label of its own: the door corrects a SKU.
     ///
-    /// @cpt-dod:cpt-cf-bss-products-dod-reference-authz:p1
     pub const CORRECT: &str = "correct";
     /// `06`'s force-completion ceremony on a timed-out version
     /// (`dod-force-completion`; P-D-67 arm 6, P-D-148) — `catalog_version ×
     /// force_complete`, the sixth action `05`'s roster grants on the label.
     ///
-    /// @cpt-dod:cpt-cf-bss-products-dod-cv-authz:p1
     pub const FORCE_COMPLETE: &str = "force_complete";
     /// Export action — taking audit content out of the gear, as opposed to
     /// reading it in place.

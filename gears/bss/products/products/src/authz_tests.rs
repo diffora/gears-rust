@@ -361,7 +361,6 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
 /// obliges the labels, the descriptors, the instances and these four roster
 /// sites, and names its own routeless grant as cited rather than decided.
 ///
-/// @cpt-dod:cpt-cf-bss-products-dod-retention-authz:p1
 ///
 /// No marker for `dod-rbac-catalog`: it waited on seven live §7 rows (1, 2, 3, 7,
 /// 12, 18 and 24), **all struck by P-D-119, P-D-120, P-D-133 and P-D-134** as

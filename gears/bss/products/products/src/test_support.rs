@@ -125,6 +125,9 @@ pub fn utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> O
 
 /// civil time names exactly one instant.
 #[must_use]
+///
+/// # Panics
+/// Panics if the hour is outside the fixture date range.
 pub fn at(hour: u32) -> OffsetDateTime {
     utc(
         2026,
@@ -137,11 +140,16 @@ pub fn at(hour: u32) -> OffsetDateTime {
 }
 
 /// A [`PolicyEnforcer`] over [`FlatInResolver`], scoped to one tenant.
+#[must_use]
 pub fn flat_in_enforcer(allowed: Uuid) -> PolicyEnforcer {
     PolicyEnforcer::new(Arc::new(FlatInResolver { allowed }))
 }
 
 /// An authenticated [`SecurityContext`] for `tenant`, with a fresh subject.
+#[must_use]
+///
+/// # Panics
+/// Panics if the fixed fixture identity cannot build a security context.
 pub fn authed_ctx(tenant: Uuid) -> SecurityContext {
     SecurityContext::builder()
         .subject_id(Uuid::now_v7())
@@ -158,6 +166,9 @@ pub fn authed_ctx(tenant: Uuid) -> SecurityContext {
 /// Its own connection, deliberately: the door harnesses pin `max_conns: 1` on
 /// the production provider, so introspecting through it would contend with the
 /// very statement under test.
+///
+/// # Panics
+/// Panics if the fixture connection, query, or required result fails.
 pub async fn raw_i64(dsn: &str, sql: &str) -> i64 {
     #[derive(Debug, FromQueryResult)]
     struct Row {
@@ -177,6 +188,9 @@ pub async fn raw_i64(dsn: &str, sql: &str) -> i64 {
 }
 
 /// [`raw_i64`] for a single nullable text column named `v`.
+///
+/// # Panics
+/// Panics if the fixture connection or query fails.
 pub async fn raw_string_opt(dsn: &str, sql: &str) -> Option<String> {
     #[derive(Debug, FromQueryResult)]
     struct Row {
@@ -196,6 +210,9 @@ pub async fn raw_string_opt(dsn: &str, sql: &str) -> Option<String> {
 }
 
 /// Drop `table` from the database at `dsn`, for the seams that need one gone.
+///
+/// # Panics
+/// Panics if the fixture connection or table deletion fails.
 pub async fn drop_table(dsn: &str, table: &str) {
     let conn = Database::connect(dsn)
         .await
@@ -207,6 +224,9 @@ pub async fn drop_table(dsn: &str, table: &str) {
 }
 
 /// The column names `table` declares, as the executed schema holds them.
+///
+/// # Panics
+/// Panics if the fixture table does not exist or its columns cannot be read.
 pub async fn table_columns(dsn: &str, table: &str) -> Vec<String> {
     let joined = raw_string_opt(
         dsn,
@@ -237,6 +257,9 @@ pub async fn enqueued_event_count(dsn: &str, payload_type: &str) -> i64 {
 /// enqueued the same token twice reads the one it just wrote. The `payload`
 /// column is a `BLOB`; `CAST(.. AS TEXT)` is what lets [`raw_string_opt`]'s
 /// single-text-column shape read it.
+///
+/// # Panics
+/// Panics if no matching event exists or its payload is not JSON.
 pub async fn enqueued_event_envelope(dsn: &str, payload_type: &str) -> serde_json::Value {
     let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
     let payload = raw_string_opt(
@@ -266,6 +289,7 @@ pub async fn idempotency_rows_for(dsn: &str, client_key: &str) -> i64 {
 ///
 /// `SQLite` stores a `UUID` as a 16-byte `BLOB`, so a bare `= '<hyphenated>'`
 /// misses rows the driver wrote as bytes; `hex()` is the other side of that.
+#[must_use]
 pub fn id_matches(column: &str, id: Uuid) -> String {
     let hex = id.simple().to_string().to_uppercase();
     format!("({column} = '{id}' OR hex({column}) = '{hex}')")
@@ -317,6 +341,7 @@ pub async fn audit_error_code(dsn: &str) -> Option<String> {
 /// `ApiState` carries unless a probe injects [`StubUsageTypes`] to script the
 /// other two answers. Production never sees it: `gear.rs` installs the
 /// collector's client or `NoCollector` (P-D-141).
+#[must_use]
 pub fn resolved_usage_types() -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
     Arc::new(StubUsageTypes::always(
         crate::domain::recognized::UsageTypeAnswer::Resolved(probe_binding()),
@@ -353,6 +378,9 @@ impl StubUsageTypes {
 
     /// `answers` in the order the door will receive them; the last repeats.
     #[must_use]
+    ///
+    /// # Panics
+    /// Panics when the answer sequence is empty.
     pub fn scripted(
         answers: impl IntoIterator<Item = crate::domain::recognized::UsageTypeAnswer>,
     ) -> Self {
@@ -396,234 +424,6 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for StubUsageTypes {
     }
 }
 
-/// Seed a **satisfied** approval record for `entity`'s publish subject at
-/// `revision`, so a routed act under the real host (`GateHost::Real`,
-/// P-D-142) finds the record the door's `governed` constructor demands.
-///
-/// The record is submitted through `repo::submit_approval` and then flipped
-/// to `satisfied` directly — the decision doors are a different suite's
-/// concern; this helper stands in for a quorum that has already spoken.
-pub async fn seed_satisfied_publish_approval(
-    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    tenant_id: Uuid,
-    entity_kind: bss_products_sdk::models::EntityKind,
-    entity_id: Uuid,
-    revision: i64,
-) -> crate::domain::governance::ApprovalId {
-    let subject = crate::domain::governance::GateSubject::entity_publish(
-        crate::domain::governance::EntityRef {
-            tenant_id,
-            entity_kind,
-            entity_id,
-        },
-        crate::domain::concurrency::InternalRevision::new(revision),
-    );
-    seed_satisfied_approval(db, tenant_id, subject, revision).await
-}
-
-/// [`seed_satisfied_publish_approval`] for any subject — a live op, the
-/// materiality policy, a bulk batch — since the routed live-op doors run the
-/// stored host too (P-D-144). `revision` is the stored pin (`0` for a subject
-/// with no counter, P-D-120 row 14).
-pub async fn seed_satisfied_approval(
-    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    tenant_id: Uuid,
-    subject: crate::domain::governance::GateSubject,
-    revision: i64,
-) -> crate::domain::governance::ApprovalId {
-    seed_satisfied_approval_with_ack(db, tenant_id, subject, revision, None).await
-}
-
-/// [`seed_satisfied_approval`] whose record also **carries the
-/// uncomposed-bundle acknowledgment** (`dod-bundle-override`): the double for
-/// P-D-02's two-person ceremony. `submit_approval` admits an author
-/// acknowledgment only at effective quorum zero (P-D-68 arm 1), so above it
-/// the double stamps the column after the fact — which is what an approver's
-/// acknowledging decision row amounts to for the gate's one reader,
-/// `CandidateApproval::override_acknowledged`. Stamps an already-open record
-/// for the subject too, so a probe can refuse first and acknowledge second.
-pub async fn seed_satisfied_approval_with_ack(
-    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    tenant_id: Uuid,
-    subject: crate::domain::governance::GateSubject,
-    revision: i64,
-    override_ack: Option<&str>,
-) -> crate::domain::governance::ApprovalId {
-    seed_satisfied_record(db, tenant_id, subject, revision, override_ack, "{}").await
-}
-
-/// [`seed_satisfied_approval`] whose record carries a **declared op payload**
-/// — the double for `03`'s change binding (**P-D-172**).
-///
-/// The plain [`seed_satisfied_approval`] stores `{}`, which declares no op
-/// and therefore authorizes every op on the subject; that is the
-/// compatibility arm and it is what the set doors' other probes exercise. A
-/// case measuring the binding has to seed the bytes the door will compare
-/// against, the way `07`'s correction double does.
-pub async fn seed_satisfied_approval_with_snapshot(
-    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    tenant_id: Uuid,
-    subject: crate::domain::governance::GateSubject,
-    revision: i64,
-    snapshot: &serde_json::Value,
-) -> crate::domain::governance::ApprovalId {
-    seed_satisfied_record(
-        db,
-        tenant_id,
-        subject,
-        revision,
-        None,
-        &snapshot.to_string(),
-    )
-    .await
-}
-
-/// The double for `07`'s correction ceremony (`dod-correction-door`): a
-/// satisfied `sku_correction` record for this SKU at `revision` whose
-/// snapshot **is the payload** the door will present — the door compares the
-/// two canonically and refuses a mismatch, so the double must carry the
-/// bytes an approver would have signed (P-D-129 rows 10 and 11).
-pub async fn seed_satisfied_correction_approval(
-    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    tenant_id: Uuid,
-    sku_id: Uuid,
-    revision: i64,
-    payload: &serde_json::Value,
-) -> crate::domain::governance::ApprovalId {
-    seed_satisfied_record(
-        db,
-        tenant_id,
-        crate::domain::governance::GateSubject::sku_correction(
-            tenant_id,
-            sku_id,
-            crate::domain::concurrency::InternalRevision::new(revision),
-        ),
-        revision,
-        None,
-        &payload.to_string(),
-    )
-    .await
-}
-
-async fn seed_satisfied_record(
-    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    tenant_id: Uuid,
-    subject: crate::domain::governance::GateSubject,
-    revision: i64,
-    override_ack: Option<&str>,
-    content_snapshot: &str,
-) -> crate::domain::governance::ApprovalId {
-    use crate::domain::governance::ApprovalId;
-    use crate::domain::materiality::{
-        MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
-    };
-    use crate::infra::storage::entity::approval;
-    use crate::infra::storage::repo;
-    use sea_orm::sea_query::Expr;
-    use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
-    use toolkit_db::secure::SecureUpdateExt as _;
-
-    let conn = db.conn().expect("connection");
-    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant_id);
-    let approval_id = ApprovalId::new(Uuid::now_v7());
-    // A case that seeded its own record for this subject keeps it: a second
-    // submission would supersede the open one (L-4) and change what the case
-    // is measuring.
-    let existing = repo::gate_candidates(&conn, &scope, &subject)
-        .await
-        .expect("read the subject's candidates");
-    if let Some(open) = existing.iter().find(|candidate| {
-        matches!(
-            candidate.state,
-            crate::domain::approval::ApprovalState::Pending
-                | crate::domain::approval::ApprovalState::Satisfied
-        )
-    }) {
-        if let Some(ack) = override_ack {
-            approval::Entity::update_many()
-                .secure()
-                .scope_with(&scope)
-                .col_expr(
-                    approval::Column::AuthorOverrideAck,
-                    Expr::value(Some(ack.to_owned())),
-                )
-                .col_expr(
-                    approval::Column::AuthorOverrideAckAt,
-                    Expr::value(Some(OffsetDateTime::now_utc())),
-                )
-                .filter(
-                    Condition::all()
-                        .add(approval::Column::TenantId.eq(tenant_id))
-                        .add(approval::Column::ApprovalId.eq(open.approval_id.get())),
-                )
-                .exec(&conn)
-                .await
-                .expect("stamp the acknowledgment on the open record");
-        }
-        return open.approval_id;
-    }
-    let policy = MaterialityPolicy::default();
-    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
-    let act = MaterialAct::PolicyMutation;
-    repo::submit_approval(
-        &conn,
-        &scope,
-        repo::NewApproval {
-            approval_id,
-            subject: &subject,
-            internal_revision: revision,
-            content_snapshot,
-            diff_basis: None,
-            act: &act,
-            evaluator,
-            finance_material: false,
-            approver_count: 2,
-            submitter: Uuid::from_u128(0xd1_77),
-            author_override_ack: None,
-            override_conditions: Vec::new(),
-        },
-        OffsetDateTime::now_utc(),
-    )
-    .await
-    .expect("submit the record");
-    approval::Entity::update_many()
-        .secure()
-        .scope_with(&scope)
-        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
-        .filter(
-            Condition::all()
-                .add(approval::Column::TenantId.eq(tenant_id))
-                .add(approval::Column::ApprovalId.eq(approval_id.get())),
-        )
-        .exec(&conn)
-        .await
-        .expect("satisfy the record");
-    if let Some(ack) = override_ack {
-        approval::Entity::update_many()
-            .secure()
-            .scope_with(&scope)
-            .col_expr(
-                approval::Column::AuthorOverrideAck,
-                Expr::value(Some(ack.to_owned())),
-            )
-            .col_expr(
-                approval::Column::AuthorOverrideAckAt,
-                Expr::value(Some(OffsetDateTime::now_utc())),
-            )
-            .filter(
-                Condition::all()
-                    .add(approval::Column::TenantId.eq(tenant_id))
-                    .add(approval::Column::ApprovalId.eq(approval_id.get())),
-            )
-            .exec(&conn)
-            .await
-            .expect("stamp the acknowledgment");
-    }
-    approval_id
-}
-
-/// A catalog that is configured and holds nothing — the 200-with-no-items case
-/// a 501 must never be confused with.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EmptyUsageTypes;
 

@@ -2112,6 +2112,7 @@ dependencies = [
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-security",
  "regex",
+ "serde",
  "time",
  "toml 0.8.23",
  "uuid",

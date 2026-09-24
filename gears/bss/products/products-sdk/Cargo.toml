@@ -11,6 +11,7 @@ name = "bss_products_sdk"
 workspace = true
 
 [dependencies]
+serde = { workspace = true, features = ["derive"] } # wire types
 async-trait = { workspace = true }
 # Every trait surface returns `CanonicalError`, per the errors ADR: the gear's
 # single `From<DomainError> for CanonicalError` ladder is the authoritative
