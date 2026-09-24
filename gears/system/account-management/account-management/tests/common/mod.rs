@@ -1697,6 +1697,10 @@ impl Default for BarrierTopology {
 /// self-managed tenant sits on the strict `(ancestor, descendant]`
 /// path). Provider-based so the SQLite and Postgres harnesses share it.
 /// Every tenant is `active`; `tenant_type_uuid` is nil.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "linear, hand-wired seed of a small fixed topology; splitting it into per-subtree helpers would obscure the closure-row table the design spec pins"
+)]
 pub async fn seed_barrier_topology(
     provider: &Arc<AmDbProvider>,
     t: &BarrierTopology,

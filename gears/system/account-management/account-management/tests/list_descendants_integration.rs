@@ -136,8 +136,8 @@ async fn seed_visible_at(
     depth: i32,
     created_at: OffsetDateTime,
 ) {
-    let parent_id = *ancestors.last().expect("at least the root");
     use toolkit_db::secure::secure_insert;
+    let parent_id = *ancestors.last().expect("at least the root");
     let conn = h.provider.conn().expect("conn");
     let am = tenants::ActiveModel {
         id: ActiveValue::Set(id),
@@ -460,7 +460,7 @@ async fn repo_list_descendants_cursor_walk_covers_whole_subtree_once() {
             None => break,
         }
     }
-    assert_eq!(pages, 3, "5 rows at limit=2 → 3 pages");
+    assert_eq!(pages, 3, "5 rows at limit=2 -> 3 pages");
     assert_eq!(
         seen, ids,
         "default (created_at ASC, id ASC) order, no loss, no duplicate"
@@ -540,8 +540,8 @@ async fn repo_ancestor_chains_returns_intermediates_ordered_top_down() {
     assert_eq!(xc_chain, vec![t.x]);
     let y_chain: Vec<Uuid> = chains[&t.y].iter().map(|a| a.id).collect();
     assert_eq!(y_chain, vec![t.x]);
-    let xcc_chain: Vec<(Uuid, u32)> = chains[&xcc].iter().map(|a| (a.id, a.depth)).collect();
-    assert_eq!(xcc_chain, vec![(t.x, 1), (t.xc, 2)], "top-down, by depth");
+    let deep_chain: Vec<(Uuid, u32)> = chains[&xcc].iter().map(|a| (a.id, a.depth)).collect();
+    assert_eq!(deep_chain, vec![(t.x, 1), (t.xc, 2)], "top-down, by depth");
     assert_eq!(chains[&xcc][1].name, "xc");
 }
 
