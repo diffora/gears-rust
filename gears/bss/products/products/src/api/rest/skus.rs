@@ -414,6 +414,7 @@ async fn update_sku_draft(
     // Resolve only a changed proposed ref outside the transaction. The revision check inside
     // guarantees this answer cannot be applied to a different head after a concurrent edit.
     let current = {
+        super::governance::touch(&state, &scope_tx, ctx.subject_tenant_id(), id).await?;
         let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
         find(&conn, &scope_tx, tenant_id, id)
             .await
@@ -471,6 +472,7 @@ async fn get_sku(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = scope(&enforcer, &ctx, false).await?;
+    super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let s = find(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
@@ -529,10 +531,30 @@ async fn list_skus(
         limit: u64::from(limit),
         after_code: q.after,
     };
-    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
-    let mut items = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &q)
+    let tenant = ctx.subject_tenant_id();
+    let ttl = state.fence_ttl_minutes;
+    let mut items = state
+        .db
+        .db()
+        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
+            let scope = scope.clone();
+            let q = q.clone();
+            Box::pin(async move {
+                repo::expire_orphan_fences(
+                    tx,
+                    &scope,
+                    tenant,
+                    OffsetDateTime::now_utc() - time::Duration::minutes(i64::from(ttl)),
+                )
+                .await
+                .map_err(TxError::Repo)?;
+                repo::list_skus(tx, &scope, tenant, &q)
+                    .await
+                    .map_err(TxError::Repo)
+            })
+        })
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
+        .map_err(tx_to_canonical)?;
     let limit =
         usize::try_from(limit).map_err(|e| CanonicalError::internal(e.to_string()).create())?;
     let more = items.len() > limit;
@@ -558,6 +580,7 @@ async fn sku_versions(
     let ctx = require_authenticated(extension_ctx)?;
     let scope = scope(&enforcer, &ctx, false).await?;
     let q = query(q)?;
+    super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     find(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
@@ -597,6 +620,7 @@ async fn sku_references(
     let ctx = require_authenticated(extension_ctx)?;
     let scope = scope(&enforcer, &ctx, false).await?;
     let tenant = ctx.subject_tenant_id();
+    super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     find(&conn, &scope, tenant, id)
         .await

@@ -398,11 +398,14 @@ pub struct VoteRequest {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct SubmitReceipt {
+    pub applied: bool,
     pub unit: UnitDto,
     pub sku: SkuDto,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct VoteReceipt {
+    pub have: Option<u32>,
+    pub need: Option<u32>,
     pub outcome: String,
     pub unit: UnitDto,
 }
@@ -419,3 +422,87 @@ pub struct PolicyDto {
 #[cfg(test)]
 #[path = "dto_tests.rs"]
 mod dto_tests;
+
+#[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::empty_structs_with_brackets,
+    reason = "Serde must accept an empty JSON object, not null"
+)]
+pub struct EmptyRequest {}
+impl From<bss_approval::Unit> for UnitDto {
+    fn from(u: bss_approval::Unit) -> Self {
+        Self {
+            id: u.id,
+            kind: u.kind,
+            ref_type: u.ref_type,
+            ref_id: u.ref_id,
+            state: u.state.as_str().into(),
+            generation: u.generation,
+            quorum_required: u.quorum_required,
+            common_effective_date: u.common_effective_date,
+            submitted_by: u.submitted_by,
+            submitted_at: u.submitted_at,
+            decided_at: u.decided_at,
+            decided_note: u.decided_note,
+            snapshot: u.snapshot,
+            decisions: Vec::new(),
+            impact_live: None,
+        }
+    }
+}
+impl From<bss_approval::Decision> for DecisionDto {
+    fn from(d: bss_approval::Decision) -> Self {
+        Self {
+            actor: d.actor,
+            generation: d.generation,
+            decision: d.verdict.as_str().into(),
+            note: d.note,
+            at: d.at,
+            stale: d.stale,
+        }
+    }
+}
+impl From<bss_approval::Policy> for PolicyDto {
+    fn from(p: bss_approval::Policy) -> Self {
+        Self {
+            default_quorum: p.default_quorum,
+            overrides: p.overrides,
+        }
+    }
+}
+#[toolkit_macros::api_dto(request)]
+pub struct ReserveRequest {
+    pub owner: String,
+    pub kind: String,
+    pub ref_id: Uuid,
+}
+#[toolkit_macros::api_dto(request)]
+pub struct ReleaseRequest {
+    #[serde(default)]
+    pub force: bool,
+    pub reason: Option<String>,
+}
+#[toolkit_macros::api_dto(response)]
+pub struct ReferenceReceipt {
+    pub id: Uuid,
+    pub sku_id: Uuid,
+    pub owner: String,
+    pub kind: String,
+    pub ref_id: Uuid,
+    pub state: String,
+    pub forced: bool,
+}
+impl From<crate::infra::storage::repo::SkuReference> for ReferenceReceipt {
+    fn from(r: crate::infra::storage::repo::SkuReference) -> Self {
+        Self {
+            id: r.id,
+            sku_id: r.sku_id,
+            owner: r.owner_gear,
+            kind: r.ref_kind,
+            ref_id: r.ref_id,
+            state: r.state,
+            forced: r.forced,
+        }
+    }
+}

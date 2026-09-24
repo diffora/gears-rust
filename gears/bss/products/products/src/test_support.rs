@@ -564,6 +564,20 @@ pub async fn rest_app_with_catalog(
     source: &'static str,
 ) -> (axum::Router, String) {
     let (db, _, _, dsn) = test_db().await;
+    let (app, _) = rest_app_on_db(tenant, build, catalog, source, db).await;
+    (app, dsn)
+}
+
+/// Build a router on a supplied provider so race tests use independent connections.
+/// # Panics
+/// Panics if outbox initialization fails.
+pub async fn rest_app_on_db(
+    tenant: Uuid,
+    build: fn(Arc<crate::api::rest::ApiState>, &dyn toolkit::api::OpenApiRegistry) -> axum::Router,
+    catalog: Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
+    source: &'static str,
+    db: toolkit_db::DBProvider<toolkit_db::DbError>,
+) -> (axum::Router, Arc<crate::api::rest::ApiState>) {
     let handle = toolkit_db::outbox::Outbox::builder(db.db().clone())
         .table_prefix(events::OUTBOX_TABLE_PREFIX)
         .unwrap()
@@ -582,11 +596,15 @@ pub async fn rest_app_with_catalog(
         usage_type_catalog_source: source,
         idempotency_retention_hours: 24,
         fence_ttl_minutes: 30,
+        reference_principals: std::collections::BTreeMap::from([(
+            Uuid::from_u128(42),
+            "pricing".into(),
+        )]),
     });
-    let app = build(state, &toolkit::api::OpenApiRegistryImpl::new())
+    let app = build(state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(flat_in_enforcer(tenant)))
         .layer(axum::Extension(Arc::new(RestOutbox { _handle: handle })));
-    (app, dsn)
+    (app, state)
 }
 
 /// Open an auxiliary scoped provider to seed the REST fixture through repositories.

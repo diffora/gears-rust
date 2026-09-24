@@ -164,16 +164,13 @@ pub(crate) enum ClaimVerdict {
 /// Take the claim for `input` **on the caller's own runner** and read the
 /// outcome as a [`ClaimVerdict`].
 ///
-/// # `runner` MUST be the guarded mutation's transaction
+/// # `PriceBook` replay boundary (P-D-193)
 ///
-/// `repo::claim_idempotency_key`'s own doc states the obligation and why it
-/// is stricter than `repo::resolve_actor_ref`'s: the claim `INSERT` **is**
-/// the gate (P-D-42), and joining the mutation's transaction is what makes a
-/// rollback free the key with no release step. A claim taken on a runner of
-/// its own would survive a mutation that rolled back and lock the key
-/// against an act that never happened — the one property this whole
-/// mechanism exists to provide. Both doors therefore call this from inside
-/// their `insert_*_with_event` closure, before the entity insert.
+/// Governance doors call this in their own small transaction before any SKU
+/// fence or unit work. They answer the claim in the successful business
+/// transaction, or release it in a small cleanup transaction after refusal.
+/// This supersedes the backup's mutation-local claim contract. A process that
+/// dies after claiming remains in flight until the retained claim expires.
 ///
 /// The payload comparison is made **here** and not in the repository: that
 /// layer was never handed the incoming request to compare against the stored

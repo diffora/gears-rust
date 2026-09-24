@@ -367,6 +367,7 @@ pub async fn list_units(
     tenant_id: Uuid,
     state: Option<UnitState>,
     kind: Option<&str>,
+    ref_id: Option<Uuid>,
 ) -> Result<Vec<Unit>, RepoError> {
     let mut c = Condition::all().add(approval_unit::Column::TenantId.eq(tenant_id));
     if let Some(s) = state {
@@ -374,6 +375,9 @@ pub async fn list_units(
     }
     if let Some(k) = kind {
         c = c.add(approval_unit::Column::Kind.eq(k));
+    }
+    if let Some(id) = ref_id {
+        c = c.add(approval_unit::Column::RefId.eq(id));
     }
     approval_unit::Entity::find()
         .secure()

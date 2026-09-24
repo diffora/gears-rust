@@ -223,7 +223,7 @@ async fn a_decision_and_version_bump_roll_back_on_error() {
             .is_empty()
     );
     assert_eq!(
-        list_units(&db.conn().unwrap(), &scope, tenant, None, None)
+        list_units(&db.conn().unwrap(), &scope, tenant, None, None, None)
             .await
             .unwrap()[0]
             .version,

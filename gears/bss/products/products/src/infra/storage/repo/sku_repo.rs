@@ -536,3 +536,26 @@ pub async fn find_sku_fence(
         .await
         .map_err(|e| driver_failure("find SKU fence".into(), e))
 }
+
+/// Recover tenant-scoped orphan fences before applying list filters.
+/// Pending units cannot be released, even when their fences are old.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn expire_orphan_fences(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    cutoff: OffsetDateTime,
+) -> Result<(), RepoError> {
+    clear_fence(scope, false)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant))
+                .add(sku::Column::PendingUnitId.is_null())
+                .add(sku::Column::FencedAt.lte(cutoff)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("expire orphan SKU fences".into(), e))?;
+    Ok(())
+}

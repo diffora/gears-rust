@@ -348,6 +348,7 @@ impl Gear for BssProductsGear {
             usage_type_catalog_source,
             idempotency_retention_hours,
             fence_ttl_minutes: cfg.fence_ttl_minutes,
+            reference_principals: cfg.reference_principals.clone(),
         });
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
@@ -372,6 +373,22 @@ impl RestApiCapability for BssProductsGear {
                     openapi,
                 ))
                 .merge(crate::api::rest::skus::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .merge(crate::api::rest::sku_governance::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .merge(crate::api::rest::approval_units::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .merge(crate::api::rest::approval_policy::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .merge(crate::api::rest::references::router(
                     Arc::clone(&rt.api_state),
                     openapi,
                 ))
@@ -489,6 +506,20 @@ mod tests {
             "bss_products.update_sku_draft",
             "bss_products.sku_versions",
             "bss_products.sku_references",
+            "bss_products.submit_sku",
+            "bss_products.change_sku",
+            "bss_products.retire_sku",
+            "bss_products.unfence_sku",
+            "bss_products.list_approval_units",
+            "bss_products.get_approval_unit",
+            "bss_products.approve_unit",
+            "bss_products.reject_unit",
+            "bss_products.withdraw_unit",
+            "bss_products.get_approval_policy",
+            "bss_products.set_approval_policy",
+            "bss_products.reserve_reference",
+            "bss_products.confirm_reference",
+            "bss_products.release_reference",
         ];
         expected.sort_unstable();
         assert_eq!(actual, expected);
@@ -540,6 +571,7 @@ mod tests {
             idempotency_retention_hours: ProductsConfig::default()
                 .resolved_idempotency_retention_hours(),
             fence_ttl_minutes: 30,
+            reference_principals: std::collections::BTreeMap::new(),
         });
         gear.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),

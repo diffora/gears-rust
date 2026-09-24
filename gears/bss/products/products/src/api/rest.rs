@@ -10,9 +10,14 @@ use serde_json::Value as JsonValue;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_security::SecurityContext;
 
+pub mod approval_policy;
+pub mod approval_units;
 pub mod categories;
 pub mod dto;
+mod governance;
 pub mod preconditions;
+pub mod references;
+pub mod sku_governance;
 pub mod skus;
 
 /// The reserved service prefix.
@@ -29,8 +34,8 @@ pub struct ApiState {
     pub usage_type_catalog: std::sync::Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
     pub usage_type_catalog_source: &'static str,
     pub idempotency_retention_hours: u32,
-    #[allow(dead_code)] // Consumed by abandoned-fence recovery in Task 10.
     pub(crate) fence_ttl_minutes: u32,
+    pub(crate) reference_principals: std::collections::BTreeMap<uuid::Uuid, String>,
 }
 
 /// Shared REST foundation helper.
@@ -123,6 +128,14 @@ pub(crate) enum TxError {
     Refused(DomainError),
     Repo(RepoError),
     ApprovalDb(sea_orm::DbErr),
+    GenerationMismatch {
+        seen: i32,
+        current: i32,
+    },
+    FencedReferences {
+        code: &'static str,
+        rows: serde_json::Value,
+    },
 }
 impl From<toolkit_db::DbError> for TxError {
     fn from(e: toolkit_db::DbError) -> Self {
@@ -139,6 +152,9 @@ impl From<bss_approval::ApprovalError> for TxError {
     fn from(e: bss_approval::ApprovalError) -> Self {
         match e {
             bss_approval::ApprovalError::Db(db) => Self::ApprovalDb(db),
+            bss_approval::ApprovalError::GenerationMismatch { seen, current } => {
+                Self::GenerationMismatch { seen, current }
+            }
             other => Self::Refused(other.into()),
         }
     }
@@ -149,13 +165,25 @@ pub(crate) fn contention_db_err(e: &TxError) -> Option<&sea_orm::DbErr> {
         TxError::Repo(RepoError::Driver { source, .. }) | TxError::ApprovalDb(source) => {
             Some(source)
         }
-        TxError::Repo(_) | TxError::Refused(_) => None,
+        TxError::Repo(_)
+        | TxError::Refused(_)
+        | TxError::GenerationMismatch { .. }
+        | TxError::FencedReferences { .. } => None,
     }
 }
 /// Convert only after the retry loop has finished.
 pub(crate) fn tx_to_canonical(e: TxError) -> CanonicalError {
     match e {
         TxError::Refused(d) => d.into(),
+        TxError::FencedReferences { code, rows } => DomainError::Conflict {
+            code,
+            detail: rows.to_string(),
+        }
+        .into(),
+        TxError::GenerationMismatch { seen, current } => {
+            DomainError::from(bss_approval::ApprovalError::GenerationMismatch { seen, current })
+                .into()
+        }
         TxError::Repo(r) => repo_error_to_canonical(&r),
         TxError::ApprovalDb(source) => repo_error_to_canonical(&RepoError::Driver {
             context: "approval".into(),

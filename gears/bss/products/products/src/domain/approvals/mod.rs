@@ -1,8 +1,5 @@
 //! Approval kinds and immutable proposal content shared by the subjects.
-#![allow(
-    dead_code,
-    reason = "Task 9 subjects are wired into production REST doors in Task 10"
-)]
+
 use bss_products_sdk::models::{Lifecycle, SkuContent};
 /// Publish a draft SKU.
 pub const KIND_SKU_PUBLISH: &str = "sku_publish";
@@ -88,4 +85,100 @@ async fn sku(
         .await
         .map_err(store_err)?
         .ok_or_else(|| invalid("NOT_FOUND", "id", id.to_string()))
+}
+
+/// The products kinds share one engine boundary without erasing the transaction runner.
+#[toolkit_macros::domain_model]
+#[derive(Clone)]
+pub(crate) enum Subject {
+    Publish(publish::SkuPublish),
+    Change(change::SkuChange),
+    Retire(retire::SkuRetire),
+}
+#[async_trait::async_trait]
+impl<'a> bss_approval::ApprovalSubject<DbTx<'a>> for Subject {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Publish(s) => s.kind(),
+            Self::Change(s) => s.kind(),
+            Self::Retire(s) => s.kind(),
+        }
+    }
+    fn ref_type(&self) -> &'static str {
+        match self {
+            Self::Publish(s) => s.ref_type(),
+            Self::Change(s) => s.ref_type(),
+            Self::Retire(s) => s.ref_type(),
+        }
+    }
+    async fn collect(
+        &self,
+        tx: &DbTx<'a>,
+        ids: &[Uuid],
+    ) -> Result<Vec<bss_approval::ItemRef>, ApprovalError> {
+        match self {
+            Self::Publish(s) => s.collect(tx, ids).await,
+            Self::Change(s) => s.collect(tx, ids).await,
+            Self::Retire(s) => s.collect(tx, ids).await,
+        }
+    }
+    async fn validate_submit(
+        &self,
+        tx: &DbTx<'a>,
+        items: &[bss_approval::ItemRef],
+    ) -> Result<(), ApprovalError> {
+        match self {
+            Self::Publish(s) => s.validate_submit(tx, items).await,
+            Self::Change(s) => s.validate_submit(tx, items).await,
+            Self::Retire(s) => s.validate_submit(tx, items).await,
+        }
+    }
+    async fn lock(
+        &self,
+        tx: &DbTx<'a>,
+        unit: Uuid,
+        items: &[bss_approval::ItemRef],
+    ) -> Result<(), ApprovalError> {
+        match self {
+            Self::Publish(s) => s.lock(tx, unit, items).await,
+            Self::Change(s) => s.lock(tx, unit, items).await,
+            Self::Retire(s) => s.lock(tx, unit, items).await,
+        }
+    }
+    fn snapshot(
+        &self,
+        items: &[bss_approval::ItemRef],
+        date: Option<time::Date>,
+    ) -> serde_json::Value {
+        match self {
+            Self::Publish(s) => s.snapshot(items, date),
+            Self::Change(s) => s.snapshot(items, date),
+            Self::Retire(s) => s.snapshot(items, date),
+        }
+    }
+    async fn apply(
+        &self,
+        tx: &DbTx<'a>,
+        unit: &bss_approval::Unit,
+        items: &[bss_approval::ItemRef],
+    ) -> Result<(), ApprovalError> {
+        match self {
+            Self::Publish(s) => s.apply(tx, unit, items).await,
+            Self::Change(s) => s.apply(tx, unit, items).await,
+            Self::Retire(s) => s.apply(tx, unit, items).await,
+        }
+    }
+    async fn unlock(
+        &self,
+        tx: &DbTx<'a>,
+        unit: &bss_approval::Unit,
+        items: &[bss_approval::ItemRef],
+        approved: bool,
+    ) -> Result<(), ApprovalError> {
+        match self {
+            Self::Publish(s) => s.unlock(tx, unit, items, approved).await,
+            Self::Change(s) => s.unlock(tx, unit, items, approved).await,
+            Self::Retire(s) => s.unlock(tx, unit, items, approved).await,
+        }
+    }
 }

@@ -56,6 +56,12 @@ pub struct ReferenceSummary {
 /// # Errors
 /// `SKU_RETIRING` while retiring; `SKU_FENCED` for other fences or inactive heads.
 pub fn reservation_allowed(lifecycle: Lifecycle, fenced: bool) -> Result<(), DomainError> {
+    if fenced {
+        return Err(DomainError::Conflict {
+            code: "SKU_FENCED",
+            detail: "the SKU is fenced".into(),
+        });
+    }
     if lifecycle == Lifecycle::Retiring {
         return Err(DomainError::Conflict {
             code: "SKU_RETIRING",

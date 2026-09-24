@@ -110,7 +110,9 @@ impl From<DomainError> for CanonicalError {
                     detail,
                     "bss-products: dependency unavailable"
                 );
-                CanonicalError::service_unavailable().create()
+                CanonicalError::service_unavailable()
+                    .with_detail(format!("USAGE_TYPE_UNAVAILABLE: {detail}"))
+                    .create()
             }
             D::UnrecognizedUnit(detail) => precondition("meter", &detail, "UNRECOGNIZED_UNIT"),
             D::MeterDeclarationIncomplete(detail) => {

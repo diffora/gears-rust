@@ -202,6 +202,8 @@ pub enum UsageTypeCatalogSource {
 pub struct ProductsConfig {
     /// Age of an abandoned SKU fence before recovery.
     pub fence_ttl_minutes: u32,
+    /// Authenticated service subject ids bound to owner gear names. Empty denies owner operations.
+    pub reference_principals: std::collections::BTreeMap<uuid::Uuid, String>,
     /// How long an idempotency key is retained, in hours, **as the operator
     /// wrote it**.
     ///
@@ -536,6 +538,7 @@ impl Default for ProductsConfig {
     fn default() -> Self {
         Self {
             fence_ttl_minutes: 30,
+            reference_principals: std::collections::BTreeMap::new(),
             idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,
