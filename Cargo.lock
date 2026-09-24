@@ -1862,6 +1862,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "cf-gears-toolkit-db",
+ "parking_lot",
  "sea-orm",
  "sea-orm-migration",
  "serde",

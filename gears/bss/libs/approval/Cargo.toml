@@ -20,6 +20,7 @@ sea-orm = { workspace = true, features = ["sqlx-sqlite"] } # DbErr, DbBackend, S
 sea-orm-migration = { workspace = true }               # SchemaManager for apply_up / apply_down
 
 [dev-dependencies]
+parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true, features = ["macros"] }     # datetime!() in tests
 
