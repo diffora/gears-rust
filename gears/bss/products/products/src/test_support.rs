@@ -490,3 +490,53 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for UnreachableUsageTypes {
         )
     }
 }
+
+/// File-backed database with the production migration chains and a PDP-derived scope.
+///
+/// # Panics
+/// Panics if fixture initialization fails.
+pub async fn test_db() -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::secure::AccessScope,
+    Uuid,
+    String,
+) {
+    use sea_orm_migration::MigratorTrait;
+    let path = std::env::temp_dir().join(format!("products-repos-{}.sqlite3", Uuid::new_v4()));
+    let dsn = format!("sqlite://{}?mode=rwc", path.display());
+    let db = toolkit_db::connect_db(
+        &dsn,
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::infra::storage::migrations::Migrator::migrations(),
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX).unwrap(),
+    )
+    .await
+    .unwrap();
+    let tenant = Uuid::new_v4();
+    let scope = crate::authz::access_scope(
+        &flat_in_enforcer(tenant),
+        &authed_ctx(tenant),
+        &crate::authz::resource_types::SKU,
+        crate::authz::actions::READ,
+        Some(tenant),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
+    (toolkit_db::DBProvider::new(db), scope, tenant, dsn)
+}
