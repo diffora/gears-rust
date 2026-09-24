@@ -3,6 +3,7 @@
 
 use sea_orm::DbErr;
 
+pub mod entity;
 pub mod migrations;
 pub mod repo;
 
