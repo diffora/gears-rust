@@ -73,9 +73,25 @@ pub struct ApprovalRefusal {
 }
 impl From<bss_approval::ApprovalError> for DomainError {
     fn from(error: bss_approval::ApprovalError) -> Self {
-        Self::Approval(ApprovalRefusal {
-            code: error.code(),
-            detail: error.to_string(),
-        })
+        match error {
+            // These variants carry a subject-specific code distinct from code(),
+            // which names only the engine's broad error category.
+            bss_approval::ApprovalError::InvalidSubmit {
+                code,
+                field,
+                detail,
+            } => {
+                let mut report = ValidationReport::new();
+                report.violate(code, field, detail);
+                Self::Validation(report)
+            }
+            bss_approval::ApprovalError::ApplyRefused { code, detail } => {
+                Self::Conflict { code, detail }
+            }
+            other => Self::Approval(ApprovalRefusal {
+                code: other.code(),
+                detail: other.to_string(),
+            }),
+        }
     }
 }

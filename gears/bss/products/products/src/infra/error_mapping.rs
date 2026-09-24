@@ -41,6 +41,9 @@ impl From<DomainError> for CanonicalError {
                 &format!("the unit was refreshed; review generation {generation}"),
                 "UNIT_STALE",
             ),
+            // InvalidSubmit and ApplyRefused enter through Validation/Conflict
+            // so their static subject-specific codes and fields survive intact.
+            // Database errors are mapped only after the transaction retry loop.
             D::Approval(r) => match r.code {
                 "SOD_VIOLATION" | "NOT_SUBMITTER" => denied(r.code),
                 "NOTE_REQUIRED" => precondition("note", "a reject needs a note", "NOTE_REQUIRED"),

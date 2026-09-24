@@ -162,3 +162,64 @@ fn approval_refusals_preserve_their_status_code_and_generation() {
         matches!(err, CanonicalError::FailedPrecondition {ctx,..} if ctx.violations[0].description.contains('7'))
     );
 }
+
+#[test]
+fn actual_approval_errors_keep_custom_codes_fields_and_details() {
+    use bss_approval::ApprovalError as A;
+    let invalid = CanonicalError::from(DomainError::from(A::InvalidSubmit {
+        code: "USAGE_NEEDS_METER",
+        field: "unit".into(),
+        detail: "a meter is required".into(),
+    }));
+    assert_eq!(invalid.status_code(), 400);
+    assert_eq!(code_of(&invalid), Some("USAGE_NEEDS_METER"));
+    assert!(
+        matches!(invalid,CanonicalError::FailedPrecondition {ctx,..} if ctx.violations[0].subject=="unit" && ctx.violations[0].description=="a meter is required")
+    );
+    let apply = CanonicalError::from(DomainError::from(A::ApplyRefused {
+        code: "SKU_REFERENCED",
+        detail: "one live reference".into(),
+    }));
+    assert_eq!(apply.status_code(), 409);
+    assert_eq!(code_of(&apply), Some("SKU_REFERENCED"));
+    for (error, status, code) in [
+        (A::SodViolation, 403, Some("SOD_VIOLATION")),
+        (A::NotSubmitter, 403, Some("NOT_SUBMITTER")),
+        (A::AlreadyDecided, 409, Some("UNIT_ALREADY_DECIDED")),
+        (A::DuplicateVote, 409, Some("DUPLICATE_VOTE")),
+        (A::Contended, 409, Some("UNIT_CONTENDED")),
+        (
+            A::Locked {
+                item_type: "sku".into(),
+                item_id: uuid::Uuid::new_v4(),
+            },
+            409,
+            Some("ROW_LOCKED_PENDING"),
+        ),
+        (A::NoteRequired, 400, Some("NOTE_REQUIRED")),
+        (A::Empty, 400, Some("VALIDATION")),
+        (
+            A::GenerationMismatch {
+                seen: 1,
+                current: 7,
+            },
+            400,
+            Some("GENERATION_MISMATCH"),
+        ),
+        (A::Store("private detail".into()), 500, None),
+        (
+            A::Db(sea_orm::DbErr::Custom("private driver detail".into())),
+            500,
+            None,
+        ),
+    ] {
+        let canonical = CanonicalError::from(DomainError::from(error));
+        assert_eq!(canonical.status_code(), status);
+        assert_eq!(code_of(&canonical), code);
+        if code == Some("GENERATION_MISMATCH") {
+            assert!(
+                matches!(canonical,CanonicalError::FailedPrecondition {ctx,..} if ctx.violations[0].description.contains('7'))
+            );
+        }
+    }
+}
