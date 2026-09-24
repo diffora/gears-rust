@@ -455,7 +455,7 @@ mod tests {
         assert!(gear.runtime.load_full().is_some());
         assert_eq!(
             crate::infra::storage::migrations::Migrator::migrations().len(),
-            1
+            7
         );
         let openapi = OpenApiRegistryImpl::new();
         let router = gear.register_rest(&ctx, Router::new(), &openapi)?;

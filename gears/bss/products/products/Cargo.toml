@@ -20,6 +20,7 @@ tokio-util = { workspace = true }
 tokio = { workspace = true }
 
 bss-products-sdk = { workspace = true }
+bss-approval = { workspace = true } # approval tables and engine
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

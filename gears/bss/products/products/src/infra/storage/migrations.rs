@@ -1,4 +1,4 @@
-//! Migration plumbing; phase 1c adds the SKU registry tables.
+//! The coordination and `PriceBook` registry migration chain.
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -40,12 +40,27 @@ pub async fn exec_backend(
     Ok(())
 }
 
+mod m20260925_000001_create_products_category;
+mod m20260925_000002_create_products_sku;
+mod m20260925_000003_create_products_approvals;
+mod m20260925_000004_create_products_audit_log;
+mod m20260925_000005_create_products_idempotency;
+mod m20260925_000006_create_products_sku_reference;
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(coord::migration::Migration::in_schema("bss"))]
+        vec![
+            Box::new(coord::migration::Migration::in_schema("bss")),
+            Box::new(m20260925_000001_create_products_category::Migration),
+            Box::new(m20260925_000002_create_products_sku::Migration),
+            Box::new(m20260925_000003_create_products_approvals::Migration),
+            Box::new(m20260925_000004_create_products_audit_log::Migration),
+            Box::new(m20260925_000005_create_products_idempotency::Migration),
+            Box::new(m20260925_000006_create_products_sku_reference::Migration),
+        ]
     }
 }
 

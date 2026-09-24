@@ -2059,6 +2059,7 @@ dependencies = [
  "axum",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-approval",
  "cf-gears-bss-coord",
  "cf-gears-bss-pricing",
  "cf-gears-bss-pricing-sdk",
