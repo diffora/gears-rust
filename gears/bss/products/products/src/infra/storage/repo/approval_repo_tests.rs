@@ -308,6 +308,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Subject {
                 &self.scope,
                 self.tenant,
                 i.item_id,
+                u.id,
                 approved.then_some(u.id),
             )
             .await

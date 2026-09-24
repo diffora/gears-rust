@@ -266,11 +266,36 @@ async fn card_and_reference_details_read_the_live_registry() {
                 .unwrap();
         }
     }
+    let released = repo::reserve_reference(
+        &conn,
+        &scope,
+        tenant,
+        s.id,
+        "pricing",
+        RefKind::SoldAs,
+        Uuid::new_v4(),
+        tenant,
+        at(9),
+    )
+    .await
+    .unwrap();
+    repo::release_reference(
+        &conn,
+        &scope,
+        tenant,
+        released.id,
+        tenant,
+        Some("abandoned attempt"),
+        true,
+        at(11),
+    )
+    .await
+    .unwrap();
     let url = format!("/bss-products/v1/skus/{}", s.id);
     let card = body_json(get(&app, tenant, &url).await).await;
     assert_eq!(
         card["references"],
-        json!({"prices":2,"plans":1,"reserved":1})
+        json!({"prices":2,"plans":1,"reserved":1,"by_owner":{"pricing":{"price":2,"plan_item":1,"reserved":1}}})
     );
     let refs = body_json(get(&app, tenant, &format!("{url}/references")).await).await;
     assert_eq!(refs["summary"], card["references"]);
@@ -285,6 +310,45 @@ async fn card_and_reference_details_read_the_live_registry() {
             .status(),
         StatusCode::NOT_FOUND
     );
+    let history_url = format!("{url}/references?include_released=true");
+    let history = body_json(get(&app, tenant, &history_url).await).await;
+    assert_eq!(history["summary"], card["references"]);
+    assert_eq!(history["items"].as_array().unwrap().len(), 4);
+    let row = history["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == released.id.to_string())
+        .unwrap();
+    assert_eq!(row["state"], "released");
+    assert_eq!(row["released_by"], tenant.to_string());
+    assert_eq!(row["release_reason"], "abandoned attempt");
+    assert_eq!(row["forced"], true);
+    assert!(row["released_at"].as_str().unwrap().contains('T'));
+    assert_eq!(
+        get(&app, Uuid::new_v4(), &history_url).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(
+            &app,
+            tenant,
+            &format!("{url}/references?include_released=invalid")
+        )
+        .await
+        .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let live = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("{url}/references?include_released=false"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(live["items"].as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]

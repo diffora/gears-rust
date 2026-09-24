@@ -156,9 +156,8 @@ impl Fixture {
 #[ignore = "requires Docker (testcontainers)"]
 async fn pg_indexes() {
     let pg = Pg::applied().await;
-    let rows = pg
-        .raw()
-        .await
+    let raw = pg.raw().await;
+    let rows = raw
         .query_all_raw(sql(
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'bss'",
         ))
@@ -180,6 +179,7 @@ async fn pg_indexes() {
             "missing index {expected}: {names:?}"
         );
     }
+    raw.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -705,4 +705,47 @@ async fn reserved_rows_block_until_release_and_tombstones_cannot_confirm() {
             .state,
         "released"
     );
+}
+
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn sku_versions_refuse_update_and_delete() {
+    let f = Fixture::new().await;
+    repo::append_version(
+        &f.db.conn().unwrap(),
+        &f.scope,
+        f.tenant,
+        f.sku.id,
+        1,
+        now().date(),
+        &bss_products_sdk::models::SkuContent::from(&f.sku),
+        now(),
+    )
+    .await
+    .unwrap();
+    let raw = f.pg.raw().await;
+    for statement in [
+        "UPDATE bss.products_sku_version SET content='{}'",
+        "DELETE FROM bss.products_sku_version",
+    ] {
+        let error = raw
+            .execute_raw(sql(statement))
+            .await
+            .expect_err("version mutations must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("products_sku_version is append-only"),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        count(
+            &raw,
+            "SELECT count(*) AS n FROM bss.products_sku_version WHERE content->>'code'='SKU'"
+        )
+        .await,
+        1
+    );
+    raw.close().await.unwrap();
 }

@@ -70,6 +70,11 @@ enum VersionsResponse {
     History(Vec<SkuVersionDto>),
     AsOf(Box<SkuVersionDto>),
 }
+#[toolkit_macros::api_dto(request)]
+struct ReferenceQuery {
+    #[serde(default)]
+    include_released: bool,
+}
 #[toolkit_macros::api_dto(response)]
 struct ReferenceDto {
     id: Uuid,
@@ -79,6 +84,11 @@ struct ReferenceDto {
     state: String,
     #[serde(with = "time::serde::rfc3339")]
     reserved_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    released_at: Option<OffsetDateTime>,
+    released_by: Option<Uuid>,
+    forced: bool,
+    release_reason: Option<String>,
 }
 impl From<repo::SkuReference> for ReferenceDto {
     fn from(r: repo::SkuReference) -> Self {
@@ -89,6 +99,10 @@ impl From<repo::SkuReference> for ReferenceDto {
             ref_id: r.ref_id,
             state: r.state,
             reserved_at: r.reserved_at,
+            released_at: r.released_at,
+            released_by: r.released_by,
+            forced: r.forced,
+            release_reason: r.release_reason,
         }
     }
 }
@@ -197,16 +211,21 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi);
     let router = OperationBuilder::get(format!("{SKUS}/{{id}}/references"))
         .operation_id("bss_products.sku_references")
-        .summary("Read live reference details")
+        .summary("Read reference details and optional released history")
         .tag(TAG)
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
+        .query_param(
+            "include_released",
+            false,
+            "Include released reference history (default false)",
+        )
         .handler(sku_references)
         .json_response_with_schema::<ReferenceList>(
             openapi,
             StatusCode::OK,
-            "Read live reference details.",
+            "Read reference details and optional released history.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -617,9 +636,11 @@ async fn sku_references(
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
+    q: Result<Query<ReferenceQuery>, QueryRejection>,
 ) -> Result<Json<ReferenceList>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = scope(&enforcer, &ctx, false).await?;
+    let q = query(q)?;
     let tenant = ctx.subject_tenant_id();
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
@@ -629,7 +650,7 @@ async fn sku_references(
     let summary = repo::reference_summary(&conn, &scope, tenant, id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
-    let items = repo::live_references(&conn, &scope, tenant, id)
+    let items = repo::list_references(&conn, &scope, tenant, id, q.include_released)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
     Ok(Json(ReferenceList {

@@ -484,8 +484,9 @@ pub async fn unlock_sku(
     scope: &AccessScope,
     tenant_id: Uuid,
     id: Uuid,
+    unit_id: Uuid,
     approved_by: Option<Uuid>,
-) -> Result<(), RepoError> {
+) -> Result<HeadWrite<Sku>, RepoError> {
     let mut q = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -493,11 +494,12 @@ pub async fn unlock_sku(
     if let Some(v) = approved_by {
         q = q.col_expr(sku::Column::ApprovedByUnitId, Expr::value(v));
     }
-    q.filter(key(tenant_id, id))
+    let result = q
+        .filter(key(tenant_id, id).add(sku::Column::PendingUnitId.eq(unit_id)))
         .exec(runner)
         .await
         .map_err(|e| driver_failure("unlock SKU".into(), e))?;
-    Ok(())
+    written(runner, scope, tenant_id, id, result.rows_affected).await
 }
 /// Count all heads that keep a category in use, including retired heads.
 /// # Errors

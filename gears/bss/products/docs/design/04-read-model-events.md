@@ -136,7 +136,7 @@ use snake_case, scoped SDK types and Foundation's Problem mapping.
 | --- | --- |
 | `GET /skus?q&type&category&lifecycle&limit&after` | products:read; search code/name, intersect provided filters, enforce bounded limit and exclusive code cursor ordering (codes are tenant-unique). Scope before filtering and cursor evaluation. |
 | `GET /skus/{id}` | products:read; current card with ETag and reference summary, including unconfirmed reservations. Shares slice 02's head read. |
-| `GET /skus/{id}/references` | products:read; local rows `{ owner, kind, ref_id, state }`, with reservation identity/timestamps for inspection and live counts grouped by owner/kind. Released history does not count as live. |
+| `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains prices/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | products:author plus authenticated owner check; 201 `{ reservation_id }` or 200 for the same live attempt; 409 SKU_FENCED for a new reservation through a fence. |
 | `POST /references/{id}/confirm` | products:author plus owner check; 200 also when already confirmed; 409 REFERENCE_RELEASED for a released id. |
 | `DELETE /references/{id}` | products:author plus owner check, or explicit operator authorization with `force: true` and reason. Records release, never deletes history. |

@@ -192,7 +192,7 @@ GET skus searches code/name and intersects type, category and lifecycle filters 
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-card-with-references`
 
-The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; released history remains visible but does not count, and no remote Pricing count substitutes for the local read (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
+The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat prices/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
 
 ### Durable reference identity and release
 

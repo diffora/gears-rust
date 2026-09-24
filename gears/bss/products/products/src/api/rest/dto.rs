@@ -217,6 +217,7 @@ pub struct ReferencesDto {
     pub prices: u32,
     pub plans: u32,
     pub reserved: u32,
+    pub by_owner: std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>>,
 }
 impl From<crate::domain::references::ReferenceSummary> for ReferencesDto {
     fn from(v: crate::domain::references::ReferenceSummary) -> Self {
@@ -224,6 +225,7 @@ impl From<crate::domain::references::ReferenceSummary> for ReferencesDto {
             prices: v.prices,
             plans: v.plans,
             reserved: v.reserved,
+            by_owner: v.by_owner,
         }
     }
 }

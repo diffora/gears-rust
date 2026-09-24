@@ -302,7 +302,7 @@ registration and standardized errors.
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
 | Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction; unfence only expired orphans. |
-| Reference reads | `GET /skus/{id}/references` | Local `{ owner, kind, ref_id, state }` rows and live counts grouped by owner/kind; show unresolved reservations. |
+| Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains prices/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
 | Confirm | `POST /references/{id}/confirm` | 200 also when already confirmed; released rows cannot reactivate. |
 | Release | `DELETE /references/{id}` | Owner after durable cancellation/deletion; operator requires `force: true` and reason, with actor attribution and event. |

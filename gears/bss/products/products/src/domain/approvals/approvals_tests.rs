@@ -8,7 +8,7 @@ use crate::{
     },
     test_support::*,
 };
-use bss_approval::{ApprovalError, Engine, Policy, Store, SubmitRequest};
+use bss_approval::{ApprovalError, ApprovalSubject, Engine, Policy, Store, SubmitRequest};
 use bss_products_sdk::models::{Lifecycle, SkuContent, SkuType};
 use event_broker_sdk::TypedEvent;
 use std::sync::Arc;
@@ -118,6 +118,44 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
         .unwrap()
         .unwrap();
     assert_eq!(got.lifecycle, Lifecycle::Published);
+    // A delayed non-fenced terminal callback cannot clear a later unit's lock.
+    let other_unit = Uuid::new_v4();
+    assert!(
+        repo::try_lock_sku(&conn, &scope, tenant, id, other_unit, got.revision)
+            .await
+            .unwrap()
+    );
+    let stale_subject = base.clone();
+    let stale_unit = published.unit.clone();
+    let failure = in_tx(&db.db(), move |tx| {
+        let b = stale_subject.clone();
+        let u = stale_unit.clone();
+        Box::pin(async move {
+            let store = repo::ProductsApprovalStore {
+                scope: b.scope.clone(),
+                tenant_id: tenant,
+            };
+            let items = store.items(tx, u.id).await?;
+            Ok(matches!(
+                b.unlock(tx, &u, &items, false).await,
+                Err(ApprovalError::Store(_))
+            ))
+        })
+    })
+    .await;
+    assert!(failure.ok().unwrap());
+    let locked = repo::find_sku(&conn, &scope, tenant, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(locked.pending_unit_id, Some(other_unit));
+    assert_eq!(locked.approved_by_unit_id, Some(published.unit.id));
+    assert!(matches!(
+        repo::unlock_sku(&conn, &scope, tenant, id, other_unit, None)
+            .await
+            .unwrap(),
+        repo::HeadWrite::Written(_)
+    ));
     assert_eq!(got.published_version, 1);
     assert_eq!(enqueued_event_count(&dsn, SkuPublished::TYPE_ID).await, 1);
     assert_eq!(

@@ -73,17 +73,11 @@ async fn the_lock_is_conditional_and_the_second_taker_gets_false() {
     let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
         .await
         .unwrap();
+    let owner = uuid::Uuid::new_v4();
     assert!(
-        try_lock_sku(
-            &conn,
-            &scope,
-            tenant,
-            s.id,
-            uuid::Uuid::new_v4(),
-            s.revision
-        )
-        .await
-        .unwrap()
+        try_lock_sku(&conn, &scope, tenant, s.id, owner, s.revision)
+            .await
+            .unwrap()
     );
     assert!(
         !try_lock_sku(
@@ -97,7 +91,9 @@ async fn the_lock_is_conditional_and_the_second_taker_gets_false() {
         .await
         .unwrap()
     );
-    unlock_sku(&conn, &scope, tenant, s.id, None).await.unwrap();
+    unlock_sku(&conn, &scope, tenant, s.id, owner, None)
+        .await
+        .unwrap();
     assert!(
         try_lock_sku(
             &conn,
@@ -428,7 +424,11 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
         crate::domain::references::ReferenceSummary {
             prices: 1,
             plans: 0,
-            reserved: 1
+            reserved: 1,
+            by_owner: std::collections::BTreeMap::from([(
+                "pricing".into(),
+                std::collections::BTreeMap::from([("price".into(), 1), ("reserved".into(), 1)])
+            )]),
         }
     );
     assert_eq!(
@@ -725,4 +725,53 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
     assert_eq!(s.published_version, 1);
     assert_eq!(s.revision, 2);
     assert_eq!(s.name, "Applied");
+}
+
+#[tokio::test]
+async fn stale_unlock_cannot_clear_another_units_lock() {
+    let (db, scope, tenant, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    let cat = seed_category(&conn, &scope, tenant).await;
+    let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
+        .await
+        .unwrap();
+    let owner = uuid::Uuid::new_v4();
+    let stale = uuid::Uuid::new_v4();
+    assert!(
+        try_lock_sku(&conn, &scope, tenant, s.id, owner, s.revision)
+            .await
+            .unwrap()
+    );
+    for approved_by in [None, Some(stale)] {
+        assert!(matches!(
+            unlock_sku(&conn, &scope, tenant, s.id, stale, approved_by)
+                .await
+                .unwrap(),
+            HeadWrite::Unmatched
+        ));
+        let head = find_sku(&conn, &scope, tenant, s.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(head.pending_unit_id, Some(owner));
+        assert_eq!(head.approved_by_unit_id, None);
+    }
+    assert!(matches!(
+        unlock_sku(&conn, &scope, tenant, s.id, owner, Some(owner))
+            .await
+            .unwrap(),
+        HeadWrite::Written(_)
+    ));
+    let head = find_sku(&conn, &scope, tenant, s.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.pending_unit_id, None);
+    assert_eq!(head.approved_by_unit_id, Some(owner));
+    assert!(matches!(
+        unlock_sku(&conn, &scope, tenant, s.id, owner, None)
+            .await
+            .unwrap(),
+        HeadWrite::Unmatched
+    ));
 }

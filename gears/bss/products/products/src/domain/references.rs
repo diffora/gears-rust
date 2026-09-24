@@ -49,6 +49,8 @@ pub struct ReferenceSummary {
     pub prices: u32,
     pub plans: u32,
     pub reserved: u32,
+    /// Live counts by owner and kind, including each owner’s reserved subset.
+    pub by_owner: std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>>,
 }
 /// Check local eligibility before a reservation is written in the transaction.
 /// @cpt-cf-bss-products-fr-reference-registry

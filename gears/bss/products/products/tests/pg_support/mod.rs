@@ -527,6 +527,7 @@ async fn prune_stale_databases(port: u16) {
         ))
         .await
     else {
+        conn.close().await.expect("close failed pruning query pool");
         return;
     };
     for row in rows {
@@ -547,6 +548,7 @@ async fn prune_stale_databases(port: u16) {
             .await,
         );
     }
+    conn.close().await.expect("close pruning pool");
 }
 
 /// Create this test's database, clearing a same-named leftover first.
@@ -585,7 +587,7 @@ async fn create_fresh_database(port: u16, database: &str) {
         ))
         .await
         .unwrap_or_else(|e| panic!("create database {database}: {e}"));
-    drop(admin);
+    admin.close().await.expect("close maintenance pool");
 }
 
 /// One test's own database on the shared server, carrying the applied chain.

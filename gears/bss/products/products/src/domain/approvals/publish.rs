@@ -169,15 +169,23 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuPublish {
         approved: bool,
     ) -> Result<(), ApprovalError> {
         for i in items {
-            repo::unlock_sku(
-                tx,
-                &self.scope,
-                self.tenant_id,
-                i.item_id,
-                approved.then_some(unit.id),
-            )
-            .await
-            .map_err(store_err)?;
+            if matches!(
+                repo::unlock_sku(
+                    tx,
+                    &self.scope,
+                    self.tenant_id,
+                    i.item_id,
+                    unit.id,
+                    approved.then_some(unit.id),
+                )
+                .await
+                .map_err(store_err)?,
+                repo::HeadWrite::Unmatched
+            ) {
+                return Err(ApprovalError::Store(
+                    "SKU pending lock is not owned by this unit".into(),
+                ));
+            }
         }
         Ok(())
     }

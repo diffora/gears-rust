@@ -184,19 +184,32 @@ pub async fn live_references(
     tenant_id: Uuid,
     sku_id: Uuid,
 ) -> Result<Vec<SkuReference>, RepoError> {
+    list_references(runner, scope, tenant_id, sku_id, false).await
+}
+/// List attempts, optionally including released history; tenant and SKU scope always apply.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn list_references(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    include_released: bool,
+) -> Result<Vec<SkuReference>, RepoError> {
+    let mut predicate = Condition::all()
+        .add(sku_reference::Column::TenantId.eq(tenant_id))
+        .add(sku_reference::Column::SkuId.eq(sku_id));
+    if !include_released {
+        predicate = predicate.add(sku_reference::Column::State.ne("released"));
+    }
     sku_reference::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(sku_reference::Column::TenantId.eq(tenant_id))
-                .add(sku_reference::Column::SkuId.eq(sku_id))
-                .add(sku_reference::Column::State.ne("released")),
-        )
+        .filter(predicate)
         .order_by(sku_reference::Column::Id, Order::Asc)
         .all(runner)
         .await
-        .map_err(|e| driver_failure("live references".into(), e))
+        .map_err(|e| driver_failure("list references".into(), e))
 }
 /// Summarize live prices/plans and the reserved subset.
 /// # Errors
@@ -219,7 +232,12 @@ pub async fn reference_summary(
                 )));
             }
         }
+        let owner = summary.by_owner.entry(r.owner_gear).or_default();
+        let kind = owner.entry(r.ref_kind).or_default();
+        *kind = kind.saturating_add(1);
         if r.state == "reserved" {
+            let reserved = owner.entry("reserved".into()).or_default();
+            *reserved = reserved.saturating_add(1);
             summary.reserved = summary.reserved.saturating_add(1);
         }
     }
