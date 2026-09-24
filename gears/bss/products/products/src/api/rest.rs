@@ -13,6 +13,7 @@ use toolkit_security::SecurityContext;
 pub mod categories;
 pub mod dto;
 pub mod preconditions;
+pub mod skus;
 
 /// The reserved service prefix.
 pub const PREFIX: &str = "/bss-products/v1";

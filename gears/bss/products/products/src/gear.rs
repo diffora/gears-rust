@@ -371,6 +371,10 @@ impl RestApiCapability for BssProductsGear {
                     Arc::clone(&rt.api_state),
                     openapi,
                 ))
+                .merge(crate::api::rest::skus::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
                 .layer(axum::Extension((*rt.enforcer).clone())));
         }
         Ok(router)
@@ -479,6 +483,12 @@ mod tests {
             "bss_products.list_categories",
             "bss_products.update_category",
             "bss_products.retire_category",
+            "bss_products.create_sku",
+            "bss_products.list_skus",
+            "bss_products.get_sku",
+            "bss_products.update_sku_draft",
+            "bss_products.sku_versions",
+            "bss_products.sku_references",
         ];
         expected.sort_unstable();
         assert_eq!(actual, expected);
