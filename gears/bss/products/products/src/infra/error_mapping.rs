@@ -31,7 +31,37 @@ impl From<DomainError> for CanonicalError {
     fn from(err: DomainError) -> Self {
         use DomainError as D;
         match err {
+            D::Conflict { code, detail } => aborted(detail, code),
+            D::Forbidden { code, .. } => denied(code),
+            D::NotFound { what, id } => ProductResource::not_found(format!("{what} {id}"))
+                .with_resource(id.to_string())
+                .create(),
+            D::StaleUnit { generation } => precondition(
+                "unit",
+                &format!("the unit was refreshed; review generation {generation}"),
+                "UNIT_STALE",
+            ),
+            D::Approval(r) => match r.code {
+                "SOD_VIOLATION" | "NOT_SUBMITTER" => denied(r.code),
+                "NOTE_REQUIRED" => precondition("note", "a reject needs a note", "NOTE_REQUIRED"),
+                "VALIDATION" => precondition("items", &r.detail, "VALIDATION"),
+                "GENERATION_MISMATCH" => {
+                    precondition("generation", &r.detail, "GENERATION_MISMATCH")
+                }
+                "DB" | "STORE" => CanonicalError::internal("products: approval store").create(),
+                other => aborted(r.detail, other),
+            },
             D::Validation(report) => {
+                // Outages are retryable even when reported by the pure publish validator.
+                if report
+                    .violations()
+                    .iter()
+                    .any(|v| v.code == "USAGE_TYPE_UNAVAILABLE")
+                {
+                    return Self::from(D::UsageTypeUnavailable(
+                        "the usage-type catalog did not answer".into(),
+                    ));
+                }
                 let mut violations = report.violations().iter();
                 let Some(first) = violations.next() else {
                     return CanonicalError::internal(

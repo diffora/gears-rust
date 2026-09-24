@@ -6,3 +6,8 @@ pub mod error;
 pub mod idempotency;
 pub mod recognized;
 pub mod validation;
+
+pub mod approvals;
+pub mod category;
+pub mod references;
+pub mod sku;

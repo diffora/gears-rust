@@ -17,13 +17,23 @@ fn code_of(err: &CanonicalError) -> Option<&str> {
 
 fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
     match err {
-        DomainError::Validation(_)
+        DomainError::StaleUnit { .. }
+        | DomainError::Validation(_)
         | DomainError::UsageTypeUnresolved(_)
         | DomainError::UnrecognizedUnit(_)
         | DomainError::MeterDeclarationIncomplete(_) => (400, Some(err.code())),
-        DomainError::StaleRevision { .. }
+        DomainError::Conflict { .. }
+        | DomainError::StaleRevision { .. }
         | DomainError::IdempotencyConflict(_)
         | DomainError::IdempotencyKeyInFlight(_) => (409, Some(err.code())),
+        DomainError::Forbidden { .. } => (403, Some(err.code())),
+        DomainError::NotFound { .. } => (404, None),
+        DomainError::Approval(r) => match r.code {
+            "SOD_VIOLATION" | "NOT_SUBMITTER" => (403, Some(r.code)),
+            "NOTE_REQUIRED" | "VALIDATION" | "GENERATION_MISMATCH" => (400, Some(r.code)),
+            "DB" | "STORE" => (500, None),
+            _ => (409, Some(r.code)),
+        },
         DomainError::AuditUnavailable(_) | DomainError::UsageTypeUnavailable(_) => (503, None),
     }
 }
@@ -33,6 +43,23 @@ fn one_of_every_variant() -> Vec<DomainError> {
     report.violate("VALIDATION", "field", "invalid");
     vec![
         DomainError::Validation(report),
+        DomainError::Conflict {
+            code: "SKU_TYPE_FROZEN",
+            detail: "references".into(),
+        },
+        DomainError::Forbidden {
+            code: "NOT_SUBMITTER",
+            detail: "hidden".into(),
+        },
+        DomainError::NotFound {
+            what: "sku",
+            id: uuid::Uuid::new_v4(),
+        },
+        DomainError::Approval(crate::domain::error::ApprovalRefusal {
+            code: "DUPLICATE_VOTE",
+            detail: "vote".into(),
+        }),
+        DomainError::StaleUnit { generation: 2 },
         DomainError::StaleRevision {
             expected: 1,
             found: 2,
@@ -46,7 +73,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         DomainError::MeterDeclarationIncomplete("detail".to_owned()),
     ]
 }
-const DOMAIN_ERROR_VARIANTS: usize = 9;
+const DOMAIN_ERROR_VARIANTS: usize = 14;
 
 #[test]
 fn every_domain_error_variant_lands_in_its_declared_category() {
@@ -104,4 +131,34 @@ fn every_domain_error_variant_lands_in_its_declared_category() {
             }
         }
     }
+}
+
+#[test]
+fn approval_refusals_preserve_their_status_code_and_generation() {
+    use crate::domain::error::ApprovalRefusal;
+    for (code, status) in [
+        ("SOD_VIOLATION", 403),
+        ("NOT_SUBMITTER", 403),
+        ("NOTE_REQUIRED", 400),
+        ("VALIDATION", 400),
+        ("GENERATION_MISMATCH", 400),
+        ("DB", 500),
+        ("STORE", 500),
+        ("UNIT_ALREADY_DECIDED", 409),
+        ("DUPLICATE_VOTE", 409),
+        ("UNIT_CONTENDED", 409),
+        ("ROW_LOCKED_PENDING", 409),
+        ("APPLY_REFUSED", 409),
+    ] {
+        let err = CanonicalError::from(DomainError::Approval(ApprovalRefusal {
+            code,
+            detail: "generation 7".into(),
+        }));
+        assert_eq!(err.status_code(), status, "{code}");
+        assert_eq!(code_of(&err), if status == 500 { None } else { Some(code) });
+    }
+    let err = CanonicalError::from(DomainError::StaleUnit { generation: 7 });
+    assert!(
+        matches!(err, CanonicalError::FailedPrecondition {ctx,..} if ctx.violations[0].description.contains('7'))
+    );
 }
