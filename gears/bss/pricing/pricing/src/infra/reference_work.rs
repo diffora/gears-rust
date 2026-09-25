@@ -960,10 +960,11 @@ async fn observe(
                 )),
                 Err(error) if definite_refusal(&error) => {
                     let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
-                    if op.kind == OpKind::Rereserve.as_str()
-                        && !LOSING_REFUSALS.contains(&code.as_str())
-                    {
-                        // Only a SKU that admits no reservation loses a live entry.
+                    if replaces_a_receipt(op) && !LOSING_REFUSALS.contains(&code.as_str()) {
+                        // Only a SKU that admits no reservation loses a live entry or a copied
+                        // item: an attach has the rereserve shape (D-413). Any other refusal (the
+                        // door caller's own grant, say) is retried, and the ticker finishes it as
+                        // the system actor.
                         return Ok(unavailable());
                     }
                     Ok((
@@ -1042,6 +1043,13 @@ async fn observe_sku(
     let tenant = op.tenant_id;
     let sku = match registry.sku_for_write(ctx, tenant, op.sku_id).await {
         Ok(sku) => sku,
+        // An op that replaces a receipt (an attach, a rereserve) holds a reference the SKU
+        // already admitted: a refusal of the READ says nothing about the SKU (the caller's own
+        // grant, say), so it is retried and the ticker finishes it as the system actor. Only a
+        // lifecycle answer below refuses it (D-413 "the rereserve shape").
+        Err(error) if definite_refusal(&error) && replaces_a_receipt(op) => {
+            return Ok((Event::RegistryUnavailable, None, None));
+        }
         Err(error) if definite_refusal(&error) => {
             return Ok((
                 Event::SkuRefused {
@@ -1070,12 +1078,23 @@ async fn observe_sku(
         return Ok((
             Event::SkuRefused { code: code.into() },
             None,
-            Some(Receipt::error(support::conflict(code)).await?),
+            Some(Receipt::error(sku_refusal_answer(kind, code)).await?),
         ));
     }
     match kind {
         RefKind::Entry => entry_written(op, &sku).await,
         RefKind::PlanItem => plan_item::written(op),
+    }
+}
+/// The answer a create's key records for a SKU its re-read refuses. An item's create answers what
+/// the item door answers for the same SKU, a 400 on `sku_id` (D-403): `ITEM_SKU_DEPRECATED` for a
+/// deprecated SKU, `ITEM_BUNDLE_SKU` for a bundle; the op's `SkuRefused` code stays the refusal's.
+/// Every other refusal is a 409 with its code.
+fn sku_refusal_answer(kind: RefKind, code: &'static str) -> CanonicalError {
+    match (kind, code) {
+        (RefKind::PlanItem, "SKU_DEPRECATED") => support::invalid("sku_id", "ITEM_SKU_DEPRECATED"),
+        (RefKind::PlanItem, "ITEM_BUNDLE_SKU") => support::invalid("sku_id", "ITEM_BUNDLE_SKU"),
+        _ => support::conflict(code),
     }
 }
 /// The entry Tx B writes once its SKU admits it: the create's new entry, or the rereserved

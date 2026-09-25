@@ -674,6 +674,123 @@ async fn a_draft_delete_leaves_a_plan_with_a_published_revision_as_it_was() {
     assert!(text(&taken).contains("PLAN_CODE_TAKEN"), "{taken}");
 }
 
+const LOST: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.plan_reference_lost.v1~";
+/// Past the in-flight grace, so the ticker takes over whatever a door left.
+struct LaterClock;
+impl bss_pricing::infra::reference_work::Clock for LaterClock {
+    fn now(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::now_utc() + time::Duration::days(2)
+    }
+}
+/// A plan whose published revision 1 holds three included items: `(plan id, copy path)`.
+async fn published_with_three_items(
+    f: &plan_support::Fixture,
+    catalog: &plan_support::Catalog,
+) -> (Uuid, String) {
+    let eur = book(f, "eur").await;
+    let (p, rev1) = plan(f, "pro", eur).await;
+    for _ in 0..3 {
+        item(f, rev1, catalog.sku(SkuType::Usage), None, "included").await;
+    }
+    let id = id_of(&p["id"]);
+    publish(f, id, rev1).await;
+    (id, format!("/plans/{id}/revisions"))
+}
+async fn ticker_tick(f: &plan_support::Fixture) {
+    bss_pricing::infra::reference_ticker::Ticker::new(
+        f.state.clone(),
+        std::sync::Arc::new(LaterClock),
+        10,
+        100,
+    )
+    .tick()
+    .await
+    .unwrap();
+}
+
+// R-1 (D-413, D-401): an attach loses its item only on a LOSING refusal, as a rereserve does.
+// Products refusing the copy's caller (no products `read` for the SKU re-read, or no products
+// `reference` for the reserve) says nothing about the SKU admitting a reference: the copied items
+// stay pending, no PlanReferenceLost is written, and the ticker finishes them as the system actor.
+#[tokio::test]
+async fn a_copy_by_a_caller_products_refuses_leaves_its_items_pending_for_the_ticker() {
+    for refused in ["read", "reference"] {
+        let (f, catalog) = setup().await;
+        let (_, path) = published_with_three_items(&f, &catalog).await;
+        let system = [bss_products_sdk::PRICING_SYSTEM_ACTOR];
+        if refused == "read" {
+            catalog.readers(system);
+        } else {
+            catalog.referencers(system);
+        }
+        let (s, copy, _) = f.call("POST", &path, json!({}), None, Some("copy")).await;
+        assert_eq!(s, 201, "{refused}: {copy}");
+        let rev2 = id_of(&copy["id"]);
+        let copied = items(&f, rev2).await;
+        assert_eq!(copied.len(), 3);
+        for it in &copied {
+            assert_eq!(
+                it.reference_state, "unreserved",
+                "{refused}: not lost: {it:?}"
+            );
+        }
+        assert!(
+            plan_support::entry_support::outbox_events(&f.dsn, LOST)
+                .await
+                .is_empty(),
+            "{refused}: no PlanReferenceLost"
+        );
+        ticker_tick(&f).await;
+        for it in items(&f, rev2).await {
+            assert_eq!(it.reference_state, "confirmed", "{refused}: {it:?}");
+            assert!(it.reservation_id.is_some());
+            let ops = ops_for(&f, it.id).await;
+            assert!(ops.iter().all(|op| op.state == "done"), "{ops:?}");
+        }
+        assert!(
+            plan_support::entry_support::outbox_events(&f.dsn, LOST)
+                .await
+                .is_empty()
+        );
+    }
+}
+
+// R-3 (D-413): the copy drives its attach ops best-effort and stops at the first one that fails;
+// the rest stay durable for the ticker. A registry that answers 503 is called once for a
+// three-item copy, not three times.
+#[tokio::test]
+async fn a_copy_stops_driving_its_attach_ops_at_the_first_failure() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (f, catalog) = setup().await;
+    let (_, path) = published_with_three_items(&f, &catalog).await;
+    catalog.down.store(true, SeqCst);
+    let before = catalog.calls();
+    let (s, copy, _) = f.call("POST", &path, json!({}), None, Some("copy")).await;
+    assert_eq!(s, 201, "the copy is committed: {copy}");
+    assert_eq!(
+        catalog.calls() - before,
+        1,
+        "one registry call for the whole copy"
+    );
+    let rev2 = id_of(&copy["id"]);
+    let copied = items(&f, rev2).await;
+    assert_eq!(copied.len(), 3);
+    for it in &copied {
+        assert_eq!(it.reference_state, "unreserved");
+        let ops = ops_for(&f, it.id).await;
+        assert_eq!(ops.len(), 1, "each attach op is durable: {ops:?}");
+        assert_eq!(
+            (ops[0].kind.as_str(), ops[0].state.as_str()),
+            ("attach", "reserving")
+        );
+    }
+    catalog.down.store(false, SeqCst);
+    ticker_tick(&f).await;
+    for it in items(&f, rev2).await {
+        assert_eq!(it.reference_state, "confirmed", "{it:?}");
+    }
+}
+
 #[tokio::test]
 async fn plan_doors_need_the_plan_permissions_and_hide_other_tenants() {
     let (f, _) = setup().await;

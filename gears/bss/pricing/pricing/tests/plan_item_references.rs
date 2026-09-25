@@ -269,18 +269,37 @@ async fn an_item_create_reserves_a_plan_item_writes_and_confirms() {
 
 #[tokio::test]
 async fn refusal_branches_answer_the_key_and_release_only_after_a_reservation() {
-    for (mode, code, releases) in [
-        (4, "SKU_FENCED", 0),
-        (8, "ITEM_BUNDLE_SKU", 1),
-        (9, "SKU_DEPRECATED", 1),
-        (10, "SKU_DRAFT", 1),
+    // R-2 (D-403): the SKU re-read answers what the item door answers for the same SKU, 400
+    // ITEM_BUNDLE_SKU or ITEM_SKU_DEPRECATED (it pinned 409 SKU_DEPRECATED before fix run 7); the
+    // op keeps its SkuRefused code. A fence at the reserve and a draft SKU stay 409.
+    for (mode, status, code, event, releases) in [
+        (4, 409, "SKU_FENCED", "SKU_FENCED", 0),
+        (8, 400, "ITEM_BUNDLE_SKU", "ITEM_BUNDLE_SKU", 1),
+        (9, 400, "ITEM_SKU_DEPRECATED", "SKU_DEPRECATED", 1),
+        (10, 409, "SKU_DRAFT", "SKU_DRAFT", 1),
     ] {
         let (f, script, t) = setup(mode).await;
         let c = f.caller();
         let input = t.input();
         let refused = t.create(&c, input.clone(), "one").await;
-        assert_eq!(refused.0, 409, "{mode}: {refused:?}");
+        assert_eq!(refused.0, status, "{mode}: {refused:?}");
         assert!(refused.1.to_string().contains(code), "{refused:?}");
+        let ops = ops::page(
+            &f.db.conn().unwrap(),
+            &scope(&f),
+            f.ctx.subject_tenant_id(),
+            None,
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ops.len(), 1, "{mode}: {ops:?}");
+        assert_eq!(
+            ops[0].last_error.as_deref(),
+            Some(event),
+            "{mode}: the event code"
+        );
         script.set(0);
         assert_eq!(t.create(&c, input, "one").await, refused);
         assert_eq!(Script::count(&script.releases), releases, "{code}");
@@ -494,9 +513,12 @@ async fn an_attach_admits_a_deprecated_sku_and_a_create_does_not() {
         [ReferenceKind::PlanItem]
     );
     let refused = t.create(&f.caller(), t.input(), "new").await;
-    assert_eq!(refused.0, 409, "{refused:?}");
+    assert_eq!(
+        refused.0, 400,
+        "the item door's own answer (R-2): {refused:?}"
+    );
     assert!(
-        refused.1.to_string().contains("SKU_DEPRECATED"),
+        refused.1.to_string().contains("ITEM_SKU_DEPRECATED"),
         "{refused:?}"
     );
     assert!(outbox_events(&f.dsn, LOST).await.is_empty());

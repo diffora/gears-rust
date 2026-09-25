@@ -558,7 +558,8 @@ through states(): released receipts are re-reserved when the SKU is not fenced, 
 lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryReferenceLost (D-401). Plan items
 use the same machine, with their own cursor: an item's write re-reads its revision (an unlocked draft) and its
 entry (of the revision's book, for the item's SKU), so SSI orders it against a submit, a book change or a
-delete (D-407); an attach of a copied item admits a deprecated SKU and a refusal makes the item lost (D-413);
+delete (D-407); an attach of a copied item admits a deprecated SKU, a losing refusal makes the item lost and
+any other refusal is retried, as for a rereserve (D-413);
 a lost item emits PlanReferenceLost and is re-reserved once its SKU admits a reservation again.
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
 

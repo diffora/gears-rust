@@ -64,11 +64,23 @@ pub struct Catalog {
     /// is Products' 403, as Products' registry authorizes the caller before it reads. Unset (the
     /// default) admits every caller.
     pub readers: Mutex<Option<std::collections::BTreeSet<Uuid>>>,
+    /// Opt-in: when set, only these principals hold products `reference`; any other caller's
+    /// reserve, confirm or release is Products' 403. Unset (the default) admits every caller.
+    pub referencers: Mutex<Option<std::collections::BTreeSet<Uuid>>>,
+    /// Every registry call, answered or not.
+    pub calls: AtomicUsize,
 }
 impl Catalog {
     /// Only these principals may read SKUs from now on (products `read`).
     pub fn readers(&self, principals: impl IntoIterator<Item = Uuid>) {
         *self.readers.lock().unwrap() = Some(principals.into_iter().collect());
+    }
+    /// Only these principals may reserve, confirm or release from now on (products `reference`).
+    pub fn referencers(&self, principals: impl IntoIterator<Item = Uuid>) {
+        *self.referencers.lock().unwrap() = Some(principals.into_iter().collect());
+    }
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
     /// Products' 403 for a caller without products `read`, when the opt-in set is armed.
     fn read_denied(&self, ctx: &SecurityContext) -> Result<(), CanonicalError> {
@@ -79,6 +91,20 @@ impl Catalog {
         {
             return Err(SkuResource::permission_denied()
                 .with_reason("SKU_READ_DENIED")
+                .create());
+        }
+        Ok(())
+    }
+    /// Products' 403 for a caller without products `reference`, when the opt-in set is armed.
+    fn reference_denied(&self, ctx: &SecurityContext) -> Result<(), CanonicalError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let referencers = self.referencers.lock().unwrap();
+        if referencers
+            .as_ref()
+            .is_some_and(|set| !set.contains(&ctx.subject_id()))
+        {
+            return Err(SkuResource::permission_denied()
+                .with_reason("SKU_REFERENCE_DENIED")
                 .create());
         }
         Ok(())
@@ -130,12 +156,13 @@ impl Catalog {
 impl ReferenceRegistryV1 for Catalog {
     async fn reserve(
         &self,
-        _: &SecurityContext,
+        ctx: &SecurityContext,
         _: Uuid,
         _: Uuid,
         kind: ReferenceKind,
         ref_id: Uuid,
     ) -> Result<ReservationReceipt, CanonicalError> {
+        self.reference_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }
@@ -152,7 +179,13 @@ impl ReferenceRegistryV1 for Catalog {
             state: entry.1,
         })
     }
-    async fn confirm(&self, _: &SecurityContext, _: Uuid, id: Uuid) -> Result<(), CanonicalError> {
+    async fn confirm(
+        &self,
+        ctx: &SecurityContext,
+        _: Uuid,
+        id: Uuid,
+    ) -> Result<(), CanonicalError> {
+        self.reference_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }
@@ -163,7 +196,13 @@ impl ReferenceRegistryV1 for Catalog {
         }
         Ok(())
     }
-    async fn release(&self, _: &SecurityContext, _: Uuid, id: Uuid) -> Result<(), CanonicalError> {
+    async fn release(
+        &self,
+        ctx: &SecurityContext,
+        _: Uuid,
+        id: Uuid,
+    ) -> Result<(), CanonicalError> {
+        self.reference_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }
@@ -181,6 +220,7 @@ impl ReferenceRegistryV1 for Catalog {
         _: Uuid,
         ids: &[Uuid],
     ) -> Result<Vec<(Uuid, ReferenceState)>, CanonicalError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let refs = self.refs.lock().unwrap();
         Ok(ids
             .iter()
@@ -201,6 +241,7 @@ impl ReferenceRegistryV1 for Catalog {
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.read_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
@@ -243,6 +284,7 @@ impl ReferenceRegistryV1 for Catalog {
         _: Uuid,
         _: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         self.read_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());

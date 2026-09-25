@@ -401,14 +401,22 @@ pub async fn delete(
     drive_best_effort(&state, &original_ctx, &[op_id]).await;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
-/// Drive committed ops once each under the caller; an op this does not finish stays durable and
-/// the ticker finishes it after the in-flight grace.
+/// Drive committed ops once each under the caller, stopping at the first drive that fails (any
+/// error): a registry that is slow or down is met once per request, not once per op. Every op
+/// this does not finish stays durable, and the ticker finishes it after the in-flight grace
+/// (D-413).
 pub async fn drive_best_effort(state: &Arc<AuthoringState>, ctx: &SecurityContext, ops: &[Uuid]) {
-    for op_id in ops {
+    for (done, op_id) in ops.iter().enumerate() {
         if let Err(error) =
             reference_work::drive(state, ctx, *op_id, Arc::new(WallClock), Caller::Door).await
         {
-            tracing::warn!(op_id=%op_id, error=%error, "pricing plan item reference work deferred to the ticker");
+            tracing::warn!(
+                op_id=%op_id,
+                error=%error,
+                left = ops.len() - done,
+                "pricing plan item reference work deferred to the ticker"
+            );
+            break;
         }
     }
 }

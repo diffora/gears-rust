@@ -575,11 +575,12 @@ async fn cancelling_releasing_backoff_and_threshold_never_drop_work() {
             assert_eq!(Script::count(&script.releases), 1);
             if cancelling {
                 let response = t.create(&c, input, "one").await;
-                assert_eq!(response.0, 409);
-                let code = match kind {
-                    Kind::Entry => "BUNDLE_SKU_NOT_PRICEABLE",
-                    Kind::Item => "ITEM_BUNDLE_SKU",
+                // An item's re-read answers the item door's 400 (R-2, D-403); an entry's, 409.
+                let (status, code) = match kind {
+                    Kind::Entry => (409, "BUNDLE_SKU_NOT_PRICEABLE"),
+                    Kind::Item => (400, "ITEM_BUNDLE_SKU"),
                 };
+                assert_eq!(response.0, status, "{kind:?}: {response:?}");
                 assert!(response.1.to_string().contains(code), "{response:?}");
             }
         }
