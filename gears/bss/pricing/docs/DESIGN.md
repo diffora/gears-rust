@@ -48,12 +48,12 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | `cpt-cf-bss-pricing-fr-price-key` | Inside a book there is one price per (sku_id, charge_kind, period), with null period normalized for uniqueness. | Books & Prices, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price-row` | Draft rows carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-chain-windows` | Windows are half-open and close independently for each (price_id, dim_value), including the null default chain. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
-| `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves model kind, package size and the SKU unit. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves model kind, package size and SKU metering as of each row's start (D-402). | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-min-fee` | The floor belongs to a row per subscription per billing period, aggregating every value and slice rated by that row. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-temporary-pair` | A temporary change on an existing chain creates two rows in one approval unit. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-publish-changes` | Publish changes lists all draft rows of one book with full money, window, chain, predecessor and impact information, all pre-selected. | Approvals, phase 2; §3 and slice 05. |
 | `cpt-cf-bss-pricing-fr-approval-units` | Use bss-approval for price_rows now and plan_revision, promotion and migration in phase 3. | Approvals, phase 2; §3 and slice 05. |
-| `cpt-cf-bss-pricing-fr-reference-protocol` | Before a price write, reserve kind price with Products, re-read SKU type/lifecycle, commit object plus reservation_id and confirmation_pending in one pricing transaction, then confirm. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-reference-protocol` | Before reserve, claim the key and persist a create_price op; reserve with Products, re-read the SKU, commit the price with reference_state = confirmation_pending and op written, then confirm and atomically finish the op and answer the key (D-401). | Rows, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-book-export` | Provide one read-only JSON export of a tenant-scoped book with its prices and rows. | Books & Prices, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-settings` | Tenant settings provide default billing timing, rounding, GL code, tax category and invoice-line templates by SKU type. | Books & Prices, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-events` | Persist PriceRowsPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceReferenceLost for a failed reference confirmation that proves release. | Read Contract & Events, phase 2; §3 and slice 07. |
@@ -232,7 +232,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |
-| Released receipt on confirm | 409 REFERENCE_RELEASED from Products; persist reference_lost locally |
+| Released receipt on confirm | 409 REFERENCE_RELEASED from Products; persist reference_state = lost locally |
 
 Canonical toolkit RFC-9457 Problem carries code, field and message, retaining typed DbErr for retry classification.
 Malformed body/precondition failures occur before domain work. All four existing route censuses must agree with
@@ -299,32 +299,34 @@ sequenceDiagram
   participant DB
   participant Retry
   Caller->>Pricing: Create price, Idempotency-Key
-  Pricing->>DB: Resolve replay and stable logical reference identity
-  Pricing->>Products: Reserve SKU reference (price, ref_id)
+  Pricing->>DB: Replay first; Tx A claim key, mint price_id, create_price op reserving
+  Pricing->>Products: Reserve SKU reference (price, price_id), idempotently
   Products-->>Pricing: reservation_id or fence/unavailable error
   Pricing->>Products: Re-read SKU type and lifecycle
-  Pricing->>DB: One transaction: claim key, validate, price + receipt + pending confirm, answer
-  alt Durable commit
+  alt Write permitted
+    Pricing->>DB: Tx B price + reservation_id + reference_state confirmation_pending; op written
     Pricing->>Products: Confirm receipt
     alt Confirmation success
-      Pricing->>DB: Clear confirmation_pending
+      Pricing->>DB: Tx C price confirmed, op done, key answered
     else Timeout or transient failure
-      Retry->>Products: Retry persisted confirmation with bounded backoff
+      Retry->>Products: Resume written op with bounded backoff; never release on timeout
     else REFERENCE_RELEASED
-      Pricing->>DB: reference_lost, audit, PriceReferenceLost in same transaction
+      Pricing->>DB: Price lost, op done, key answered, audit and PriceReferenceLost
     end
-  else Definite rollback
-    Pricing->>DB: Persist cancellation / pending release
+  else Refusal after reserve
+    Pricing->>DB: Op cancelling, persist outcome
     Retry->>Products: Release after cancellation is durable
+    Retry->>DB: Op done, key answered
   end
 ```
 
-Concurrent replays must resolve to the same logical object or a nonmutating conflict. A losing attempt must not
-release another successful attempt's live reference. If the local commit outcome is unknown, first reconcile
-object/replay identity; retain the reservation until absence plus durable cancellation is established. A crash
-between reserve and local commit leaves a protective Products receipt for recovery/operator inspection. Deletion
-persists a release job with object removal. Confirm and release attempts retain tenant, SKU, ref_id and receipt
-identity; retry cannot operate on another generation's receipt. No timeout automatically releases anything.
+Concurrent replays resolve to the same logical object or a nonmutating conflict. Tx A durably names the
+reference before reserve: a crash between reserve and Tx B is recoverable by repeating the idempotent reserve.
+An unknown commit outcome is reconciled before cancellation. Deletion removes the price and inserts a
+delete_price op in releasing in one transaction, then release finishes the op. Every op not done is retried
+with bounded backoff and never dropped. The ticker also checks confirmed prices through states(): a released
+receipt on a live price starts a rereserve_price op when the SKU is not fenced, else the price becomes lost,
+new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted. No timeout releases a reservation.
 
 #### Temporary pair
 
@@ -426,9 +428,9 @@ CREATE TABLE bss.pricing_price (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, book_id uuid NOT NULL REFERENCES bss.pricing_price_book(id),
   sku_id uuid NOT NULL, charge_kind text NOT NULL CHECK (charge_kind IN ('recurring','usage','one_time')),
   period text, dimension_key text, invoice_line_override text,
-  reservation_id uuid NOT NULL, confirmation_pending boolean NOT NULL DEFAULT true,
-  reference_lost boolean NOT NULL DEFAULT false, confirmation_attempts integer NOT NULL DEFAULT 0,
-  confirmation_retry_at timestamptz, version bigint NOT NULL DEFAULT 1,
+  reservation_id uuid NOT NULL,
+  reference_state text NOT NULL CHECK (reference_state IN ('confirmation_pending','confirmed','lost')),
+  version bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
   FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key),
   CHECK ((charge_kind = 'recurring' AND period IS NOT NULL AND period IN ('month','year'))
@@ -441,6 +443,7 @@ CREATE TABLE bss.pricing_price_row (
   model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json jsonb NOT NULL,
   min_fee numeric CHECK (min_fee >= 0), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
   effective_from date NOT NULL, effective_to date, keep_for_bound boolean NOT NULL DEFAULT false,
+  closed_explicitly boolean NOT NULL DEFAULT false,
   temporary_until date, paired_row_id uuid REFERENCES bss.pricing_price_row(id),
   return_of_row_id uuid REFERENCES bss.pricing_price_row(id),
   state text NOT NULL CHECK (state IN ('draft','pending','approved','rejected')),
@@ -455,11 +458,16 @@ CREATE UNIQUE INDEX pricing_price_row_approved_start
   ON bss.pricing_price_row (price_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved';
 CREATE INDEX pricing_price_row_chain
   ON bss.pricing_price_row (price_id, dim_value, effective_from) WHERE state = 'approved';
-CREATE TABLE bss.pricing_pending_release (
-  reservation_id uuid PRIMARY KEY, tenant_id uuid NOT NULL, sku_id uuid NOT NULL,
-  ref_kind text NOT NULL, ref_id uuid NOT NULL, cancelled_at timestamptz NOT NULL,
-  attempts integer NOT NULL DEFAULT 0, retry_at timestamptz NOT NULL, last_error text
+CREATE TABLE bss.pricing_reference_op (
+  op_id uuid PRIMARY KEY, tenant_id uuid NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('create_price','delete_price','rereserve_price')),
+  price_id uuid NOT NULL, sku_id uuid NOT NULL, reservation_id uuid,
+  idempotency_key text,
+  state text NOT NULL CHECK (state IN ('reserving','written','cancelling','releasing','done')),
+  outcome text, attempts integer NOT NULL DEFAULT 0, next_attempt_at timestamptz NOT NULL,
+  last_error text, created_by uuid NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
 );
+CREATE INDEX pricing_reference_op_due ON bss.pricing_reference_op (state, next_attempt_at) WHERE state <> 'done';
 ```
 
 Policy kind is '*' or a registered pricing kind; a missing default fails safe to quorum 1. Subject validation
@@ -467,7 +475,10 @@ owns kind legality, quorum snapshots and item typing. The pending-unit column pl
 one unit per element. Same-start uniqueness is enforced by the index; general non-overlap is enforced by the
 serializable approve transaction re-reading each chain, with prices and rows ordered by id. Approved money
 cannot be edited/deleted; only controlled window normalization and keep_for_bound changes are allowed.
-The pending_release row survives price removal (no cascading FK); confirmation work stays with the price.
+The reference op is durable before reserve and has no FK to the price: it survives cancellation and removal.
+The ticker resumes every op not done with bounded backoff and never drops one. It reconciles confirmed prices
+through states(): released receipts are re-reserved when the SKU is not fenced, otherwise the price becomes
+lost, refuses new rows with PRICE_REFERENCE_LOST and emits PriceReferenceLost (D-401).
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
 
 Audit and idempotency use the Products document's retained shapes, renamed pricing_. The audit trigger permits

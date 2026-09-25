@@ -91,7 +91,7 @@ Each mounted route must appear in all four censuses with authz and precondition 
 
 ## 6. Data Model
 
-DESIGN §3.7 is the phase 2 schema: pricing_settings, pricing_dimension_key, pricing_price_book, pricing_price, pricing_price_row, four pricing_approval tables, pricing_audit, pricing_idempotency and pricing_pending_release. Toolkit supplies bss_pricing_outbox tables. Replay has one key per tenant/endpoint/client_key; approval children are accessed through scoped units. Migrations are replay-safe on both engines, with no legacy data conversion.
+DESIGN §3.7 is the phase 2 schema: pricing_settings, pricing_dimension_key, pricing_price_book, pricing_price, pricing_price_row, four pricing_approval tables, pricing_audit, pricing_idempotency and pricing_reference_op. Toolkit supplies bss_pricing_outbox tables. Replay has one key per tenant/endpoint/client_key; approval children are accessed through scoped units. Migrations are replay-safe on both engines, with no legacy data conversion.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.

@@ -240,7 +240,7 @@ Use bss-approval for price_rows now and plan_revision, promotion and migration i
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Before a price write, reserve kind price with Products, re-read SKU type/lifecycle, commit object plus reservation_id and confirmation_pending in one pricing transaction, then confirm. Registry outage before write is 503 REGISTRY_UNAVAILABLE; a fence refuses reserve as SKU_FENCED. A confirm timeout never releases the reservation. Retry durably; REFERENCE_RELEASED marks reference_lost and emits PriceReferenceLost. Definite rollback requires durable cancellation before release; deletion commits removal before release and failed release is retried. Phase 3 uses the same protocol for plan_item and sold_as.
+Before reserve, Tx A claims the key and persists a create_price op in reserving. Reserve kind price with Products, re-read SKU type/lifecycle; Tx B commits the price with reservation_id and reference_state = confirmation_pending and op written. Confirm, then Tx C sets price confirmed, op done and answers the key (D-401). Registry outage before write is 503 REGISTRY_UNAVAILABLE; a fence refuses reserve as SKU_FENCED. A confirm timeout never releases the reservation. Retry durably; REFERENCE_RELEASED during confirm marks the price lost and emits PriceReferenceLost. The ticker also reconciles confirmed prices through states(): a released receipt is re-reserved if the SKU is not fenced; otherwise the price becomes lost and new rows fail PRICE_REFERENCE_LOST. Definite rollback requires durable cancellation before release; deletion commits removal and a delete_price op in releasing before release. Every op not done is retried with bounded backoff and never dropped. Phase 3 uses the same protocol for plan_item and sold_as.
 
 #### `fr-book-export`
 
@@ -386,7 +386,7 @@ plan using it; rejection of a separately proposed plan revision cannot undo this
 
 Pricing reserves a SKU, commits a price and loses the confirm response. The price shows confirmation_pending;
 the durable worker retries. Products refuses retirement while the live receipt exists. An operator-forced release
-is surfaced as reference_lost; a confirm timeout itself never triggers release (spec §13).
+is surfaced as reference_state = lost; a confirm timeout itself never triggers release (spec §13).
 
 #### Bind a descriptor change
 
@@ -402,12 +402,12 @@ earlier pins retain the original GL. Pricing creates no refreeze rows or approva
 | AC #3 | `cpt-cf-bss-pricing-fr-price-key` | Given a published recurring SKU, when its monthly price is created then charge_kind is recurring; a duplicate key is refused, a bundle cannot be priced, and changing the dimension key after a valued row exists is refused. |
 | AC #4 | `cpt-cf-bss-pricing-fr-price-row` | Given a volume ladder with a boundary at 1000, when quantity is 1000 then the band starting at 1000 applies; editing approved money or attaching flat to usage is refused. |
 | AC #5 | `cpt-cf-bss-pricing-fr-chain-windows` | Given EU and default chains, when a new EU row is approved then only the EU predecessor closes; after an explicit EU tail ends the default applies, and overlapping rows on the same chain are refused. |
-| AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or unit produces 422 CHAIN_MODEL_CHANGED. |
+| AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or SKU (unit, usage_type_ref) as of each row's start produces 422 CHAIN_MODEL_CHANGED. |
 | AC #7 | `cpt-cf-bss-pricing-fr-min-fee` | Given two regions rated at 10 each, when both bind one default row with min_fee 30 then their combined charge floors at 30; two separate rows each carrying 30 floor at 60, without applying the shared floor twice. |
 | AC #8 | `cpt-cf-bss-pricing-fr-temporary-pair` | Given an existing chain, when a temporary pair is shifted by five days then both boundaries shift five days; for a value with no chain only one closed row is created, and an invalid end before the start is refused. |
 | AC #9 | `cpt-cf-bss-pricing-fr-publish-changes` | Given three draft rows and a temporary companion, when the author deselects a normal row and supplies a common date then only the selected atomic set enters one unit; a foreign-book row or broken pair is refused without partial locks. |
 | AC #10 | `cpt-cf-bss-pricing-fr-approval-units` | Given a pending unit, when an independent reviewer meets quorum then it applies atomically; an item author receives SOD_VIOLATION, a stale generation cannot count, and content drift commits UNIT_STALE without publishing the old content. |
-| AC #11 | `cpt-cf-bss-pricing-fr-reference-protocol` | Given a reservation and committed price, when confirm times out then the price remains confirmation_pending and retry is durable; retire remains blocked, and only durable cancellation/deletion permits release. A released receipt cannot be reactivated or silently ignored. |
+| AC #11 | `cpt-cf-bss-pricing-fr-reference-protocol` | Given a reservation and committed price, when confirm times out then the price remains confirmation_pending and retry is durable; retire remains blocked, and only durable cancellation/deletion permits release. An op is durable before reserve and survives restart even without a price. Confirmed prices reconcile released receipts through re-reserve when unfenced, or lost state otherwise. |
 | AC #12 | `cpt-cf-bss-pricing-fr-book-export` | Given an authorized reader, when a book is exported then its scoped prices and rows appear; another tenant cannot obtain its data and export creates no writes. |
 | AC #13 | `cpt-cf-bss-pricing-fr-settings` | Given arrears as the tenant default and advance on the SKU, when binding resolves timing then advance wins; stale settings If-Match and unauthorized settings changes are refused. |
 | AC #14 | `cpt-cf-bss-pricing-fr-events` | Given an approved row unit, when commit succeeds then domain and terminal events are durable; an outbox failure rolls back state and no rejected or withdrawn unit emits PriceRowsPublished. |

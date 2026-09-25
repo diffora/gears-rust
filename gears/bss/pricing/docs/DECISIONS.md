@@ -34,6 +34,8 @@ then this register, then code, then descriptive prose. D-399 is the explicit pha
 | D-398 | H | Reference reservation closes the lifecycle race | DECIDED 2026-09-25 · §2 decision 17; §13 |
 | D-399 | H | No SkuChanged listener or local SKU cache in phase 2 | DECIDED 2026-09-25 · Phase 2 plan, Global Constraints; deviation from spec §7.3 and §11 |
 | D-400 | H | Toolkit outbox and broker TypedEvent own event delivery | DECIDED 2026-09-25 · Phase 2 plan Task 2a.2 and 2c.8; Products phase 1 pattern |
+| D-401 | H | Reference work is a durable op written before reserve | DECIDED 2026-09-25 · Phase 2 plan 2c.1/2c.6; plan review findings 2, 3 |
+| D-402 | H | The pair guard compares SKU metering as of each row's start | DECIDED 2026-09-25 · Phase 2 reconciliation matrix row 24; spec §5 pair guard; supersession-continuity family |
 
 ## Entries
 
@@ -75,7 +77,7 @@ Rows do not freeze GL, tax, invoice descriptors, metering or timing. Consumers b
 
 #### D-390 [H] Windows normalize per chain and preserve usage structure
 
-On approval, sort approved rows within each (price_id, dim_value), set predecessor effective_to to successor effective_from, and enforce one approved start per chain. The default tail stays open; a value tail may explicitly end and resume default fallback. Re-read chains transactionally, with serializable Postgres isolation. Usage successors cannot change model kind, package size or SKU unit: CHAIN_MODEL_CHANGED at submit, revalidated at apply.
+On approval, sort approved rows within each (price_id, dim_value), set predecessor effective_to to successor effective_from, and enforce one approved start per chain. The default tail stays open; a value tail may explicitly end and resume default fallback. Re-read chains transactionally, with serializable Postgres isolation. Usage successors cannot change model kind, package size or SKU metering as of each row's start (D-402): CHAIN_MODEL_CHANGED at submit, revalidated at apply.
 
 **Source:** §2 decision 16; §5.
 
@@ -123,7 +125,7 @@ Phase 4 resolve returns a full per-item chain matrix, versioned descriptors and 
 
 #### D-398 [H] Reference reservation closes the lifecycle race
 
-Before creating a price, reserve in Products, re-read the SKU, then write object, reservation_id and confirmation_pending durably in one pricing transaction. Confirm after commit and retry with bounded backoff; never release because confirm timed out. Reserve/fence guards share the Products database. Registry outage before write is REGISTRY_UNAVAILABLE and writes no price. Definite rollback records cancellation before release; deletion commits removal before release; failed releases remain durable work. REFERENCE_RELEASED marks reference_lost and emits PriceReferenceLost. Only price references are built in phase 2; plan_item and sold_as follow in phase 3. See ADR-0004.
+Before creating a price, reserve in Products, re-read the SKU, then write the object and receipt durably before confirming. Reserve/fence guards share the Products database. Never release because confirm timed out. Registry outage before the price write is REGISTRY_UNAVAILABLE and writes no price. Only price references are built in phase 2; plan_item and sold_as follow in phase 3. See ADR-0004; bookkeeping: see D-401. The earlier pending_release wording is superseded by D-401.
 
 **Source:** §2 decision 17; §13.
 
@@ -138,3 +140,21 @@ Pricing reads bss_products_sdk::ProductsClient at write time for type and lifecy
 Retire the gear-authored pricing_outbox without a relay in phase 2b. The new chain uses toolkit outbox migrations with prefix bss_pricing_outbox; writers accept the same scoped transaction as the state change. Events implement broker TypedEvent and retain the envelope-encoded interim sink pattern proved by Products. Only committed rows dispatch. Core payloads are PriceRowsPublished, ApprovalUnitDecided and PriceReferenceLost; phase 3 adds plan, promotion and migration events.
 
 **Source:** Phase 2 plan Task 2a.2 and 2c.8; Products phase 1 pattern.
+
+#### D-401 [H] Reference work is a durable op written before reserve
+
+**Status:** DECIDED 2026-09-25.
+
+Tx A claims the Idempotency-Key, mints price_id and inserts pricing_reference_op with kind create_price and state reserving before reserve. Reserve is idempotent per (owner, kind, ref_id). Re-read the SKU after reserve; Tx B inserts the price with reservation_id and reference_state = confirmation_pending and moves the op to written. Confirm succeeds before Tx C sets the price to confirmed, the op to done and answers the key. A refusal after reserve moves the op to cancelling, then release, then done. Delete removes the price and inserts a delete_price op in releasing in one transaction.
+
+A ticker drives every op not done with bounded backoff and never drops one. It also reconciles confirmed prices through states(): a released reservation on a live price is re-reserved through a rereserve_price op when the SKU is not fenced; otherwise the price becomes lost, new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted. Never release because a confirm timed out. An op has no foreign key to the price and outlives removal. This supersedes D-398's earlier bookkeeping.
+
+**Source:** Phase 2 plan 2c.1/2c.6; plan review findings 2, 3.
+
+#### D-402 [H] The pair guard compares SKU metering as of each row's start
+
+**Status:** DECIDED 2026-09-25.
+
+On a usage chain the successor keeps model, package_size and the SKU's (unit, usage_type_ref) read from the SKU version in force at each row's effective_from; otherwise CHAIN_MODEL_CHANGED. Products freezes the SKU type while referenced but versions its metering, hence the dated read. The meter is included because the supersession-continuity family (spec §5 "asserts exactly this") rejects a meter change. Submit checks the guard and apply rechecks it.
+
+**Source:** Phase 2 reconciliation matrix row 24; spec §5 pair guard; supersession-continuity family.

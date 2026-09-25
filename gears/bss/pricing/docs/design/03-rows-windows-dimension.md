@@ -64,23 +64,23 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-rows-windows-dimension-model-and-flo
 
 1. [ ] - `p1` - Derive permitted models from charge kind; validate nonnegative prices and coherent model parameters. - `inst-rows-windows-dimension-model-and-floor-1`
 2. [ ] - `p1` - Evaluate per_unit, graduated, volume and package with decimal arithmetic and half-open tier bands; recurring/one_time allow flat or per_unit. - `inst-rows-windows-dimension-model-and-floor-2`
-3. [ ] - `p1` - Preserve usage model kind, package size and unit across successors; CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-rows-windows-dimension-model-and-floor-3`
+3. [ ] - `p1` - Preserve usage model kind, package size and SKU (unit, usage_type_ref) read as of each row's start across successors (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-rows-windows-dimension-model-and-floor-3`
 4. [ ] - `p1` - Aggregate rated amounts after included quantities by row/subscription/period across every bound value and slice; apply the prorated row floor, then promotions. - `inst-rows-windows-dimension-model-and-floor-4`
 
 ### reserve-write-confirm
 
 Feature algorithm: `cpt-cf-bss-pricing-algo-rows-windows-dimension-reserve-write-confirm`.
 
-1. [ ] - `p1` - Consult replay and establish stable ref_id; reserve a price reference from Products before writing it locally. - `inst-rows-windows-dimension-reserve-write-confirm-1`
-2. [ ] - `p1` - Re-read SKU type/lifecycle after reserve; a fence or invalid lifecycle refuses the write. - `inst-rows-windows-dimension-reserve-write-confirm-2`
-3. [ ] - `p1` - Commit price, receipt, confirmation_pending and replay response in one transaction. - `inst-rows-windows-dimension-reserve-write-confirm-3`
-4. [ ] - `p1` - Confirm after commit; persist retry on transient failure and never release on a timeout or unknown commit outcome. - `inst-rows-windows-dimension-reserve-write-confirm-4`
-5. [ ] - `p1` - On REFERENCE_RELEASED, atomically mark reference_lost, audit and enqueue PriceReferenceLost. - `inst-rows-windows-dimension-reserve-write-confirm-5`
-6. [ ] - `p1` - After definite rollback persist cancellation, or commit deletion plus pending_release; retry release only after durable absence is established. - `inst-rows-windows-dimension-reserve-write-confirm-6`
+1. [ ] - `p1` - Replay first; Tx A claims the key, mints price_id and inserts a create_price op in reserving before reserve. - `inst-rows-windows-dimension-reserve-write-confirm-1`
+2. [ ] - `p1` - Reserve idempotently per (owner, kind, ref_id), then re-read SKU type/lifecycle; a refusal moves the op to cancelling. - `inst-rows-windows-dimension-reserve-write-confirm-2`
+3. [ ] - `p1` - Tx B commits the price, reservation_id, reference_state = confirmation_pending and op written together. - `inst-rows-windows-dimension-reserve-write-confirm-3`
+4. [ ] - `p1` - Confirm after commit; Tx C sets price confirmed, op done and answers the key. Retry transient failure with bounded backoff; never release on timeout. - `inst-rows-windows-dimension-reserve-write-confirm-4`
+5. [ ] - `p1` - On REFERENCE_RELEASED during confirm mark the price lost, audit and enqueue PriceReferenceLost. Reconcile confirmed prices through states(): re-reserve when not fenced, else mark lost and refuse new rows with PRICE_REFERENCE_LOST. - `inst-rows-windows-dimension-reserve-write-confirm-5`
+6. [ ] - `p1` - Cancellation persists op cancelling before release; deletion removes the price and inserts delete_price op releasing in one transaction. Release finishes the op; every op not done survives restart and is never dropped. - `inst-rows-windows-dimension-reserve-write-confirm-6`
 
 ## 4. States (CDSL)
 
-Rows move draft → pending → approved through the unit engine; pending ownership prohibits edits. Rejected proposals retain their review history and cannot become approved by direct PATCH; replacement proposals use drafts. Withdrawal unlocks the proposal for authoring. References move reserved → locally committed/confirmation_pending → confirmed, or reference_lost on proven release. Cancellation/deletion → pending_release → released is separate from confirmation.
+Rows move draft → pending → approved through the unit engine; pending ownership prohibits edits. Rejected proposals retain their review history and cannot become approved by direct PATCH; replacement proposals use drafts. Withdrawal unlocks the proposal for authoring. Price reference_state moves confirmation_pending → confirmed, or lost on proven release. Durable ops move reserving → written → done for creation, cancelling → done for refusal, or releasing → done for deletion; a rereserve_price op recovers a released receipt when the SKU is not fenced (D-401).
 
 State definition: `cpt-cf-bss-pricing-state-rows-windows-dimension` in the FEATURE.
 
@@ -93,7 +93,7 @@ Each mounted route must appear in all four censuses with authz and precondition 
 
 ## 6. Data Model
 
-pricing_price_row holds version_no, nullable dim_value, model/price_json, min_fee, eligibility, dates, keep_for_bound, pair links, state, author and approval ownership. Approved chain indexes are per price/value/start. pricing_price holds reservation_id, confirmation_pending, reference_lost and retry metadata; pricing_pending_release persists after deletion/cancellation. No row-level frozen descriptors or remote reference count exists.
+pricing_price_row holds version_no, nullable dim_value, model/price_json, min_fee, eligibility, dates, keep_for_bound, pair links, state, author and approval ownership. Approved chain indexes are per price/value/start. pricing_price holds reservation_id and reference_state; pricing_reference_op holds durable work before reserve, retry metadata and cancellation/deletion work without a price FK. closed_explicitly preserves a temporary row's end through normalization. No row-level frozen descriptors or remote reference count exists.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.
@@ -126,7 +126,7 @@ The sole definitions live in [features/rows-windows-dimension.md](../features/ro
 2. PRD AC #4 / `cpt-cf-bss-pricing-dod-tier-bands-half-open`: Given a boundary of 1000, when quantity equals 1000 then volume selects the next band; 999 remains in the prior band.
 3. PRD AC #5 / `cpt-cf-bss-pricing-dod-chain-windows`: Given default and EU rows, when EU gains a successor then default stays unchanged; duplicate approved start, overlap and past start fail.
 4. PRD AC #5 / `cpt-cf-bss-pricing-dod-dimension-fallback`: Given a closed EU tail and an open default, when its end date arrives then default applies; if both are absent selection reports uncovered.
-5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, model or unit change returns 422 CHAIN_MODEL_CHANGED.
+5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, model, dated unit or meter change returns 422 CHAIN_MODEL_CHANGED.
 6. PRD AC #7 / `cpt-cf-bss-pricing-dod-min-fee-row-period`: Given two 10 charges bound to one row with floor 30 then the result is 30; two distinct floor-30 rows yield 60, not 30 or 120.
 7. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-pair`: Given an existing EU chain, when a five-day temporary change shifts by three days then both boundaries shift and the return stays EU; partial pair submission fails.
 8. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-value-fallback`: Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return row exists.

@@ -36,11 +36,11 @@ concurrent writes and either supported database, and must remain explainable to 
 
 ## Decision Outcome
 
-Chosen: **Reference reservation with durable confirmation**. Products owns live reserved/confirmed/released receipts. Pricing reserves a logical reference, re-reads the SKU, commits its object with the receipt and durable confirmation work, then confirms. Reserve and fence are reciprocal guarded writes in Products. An unconfirmed receipt counts until released. A confirm timeout never releases; definite rollback first records durable cancellation, deletion first commits removal, then release is retried. Released receipts never reactivate.
+Chosen: **Reference reservation with durable confirmation**. Products owns live reserved/confirmed/released receipts. Pricing first claims the key and persists a create_price op in reserving (D-401), then reserves a logical reference, re-reads the SKU, commits its object with the receipt and durable confirmation work, then confirms and atomically sets price confirmed, op done and key answered. Reserve and fence are reciprocal guarded writes in Products. An unconfirmed receipt counts until released. A confirm timeout never releases; definite rollback first records durable cancellation, deletion first commits removal plus a delete_price op in releasing, then release is retried. Released receipts never reactivate.
 
 ### Consequences
 
-Creating a price requires Products availability: failure before write is REGISTRY_UNAVAILABLE. Confirmation outage leaves confirmation_pending, protecting the SKU. REFERENCE_RELEASED becomes reference_lost and PriceReferenceLost, requiring remediation. Dead callers may block retirement until recovery or audited operator force-release; this availability cost is accepted. Phase 3 uses the same barrier for plan_item and sold_as.
+Creating a price requires Products availability: failure before write is REGISTRY_UNAVAILABLE. Confirmation outage leaves confirmation_pending, protecting the SKU. REFERENCE_RELEASED during confirm becomes reference_state = lost and PriceReferenceLost. A ticker never drops unfinished ops and reconciles confirmed prices through states(): a released receipt is re-reserved when the SKU is not fenced, otherwise lost prevents new rows with PRICE_REFERENCE_LOST. Dead callers may block retirement until recovery or audited operator force-release; this availability cost is accepted. Phase 3 uses the same barrier for plan_item and sold_as.
 
 ### Confirmation
 
