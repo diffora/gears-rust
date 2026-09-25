@@ -162,3 +162,29 @@ pub async fn page(
         .await
         .map_err(|e| driver_failure("reference op page".into(), e))
 }
+
+/// Whether a price already has unfinished work of `kind`: one re-reservation per price.
+/// # Errors
+/// Returns typed scoped storage failures.
+pub async fn open_for_price(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    price: Uuid,
+    kind: &str,
+) -> Result<bool, RepoError> {
+    Ok(e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceId.eq(price))
+                .add(e::Column::Kind.eq(kind))
+                .add(e::Column::State.ne(OpState::Done.as_str())),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure("open reference op".into(), e))?
+        .is_some())
+}

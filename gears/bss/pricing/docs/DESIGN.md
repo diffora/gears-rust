@@ -232,7 +232,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |
-| Released receipt on confirm | 409 REFERENCE_RELEASED from Products; persist reference_state = lost locally |
+| Released receipt on confirm | 409 REFERENCE_RELEASED from Products; the price stays confirmation_pending and a rereserve_price op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
 
 Canonical toolkit RFC-9457 Problem carries code, field and message, retaining typed DbErr for retry classification.
 Malformed body/precondition failures occur before domain work. All four existing route censuses must agree with
@@ -320,7 +320,7 @@ sequenceDiagram
     else Timeout or transient failure
       Retry->>Products: Resume written op with bounded backoff; never release on timeout
     else REFERENCE_RELEASED
-      Pricing->>DB: Price lost, op done, key answered, audit and PriceReferenceLost
+      Pricing->>DB: Price stays confirmation_pending, rereserve_price op, op done, key answered
     end
   else Refusal after reserve
     Pricing->>DB: Op cancelling, persist outcome
@@ -335,7 +335,9 @@ An unknown commit outcome is reconciled before cancellation. Deletion removes th
 delete_price op in releasing in one transaction, then release finishes the op. Every op not done is retried
 with bounded backoff and never dropped. The ticker also checks confirmed prices through states(): a released
 receipt on a live price starts a rereserve_price op when the SKU is not fenced, else the price becomes lost,
-new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted. No timeout releases a reservation.
+new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted. A receipt released before its confirm
+starts the same op; lost prices are re-reserved once their SKU admits a reservation again. No timeout
+releases a reservation.
 
 #### Temporary pair
 

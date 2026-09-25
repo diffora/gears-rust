@@ -272,6 +272,10 @@ async fn mark_rereserve_lost(
     let Some(mut price) = price_repo::find(tx, &scope, op.tenant_id, op.price_id).await? else {
         return Ok(());
     };
+    if price.reference_state == ReferenceState::Lost.as_str() {
+        // A lost price whose re-reservation is refused again stays lost, announced once.
+        return Ok(());
+    }
     price_repo::set_reference(
         tx,
         &scope,
@@ -491,7 +495,13 @@ async fn give_up(
 fn refuses_the_write(error: &CanonicalError) -> bool {
     matches!(
         error_code(error).as_deref(),
-        Some("PRICE_KEY_TAKEN" | "DIM_NOT_DECLARED" | "BOOK_NOT_FOUND" | "CHARGE_KIND_SKU_TYPE")
+        Some(
+            "PRICE_KEY_TAKEN"
+                | "DIM_NOT_DECLARED"
+                | "BOOK_NOT_FOUND"
+                | "CHARGE_KIND_SKU_TYPE"
+                | "PRICE_NOT_FOUND"
+        )
     )
 }
 /// Commit one observation in one transaction: the price write it carries, the completion
@@ -562,7 +572,7 @@ async fn commit(
     }
     if planned.state == OpState::Done {
         if op.state == OpState::Written.as_str() {
-            work.receipt = Some(finish_written(tx, outbox, ctx, op, &work, &effects, now).await?);
+            work.receipt = Some(finish_written(tx, ctx, op, &work, &effects, now).await?);
         } else if op.kind == OpKind::Rereserve.as_str() {
             mark_rereserve_lost(tx, outbox, ctx, &work, op, now).await?;
         }
@@ -583,9 +593,11 @@ async fn write_price(
         price_repo::insert(tx, scope, price).await?;
         return Ok(());
     }
+    // A lost price may be deleted while its re-reservation is in flight: cancel, which
+    // releases the new reservation.
     let current = price_repo::find(tx, scope, op.tenant_id, op.price_id)
         .await?
-        .ok_or_else(corrupt)?;
+        .ok_or_else(|| support::conflict("PRICE_NOT_FOUND"))?;
     if current.charge_kind != price.charge_kind {
         return Err(support::conflict("CHARGE_KIND_SKU_TYPE").into());
     }
@@ -602,10 +614,12 @@ async fn write_price(
     .await?;
     Ok(())
 }
-/// Tx C: the confirm answered, so the price leaves `confirmation_pending`.
+/// Tx C. A confirmed receipt confirms the price. A receipt released before its confirm keeps
+/// the price `confirmation_pending` and starts a `rereserve_price` op in this transaction;
+/// that op alone decides between confirmed and lost (D-401), so a create is never answered
+/// `lost` for a reservation that can still be replaced.
 async fn finish_written(
     tx: &(impl DBRunner + Sync),
-    outbox: &toolkit_db::outbox::Outbox,
     ctx: &SecurityContext,
     op: &entity::Model,
     work: &Work,
@@ -616,43 +630,66 @@ async fn finish_written(
     let mut price = price_repo::find(tx, &scope, op.tenant_id, op.price_id)
         .await?
         .ok_or_else(corrupt)?;
-    let reference = if effects.contains(&Effect::MarkLost) {
-        ReferenceState::Lost
-    } else {
-        ReferenceState::Confirmed
-    };
+    if effects.contains(&Effect::Rereserve) {
+        // Due at once: no door drives this op, so no in-flight grace applies.
+        ops::insert(tx, &scope, rereserve_op(ctx, &price, now, now)?).await?;
+        return Ok(Receipt::price(price)?);
+    }
     price_repo::set_reference(
         tx,
         &scope,
         op.tenant_id,
         op.price_id,
         price.version,
-        reference,
+        ReferenceState::Confirmed,
         price.reservation_id,
         now,
     )
     .await?;
-    price.reference_state = reference.as_str().into();
+    price.reference_state = ReferenceState::Confirmed.as_str().into();
     price.version += 1;
     price.updated_at = now;
     support::audit(
         tx,
         ctx,
         work.correlation,
-        if reference == ReferenceState::Lost {
-            "PriceReferenceLost"
-        } else {
-            "price.confirm"
-        },
+        "price.confirm",
         price.id,
         price.version,
     )
     .await?;
-    if reference == ReferenceState::Lost {
-        super::reference_events::lost(outbox, tx, &price, ctx.subject_id(), now).await?;
-    }
     Ok(Receipt::price(price)?)
 }
+/// A `rereserve_price` op for a live price, due at `due`.
+/// # Errors
+/// Fails only if the durable work record cannot be encoded.
+pub fn rereserve_op(
+    ctx: &SecurityContext,
+    price: &price::Model,
+    now: OffsetDateTime,
+    due: OffsetDateTime,
+) -> Result<entity::Model, CanonicalError> {
+    let work = Work {
+        book_id: price.book_id,
+        input: PricingPriceCreate {
+            sku_id: price.sku_id,
+            period: price.period.clone(),
+            dimension_key: price.dimension_key.clone(),
+            invoice_line_override: price.invoice_line_override.clone(),
+        },
+        correlation: Uuid::now_v7(),
+        refusal: None,
+        receipt: None,
+        outcome: None,
+    };
+    let mut op = new_op(ctx, price.id, &work, OpKind::Rereserve, None, None, now)?;
+    op.tenant_id = price.tenant_id;
+    op.next_attempt_at = due;
+    Ok(op)
+}
+/// Products refusals that mean the SKU admits no reservation: fenced, retiring or retired.
+/// Only these make a live price lost; every other refusal of a re-reservation is retried.
+pub const LOSING_REFUSALS: [&str; 3] = ["SKU_FENCED", "SKU_RETIRING", "SKU_RETIRED"];
 fn unavailable() -> CanonicalError {
     CanonicalError::service_unavailable()
         .with_detail("REGISTRY_UNAVAILABLE: reference work will be retried")
@@ -734,6 +771,12 @@ async fn observe(
                 )),
                 Err(error) if definite_refusal(&error) => {
                     let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
+                    if op.kind == OpKind::Rereserve.as_str()
+                        && !LOSING_REFUSALS.contains(&code.as_str())
+                    {
+                        // Only a SKU that admits no reservation loses a live price.
+                        return Ok(unavailable());
+                    }
                     Ok((
                         Event::ReserveRefused { code },
                         None,

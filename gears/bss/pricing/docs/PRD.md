@@ -240,7 +240,7 @@ Use bss-approval for price_rows now and plan_revision, promotion and migration i
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Before reserve, Tx A claims the key and persists a create_price op in reserving. Reserve kind price with Products, re-read SKU type/lifecycle; Tx B commits the price with reservation_id and reference_state = confirmation_pending and op written. Confirm, then Tx C sets price confirmed, op done and answers the key (D-401). Registry outage before write is 503 REGISTRY_UNAVAILABLE; a fence refuses reserve as SKU_FENCED. A confirm timeout never releases the reservation. Retry durably; REFERENCE_RELEASED during confirm marks the price lost and emits PriceReferenceLost. The ticker also reconciles confirmed prices through states(): a released receipt is re-reserved if the SKU is not fenced; otherwise the price becomes lost and new rows fail PRICE_REFERENCE_LOST. Definite rollback requires durable cancellation before release; deletion commits removal and a delete_price op in releasing before release. Every op not done is retried with bounded backoff and never dropped. Phase 3 uses the same protocol for plan_item and sold_as.
+Before reserve, Tx A claims the key and persists a create_price op in reserving. Reserve kind price with Products, re-read SKU type/lifecycle; Tx B commits the price with reservation_id and reference_state = confirmation_pending and op written. Confirm, then Tx C sets price confirmed, op done and answers the key (D-401). Registry outage before write is 503 REGISTRY_UNAVAILABLE; a fence refuses reserve as SKU_FENCED. A confirm timeout never releases the reservation. Retry durably; REFERENCE_RELEASED during confirm keeps the price confirmation_pending and re-reserves it through a rereserve_price op. The ticker also reconciles confirmed prices through states(): a released receipt is re-reserved if the SKU is not fenced; otherwise the price becomes lost and new rows fail PRICE_REFERENCE_LOST. Definite rollback requires durable cancellation before release; deletion commits removal and a delete_price op in releasing before release. Every op not done is retried with bounded backoff and never dropped. Phase 3 uses the same protocol for plan_item and sold_as.
 
 #### `fr-book-export`
 
@@ -386,7 +386,8 @@ plan using it; rejection of a separately proposed plan revision cannot undo this
 
 Pricing reserves a SKU, commits a price and loses the confirm response. The price shows confirmation_pending;
 the durable worker retries. Products refuses retirement while the live receipt exists. An operator-forced release
-is surfaced as reference_state = lost; a confirm timeout itself never triggers release (spec §13).
+is re-reserved, or surfaced as reference_state = lost while the SKU is fenced; a confirm timeout itself never
+triggers release (spec §13).
 
 #### Bind a descriptor change
 

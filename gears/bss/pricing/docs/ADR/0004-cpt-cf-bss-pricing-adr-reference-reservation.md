@@ -40,7 +40,7 @@ Chosen: **Reference reservation with durable confirmation**. Products owns live 
 
 ### Consequences
 
-Creating a price requires Products availability: failure before write is REGISTRY_UNAVAILABLE. Confirmation outage leaves confirmation_pending, protecting the SKU. REFERENCE_RELEASED during confirm becomes reference_state = lost and PriceReferenceLost. A ticker never drops unfinished ops and reconciles confirmed prices through states(): a released receipt is re-reserved when the SKU is not fenced, otherwise lost prevents new rows with PRICE_REFERENCE_LOST. Dead callers may block retirement until recovery or audited operator force-release; this availability cost is accepted. Phase 3 uses the same barrier for plan_item and sold_as.
+Creating a price requires Products availability: failure before write is REGISTRY_UNAVAILABLE. Confirmation outage leaves confirmation_pending, protecting the SKU. REFERENCE_RELEASED during confirm keeps the price confirmation_pending and re-reserves it; only a fenced, retiring or retired SKU makes it lost with PriceReferenceLost. A ticker never drops unfinished ops and reconciles confirmed prices through states(): a released receipt is re-reserved when the SKU is not fenced, otherwise lost prevents new rows with PRICE_REFERENCE_LOST. Dead callers may block retirement until recovery or audited operator force-release; this availability cost is accepted. Phase 3 uses the same barrier for plan_item and sold_as.
 
 ### Confirmation
 

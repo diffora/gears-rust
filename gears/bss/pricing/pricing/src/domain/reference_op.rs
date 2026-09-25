@@ -41,7 +41,9 @@ pub enum Effect {
     Release,
     Retry,
     Complete,
-    MarkLost,
+    /// The reservation was released before its confirm: keep the price pending and
+    /// re-reserve it; only a SKU that refuses the reservation makes the price lost (D-401).
+    Rereserve,
 }
 /// Illegal input is a typed failure, including all observations on terminal work.
 #[toolkit_macros::domain_model]
@@ -77,7 +79,7 @@ pub fn next(mut op: Op, event: Event) -> Result<(Op, Vec<Effect>), IllegalTransi
             (Done, Effect::Complete)
         }
         (Written, Event::ConfirmFailed) => (Written, Effect::Retry),
-        (Written, Event::ReleasedOnConfirm) => (Done, Effect::MarkLost),
+        (Written, Event::ReleasedOnConfirm) => (Done, Effect::Rereserve),
         (Cancelling | Releasing, Event::ReleaseFailed) => (op.state, Effect::Retry),
         _ => {
             return Err(IllegalTransition {

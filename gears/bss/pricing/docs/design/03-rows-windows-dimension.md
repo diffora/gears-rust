@@ -75,7 +75,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-rows-windows-dimension-reserve-write
 2. [ ] - `p1` - Reserve idempotently per (owner, kind, ref_id), then re-read SKU type/lifecycle; a refusal moves the op to cancelling. - `inst-rows-windows-dimension-reserve-write-confirm-2`
 3. [ ] - `p1` - Tx B commits the price, reservation_id, reference_state = confirmation_pending and op written together. - `inst-rows-windows-dimension-reserve-write-confirm-3`
 4. [ ] - `p1` - Confirm after commit; Tx C sets price confirmed, op done and answers the key. Retry transient failure with bounded backoff; never release on timeout. - `inst-rows-windows-dimension-reserve-write-confirm-4`
-5. [ ] - `p1` - On REFERENCE_RELEASED during confirm mark the price lost, audit and enqueue PriceReferenceLost. Reconcile confirmed prices through states(): re-reserve when not fenced, else mark lost and refuse new rows with PRICE_REFERENCE_LOST. - `inst-rows-windows-dimension-reserve-write-confirm-5`
+5. [ ] - `p1` - On REFERENCE_RELEASED during confirm keep the price confirmation_pending and start a rereserve_price op. Reconcile confirmed prices through states(): re-reserve when not fenced, else mark lost, audit, enqueue PriceReferenceLost and refuse new rows with PRICE_REFERENCE_LOST; re-reserve lost prices once their SKU admits a reservation. - `inst-rows-windows-dimension-reserve-write-confirm-5`
 6. [ ] - `p1` - Cancellation persists op cancelling before release; deletion removes the price and inserts delete_price op releasing in one transaction. Release finishes the op; every op not done survives restart and is never dropped. - `inst-rows-windows-dimension-reserve-write-confirm-6`
 
 ## 4. States (CDSL)

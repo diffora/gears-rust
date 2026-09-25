@@ -107,13 +107,13 @@ async fn a_503_before_the_write_frees_the_key_and_a_confirm_timeout_keeps_it() {
     assert_eq!(Script::count(&script.releases), 0);
 }
 #[tokio::test]
-async fn released_on_confirm_is_lost_and_replayable() {
+async fn released_on_confirm_is_answered_pending_never_lost() {
     let (f, script, path, input) = setup(7).await;
     let first = f
         .call("POST", &path, input.clone(), None, Some("one"))
         .await;
     assert_eq!(first.0, 201, "{first:?}");
-    assert_eq!(first.1["reference_state"], "lost");
+    assert_eq!(first.1["reference_state"], "confirmation_pending");
     assert_eq!(f.call("POST", &path, input, None, Some("one")).await, first);
     assert_eq!(Script::count(&script.releases), 0);
 }

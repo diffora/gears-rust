@@ -7,7 +7,7 @@ use bss_pricing::domain::{
 use uuid::Uuid;
 #[test]
 fn every_state_event_pair_is_typed_and_never_panics() {
-    use Effect::{Complete, Confirm, MarkLost, ReadSku, Release, Retry};
+    use Effect::{Complete, Confirm, ReadSku, Release, Rereserve, Retry};
     use OpState::{Cancelling, Done, Releasing, Reserving, Written};
     let id = Uuid::from_u128(1);
     let events = [
@@ -55,7 +55,7 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 None,
                 Some((Done, Complete)),
                 Some((Written, Retry)),
-                Some((Done, MarkLost)),
+                Some((Done, Rereserve)),
                 None,
                 None,
                 None,

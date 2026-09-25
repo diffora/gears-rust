@@ -212,16 +212,18 @@ pub async fn delete_empty(
     matched(result.rows_affected, "VERSION_CONFLICT")
 }
 
-/// Bounded identity-ordered scan for the trusted reconciliation worker.
+/// Bounded identity-ordered scan for the trusted reconciliation worker: confirmed prices,
+/// whose receipts it checks, and lost prices, which it re-reserves once their SKU admits a
+/// reservation again.
 /// # Errors
 /// Returns typed scoped storage failures.
-pub async fn confirmed_batch(
+pub async fn reconcile_batch(
     runner: &impl DBRunner,
     scope: &AccessScope,
     cursor: Option<Uuid>,
     limit: u64,
 ) -> Result<Vec<e::Model>, RepoError> {
-    let mut filter = Condition::all().add(e::Column::ReferenceState.eq("confirmed"));
+    let mut filter = Condition::all().add(e::Column::ReferenceState.is_in(["confirmed", "lost"]));
     if let Some(cursor) = cursor {
         filter = filter.add(e::Column::Id.gt(cursor));
     }

@@ -377,33 +377,138 @@ fn backoff_is_exponential_and_bounded() {
     assert_eq!(OpState::Done.as_str(), "done");
 }
 
-#[tokio::test]
-async fn lost_price_emits_one_durable_event() {
+/// Every `PriceReferenceLost` envelope in the fixture's outbox.
+async fn lost_events(f: &Fixture) -> Vec<serde_json::Value> {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let raw = Database::connect(&f.dsn).await.unwrap();
+    raw.query_all_raw(Statement::from_string(
+        DbBackend::Sqlite,
+        "SELECT CAST(payload AS TEXT) AS payload FROM bss_pricing_outbox_body",
+    ))
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| serde_json::from_str(&r.try_get::<String>("", "payload").unwrap()).unwrap())
+    .filter(|e: &serde_json::Value| {
+        e["type"] == "gts.cf.core.events.event.v1~cf.bss.pricing.price_reference_lost.v1~"
+    })
+    .collect()
+}
+async fn read_price(f: &Fixture, id: &serde_json::Value) -> serde_json::Value {
+    let read = f
+        .call(
+            "GET",
+            &format!("/prices/{}", id.as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(read.0, 200, "{read:?}");
+    read.1
+}
+#[tokio::test]
+async fn a_reservation_released_before_confirm_is_rereserved_not_lost() {
+    // An operator force-released the reservation between Tx B and the confirm. The SKU is not
+    // fenced, so the price is re-reserved (D-401); the create is answered, never as `lost`.
     let (f, script, path, input) = setup().await;
     script.set(7);
     let created = f
         .call("POST", &path, input.clone(), None, Some("one"))
         .await;
-    assert_eq!(created.0, 201);
-    f.call("POST", &path, input, None, Some("one")).await;
-    let raw = Database::connect(&f.dsn).await.unwrap();
-    let rows = raw
-        .query_all_raw(Statement::from_string(
-            DbBackend::Sqlite,
-            "SELECT CAST(payload AS TEXT) AS payload FROM bss_pricing_outbox_body",
-        ))
+    assert_eq!(created.0, 201, "{created:?}");
+    assert_eq!(created.1["reference_state"], "confirmation_pending");
+    assert_eq!(
+        f.call("POST", &path, input, None, Some("one")).await,
+        created
+    );
+    let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+    let open = ops::page(
+        &f.db.conn().unwrap(),
+        &scope,
+        f.ctx.subject_tenant_id(),
+        Some(OpState::Reserving),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(open.len(), 1, "one rereserve_price op is open");
+    assert_eq!(open[0].kind, "rereserve_price");
+    assert_eq!(
+        open[0].price_id.to_string(),
+        created.1["id"].as_str().unwrap()
+    );
+    script.set(0);
+    Ticker::new(f.state.clone(), clock(), 10, 100)
+        .tick()
         .await
         .unwrap();
-    assert_eq!(rows.len(), 1);
-    let envelope: serde_json::Value =
-        serde_json::from_str(&rows[0].try_get::<String>("", "payload").unwrap()).unwrap();
+    let read = read_price(&f, &created.1["id"]).await;
+    assert_eq!(read["reference_state"], "confirmed", "{read}");
+    assert_ne!(read["reservation_id"], created.1["reservation_id"]);
+    assert!(lost_events(&f).await.is_empty());
+    assert_eq!(Script::count(&script.releases), 0);
+}
+#[tokio::test]
+async fn a_released_price_is_lost_only_behind_a_fence_and_found_again_when_it_lifts() {
+    let (f, script, path, input) = setup().await;
+    script.set(7);
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.1["reference_state"], "confirmation_pending");
+    // The SKU is now fenced: the re-reservation is refused SKU_FENCED, so the price is lost.
+    script.set(4);
+    let mut ticker = Ticker::new(f.state.clone(), clock(), 10, 1);
+    ticker.tick().await.unwrap();
+    let read = read_price(&f, &created.1["id"]).await;
+    assert_eq!(read["reference_state"], "lost", "{read}");
+    let events = lost_events(&f).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["data"]["priceId"], created.1["id"]);
     assert_eq!(
-        envelope["type"],
-        "gts.cf.core.events.event.v1~cf.bss.pricing.price_reference_lost.v1~"
+        events[0]["tenant_id"],
+        f.ctx.subject_tenant_id().to_string()
     );
-    assert_eq!(envelope["data"]["priceId"], created.1["id"]);
-    assert_eq!(envelope["tenant_id"], f.ctx.subject_tenant_id().to_string());
+    // Still fenced: reconciliation leaves the lost price alone and announces nothing twice.
+    let reserves = Script::count(&script.reserve_calls);
+    ticker.tick().await.unwrap();
+    assert_eq!(Script::count(&script.reserve_calls), reserves);
+    assert_eq!(lost_events(&f).await.len(), 1);
+    // The fence lifts: reconciliation re-reserves the lost price.
+    script.set(0);
+    ticker.tick().await.unwrap();
+    let read = read_price(&f, &created.1["id"]).await;
+    assert_eq!(read["reference_state"], "confirmed", "{read}");
+    assert_ne!(read["reservation_id"], created.1["reservation_id"]);
+    assert_eq!(lost_events(&f).await.len(), 1);
+}
+#[tokio::test]
+async fn a_rereserve_refused_for_another_reason_is_retried_never_lost() {
+    let (f, script, path, input) = setup().await;
+    script.set(7);
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.1["reference_state"], "confirmation_pending");
+    script.set(16);
+    Ticker::new(f.state.clone(), clock(), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    let read = read_price(&f, &created.1["id"]).await;
+    assert_eq!(read["reference_state"], "confirmation_pending", "{read}");
+    assert!(lost_events(&f).await.is_empty());
+    let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+    let open = ops::page(
+        &f.db.conn().unwrap(),
+        &scope,
+        f.ctx.subject_tenant_id(),
+        Some(OpState::Reserving),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].attempts, 1, "retried with backoff, not cancelled");
 }
 
 #[tokio::test]

@@ -310,6 +310,12 @@ impl ReferenceRegistryV1 for Script {
         if mode == 4 {
             return Err(refusal("SKU_FENCED"));
         }
+        if mode == 16 {
+            // A refusal that says nothing about the SKU admitting references.
+            return Err(TestResource::permission_denied()
+                .with_reason("REFERENCE_OWNER_MISMATCH")
+                .create());
+        }
         let mut refs = self.refs.lock().await;
         let entry = refs
             .entry(ref_id)
@@ -337,6 +343,12 @@ impl ReferenceRegistryV1 for Script {
             return Err(CanonicalError::service_unavailable().create());
         }
         if mode == 7 {
+            // An operator released the reservation before this confirm.
+            for item in self.refs.lock().await.values_mut() {
+                if item.0 == id {
+                    item.1 = ReferenceState::Released;
+                }
+            }
             return Err(refusal("REFERENCE_RELEASED"));
         }
         for item in self.refs.lock().await.values_mut() {
@@ -410,7 +422,8 @@ impl ReferenceRegistryV1 for Script {
             billing_timing: None,
             usage_type_ref: None,
             unit: None,
-            type_change_pending: false,
+            // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
+            type_change_pending: mode == 4,
             pending_unit_id: None,
             approved_by_unit_id: None,
             created_by: Uuid::new_v4(),
