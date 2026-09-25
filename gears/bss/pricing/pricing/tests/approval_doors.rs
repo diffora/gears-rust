@@ -778,3 +778,159 @@ async fn the_approval_policy_is_read_and_written_under_if_match() {
         kind.1
     );
 }
+
+#[tokio::test]
+async fn a_units_quorum_is_its_own_snapshot_and_an_approve_only_reviewer_may_vote() {
+    let g = gov(2).await;
+    let row = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let unit = &receipt["unit"];
+    assert_eq!(unit["quorum_required"], 2);
+    g.policy(None, 0).await;
+    // A reviewer who holds `approval_unit:approve` and nothing else.
+    let approver = || {
+        SecurityContext::builder()
+            .subject_id(Uuid::new_v4())
+            .subject_tenant_id(g.f.ctx.subject_tenant_id())
+            .subject_type("approval_unit:approve")
+            .build()
+            .unwrap()
+    };
+    let (status, b, _) = g
+        .vote(&approver(), unit, "approve", json!({"generation":1}), "1")
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(
+        (b["outcome"].clone(), b["have"].clone(), b["need"].clone()),
+        (json!("pending"), json!(1), json!(2)),
+        "a lowered policy does not lower a submitted unit"
+    );
+    let (status, b, _) = g
+        .vote(&approver(), unit, "approve", json!({"generation":1}), "2")
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "applied");
+}
+
+#[tokio::test]
+async fn a_stale_refresh_is_the_keys_committed_answer() {
+    let g = gov(2).await;
+    let row = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let unit = &receipt["unit"];
+    let (one, two) = (g.f.user(), g.f.user());
+    assert_eq!(
+        g.vote(&one, unit, "approve", json!({"generation":1}), "1")
+            .await
+            .0,
+        200
+    );
+    let tenant = g.f.ctx.subject_tenant_id();
+    price_row::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .col_expr(
+            price_row::Column::PriceJson,
+            sea_orm::sea_query::Expr::value(json!({"rate":"0.11"})),
+        )
+        .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
+            &price_row::Column::Id,
+            row["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
+        )))
+        .exec(&g.f.db.conn().unwrap())
+        .await
+        .unwrap();
+    let stale = g
+        .vote(&two, unit, "approve", json!({"generation":1}), "2")
+        .await;
+    assert_eq!(stale.0, 400, "{stale:?}");
+    assert!(code(&stale.1).contains("UNIT_STALE"), "{stale:?}");
+    assert_eq!(
+        g.vote(&two, unit, "approve", json!({"generation":1}), "2")
+            .await,
+        stale,
+        "the refresh committed with its answer; the key replays it"
+    );
+    assert_eq!(g.card(unit).await["generation"], 2, "refreshed once");
+}
+
+#[tokio::test]
+async fn simultaneous_claims_of_one_key_record_one_unit() {
+    let g = gov(1).await;
+    let row = &g.draft("a", body("2031-03-01")).await[0];
+    let second = g.f.second_app().await;
+    let path = format!("/rows/{}/submit", row["id"].as_str().unwrap());
+    let (a, b) = tokio::join!(
+        g.f.call("POST", &path, json!({}), None, Some("same")),
+        price_support::request(
+            &second,
+            &g.f.ctx,
+            "POST",
+            &path,
+            json!({}),
+            None,
+            Some("same")
+        )
+    );
+    let (first, other) = if a.0 == 201 { (a, b) } else { (b, a) };
+    assert_eq!(first.0, 201, "{first:?}");
+    assert!(
+        other == first || (other.0 == 409 && code(&other.1).contains("IDEMPOTENCY_KEY_IN_FLIGHT")),
+        "the other claim replays or waits: {other:?}"
+    );
+    let (_, list, _) =
+        g.f.call("GET", "/approval-units", json!({}), None, None)
+            .await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 1, "one act");
+}
+
+#[tokio::test]
+async fn every_act_is_audited_with_its_actor_subject_and_correlation() {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let g = gov(1).await;
+    let (submitter, reviewer) = (g.f.user(), g.f.user());
+    let row = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&submitter, row, "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    let unit = &receipt["unit"];
+    assert_eq!(
+        g.vote(&reviewer, unit, "approve", json!({"generation":1}), "ok")
+            .await
+            .0,
+        200
+    );
+    let rows = Database::connect(&g.f.dsn)
+        .await
+        .unwrap()
+        .query_all_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT action, actor_ref, correlation_id FROM pricing_audit \
+             WHERE subject_id = ? ORDER BY written_at, action",
+            [unit["id"].as_str().unwrap().parse::<Uuid>().unwrap().into()],
+        ))
+        .await
+        .unwrap();
+    let acts: Vec<(String, Uuid, bool)> = rows
+        .iter()
+        .map(|r| {
+            (
+                r.try_get::<String>("", "action").unwrap(),
+                r.try_get::<Uuid>("", "actor_ref").unwrap(),
+                r.try_get::<Option<String>>("", "correlation_id")
+                    .unwrap()
+                    .is_some_and(|c| !c.is_empty()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        acts,
+        vec![
+            (
+                "approval.submitted".to_owned(),
+                submitter.subject_id(),
+                true
+            ),
+            ("approval.approved".to_owned(), reviewer.subject_id(), true),
+        ]
+    );
+}

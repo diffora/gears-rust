@@ -1,4 +1,6 @@
 //! `PriceBook` migration chain; toolkit delivery tables join it at the capability.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-tables-two-backends:p1
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;

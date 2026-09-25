@@ -1,4 +1,10 @@
 //! Submission, publish changes, the approval queue, generation-bound votes and the policy.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-publish-changes-selection:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-stale-refresh-generation:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-generation-and-duplicate-vote:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-unit-contended:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-terminal-audit-event:p1
 use super::{
     dto::{
         PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut, PricingApprovalUnitDto,

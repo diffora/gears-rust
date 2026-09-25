@@ -1,4 +1,7 @@
 //! Row validation, per-value chains, temporary pairs and dated metering continuity.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-dimension-fallback:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-temporary-value-fallback:p1
 use super::{
     RuleError,
     money::{self, PriceData},

@@ -423,7 +423,7 @@ CREATE TABLE bss.pricing_approval_unit (
   decided_at timestamptz, decided_note text, snapshot jsonb NOT NULL, snapshot_hash text NOT NULL,
   version bigint NOT NULL DEFAULT 1, UNIQUE (tenant_id, id)
 );
-CREATE INDEX pricing_approval_queue ON bss.pricing_approval_unit (tenant_id, state, kind, submitted_at);
+CREATE INDEX ix_pricing_approval_unit_queue ON bss.pricing_approval_unit (tenant_id, state, kind, submitted_at);
 CREATE TABLE bss.pricing_approval_unit_item (
   unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), item_type text NOT NULL, item_id uuid NOT NULL,
   created_by uuid NOT NULL, before jsonb, after jsonb NOT NULL, PRIMARY KEY (unit_id, item_type, item_id)

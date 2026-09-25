@@ -1,4 +1,6 @@
 //! Scoped idempotency repo; follows the Products implementation.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-idempotency-key-store:p1
 use super::driver_failure;
 use crate::infra::storage::{RepoError, entity::idempotency};
 use sea_orm::sea_query::{Expr, OnConflict};

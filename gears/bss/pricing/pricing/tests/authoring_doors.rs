@@ -655,18 +655,16 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         .subject_type("user")
         .build()
         .unwrap();
-    assert_eq!(
-        request(
-            &f.app,
-            &stranger,
-            "GET",
-            &format!("/price-books/{id}"),
-            json!({}),
-            None,
-            None
-        )
-        .await
-        .0,
-        404
-    );
+    for path in [
+        format!("/price-books/{id}"),
+        format!("/price-books/{id}/export"),
+    ] {
+        assert_eq!(
+            request(&f.app, &stranger, "GET", &path, json!({}), None, None)
+                .await
+                .0,
+            404,
+            "{path}: a foreign book is not disclosed"
+        );
+    }
 }

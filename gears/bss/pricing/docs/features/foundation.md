@@ -122,7 +122,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 ### Fresh schema on both backends
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-tables-two-backends`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-tables-two-backends`
 
 The new migration chain preserves keys, checks and chain indexes on SQLite and Postgres. Schema goldens and two-writer integration tests verify DESIGN §3.7, without migrating stand data.
 
@@ -130,7 +130,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-two-backends`; PRD AC #24.
 
 ### Scoped repositories
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-scoped-repositories`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-scoped-repositories`
 
 Repositories use the caller DBRunner and PolicyEnforcer-derived tenant scope. Approval children require the scoped unit; a raw or second connection cannot bypass the mutation transaction (spec §3 item 27).
 
@@ -138,7 +138,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-tenant-isolation`; PRD AC #23.
 
 ### Append-only audit
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-audit-append-only`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-audit-append-only`
 
 Submission, terminal decisions and reference-loss acts persist attributed audit in the same transaction. Storage rejects deletion and record edits while allowing only the reserved seal transition (spec §3 item 27, §6).
 
@@ -146,7 +146,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-audit`; PRD AC #22.
 
 ### One replay store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-idempotency-key-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-idempotency-key-store`
 
 Required POST keys use tenant/endpoint/client_key, payload hash and 24-hour retention. Claims and saved answers share the mutation transaction, including committed UNIT_STALE responses; units have no second key (spec §2.2).
 
@@ -162,7 +162,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-idempotency-concurrency`; PRD AC #25.
 
 ### Conditional approval Store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-unit-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-unit-store`
 
 The Store retains typed DbErr, conditional versions, ownership guards and generation-scoped decisions. Repository races are tested with two actual connections on both engines, without FOR UPDATE (spec §2.2, §6).
 
@@ -170,7 +170,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-two-backends`; PRD AC #24.
 
 ### Atomic event writes
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-outbox-same-tx`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-outbox-same-tx`
 
 State, audit and required events commit together through the caller transaction. A failing outbox insert prevents successful state publication (spec §6–§7.3).
 

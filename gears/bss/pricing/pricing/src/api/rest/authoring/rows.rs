@@ -1,4 +1,7 @@
 //! Draft rows: a single row, a temporary pair or one explicitly closed row; draft-only edits.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-temporary-pair:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-row-pending-guard:p1
 use super::{
     dto::{
         PricingPriceRowCreate, PricingPriceRowCreated, PricingPriceRowDto, PricingPriceRowPatch,

@@ -170,7 +170,7 @@ Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
 ### Typed transactional domain events
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-events-typed-outbox`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-events-typed-outbox`
 
 Core and later domain events use TypedEvent and toolkit delivery, preserving envelope and payload identity. Terminal units always event; submission and committed refresh do not falsely publish domain success (spec §6–§7.3, D-400).
 

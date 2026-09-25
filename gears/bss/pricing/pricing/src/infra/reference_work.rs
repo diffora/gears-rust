@@ -1,4 +1,6 @@
 //! Shared durable executor: local transitions are conditional, remote calls are idempotent.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-reference-protocol:p1
 use crate::{
     api::rest::authoring::{
         AuthoringState,

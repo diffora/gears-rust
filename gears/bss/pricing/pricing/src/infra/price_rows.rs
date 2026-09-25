@@ -3,6 +3,11 @@
 //!
 //! No row is locked by the database: ownership is the conditional `pending_unit_id` write,
 //! and `apply` re-reads every touched chain in the door's serializable transaction.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-chain-windows:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-pair-guard:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-rows-unit:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-sod-excludes-authors:p1
 use crate::{
     domain::{
         RuleError, book,

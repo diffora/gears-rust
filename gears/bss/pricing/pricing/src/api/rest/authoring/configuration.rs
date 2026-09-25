@@ -1,4 +1,6 @@
 //! Atomic settings and dimension registry operations.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-dimension-registry:p1
 use super::{
     dto::{PricingDimensionEntry, PricingDimensions, PricingSettingsDto, PricingSettingsPut},
     support::{DoorError, audit, check_version, conflict, invalid, response, value},

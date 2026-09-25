@@ -121,7 +121,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 ### Currency books and validity
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-currency-validity`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-currency-validity`
 
 Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384).
 
@@ -129,7 +129,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
 ### One price per book key
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-key-unique`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-key-unique`
 
 The database enforces SKU × charge kind × normalized period uniqueness inside a book. Charge kind follows the re-read SKU; a bundle or invalid period is rejected (spec §5).
 
@@ -137,7 +137,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-key`; PRD AC #3.
 
 ### Restricted price metadata edits
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-metadata`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-metadata`
 
 invoice_line_override remains editable under If-Match. dimension_key changes only before any valued row exists; approved rows also prevent price deletion (spec §7.2, phase 2c.6).
 
@@ -145,7 +145,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-key`; PRD AC #3.
 
 ### Tenant dimension registry
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-registry`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-registry`
 
 Keys and values are tenant-owned and validated with the four DIM errors. A referenced value cannot be removed even when its row is historical, and registry edits require no approval (spec §5, §14).
 
@@ -161,7 +161,7 @@ Requirement: `cpt-cf-bss-pricing-fr-settings`; PRD AC #13.
 
 ### Read-only book export
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-export`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-export`
 
 Export returns the book and all its scoped prices/rows as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16).
 
@@ -169,7 +169,7 @@ Requirement: `cpt-cf-bss-pricing-fr-book-export`; PRD AC #12.
 
 ### Creation uses the reference service
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-reference-handoff`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-reference-handoff`
 
 Every price create and delete invokes slice 03 reference protocol rather than writing directly. Validation failures and duplicate-key races leave no unprotected object (spec §13).
 

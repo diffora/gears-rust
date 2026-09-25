@@ -127,7 +127,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 ### Type-appropriate row models
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-row-models`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-row-models`
 
 Draft validation permits exactly the model families specified by charge kind. Approved money remains immutable while controlled chain metadata can normalize on successors (spec §5).
 
@@ -135,7 +135,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-row`; PRD AC #4.
 
 ### Half-open tier arithmetic
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-tier-bands-half-open`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-tier-bands-half-open`
 
 Tier selection uses [from, to), correcting the prototype volume edge. Surviving flat, per-unit, package and tier-boundary goldens execute against the money function (spec §10, D-387).
 
@@ -143,7 +143,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-row`; PRD AC #4.
 
 ### Per-chain window normalization
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-chain-windows`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-chain-windows`
 
 Approval recomputes predecessor ends within one value chain under transactional revalidation. Same-start uniqueness and domain overlap/past-start validation protect both databases (spec §5).
 
@@ -151,7 +151,7 @@ Requirement: `cpt-cf-bss-pricing-fr-chain-windows`; PRD AC #5.
 
 ### Default fallback after value tails
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-fallback`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-fallback`
 
 Selection prefers the in-force value chain then default. A value chain may end explicitly; missing default is legal until coverage is required (spec §5, §14).
 
@@ -159,7 +159,7 @@ Requirement: `cpt-cf-bss-pricing-fr-chain-windows`; PRD AC #5.
 
 ### Usage successor structure guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-pair-guard`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-pair-guard`
 
 Successors preserve usage model, package size and SKU unit. Submit and apply both enforce CHAIN_MODEL_CHANGED, and supersession-continuity goldens reach that validator (spec §2 decision 16).
 
@@ -175,7 +175,7 @@ Requirement: `cpt-cf-bss-pricing-fr-min-fee`; PRD AC #7.
 
 ### Existing-chain temporary pairs
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-temporary-pair`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-temporary-pair`
 
 A temporary row and return are created, edited and submitted atomically. Return money comes from versionAt at the end, inherits dim_value and shifts with preserved duration (spec §5).
 
@@ -183,7 +183,7 @@ Requirement: `cpt-cf-bss-pricing-fr-temporary-pair`; PRD AC #8.
 
 ### Temporary value without its own chain
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-temporary-value-fallback`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-temporary-value-fallback`
 
 A previously unowned value receives one row ending at temporary_until. No return row copies the default, so later default changes remain visible after the temporary interval (spec §5).
 
@@ -191,7 +191,7 @@ Requirement: `cpt-cf-bss-pricing-fr-temporary-pair`; PRD AC #8.
 
 ### Draft and pending ownership guards
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-row-pending-guard`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-row-pending-guard`
 
 Draft PATCH/DELETE requires current version and no pending unit. Historical approved rows cannot be deleted; pending ownership is acquired conditionally by approval submission (spec §5–§6).
 
@@ -199,7 +199,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-row`; PRD AC #4.
 
 ### Reference reservation barrier
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-reference-protocol`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-reference-protocol`
 
 Price writes first persist a durable op, reserve, re-read SKU, locally commit receipt/work and confirm; cancellation/removal precedes release. A remote count or timeout-based release cannot substitute for the protocol (spec §13, D-398).
 
@@ -207,7 +207,7 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 
 ### Durable confirmation and release recovery
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-confirmation-retry`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-confirmation-retry`
 
 Restart resumes every pricing_reference_op not done with bounded backoff, including reserving before any price exists; an unknown commit is reconciled before release. Confirmed prices are checked through states(): a released receipt is re-reserved when the SKU is not fenced, otherwise reference_state becomes lost, new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted (D-401).
 

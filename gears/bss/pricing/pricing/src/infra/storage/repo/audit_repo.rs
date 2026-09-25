@@ -1,4 +1,6 @@
 //! Scoped audit repo; follows the Products implementation.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-audit-append-only:p1
 use super::driver_failure;
 use crate::infra::storage::{RepoError, entity::audit_log};
 use sea_orm::{EntityTrait, Set};

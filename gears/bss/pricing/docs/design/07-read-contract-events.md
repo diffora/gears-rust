@@ -98,7 +98,7 @@ cross-gear read for transactional local ownership/version guards. Approved money
 
 ## 7. Events & Alarms
 
-Core payloads: PriceRowsPublished { book_id, rows[] }, ApprovalUnitDecided { unit_id, kind, state, generation, actors[] }, PriceReferenceLost { price_id, sku_id, reservation_id }. Later payloads name the published revision, retired plan, promotion id/version or migration request/target/subscriptions. Tenant and correlation are envelope facts. No SkuChanged subscription is required by phase 2.
+Core payloads (camelCase on the wire): PriceRowsPublished { book_id, unit_id, rows[] { row_id, price_id, dim_value (null is the default chain), effective_from, effective_to, eligibility }, actor_ref }, ApprovalUnitDecided { unit_id, kind, state (approved, rejected or withdrawn), generation, actors[] }, PriceReferenceLost { price_id, sku_id, reservation_id, actor_ref }; each also names its tenant_id. Later payloads name the published revision, retired plan, promotion id/version or migration request/target/subscriptions. Tenant and correlation are envelope facts. No SkuChanged subscription is required by phase 2.
 
 Audit and outbox inserts use the same mutation transaction; retry is lifecycle-managed and observes shutdown.
 

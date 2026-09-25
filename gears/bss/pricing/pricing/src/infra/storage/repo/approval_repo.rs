@@ -1,4 +1,7 @@
 //! Scoped approval repo; follows the Products implementation.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-unit-store:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-quorum-policy:p1
 use super::driver_failure;
 const DEFAULT_QUORUM: u32 = 1;
 use crate::infra::storage::{

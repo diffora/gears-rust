@@ -1,4 +1,6 @@
 //! Repositories accept any scoped transaction or connection runner.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-scoped-repositories:p1
 use super::RepoError;
 use toolkit_db::secure::ScopeError;
 pub mod approval_repo;

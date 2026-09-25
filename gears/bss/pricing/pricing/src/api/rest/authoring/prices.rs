@@ -1,4 +1,8 @@
 //! Price writes and their durable registry operations.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-key-unique:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-metadata:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-reference-handoff:p1
 use super::{
     AuthoringState,
     dto::{PricingPriceCreate, PricingPriceDto, PricingPricePatch},

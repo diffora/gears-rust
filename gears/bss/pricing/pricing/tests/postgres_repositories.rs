@@ -136,3 +136,38 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         })
     ));
 }
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_audit_rows_refuse_deletion_and_edits() {
+    use bss_pricing::infra::storage::repo::audit_repo::{AuditCommon, write_eventless_act_audit};
+    use sea_orm::ConnectionTrait;
+    let pg = pg_support::Pg::applied().await;
+    let provider = DBProvider::<DbError>::new(pg.db().await);
+    let tenant = Uuid::new_v4();
+    write_eventless_act_audit(
+        &provider.conn().unwrap(),
+        &AccessScope::for_tenant(tenant),
+        AuditCommon {
+            audit_id: Uuid::new_v4(),
+            tenant_id: tenant,
+            actor_ref: Uuid::new_v4(),
+            action: "book.create".into(),
+            subject_kind: "price_book".into(),
+            reason: None,
+            correlation_id: Some("c".into()),
+            written_at: time::OffsetDateTime::now_utc(),
+        },
+        Uuid::new_v4(),
+        Some(1),
+    )
+    .await
+    .unwrap();
+    let raw = pg.raw().await;
+    for statement in [
+        "DELETE FROM bss.pricing_audit",
+        "UPDATE bss.pricing_audit SET action = 'forged'",
+    ] {
+        let refused = raw.execute_unprepared(statement).await.unwrap_err();
+        assert!(refused.to_string().contains("append-only"), "{refused}");
+    }
+}

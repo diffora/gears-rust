@@ -1,4 +1,6 @@
 //! Bounded recovery and periodic receipt reconciliation under the pricing system actor.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-confirmation-retry:p1
 use super::{
     reference_work::{self, Clock, Work},
     storage::{

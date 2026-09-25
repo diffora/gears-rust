@@ -6,6 +6,9 @@
 //! producer is bound in phase 2: the queue's processor is [`PendingProducer`], which holds
 //! every envelope, so nothing is reported delivered before a broker exists (Products'
 //! interim pattern).
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-outbox-same-tx:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-events-typed-outbox:p1
 use super::storage::RepoError;
 use event_broker_sdk::TypedEvent;
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,7 @@
 //! Book writes share one transaction with their audit and POST receipt.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-book-currency-validity:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-book-export:p1
 use super::{
     dto::{PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingExportPrice},
     support::{DoorError, audit, check_version, conflict, date, invalid, missing, response, value},

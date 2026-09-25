@@ -934,3 +934,44 @@ async fn min_fee_column_refuses_anything_but_an_unsigned_plain_decimal() {
         );
     }
 }
+#[tokio::test]
+async fn audit_rows_refuse_deletion_and_edits() {
+    use bss_pricing::infra::storage::repo::audit_repo::{AuditCommon, write_eventless_act_audit};
+    use sea_orm::{ConnectionTrait, Database};
+    let (db, scope, tenant, dsn) = test_db().await;
+    write_eventless_act_audit(
+        &db.conn().unwrap(),
+        &scope,
+        AuditCommon {
+            audit_id: Uuid::new_v4(),
+            tenant_id: tenant,
+            actor_ref: Uuid::new_v4(),
+            action: "book.create".into(),
+            subject_kind: "price_book".into(),
+            reason: None,
+            correlation_id: Some("c".into()),
+            written_at: at(9),
+        },
+        Uuid::new_v4(),
+        Some(1),
+    )
+    .await
+    .unwrap();
+    let raw = Database::connect(&dsn).await.unwrap();
+    for statement in [
+        "DELETE FROM pricing_audit",
+        "UPDATE pricing_audit SET action = 'forged'",
+    ] {
+        let refused = raw.execute_unprepared(statement).await.unwrap_err();
+        assert!(refused.to_string().contains("append-only"), "{refused}");
+    }
+    let kept = raw
+        .query_one_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Sqlite,
+            "SELECT action FROM pricing_audit".to_owned(),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.try_get::<String>("", "action").unwrap(), "book.create");
+}

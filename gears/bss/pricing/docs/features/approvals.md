@@ -133,7 +133,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 ### Selected row batch
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-publish-changes-selection`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-publish-changes-selection`
 
 Publish changes exposes all book drafts and their full review information, initially selected. The selected subset and optional common date form one atomic price_rows unit, preserving temporary pairs (spec §2 decision 7).
 
@@ -141,7 +141,7 @@ Requirement: `cpt-cf-bss-pricing-fr-publish-changes`; PRD AC #9.
 
 ### Transactional row apply
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-rows-unit`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-rows-unit`
 
 PriceRowsSubject revalidates shifted rows and chain invariants, normalizes windows and sets keep_for_bound. Approved money, audit and events commit atomically with ordered conditional ownership (spec §6).
 
@@ -149,7 +149,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 ### Separation from every author
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-sod-excludes-authors`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-sod-excludes-authors`
 
 Approvers exclude both submitter and every item created_by. Holding submit and approve grants does not override the check; a reviewer need not hold submit (spec §6).
 
@@ -157,7 +157,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 ### Copied quorum including zero
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quorum-policy`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quorum-policy`
 
 Policy resolves kind override then tenant default, failing safe to one if absent. A unit snapshots quorum; zero records an approved unit and terminal audit/event without decision rows (spec §6).
 
@@ -165,7 +165,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 ### Committed refresh of stale content
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-stale-refresh-generation`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-stale-refresh-generation`
 
 Fingerprint mismatch replaces items/snapshot/hash and increments generation, preserving old decisions as stale. Caller receives committed UNIT_STALE with the new generation and no old-content publication (spec §2.2).
 
@@ -173,7 +173,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 ### Generation-scoped votes
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-generation-and-duplicate-vote`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-generation-and-duplicate-vote`
 
 Approve/reject require generation and refuse a delayed vote with GENERATION_MISMATCH. Each actor votes once per generation; duplicate is DUPLICATE_VOTE and terminal state is UNIT_ALREADY_DECIDED (spec §2.2).
 
@@ -181,7 +181,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 ### Unit contention and environmental refusal
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-unit-contended`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-unit-contended`
 
 Conditional version admits one writer and returns UNIT_CONTENDED to a lost race. Revalidation failures inside apply roll back as APPLY_REFUSED, distinct from committed content refresh (spec §2.2, §6).
 
@@ -189,7 +189,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 ### Every terminal outcome is attributable
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-terminal-audit-event`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-terminal-audit-event`
 
 Reject requires a note and withdraw requires the submitter. Approve, reject, withdraw and zero-quorum paths all persist terminal audit and ApprovalUnitDecided, clearing only owned locks (spec §6).
 
