@@ -50,11 +50,10 @@ impl LocalReferenceRegistry {
         tenant: Uuid,
         action: &str,
     ) -> Result<AccessScope, CanonicalError> {
-        if tenant != ctx.subject_tenant_id()
-            || tenant.is_nil()
-            || ctx.subject_id().is_nil()
-            || ctx.subject_type().is_none()
-        {
+        // A missing subject type is a human principal (the static-authn default, third-party
+        // OIDC tokens): it goes through the PDP below like any other. Only the system branch
+        // interprets the subject type, and it checks it itself.
+        if tenant != ctx.subject_tenant_id() || tenant.is_nil() || ctx.subject_id().is_nil() {
             return Err(service::forbidden().into());
         }
         if ctx.subject_type().is_some_and(|s| s.ends_with(".system")) {

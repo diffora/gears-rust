@@ -1990,6 +1990,46 @@ async fn bound_registry_system_identity_and_tenant_are_checked() {
 }
 
 #[tokio::test]
+async fn bound_registry_serves_a_principal_without_a_subject_type() {
+    // The static-authn default identity and OIDC third-party tokens carry no subject type;
+    // neither pricing's nor products' REST door requires one, so the registry must not either.
+    // Such a principal is a human caller and goes through the PDP like any other.
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1, ReferenceState};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let registry = local(&f, "pricing");
+    let untyped = SecurityContext::builder()
+        .subject_id(Uuid::now_v7())
+        .subject_tenant_id(f.tenant)
+        .token_scopes(vec!["*".into()])
+        .build()
+        .unwrap();
+    assert!(untyped.subject_type().is_none());
+    let receipt = registry
+        .reserve(
+            &untyped,
+            f.tenant,
+            f.id,
+            ReferenceKind::Price,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(receipt.state, ReferenceState::Reserved);
+    registry
+        .release(&untyped, f.tenant, receipt.reservation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        registry
+            .sku_for_write(&untyped, f.tenant, f.id)
+            .await
+            .unwrap()
+            .id,
+        f.id
+    );
+}
+#[tokio::test]
 async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
     use bss_products_sdk::{Lifecycle, ReferenceKind, ReferenceRegistryV1};
     let f = Fixture::new(0).await;
