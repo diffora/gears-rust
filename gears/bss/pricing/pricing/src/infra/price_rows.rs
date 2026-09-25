@@ -527,15 +527,19 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
                 .await
                 .map_err(applied)?;
             let normalised = |id: Uuid| judged.chain.iter().find(|c| c.id == id);
-            let mut keep = BTreeSet::new();
-            for r in judged
+            // The current predecessor of EVERY `new` row of a touched chain binds renewals,
+            // whether the `new` row is in this unit or was approved earlier and a row of this
+            // unit now sits in front of it. A mark is never cleared.
+            let touched: BTreeSet<Option<&str>> = judged
                 .proposed
                 .iter()
-                .filter(|r| r.eligibility == Eligibility::New)
-            {
-                if let Some(predecessor) =
-                    normalised(r.id).and_then(|c| row::in_force_before(&judged.chain, c))
-                {
+                .map(|r| r.dim_value.as_deref())
+                .collect();
+            let mut keep = BTreeSet::new();
+            for c in judged.chain.iter().filter(|c| {
+                c.eligibility == Eligibility::New && touched.contains(&c.dim_value.as_deref())
+            }) {
+                if let Some(predecessor) = row::in_force_before(&judged.chain, c) {
                     keep.insert(predecessor.id);
                 }
             }

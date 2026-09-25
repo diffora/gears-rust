@@ -842,3 +842,24 @@ async fn a_temporary_ending_on_the_next_approved_start_is_one_row_ended_by_it() 
         Some(json!({"rate":"12"}))
     );
 }
+
+// Chains LOW-1: a row approved in front of a `new` row becomes its predecessor and binds renewals.
+#[tokio::test]
+async fn a_row_approved_before_an_existing_new_row_is_marked_keep_for_bound() {
+    let s = setup(0).await;
+    let p = s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    let mut signup = body("2031-05-01");
+    signup["eligibility"] = json!("new");
+    let n = s.draft("n", signup).await;
+    assert!(s.submit(s.subject(), n, 0).await.unwrap().applied);
+    assert!(s.row(p).await.keep_for_bound, "P preceded N");
+    let m = s.draft("m", body("2031-03-01")).await;
+    assert!(s.submit(s.subject(), m.clone(), 0).await.unwrap().applied);
+    let m = s.row(m[0]).await;
+    assert_eq!(m.effective_to, Some(day("2031-05-01")), "M now precedes N");
+    assert!(
+        m.keep_for_bound,
+        "renewals from P walk to M, which binds them"
+    );
+    assert!(s.row(p).await.keep_for_bound, "never cleared");
+}

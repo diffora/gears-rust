@@ -108,7 +108,7 @@ Holding multiple permissions never bypasses separation of duties.
 1. [ ] - `p1` - Order affected prices by id and rows by id after the unit; use conditional guards and serializable Postgres transaction. - `inst-approvals-apply-price-rows-1`
 2. [ ] - `p1` - Shift selected rows to the common date with temporary duration preserved. - `inst-approvals-apply-price-rows-2`
 3. [ ] - `p1` - Re-read each chain, enforce usage pair guard and approved start uniqueness, and recompute effective_to independently per value. - `inst-approvals-apply-price-rows-3`
-4. [ ] - `p1` - Set keep_for_bound on the predecessor of a new successor; preserve approved money and historical ids. - `inst-approvals-apply-price-rows-4`
+4. [ ] - `p1` - Set keep_for_bound on the current predecessor of every new row of each touched chain, including a new row approved earlier that a row of this unit now precedes, and never clear it; preserve approved money and historical ids. - `inst-approvals-apply-price-rows-4`
 5. [ ] - `p1` - Replace owned pending locks with approved_by_unit_id and atomically persist audit, PriceRowsPublished and ApprovalUnitDecided. - `inst-approvals-apply-price-rows-5`
 
 ### withdraw-unit
