@@ -23,13 +23,13 @@ struct BrowseQuery {
     cursor: Option<String>,
 }
 #[toolkit_macros::api_dto(response)]
-struct PageInfo {
+struct BrowsePageInfo {
     next_cursor: Option<String>,
 }
 #[toolkit_macros::api_dto(response)]
 struct BrowsePage {
     rows: Vec<BrowseRow>,
-    page_info: PageInfo,
+    page_info: BrowsePageInfo,
 }
 #[toolkit_macros::api_dto(response)]
 #[serde(untagged)]
@@ -152,7 +152,7 @@ async fn browse(
                     .into_iter()
                     .map(|s| BrowseRow::Sku(Box::new(s.into())))
                     .collect(),
-                page_info: PageInfo {
+                page_info: BrowsePageInfo {
                     next_cursor: page.next_cursor,
                 },
             }))
@@ -171,7 +171,7 @@ async fn browse(
                     .into_iter()
                     .map(|r| BrowseRow::Tax(r.into()))
                     .collect(),
-                page_info: PageInfo { next_cursor: None },
+                page_info: BrowsePageInfo { next_cursor: None },
             }))
         }
         _ => Err(invalid("kind", "expected sku or tax_category")),

@@ -2,7 +2,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-quorum-zero-records-unit:p1
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
-    dto::{PolicyDto, PolicyRequest},
+    dto::{ApprovalPolicyDto, ApprovalPolicyRequest},
     governance as g, json_body, require_authenticated, tx_to_canonical,
 };
 use crate::{
@@ -30,7 +30,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .handler(get)
-        .json_response_with_schema::<PolicyDto>(openapi, StatusCode::OK, "Policy")
+        .json_response_with_schema::<ApprovalPolicyDto>(openapi, StatusCode::OK, "Policy")
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -42,9 +42,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag("Approval policy")
         .authenticated()
         .no_license_required()
-        .json_request::<PolicyRequest>(openapi, "Policy")
+        .json_request::<ApprovalPolicyRequest>(openapi, "Policy")
         .handler(put)
-        .json_response_with_schema::<PolicyDto>(openapi, StatusCode::OK, "Policy")
+        .json_response_with_schema::<ApprovalPolicyDto>(openapi, StatusCode::OK, "Policy")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -67,14 +67,14 @@ async fn get(
     )
     .await
     .map_err(|e| tx_to_canonical(TxError::Repo(e)))?;
-    Ok(Json(PolicyDto::from(p)).into_response())
+    Ok(Json(ApprovalPolicyDto::from(p)).into_response())
 }
 /// @cpt-cf-bss-products-fr-approval-units
 async fn put(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
-    body: Result<Json<PolicyRequest>, JsonRejection>,
+    body: Result<Json<ApprovalPolicyRequest>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(&enforcer, &ctx, actions::SETTINGS, true).await?;
@@ -117,5 +117,5 @@ async fn put(
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(PolicyDto::from(policy)).into_response())
+    Ok(Json(ApprovalPolicyDto::from(policy)).into_response())
 }

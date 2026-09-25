@@ -412,12 +412,12 @@ pub struct VoteReceipt {
     pub unit: UnitDto,
 }
 #[toolkit_macros::api_dto(request)]
-pub struct PolicyRequest {
+pub struct ApprovalPolicyRequest {
     pub kind: Option<String>,
     pub quorum: u32,
 }
 #[toolkit_macros::api_dto(response)]
-pub struct PolicyDto {
+pub struct ApprovalPolicyDto {
     pub default_quorum: u32,
     pub overrides: std::collections::BTreeMap<String, u32>,
 }
@@ -465,7 +465,7 @@ impl From<bss_approval::Decision> for DecisionDto {
         }
     }
 }
-impl From<bss_approval::Policy> for PolicyDto {
+impl From<bss_approval::Policy> for ApprovalPolicyDto {
     fn from(p: bss_approval::Policy) -> Self {
         Self {
             default_quorum: p.default_quorum,
