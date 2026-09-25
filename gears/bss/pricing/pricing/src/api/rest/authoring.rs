@@ -45,12 +45,12 @@ impl AuthoringState {
         hub: Arc<toolkit::ClientHub>,
     ) -> Result<Self, toolkit_db::outbox::OutboxError> {
         let pipeline = toolkit_db::outbox::Outbox::builder(db.db())
-            .table_prefix("bss_pricing_outbox")?
+            .table_prefix(crate::infra::events::OUTBOX_TABLE_PREFIX)?
             .queue(
-                crate::infra::reference_events::QUEUE,
+                crate::infra::events::QUEUE,
                 toolkit_db::outbox::Partitions::of(1),
             )
-            .leased(crate::infra::reference_events::PendingProducer)
+            .leased(crate::infra::events::PendingProducer)
             .start()
             .await?;
         Ok(Self {
@@ -433,6 +433,7 @@ async fn submit_row(
         scope,
         ctx,
         hub: state.hub.clone(),
+        outbox: state.outbox.clone(),
         correlation,
         key,
         digest,
@@ -493,6 +494,7 @@ async fn publish_changes(
         scope,
         ctx,
         hub: state.hub.clone(),
+        outbox: state.outbox.clone(),
         correlation,
         key,
         digest,
@@ -592,6 +594,7 @@ async fn approve_unit(
         scope,
         ctx,
         hub: state.hub.clone(),
+        outbox: state.outbox.clone(),
         correlation,
         key,
         digest,
@@ -634,6 +637,7 @@ async fn reject_unit(
         scope,
         ctx,
         hub: state.hub.clone(),
+        outbox: state.outbox.clone(),
         correlation,
         key,
         digest,
@@ -674,6 +678,7 @@ async fn withdraw_unit(
         scope,
         ctx,
         hub: state.hub.clone(),
+        outbox: state.outbox.clone(),
         correlation,
         key,
         digest,

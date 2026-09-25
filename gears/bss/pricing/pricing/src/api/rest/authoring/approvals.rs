@@ -11,6 +11,7 @@ use super::{
 use crate::{
     domain::row::{self, RowState},
     infra::{
+        events::{self, ApprovalUnitDecided, PriceRowsPublished, PublishedRow},
         price_rows::{KIND_PRICE_ROWS, PriceRowsSubject, Release},
         storage::{
             RepoError,
@@ -45,6 +46,8 @@ pub struct Command {
     pub scope: AccessScope,
     pub ctx: SecurityContext,
     pub hub: Arc<toolkit::ClientHub>,
+    /// The toolkit outbox the decision's events are enqueued on, inside its transaction.
+    pub outbox: Arc<toolkit_db::outbox::Outbox>,
     pub correlation: Uuid,
     pub key: String,
     pub digest: Vec<u8>,
@@ -116,6 +119,77 @@ async fn rows_of(
     Ok(rows)
 }
 
+/// `ApprovalUnitDecided` for a unit that just reached its terminal state, in the deciding
+/// transaction: the current-generation voters and the acting principal.
+async fn decided(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let unit = load_unit(tx, store, id).await?;
+    let mut actors: Vec<Uuid> = store
+        .decisions(tx, unit.id)
+        .await
+        .map_err(approval_failure)?
+        .into_iter()
+        .filter(|d| !d.stale)
+        .map(|d| d.actor)
+        .collect();
+    actors.push(cmd.ctx.subject_id());
+    actors.sort_unstable();
+    actors.dedup();
+    let event = ApprovalUnitDecided {
+        tenant_id: unit.tenant_id,
+        unit_id: unit.id,
+        kind: unit.kind.clone(),
+        state: unit.state.as_str().into(),
+        generation: unit.generation,
+        actors,
+    };
+    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    Ok(())
+}
+/// `PriceRowsPublished` for an applied unit, in the apply transaction: every row with the
+/// window its chain was approved with.
+async fn published(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let unit = load_unit(tx, store, id).await?;
+    let scope = AccessScope::for_tenant(store.tenant_id);
+    let mut rows = Vec::new();
+    for item in store.items(tx, unit.id).await.map_err(approval_failure)? {
+        let m = row_repo::find(tx, &scope, store.tenant_id, item.item_id)
+            .await?
+            .ok_or_else(|| {
+                RepoError::CorruptRow(format!("unit {} lost row {}", unit.id, item.item_id))
+            })?;
+        rows.push(PublishedRow {
+            row_id: m.id,
+            price_id: m.price_id,
+            dim_value: m.dim_value,
+            effective_from: m.effective_from.to_string(),
+            effective_to: m.effective_to.map(|d| d.to_string()),
+            eligibility: m.eligibility,
+        });
+    }
+    rows.sort_by_key(|r| r.row_id);
+    let event = PriceRowsPublished {
+        tenant_id: unit.tenant_id,
+        book_id: unit.ref_id,
+        unit_id: unit.id,
+        rows,
+        actor_ref: cmd.ctx.subject_id(),
+    };
+    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    Ok(())
+}
+
 /// Record one unit over the selected rows, applying it at once under quorum zero.
 async fn record(
     tx: &DbTx<'_>,
@@ -162,6 +236,8 @@ async fn record(
             unit.version,
         )
         .await?;
+        published(tx, cmd, &store, unit.id, subject.now).await?;
+        decided(tx, cmd, &store, unit.id, subject.now).await?;
     }
     let rows = rows_of(tx, &store, unit.id).await?;
     let receipt = PricingSubmitReceipt {
@@ -587,11 +663,17 @@ async fn vote_in(
         ApproveOutcome::Pending { have, need } => {
             ("pending", "approval.vote", Some(have), Some(need))
         }
-        ApproveOutcome::Applied => match action {
-            Vote::Approve => ("applied", "approval.approved", None, None),
-            Vote::Reject => ("rejected", "approval.rejected", None, None),
-            Vote::Withdraw => ("withdrawn", "approval.withdrawn", None, None),
-        },
+        ApproveOutcome::Applied => {
+            if action == Vote::Approve {
+                published(tx, cmd, &store, id, now).await?;
+            }
+            decided(tx, cmd, &store, id, now).await?;
+            match action {
+                Vote::Approve => ("applied", "approval.approved", None, None),
+                Vote::Reject => ("rejected", "approval.rejected", None, None),
+                Vote::Withdraw => ("withdrawn", "approval.withdrawn", None, None),
+            }
+        }
     };
     let unit = load_unit(tx, &store, id).await?;
     support::audit(tx, &cmd.ctx, cmd.correlation, audit, id, unit.version).await?;

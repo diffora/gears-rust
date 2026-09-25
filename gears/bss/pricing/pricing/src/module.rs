@@ -126,7 +126,9 @@ impl Gear for BssPricingGear {
 impl DatabaseCapability for BssPricingGear {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         let mut migrations = crate::infra::storage::migrations::Migrator::migrations();
-        match toolkit_db::outbox::outbox_migrations_with_prefix("bss_pricing_outbox") {
+        match toolkit_db::outbox::outbox_migrations_with_prefix(
+            crate::infra::events::OUTBOX_TABLE_PREFIX,
+        ) {
             Ok(outbox) => migrations.extend(outbox),
             Err(error) => migrations.push(Box::new(InvalidOutboxMigration(error.to_string()))),
         }
