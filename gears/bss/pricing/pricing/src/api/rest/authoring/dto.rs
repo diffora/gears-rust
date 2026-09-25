@@ -238,3 +238,44 @@ pub struct PricingPricePatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub invoice_line_override: Option<Option<String>>,
 }
+
+#[toolkit_macros::api_dto(response)]
+pub struct PricingReferenceOpDto {
+    pub op_id: Uuid,
+    pub kind: String,
+    pub state: String,
+    pub price_id: Uuid,
+    pub sku_id: Uuid,
+    pub reservation_id: Option<Uuid>,
+    pub attempts: i32,
+    #[serde(with = "time::serde::rfc3339")]
+    pub next_attempt_at: time::OffsetDateTime,
+    pub last_error: Option<String>,
+}
+impl From<entity::reference_op::Model> for PricingReferenceOpDto {
+    fn from(op: entity::reference_op::Model) -> Self {
+        Self {
+            op_id: op.op_id,
+            kind: op.kind,
+            state: op.state,
+            price_id: op.price_id,
+            sku_id: op.sku_id,
+            reservation_id: op.reservation_id,
+            attempts: op.attempts,
+            next_attempt_at: op.next_attempt_at,
+            last_error: op.last_error,
+        }
+    }
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingReferenceOpPage {
+    pub items: Vec<PricingReferenceOpDto>,
+    pub next_cursor: Option<Uuid>,
+}
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingReferenceOpQuery {
+    pub state: Option<String>,
+    pub limit: Option<u64>,
+    pub cursor: Option<Uuid>,
+}

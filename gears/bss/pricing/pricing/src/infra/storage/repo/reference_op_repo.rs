@@ -133,3 +133,32 @@ pub async fn due(
         .await
         .map_err(|e| driver_failure("due reference ops".into(), e))
 }
+
+/// Operator pagination uses a stable exclusive op-id cursor and an optional state.
+/// # Errors
+/// Returns typed scoped storage failures.
+pub async fn page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    state: Option<OpState>,
+    cursor: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<e::Model>, RepoError> {
+    let mut filter = Condition::all().add(e::Column::TenantId.eq(tenant));
+    if let Some(state) = state {
+        filter = filter.add(e::Column::State.eq(state.as_str()));
+    }
+    if let Some(cursor) = cursor {
+        filter = filter.add(e::Column::OpId.gt(cursor));
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(e::Column::OpId, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("reference op page".into(), e))
+}

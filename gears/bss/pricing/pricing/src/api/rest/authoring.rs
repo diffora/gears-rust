@@ -31,6 +31,38 @@ use uuid::Uuid;
 pub struct AuthoringState {
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
     pub hub: Arc<toolkit::ClientHub>,
+    pub outbox: Arc<toolkit_db::outbox::Outbox>,
+    pipeline: tokio::sync::Mutex<Option<toolkit_db::outbox::OutboxHandle>>,
+}
+impl AuthoringState {
+    /// Attach the durable event queue to the runtime database.
+    /// # Errors
+    /// Fails initialization if the toolkit queue cannot start.
+    pub async fn new(
+        db: toolkit_db::DBProvider<toolkit_db::DbError>,
+        hub: Arc<toolkit::ClientHub>,
+    ) -> Result<Self, toolkit_db::outbox::OutboxError> {
+        let pipeline = toolkit_db::outbox::Outbox::builder(db.db())
+            .table_prefix("bss_pricing_outbox")?
+            .queue(
+                crate::infra::reference_events::QUEUE,
+                toolkit_db::outbox::Partitions::of(1),
+            )
+            .leased(crate::infra::reference_events::PendingProducer)
+            .start()
+            .await?;
+        Ok(Self {
+            db,
+            hub,
+            outbox: pipeline.outbox().clone(),
+            pipeline: tokio::sync::Mutex::new(Some(pipeline)),
+        })
+    }
+    pub(crate) async fn stop(&self) {
+        if let Some(pipeline) = self.pipeline.lock().await.take() {
+            pipeline.stop().await;
+        }
+    }
 }
 /// Mount the complete authoring surface and establish one audit correlation per request.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
@@ -193,6 +225,23 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .path_param("id", "Price or book id")
         .handler(delete_price)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/reference-ops")
+        .operation_id("bss_pricing.list_reference_ops")
+        .summary("List durable reference work")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .query_param("state", false, "Reference op state")
+        .query_param("limit", false, "Batch size, 1 to 1000")
+        .query_param("cursor", false, "Exclusive op-id cursor")
+        .handler(list_reference_ops)
+        .json_response_with_schema::<dto::PricingReferenceOpPage>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
     router
@@ -622,4 +671,65 @@ async fn delete_price(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     prices::delete(state, scope, ctx, correlation, id).await
+}
+
+async fn list_reference_ops(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    uri: axum::http::Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::CONFIG,
+        actions::SETTINGS,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<dto::PricingReferenceOpQuery>::try_from_uri(&uri)
+            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    let filter = query
+        .state
+        .as_deref()
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| support::invalid("state", "REFERENCE_OP_STATE_INVALID"))?;
+    let limit = query.limit.unwrap_or(100);
+    if !(1..=1000).contains(&limit) {
+        return Err(support::invalid("limit", "LIMIT_INVALID"));
+    }
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), ctx.clone());
+        Box::pin(async move {
+            let mut items = crate::infra::storage::repo::reference_op_repo::page(
+                tx,
+                &scope,
+                ctx.subject_tenant_id(),
+                filter,
+                query.cursor,
+                limit + 1,
+            )
+            .await?;
+            let next_cursor = if u64::try_from(items.len()).unwrap_or(u64::MAX) > limit {
+                items.pop();
+                items.last().map(|op| op.op_id)
+            } else {
+                None
+            };
+            Ok(response(
+                StatusCode::OK,
+                &dto::PricingReferenceOpPage {
+                    items: items.into_iter().map(Into::into).collect(),
+                    next_cursor,
+                },
+                None,
+            )?)
+        })
+    })
+    .await
 }

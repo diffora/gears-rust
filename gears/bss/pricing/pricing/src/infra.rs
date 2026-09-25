@@ -6,3 +6,7 @@ pub mod storage;
 pub mod reference_registry;
 
 pub mod reference_work;
+
+pub mod reference_ticker;
+
+pub mod reference_events;

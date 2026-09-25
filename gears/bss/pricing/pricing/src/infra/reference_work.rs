@@ -136,13 +136,18 @@ pub fn new_op(
         .into(),
         outcome: Some(work.encode()?),
         attempts: 0,
-        next_attempt_at: now,
+        next_attempt_at: now + IN_FLIGHT_GRACE,
         last_error: None,
         created_by: ctx.subject_id(),
         created_at: now,
         updated_at: now,
     })
 }
+/// How long a door that just created or advanced an op keeps it before the ticker may take
+/// it over. The door drives its op to completion without waiting on `next_attempt_at`; the
+/// grace only keeps the one-second ticker from racing a live request with a second registry
+/// caller under another actor. An abandoned op (a crash, a dropped request) is due after it.
+pub const IN_FLIGHT_GRACE: time::Duration = time::Duration::seconds(30);
 /// Time and jitter are injectable so recovery tests never sleep for backoff.
 pub trait Clock: Send + Sync {
     fn now(&self) -> OffsetDateTime;
@@ -219,7 +224,7 @@ async fn advance(
                 now + (backoff(attempts) + time::Duration::milliseconds(clock.jitter_millis()))
                     .min(time::Duration::seconds(300))
             } else {
-                now
+                now + IN_FLIGHT_GRACE
             },
             last_error: if retry {
                 Some("REGISTRY_UNAVAILABLE".into())
@@ -231,6 +236,76 @@ async fn advance(
     )
     .await?;
     Ok((next.state, effects))
+}
+/// A re-reservation that ended without a live receipt leaves its price lost: the
+/// state, the durable `PriceReferenceLost` event and the audit record commit together.
+async fn mark_rereserve_lost(
+    tx: &(impl DBRunner + Sync),
+    outbox: &toolkit_db::outbox::Outbox,
+    ctx: &SecurityContext,
+    work: &Work,
+    op: &entity::Model,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let scope = AccessScope::for_tenant(op.tenant_id);
+    let Some(mut price) = price_repo::find(tx, &scope, op.tenant_id, op.price_id).await? else {
+        return Ok(());
+    };
+    price_repo::set_reference(
+        tx,
+        &scope,
+        op.tenant_id,
+        op.price_id,
+        price.version,
+        ReferenceState::Lost,
+        price.reservation_id,
+        now,
+    )
+    .await?;
+    super::reference_events::lost(outbox, tx, &price, ctx.subject_id(), now).await?;
+    price.reference_state = "lost".into();
+    price.version += 1;
+    support::audit(
+        tx,
+        ctx,
+        work.correlation,
+        "PriceReferenceLost",
+        price.id,
+        price.version,
+    )
+    .await?;
+    Ok(())
+}
+/// Answer the op's Idempotency-Key with its receipt or refusal, once, in the completing transaction.
+async fn answer_key(
+    tx: &(impl DBRunner + Sync),
+    op: &entity::Model,
+    work: &Work,
+) -> Result<(), DoorError> {
+    let Some(key) = &op.idempotency_key else {
+        return Ok(());
+    };
+    let scope = AccessScope::for_tenant(op.tenant_id);
+    let receipt = work
+        .receipt
+        .as_ref()
+        .or(work.refusal.as_ref())
+        .ok_or_else(corrupt)?;
+    if idem::answer_idempotency_key(
+        tx,
+        &scope,
+        op.tenant_id,
+        &work.endpoint(),
+        key,
+        i32::from(receipt.status),
+        support::value(receipt)?,
+    )
+    .await?
+        != idem::IdempotencyAnswer::Recorded
+    {
+        return Err(corrupt().into());
+    }
+    Ok(())
 }
 /// Drive a durable op until terminal completion or the next scheduled retry.
 /// # Errors
@@ -252,6 +327,9 @@ pub async fn drive(
         if parse_state(&op)? == OpState::Done {
             return Ok(work.receipt.or(work.refusal));
         }
+        if op.attempts >= 10 {
+            tracing::warn!(op_id=%op.op_id, attempts=op.attempts, "pricing reference operation retry threshold reached");
+        }
         let registry = super::reference_registry::resolve(&state.hub);
         let observation = observe(registry, ctx, &op).await;
         let (event, price, refusal) = observation?;
@@ -263,6 +341,7 @@ pub async fn drive(
         if let Some(refusal) = refusal {
             work2.refusal = Some(refusal);
         }
+        let outbox = state.outbox.clone();
         let result = support::transaction(&state.db.db(), move |tx| {
             let (op, mut work, ctx, clock, event, price) = (
                 op2.clone(),
@@ -272,7 +351,19 @@ pub async fn drive(
                 event.clone(),
                 price.clone(),
             );
+            let outbox = outbox.clone();
             Box::pin(async move {
+                let scope = AccessScope::for_tenant(op.tenant_id);
+                if ops::find(tx, &scope, op.tenant_id, op.op_id)
+                    .await?
+                    .as_ref()
+                    != Some(&op)
+                {
+                    return Err(RepoError::Conflict {
+                        code: "REFERENCE_OP_CONTENDED",
+                    }
+                    .into());
+                }
                 let now = clock.now();
                 let (planned, effects) = reference_op::next(
                     Op {
@@ -290,6 +381,9 @@ pub async fn drive(
                         let current = price_repo::find(tx, &scope, op.tenant_id, op.price_id)
                             .await?
                             .ok_or_else(corrupt)?;
+                        if current.charge_kind != price.charge_kind {
+                            return Err(support::conflict("CHARGE_KIND_SKU_TYPE").into());
+                        }
                         price_repo::set_reference(
                             tx,
                             &scope,
@@ -342,55 +436,21 @@ pub async fn drive(
                             price.version,
                         )
                         .await?;
-                        work.receipt = Some(Receipt::price(price)?);
-                    } else if op.kind == OpKind::Rereserve.as_str()
-                        && let Some(mut price) =
-                            price_repo::find(tx, &scope, op.tenant_id, op.price_id).await?
-                    {
-                        price_repo::set_reference(
-                            tx,
-                            &scope,
-                            op.tenant_id,
-                            op.price_id,
-                            price.version,
-                            ReferenceState::Lost,
-                            price.reservation_id,
-                            now,
-                        )
-                        .await?;
-                        price.reference_state = "lost".into();
-                        price.version += 1;
-                        support::audit(
-                            tx,
-                            &ctx,
-                            work.correlation,
-                            "PriceReferenceLost",
-                            price.id,
-                            price.version,
-                        )
-                        .await?;
-                    }
-                    if let Some(key) = &op.idempotency_key {
-                        let receipt = work
-                            .receipt
-                            .as_ref()
-                            .or(work.refusal.as_ref())
-                            .ok_or_else(corrupt)?;
-                        if idem::answer_idempotency_key(
-                            tx,
-                            &scope,
-                            op.tenant_id,
-                            &work.endpoint(),
-                            key,
-                            i32::from(receipt.status),
-                            support::value(receipt)?,
-                        )
-                        .await?
-                            != idem::IdempotencyAnswer::Recorded
-                        {
-                            return Err(corrupt().into());
+                        if reference == ReferenceState::Lost {
+                            super::reference_events::lost(
+                                &outbox,
+                                tx,
+                                &price,
+                                ctx.subject_id(),
+                                now,
+                            )
+                            .await?;
                         }
+                        work.receipt = Some(Receipt::price(price)?);
+                    } else if op.kind == OpKind::Rereserve.as_str() {
+                        mark_rereserve_lost(tx, &outbox, &ctx, &work, &op, now).await?;
                     }
+                    answer_key(tx, &op, &work).await?;
                 }
                 advance(tx, &op, &work, event, clock.as_ref()).await?;
                 Ok(())
@@ -404,7 +464,12 @@ pub async fn drive(
             }
             if matches!(
                 code.as_deref(),
-                Some("PRICE_KEY_TAKEN" | "DIM_NOT_DECLARED" | "BOOK_NOT_FOUND")
+                Some(
+                    "PRICE_KEY_TAKEN"
+                        | "DIM_NOT_DECLARED"
+                        | "BOOK_NOT_FOUND"
+                        | "CHARGE_KIND_SKU_TYPE"
+                )
             ) && op.state == OpState::Reserving.as_str()
             {
                 cancel(state, &op, work, error, clock.clone()).await?;

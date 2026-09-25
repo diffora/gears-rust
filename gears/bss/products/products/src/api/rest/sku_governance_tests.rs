@@ -2022,3 +2022,136 @@ async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
         .unwrap_err();
     assert_eq!(canonical_code(error), problem_code(&rest));
 }
+
+/// One pricing request through the real pricing router, as the cross-gear test sends it.
+async fn price_call(
+    app: &Router,
+    ctx: &SecurityContext,
+    method: Method,
+    path: &str,
+    body: Value,
+) -> (u16, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(format!("/bss-pricing/v1{path}"))
+        .extension(ctx.clone())
+        .header("content-type", "application/json")
+        .header("idempotency-key", "cross-gear")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(req).await.unwrap();
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+#[tokio::test]
+async fn real_pricing_price_blocks_retirement_until_delete_and_ticker_pass() {
+    use toolkit::contracts::DatabaseCapability;
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    f.policy(1).await;
+    let dsn = format!(
+        "sqlite://{}?mode=rwc",
+        std::env::temp_dir()
+            .join(format!("pricing-cross-gear-{}.sqlite3", Uuid::new_v4()))
+            .display()
+    );
+    let db = toolkit_db::connect_db(
+        &dsn,
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        bss_pricing::module::BssPricingGear::default().migrations(),
+    )
+    .await
+    .unwrap();
+    let hub = Arc::new(toolkit::ClientHub::default());
+    let registry = crate::infra::reference_registry::LocalReferenceRegistry::for_owner("pricing")
+        .with_runtime(f.state.clone(), Arc::new(flat_in_enforcer(f.tenant)));
+    hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
+        bss_products_sdk::PricingReferenceRegistry(Arc::new(registry)),
+    ));
+    let state = Arc::new(
+        bss_pricing::api::rest::authoring::AuthoringState::new(
+            toolkit_db::DBProvider::new(db),
+            hub,
+        )
+        .await
+        .unwrap(),
+    );
+    let pricing = bss_pricing::api::rest::authoring::router(
+        state.clone(),
+        &toolkit::api::OpenApiRegistryImpl::new(),
+    )
+    .layer(axum::Extension(flat_in_enforcer(f.tenant)));
+    let (status, book) = price_call(
+        &pricing,
+        &f.author,
+        Method::POST,
+        "/price-books",
+        json!({"code":"standard","name":"Standard","currency":"EUR"}),
+    )
+    .await;
+    assert_eq!(status, 201, "{book}");
+    let (status, price) = price_call(
+        &pricing,
+        &f.author,
+        Method::POST,
+        &format!("/price-books/{}/prices", book["id"].as_str().unwrap()),
+        json!({"sku_id":f.id}),
+    )
+    .await;
+    assert_eq!(status, 201, "{price}");
+    assert_eq!(price["reference_state"], "confirmed");
+    let (status, references) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}/references", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{references}");
+    assert!(
+        references
+            .to_string()
+            .contains(price["reservation_id"].as_str().unwrap())
+    );
+    let (status, refusal) = f.post("/retire", json!({})).await;
+    assert_eq!(status, 409);
+    assert_eq!(problem_code(&refusal), "SKU_REFERENCED");
+    let (status, _) = price_call(
+        &pricing,
+        &f.author,
+        Method::DELETE,
+        &format!("/prices/{}", price["id"].as_str().unwrap()),
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    bss_pricing::infra::reference_ticker::Ticker::new(
+        state,
+        Arc::new(bss_pricing::infra::reference_work::WallClock),
+        100,
+        1,
+    )
+    .tick()
+    .await
+    .unwrap();
+    let (status, unit) = f.post("/retire", json!({})).await;
+    assert_eq!(status, 200, "{unit}");
+    assert_eq!(f.vote(&unit, "approve", 1).await.0, 200);
+    assert_eq!(f.card().await["lifecycle"], "retired");
+}

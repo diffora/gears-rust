@@ -60,10 +60,14 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let (db, _, tenant, _) = storage_support::test_db().await;
-        let state = Arc::new(bss_pricing::api::rest::authoring::AuthoringState {
-            db: db.clone(),
-            hub: Arc::new(toolkit::ClientHub::default()),
-        });
+        let state = Arc::new(
+            bss_pricing::api::rest::authoring::AuthoringState::new(
+                db.clone(),
+                Arc::new(toolkit::ClientHub::default()),
+            )
+            .await
+            .unwrap(),
+        );
         let make = |allow| {
             bss_pricing::api::rest::authoring::router(
                 state.clone(),
@@ -340,6 +344,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("PATCH", format!("/prices/{id}")),
         ("DELETE", format!("/prices/{id}")),
         ("GET", "/price-books".into()),
+        ("GET", "/reference-ops".into()),
         ("GET", format!("/price-books/{id}")),
         ("PATCH", format!("/price-books/{id}")),
         ("GET", format!("/price-books/{id}/prices")),
@@ -536,6 +541,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("PATCH", format!("/prices/{id}"), "price", "author"),
         ("DELETE", format!("/prices/{id}"), "price", "author"),
         ("GET", "/price-books".into(), "price_book", "read"),
+        ("GET", "/reference-ops".into(), "config", "settings"),
         ("GET", format!("/price-books/{id}"), "price_book", "read"),
         (
             "PATCH",

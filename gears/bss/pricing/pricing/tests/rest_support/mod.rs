@@ -178,6 +178,7 @@ impl Harness {
             ("GET", "/bss-pricing/v1/prices/{id}"),
             ("PATCH", "/bss-pricing/v1/prices/{id}"),
             ("DELETE", "/bss-pricing/v1/prices/{id}"),
+            ("GET", "/bss-pricing/v1/reference-ops"),
             ("GET", "/bss-pricing/v1/price-books"),
             ("GET", "/bss-pricing/v1/price-books/{id}"),
             ("PATCH", "/bss-pricing/v1/price-books/{id}"),
@@ -212,3 +213,5 @@ impl Harness {
 // GET /prices/{id} price:read false false
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author false false
+
+// GET /reference-ops config:settings false false

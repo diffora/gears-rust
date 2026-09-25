@@ -20,12 +20,14 @@ pub async fn insert(
     scope: &AccessScope,
     m: e::Model,
 ) -> Result<e::Model, RepoError> {
-    if super::price_repo::find(runner, scope, m.tenant_id, m.price_id)
+    let price = super::price_repo::find(runner, scope, m.tenant_id, m.price_id)
         .await?
-        .is_none()
-    {
-        return Err(RepoError::Conflict {
+        .ok_or(RepoError::Conflict {
             code: "PRICE_NOT_FOUND",
+        })?;
+    if price.reference_state == "lost" {
+        return Err(RepoError::Conflict {
+            code: "PRICE_REFERENCE_LOST",
         });
     }
     let active = e::ActiveModel {

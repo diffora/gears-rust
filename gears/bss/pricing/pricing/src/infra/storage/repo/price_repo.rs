@@ -211,3 +211,27 @@ pub async fn delete_empty(
         .map_err(|e| driver_failure("delete empty price".into(), e))?;
     matched(result.rows_affected, "VERSION_CONFLICT")
 }
+
+/// Bounded identity-ordered scan for the trusted reconciliation worker.
+/// # Errors
+/// Returns typed scoped storage failures.
+pub async fn confirmed_batch(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    cursor: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<e::Model>, RepoError> {
+    let mut filter = Condition::all().add(e::Column::ReferenceState.eq("confirmed"));
+    if let Some(cursor) = cursor {
+        filter = filter.add(e::Column::Id.gt(cursor));
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(e::Column::Id, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("confirmed price batch".into(), e))
+}

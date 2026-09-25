@@ -54,6 +54,8 @@ impl authz_resolver_sdk::AuthZResolverApi for Resolver {
     }
 }
 pub struct Fixture {
+    pub dsn: String,
+    pub state: Arc<bss_pricing::api::rest::authoring::AuthoringState>,
     pub app: Router,
     pub denied: Router,
     pub ctx: SecurityContext,
@@ -61,15 +63,16 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn new(registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>) -> Self {
-        let (db, _, tenant, _) = storage_support::test_db().await;
+        let (db, _, tenant, dsn) = storage_support::test_db().await;
         let hub = Arc::new(toolkit::ClientHub::default());
         hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
             bss_products_sdk::PricingReferenceRegistry(registry),
         ));
-        let state = Arc::new(bss_pricing::api::rest::authoring::AuthoringState {
-            db: db.clone(),
-            hub,
-        });
+        let state = Arc::new(
+            bss_pricing::api::rest::authoring::AuthoringState::new(db.clone(), hub)
+                .await
+                .unwrap(),
+        );
         let make = |allow| {
             bss_pricing::api::rest::authoring::router(
                 state.clone(),
@@ -85,9 +88,12 @@ impl Fixture {
             .subject_type("user")
             .build()
             .unwrap();
+        let (app, denied) = (make(true), make(false));
         Self {
-            app: make(true),
-            denied: make(false),
+            dsn,
+            state,
+            app,
+            denied,
             ctx,
             db,
         }
@@ -172,6 +178,7 @@ pub struct Script {
     pub mode: AtomicUsize,
     pub parked: tokio::sync::Notify,
     pub resume: tokio::sync::Notify,
+    pub actors: tokio::sync::Mutex<Vec<Uuid>>,
     pub refs: tokio::sync::Mutex<std::collections::BTreeMap<Uuid, (Uuid, ReferenceState)>>,
 }
 impl Script {
@@ -195,12 +202,13 @@ pub fn refusal(code: &str) -> CanonicalError {
 impl ReferenceRegistryV1 for Script {
     async fn reserve(
         &self,
-        _: &SecurityContext,
+        ctx: &SecurityContext,
         _: Uuid,
         _: Uuid,
         _: ReferenceKind,
         ref_id: Uuid,
     ) -> Result<ReservationReceipt, CanonicalError> {
+        self.actors.lock().await.push(ctx.subject_id());
         self.reserve_calls.fetch_add(1, Ordering::SeqCst);
         let mode = self.mode.load(Ordering::SeqCst);
         if mode == 1 {
@@ -249,7 +257,7 @@ impl ReferenceRegistryV1 for Script {
         if self.mode.load(Ordering::SeqCst) == 3 {
             self.park().await;
         }
-        if self.mode.load(Ordering::SeqCst) == 12 {
+        if matches!(self.mode.load(Ordering::SeqCst), 12 | 14) {
             return Err(CanonicalError::service_unavailable().create());
         }
         self.releases.fetch_add(1, Ordering::SeqCst);
@@ -284,7 +292,7 @@ impl ReferenceRegistryV1 for Script {
             tenant_id: tenant,
             code: "cpu".into(),
             name: "CPU".into(),
-            r#type: if mode == 8 {
+            r#type: if matches!(mode, 8 | 14) {
                 SkuType::Bundle
             } else if mode == 11 {
                 SkuType::Recurring

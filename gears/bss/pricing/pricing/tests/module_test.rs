@@ -13,6 +13,7 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/prices/{id}"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("DELETE", "/bss-pricing/v1/prices/{id}"),
+        ("GET", "/bss-pricing/v1/reference-ops"),
         ("GET", "/bss-pricing/v1/price-books"),
         ("GET", "/bss-pricing/v1/price-books/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
@@ -62,7 +63,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 14);
+    assert_eq!(registered.len(), 15);
     assert!(router.has_routes());
 }
 
@@ -94,7 +95,7 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         ("preconditions::if_match(", 1, 4),
         ("preconditions::idempotency_key(", 1, 2),
         ("Query<", 1, 0),
-        ("StatusCode::", 2, 29),
+        ("StatusCode::", 2, 31),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -163,3 +164,5 @@ async fn no_operation_declares_a_422() {
 // GET /prices/{id} price:read false false
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author false false
+
+// GET /reference-ops config:settings false false

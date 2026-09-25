@@ -156,6 +156,7 @@ toolkit-http = { workspace = true }
 secrecy = { workspace = true }
 
 [dev-dependencies]
+bss-pricing = { workspace = true }
 # `ServiceExt::oneshot` drives one request through the composed router in
 # `gear.rs`'s mount test, so the prefix reservation is asserted at the
 # HTTP level rather than by constructing a `Router` and trusting it.

@@ -32,9 +32,37 @@ impl Default for BssPricingGear {
 }
 
 impl BssPricingGear {
-    /// Wait for cooperative shutdown; the skeleton has no background jobs.
+    /// Spawn the reference recovery task and cancel in-flight work on shutdown.
     pub(crate) async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<()> {
-        cancel.cancelled().await;
+        let Some(runtime) = self.runtime.load_full() else {
+            cancel.cancelled().await;
+            return Ok(());
+        };
+        let child = cancel.child_token();
+        let state = runtime.state.clone();
+        let task = tokio::spawn(async move {
+            let mut ticker = crate::infra::reference_ticker::Ticker::new(
+                state,
+                Arc::new(crate::infra::reference_work::WallClock),
+                100,
+                10,
+            );
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                tokio::select! { biased;
+                    () = child.cancelled() => break,
+                    _ = interval.tick() => {
+                        tokio::select! { biased;
+                            () = child.cancelled() => break,
+                            result = ticker.tick() => if let Err(error) = result { tracing::warn!(error=%error, "pricing reference ticker failed"); }
+                        }
+                    }
+                }
+            }
+        });
+        task.await
+            .context("pricing reference ticker stopped unexpectedly")?;
+        runtime.state.stop().await;
         Ok(())
     }
 }
@@ -87,10 +115,9 @@ impl Gear for BssPricingGear {
 
         self.runtime.store(Some(Arc::new(PricingRuntime {
             enforcer,
-            state: Arc::new(crate::api::rest::authoring::AuthoringState {
-                db,
-                hub: ctx.client_hub(),
-            }),
+            state: Arc::new(
+                crate::api::rest::authoring::AuthoringState::new(db, ctx.client_hub()).await?,
+            ),
         })));
         Ok(())
     }
@@ -167,3 +194,5 @@ impl MigrationTrait for InvalidOutboxMigration {
 // GET /prices/{id} price:read false false
 // PATCH /prices/{id} price:author true false
 // DELETE /prices/{id} price:author false false
+
+// GET /reference-ops config:settings false false
