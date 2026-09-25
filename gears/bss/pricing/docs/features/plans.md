@@ -135,7 +135,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-item-rules`
 
-Validate recurring frequency, duplicate usage meters, treatment and usage-only included quantities. Reject bundle items, deprecated SKUs in new revisions and foreign-book entries using the named spec errors (spec §5).
+Validate recurring frequency, duplicate usage meters, treatment and usage-only included quantities. Reject bundle items, a deprecated SKU newly added (one carried over from the same plan's published revision stays, D-408) and foreign-book entries using the named spec errors (spec §5).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 

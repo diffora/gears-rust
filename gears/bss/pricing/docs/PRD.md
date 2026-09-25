@@ -276,7 +276,7 @@ Persist PricesPublished and ApprovalUnitDecided with state and audit in the tool
 
 **Phase:** 3. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU in a new revision (ITEM_SKU_DEPRECATED), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units. Clone produces a draft; retirement requires migration. Grants and the sold-as bundle SKU are deferred (D-411), and so is retirement (D-410).
+A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU newly added, while one carried over from the same plan's published revision stays (ITEM_SKU_DEPRECATED, D-408), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units. Clone produces a draft; retirement requires migration. Grants and the sold-as bundle SKU are deferred (D-411), and so is retirement (D-410).
 
 #### `fr-promotions`
 
@@ -326,7 +326,7 @@ Not built (D-415): the owner dropped quote and the Studio wiring; consumers read
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. Resource labels cover books, entries, prices, approval units and config; the four route censuses carry positive, denial and precondition probes. Combined grants never bypass author separation.
+Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. Resource labels cover books, entries, prices, approval units, config and, from phase 3, plans (read, author and submit, D-418); the four route censuses carry positive, denial and precondition probes. Combined grants never bypass author separation.
 
 #### `nfr-audit`
 
