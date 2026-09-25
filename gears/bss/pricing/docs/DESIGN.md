@@ -238,7 +238,8 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Released receipt on confirm | 409 REFERENCE_RELEASED from Products; the price stays confirmation_pending and a rereserve_price op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
 
 Canonical toolkit RFC-9457 Problem carries code, field and message, retaining typed DbErr for retry classification.
-Malformed body/precondition failures occur before domain work. All four existing route censuses must agree with
+Malformed body/precondition failures occur before domain work. A body string (value or key) that contains a NUL
+character is 400 VALIDATION at parse_body, before any database work, so SQLite and Postgres answer alike. All four existing route censuses must agree with
 mounted operations, permissions and preconditions; no Json<T> extractor replaces the retained pricing door shape.
 
 ### 3.4 Internal Dependencies

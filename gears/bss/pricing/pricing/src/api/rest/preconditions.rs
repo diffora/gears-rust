@@ -169,15 +169,45 @@ pub fn idempotency_key(headers: &HeaderMap) -> Result<String, DomainError> {
 /// Parse JSON while keeping malformed bodies in the canonical 400 envelope.
 ///
 /// # Errors
-/// Returns an invalid-request error for empty or malformed bodies.
+/// Returns an invalid-request error for empty or malformed bodies, and `VALIDATION` for a
+/// string (value or key) that contains a NUL character: `SQLite` would store it and Postgres
+/// refuse it, so neither dialect ever sees one.
 pub fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, DomainError> {
     if body.is_empty() {
         return Err(DomainError::InvalidRequest(
             "the request body is empty; send a JSON object, `{}` for an empty one".to_owned(),
         ));
     }
-    serde_json::from_slice(body)
-        .map_err(|e| DomainError::InvalidRequest(format!("the request body is not readable: {e}")))
+    let unreadable = |e: serde_json::Error| {
+        DomainError::InvalidRequest(format!("the request body is not readable: {e}"))
+    };
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(unreadable)?;
+    if let Some(field) = nul_at(&value, "body") {
+        return Err(DomainError::Validation {
+            field,
+            detail: "text must not contain a NUL character (\\u0000)".to_owned(),
+        });
+    }
+    serde_json::from_value(value).map_err(unreadable)
+}
+
+/// The path of the first string, value or key, that contains a NUL character.
+fn nul_at(value: &serde_json::Value, path: &str) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => text.contains('\0').then(|| path.to_owned()),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(i, item)| nul_at(item, &format!("{path}[{i}]"))),
+        serde_json::Value::Object(fields) => fields.iter().find_map(|(key, item)| {
+            if key.contains('\0') {
+                Some(format!("{path} (a key)"))
+            } else {
+                nul_at(item, &format!("{path}.{key}"))
+            }
+        }),
+        _ => None,
+    }
 }
 
 /// Hash the request's canonical JSON: object keys sorted at every depth, so the digest never

@@ -142,3 +142,24 @@ fn the_digest_is_independent_of_key_order_at_every_depth() {
         request_digest(&other).unwrap()
     );
 }
+
+/// Surface F5: `SQLite` stored a NUL and Postgres refused it with a 500; the body is refused
+/// before any database work, in a value or a key, at any depth.
+#[test]
+fn a_nul_character_anywhere_in_the_body_is_refused() {
+    use axum::response::IntoResponse as _;
+    for bad in [
+        br#"{"name":"a\u0000b"}"#.as_slice(),
+        br#"{"items":[{"key":"region","values":["e\u0000u"]}]}"#,
+        br#"{"templates":{"us\u0000":"x"}}"#,
+    ] {
+        let error = parse_body::<serde_json::Value>(bad).unwrap_err();
+        let response = toolkit_canonical_errors::CanonicalError::from(error).into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+    let fine: serde_json::Value = parse_body(br#"{"name":"a\\u0000b"}"#).unwrap();
+    assert_eq!(
+        fine["name"], "a\\u0000b",
+        "an escaped backslash is not a NUL"
+    );
+}

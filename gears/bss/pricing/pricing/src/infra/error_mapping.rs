@@ -11,6 +11,9 @@ pub enum DomainError {
     /// A request body or header cannot be interpreted.
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// A readable body carries a value no pricing field may hold: 400 `VALIDATION`.
+    #[error("invalid {field}: {detail}")]
+    Validation { field: String, detail: String },
     /// Internal serialization or middleware wiring failure.
     #[error("internal error: {0}")]
     Internal(String),
@@ -21,6 +24,9 @@ impl From<DomainError> for CanonicalError {
         match error {
             DomainError::InvalidRequest(detail) => PricingResource::invalid_argument()
                 .with_constraint(detail)
+                .create(),
+            DomainError::Validation { field, detail } => PricingResource::invalid_argument()
+                .with_field_violation(field, detail, "VALIDATION")
                 .create(),
             DomainError::Internal(detail) => {
                 CanonicalError::internal(format!("pricing: {detail}")).create()

@@ -668,3 +668,35 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         );
     }
 }
+
+// Surface F5: a NUL in any free text is 400 VALIDATION on every dialect, and nothing is written.
+#[tokio::test]
+async fn a_nul_character_in_free_text_is_refused_before_any_write() {
+    let f = Fixture::new().await;
+    let (status, b, _) = f
+        .call(
+            "POST",
+            "/price-books",
+            json!({"code":"standard","name":"a\u{0}b","currency":"EUR"}),
+            None,
+            Some("nul"),
+        )
+        .await;
+    assert_eq!(status, 400, "{b}");
+    assert!(b.to_string().contains("VALIDATION"), "{b}");
+    let (status, list, _) = f.call("GET", "/price-books", json!({}), None, None).await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["items"], json!([]), "no book was written");
+    let (_, _, tag) = f.call("GET", "/settings", json!({}), None, None).await;
+    let (status, b, _) = f
+        .call(
+            "PUT",
+            "/settings",
+            json!({"default_timing":"advance","default_rounding":"half\u{0}up","invoice_line_templates":{}}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(status, 400, "{b}");
+    assert!(b.to_string().contains("VALIDATION"), "{b}");
+}
