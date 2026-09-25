@@ -2,7 +2,8 @@
 mod books;
 mod configuration;
 pub mod dto;
-mod support;
+mod prices;
+pub(crate) mod support;
 use super::{correlation, preconditions};
 use crate::{
     authz::{self, OwnerTenant, ResourceRef, actions, resource_types},
@@ -29,6 +30,7 @@ use uuid::Uuid;
 /// Dependencies shared by every authoring request.
 pub struct AuthoringState {
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    pub hub: Arc<toolkit::ClientHub>,
 }
 /// Mount the complete authoring surface and establish one audit correlation per request.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
@@ -143,6 +145,54 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(put_dimensions)
         .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/prices")
+        .operation_id("bss_pricing.create_price")
+        .summary("create_price")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price or book id")
+        .json_request::<dto::PricingPriceCreate>(openapi, "Request")
+        .param(header("Idempotency-Key"))
+        .handler(create_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::CREATED, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/prices/{id}")
+        .operation_id("bss_pricing.get_price")
+        .summary("get_price")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price or book id")
+        .handler(get_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::patch("/bss-pricing/v1/prices/{id}")
+        .operation_id("bss_pricing.patch_price")
+        .summary("patch_price")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price or book id")
+        .json_request::<dto::PricingPricePatch>(openapi, "Request")
+        .param(header("If-Match"))
+        .handler(patch_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::delete("/bss-pricing/v1/prices/{id}")
+        .operation_id("bss_pricing.delete_price")
+        .summary("delete_price")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price or book id")
+        .handler(delete_price)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
         .register(router, openapi);
     router
@@ -456,4 +506,120 @@ async fn put_dimensions(
         })
     })
     .await
+}
+
+async fn create_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&payload)?;
+    let input = preconditions::parse_body(&body)?;
+    prices::create(state, scope, ctx, id, correlation, key, digest, input).await
+}
+
+async fn get_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::READ,
+        None,
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), ctx.clone());
+        Box::pin(async move {
+            let m = prices::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
+            let version = preconditions::RowVersion::from_stored(m.version)
+                .map_err(CanonicalError::from)?
+                .get();
+            Ok(response(
+                StatusCode::OK,
+                &dto::PricingPriceDto::from(m),
+                Some(version),
+            )?)
+        })
+    })
+    .await
+}
+
+async fn patch_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+        Box::pin(
+            async move { prices::patch(tx, &scope, &ctx, correlation, id, version, input).await },
+        )
+    })
+    .await
+}
+
+async fn delete_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    prices::delete(state, scope, ctx, correlation, id).await
 }

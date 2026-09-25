@@ -59,10 +59,11 @@ pub fn next(mut op: Op, event: Event) -> Result<(Op, Vec<Effect>), IllegalTransi
         }
         (Reserving, Event::RegistryUnavailable) => (Reserving, Effect::Retry),
         (Reserving, Event::Written) => (Written, Effect::Confirm),
-        (Written, Event::Confirmed) => (Done, Effect::Complete),
+        (Written, Event::Confirmed) | (Cancelling | Releasing, Event::Released) => {
+            (Done, Effect::Complete)
+        }
         (Written, Event::ConfirmFailed) => (Written, Effect::Retry),
         (Written, Event::ReleasedOnConfirm) => (Done, Effect::MarkLost),
-        (Cancelling | Releasing, Event::Released) => (Done, Effect::Complete),
         (Cancelling | Releasing, Event::ReleaseFailed) => (op.state, Effect::Retry),
         _ => {
             return Err(IllegalTransition {

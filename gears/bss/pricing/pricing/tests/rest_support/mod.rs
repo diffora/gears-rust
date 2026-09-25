@@ -174,6 +174,10 @@ impl Harness {
             .collect();
         let expected: std::collections::BTreeSet<_> = [
             ("POST", "/bss-pricing/v1/price-books"),
+            ("POST", "/bss-pricing/v1/price-books/{id}/prices"),
+            ("GET", "/bss-pricing/v1/prices/{id}"),
+            ("PATCH", "/bss-pricing/v1/prices/{id}"),
+            ("DELETE", "/bss-pricing/v1/prices/{id}"),
             ("GET", "/bss-pricing/v1/price-books"),
             ("GET", "/bss-pricing/v1/price-books/{id}"),
             ("PATCH", "/bss-pricing/v1/price-books/{id}"),
@@ -192,7 +196,7 @@ impl Harness {
     }
 }
 
-// Run-2 route contract: method | path | resource:action | If-Match | Idempotency-Key
+// Run-3 route contract: method | path | resource:action | If-Match | Idempotency-Key
 // POST /price-books price_book:author false true
 // GET /price-books price_book:read false false
 // GET /price-books/{id} price_book:read false false
@@ -203,3 +207,8 @@ impl Harness {
 // PUT /settings config:settings true false
 // GET /dimension-keys config:read false false
 // PUT /dimension-keys config:settings true false
+
+// POST /price-books/{id}/prices price:author false true
+// GET /prices/{id} price:read false false
+// PATCH /prices/{id} price:author true false
+// DELETE /prices/{id} price:author false false

@@ -87,7 +87,10 @@ impl Gear for BssPricingGear {
 
         self.runtime.store(Some(Arc::new(PricingRuntime {
             enforcer,
-            state: Arc::new(crate::api::rest::authoring::AuthoringState { db }),
+            state: Arc::new(crate::api::rest::authoring::AuthoringState {
+                db,
+                hub: ctx.client_hub(),
+            }),
         })));
         Ok(())
     }
@@ -148,7 +151,7 @@ impl MigrationTrait for InvalidOutboxMigration {
     }
 }
 
-// Run-2 route contract: method | path | resource:action | If-Match | Idempotency-Key
+// Run-3 route contract: method | path | resource:action | If-Match | Idempotency-Key
 // POST /price-books price_book:author false true
 // GET /price-books price_book:read false false
 // GET /price-books/{id} price_book:read false false
@@ -159,3 +162,8 @@ impl MigrationTrait for InvalidOutboxMigration {
 // PUT /settings config:settings true false
 // GET /dimension-keys config:read false false
 // PUT /dimension-keys config:settings true false
+
+// POST /price-books/{id}/prices price:author false true
+// GET /prices/{id} price:read false false
+// PATCH /prices/{id} price:author true false
+// DELETE /prices/{id} price:author false false

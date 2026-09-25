@@ -98,16 +98,13 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 refusal: None,
             };
             let got = next(op, event.clone());
-            match expected {
-                Some((state, effect)) => {
-                    let (op, effects) = got.unwrap();
-                    assert_eq!(op.state, state);
-                    assert_eq!(effects, vec![effect]);
-                }
-                None => {
-                    let error = got.unwrap_err();
-                    assert_eq!(error.state, state);
-                }
+            if let Some((state, effect)) = expected {
+                let (op, effects) = got.unwrap();
+                assert_eq!(op.state, state);
+                assert_eq!(effects, vec![effect]);
+            } else {
+                let error = got.unwrap_err();
+                assert_eq!(error.state, state);
             }
             count += 1;
         }

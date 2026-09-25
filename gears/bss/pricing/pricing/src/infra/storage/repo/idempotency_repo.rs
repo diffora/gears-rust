@@ -160,7 +160,7 @@ pub async fn claim_idempotency_key(
             ))
         })?;
 
-    if now > held.expires_at {
+    if now > held.expires_at && !(held.state == "claimed" && held.entity_ref.is_some()) {
         return take_over_expired_idempotency_claim(runner, scope, &held, payload_hash, expires_at)
             .await;
     }
@@ -367,3 +367,27 @@ pub async fn release_idempotency_claim(
 #[cfg(test)]
 #[path = "idempotency_repo_tests.rs"]
 mod tests;
+
+/// Bind an unanswered claim to its durable op so expiry cannot strand in-flight work.
+/// # Errors
+/// Returns a storage error or a lost claim conflict.
+pub async fn bind_op(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    endpoint: &str,
+    key: &str,
+    op_id: Uuid,
+) -> Result<(), RepoError> {
+    let result = idempotency::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(idempotency::Column::EntityRef, Expr::value(op_id))
+        .filter(
+            idempotency_key_of(tenant, endpoint, key).add(idempotency::Column::State.eq("claimed")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("bind reference op claim".into(), e))?;
+    super::matched(result.rows_affected, "IDEMPOTENCY_KEY_IN_FLIGHT")
+}

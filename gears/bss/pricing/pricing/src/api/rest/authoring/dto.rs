@@ -215,3 +215,26 @@ pub struct PricingSettingsDto {
     pub invoice_line_templates: serde_json::Value,
     pub version: i64,
 }
+
+#[toolkit_macros::api_dto(request)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPriceCreate {
+    pub sku_id: Uuid,
+    pub period: Option<String>,
+    pub dimension_key: Option<String>,
+    pub invoice_line_override: Option<String>,
+}
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::option_option,
+    reason = "PATCH distinguishes omission and clearing"
+)]
+pub struct PricingPricePatch {
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub dimension_key: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub invoice_line_override: Option<Option<String>>,
+}

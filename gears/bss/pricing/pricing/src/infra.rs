@@ -4,3 +4,5 @@ pub mod error_mapping;
 pub mod storage;
 
 pub mod reference_registry;
+
+pub mod reference_work;
