@@ -739,7 +739,7 @@ pub async fn get_policy(
 }
 /// `PUT /approval-policy`: set the default (`*`) or the `price_rows` quorum under If-Match.
 /// # Errors
-/// Returns `POLICY_KIND_INVALID`, `QUORUM_INVALID` or `VERSION_CONFLICT`.
+/// Returns `POLICY_KIND_INVALID`, `QUORUM_INVALID` or `STALE_REVISION`.
 pub async fn put_policy(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -757,7 +757,7 @@ pub async fn put_policy(
         return Err(support::invalid("quorum", "QUORUM_INVALID").into());
     }
     if policy_tag(&approval_repo::read_policy(tx, scope, tenant).await?)? != version {
-        return Err(support::conflict("VERSION_CONFLICT").into());
+        return Err(support::conflict("STALE_REVISION").into());
     }
     approval_repo::write_policy(tx, scope, tenant, &kind, input.quorum).await?;
     support::audit(tx, ctx, correlation, "approval_policy.write", tenant, 0).await?;

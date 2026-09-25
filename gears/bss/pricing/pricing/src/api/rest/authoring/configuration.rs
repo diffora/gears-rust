@@ -135,7 +135,7 @@ pub async fn put_dimensions(
     let tenant = ctx.subject_tenant_id();
     let (_, tag) = dimensions(tx, scope, tenant).await?;
     if tag != version {
-        return Err(conflict("VERSION_CONFLICT").into());
+        return Err(conflict("STALE_REVISION").into());
     }
     let mut keys = std::collections::BTreeSet::new();
     for item in &mut body.items {

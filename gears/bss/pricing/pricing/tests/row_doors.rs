@@ -401,7 +401,7 @@ async fn patch_and_delete_touch_only_unlocked_drafts_at_their_version() {
         )
         .await;
     assert_eq!(stale.0, 409, "{stale:?}");
-    assert!(code_in(&stale.1, "VERSION_CONFLICT"), "{stale:?}");
+    assert!(code_in(&stale.1, "STALE_REVISION"), "{stale:?}");
     let invalid = f
         .call(
             "PATCH",
@@ -645,4 +645,110 @@ async fn money_as_a_json_number_is_refused_and_the_detail_says_strings() {
         .await;
     assert_eq!(status, 400, "{b}");
     assert!(b.to_string().contains("AMOUNT_INVALID"), "{b}");
+}
+
+// dod-if-match-version (PRD AC #25): at every PATCH/PUT door a successful update moves the
+// ETag, the old token is 409 STALE_REVISION with nothing written, and no token is a
+// precondition failure.
+#[tokio::test]
+async fn every_conditional_door_answers_a_stale_token_with_stale_revision() {
+    let (f, price) = priced(false).await;
+    let (_, book, book_tag) = f
+        .call(
+            "GET",
+            &format!("/price-books/{}", price["book_id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    let (_, row, row_tag) = f
+        .call(
+            "POST",
+            &rows_path(&price),
+            draft("2031-03-01"),
+            None,
+            Some("r"),
+        )
+        .await;
+    let row_tag = if row_tag.is_empty() {
+        "\"1\"".to_owned()
+    } else {
+        row_tag
+    };
+    let (_, _, price_tag) = f
+        .call(
+            "GET",
+            &format!("/prices/{}", price["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    let (_, _, settings_tag) = f.call("GET", "/settings", json!({}), None, None).await;
+    let (_, _, dims_tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    let (_, _, policy_tag) = f
+        .call("GET", "/approval-policy", json!({}), None, None)
+        .await;
+    let doors = [
+        (
+            "PATCH",
+            format!("/price-books/{}", book["id"].as_str().unwrap()),
+            json!({"name":"Renamed"}),
+            book_tag,
+        ),
+        (
+            "PATCH",
+            format!("/prices/{}", price["id"].as_str().unwrap()),
+            json!({"invoice_line_override":null}),
+            price_tag,
+        ),
+        (
+            "PATCH",
+            format!("/rows/{}", row["items"][0]["id"].as_str().unwrap()),
+            json!({"note":"changed"}),
+            row_tag,
+        ),
+        (
+            "PUT",
+            "/settings".to_owned(),
+            json!({"default_timing":"arrears","default_rounding":"half_up","invoice_line_templates":{}}),
+            settings_tag,
+        ),
+        (
+            "PUT",
+            "/dimension-keys".to_owned(),
+            json!({"items":[{"key":"region","values":["eu","us"]}]}),
+            dims_tag,
+        ),
+        (
+            "PUT",
+            "/approval-policy".to_owned(),
+            json!({"quorum":2}),
+            policy_tag,
+        ),
+    ];
+    for (method, path, body, tag) in doors {
+        let (status, b, next) = f.call(method, &path, body.clone(), Some(&tag), None).await;
+        assert_eq!(status, 200, "{method} {path}: {b}");
+        assert_ne!(next, tag, "{method} {path}: the successor token changes");
+        let (status, b, _) = f.call(method, &path, body.clone(), Some(&tag), None).await;
+        assert_eq!(status, 409, "{method} {path}: {b}");
+        assert!(code_in(&b, "STALE_REVISION"), "{method} {path}: {b}");
+        let (status, b, _) = f.call(method, &path, body, None, None).await;
+        assert_eq!(status, 400, "{method} {path}: no token: {b}");
+    }
+    let (status, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/rows/{}", row["items"][0]["id"].as_str().unwrap()),
+            json!({}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(status, 409, "{b}");
+    assert!(code_in(&b, "STALE_REVISION"), "{b}");
 }

@@ -211,7 +211,7 @@ async fn version_guard_and_row_roundtrip() {
     assert!(matches!(
         book_repo::update(&conn, &scope, changed).await,
         Err(RepoError::Conflict {
-            code: "VERSION_CONFLICT"
+            code: "STALE_REVISION"
         })
     ));
     let p = price_repo::insert(&conn, &scope, price(&b)).await.unwrap();

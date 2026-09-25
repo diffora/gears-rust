@@ -102,5 +102,5 @@ pub async fn update(
         .exec(runner)
         .await
         .map_err(|e| map_unique("update settings".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }

@@ -154,7 +154,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-idempotency-concurrency`; PRD AC #25.
 
 ### Conditional object versions
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-if-match-version`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-if-match-version`
 
 PATCH/PUT require the version in If-Match and return the updated ETag. The conditional write preserves state on stale tokens and is independent of row version_no or approval generation (spec §3 item 23).
 

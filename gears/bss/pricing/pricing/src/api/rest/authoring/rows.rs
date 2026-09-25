@@ -281,7 +281,7 @@ async fn create_in(
 /// Change business fields of an unlocked draft at the version the caller read.
 /// A temporary row keeps its start and value: its window belongs to its pair or closure.
 /// # Errors
-/// Returns `ROW_NOT_DRAFT`, `NOT_DRAFT_AUTHOR`, `VERSION_CONFLICT`, `TEMPORARY_ROW_FIXED` or a
+/// Returns `ROW_NOT_DRAFT`, `NOT_DRAFT_AUTHOR`, `STALE_REVISION`, `TEMPORARY_ROW_FIXED` or a
 /// pure-rule refusal.
 #[allow(
     clippy::too_many_arguments,
@@ -368,7 +368,7 @@ pub async fn patch(
 
 /// Delete an unlocked draft at its version; a pair half takes its partner with it.
 /// # Errors
-/// Returns `ROW_NOT_DRAFT`, `NOT_DRAFT_AUTHOR` or `VERSION_CONFLICT`.
+/// Returns `ROW_NOT_DRAFT`, `NOT_DRAFT_AUTHOR` or `STALE_REVISION`.
 pub async fn delete(
     tx: &impl DBRunner,
     scope: &AccessScope,

@@ -126,7 +126,7 @@ pub async fn update(
         .exec(runner)
         .await
         .map_err(|e| map_unique("update price".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 /// List rows of one scoped parent in stable order.
 /// # Errors
@@ -178,7 +178,7 @@ pub async fn set_reference(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("update price reference".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 /// Delete a price after the caller has removed its drafts, with the release op in the same transaction.
 /// # Errors
@@ -209,7 +209,7 @@ pub async fn delete_empty(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("delete empty price".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 
 /// Bounded identity-ordered scan for the trusted reconciliation worker: confirmed prices,

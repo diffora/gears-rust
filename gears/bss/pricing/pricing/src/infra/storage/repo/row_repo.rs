@@ -135,7 +135,7 @@ pub async fn update_draft(
         .exec(runner)
         .await
         .map_err(|e| map_unique("update price_row".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 /// List rows of one scoped parent in stable order.
 /// # Errors
@@ -182,7 +182,7 @@ pub async fn delete_draft(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("delete draft".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 /// Decode a stored row into the pure model; unknown vocabulary is a corrupt row.
 /// # Errors
@@ -238,7 +238,7 @@ pub async fn link_pair(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("link pair".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 /// Delete unlocked drafts, each at its observed version, in ONE statement so a
 /// pair's mutual references never dangle between two deletes.
@@ -279,7 +279,7 @@ pub async fn delete_drafts(
         Ok(())
     } else {
         Err(RepoError::Conflict {
-            code: "VERSION_CONFLICT",
+            code: "STALE_REVISION",
         })
     }
 }
@@ -287,7 +287,7 @@ pub async fn delete_drafts(
 /// rows, none owned by a pending unit, each at its observed version. A rejected row's review
 /// history stays in its approval unit's snapshot.
 /// # Errors
-/// A row that changed or is not deletable is a `VERSION_CONFLICT`; database failures keep
+/// A row that changed or is not deletable is a `STALE_REVISION`; database failures keep
 /// their type.
 pub async fn delete_unapproved(
     runner: &impl DBRunner,
@@ -324,7 +324,7 @@ pub async fn delete_unapproved(
         Ok(())
     } else {
         Err(RepoError::Conflict {
-            code: "VERSION_CONFLICT",
+            code: "STALE_REVISION",
         })
     }
 }
@@ -438,7 +438,7 @@ pub async fn unlock(
         .exec(runner)
         .await
         .map_err(|e| map_unique("unlock row".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 /// The window an applied row takes, after the unit's shift and the chain's normalisation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,7 +487,7 @@ pub async fn approve(
 }
 /// Re-close an approved row after its chain changed, at the version the caller read.
 /// # Errors
-/// A concurrent change is `VERSION_CONFLICT`; database failures keep their type.
+/// A concurrent change is `STALE_REVISION`; database failures keep their type.
 #[allow(
     clippy::too_many_arguments,
     reason = "tenant identity, version and the two recomputed columns are the write's operands"
@@ -517,5 +517,5 @@ pub async fn set_window(
         .exec(runner)
         .await
         .map_err(|e| map_unique("re-close row".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }

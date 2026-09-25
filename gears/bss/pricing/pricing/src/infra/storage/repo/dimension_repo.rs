@@ -86,7 +86,7 @@ pub async fn update(
         .exec(runner)
         .await
         .map_err(|e| map_unique("update dimension_key".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }
 
 /// Remove an unused registry key at its observed version in the caller's transaction.
@@ -107,5 +107,5 @@ pub async fn delete(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("delete dimension key".into(), e))?;
-    matched(result.rows_affected, "VERSION_CONFLICT")
+    matched(result.rows_affected, "STALE_REVISION")
 }

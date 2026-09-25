@@ -799,7 +799,7 @@ async fn the_approval_policy_is_read_and_written_under_if_match() {
         )
         .await;
     assert_eq!(stale.0, 409);
-    assert!(code(&stale.1).contains("VERSION_CONFLICT"));
+    assert!(code(&stale.1).contains("STALE_REVISION"), "{stale:?}");
     for (bad, what) in [
         (
             json!({"kind":"plan_revision","quorum":1}),

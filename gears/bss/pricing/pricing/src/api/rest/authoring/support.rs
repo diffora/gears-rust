@@ -392,11 +392,15 @@ pub fn empty_body(body: &[u8]) -> Result<serde_json::Value, CanonicalError> {
         Err(invalid("body", "BODY_UNEXPECTED"))
     }
 }
+/// The If-Match token must name the stored version: a stale one is 409 `STALE_REVISION`
+/// before anything is written (the code products answers for the same refusal).
+///
+/// @cpt-dod:cpt-cf-bss-pricing-dod-if-match-version:p1
 pub fn check_version(seen: u64, actual: i64) -> Result<(), CanonicalError> {
     if u64::try_from(actual).ok() == Some(seen) {
         Ok(())
     } else {
-        Err(conflict("VERSION_CONFLICT"))
+        Err(conflict("STALE_REVISION"))
     }
 }
 pub async fn audit(
