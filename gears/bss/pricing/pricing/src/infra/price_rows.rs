@@ -225,9 +225,15 @@ pub fn impact(items: &[ItemRef]) -> Value {
         .iter()
         .filter_map(|i| i.after["price_id"].as_str().map(str::to_owned))
         .collect();
+    impact_of(items.len(), prices.len())
+}
+/// The impact object every read shows (D-392): the queue card and list, and the
+/// publish-changes listing. Phase 3 measures plans and subscriptions.
+#[must_use]
+pub fn impact_of(rows: usize, prices: usize) -> Value {
     json!({
-        "rows": items.len(),
-        "prices": prices.len(),
+        "rows": rows,
+        "prices": prices,
         "plans": UNAVAILABLE,
         "subscriptions": UNAVAILABLE,
     })

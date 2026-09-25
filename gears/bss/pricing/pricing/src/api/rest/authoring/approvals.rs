@@ -370,9 +370,12 @@ pub async fn publish_list(
         .await?
         .ok_or_else(support::missing)?;
     let rows = proposals(tx, tenant, book).await?;
+    let prices: BTreeSet<Uuid> = rows.iter().map(|r| r.price.id).collect();
+    let impact = crate::infra::price_rows::impact_of(rows.len(), prices.len());
     let body = PricingPublishChanges {
         book: PriceBookDto::from(model),
         rows,
+        impact,
     };
     Ok(support::response(StatusCode::OK, &body, None)?)
 }
@@ -456,7 +459,8 @@ pub fn state_filter(state: Option<&str>) -> Result<Option<UnitState>, CanonicalE
         .map(|s| UnitState::parse(s).ok_or_else(|| support::invalid("state", "UNIT_STATE_INVALID")))
         .transpose()
 }
-/// `GET /approval-units` in submission order, with every generation's decisions.
+/// `GET /approval-units` in submission order, with every generation's decisions and the
+/// same live impact as the card.
 /// # Errors
 /// Returns storage failures.
 pub async fn list_units(
@@ -473,7 +477,10 @@ pub async fn list_units(
     };
     let mut items = Vec::new();
     for unit in approval_repo::list_units(tx, scope, tenant, state, kind, reference).await? {
-        items.push(unit_dto(tx, &store, unit).await?);
+        let touched = store.items(tx, unit.id).await.map_err(approval_failure)?;
+        let mut dto = unit_dto(tx, &store, unit).await?;
+        dto.impact = Some(crate::infra::price_rows::impact(&touched));
+        items.push(dto);
     }
     Ok(support::response(
         StatusCode::OK,

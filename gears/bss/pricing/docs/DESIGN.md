@@ -205,8 +205,9 @@ Phase 4: resolve matrix, renewal walk, period bindings, durable pin reads and St
 The mounted authoring base is `/bss-pricing/v1`. Every mutation passes authenticated PolicyEnforcer scope,
 headers + Bytes, preconditions::parse_body and correlation::establish. OperationBuilder registers matching
 OpenAPI success/error schemas. POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
-stored snapshots and live impact; in phase 2 the live impact is the current row count, with plan/subscription
-impact added when those dependencies exist. Never label unavailable phase 3 impact as a measured zero.
+stored snapshots and live impact: every GET /approval-units item, GET /approval-units/{id} and the GET
+publish-changes listing carry the same impact object, {rows, prices, plans, subscriptions}; in phase 2 plans and
+subscriptions read "unavailable until phase 3". Never label unavailable phase 3 impact as a measured zero.
 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |

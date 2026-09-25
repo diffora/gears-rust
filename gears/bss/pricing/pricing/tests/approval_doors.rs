@@ -1099,3 +1099,35 @@ async fn a_common_date_past_an_approved_change_answers_400_pair_return_stale() {
     assert_eq!(status, 200, "{list}");
     assert_eq!(list["items"], json!([]), "no unit was recorded");
 }
+
+// Docs F10 (D-392): the queue list and the publish-changes listing carry the same impact
+// object as the unit card.
+#[tokio::test]
+async fn the_queue_list_and_the_publish_listing_carry_impact() {
+    let g = gov(1).await;
+    g.approved(1, "2031-01-01").await;
+    g.draft("one", body("2031-05-01")).await;
+    let mut promo = body("2031-03-01");
+    promo["temporary_until"] = json!("2031-03-11");
+    g.draft("pair", promo).await;
+    let path = format!("/price-books/{}/publish-changes", g.book);
+    let unavailable = "unavailable until phase 3";
+    let (status, listing, _) = g.f.call("GET", &path, json!({}), None, None).await;
+    assert_eq!(status, 200, "{listing}");
+    assert_eq!(
+        listing["impact"],
+        json!({"rows":3,"prices":1,"plans":unavailable,"subscriptions":unavailable})
+    );
+    let (status, receipt, _) = g.f.call("POST", &path, json!({}), None, Some("all")).await;
+    assert_eq!(status, 201, "{receipt}");
+    let (status, list, _) =
+        g.f.call("GET", "/approval-units", json!({}), None, None)
+            .await;
+    assert_eq!(status, 200, "{list}");
+    let card = g.card(&receipt["unit"]).await;
+    assert_eq!(
+        list["items"][0]["impact"],
+        json!({"rows":3,"prices":1,"plans":unavailable,"subscriptions":unavailable})
+    );
+    assert_eq!(list["items"][0]["impact"], card["impact"]);
+}

@@ -446,6 +446,8 @@ pub struct PricingProposedRow {
 pub struct PricingPublishChanges {
     pub book: PriceBookDto,
     pub rows: Vec<PricingProposedRow>,
+    /// Rows and prices the listed drafts touch; plans and subscriptions from phase 3.
+    pub impact: serde_json::Value,
 }
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
