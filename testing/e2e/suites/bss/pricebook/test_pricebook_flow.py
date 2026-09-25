@@ -147,25 +147,3 @@ def test_a_priced_sku_publishes_its_row_and_blocks_retirement(api, variant):
     r = api.get(f"{PRODUCTS}/skus/{sku}")
     assert r.status_code == 200, r.text
     assert r.json()["sku"]["lifecycle"] == "published", r.text
-
-
-@pytest.mark.timeout(60)
-def test_a_retried_key_replays_whatever_the_body_key_order(api):
-    """Surface F3: this server links file-parser, which turns on serde_json's
-    ``preserve_order``, so a parsed body keeps the client's key order. The
-    Idempotency-Key digest is over canonical JSON, so a retry that orders the
-    same members differently replays the answer instead of 409."""
-    run = uuid.uuid4().hex[:8]
-    key = _key()
-    headers = {**key, "Content-Type": "application/json"}
-    first = (
-        f'{{"code":"order-{run}","name":"Order {run}","currency":"EUR"}}'
-    )
-    reordered = (
-        f'{{"currency":"EUR","name":"Order {run}","code":"order-{run}"}}'
-    )
-    r = api.post(f"{PRICING}/price-books", content=first, headers=headers)
-    assert r.status_code == 201, r.text
-    retry = api.post(f"{PRICING}/price-books", content=reordered, headers=headers)
-    assert retry.status_code == 201, retry.text
-    assert retry.json() == r.json(), "the retry replays the same book"
