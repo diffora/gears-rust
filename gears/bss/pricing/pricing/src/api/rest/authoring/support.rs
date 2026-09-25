@@ -56,6 +56,99 @@ pub fn missing() -> CanonicalError {
         .with_resource("price_book")
         .create()
 }
+/// A named pricing resource that the caller's tenant does not hold.
+pub fn missing_what(what: &str) -> CanonicalError {
+    PricingResource::not_found(format!("{what} not found"))
+        .with_resource(what)
+        .create()
+}
+/// Claim a POST's key inside the mutation transaction, or replay its stored answer.
+/// # Errors
+/// A different payload under the key is `IDEMPOTENCY_CONFLICT`; a live claim is in flight.
+pub async fn claim(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    endpoint: &str,
+    key: &str,
+    digest: &[u8],
+) -> Result<Option<Response>, DoorError> {
+    let now = time::OffsetDateTime::now_utc();
+    let scope = AccessScope::for_tenant(tenant);
+    match repo::idempotency_repo::claim_idempotency_key(
+        tx,
+        &scope,
+        tenant,
+        endpoint,
+        key,
+        digest,
+        now,
+        now + time::Duration::hours(24),
+    )
+    .await?
+    {
+        repo::idempotency_repo::IdempotencyClaim::Claimed => Ok(None),
+        repo::idempotency_repo::IdempotencyClaim::Answered {
+            payload_hash,
+            response_status,
+            response_body,
+        } => {
+            if payload_hash != digest {
+                return Err(conflict("IDEMPOTENCY_CONFLICT").into());
+            }
+            let status = u16::try_from(response_status)
+                .ok()
+                .and_then(|s| StatusCode::from_u16(s).ok())
+                .ok_or_else(|| CanonicalError::internal("invalid stored status").create())?;
+            Ok(Some(response(
+                status,
+                &response_body["body"],
+                response_body["etag"].as_u64(),
+            )?))
+        }
+        repo::idempotency_repo::IdempotencyClaim::InFlight { payload_hash, .. } => {
+            Err(conflict(if payload_hash == digest {
+                "IDEMPOTENCY_KEY_IN_FLIGHT"
+            } else {
+                "IDEMPOTENCY_CONFLICT"
+            })
+            .into())
+        }
+        repo::idempotency_repo::IdempotencyClaim::TakeoverRaceLost => {
+            Err(conflict("IDEMPOTENCY_KEY_IN_FLIGHT").into())
+        }
+    }
+}
+/// Record the answer of a claimed key in the same transaction and render it.
+/// # Errors
+/// A lost claim is an internal failure; the transaction rolls back.
+pub async fn answer<T: serde::Serialize>(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    endpoint: &str,
+    key: &str,
+    status: StatusCode,
+    body: &T,
+    etag: Option<u64>,
+) -> Result<Response, DoorError> {
+    let body = value(body)?;
+    if repo::idempotency_repo::answer_idempotency_key(
+        tx,
+        &AccessScope::for_tenant(tenant),
+        tenant,
+        endpoint,
+        key,
+        i32::from(status.as_u16()),
+        serde_json::json!({ "etag": etag, "body": body }),
+    )
+    .await?
+        != repo::idempotency_repo::IdempotencyAnswer::Recorded
+    {
+        return Err(CanonicalError::internal("idempotency claim lost")
+            .create()
+            .into());
+    }
+    Ok(response(status, &body, etag)?)
+}
 #[derive(Debug, thiserror::Error)]
 pub enum DoorError {
     #[error(transparent)]
@@ -88,6 +181,19 @@ pub async fn transaction<T: Send + 'static>(
         Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
     > + Send,
 ) -> Result<T, CanonicalError> {
+    transaction_door(db, work).await.map_err(Into::into)
+}
+/// The serializable retrying transaction, keeping the door's typed refusal.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure.
+pub async fn transaction_door<T: Send + 'static>(
+    db: &Db,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
     db.transaction_with_retry(
         toolkit_db::secure::TxConfig::serializable(),
         |e| match e {
@@ -97,7 +203,6 @@ pub async fn transaction<T: Send + 'static>(
         work,
     )
     .await
-    .map_err(Into::into)
 }
 pub fn response<T: serde::Serialize>(
     status: StatusCode,

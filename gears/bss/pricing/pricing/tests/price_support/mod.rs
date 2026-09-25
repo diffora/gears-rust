@@ -108,6 +108,55 @@ impl Fixture {
     ) -> (u16, Value, String) {
         request(&self.app, &self.ctx, method, path, body, tag, key).await
     }
+    /// A second router over its own connection to the same database file.
+    pub async fn second_app(&self) -> Router {
+        let db = toolkit_db::connect_db(
+            &self.dsn,
+            toolkit_db::ConnectOpts {
+                max_conns: Some(1),
+                min_conns: Some(1),
+                ..toolkit_db::ConnectOpts::default()
+            },
+        )
+        .await
+        .unwrap();
+        let state = Arc::new(
+            bss_pricing::api::rest::authoring::AuthoringState::new(
+                toolkit_db::DBProvider::new(db),
+                self.state.hub.clone(),
+            )
+            .await
+            .unwrap(),
+        );
+        bss_pricing::api::rest::authoring::router(state, &toolkit::api::OpenApiRegistryImpl::new())
+            .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
+                Arc::new(Resolver {
+                    tenant: self.ctx.subject_tenant_id(),
+                    allow: true,
+                }),
+            )))
+    }
+    /// Call as another principal of the same tenant.
+    pub async fn call_as(
+        &self,
+        ctx: &SecurityContext,
+        method: &str,
+        path: &str,
+        body: Value,
+        tag: Option<&str>,
+        key: Option<&str>,
+    ) -> (u16, Value, String) {
+        request(&self.app, ctx, method, path, body, tag, key).await
+    }
+    /// Another user principal of the fixture tenant.
+    pub fn user(&self) -> SecurityContext {
+        SecurityContext::builder()
+            .subject_id(Uuid::new_v4())
+            .subject_tenant_id(self.ctx.subject_tenant_id())
+            .subject_type("user")
+            .build()
+            .unwrap()
+    }
     pub async fn book(&self) -> (Value, String) {
         let (s, b, t) = self
             .call(
@@ -122,7 +171,7 @@ impl Fixture {
         (b, t)
     }
 }
-async fn request(
+pub async fn request(
     app: &Router,
     ctx: &SecurityContext,
     method: &str,
@@ -170,6 +219,8 @@ use bss_products_sdk::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use toolkit_canonical_errors::CanonicalError;
+/// A dated SKU metering answer: `(effective_from, unit, usage_type_ref)`.
+pub type Metering = (time::Date, Option<String>, Option<String>);
 #[derive(Default)]
 pub struct Script {
     pub reserve_calls: AtomicUsize,
@@ -180,6 +231,11 @@ pub struct Script {
     pub resume: tokio::sync::Notify,
     pub actors: tokio::sync::Mutex<Vec<Uuid>>,
     pub refs: tokio::sync::Mutex<std::collections::BTreeMap<Uuid, (Uuid, ReferenceState)>>,
+    /// Dated SKU metering `(effective_from, unit, usage_type_ref)`; empty answers `None`.
+    pub versions: std::sync::Mutex<Vec<Metering>>,
+    pub version_reads: AtomicUsize,
+    /// When set, dated reads fail as an unavailable registry.
+    pub versions_down: std::sync::atomic::AtomicBool,
 }
 impl Script {
     pub fn set(&self, mode: usize) {
@@ -327,12 +383,37 @@ impl ReferenceRegistryV1 for Script {
     }
     async fn sku_version_as_of(
         &self,
-        _: &SecurityContext,
-        _: Uuid,
-        _: Uuid,
-        _: time::Date,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+        sku: Uuid,
+        date: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
-        Ok(None)
+        self.version_reads.fetch_add(1, Ordering::SeqCst);
+        if self.versions_down.load(Ordering::SeqCst) {
+            return Err(CanonicalError::service_unavailable().create());
+        }
+        let found = self
+            .versions
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(from, _, _)| *from <= date)
+            .max_by_key(|(from, _, _)| *from)
+            .cloned();
+        let Some((from, unit, usage_type_ref)) = found else {
+            return Ok(None);
+        };
+        let head = self.sku_for_write(ctx, tenant, sku).await?;
+        let mut content = bss_products_sdk::models::SkuContent::from(&head);
+        content.unit = unit;
+        content.usage_type_ref = usage_type_ref;
+        Ok(Some(SkuVersion {
+            sku_id: sku,
+            published_version: 1,
+            effective_from: from,
+            content,
+            created_at: time::OffsetDateTime::now_utc(),
+        }))
     }
 }
 

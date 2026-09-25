@@ -88,6 +88,8 @@ pub struct PricingPriceRowDto {
     pub paired_row_id: Option<Uuid>,
     pub return_of_row_id: Option<Uuid>,
     pub state: String,
+    /// Display state of matrix row 10: draft, pending, rejected, scheduled, active or superseded.
+    pub status: String,
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub note: Option<String>,
@@ -102,6 +104,18 @@ pub struct PricingPriceRowDto {
 }
 impl From<entity::price_row::Model> for PricingPriceRowDto {
     fn from(m: entity::price_row::Model) -> Self {
+        let status = m.state.parse::<crate::domain::row::RowState>().map_or_else(
+            |_| m.state.clone(),
+            |state| {
+                crate::domain::row::window_status(
+                    state,
+                    m.effective_from,
+                    m.effective_to,
+                    time::OffsetDateTime::now_utc().date(),
+                )
+                .to_owned()
+            },
+        );
         Self {
             id: m.id,
             tenant_id: m.tenant_id,
@@ -120,6 +134,7 @@ impl From<entity::price_row::Model> for PricingPriceRowDto {
             paired_row_id: m.paired_row_id,
             return_of_row_id: m.return_of_row_id,
             state: m.state,
+            status,
             pending_unit_id: m.pending_unit_id,
             approved_by_unit_id: m.approved_by_unit_id,
             note: m.note,
@@ -278,4 +293,42 @@ pub(super) struct PricingReferenceOpQuery {
     pub state: Option<String>,
     pub limit: Option<u64>,
     pub cursor: Option<Uuid>,
+}
+
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPriceRowCreate {
+    pub dim_value: Option<String>,
+    pub model: String,
+    pub price: serde_json::Value,
+    pub min_fee: Option<String>,
+    pub eligibility: String,
+    pub effective_from: String,
+    pub temporary_until: Option<String>,
+    pub note: Option<String>,
+}
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::option_option,
+    reason = "PATCH distinguishes omission, null clearing and a new value"
+)]
+pub struct PricingPriceRowPatch {
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub dim_value: Option<Option<String>>,
+    pub model: Option<String>,
+    pub price: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub min_fee: Option<Option<String>>,
+    pub eligibility: Option<String>,
+    pub effective_from: Option<String>,
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub note: Option<Option<String>>,
+}
+/// The draft row, and its return partner when the request made a temporary pair.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPriceRowCreated {
+    pub items: Vec<PricingPriceRowDto>,
 }

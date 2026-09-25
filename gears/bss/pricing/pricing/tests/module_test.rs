@@ -23,6 +23,9 @@ fn declared_paths() -> Routes {
         ("PUT", "/bss-pricing/v1/settings"),
         ("GET", "/bss-pricing/v1/dimension-keys"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
+        ("POST", "/bss-pricing/v1/prices/{id}/rows"),
+        ("PATCH", "/bss-pricing/v1/rows/{id}"),
+        ("DELETE", "/bss-pricing/v1/rows/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -34,6 +37,8 @@ fn if_match_routes() -> Routes {
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
         ("PUT", "/bss-pricing/v1/settings"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
+        ("PATCH", "/bss-pricing/v1/rows/{id}"),
+        ("DELETE", "/bss-pricing/v1/rows/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -43,6 +48,7 @@ fn idempotency_key_routes() -> Routes {
     [
         ("POST", "/bss-pricing/v1/price-books"),
         ("POST", "/bss-pricing/v1/price-books/{id}/prices"),
+        ("POST", "/bss-pricing/v1/prices/{id}/rows"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -63,7 +69,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 15);
+    assert_eq!(registered.len(), 18);
     assert!(router.has_routes());
 }
 
@@ -92,10 +98,10 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 4),
-        ("preconditions::idempotency_key(", 1, 2),
+        ("preconditions::if_match(", 1, 6),
+        ("preconditions::idempotency_key(", 1, 3),
         ("Query<", 1, 0),
-        ("StatusCode::", 2, 31),
+        ("StatusCode::", 2, 38),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -166,3 +172,8 @@ async fn no_operation_declares_a_422() {
 // DELETE /prices/{id} price:author false false
 
 // GET /reference-ops config:settings false false
+
+// Run-4 rows: method | path | resource:action | If-Match | Idempotency-Key
+// POST /prices/{id}/rows price:author false true
+// PATCH /rows/{id} price:author true false
+// DELETE /rows/{id} price:author true false

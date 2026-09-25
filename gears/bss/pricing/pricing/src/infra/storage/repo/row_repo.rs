@@ -184,6 +184,100 @@ pub async fn delete_draft(
         .map_err(|e| driver_failure("delete draft".into(), e))?;
     matched(result.rows_affected, "VERSION_CONFLICT")
 }
+/// Decode a stored row into the pure model; unknown vocabulary is a corrupt row.
+/// # Errors
+/// Returns `CorruptRow` for a stored enum or price shape the model does not know.
+pub fn to_domain(m: &e::Model) -> Result<crate::domain::row::Row, RepoError> {
+    use crate::domain::{money, price::Model, row};
+    let corrupt = |what: &str| RepoError::CorruptRow(format!("price_row {} {what}", m.id));
+    let model: Model = m.model.parse().map_err(|_| corrupt("model"))?;
+    Ok(row::Row {
+        id: m.id,
+        price_id: m.price_id,
+        version_no: m.version_no,
+        dim_value: m.dim_value.clone(),
+        model,
+        price: Some(money::decode(model, m.price_json.clone()).map_err(|_| corrupt("price_json"))?),
+        min_fee: m.min_fee,
+        eligibility: m.eligibility.parse().map_err(|_| corrupt("eligibility"))?,
+        effective_from: m.effective_from,
+        effective_to: m.effective_to,
+        temporary_until: m.temporary_until,
+        paired_row_id: m.paired_row_id,
+        return_of_row_id: m.return_of_row_id,
+        closed_explicitly: m.closed_explicitly,
+        state: m.state.parse().map_err(|_| corrupt("state"))?,
+    })
+}
+/// Point a freshly inserted draft at its pair partner, without a version step.
+/// The partner must exist first: the pair reference is a foreign key.
+/// # Errors
+/// Refuses anything but an unlinked, unlocked draft; preserves database failures.
+pub async fn link_pair(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    partner: Uuid,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::PairedRowId, Expr::value(Some(partner)))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::State.eq("draft"))
+                .add(e::Column::PendingUnitId.is_null())
+                .add(e::Column::PairedRowId.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("link pair".into(), e))?;
+    matched(result.rows_affected, "VERSION_CONFLICT")
+}
+/// Delete unlocked drafts, each at its observed version, in ONE statement so a
+/// pair's mutual references never dangle between two deletes.
+/// # Errors
+/// Refuses when any row moved or is no longer an unlocked draft.
+pub async fn delete_drafts(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    rows: &[(Uuid, i64)],
+) -> Result<(), RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut any = Condition::any();
+    for (id, version) in rows {
+        any = any.add(
+            Condition::all()
+                .add(e::Column::Id.eq(*id))
+                .add(e::Column::Version.eq(*version)),
+        );
+    }
+    let result = e::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(any)
+                .add(e::Column::State.eq("draft"))
+                .add(e::Column::PendingUnitId.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete drafts".into(), e))?;
+    if usize::try_from(result.rows_affected).ok() == Some(rows.len()) {
+        Ok(())
+    } else {
+        Err(RepoError::Conflict {
+            code: "VERSION_CONFLICT",
+        })
+    }
+}
 /// Run price-row apply work under serializable isolation, retrying driver contention.
 /// The approval subject and doors use this boundary when they arrive in Task 2c.7.
 /// # Errors

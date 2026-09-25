@@ -3,6 +3,7 @@ mod books;
 mod configuration;
 pub mod dto;
 mod prices;
+pub(crate) mod rows;
 pub(crate) mod support;
 use super::{correlation, preconditions};
 use crate::{
@@ -244,9 +245,149 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .standard_errors(openapi)
         .register(router, openapi);
-    router
+    row_routes(router, openapi)
         .layer(Extension(state))
         .layer(axum::middleware::from_fn(correlation::establish))
+}
+/// Draft row authoring: create, patch and delete.
+fn row_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/rows")
+        .operation_id("bss_pricing.create_row")
+        .summary("create_row")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price id")
+        .json_request::<dto::PricingPriceRowCreate>(openapi, "Request")
+        .param(header("Idempotency-Key"))
+        .handler(create_row)
+        .json_response_with_schema::<dto::PricingPriceRowCreated>(
+            openapi,
+            StatusCode::CREATED,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::patch("/bss-pricing/v1/rows/{id}")
+        .operation_id("bss_pricing.patch_row")
+        .summary("patch_row")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price row id")
+        .json_request::<dto::PricingPriceRowPatch>(openapi, "Request")
+        .param(header("If-Match"))
+        .handler(patch_row)
+        .json_response_with_schema::<dto::PricingPriceRowDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    OperationBuilder::delete("/bss-pricing/v1/rows/{id}")
+        .operation_id("bss_pricing.delete_row")
+        .summary("delete_row")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price row id")
+        .param(header("If-Match"))
+        .handler(delete_row)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
+        .standard_errors(openapi)
+        .register(router, openapi)
+}
+async fn create_row(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&payload)?;
+    let input: dto::PricingPriceRowCreate = preconditions::parse_body(&body)?;
+    rows::create(
+        &state.db.db(),
+        scope,
+        ctx,
+        correlation,
+        id,
+        key,
+        digest,
+        input,
+    )
+    .await
+}
+async fn patch_row(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let input: dto::PricingPriceRowPatch = preconditions::parse_body(&body)?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+        Box::pin(
+            async move { rows::patch(tx, &scope, &ctx, correlation, id, version, input).await },
+        )
+    })
+    .await
+}
+async fn delete_row(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), ctx.clone());
+        Box::pin(async move { rows::delete(tx, &scope, &ctx, correlation, id, version).await })
+    })
+    .await
 }
 async fn create_book(
     Extension(state): Extension<Arc<AuthoringState>>,

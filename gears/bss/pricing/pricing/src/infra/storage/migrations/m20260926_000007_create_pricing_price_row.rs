@@ -27,12 +27,14 @@ const PG_UP: &[&str] = &[
     r"CREATE INDEX IF NOT EXISTS pricing_price_row_chain
   ON bss.pricing_price_row (price_id, dim_value, effective_from) WHERE state = 'approved'",
 ];
+// SQLite `min_fee` is REAL, not NUMERIC: NUMERIC affinity stores an integral fee such as
+// 30.00 as INTEGER, which the driver cannot decode into a decimal; REAL keeps every fee readable.
 const SQLITE_UP: &[&str] = &[
     r"CREATE TABLE IF NOT EXISTS pricing_price_row (
   id text PRIMARY KEY, tenant_id text NOT NULL, price_id text NOT NULL REFERENCES pricing_price(id),
   version_no integer NOT NULL, dim_value text,
   model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json text NOT NULL,
-  min_fee numeric CHECK (min_fee >= 0), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
+  min_fee real CHECK (min_fee >= 0), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
   effective_from text NOT NULL, effective_to text, keep_for_bound integer NOT NULL DEFAULT 0,
   closed_explicitly integer NOT NULL DEFAULT 0,
   temporary_until text, paired_row_id text REFERENCES pricing_price_row(id),

@@ -88,12 +88,17 @@ pub fn validate(
 /// Display state combines stored approval and the window at the requested date.
 #[must_use]
 pub fn status(row: &Row, today: Date) -> &'static str {
-    if row.state != RowState::Approved {
-        return row.state.as_str();
+    window_status(row.state, row.effective_from, row.effective_to, today)
+}
+/// The same display state from the stored columns alone.
+#[must_use]
+pub fn window_status(state: RowState, from: Date, to: Option<Date>, today: Date) -> &'static str {
+    if state != RowState::Approved {
+        return state.as_str();
     }
-    if row.effective_to.is_some_and(|end| end <= today) {
+    if to.is_some_and(|end| end <= today) {
         "superseded"
-    } else if row.effective_from > today {
+    } else if from > today {
         "scheduled"
     } else {
         "active"

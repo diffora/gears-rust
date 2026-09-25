@@ -353,6 +353,9 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("PUT", "/settings".into()),
         ("GET", "/dimension-keys".into()),
         ("PUT", "/dimension-keys".into()),
+        ("POST", format!("/prices/{id}/rows")),
+        ("PATCH", format!("/rows/{id}")),
+        ("DELETE", format!("/rows/{id}")),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -560,6 +563,9 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("PUT", "/settings".into(), "config", "settings"),
         ("GET", "/dimension-keys".into(), "config", "read"),
         ("PUT", "/dimension-keys".into(), "config", "settings"),
+        ("POST", format!("/prices/{id}/rows"), "price", "author"),
+        ("PATCH", format!("/rows/{id}"), "price", "author"),
+        ("DELETE", format!("/rows/{id}"), "price", "author"),
     ] {
         let context = |grant: &str| {
             SecurityContext::builder()

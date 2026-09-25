@@ -196,3 +196,8 @@ impl MigrationTrait for InvalidOutboxMigration {
 // DELETE /prices/{id} price:author false false
 
 // GET /reference-ops config:settings false false
+
+// Run-4 rows: method | path | resource:action | If-Match | Idempotency-Key
+// POST /prices/{id}/rows price:author false true
+// PATCH /rows/{id} price:author true false
+// DELETE /rows/{id} price:author true false

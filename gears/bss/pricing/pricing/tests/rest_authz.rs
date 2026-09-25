@@ -21,6 +21,9 @@ fn census() -> census::Routes {
         ("PUT", "/bss-pricing/v1/settings"),
         ("GET", "/bss-pricing/v1/dimension-keys"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
+        ("POST", "/bss-pricing/v1/prices/{id}/rows"),
+        ("PATCH", "/bss-pricing/v1/rows/{id}"),
+        ("DELETE", "/bss-pricing/v1/rows/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -43,7 +46,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 15);
+    assert_eq!(registered.len(), 18);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 4);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -59,9 +62,9 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
         assert_eq!(
             census::production_count(needle),
             if needle == "require_authenticated(" {
-                16
+                19
             } else {
-                15
+                18
             }
         );
     }
@@ -73,7 +76,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 15);
+    assert_eq!(census::source_routes().len(), 18);
 }
 
 #[test]
@@ -122,3 +125,8 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // DELETE /prices/{id} price:author false false
 
 // GET /reference-ops config:settings false false
+
+// Run-4 rows: method | path | resource:action | If-Match | Idempotency-Key
+// POST /prices/{id}/rows price:author false true
+// PATCH /rows/{id} price:author true false
+// DELETE /rows/{id} price:author true false

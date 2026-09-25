@@ -31,6 +31,17 @@ pub fn valid_on(book: &Book, date: Date) -> bool {
     book.valid_from.is_none_or(|start| date >= start)
         && book.valid_until.is_none_or(|end| date < end)
 }
+/// Fractional digits of an ISO 4217 currency; two unless the standard says otherwise.
+#[must_use]
+pub fn minor_digits(currency: &str) -> u32 {
+    match currency {
+        "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX"
+        | "UYI" | "VND" | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
+        "CLF" | "UYW" => 4,
+        _ => 2,
+    }
+}
 #[cfg(test)]
 #[path = "book_tests.rs"]
 mod tests;

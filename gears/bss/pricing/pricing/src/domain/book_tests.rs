@@ -73,3 +73,10 @@ fn prototype_l231_book_validity_invalid() {
         "BOOK_VALIDITY_INVALID"
     );
 }
+#[test]
+fn matrix_18_minor_digits_follow_the_book_currency() {
+    assert_eq!(minor_digits("EUR"), 2);
+    assert_eq!(minor_digits("USD"), 2);
+    assert_eq!(minor_digits("JPY"), 0);
+    assert_eq!(minor_digits("KWD"), 3);
+}
