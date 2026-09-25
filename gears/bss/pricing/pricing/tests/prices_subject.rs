@@ -766,6 +766,58 @@ async fn a_single_closed_price_whose_value_gained_a_chain_is_refused() {
     assert!(s.submit(s.subject(), closed, 1).await.is_ok());
 }
 
+// Behaviour MEDIUM-1: two pairs on one chain in one unit. Both returns were copied from A
+// (drafting sees approved prices only). Judged against the unit, the price in force on T2's
+// end is R1, a return of the same A with the same money, so R2 is still right.
+#[tokio::test]
+async fn two_pairs_on_one_chain_in_one_unit_are_both_current_and_apply_in_order() {
+    let s = setup(0).await;
+    let a = s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    let one = s
+        .draft("one", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    let two = s
+        .draft("two", promo("2031-04-01", "2031-05-01", "6", None))
+        .await;
+    assert_eq!((one.len(), two.len()), (2, 2), "two pairs");
+    for back in [one[1], two[1]] {
+        assert_eq!(s.price(back).await.return_of_price_id, Some(a));
+    }
+    let ids: Vec<Uuid> = one.iter().chain(&two).copied().collect();
+    let submitted = s.submit(s.subject(), ids, 0).await.unwrap();
+    assert!(submitted.applied, "one unit, accepted and applied");
+    let mut windows = Vec::new();
+    for id in [a, one[0], one[1], two[0], two[1]] {
+        let p = s.price(id).await;
+        assert_eq!(p.state, "approved");
+        windows.push((p.effective_from, p.effective_to));
+    }
+    assert_eq!(
+        windows,
+        vec![
+            (day("2031-01-01"), Some(day("2031-02-01"))),
+            (day("2031-02-01"), Some(day("2031-03-01"))),
+            (day("2031-03-01"), Some(day("2031-04-01"))),
+            (day("2031-04-01"), Some(day("2031-05-01"))),
+            (day("2031-05-01"), None),
+        ],
+        "A, T1, R1, T2, R2 in order"
+    );
+    for (on, rate) in [
+        ("2031-01-15", "10"),
+        ("2031-02-15", "5"),
+        ("2031-03-15", "10"),
+        ("2031-04-15", "6"),
+        ("2031-05-15", "10"),
+    ] {
+        assert_eq!(
+            s.reads(on, None).await,
+            Some(json!({ "rate": rate })),
+            "{on}"
+        );
+    }
+}
+
 // Chains HIGH-2: a temporary nested in a closed value price returns to it only until its end.
 #[tokio::test]
 async fn a_temporary_nested_in_a_closed_price_returns_to_the_default_after_the_outer_end() {

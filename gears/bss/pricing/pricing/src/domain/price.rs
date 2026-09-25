@@ -312,9 +312,12 @@ pub fn temporary(
 /// the temporary price and its partner included. The chain the return must honour is the
 /// approved prices PLUS the unit's other prices: a price published in the same unit and in force on
 /// the pair's end would otherwise be undone by a return copied from an older price. A pair's
-/// return must restore the price in force on the (shifted) end, with that price's money. A
-/// temporary price without a return is right only while nothing of its own chain is in force on
-/// its end, or while the next price starts exactly there and so ends it.
+/// return must restore the price in force on the (shifted) end, with that price's money. When
+/// that price is itself a price of the unit, the pair is right only if it is another pair's
+/// return naming the same restored price with the same money (two pairs on one chain, both
+/// drafted against the same approved price). A temporary price without a return is right only
+/// while nothing of its own chain is in force on its end, or while the next price starts exactly
+/// there and so ends it.
 #[must_use]
 pub fn temporary_is_current(prices: &[Price], temporary: &Price, unit: &[Price]) -> bool {
     let Some(until) = temporary.temporary_until else {
@@ -346,10 +349,13 @@ pub fn temporary_is_current(prices: &[Price], temporary: &Price, unit: &[Price])
             let returned = unit.iter().find(|r| r.id == partner);
             match (returned, back) {
                 (Some(r), Some(b)) => {
-                    r.return_of_price_id == Some(b.id)
-                        && r.model == b.model
-                        && r.price == b.price
-                        && r.min_fee == b.min_fee
+                    let restores = if unit.iter().any(|u| u.id == b.id) {
+                        b.return_of_price_id.is_some()
+                            && b.return_of_price_id == r.return_of_price_id
+                    } else {
+                        r.return_of_price_id == Some(b.id)
+                    };
+                    restores && r.model == b.model && r.price == b.price && r.min_fee == b.min_fee
                 }
                 _ => false,
             }
