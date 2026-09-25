@@ -150,7 +150,9 @@ pub fn normalize_windows(rows: &mut [Row]) {
         };
     }
 }
-fn own_version_at<'a>(
+/// The row of exactly one chain (no default fallback) in force on a date.
+#[must_use]
+pub fn own_version_at<'a>(
     rows: &'a [Row],
     price_id: Uuid,
     date: Date,
@@ -274,6 +276,41 @@ pub fn temporary(
         Ok(vec![promo])
     }
 }
+/// Whether a temporary row still matches the chain as it now stands (D-391). `rows` are the
+/// approved rows outside the unit; `unit` holds the temporary row's partner. A pair's return
+/// must restore the row in force on the (shifted) end, with that row's money. A temporary row
+/// without a return is right only while nothing of its own chain is in force on its end, or
+/// while the next row starts exactly there and so ends it.
+#[must_use]
+pub fn temporary_is_current(rows: &[Row], temporary: &Row, unit: &[Row]) -> bool {
+    let Some(until) = temporary.temporary_until else {
+        return true;
+    };
+    let back = own_version_at(
+        rows,
+        temporary.price_id,
+        until,
+        temporary.dim_value.as_deref(),
+    );
+    match temporary.paired_row_id {
+        Some(partner) => {
+            let returned = unit.iter().find(|r| r.id == partner);
+            match (returned, back) {
+                (Some(r), Some(b)) => {
+                    r.return_of_row_id == Some(b.id)
+                        && r.model == b.model
+                        && r.price == b.price
+                        && r.min_fee == b.min_fee
+                }
+                _ => false,
+            }
+        }
+        None => match back {
+            Some(b) => b.effective_from == until,
+            None => temporary.closed_explicitly,
+        },
+    }
+}
 /// Shift a row and its explicit/temporary end by the same duration.
 /// Call with the same displacement for the return partner.
 /// # Errors
@@ -331,7 +368,7 @@ pub fn field_of(code: &str) -> &'static str {
     match code {
         "MODEL_KIND_CHARGEKIND_MISMATCH" | "MODEL_INVALID" | "CHAIN_MODEL_CHANGED" => "model",
         "WINDOW_START_IN_PAST" | "WINDOW_START_INVALID" | "WINDOW_OVERLAP" => "effective_from",
-        "WINDOW_END_INVALID" => "temporary_until",
+        "WINDOW_END_INVALID" | "PAIR_RETURN_STALE" => "temporary_until",
         "DIM_NOT_DECLARED" | "DIM_VALUE_UNKNOWN" => "dim_value",
         "MIN_FEE_INVALID" => "min_fee",
         "ELIGIBILITY_INVALID" => "eligibility",

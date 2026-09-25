@@ -1014,3 +1014,32 @@ async fn a_price_with_pending_or_approved_rows_refuses_deletion() {
     );
     assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 200);
 }
+
+// Chains HIGH-1 on the wire: the stale return is a 400 with its code, and no unit is made.
+#[tokio::test]
+async fn a_common_date_past_an_approved_change_answers_400_pair_return_stale() {
+    let g = gov(1).await;
+    g.approved(1, "2031-01-01").await;
+    g.approved(2, "2031-06-01").await;
+    let mut promo = body("2031-02-01");
+    promo["temporary_until"] = json!("2031-03-01");
+    let pair = g.draft("pair", promo).await;
+    let path = format!("/price-books/{}/publish-changes", g.book);
+    let (status, b, _) =
+        g.f.call(
+            "POST",
+            &path,
+            json!({"common_effective_date":"2031-07-01"}),
+            None,
+            Some("late"),
+        )
+        .await;
+    assert_eq!(status, 400, "{b}");
+    assert!(code(&b).contains("PAIR_RETURN_STALE"), "{b}");
+    assert_eq!(g.row(&pair[0]["id"]).await.state, "draft");
+    let (status, list, _) =
+        g.f.call("GET", "/approval-units", json!({}), None, None)
+            .await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["items"], json!([]), "no unit was recorded");
+}

@@ -150,6 +150,29 @@ impl Setup {
         r.effective_from = day(from);
         row_repo::insert(&conn, &scope, r).await.unwrap().id
     }
+    /// An approved row of one chain with a stored window, as an earlier unit left it.
+    async fn approved_at(
+        &self,
+        version_no: i32,
+        (from, to): (&str, Option<&str>),
+        dim: Option<&str>,
+        rate: &str,
+    ) -> Uuid {
+        let conn = self.f.db.conn().unwrap();
+        let scope = AccessScope::for_tenant(self.tenant());
+        let p = price_repo::find(&conn, &scope, self.tenant(), self.price_id())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut r = price_support::row(&p);
+        r.version_no = version_no;
+        r.state = "approved".into();
+        r.price_json = json!({ "rate": rate });
+        r.dim_value = dim.map(str::to_owned);
+        r.effective_from = day(from);
+        r.effective_to = to.map(day);
+        row_repo::insert(&conn, &scope, r).await.unwrap().id
+    }
     async fn row(&self, id: Uuid) -> price_row::Model {
         row_repo::find(
             &self.f.db.conn().unwrap(),
@@ -621,4 +644,106 @@ async fn rejected_rows_stay_rejected_and_withdrawn_rows_return_to_draft() {
     .await
     .unwrap();
     assert_eq!(s.row(other[0]).await.state, "draft");
+}
+
+fn promo(from: &str, until: &str, rate: &str, dim: Option<&str>) -> Value {
+    let mut b = body(from);
+    b["price"] = json!({ "rate": rate });
+    b["temporary_until"] = json!(until);
+    if let Some(dim) = dim {
+        b["dim_value"] = json!(dim);
+    }
+    b
+}
+
+// Chains HIGH-1 (D-391), scenario A: a common date moves the pair's end past an approved change.
+#[tokio::test]
+async fn a_common_date_that_moves_a_return_past_an_approved_change_is_refused() {
+    let s = setup(0).await;
+    let a = s
+        .approved_at(1, ("2031-01-01", Some("2031-06-01")), None, "10")
+        .await;
+    s.approved_at(2, ("2031-06-01", None), None, "12").await;
+    let pair = s
+        .draft("pair", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    assert_eq!(pair.len(), 2);
+    let back = s.row(pair[1]).await;
+    assert_eq!(back.return_of_row_id, Some(a), "the return copied A");
+    let mut shifted = s.subject();
+    shifted.common_effective_date = Some(day("2031-07-01"));
+    let err = s.submit(shifted, pair.clone(), 1).await.unwrap_err();
+    assert_eq!(
+        code(&err),
+        "PAIR_RETURN_STALE",
+        "from 08-01 the return would restore A's 10 over B's approved 12"
+    );
+    assert_eq!(s.row(pair[0]).await.state, "draft", "no unit, no lock");
+    assert!(
+        s.submit(s.subject(), pair, 1).await.is_ok(),
+        "unshifted, the return still restores A, which is in force on 03-01"
+    );
+}
+
+// Scenario B: a change approved after drafting, met at submit and again at apply.
+#[tokio::test]
+async fn a_change_approved_after_drafting_makes_the_return_stale_at_submit_and_apply() {
+    let s = setup(0).await;
+    s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    let pending = s
+        .draft("pending", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    let unit = s
+        .submit(s.subject(), pending.clone(), 1)
+        .await
+        .unwrap()
+        .unit;
+    let later = s
+        .draft("later", promo("2031-04-01", "2031-04-10", "6", None))
+        .await;
+    let mut increase = body("2031-02-15");
+    increase["price"] = json!({"rate":"12"});
+    let b = s.draft("b", increase).await;
+    assert!(s.submit(s.subject(), b, 0).await.unwrap().applied);
+    let err = s.approve(s.subject(), &unit).await.unwrap_err();
+    assert_eq!(code(&err), "APPLY_REFUSED");
+    assert!(format!("{err:?}").contains("PAIR_RETURN_STALE"), "{err:?}");
+    for id in &pending {
+        assert_eq!(s.row(*id).await.state, "pending", "the unit rolled back");
+    }
+    let err = s.submit(s.subject(), later, 1).await.unwrap_err();
+    assert_eq!(code(&err), "PAIR_RETURN_STALE", "B is in force on 04-10");
+}
+
+// Scenario C: a single closed row whose chain gained a row in force at its end.
+#[tokio::test]
+async fn a_single_closed_row_whose_value_gained_a_chain_is_refused() {
+    let s = setup_with(0, true).await;
+    s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    let closed = s
+        .draft("us", promo("2031-02-01", "2031-03-01", "5", Some("us")))
+        .await;
+    assert_eq!(closed.len(), 1, "no own row on 03-01: one closed row");
+    s.approved_at(9, ("2031-01-15", None), Some("us"), "8")
+        .await;
+    let err = s.submit(s.subject(), closed, 1).await.unwrap_err();
+    assert_eq!(
+        code(&err),
+        "PAIR_RETURN_STALE",
+        "closing at 03-01 would drop the value's own open row"
+    );
+    // The same through a common date that moves the closed row into a later value row.
+    let s = setup_with(0, true).await;
+    s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    s.approved_at(2, ("2031-04-01", None), Some("us"), "8")
+        .await;
+    let closed = s
+        .draft("us", promo("2031-02-01", "2031-03-01", "5", Some("us")))
+        .await;
+    assert_eq!(closed.len(), 1);
+    let mut shifted = s.subject();
+    shifted.common_effective_date = Some(day("2031-05-01"));
+    let err = s.submit(shifted, closed.clone(), 1).await.unwrap_err();
+    assert_eq!(code(&err), "PAIR_RETURN_STALE");
+    assert!(s.submit(s.subject(), closed, 1).await.is_ok());
 }

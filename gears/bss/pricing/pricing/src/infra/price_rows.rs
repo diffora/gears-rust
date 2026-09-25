@@ -363,6 +363,18 @@ impl PriceRowsSubject {
                 return Err(invalid("WINDOW_OVERLAP", format!("price_row {}", r.id)));
             }
         }
+        // D-391: a return restores what the approved chain applies on the shifted end NOW; the
+        // copy made at drafting is stale once another unit (or the common date) changed that.
+        // The author re-drafts the pair.
+        if let Some(stale) = proposed
+            .iter()
+            .find(|r| !row::temporary_is_current(&siblings, r, &proposed))
+        {
+            return Err(invalid(
+                "PAIR_RETURN_STALE",
+                format!("price_row {}", stale.id),
+            ));
+        }
         let mut chain = siblings;
         chain.extend(proposed.iter().cloned().map(|mut r| {
             r.state = RowState::Approved;
