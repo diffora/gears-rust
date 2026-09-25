@@ -15,7 +15,7 @@ use crate::{
         row::{self, Eligibility, Row, RowState, SkuMetering},
     },
     infra::{
-        reference_registry,
+        reference_registry, reference_work,
         storage::{
             RepoError,
             entity::{price, price_row},
@@ -24,12 +24,14 @@ use crate::{
     },
 };
 use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
+use bss_products_sdk::{ReferenceRegistryV1, models::SkuVersion};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use time::{Date, OffsetDateTime};
+use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::{
     DbTx,
     secure::{AccessScope, DBRunner},
@@ -138,6 +140,9 @@ pub struct PriceRowsSubject {
     /// Partners that publish-changes pulled in; recorded in the snapshot.
     pub added_partner: Vec<Uuid>,
     pub release: Release,
+    /// A definite Products refusal met while judging, kept whole for the door: the approval
+    /// error carries only static codes, and the caller must see Products' own status and code.
+    refused: Arc<Mutex<Option<CanonicalError>>>,
 }
 
 /// One price's part of a unit, judged against the price's current approved rows.
@@ -254,7 +259,52 @@ impl PriceRowsSubject {
             common_effective_date: None,
             added_partner: Vec::new(),
             release: Release::Draft,
+            refused: Arc::default(),
         }
+    }
+    /// The Products refusal that ended the last judgement, if any; the door answers it as is.
+    #[must_use]
+    pub fn take_refusal(&self) -> Option<CanonicalError> {
+        self.refused.lock().ok().and_then(|mut slot| slot.take())
+    }
+    /// Only unavailability (5xx, timeouts, rate limits, lost races) is `REGISTRY_UNAVAILABLE`;
+    /// a definite refusal (403, 404, …) passes through with its code.
+    fn registry_failure(&self, error: CanonicalError) -> ApprovalError {
+        if !reference_work::definite_refusal(&error) {
+            return invalid("REGISTRY_UNAVAILABLE", "Products reference registry");
+        }
+        if let Ok(mut slot) = self.refused.lock() {
+            *slot = Some(error);
+        }
+        invalid("REGISTRY_REFUSED", "Products refused the dated SKU read")
+    }
+    async fn version_on(
+        &self,
+        registry: &dyn ReferenceRegistryV1,
+        sku: Uuid,
+        on: Date,
+    ) -> Result<Option<SkuVersion>, ApprovalError> {
+        registry
+            .sku_version_as_of(&self.ctx, self.tenant_id, sku, on)
+            .await
+            .map_err(|e| self.registry_failure(e))
+    }
+    /// The SKU's first version: the latest, then each predecessor until none is older.
+    async fn earliest(
+        &self,
+        registry: &dyn ReferenceRegistryV1,
+        sku: Uuid,
+    ) -> Result<Option<SkuVersion>, ApprovalError> {
+        let Some(mut first) = self.version_on(registry, sku, Date::MAX).await? else {
+            return Ok(None);
+        };
+        while let Some(eve) = first.effective_from.previous_day() {
+            match self.version_on(registry, sku, eve).await? {
+                Some(older) if older.effective_from < first.effective_from => first = older,
+                _ => break,
+            }
+        }
+        Ok(Some(first))
     }
     fn scope(&self) -> AccessScope {
         AccessScope::for_tenant(self.tenant_id)
@@ -279,14 +329,15 @@ impl PriceRowsSubject {
         }
         Ok(models)
     }
-    /// The SKU's metering in force on a date (D-402); a date before any version reads as none.
+    /// The SKU's metering in force on a date (D-402). A date before the SKU's first version
+    /// reads that first version's metering, never "none".
     async fn metering(&self, sku: Uuid, on: Date) -> Result<SkuMetering, ApprovalError> {
-        let unavailable = |_| invalid("REGISTRY_UNAVAILABLE", "Products reference registry");
-        let registry = reference_registry::resolve(&self.hub).map_err(unavailable)?;
-        let version = registry
-            .sku_version_as_of(&self.ctx, self.tenant_id, sku, on)
-            .await
-            .map_err(unavailable)?;
+        let registry = reference_registry::resolve(&self.hub)
+            .map_err(|_| invalid("REGISTRY_UNAVAILABLE", "Products reference registry"))?;
+        let version = match self.version_on(registry.as_ref(), sku, on).await? {
+            Some(version) => Some(version),
+            None => self.earliest(registry.as_ref(), sku).await?,
+        };
         Ok(version.map_or(
             SkuMetering {
                 unit: None,

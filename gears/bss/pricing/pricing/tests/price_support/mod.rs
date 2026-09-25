@@ -282,6 +282,8 @@ pub struct Script {
     pub version_reads: AtomicUsize,
     /// When set, dated reads fail as an unavailable registry.
     pub versions_down: std::sync::atomic::AtomicBool,
+    /// When set, Products refuses the dated read: the caller may not read SKUs (403).
+    pub versions_refused: std::sync::atomic::AtomicBool,
     /// A tenant whose `states()` calls fail as an unavailable registry.
     pub states_down_for: std::sync::Mutex<Option<Uuid>>,
 }
@@ -477,6 +479,11 @@ impl ReferenceRegistryV1 for Script {
         self.version_reads.fetch_add(1, Ordering::SeqCst);
         if self.versions_down.load(Ordering::SeqCst) {
             return Err(CanonicalError::service_unavailable().create());
+        }
+        if self.versions_refused.load(Ordering::SeqCst) {
+            return Err(TestResource::permission_denied()
+                .with_reason("SKU_READ_DENIED")
+                .create());
         }
         let found = self
             .versions

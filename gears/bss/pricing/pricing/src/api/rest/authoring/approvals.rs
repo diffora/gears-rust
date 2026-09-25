@@ -196,6 +196,15 @@ async fn published(
     Ok(())
 }
 
+/// An engine refusal as the door answers it: a Products refusal the subject met while judging
+/// keeps its own status and code; everything else maps through [`approval_failure`].
+fn refusal(subject: &PriceRowsSubject) -> impl Fn(bss_approval::ApprovalError) -> DoorError + '_ {
+    move |error| {
+        subject
+            .take_refusal()
+            .map_or_else(|| approval_failure(error), DoorError::Api)
+    }
+}
 /// Record one unit over the selected rows, applying it at once under quorum zero.
 async fn record(
     tx: &DbTx<'_>,
@@ -221,7 +230,7 @@ async fn record(
         },
     )
     .await
-    .map_err(approval_failure)?;
+    .map_err(refusal(subject))?;
     let unit = submitted.unit;
     support::audit(
         tx,
@@ -621,7 +630,7 @@ async fn vote_in(
             now,
         )
         .await
-        .map_err(approval_failure)?,
+        .map_err(refusal(&subject))?,
         Vote::Reject => {
             let note = note
                 .as_deref()

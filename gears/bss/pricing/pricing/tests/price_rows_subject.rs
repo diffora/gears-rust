@@ -863,3 +863,76 @@ async fn a_row_approved_before_an_existing_new_row_is_marked_keep_for_bound() {
     );
     assert!(s.row(p).await.keep_for_bound, "never cleared");
 }
+
+// Chains LOW-3 = surface F6: a Products refusal of the dated read keeps its status and code;
+// only unavailability is 503 REGISTRY_UNAVAILABLE. At submit and at apply.
+#[tokio::test]
+async fn a_products_refusal_of_the_dated_read_reaches_the_caller_with_its_code() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let s = setup(0).await;
+    s.approved(1, "2031-01-01", "per_unit", json!({"rate":"0.20"}))
+        .await;
+    let ids = s.draft("x", body("2031-03-01")).await;
+    let submit = format!("/rows/{}/submit", ids[0]);
+    s.script.versions_refused.store(true, SeqCst);
+    let (status, b, _) = s.f.call("POST", &submit, json!({}), None, Some("s1")).await;
+    assert_eq!(status, 403, "{b}");
+    assert!(b.to_string().contains("SKU_READ_DENIED"), "{b}");
+    s.script.versions_refused.store(false, SeqCst);
+    s.script.versions_down.store(true, SeqCst);
+    let (status, b, _) = s.f.call("POST", &submit, json!({}), None, Some("s2")).await;
+    assert_eq!(status, 503, "{b}");
+    assert!(b.to_string().contains("REGISTRY_UNAVAILABLE"), "{b}");
+    s.script.versions_down.store(false, SeqCst);
+    let (status, b, _) = s.f.call("POST", &submit, json!({}), None, Some("s3")).await;
+    assert_eq!(status, 201, "{b}");
+    assert_eq!(b["applied"], false, "quorum one: pending");
+    s.script.versions_refused.store(true, SeqCst);
+    let (status, b, _) =
+        s.f.call_as(
+            &s.f.user(),
+            "POST",
+            &format!(
+                "/approval-units/{}/approve",
+                b["unit"]["id"].as_str().unwrap()
+            ),
+            json!({"generation":1}),
+            None,
+            Some("a1"),
+        )
+        .await;
+    assert_eq!(status, 403, "{b}");
+    assert!(b.to_string().contains("SKU_READ_DENIED"), "{b}");
+    assert_eq!(s.row(ids[0]).await.state, "pending");
+}
+
+// Known "empty metering": a row that starts before the SKU's first version is compared with
+// the earliest version's metering, never with nothing.
+#[tokio::test]
+async fn a_row_before_the_first_sku_version_is_guarded_by_the_earliest_version() {
+    let s = setup(0).await;
+    s.script.versions.lock().unwrap().push((
+        day("2031-06-01"),
+        Some("GB".into()),
+        Some("storage".into()),
+    ));
+    s.approved(1, "2031-01-01", "per_unit", json!({"rate":"0.20"}))
+        .await;
+    let same = s.draft("same", body("2031-07-01")).await;
+    assert!(
+        s.submit(s.subject(), same, 1).await.is_ok(),
+        "before its first version the SKU meters as that version, not as nothing"
+    );
+    s.script.versions.lock().unwrap().push((
+        day("2031-08-01"),
+        Some("TB".into()),
+        Some("storage".into()),
+    ));
+    let changed = s.draft("changed", body("2031-09-01")).await;
+    let err = s.submit(s.subject(), changed, 1).await.unwrap_err();
+    assert_eq!(
+        code(&err),
+        "CHAIN_MODEL_CHANGED",
+        "GB (earliest) against TB"
+    );
+}

@@ -99,7 +99,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Derive permitted models from charge kind; validate nonnegative prices and coherent model parameters. - `inst-rows-windows-dimension-model-and-floor-1`
 2. [ ] - `p1` - Evaluate per_unit, graduated, volume and package with decimal arithmetic and half-open tier bands; recurring/one_time allow flat or per_unit. - `inst-rows-windows-dimension-model-and-floor-2`
-3. [ ] - `p1` - Preserve usage model kind, package size and SKU (unit, usage_type_ref) read as of each row's start across successors (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-rows-windows-dimension-model-and-floor-3`
+3. [ ] - `p1` - Preserve usage model kind, package size and SKU (unit, usage_type_ref) read as of each row's start across successors, a start before the SKU's first version reading that first version (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-rows-windows-dimension-model-and-floor-3`
 4. [ ] - `p1` - Aggregate rated amounts after included quantities by row/subscription/period across every bound value and slice; apply the prorated row floor, then promotions. - `inst-rows-windows-dimension-model-and-floor-4`
 
 ### reserve-write-confirm
