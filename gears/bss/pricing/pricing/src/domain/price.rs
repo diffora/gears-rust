@@ -21,6 +21,15 @@ pub fn charge_kind_for(sku: SkuType) -> Result<ChargeKind, RuleError> {
         SkuType::Bundle => Err(RuleError::new("BUNDLE_SKU_NOT_PRICEABLE")),
     }
 }
+/// A recurring SKU is priced per `month` or `year`; any other SKU takes no period.
+#[must_use]
+pub fn period_valid(sku: SkuType, period: Option<&str>) -> bool {
+    if sku == SkuType::Recurring {
+        matches!(period, Some("month" | "year"))
+    } else {
+        period.is_none()
+    }
+}
 /// Check an existing kind against a SKU; used for plan-item consistency.
 /// # Errors
 /// Returns the bundle or charge-kind mismatch refusal.

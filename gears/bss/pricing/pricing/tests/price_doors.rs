@@ -262,3 +262,62 @@ async fn products_contention_and_rate_limits_are_unavailability_not_refusals() {
         "{retry:?}"
     );
 }
+
+#[tokio::test]
+async fn period_and_dimension_refusals_are_400_before_any_reservation() {
+    // D-403: pure input refusals are 400, and they cost no Products reservation.
+    for (mode, body, field, code) in [
+        (11, json!({}), "period", "PRICE_PERIOD_INVALID"),
+        (
+            0,
+            json!({"period":"month"}),
+            "period",
+            "PRICE_PERIOD_INVALID",
+        ),
+        (
+            0,
+            json!({"period":"week"}),
+            "period",
+            "PRICE_PERIOD_INVALID",
+        ),
+        (
+            0,
+            json!({"dimension_key":"region"}),
+            "dimension_key",
+            "DIM_NOT_DECLARED",
+        ),
+    ] {
+        let (f, script, path, _) = setup(mode).await;
+        let mut input = body.clone();
+        input["sku_id"] = json!(Uuid::new_v4());
+        let refused = f
+            .call("POST", &path, input.clone(), None, Some("one"))
+            .await;
+        assert_eq!(refused.0, 400, "{body}: {refused:?}");
+        assert!(refused.1.to_string().contains(code), "{refused:?}");
+        assert!(refused.1.to_string().contains(field), "{refused:?}");
+        assert_eq!(Script::count(&script.reserve_calls), 0, "{body}");
+        // Nothing was claimed: the corrected request runs under the same key.
+        let fixed = if mode == 11 {
+            json!({"sku_id":input["sku_id"],"period":"month"})
+        } else {
+            json!({"sku_id":input["sku_id"]})
+        };
+        let created = f.call("POST", &path, fixed, None, Some("one")).await;
+        assert_eq!(created.0, 201, "{created:?}");
+        let patched = f
+            .call(
+                "PATCH",
+                &format!("/prices/{}", created.1["id"].as_str().unwrap()),
+                json!({"dimension_key":"region"}),
+                Some(&created.2),
+                None,
+            )
+            .await;
+        assert_eq!(patched.0, 400, "{patched:?}");
+        assert!(
+            patched.1.to_string().contains("DIM_NOT_DECLARED"),
+            "{patched:?}"
+        );
+    }
+}

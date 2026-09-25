@@ -711,6 +711,12 @@ async fn cancel(
     clock: Arc<dyn Clock>,
 ) -> Result<(), CanonicalError> {
     let code = error_code(&error).unwrap_or_else(|| "PRICE_WRITE_REFUSED".into());
+    // A key removed from the registry since the door checked it is still an input refusal.
+    let error = if code == "DIM_NOT_DECLARED" {
+        support::invalid("dimension_key", "DIM_NOT_DECLARED")
+    } else {
+        error
+    };
     work.refusal = Some(Receipt::error(error).await?);
     let op = op.clone();
     support::transaction(&state.db.db(), move |tx| {
@@ -871,18 +877,15 @@ async fn observe_sku(
         ));
     }
     let work = Work::read(op)?;
-    let period_valid = if sku.r#type == bss_products_sdk::models::SkuType::Recurring {
-        matches!(work.input.period.as_deref(), Some("month" | "year"))
-    } else {
-        work.input.period.is_none()
-    };
-    if !period_valid {
+    // The door checked the period before reserving; this re-read repeats it against the
+    // type the reservation froze. Either way it is an input refusal: 400 (D-403).
+    if !crate::domain::price::period_valid(sku.r#type, work.input.period.as_deref()) {
         return Ok((
             Event::SkuRefused {
                 code: "PRICE_PERIOD_INVALID".into(),
             },
             None,
-            Some(Receipt::error(support::conflict("PRICE_PERIOD_INVALID")).await?),
+            Some(Receipt::error(support::invalid("period", "PRICE_PERIOD_INVALID")).await?),
         ));
     }
     let price = price::Model {

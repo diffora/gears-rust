@@ -415,7 +415,8 @@ impl ReferenceRegistryV1 for Script {
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
         let mode = self.mode.load(Ordering::SeqCst);
-        if mode == 18 {
+        if mode == 18 && Self::count(&self.reserve_calls) > 0 {
+            // The re-read after a successful reserve lost a race in Products.
             return Err(refusal("CONTENDED"));
         }
         Ok(Sku {

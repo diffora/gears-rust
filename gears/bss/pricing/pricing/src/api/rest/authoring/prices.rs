@@ -14,7 +14,10 @@ use crate::{
         reference_work::{self, Caller, Receipt, WallClock, Work},
         storage::{
             entity,
-            repo::{book_repo, idempotency_repo as idem, price_repo, reference_op_repo, row_repo},
+            repo::{
+                book_repo, dimension_repo, idempotency_repo as idem, price_repo, reference_op_repo,
+                row_repo,
+            },
         },
     },
 };
@@ -48,6 +51,98 @@ enum Begun {
     Replay(Receipt),
     Op(Uuid),
 }
+/// What a held Idempotency-Key answers: `None` when this call holds it (or may take it).
+fn settled(
+    claim: idem::IdempotencyClaim,
+    digest: &[u8],
+) -> Result<Option<Receipt>, CanonicalError> {
+    match claim {
+        idem::IdempotencyClaim::Claimed => Ok(None),
+        idem::IdempotencyClaim::Answered {
+            payload_hash,
+            response_body,
+            ..
+        } => {
+            if payload_hash != digest {
+                return Err(support::conflict("IDEMPOTENCY_CONFLICT"));
+            }
+            serde_json::from_value(response_body)
+                .map(Some)
+                .map_err(|_| CanonicalError::internal("invalid price receipt").create())
+        }
+        idem::IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != digest => {
+            Err(support::conflict("IDEMPOTENCY_CONFLICT"))
+        }
+        _ => Err(support::conflict("IDEMPOTENCY_KEY_IN_FLIGHT")),
+    }
+}
+/// The key's stored answer, read without claiming it: a replay or an in-flight duplicate is
+/// answered from the store alone, before any Products call.
+async fn stored(
+    state: &AuthoringState,
+    tenant: Uuid,
+    endpoint: &str,
+    key: &str,
+    digest: &[u8],
+) -> Result<Option<Receipt>, CanonicalError> {
+    let conn = state.db.conn().map_err(DoorError::from)?;
+    match idem::lookup_idempotency_key(
+        &conn,
+        &AccessScope::for_tenant(tenant),
+        tenant,
+        endpoint,
+        key,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .map_err(DoorError::from)?
+    {
+        Some(claim) => settled(claim, digest),
+        None => Ok(None),
+    }
+}
+/// The period rule needs the SKU's type, read before anything is claimed or reserved: an
+/// input refusal is 400 and costs no reservation (D-403). A registry that cannot answer is
+/// 503 with nothing written; a definite Products refusal is answered as Products gave it.
+async fn check_period(
+    state: &AuthoringState,
+    ctx: &SecurityContext,
+    input: &PricingPriceCreate,
+) -> Result<(), CanonicalError> {
+    let registry = crate::infra::reference_registry::resolve(&state.hub)
+        .map_err(|_| support::unavailable())?;
+    let sku = registry
+        .sku_for_write(ctx, ctx.subject_tenant_id(), input.sku_id)
+        .await
+        .map_err(|error| {
+            if reference_work::definite_refusal(&error) {
+                error
+            } else {
+                support::unavailable()
+            }
+        })?;
+    if price::period_valid(sku.r#type, input.period.as_deref()) {
+        Ok(())
+    } else {
+        Err(support::invalid("period", "PRICE_PERIOD_INVALID"))
+    }
+}
+/// A named dimension key must be declared in the tenant's registry.
+async fn check_dimension(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    key: Option<&str>,
+) -> Result<(), DoorError> {
+    if let Some(key) = key
+        && dimension_repo::find(tx, scope, tenant, key)
+            .await?
+            .is_none()
+    {
+        return Err(support::invalid("dimension_key", "DIM_NOT_DECLARED").into());
+    }
+    Ok(())
+}
 #[allow(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
@@ -63,20 +158,26 @@ pub(super) async fn create(
     input: PricingPriceCreate,
 ) -> Result<Response, CanonicalError> {
     let original_ctx = ctx.clone();
+    let endpoint = format!("/bss-pricing/v1/price-books/{book}/prices");
+    if let Some(receipt) = stored(&state, ctx.subject_tenant_id(), &endpoint, &key, &digest).await?
+    {
+        return receipt.response();
+    }
+    check_period(&state, &ctx, &input).await?;
     let result = support::transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, key, digest, input) = (
+        let (scope, ctx, key, digest, input, endpoint) = (
             scope.clone(),
             ctx.clone(),
             key.clone(),
             digest.clone(),
             input.clone(),
+            endpoint.clone(),
         );
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let now = time::OffsetDateTime::now_utc();
             let receipt_scope = AccessScope::for_tenant(tenant);
-            let endpoint = format!("/bss-pricing/v1/price-books/{book}/prices");
-            match idem::claim_idempotency_key(
+            let claim = idem::claim_idempotency_key(
                 tx,
                 &receipt_scope,
                 tenant,
@@ -86,29 +187,12 @@ pub(super) async fn create(
                 now,
                 now + time::Duration::hours(24),
             )
-            .await?
-            {
-                idem::IdempotencyClaim::Claimed => {}
-                idem::IdempotencyClaim::Answered {
-                    payload_hash,
-                    response_body,
-                    ..
-                } => {
-                    if payload_hash != digest {
-                        return Err(support::conflict("IDEMPOTENCY_CONFLICT").into());
-                    }
-                    return Ok(Begun::Replay(
-                        serde_json::from_value(response_body).map_err(|_| {
-                            CanonicalError::internal("invalid price receipt").create()
-                        })?,
-                    ));
-                }
-                idem::IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != digest => {
-                    return Err(support::conflict("IDEMPOTENCY_CONFLICT").into());
-                }
-                _ => return Err(support::conflict("IDEMPOTENCY_KEY_IN_FLIGHT").into()),
+            .await?;
+            if let Some(receipt) = settled(claim, &digest)? {
+                return Ok(Begun::Replay(receipt));
             }
             validate_template(input.invoice_line_override.as_deref())?;
+            check_dimension(tx, &receipt_scope, tenant, input.dimension_key.as_deref()).await?;
             if book_repo::find(tx, &scope, tenant, book).await?.is_none() {
                 return Err(support::missing().into());
             }
@@ -159,6 +243,7 @@ pub(super) async fn patch(
     let mut m = find(tx, scope, tenant, id).await?;
     support::check_version(version, m.version)?;
     if let Some(dimension) = input.dimension_key {
+        check_dimension(tx, scope, tenant, dimension.as_deref()).await?;
         if dimension != m.dimension_key
             && row_repo::for_price(tx, scope, tenant, id)
                 .await?
