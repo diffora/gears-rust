@@ -786,3 +786,103 @@ async fn a_reservation_products_does_not_know_is_treated_as_released() {
     assert_eq!(read["reference_state"], "confirmed", "{read}");
     assert_ne!(read["reservation_id"], created.1["reservation_id"]);
 }
+// Behaviour LOW-1: Products restored from a backup older than the reserve answers 404 at the
+// confirm. That reservation is gone, exactly as if it was released before its confirm: the
+// create is answered, the entry is re-reserved (D-401), and it is lost only behind a fence.
+#[tokio::test]
+async fn a_confirm_answered_404_is_a_reservation_released_before_confirm() {
+    for fenced in [false, true] {
+        let (f, script, path, input) = setup().await;
+        script.set(20);
+        let created = f
+            .call("POST", &path, input.clone(), None, Some("one"))
+            .await;
+        assert_eq!(created.0, 201, "{fenced}: {created:?}");
+        assert_eq!(created.1["reference_state"], "confirmation_pending");
+        assert_eq!(
+            f.call("POST", &path, input, None, Some("one")).await,
+            created,
+            "the key is answered"
+        );
+        let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+        let open = ops::page(
+            &f.db.conn().unwrap(),
+            &scope,
+            f.ctx.subject_tenant_id(),
+            Some(OpState::Reserving),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(open.len(), 1, "one rereserve_entry op, no confirm retried");
+        assert_eq!(open[0].kind, "rereserve_entry");
+        script.set(if fenced { 4 } else { 0 });
+        Ticker::new(f.state.clone(), clock(), 10, 100)
+            .tick()
+            .await
+            .unwrap();
+        let read = read_entry(&f, &created.1["id"]).await;
+        if fenced {
+            assert_eq!(read["reference_state"], "lost", "{read}");
+            assert_eq!(lost_events(&f).await.len(), 1);
+        } else {
+            assert_eq!(read["reference_state"], "confirmed", "{read}");
+            assert_ne!(read["reservation_id"], created.1["reservation_id"]);
+            assert!(lost_events(&f).await.is_empty());
+        }
+    }
+}
+// Behaviour LOW-1 at release: a reservation Products does not know is released already. The
+// delete's release op finishes instead of retrying forever.
+#[tokio::test]
+async fn a_release_answered_404_counts_as_released() {
+    let (f, script, path, input) = setup().await;
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    assert_eq!(created.1["reference_state"], "confirmed");
+    // Products' database was restored from a backup that predates this reservation.
+    script.refs.lock().await.clear();
+    script.set(20);
+    let deleted = f
+        .call(
+            "DELETE",
+            &format!("/price-book-entries/{}", created.1["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(deleted.0, 204, "{deleted:?}");
+    let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+    let releasing = ops::page(
+        &f.db.conn().unwrap(),
+        &scope,
+        f.ctx.subject_tenant_id(),
+        Some(OpState::Releasing),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(
+        releasing.is_empty(),
+        "the release op is done, not retried: {releasing:?}"
+    );
+    let done = ops::page(
+        &f.db.conn().unwrap(),
+        &scope,
+        f.ctx.subject_tenant_id(),
+        Some(OpState::Done),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert!(done.iter().any(|op| op.kind == "delete_entry"), "{done:?}");
+    assert_eq!(
+        Script::count(&script.releases),
+        0,
+        "nothing was released twice"
+    );
+}

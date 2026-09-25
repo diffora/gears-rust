@@ -267,7 +267,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |
-| Released receipt on confirm | 409 REFERENCE_RELEASED from Products; the entry stays confirmation_pending and a rereserve_entry op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
+| Released receipt on confirm | 409 REFERENCE_RELEASED from Products, or 404 for a reservation Products does not know; the entry stays confirmation_pending and a rereserve_entry op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
 
 Canonical toolkit RFC-9457 Problem carries code, field and message, retaining typed DbErr for retry classification.
 Malformed body/precondition failures occur before domain work. A body string (value or key) that contains a NUL
@@ -355,7 +355,7 @@ sequenceDiagram
       Pricing->>DB: Tx C entry confirmed, op done, key answered
     else Timeout or transient failure
       Retry->>Products: Resume written op with bounded backoff; never release on timeout
-    else REFERENCE_RELEASED
+    else REFERENCE_RELEASED or 404 unknown reservation
       Pricing->>DB: Entry stays confirmation_pending, rereserve_entry op, op done, key answered
     end
   else Refusal after reserve

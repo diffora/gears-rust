@@ -748,6 +748,11 @@ pub fn definite_refusal(error: &CanonicalError) -> bool {
         && status != 429
         && !error_code(error).is_some_and(|code| RETRYABLE_CONFLICTS.contains(&code.as_str()))
 }
+/// Products answers 404 for a reservation id it does not hold (a restore from an older backup
+/// is the known case). The reconciliation reads the same answer as released.
+fn unknown_reservation(error: &CanonicalError) -> bool {
+    error.status_code() == 404
+}
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
     ctx: &SecurityContext,
@@ -820,7 +825,12 @@ async fn observe(
                 .await
             {
                 Ok(()) => Event::Confirmed,
-                Err(error) if error_code(&error).as_deref() == Some("REFERENCE_RELEASED") => {
+                // A reservation Products does not know (404, for example after a restore from
+                // an older backup) is gone just like a released one: re-reserve the entry.
+                Err(error)
+                    if error_code(&error).as_deref() == Some("REFERENCE_RELEASED")
+                        || unknown_reservation(&error) =>
+                {
                     Event::ReleasedOnConfirm
                 }
                 Err(_) => Event::ConfirmFailed,
@@ -829,7 +839,11 @@ async fn observe(
         }
         OpState::Cancelling | OpState::Releasing => {
             let result = match op.reservation_id {
-                Some(id) => registry.release(ctx, tenant, id).await,
+                // A reservation Products does not know holds nothing: it counts as released.
+                Some(id) => match registry.release(ctx, tenant, id).await {
+                    Err(error) if unknown_reservation(&error) => Ok(()),
+                    other => other,
+                },
                 // The reserve outcome was never learned. Reserve is idempotent per logical
                 // reference, so it answers the reservation the lost call made (or makes one),
                 // and releasing that leaves none. A definite refusal means none can exist:

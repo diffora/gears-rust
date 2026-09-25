@@ -301,6 +301,12 @@ impl Script {
 }
 #[toolkit_canonical_errors::resource_error(toolkit_gts::gts_id!("cf.bss.pricing.price_book_entry.v1~"))]
 struct TestResource;
+/// Products' answer for a reservation id it does not hold.
+pub fn unknown_reference() -> CanonicalError {
+    TestResource::not_found("reference not found")
+        .with_resource("reference")
+        .create()
+}
 pub fn refusal(code: &str) -> CanonicalError {
     TestResource::aborted(code).with_reason(code).create()
 }
@@ -364,6 +370,12 @@ impl ReferenceRegistryV1 for Script {
         if mode == 6 {
             return Err(CanonicalError::service_unavailable().create());
         }
+        if mode == 20 {
+            // Products was restored from a backup older than this reservation: it does not
+            // know the id (`confirm_tx` answers 404).
+            self.refs.lock().await.retain(|_, item| item.0 != id);
+            return Err(unknown_reference());
+        }
         if mode == 7 {
             // An operator released the reservation before this confirm.
             for item in self.refs.lock().await.values_mut() {
@@ -386,6 +398,12 @@ impl ReferenceRegistryV1 for Script {
         }
         if matches!(self.mode.load(Ordering::SeqCst), 12 | 14) {
             return Err(CanonicalError::service_unavailable().create());
+        }
+        if self.mode.load(Ordering::SeqCst) == 20
+            && !self.refs.lock().await.values().any(|item| item.0 == id)
+        {
+            // A restored Products does not know the reservation (`release_tx` answers 404).
+            return Err(unknown_reference());
         }
         self.releases.fetch_add(1, Ordering::SeqCst);
         for item in self.refs.lock().await.values_mut() {
@@ -411,11 +429,7 @@ impl ReferenceRegistryV1 for Script {
                 refs.values()
                     .find(|v| v.0 == *id)
                     .map(|v| (*id, v.1))
-                    .ok_or_else(|| {
-                        TestResource::not_found("reference not found")
-                            .with_resource("reference")
-                            .create()
-                    })
+                    .ok_or_else(unknown_reference)
             })
             .collect()
     }
