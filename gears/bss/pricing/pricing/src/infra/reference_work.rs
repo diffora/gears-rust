@@ -860,8 +860,8 @@ async fn cancel(
 ) -> Result<(), CanonicalError> {
     let code = error_code(&error).unwrap_or_else(|| "WRITE_REFUSED".into());
     // What the door refuses as input stays an input refusal (400, D-403) when Tx B finds it: a
-    // key removed from the registry since the door checked it, or an item's entry that is no
-    // longer of its revision's book or never was of its SKU.
+    // key removed from the registry since the door checked it, an item's entry that is no
+    // longer of its revision's book or never was of its SKU, or a revision already full.
     let error = match (parse_ref_kind(op)?, code.as_str()) {
         (RefKind::Entry, "DIM_NOT_DECLARED") => {
             support::invalid("dimension_key", "DIM_NOT_DECLARED")
@@ -869,6 +869,7 @@ async fn cancel(
         (RefKind::PlanItem, "ITEM_BOOK_FOREIGN" | "ITEM_ENTRY_SKU_MISMATCH") => {
             support::invalid("price_book_entry_id", &code)
         }
+        (RefKind::PlanItem, "REVISION_ITEMS_TOO_MANY") => support::invalid("items", &code),
         _ => error,
     };
     work.refusal = Some(Receipt::error(error).await?);

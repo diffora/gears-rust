@@ -295,7 +295,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = plan_routes::routes(router, openapi);
+    let router = plan_routes::item_routes(plan_routes::routes(router, openapi), openapi);
     approval_routes(price_routes(router, openapi), openapi)
         .layer(Extension(state))
         .layer(axum::middleware::from_fn(correlation::establish))

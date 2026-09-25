@@ -450,6 +450,65 @@ pub struct PricingPlanRevisionPatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub available_from: Option<Option<String>>,
 }
+/// `PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::option_option,
+    reason = "PATCH distinguishes omission, null clearing and a new value"
+)]
+pub struct PricingPlanItemPatch {
+    pub treatment: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub included_qty: Option<Option<String>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub qty_min: Option<Option<i32>>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub price_book_entry_id: Option<Option<Uuid>>,
+}
+#[allow(
+    clippy::option_option,
+    reason = "PATCH distinguishes omission, null clearing and a new value"
+)]
+fn nullable<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    <Option<T> as serde::Deserialize>::deserialize(d).map(Some)
+}
+/// One row of a revision's checks (D-408). An `info` row is always ok and never blocks.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanCheckDto {
+    pub code: String,
+    pub ok: bool,
+    pub label: String,
+    pub detail: String,
+    pub info: bool,
+    /// The approval units whose pending prices would cover what is uncovered: computed on every
+    /// read, never stored (spec §6).
+    pub blocked_by: Vec<Uuid>,
+}
+impl From<crate::domain::plan::Check> for PricingPlanCheckDto {
+    fn from(c: crate::domain::plan::Check) -> Self {
+        Self {
+            code: c.code.into(),
+            ok: c.ok,
+            label: c.label,
+            detail: c.detail,
+            info: c.info,
+            blocked_by: c.blocked_by,
+        }
+    }
+}
+/// `GET /plan-revisions/{id}/checks`: every check on the sale date, from fresh SKU reads.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanChecksDto {
+    pub checks: Vec<PricingPlanCheckDto>,
+    /// Every check is ok: the revision may be submitted.
+    pub ready: bool,
+    /// `available_from`, or today for a revision sold from its publication.
+    pub sale_date: String,
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {
     pub op_id: Uuid,

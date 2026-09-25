@@ -336,6 +336,18 @@ pub async fn item(
     .await
     .unwrap()
 }
+/// An included usage item with its quantity, written straight into a draft revision.
+pub async fn item_with_qty(f: &Fixture, revision: Uuid, sku: Uuid, qty: &str) -> plan_item::Model {
+    let mut m = item(f, revision, sku, None, "included").await;
+    let now = time::OffsetDateTime::now_utc();
+    m.included_qty = Some(qty.to_owned());
+    m.updated_at = now;
+    plan_item_repo::update_draft(&f.db.conn().unwrap(), &scope(f), m.clone())
+        .await
+        .unwrap();
+    m.version += 1;
+    m
+}
 pub async fn items(f: &Fixture, revision: Uuid) -> Vec<plan_item::Model> {
     plan_item_repo::for_revision(
         &f.db.conn().unwrap(),

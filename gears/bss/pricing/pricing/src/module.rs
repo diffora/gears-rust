@@ -225,3 +225,9 @@ impl MigrationTrait for InvalidOutboxMigration {
 // GET /plan-revisions/{id} plan:read false false
 // PATCH /plan-revisions/{id} plan:author true false
 // DELETE /plan-revisions/{id} plan:author false false
+
+// Run 3.3 items and checks: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/items plan:author false true
+// PATCH /plan-items/{id} plan:author true false
+// DELETE /plan-items/{id} plan:author false false
+// GET /plan-revisions/{id}/checks plan:read false false

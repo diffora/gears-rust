@@ -22,6 +22,11 @@ string_enum!(Treatment {Paid=>"paid", Optional=>"optional", Included=>"included"
 // A copied item starts `unreserved` and attaches after its write (D-413).
 string_enum!(ReferenceState {Unreserved=>"unreserved", ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost"});
 
+/// The approval kind of a plan revision (spec §6); its quorum is the APPROVAL row's.
+pub const KIND_PLAN_REVISION: &str = "plan_revision";
+/// The most items one revision holds (`REVISION_ITEMS_TOO_MANY`).
+pub const MAX_ITEMS: usize = 200;
+
 /// The plan's identity.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]

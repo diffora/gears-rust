@@ -209,6 +209,10 @@ impl Harness {
             ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
             ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
             ("DELETE", "/bss-pricing/v1/plan-revisions/{id}"),
+            ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
+            ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
+            ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
+            ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -263,3 +267,9 @@ impl Harness {
 // GET /plan-revisions/{id} plan:read false false
 // PATCH /plan-revisions/{id} plan:author true false
 // DELETE /plan-revisions/{id} plan:author false false
+
+// Run 3.3 items and checks: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/items plan:author false true
+// PATCH /plan-items/{id} plan:author true false
+// DELETE /plan-items/{id} plan:author false false
+// GET /plan-revisions/{id}/checks plan:read false false

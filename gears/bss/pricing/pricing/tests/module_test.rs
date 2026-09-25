@@ -44,6 +44,10 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
         ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
         ("DELETE", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
+        ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
+        ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -60,6 +64,7 @@ fn if_match_routes() -> Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -77,6 +82,7 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
         ("POST", "/bss-pricing/v1/plans"),
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -97,7 +103,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 36);
+    assert_eq!(registered.len(), 40);
     assert!(router.has_routes());
 }
 
@@ -126,12 +132,13 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 9),
-        ("preconditions::idempotency_key(", 1, 10),
+        ("preconditions::if_match(", 1, 10),
+        ("preconditions::idempotency_key(", 1, 11),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
-        // (eight registrations and the statuses their handlers and operations answer).
-        ("StatusCode::", 2, 74),
+        // (eight registrations and the statuses their handlers and operations answer); + 6: the
+        // item and checks doors (four registrations, the item PATCH and the checks answer).
+        ("StatusCode::", 2, 80),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -229,3 +236,9 @@ async fn no_operation_declares_a_422() {
 // GET /plan-revisions/{id} plan:read false false
 // PATCH /plan-revisions/{id} plan:author true false
 // DELETE /plan-revisions/{id} plan:author false false
+
+// Run 3.3 items and checks: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/items plan:author false true
+// PATCH /plan-items/{id} plan:author true false
+// DELETE /plan-items/{id} plan:author false false
+// GET /plan-revisions/{id}/checks plan:read false false

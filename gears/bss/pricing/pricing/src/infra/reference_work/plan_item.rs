@@ -12,7 +12,7 @@ use super::{
 use crate::{
     api::rest::authoring::support::{self, DoorError},
     domain::{
-        plan::ReferenceState,
+        plan::{MAX_ITEMS, ReferenceState},
         reference_op::{Effect, Event, OpKind, RefKind},
     },
     infra::storage::{
@@ -28,11 +28,13 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 /// The local refusals of an item's Tx B that cancel the op and release its reservation: the
-/// revision is gone or no longer an unlocked draft, the SKU is already an item of the revision,
-/// the entry is missing, of another book or of another SKU, or the attached item is gone.
-pub(super) const REFUSES_THE_WRITE: [&str; 7] = [
+/// revision is gone, no longer an unlocked draft or already full, the SKU is already an item of
+/// the revision, the entry is missing, of another book or of another SKU, or the attached item is
+/// gone.
+pub(super) const REFUSES_THE_WRITE: [&str; 8] = [
     "REVISION_NOT_DRAFT",
     "REVISION_NOT_FOUND",
+    "REVISION_ITEMS_TOO_MANY",
     "ITEM_SKU_TAKEN",
     "ENTRY_NOT_FOUND",
     "ITEM_BOOK_FOREIGN",
@@ -40,7 +42,8 @@ pub(super) const REFUSES_THE_WRITE: [&str; 7] = [
     "ITEM_NOT_FOUND",
 ];
 /// A bundle SKU is never an item (D-408, D-411); every other type may be one.
-pub(super) const fn type_refusal(sku: SkuType) -> Option<&'static str> {
+#[must_use]
+pub const fn type_refusal(sku: SkuType) -> Option<&'static str> {
     match sku {
         SkuType::Bundle => Some("ITEM_BUNDLE_SKU"),
         SkuType::Recurring | SkuType::Usage | SkuType::OneTime => None,
@@ -78,12 +81,21 @@ pub(super) fn written(op: &entity::Model) -> Result<Observation, CanonicalError>
     };
     Ok((Event::Written, Some(Write::Item(item)), None))
 }
-/// Tx B of a create: the insert re-reads the revision and the entry in this transaction.
+/// Tx B of a create: the insert re-reads the revision and the entry in this transaction, and the
+/// revision's items, so two adds racing for its last free place are ordered by the serializable
+/// transaction and the loser is refused `REVISION_ITEMS_TOO_MANY`.
 pub(super) async fn write(
     tx: &(impl DBRunner + Sync),
     scope: &AccessScope,
     item: plan_item::Model,
 ) -> Result<(), DoorError> {
+    if plan_item_repo::for_revision(tx, scope, item.tenant_id, item.revision_id)
+        .await?
+        .len()
+        >= MAX_ITEMS
+    {
+        return Err(support::conflict("REVISION_ITEMS_TOO_MANY").into());
+    }
     plan_item_repo::insert(tx, scope, item).await?;
     Ok(())
 }

@@ -1,29 +1,34 @@
 //! Plans and their revisions below their doors (D-404, D-407, D-413, D-414): a plan with its
 //! draft rev 1, the rename, the copy of the published revision into a new draft, and the draft
-//! revision's PATCH and delete.
+//! revision's PATCH and delete, and the revision's checks read over fresh SKUs (D-408).
 //!
 //! A copy writes the revision, every copied item (`unreserved`, no receipt) and one attach op per
 //! item in ONE transaction (D-413); the door then drives the attach ops best-effort and answers
 //! 201, and the ticker finishes what it could not. A draft revision belongs to its author (D-404):
 //! only its `created_by` edits or deletes it and its items.
 use super::{
-    AuthoringState,
+    AuthoringState, configuration,
     dto::{
-        PricingPlanCreate, PricingPlanDto, PricingPlanList, PricingPlanPatch,
+        PricingPlanChecksDto, PricingPlanCreate, PricingPlanDto, PricingPlanList, PricingPlanPatch,
         PricingPlanRevisionDto, PricingPlanRevisionPatch,
     },
     plan_items,
     support::{self, DoorError},
 };
 use crate::{
-    domain::plan::{ReferenceState, RevisionState},
+    domain::{
+        book::Book,
+        plan::{self, PlanContext, ReferenceState, RevisionState},
+        price::PriceState,
+    },
     infra::{
-        reference_work,
+        reference_registry, reference_work,
         storage::{
-            entity::{plan, plan_item, plan_revision},
+            RepoError,
+            entity::{plan as plan_entity, plan_item, plan_revision, price_book_entry},
             repo::{
-                book_repo, plan_item_repo, plan_repo, plan_revision_repo, price_book_entry_repo,
-                reference_op_repo,
+                approval_repo, book_repo, dimension_repo, plan_item_repo, plan_repo,
+                plan_revision_repo, price_book_entry_repo, price_repo, reference_op_repo,
             },
         },
     },
@@ -32,6 +37,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -44,7 +50,7 @@ pub(super) async fn find_plan(
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
-) -> Result<plan::Model, DoorError> {
+) -> Result<plan_entity::Model, DoorError> {
     plan_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("plan").into())
@@ -84,7 +90,7 @@ pub(super) fn editable(r: &plan_revision::Model, ctx: &SecurityContext) -> Resul
 async fn plan_body(
     tx: &impl DBRunner,
     tenant: Uuid,
-    m: plan::Model,
+    m: plan_entity::Model,
 ) -> Result<PricingPlanDto, DoorError> {
     let revisions =
         plan_revision_repo::for_plan(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
@@ -143,7 +149,7 @@ pub(super) async fn create(
     let p = plan_repo::insert(
         tx,
         scope,
-        plan::Model {
+        plan_entity::Model {
             id: Uuid::now_v7(),
             tenant_id: tenant,
             code: input.code,
@@ -239,7 +245,7 @@ pub(super) async fn patch(
     support::check_version(version, m.version)?;
     let now = time::OffsetDateTime::now_utc();
     plan_repo::rename(tx, scope, tenant, id, m.version, input.name.clone(), now).await?;
-    let m = plan::Model {
+    let m = plan_entity::Model {
         name: input.name,
         version: m.version + 1,
         updated_at: now,
@@ -532,4 +538,202 @@ pub(super) async fn delete_revision(
     .await?;
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /plan-revisions/{id}/checks`: every check on the sale date (D-408). The stored state is
+/// read in one transaction; then every item SKU is read fresh through `sku_for_write`, never from a
+/// cache, so a SKU deprecated since the last read turns its check red at once. A SKU Products no
+/// longer knows (404) is unavailable in the checks; any other definite refusal is answered as
+/// Products gave it; a registry that cannot answer is 503 `REGISTRY_UNAVAILABLE`.
+/// # Errors
+/// 404 for a revision the tenant does not hold; the registry's refusal or unavailability.
+pub(super) async fn checks(
+    state: &AuthoringState,
+    scope: AccessScope,
+    ctx: SecurityContext,
+    id: Uuid,
+) -> Result<Response, CanonicalError> {
+    let tenant = ctx.subject_tenant_id();
+    let mut context = support::transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { stored_context(tx, &scope, tenant, id).await })
+    })
+    .await?;
+    let registry = reference_registry::resolve(&state.hub).map_err(|_| support::unavailable())?;
+    let wanted: BTreeSet<Uuid> = context.items.iter().map(|i| i.sku_id).collect();
+    for sku in wanted {
+        match registry.sku_for_write(&ctx, tenant, sku).await {
+            Ok(found) => context.skus.push(found),
+            Err(error) if error.status_code() == 404 => {}
+            Err(error) if reference_work::definite_refusal(&error) => return Err(error),
+            Err(_) => return Err(support::unavailable()),
+        }
+    }
+    let today = time::OffsetDateTime::now_utc().date();
+    let rows = plan::checks(&context, today);
+    let ready = plan::ready(&rows);
+    let body = PricingPlanChecksDto {
+        checks: rows.into_iter().map(Into::into).collect(),
+        ready,
+        sale_date: plan::sale_date(&context.revision, today).to_string(),
+    };
+    support::response(StatusCode::OK, &body, None)
+}
+fn corrupt(what: String) -> DoorError {
+    RepoError::CorruptRow(what).into()
+}
+/// Everything the checks read from storage, with no SKU yet.
+async fn stored_context(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<PlanContext, DoorError> {
+    let children = AccessScope::for_tenant(tenant);
+    let r = find_revision(tx, scope, tenant, id).await?;
+    let p = plan_repo::find(tx, &children, tenant, r.plan_id)
+        .await?
+        .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
+    let rows = plan_item_repo::for_revision(tx, &children, tenant, r.id).await?;
+    let mut items = Vec::with_capacity(rows.len());
+    let mut entries: Vec<plan::Entry> = Vec::new();
+    let mut book_ids = BTreeSet::from([r.book_id]);
+    for row in &rows {
+        items.push(item_of(row)?);
+        let Some(entry_id) = row.price_book_entry_id else {
+            continue;
+        };
+        if entries.iter().any(|e| e.id == entry_id) {
+            continue;
+        }
+        if let Some(e) = price_book_entry_repo::find(tx, &children, tenant, entry_id).await? {
+            book_ids.insert(e.book_id);
+            entries.push(entry_of(tx, &children, tenant, e).await?);
+        }
+    }
+    let mut books = Vec::with_capacity(book_ids.len());
+    for book_id in book_ids {
+        if let Some(b) = book_repo::find(tx, &children, tenant, book_id).await? {
+            books.push(plan::PlanBook {
+                id: b.id,
+                book: Book {
+                    name: b.name,
+                    currency: b.currency,
+                    valid_from: b.valid_from,
+                    valid_until: b.valid_until,
+                },
+            });
+        }
+    }
+    let mut dimension_values = Vec::new();
+    for d in dimension_repo::list(tx, &children, tenant).await? {
+        let values: Vec<String> = serde_json::from_value(d.values)
+            .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
+        dimension_values.push((d.key, values));
+    }
+    let published = plan_revision_repo::for_plan(tx, &children, tenant, p.id)
+        .await?
+        .into_iter()
+        .find(|x| x.state == RevisionState::Published.as_str());
+    let published_sku_ids = match published {
+        Some(published) => plan_item_repo::for_revision(tx, &children, tenant, published.id)
+            .await?
+            .into_iter()
+            .map(|i| i.sku_id)
+            .collect(),
+        None => Vec::new(),
+    };
+    let quorum = approval_repo::read_policy(tx, &children, tenant)
+        .await?
+        .quorum_for(plan::KIND_PLAN_REVISION);
+    let settings = configuration::settings(tx, &children, tenant).await?;
+    Ok(PlanContext {
+        plan: plan::Plan {
+            id: p.id,
+            code: p.code,
+            name: p.name,
+        },
+        revision: plan::Revision {
+            id: r.id,
+            rev_no: r.rev_no,
+            book_id: r.book_id,
+            state: r
+                .state
+                .parse()
+                .map_err(|_| corrupt(format!("revision {} state", r.id)))?,
+            available_from: r.available_from,
+        },
+        items,
+        skus: Vec::new(),
+        entries,
+        books,
+        dimension_values,
+        published_sku_ids,
+        quorum,
+        defaults: plan::Defaults {
+            gl: settings.default_gl,
+            rounding: settings.default_rounding,
+            tax_category: settings.default_tax_category,
+        },
+    })
+}
+fn item_of(m: &plan_item::Model) -> Result<plan::Item, DoorError> {
+    let bad = |what: &str| corrupt(format!("plan item {} {what}", m.id));
+    Ok(plan::Item {
+        id: m.id,
+        sku_id: m.sku_id,
+        price_book_entry_id: m.price_book_entry_id,
+        treatment: m.treatment.parse().map_err(|_| bad("treatment"))?,
+        included_qty: m
+            .included_qty
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| bad("included_qty"))?,
+        qty_min: m.qty_min,
+        reference: plan::Reference {
+            state: m
+                .reference_state
+                .parse()
+                .map_err(|_| bad("reference_state"))?,
+            reservation_id: m.reservation_id,
+        },
+    })
+}
+async fn entry_of(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    e: price_book_entry::Model,
+) -> Result<plan::Entry, DoorError> {
+    let bad = |what: &str| corrupt(format!("entry {} {what}", e.id));
+    let stored = price_repo::for_entry(tx, scope, tenant, e.id).await?;
+    let pending = stored
+        .iter()
+        .filter(|p| p.state == PriceState::Pending.as_str())
+        .filter_map(|p| {
+            p.pending_unit_id.map(|unit_id| plan::PendingPrice {
+                price_id: p.id,
+                unit_id,
+            })
+        })
+        .collect();
+    let prices = stored
+        .iter()
+        .map(price_repo::to_domain)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(plan::Entry {
+        id: e.id,
+        book_id: e.book_id,
+        sku_id: e.sku_id,
+        charge_kind: e.charge_kind.parse().map_err(|_| bad("charge_kind"))?,
+        period: e.period.clone(),
+        dimension_key: e.dimension_key.clone(),
+        reference_state: e
+            .reference_state
+            .parse()
+            .map_err(|_| bad("reference_state"))?,
+        prices,
+        pending,
+    })
 }

@@ -1,6 +1,6 @@
 //! The plan, revision and item doors (phase 3): one `plan` label, read and author.
 use super::{
-    AuthoringState, dto, plans,
+    AuthoringState, dto, plan_items, plans,
     support::{authz_failure, header, require_authenticated, response, transaction},
 };
 use crate::{
@@ -345,4 +345,157 @@ async fn delete_revision(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     plans::delete_revision(state, scope, ctx, correlation, id).await
+}
+/// Items of a draft revision and the revision's checks.
+pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/items")
+        .operation_id("bss_pricing.create_plan_item")
+        .summary("create_plan_item")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan revision id")
+        .json_request::<dto::PricingPlanItemCreate>(openapi, "Request")
+        .param(header("Idempotency-Key"))
+        .handler(create_item)
+        .json_response_with_schema::<dto::PricingPlanItemDto>(
+            openapi,
+            StatusCode::CREATED,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::patch("/bss-pricing/v1/plan-items/{id}")
+        .operation_id("bss_pricing.patch_plan_item")
+        .summary("patch_plan_item")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan item id")
+        .json_request::<dto::PricingPlanItemPatch>(openapi, "Request")
+        .param(header("If-Match"))
+        .handler(patch_item)
+        .json_response_with_schema::<dto::PricingPlanItemDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::delete("/bss-pricing/v1/plan-items/{id}")
+        .operation_id("bss_pricing.delete_plan_item")
+        .summary("delete_plan_item")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan item id")
+        .handler(delete_item)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}/checks")
+        .operation_id("bss_pricing.get_plan_revision_checks")
+        .summary("get_plan_revision_checks")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan revision id")
+        .handler(get_checks)
+        .json_response_with_schema::<dto::PricingPlanChecksDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi)
+}
+async fn create_item(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&payload)?;
+    let input: dto::PricingPlanItemCreate = preconditions::parse_body(&body)?;
+    plan_items::add(state, scope, ctx, id, correlation, key, digest, input).await
+}
+async fn patch_item(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let input: dto::PricingPlanItemPatch = preconditions::parse_body(&body)?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+        Box::pin(async move {
+            plan_items::patch(tx, &scope, &ctx, correlation, id, version, input).await
+        })
+    })
+    .await
+}
+async fn delete_item(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    plan_items::delete(state, scope, ctx, correlation, id).await
+}
+async fn get_checks(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    plans::checks(&state, scope, ctx, id).await
 }
