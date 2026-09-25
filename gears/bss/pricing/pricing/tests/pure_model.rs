@@ -4,6 +4,7 @@ use bss_pricing::domain::{
     plan::{ReferenceState as PlanReferenceState, RevisionState, Treatment},
     price::{Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState},
+    reference_op::{OpKind, RefKind},
 };
 #[test]
 fn enum_check_values_match_migration_text() {
@@ -70,4 +71,22 @@ fn plan_enum_check_values_match_migration_text() {
     pin_both_dialects!(RevisionState, revision, "state");
     pin_both_dialects!(Treatment, item, "treatment");
     pin_both_dialects!(PlanReferenceState, item, "reference_state");
+}
+/// A reference op names its reference as `(ref_kind, ref_id)` and its kind without the entry
+/// suffix (D-412): both vocabularies are the enums', on both dialects.
+#[test]
+fn reference_op_kind_and_ref_kind_match_migration_text() {
+    let op = include_str!(
+        "../src/infra/storage/migrations/m20260926_000006_create_pricing_reference_op.rs"
+    );
+    pin_both_dialects!(OpKind, op, "kind");
+    pin_both_dialects!(RefKind, op, "ref_kind");
+    assert_eq!(
+        OpKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
+        ["create", "delete", "rereserve", "attach"]
+    );
+    assert_eq!(
+        RefKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
+        ["price_book_entry", "plan_item"]
+    );
 }

@@ -13,7 +13,10 @@ use crate::{
         AuthoringState,
         support::{self, DoorError},
     },
-    domain::price_book_entry::{OpKind, ReferenceState, charge_kind_for},
+    domain::{
+        price_book_entry::{ReferenceState, charge_kind_for},
+        reference_op::{OpKind, RefKind},
+    },
 };
 use bss_products_sdk::{
     PRICING_SYSTEM_ACTOR,
@@ -215,12 +218,13 @@ impl Ticker {
                 )?;
                 let id = op.op_id;
                 if observed.reference_state == ReferenceState::Lost.as_str() {
-                    if ops::open_for_entry(
+                    if ops::open_for_ref(
                         tx,
                         &scope,
                         observed.tenant_id,
+                        RefKind::Entry,
                         observed.id,
-                        OpKind::Rereserve.as_str(),
+                        OpKind::Rereserve,
                     )
                     .await?
                     {

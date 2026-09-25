@@ -191,7 +191,7 @@ async fn postgres_every_crash_window_is_resumed_by_the_ticker() {
         if mode == 1 {
             // Before Tx B the reserve outcome was unknown: the ticker cancelled the create,
             // released the key and the reservation, and the same key ran afresh.
-            assert_ne!(replay.1["id"], due[0].price_book_entry_id.to_string());
+            assert_ne!(replay.1["id"], due[0].ref_id.to_string());
             assert_eq!(Script::count(&p.script.releases), 1);
             let op = ops::find(&p.db.conn().unwrap(), &p.scope(), p.tenant(), due[0].op_id)
                 .await
@@ -205,12 +205,9 @@ async fn postgres_every_crash_window_is_resumed_by_the_ticker() {
                     .as_deref(),
                 Some("cancelled")
             );
-            assert_eq!(
-                p.reference_state(&json!(due[0].price_book_entry_id)).await,
-                ""
-            );
+            assert_eq!(p.reference_state(&json!(due[0].ref_id)).await, "");
         } else {
-            assert_eq!(replay.1["id"], due[0].price_book_entry_id.to_string());
+            assert_eq!(replay.1["id"], due[0].ref_id.to_string());
         }
         assert_eq!(p.reference_state(&replay.1["id"]).await, "confirmed");
     }
@@ -321,7 +318,7 @@ async fn postgres_two_tickers_on_two_pools_finish_one_op_once() {
     assert_eq!(op.state, "done");
     let replay = p.create("one").await;
     assert_eq!(replay.0, 201, "{replay:?}");
-    assert_eq!(replay.1["id"], due[0].price_book_entry_id.to_string());
+    assert_eq!(replay.1["id"], due[0].ref_id.to_string());
     assert_eq!(replay.1["reference_state"], "confirmed");
     assert_eq!(
         Script::count(&p.script.releases),

@@ -9,7 +9,9 @@ pub struct Model {
     pub op_id: Uuid,
     pub tenant_id: Uuid,
     pub kind: String,
-    pub price_book_entry_id: Uuid,
+    /// `price_book_entry` or `plan_item`; no foreign key, so an op outlives its reference.
+    pub ref_kind: String,
+    pub ref_id: Uuid,
     pub sku_id: Uuid,
     pub reservation_id: Option<Uuid>,
     pub idempotency_key: Option<String>,

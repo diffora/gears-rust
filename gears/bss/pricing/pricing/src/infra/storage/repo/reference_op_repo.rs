@@ -1,7 +1,10 @@
 //! Durable reference work; compare-and-swap never locks a row or drops failed work.
 use super::{driver_failure, matched};
 use crate::{
-    domain::price_book_entry::OpState,
+    domain::{
+        price_book_entry::OpState,
+        reference_op::{OpKind, RefKind},
+    },
     infra::storage::{RepoError, entity::reference_op as e},
 };
 use sea_orm::sea_query::Expr;
@@ -23,7 +26,8 @@ pub async fn insert(
         op_id: Set(m.op_id),
         tenant_id: Set(m.tenant_id),
         kind: Set(m.kind),
-        price_book_entry_id: Set(m.price_book_entry_id),
+        ref_kind: Set(m.ref_kind),
+        ref_id: Set(m.ref_id),
         sku_id: Set(m.sku_id),
         reservation_id: Set(m.reservation_id),
         idempotency_key: Set(m.idempotency_key),
@@ -163,15 +167,17 @@ pub async fn page(
         .map_err(|e| driver_failure("reference op page".into(), e))
 }
 
-/// Whether an entry already has unfinished work of `kind`: one re-reservation per entry.
+/// Whether a reference already has unfinished work of `kind`: one re-reservation per
+/// reference. The guard is keyed by the reference's kind as well as its id.
 /// # Errors
 /// Returns typed scoped storage failures.
-pub async fn open_for_entry(
+pub async fn open_for_ref(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
-    entry: Uuid,
-    kind: &str,
+    ref_kind: RefKind,
+    ref_id: Uuid,
+    kind: OpKind,
 ) -> Result<bool, RepoError> {
     Ok(e::Entity::find()
         .secure()
@@ -179,8 +185,9 @@ pub async fn open_for_entry(
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
-                .add(e::Column::PriceBookEntryId.eq(entry))
-                .add(e::Column::Kind.eq(kind))
+                .add(e::Column::RefKind.eq(ref_kind.as_str()))
+                .add(e::Column::RefId.eq(ref_id))
+                .add(e::Column::Kind.eq(kind.as_str()))
                 .add(e::Column::State.ne(OpState::Done.as_str())),
         )
         .one(runner)

@@ -106,12 +106,12 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-prices-windows-dimension-reserve-write-confirm`
 
-1. [ ] - `p1` - Replay first; Tx A claims the key, mints price_book_entry_id and inserts a create_entry op in reserving before reserve. - `inst-prices-windows-dimension-reserve-write-confirm-1`
+1. [ ] - `p1` - Replay first; Tx A claims the key, mints price_book_entry_id and inserts a create op in reserving before reserve. - `inst-prices-windows-dimension-reserve-write-confirm-1`
 2. [ ] - `p1` - Reserve idempotently per (owner, kind, ref_id), then re-read SKU type/lifecycle; a refusal moves the op to cancelling. - `inst-prices-windows-dimension-reserve-write-confirm-2`
 3. [ ] - `p1` - Tx B commits the entry, reservation_id, reference_state = confirmation_pending and op written together. - `inst-prices-windows-dimension-reserve-write-confirm-3`
 4. [ ] - `p1` - Confirm after commit; Tx C sets entry confirmed, op done and answers the key. Retry transient failure with bounded backoff; never release on timeout. - `inst-prices-windows-dimension-reserve-write-confirm-4`
-5. [ ] - `p1` - On REFERENCE_RELEASED during confirm, or a 404 for a reservation Products does not know, keep the entry confirmation_pending and start a rereserve_entry op; a release answered 404 counts as released. Reconcile confirmed entries through states(): re-reserve when not fenced, else mark lost, audit, enqueue PriceBookEntryReferenceLost and refuse new prices with ENTRY_REFERENCE_LOST; re-reserve lost entries once their SKU admits a reservation. - `inst-prices-windows-dimension-reserve-write-confirm-5`
-6. [ ] - `p1` - Cancellation persists op cancelling before release; deletion removes the entry and inserts delete_entry op releasing in one transaction. Release finishes the op; every op not done survives restart and is never dropped. - `inst-prices-windows-dimension-reserve-write-confirm-6`
+5. [ ] - `p1` - On REFERENCE_RELEASED during confirm, or a 404 for a reservation Products does not know, keep the entry confirmation_pending and start a rereserve op; a release answered 404 counts as released. Reconcile confirmed entries through states(): re-reserve when not fenced, else mark lost, audit, enqueue PriceBookEntryReferenceLost and refuse new prices with ENTRY_REFERENCE_LOST; re-reserve lost entries once their SKU admits a reservation. - `inst-prices-windows-dimension-reserve-write-confirm-5`
+6. [ ] - `p1` - Cancellation persists op cancelling before release; deletion removes the entry and inserts a delete op releasing in one transaction. Release finishes the op; every op not done survives restart and is never dropped. - `inst-prices-windows-dimension-reserve-write-confirm-6`
 
 ## 4. States (CDSL)
 
@@ -119,7 +119,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-prices-windows-dimension`
 
-Prices move draft → pending → approved through the unit engine; pending ownership prohibits edits. Rejected proposals retain their review history and cannot become approved by direct PATCH; replacement proposals use drafts. Withdrawal unlocks the proposal for authoring. Entry reference_state moves confirmation_pending → confirmed, or lost on proven release. Durable ops move reserving → written → done for creation, cancelling → done for refusal, or releasing → done for deletion; a rereserve_entry op recovers a released receipt when the SKU is not fenced (D-401).
+Prices move draft → pending → approved through the unit engine; pending ownership prohibits edits. Rejected proposals retain their review history and cannot become approved by direct PATCH; replacement proposals use drafts. Withdrawal unlocks the proposal for authoring. Entry reference_state moves confirmation_pending → confirmed, or lost on proven release. Durable ops move reserving → written → done for creation, cancelling → done for refusal, or releasing → done for deletion; a rereserve op recovers a released receipt when the SKU is not fenced (D-401).
 
 ## 5. Definitions of Done
 

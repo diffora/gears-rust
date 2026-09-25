@@ -54,7 +54,7 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | `cpt-cf-bss-pricing-fr-temporary-pair` | A temporary change on an existing chain creates two prices in one approval unit. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-publish-changes` | Publish changes lists all draft prices of one book with full money, window, chain, predecessor and impact information, all pre-selected. | Approvals, phase 2; §3 and slice 05. |
 | `cpt-cf-bss-pricing-fr-approval-units` | Use bss-approval for prices now and plan_revision in phase 3; the promotion (D-409) and migration (D-410) kinds are deferred. | Approvals, phase 2; §3 and slice 05. |
-| `cpt-cf-bss-pricing-fr-reference-protocol` | Before reserve, claim the key and persist a create_entry op; reserve with Products, re-read the SKU, commit the entry with reference_state = confirmation_pending and op written, then confirm and atomically finish the op and answer the key (D-401). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-reference-protocol` | Before reserve, claim the key and persist a create op; reserve with Products, re-read the SKU, commit the entry with reference_state = confirmation_pending and op written, then confirm and atomically finish the op and answer the key (D-401). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-book-export` | Provide one read-only JSON export of a tenant-scoped book with its entries and prices. | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-settings` | Tenant settings provide default billing timing, rounding, GL code, tax category and invoice-line templates by SKU type. | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-events` | Persist PricesPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceBookEntryReferenceLost for a failed reference confirmation that proves release. | Read Contract & Events, phase 2; §3 and slice 07. |
@@ -143,7 +143,7 @@ Names before the rename, kept here on purpose so older records stay readable:
 | `price_row`, table `pricing_price_row`, `/prices/{id}/rows`, `/rows/{id}`, `GET /pricing/v1/price-rows/{id}` | `price`, table `pricing_price`, `/price-book-entries/{id}/prices`, `/prices/{id}`, `GET /pricing/v1/prices/{id}` |
 | `price_id` (on prices and reference ops), `row_id`, `row_ids` | `price_book_entry_id`, `price_id`, `price_ids` |
 | approval kind `price_rows`; events `PriceRowsPublished`, `PriceReferenceLost`; reference kind `price` | `prices`; `PricesPublished`, `PriceBookEntryReferenceLost`; `price_book_entry` |
-| op kinds `create_price`, `delete_price`, `rereserve_price` | `create_entry`, `delete_entry`, `rereserve_entry` |
+| op kinds `create_price`, `delete_price`, `rereserve_price` | `create`, `delete`, `rereserve` on `(ref_kind, ref_id)`, plus `attach` for a copied item (D-412, D-413) |
 | line codes `PRICE_KEY_TAKEN`, `PRICE_REFERENCE_LOST`, `PRICE_PERIOD_INVALID`, `PRICE_ROWS_IN_USE`, `PRICE_NOT_FOUND`, `PRICE_CONFIRMATION_PENDING`, `PRICE_WRITE_REFUSED` | `ENTRY_KEY_TAKEN`, `ENTRY_REFERENCE_LOST`, `ENTRY_PERIOD_INVALID`, `ENTRY_PRICES_IN_USE`, `ENTRY_NOT_FOUND`, `ENTRY_CONFIRMATION_PENDING`, `ENTRY_WRITE_REFUSED` |
 | amount codes `ROW_NOT_DRAFT`, `ROW_NOT_IN_BOOK`, `ROW_LOCKED_PENDING`, `ROW_VERSION_TAKEN`, `ROW_NOT_PENDING`, `ROW_NOT_FOUND`, `NO_DRAFT_ROWS`, `TEMPORARY_ROW_FIXED`; phase 3 `ROW_SKU_DEPRECATED` | `PRICE_NOT_DRAFT`, `PRICE_NOT_IN_BOOK`, `PRICE_LOCKED_PENDING`, `PRICE_VERSION_TAKEN`, `PRICE_NOT_PENDING`, `PRICE_NOT_FOUND`, `NO_DRAFT_PRICES`, `TEMPORARY_PRICE_FIXED`; phase 3 `ITEM_SKU_DEPRECATED` |
 
@@ -279,7 +279,7 @@ Resolve returns inputs, not totals.
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |
-| Released receipt on confirm | 409 REFERENCE_RELEASED from Products, or 404 for a reservation Products does not know; the entry stays confirmation_pending and a rereserve_entry op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
+| Released receipt on confirm | 409 REFERENCE_RELEASED from Products, or 404 for a reservation Products does not know; the entry stays confirmation_pending and a rereserve op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
 | Phase 3: a red plan check at submit; an item refused at its door; an entry a plan item names, deleted | 400 REVISION_CHECKS_RED with the red checks, no unit; 400 ITEM_BOOK_FOREIGN, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_MISSING, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY, 409 ITEM_SKU_TAKEN; 409 ENTRY_IN_USE (D-408) |
 | Deferred: migration, retirement and promotion refusals | MIGRATION_TARGET_UNPUBLISHED, MIGRATION_TARGET_CURRENT, MIGRATION_TARGET_RETIRING, MIGRATION_CURRENCY_MISMATCH, MIGRATION_SUBSCRIPTION_PENDING and RETIRE_MIGRATION_REQUIRED wait with migration requests and retirement (D-410); PROMOTION_VERSION_OPEN and PROMOTION_NOT_STARTED with promotions (D-409) |
 
@@ -358,7 +358,7 @@ sequenceDiagram
   participant DB
   participant Retry
   Caller->>Pricing: Create entry, Idempotency-Key
-  Pricing->>DB: Replay first; Tx A claim key, mint price_book_entry_id, create_entry op reserving
+  Pricing->>DB: Replay first; Tx A claim key, mint price_book_entry_id, create op reserving
   Pricing->>Products: Reserve SKU reference (price_book_entry, price_book_entry_id), idempotently
   Products-->>Pricing: reservation_id or fence/unavailable error
   Pricing->>Products: Re-read SKU type and lifecycle
@@ -370,7 +370,7 @@ sequenceDiagram
     else Timeout or transient failure
       Retry->>Products: Resume written op with bounded backoff; never release on timeout
     else REFERENCE_RELEASED or 404 unknown reservation
-      Pricing->>DB: Entry stays confirmation_pending, rereserve_entry op, op done, key answered
+      Pricing->>DB: Entry stays confirmation_pending, rereserve op, op done, key answered
     end
   else Refusal after reserve
     Pricing->>DB: Op cancelling, persist outcome
@@ -382,9 +382,9 @@ sequenceDiagram
 Concurrent replays resolve to the same logical object or a nonmutating conflict. Tx A durably names the
 reference before reserve: a crash between reserve and Tx B is recoverable by repeating the idempotent reserve.
 An unknown commit outcome is reconciled before cancellation. Deletion removes the entry and inserts a
-delete_entry op in releasing in one transaction, then release finishes the op. Every op not done is retried
+delete op in releasing in one transaction, then release finishes the op. Every op not done is retried
 with bounded backoff and never dropped. The ticker also checks confirmed entries through states(): a released
-receipt on a live entry starts a rereserve_entry op when the SKU is not fenced, else the entry becomes lost,
+receipt on a live entry starts a rereserve op when the SKU is not fenced, else the entry becomes lost,
 new prices fail ENTRY_REFERENCE_LOST and PriceBookEntryReferenceLost is emitted. A receipt released before its confirm
 starts the same op; lost entries are re-reserved once their SKU admits a reservation again. No timeout
 releases a reservation.
@@ -525,8 +525,9 @@ CREATE INDEX pricing_price_chain
   ON bss.pricing_price (price_book_entry_id, dim_value, effective_from) WHERE state = 'approved';
 CREATE TABLE bss.pricing_reference_op (
   op_id uuid PRIMARY KEY, tenant_id uuid NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('create_entry','delete_entry','rereserve_entry')),
-  price_book_entry_id uuid NOT NULL, sku_id uuid NOT NULL, reservation_id uuid,
+  kind text NOT NULL CHECK (kind IN ('create','delete','rereserve','attach')),
+  ref_kind text NOT NULL CHECK (ref_kind IN ('price_book_entry','plan_item')),
+  ref_id uuid NOT NULL, sku_id uuid NOT NULL, reservation_id uuid,
   idempotency_key text,
   state text NOT NULL CHECK (state IN ('reserving','written','cancelling','releasing','done')),
   outcome text, attempts integer NOT NULL DEFAULT 0, next_attempt_at timestamptz NOT NULL,
@@ -540,7 +541,9 @@ owns kind legality, quorum snapshots and item typing. The pending-unit column pl
 one unit per element. Same-start uniqueness is enforced by the index; general non-overlap is enforced by the
 serializable approve transaction re-reading each chain, with entries and prices ordered by id. Approved money
 cannot be edited/deleted; only controlled window normalization and keep_for_bound changes are allowed.
-The reference op is durable before reserve and has no FK to the entry: it survives cancellation and removal.
+The reference op is durable before reserve and has no FK to its reference: it survives cancellation and removal.
+An op names its reference as (ref_kind, ref_id), a price book entry or a plan item (D-407); phase 3 edited
+m20260926_000006 in place for this (D-412).
 The ticker resumes every op not done with bounded backoff and never drops one. It reconciles confirmed entries
 through states(): released receipts are re-reserved when the SKU is not fenced, otherwise the entry becomes
 lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryReferenceLost (D-401).

@@ -8,7 +8,6 @@ string_enum!(ChargeKind {Recurring=>"recurring", Usage=>"usage", OneTime=>"one_t
 string_enum!(Model {Flat=>"flat", PerUnit=>"per_unit", Graduated=>"graduated", Volume=>"volume", Package=>"package"});
 string_enum!(ReferenceState {ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost"});
 string_enum!(OpState {Reserving=>"reserving", Written=>"written", Cancelling=>"cancelling", Releasing=>"releasing", Done=>"done"});
-string_enum!(OpKind {Create=>"create_entry", Delete=>"delete_entry", Rereserve=>"rereserve_entry"});
 
 /// Derive charge kind from the current, freshly read SKU type.
 /// # Errors

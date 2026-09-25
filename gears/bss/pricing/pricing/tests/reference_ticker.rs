@@ -55,15 +55,11 @@ async fn crash_create(mode: usize, expected_state: &str) {
         .unwrap()
         .unwrap();
     assert_eq!(after.state, "done");
-    let entry = price_book_entry_repo::find(
-        &conn,
-        &scope,
-        f.ctx.subject_tenant_id(),
-        before[0].price_book_entry_id,
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let entry =
+        price_book_entry_repo::find(&conn, &scope, f.ctx.subject_tenant_id(), before[0].ref_id)
+            .await
+            .unwrap()
+            .unwrap();
     assert_eq!(entry.reference_state, "confirmed");
     let replay = f.call("POST", &path, input, None, Some("crash")).await;
     assert_eq!(replay.0, 201, "{replay:?}");
@@ -108,15 +104,10 @@ async fn assert_cancelled_without_entry(f: &Fixture, op_id: Uuid, path: &str, ke
     let work = bss_pricing::infra::reference_work::Work::read(&op).unwrap();
     assert_eq!(work.outcome.as_deref(), Some("cancelled"), "{op:?}");
     assert!(
-        price_book_entry_repo::find(
-            &conn,
-            &scope,
-            f.ctx.subject_tenant_id(),
-            op.price_book_entry_id
-        )
-        .await
-        .unwrap()
-        .is_none(),
+        price_book_entry_repo::find(&conn, &scope, f.ctx.subject_tenant_id(), op.ref_id)
+            .await
+            .unwrap()
+            .is_none(),
         "a cancelled create writes no entry"
     );
     assert_eq!(
@@ -157,16 +148,12 @@ async fn crash_after_tx_a_cancels_the_create_and_frees_the_key() {
             .refs
             .lock()
             .await
-            .get(&before[0].price_book_entry_id)
+            .get(&before[0].ref_id)
             .is_none_or(|r| r.1 == bss_products_sdk::models::ReferenceState::Released)
     );
     let retry = f.call("POST", &path, input, None, Some("crash")).await;
     assert_eq!(retry.0, 201, "{retry:?}");
-    assert_ne!(
-        retry.1["id"],
-        before[0].price_book_entry_id.to_string(),
-        "a fresh entry"
-    );
+    assert_ne!(retry.1["id"], before[0].ref_id.to_string(), "a fresh entry");
     assert!(matches!(
         key_claim(&f, &path, "crash").await,
         Some(idem::IdempotencyClaim::Answered { .. })
@@ -235,7 +222,7 @@ async fn a_lost_reserve_response_writes_no_entry_and_its_reservation_is_released
         let (id, (receipt, _)) = refs.iter().next().unwrap();
         (*id, *receipt)
     };
-    assert_eq!(lost_ref, cancelling[0].price_book_entry_id);
+    assert_eq!(lost_ref, cancelling[0].ref_id);
     Ticker::new(f.state.clone(), clock(), 10, 100)
         .tick()
         .await
@@ -353,6 +340,15 @@ async fn operator_list_filters_paginates_and_validates_query() {
         .await;
     assert_eq!(result.0, 200, "{result:?}");
     assert_eq!(result.1["items"].as_array().unwrap().len(), 1);
+    // The op names its reference as (ref_kind, ref_id) (D-412).
+    let item = &result.1["items"][0];
+    assert_eq!(item["kind"], "create", "{item}");
+    assert_eq!(item["ref_kind"], "price_book_entry", "{item}");
+    assert!(
+        item["ref_id"].as_str().unwrap().parse::<Uuid>().is_ok(),
+        "{item}"
+    );
+    assert!(item.get("price_book_entry_id").is_none(), "{item}");
     let id = result.1["items"][0]["op_id"].as_str().unwrap();
     assert_eq!(
         f.call(
@@ -452,10 +448,11 @@ async fn a_reservation_released_before_confirm_is_rereserved_not_lost() {
     )
     .await
     .unwrap();
-    assert_eq!(open.len(), 1, "one rereserve_entry op is open");
-    assert_eq!(open[0].kind, "rereserve_entry");
+    assert_eq!(open.len(), 1, "one rereserve op is open");
+    assert_eq!(open[0].kind, "rereserve");
+    assert_eq!(open[0].ref_kind, "price_book_entry");
     assert_eq!(
-        open[0].price_book_entry_id.to_string(),
+        open[0].ref_id.to_string(),
         created.1["id"].as_str().unwrap()
     );
     script.set(0);
@@ -815,8 +812,8 @@ async fn a_confirm_answered_404_is_a_reservation_released_before_confirm() {
         )
         .await
         .unwrap();
-        assert_eq!(open.len(), 1, "one rereserve_entry op, no confirm retried");
-        assert_eq!(open[0].kind, "rereserve_entry");
+        assert_eq!(open.len(), 1, "one rereserve op, no confirm retried");
+        assert_eq!(open[0].kind, "rereserve");
         script.set(if fenced { 4 } else { 0 });
         Ticker::new(f.state.clone(), clock(), 10, 100)
             .tick()
@@ -879,7 +876,7 @@ async fn a_release_answered_404_counts_as_released() {
     )
     .await
     .unwrap();
-    assert!(done.iter().any(|op| op.kind == "delete_entry"), "{done:?}");
+    assert!(done.iter().any(|op| op.kind == "delete"), "{done:?}");
     assert_eq!(
         Script::count(&script.releases),
         0,

@@ -1,7 +1,10 @@
 //! Real scoped repository contracts, including two connections to one `SQLite` file.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::{
-    domain::price_book_entry::OpState,
+    domain::{
+        price_book_entry::OpState,
+        reference_op::{OpKind, RefKind},
+    },
     infra::storage::{
         RepoError,
         entity::{price, price_book, price_book_entry, reference_op},
@@ -79,8 +82,9 @@ fn op(tenant: Uuid, state: OpState, when: OffsetDateTime) -> reference_op::Model
     reference_op::Model {
         op_id: Uuid::new_v4(),
         tenant_id: tenant,
-        kind: "create_entry".into(),
-        price_book_entry_id: Uuid::new_v4(),
+        kind: "create".into(),
+        ref_kind: "price_book_entry".into(),
+        ref_id: Uuid::new_v4(),
         sku_id: Uuid::new_v4(),
         reservation_id: None,
         idempotency_key: Some("key".into()),
@@ -375,6 +379,84 @@ async fn reference_op_transition_is_conditional_and_persists_retry_fields() {
     assert_eq!(got.reservation_id, fields.reservation_id);
     assert_eq!(got.last_error, fields.last_error);
     assert_eq!(got.outcome, fields.outcome);
+}
+/// The op names its reference by kind and id (D-412): the CHECKs refuse any other vocabulary,
+/// and the one-open-op guard is keyed by the reference's kind as well as its id.
+#[tokio::test]
+async fn reference_op_names_its_reference_by_kind_and_id() {
+    let (db, scope, tenant, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    for (kind, ref_kind) in [
+        ("create_entry", "price_book_entry"),
+        ("rereserve_entry", "price_book_entry"),
+        ("create", "sold_as"),
+        ("create", "price"),
+    ] {
+        let refused = reference_op_repo::insert(
+            &conn,
+            &scope,
+            reference_op::Model {
+                kind: kind.into(),
+                ref_kind: ref_kind.into(),
+                ..op(tenant, OpState::Reserving, at(9))
+            },
+        )
+        .await;
+        assert!(refused.is_err(), "{kind} {ref_kind}: {refused:?}");
+    }
+    let id = Uuid::new_v4();
+    for kind in ["create", "delete", "rereserve", "attach"] {
+        for ref_kind in ["price_book_entry", "plan_item"] {
+            reference_op_repo::insert(
+                &conn,
+                &scope,
+                reference_op::Model {
+                    kind: kind.into(),
+                    ref_kind: ref_kind.into(),
+                    ..op(tenant, OpState::Done, at(9))
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
+    // An open re-reservation of a plan item with the same id is not an open one of an entry.
+    reference_op_repo::insert(
+        &conn,
+        &scope,
+        reference_op::Model {
+            kind: "rereserve".into(),
+            ref_kind: "plan_item".into(),
+            ref_id: id,
+            ..op(tenant, OpState::Reserving, at(9))
+        },
+    )
+    .await
+    .unwrap();
+    let open = |ref_kind, kind| {
+        let conn = db.conn().unwrap();
+        let scope = scope.clone();
+        async move {
+            reference_op_repo::open_for_ref(&conn, &scope, tenant, ref_kind, id, kind)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(open(RefKind::PlanItem, OpKind::Rereserve).await);
+    assert!(!open(RefKind::Entry, OpKind::Rereserve).await);
+    assert!(!open(RefKind::PlanItem, OpKind::Attach).await);
+    assert!(
+        !reference_op_repo::open_for_ref(
+            &conn,
+            &AccessScope::for_tenant(Uuid::new_v4()),
+            Uuid::new_v4(),
+            RefKind::PlanItem,
+            id,
+            OpKind::Rereserve
+        )
+        .await
+        .unwrap()
+    );
 }
 fn db_error(e: &RepoError) -> Option<&sea_orm::DbErr> {
     match e {
@@ -783,8 +865,8 @@ async fn entry_receipt_updates_and_deletion_are_version_guarded() {
     );
     let txscope = scope.clone();
     let m = reference_op::Model {
-        kind: "delete_entry".into(),
-        price_book_entry_id: p.id,
+        kind: "delete".into(),
+        ref_id: p.id,
         reservation_id: Some(p.reservation_id),
         ..op(tenant, OpState::Releasing, at(10))
     };

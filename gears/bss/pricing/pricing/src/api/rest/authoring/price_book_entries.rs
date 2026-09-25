@@ -9,10 +9,7 @@ use super::{
     support::{self, DoorError},
 };
 use crate::{
-    domain::{
-        price::PriceState,
-        price_book_entry::{self, OpKind},
-    },
+    domain::{price::PriceState, price_book_entry, reference_op::OpKind},
     infra::{
         reference_work::{self, Caller, Receipt, WallClock, Work},
         storage::{

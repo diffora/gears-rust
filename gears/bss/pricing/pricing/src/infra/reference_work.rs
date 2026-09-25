@@ -8,8 +8,8 @@ use crate::{
         support::{self, DoorError},
     },
     domain::{
-        price_book_entry::{OpKind, OpState, ReferenceState, charge_kind_for},
-        reference_op::{self, Effect, Event, Op},
+        price_book_entry::{OpState, ReferenceState, charge_kind_for},
+        reference_op::{self, Effect, Event, Op, OpKind, RefKind},
     },
     infra::storage::{
         RepoError,
@@ -145,7 +145,8 @@ pub fn new_op(
         op_id: Uuid::now_v7(),
         tenant_id: ctx.subject_tenant_id(),
         kind: kind.as_str().into(),
-        price_book_entry_id,
+        ref_kind: RefKind::Entry.as_str().into(),
+        ref_id: price_book_entry_id,
         sku_id: work.input.sku_id,
         reservation_id,
         idempotency_key: key,
@@ -270,8 +271,7 @@ async fn mark_rereserve_lost(
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     let scope = AccessScope::for_tenant(op.tenant_id);
-    let Some(mut entry) =
-        price_book_entry_repo::find(tx, &scope, op.tenant_id, op.price_book_entry_id).await?
+    let Some(mut entry) = price_book_entry_repo::find(tx, &scope, op.tenant_id, op.ref_id).await?
     else {
         return Ok(());
     };
@@ -283,7 +283,7 @@ async fn mark_rereserve_lost(
         tx,
         &scope,
         op.tenant_id,
-        op.price_book_entry_id,
+        op.ref_id,
         entry.version,
         ReferenceState::Lost,
         entry.reservation_id,
@@ -637,7 +637,7 @@ async fn write_entry(
     }
     // A lost entry may be deleted while its re-reservation is in flight: cancel, which
     // releases the new reservation.
-    let current = price_book_entry_repo::find(tx, scope, op.tenant_id, op.price_book_entry_id)
+    let current = price_book_entry_repo::find(tx, scope, op.tenant_id, op.ref_id)
         .await?
         .ok_or_else(|| support::conflict("ENTRY_NOT_FOUND"))?;
     if current.charge_kind != entry.charge_kind {
@@ -647,7 +647,7 @@ async fn write_entry(
         tx,
         scope,
         op.tenant_id,
-        op.price_book_entry_id,
+        op.ref_id,
         current.version,
         ReferenceState::ConfirmationPending,
         entry.reservation_id,
@@ -669,7 +669,7 @@ async fn finish_written(
     now: OffsetDateTime,
 ) -> Result<Receipt, DoorError> {
     let scope = AccessScope::for_tenant(op.tenant_id);
-    let mut entry = price_book_entry_repo::find(tx, &scope, op.tenant_id, op.price_book_entry_id)
+    let mut entry = price_book_entry_repo::find(tx, &scope, op.tenant_id, op.ref_id)
         .await?
         .ok_or_else(corrupt)?;
     if effects.contains(&Effect::Rereserve) {
@@ -681,7 +681,7 @@ async fn finish_written(
         tx,
         &scope,
         op.tenant_id,
-        op.price_book_entry_id,
+        op.ref_id,
         entry.version,
         ReferenceState::Confirmed,
         entry.reservation_id,
@@ -824,7 +824,7 @@ async fn observe(
                     tenant,
                     op.sku_id,
                     ReferenceKind::PriceBookEntry,
-                    op.price_book_entry_id,
+                    op.ref_id,
                 )
                 .await
             {
@@ -888,7 +888,7 @@ async fn observe(
                         tenant,
                         op.sku_id,
                         ReferenceKind::PriceBookEntry,
-                        op.price_book_entry_id,
+                        op.ref_id,
                     )
                     .await
                 {
@@ -957,7 +957,7 @@ async fn observe_sku(
         ));
     }
     let entry = price_book_entry::Model {
-        id: op.price_book_entry_id,
+        id: op.ref_id,
         tenant_id: tenant,
         book_id: work.book_id,
         sku_id: op.sku_id,

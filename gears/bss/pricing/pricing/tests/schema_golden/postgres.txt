@@ -162,7 +162,8 @@ COLUMN bss.pricing_reference_op last_error text NULL DEFAULT -
 COLUMN bss.pricing_reference_op next_attempt_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_reference_op op_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_reference_op outcome text NULL DEFAULT -
-COLUMN bss.pricing_reference_op price_book_entry_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_reference_op ref_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_reference_op ref_kind text NOT NULL DEFAULT -
 COLUMN bss.pricing_reference_op reservation_id uuid NULL DEFAULT -
 COLUMN bss.pricing_reference_op sku_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_reference_op state text NOT NULL DEFAULT -
@@ -279,8 +280,9 @@ CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_check CHECK (((
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_pkey PRIMARY KEY (id)
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_reference_state_check CHECK ((reference_state = ANY (ARRAY['confirmation_pending'::text, 'confirmed'::text, 'lost'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_tenant_id_dimension_key_fkey FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key)
-CONSTRAINT bss.pricing_reference_op pricing_reference_op_kind_check CHECK ((kind = ANY (ARRAY['create_entry'::text, 'delete_entry'::text, 'rereserve_entry'::text])))
+CONSTRAINT bss.pricing_reference_op pricing_reference_op_kind_check CHECK ((kind = ANY (ARRAY['create'::text, 'delete'::text, 'rereserve'::text, 'attach'::text])))
 CONSTRAINT bss.pricing_reference_op pricing_reference_op_pkey PRIMARY KEY (op_id)
+CONSTRAINT bss.pricing_reference_op pricing_reference_op_ref_kind_check CHECK ((ref_kind = ANY (ARRAY['price_book_entry'::text, 'plan_item'::text])))
 CONSTRAINT bss.pricing_reference_op pricing_reference_op_state_check CHECK ((state = ANY (ARRAY['reserving'::text, 'written'::text, 'cancelling'::text, 'releasing'::text, 'done'::text])))
 CONSTRAINT bss.pricing_settings pricing_settings_default_timing_check CHECK ((default_timing = ANY (ARRAY['advance'::text, 'arrears'::text])))
 CONSTRAINT bss.pricing_settings pricing_settings_pkey PRIMARY KEY (tenant_id)
