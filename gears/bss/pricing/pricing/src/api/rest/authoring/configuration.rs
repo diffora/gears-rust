@@ -165,6 +165,11 @@ pub async fn put_dimensions(
                     return Err(conflict("DIM_VALUE_IN_USE").into());
                 }
             }
+            // A price names the key whatever its rows hold (the price's key is a foreign key
+            // to the registry): removing it is the same refusal PATCH /prices answers.
+            if next.is_none() {
+                return Err(conflict("DIMENSION_KEY_IN_USE").into());
+            }
         }
     }
     for old in dimension_repo::list(tx, scope, tenant).await? {

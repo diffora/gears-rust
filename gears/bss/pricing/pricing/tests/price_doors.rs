@@ -321,3 +321,51 @@ async fn period_and_dimension_refusals_are_400_before_any_reservation() {
         );
     }
 }
+
+#[tokio::test]
+async fn removing_a_dimension_key_a_price_names_is_refused_409() {
+    let (f, _, path, input) = setup(0).await;
+    let (_, _, tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    let declared = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":"region","values":["eu","us"]}]}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(declared.0, 200, "{declared:?}");
+    let mut input = input;
+    input["dimension_key"] = json!("region");
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    // The price names the key but has no valued row: the key itself is still in use.
+    let refused = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[]}),
+            Some(&declared.2),
+            None,
+        )
+        .await;
+    assert_eq!(refused.0, 409, "{refused:?}");
+    assert!(
+        refused.1.to_string().contains("DIMENSION_KEY_IN_USE"),
+        "{refused:?}"
+    );
+    // Changing its values is still allowed: no row carries one.
+    let changed = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":"region","values":["ap","eu"]}]}),
+            Some(&declared.2),
+            None,
+        )
+        .await;
+    assert_eq!(changed.0, 200, "{changed:?}");
+}

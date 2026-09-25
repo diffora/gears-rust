@@ -326,3 +326,46 @@ async fn postgres_two_tickers_on_two_pools_finish_one_op_once() {
         "a timeout never releases"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_removing_a_dimension_key_a_price_names_is_refused_409() {
+    // Postgres raises 23503 on pricing_price's key FK; the door must refuse before it.
+    let p = setup().await;
+    let (_, _, tag) = p.call("GET", "/dimension-keys", json!({}), None).await;
+    let declared = request(
+        &p.app,
+        &p.ctx,
+        "PUT",
+        "/dimension-keys",
+        json!({"items":[{"key":"region","values":["eu","us"]}]}),
+        Some(&tag),
+        None,
+    )
+    .await;
+    assert_eq!(declared.0, 200, "{declared:?}");
+    let created = p
+        .call(
+            "POST",
+            &p.path,
+            json!({"sku_id":p.sku,"dimension_key":"region"}),
+            Some("one"),
+        )
+        .await;
+    assert_eq!(created.0, 201, "{created:?}");
+    let refused = request(
+        &p.app,
+        &p.ctx,
+        "PUT",
+        "/dimension-keys",
+        json!({"items":[]}),
+        Some(&declared.2),
+        None,
+    )
+    .await;
+    assert_eq!(refused.0, 409, "{refused:?}");
+    assert!(
+        refused.1.to_string().contains("DIMENSION_KEY_IN_USE"),
+        "{refused:?}"
+    );
+}
