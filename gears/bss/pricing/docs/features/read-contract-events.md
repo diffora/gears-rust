@@ -40,7 +40,7 @@
 
 ### 1.1 Overview
 
-**Delivery:** phase 4 for reads/quote; 2c for core events; 3 for added events. Every checkbox is an implementation obligation, not an assertion about the legacy code. Core event payloads are built with phase 2 approvals; dependencies on plans/promotions apply only to their later reads and events.
+**Delivery:** phase 4 for reads, with quote not built (D-415); 2c for core events; 3 for added events. Every checkbox is an implementation obligation, not an assertion about the legacy code. Core event payloads are built with phase 2 approvals; dependencies on plans/promotions apply only to their later reads and events.
 
 This feature implements [slice 07](../design/07-read-contract-events.md) — `cpt-cf-bss-pricing-design-slice-07`.
 [DECOMPOSITION](../DECOMPOSITION.md) records integration order; [DESIGN §3](../DESIGN.md#3-technical-architecture)
@@ -48,7 +48,7 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 
 ### 1.2 Purpose
 
-Deliver reproducible resolution matrices, pinned-price reads and Studio quote, plus typed transactional events and consumer goldens.
+Deliver reproducible resolution matrices, pinned-price reads and Studio quote, plus typed transactional events and consumer goldens. The Studio quote is not built (D-415).
 
 Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`, `cpt-cf-bss-pricing-fr-events`.
 
@@ -64,7 +64,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 07](../design/07-read-contract-events.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-406; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-415; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -76,7 +76,7 @@ Holding multiple permissions never bypasses separation of duties.
 1. [ ] - `p1` - Rating or Subscriptions sends the revision id, period start and optional current pins. - `inst-read-contract-events-flow-1`
 2. [ ] - `p1` - Load immutable revision structure and the full chain matrix, scoped to the tenant. - `inst-read-contract-events-flow-2`
 3. [ ] - `p1` - For existing pins walk eligible all successors, stopping before the first new price; for signup select in-force prices. - `inst-read-contract-events-flow-3`
-4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit and return the whole dimension matrix plus promotion version. - `inst-read-contract-events-flow-4`
+4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit and return the whole dimension matrix plus promotion version (deferred with promotions, D-409). - `inst-read-contract-events-flow-4`
 5. [ ] - `p1` - Consumers lazily bind usage per value and retain the complete inputs; later replay reads the pinned price and stored binding without choosing new descriptors. - `inst-read-contract-events-flow-5`
 
 ## 3. Processes / Business Logic (CDSL)
@@ -94,17 +94,19 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-and-quote`
 
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic.
+
 1. [ ] - `p1` - Split the period at every price boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
 2. [ ] - `p1` - Prorate recurring slices by calendar days; rate usage by reading timestamp with tier counters per slice. - `inst-read-contract-events-period-slices-and-quote-2`
-3. [ ] - `p1` - Deduct included quantities, aggregate per price/subscription/period and apply the coverage-prorated min_fee once per price. - `inst-read-contract-events-period-slices-and-quote-3`
-4. [ ] - `p1` - Apply period-start promotion after floors, then the bound rounding/currency policy; quote returns totals while resolve never does. - `inst-read-contract-events-period-slices-and-quote-4`
+3. [ ] - `p1` - Deduct included quantities, aggregate per price/subscription/period and apply the coverage-prorated min_fee once per price; not built in pricing, Rating applies the floor (D-415). - `inst-read-contract-events-period-slices-and-quote-3`
+4. [ ] - `p1` - Apply period-start promotion after floors, then the bound rounding/currency policy; quote returns totals while resolve never does; quote is not built (D-415). - `inst-read-contract-events-period-slices-and-quote-4`
 
 ### typed-events
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-typed-events`
 
 1. [ ] - `p1` - Implement PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
-2. [ ] - `p1` - Add PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real. - `inst-read-contract-events-typed-events-2`
+2. [ ] - `p1` - Add PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real; PromotionPublished (D-409), PlanRetired and SubscriptionMigrationRequested (D-410) are deferred. - `inst-read-contract-events-typed-events-2`
 3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
 4. [ ] - `p1` - Deliver from the toolkit dispatcher after commit; test restart/retry and prevent domain publish on reject/withdraw/refresh. - `inst-read-contract-events-typed-events-4`
 
@@ -124,7 +126,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-resolve-matrix`
 
-Resolve returns every item's default/value inputs and active promotion version without totals. Usage consumers bind lazily by value rather than choosing one value for the plan (spec §7.1).
+Resolve returns every item's default/value inputs and active promotion version (deferred with promotions, D-409) without totals. Usage consumers bind lazily by value rather than choosing one value for the plan (spec §7.1).
 
 Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
@@ -156,6 +158,8 @@ Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-period-slices`
 
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
+
 Recurring slices prorate by calendar days and usage follows timestamp-selected prices, with counters per slice. Temporary boundaries inside a period produce multiple slices and price-level floor aggregation (spec §7.1).
 
 Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
@@ -163,6 +167,8 @@ Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 ### Studio quote calculation
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quote-totals`
+
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
 
 Quote adds quantities and optional-item choices to selection, included quantities, price floors and promotions. It is read-only and separate from resolve, with exact tier-edge and rounding goldens (spec §7.1).
 
@@ -192,8 +198,8 @@ Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 | `cpt-cf-bss-pricing-dod-renewal-all-new` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given pinned 10 → all 12 → new 15, when renewal resolves then it chooses 12 and signup 15; a forged foreign-chain pin is refused. |
 | `cpt-cf-bss-pricing-dod-binding-sku-version` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given an October 1 GL change already applied to the current SKU, when September resolves then it binds the earlier version; October binds the new one and prior pins do not change. |
 | `cpt-cf-bss-pricing-dod-price-read-forever` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given a closed price id from an old invoice, when read then its original money is returned; unknown/foreign ids reveal no price. |
-| `cpt-cf-bss-pricing-dod-period-slices` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Given a temporary price ending October 11 inside October 5–November 5, when preview runs then two slices appear; their common-price floors are not charged twice. |
-| `cpt-cf-bss-pricing-dod-quote-totals` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Given valid quantities and a promotion, when quote runs then totals apply included quantities before prorated floor and promotion afterward; invalid quantities fail without changing pins. |
+| `cpt-cf-bss-pricing-dod-period-slices` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Not built (D-415). Given a temporary price ending October 11 inside October 5–November 5, when preview runs then two slices appear; their common-price floors are not charged twice. |
+| `cpt-cf-bss-pricing-dod-quote-totals` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Not built (D-415). Given valid quantities and a promotion, when quote runs then totals apply included quantities before prorated floor and promotion afterward; invalid quantities fail without changing pins. |
 | `cpt-cf-bss-pricing-dod-events-typed-outbox` | AC #14; `cpt-cf-bss-pricing-fr-events` | Given approve/reject/withdraw/quorum-zero outcomes, when committed then each has its terminal event and only successful apply has its domain publication; rollback has neither. |
 | `cpt-cf-bss-pricing-dod-consumer-golden-contracts` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate. |
 

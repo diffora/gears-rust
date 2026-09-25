@@ -67,7 +67,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 03](../design/03-prices-windows-dimension.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-406; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-415; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -100,7 +100,7 @@ Holding multiple permissions never bypasses separation of duties.
 1. [ ] - `p1` - Derive permitted models from charge kind; validate nonnegative prices and coherent model parameters. - `inst-prices-windows-dimension-model-and-floor-1`
 2. [ ] - `p1` - Evaluate per_unit, graduated, volume and package with decimal arithmetic and half-open tier bands; recurring/one_time allow flat or per_unit. - `inst-prices-windows-dimension-model-and-floor-2`
 3. [ ] - `p1` - Preserve usage model kind, package size and SKU (unit, usage_type_ref) read as of each price's start across successors, a start before the SKU's first version reading that first version (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-prices-windows-dimension-model-and-floor-3`
-4. [ ] - `p1` - Aggregate rated amounts after included quantities by price/subscription/period across every bound value and slice; apply the prorated price floor, then promotions. - `inst-prices-windows-dimension-model-and-floor-4`
+4. [ ] - `p1` - Aggregate rated amounts after included quantities by price/subscription/period across every bound value and slice; apply the prorated price floor, then promotions; not built in pricing, Rating applies the floor and pricing stores and validates min_fee (D-415). - `inst-prices-windows-dimension-model-and-floor-4`
 
 ### reserve-write-confirm
 
@@ -168,6 +168,8 @@ Requirement: `cpt-cf-bss-pricing-fr-pair-guard`; PRD AC #6.
 ### Minimum fee aggregation grain
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-min-fee-price-period`
+
+Not built in pricing (D-415): Rating applies the floor; pricing stores and validates min_fee. This DoD stays unticked.
 
 Minimum fee is one floor per price/subscription/period after included quantities and before promotions. Shared values and slices are aggregated, and covered-period fraction prorates the floor (spec §2 decision 13).
 

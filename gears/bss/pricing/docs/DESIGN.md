@@ -33,7 +33,8 @@
 
 Products owns the SKU registry and reference barrier; Pricing owns per-currency books and immutable approved
 money chains. A shared approval engine governs proposed business content through gear-local transactions.
-Plans/promotions/migration requests arrive in phase 3; consumer resolution and quote arrive in phase 4.
+Plans arrive in phase 3; the owner defers promotions (D-409), migration requests and retirement (D-410) and the
+sold-as bundle and grants (D-411). Consumer resolution arrives in phase 4, and quote is not built (D-415).
 This is the target design, not a claim that the legacy pricing implementation has already been replaced.
 
 Authority is the PriceBook spec §2, §2.2 and §13, then [DECISIONS](DECISIONS.md), then code, then prose.
@@ -49,20 +50,20 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | `cpt-cf-bss-pricing-fr-price` | Draft prices carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-chain-windows` | Windows are half-open and close independently for each (price_book_entry_id, dim_value), including the null default chain. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves model kind, package size and SKU metering as of each price's start (D-402). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
-| `cpt-cf-bss-pricing-fr-min-fee` | The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-min-fee` | The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price; pricing stores and validates min_fee, and Rating applies the floor (D-415). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-temporary-pair` | A temporary change on an existing chain creates two prices in one approval unit. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-publish-changes` | Publish changes lists all draft prices of one book with full money, window, chain, predecessor and impact information, all pre-selected. | Approvals, phase 2; §3 and slice 05. |
-| `cpt-cf-bss-pricing-fr-approval-units` | Use bss-approval for prices now and plan_revision, promotion and migration in phase 3. | Approvals, phase 2; §3 and slice 05. |
+| `cpt-cf-bss-pricing-fr-approval-units` | Use bss-approval for prices now and plan_revision in phase 3; the promotion (D-409) and migration (D-410) kinds are deferred. | Approvals, phase 2; §3 and slice 05. |
 | `cpt-cf-bss-pricing-fr-reference-protocol` | Before reserve, claim the key and persist a create_entry op; reserve with Products, re-read the SKU, commit the entry with reference_state = confirmation_pending and op written, then confirm and atomically finish the op and answer the key (D-401). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-book-export` | Provide one read-only JSON export of a tenant-scoped book with its entries and prices. | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-settings` | Tenant settings provide default billing timing, rounding, GL code, tax category and invoice-line templates by SKU type. | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-events` | Persist PricesPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceBookEntryReferenceLost for a failed reference confirmation that proves release. | Read Contract & Events, phase 2; §3 and slice 07. |
-| `cpt-cf-bss-pricing-fr-plans` | A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. | Plans, phase 3; §3 and slice 04. |
-| `cpt-cf-bss-pricing-fr-promotions` | A dated percentage promotion targets plans and recurring or recurring-plus-usage charges. | Promotions & Migrations, phase 3; §3 and slice 06. |
-| `cpt-cf-bss-pricing-fr-migrations` | An approved migration_request records target plan/revision, subscription ids, next_renewal or explicit date, and the period-aware preview, then emits SubscriptionMigrationRequested. | Promotions & Migrations, phase 3; §3 and slice 06. |
-| `cpt-cf-bss-pricing-fr-resolve` | GET /pricing/v1/resolve accepts plan_revision_id, date and optional pins and returns each item's full default/value chain matrix and active promotion (id, version), without totals. | Read Contract & Events, phase 4; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-plans` | A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Grants and the sold-as bundle SKU are deferred (D-411). | Plans, phase 3; §3 and slice 04. |
+| `cpt-cf-bss-pricing-fr-promotions` | A dated percentage promotion targets plans and recurring or recurring-plus-usage charges. | Promotions & Migrations; deferred by the owner (D-409); §3 and slice 06. |
+| `cpt-cf-bss-pricing-fr-migrations` | An approved migration_request records target plan/revision, subscription ids, next_renewal or explicit date, and the period-aware preview, then emits SubscriptionMigrationRequested. | Promotions & Migrations; deferred by the owner (D-410); §3 and slice 06. |
+| `cpt-cf-bss-pricing-fr-resolve` | GET /pricing/v1/resolve accepts plan_revision_id, date and optional pins and returns each item's full default/value chain matrix and active promotion (id, version) (deferred with promotions, D-409), without totals. | Read Contract & Events, phase 4; §3 and slice 07. |
 | `cpt-cf-bss-pricing-fr-price-read` | GET /pricing/v1/prices/{id} serves a pinned price forever, including closed, superseded and keep_for_bound prices. | Read Contract & Events, phase 4; §3 and slice 07. |
-| `cpt-cf-bss-pricing-fr-quote` | GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. | Read Contract & Events, phase 4; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-quote` | GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. | Not built (D-415); §3 and slice 07. |
 | `cpt-cf-bss-pricing-nfr-authz` | Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. | Foundation, phase 2; §3 and slice 01. |
 | `cpt-cf-bss-pricing-nfr-audit` | Append tenant, actor, subject, correlation and before/after facts with each governed act. | Foundation, phase 2; §3 and slice 01. |
 | `cpt-cf-bss-pricing-nfr-tenant-isolation` | Every repository uses SecureORM and PDP-derived AccessScope; child prices are reached through scoped parents. | Foundation, phase 2; §3 and slice 01. |
@@ -95,7 +96,9 @@ Bindings preserve the money price and dated SKU descriptors needed to replay an 
 **ID**: `cpt-cf-bss-pricing-principle-reserve-before-write`
 
 Reserve before a durable reference; release only after durable cancellation or removal. A timeout is not proof
-of rollback. Products keeps an unresolved reservation live and refuses retirement while it exists.
+of rollback. Products keeps an unresolved reservation live and refuses retirement while it exists. A copied plan
+item is the one exception: it is written unreserved and attaches after the write, because the source revision's
+live reference already protects the SKU (D-413).
 
 **ID**: `cpt-cf-bss-pricing-principle-business-content-fingerprint`
 
@@ -149,8 +152,10 @@ the pricing doors answer `PRICE_LOCKED_PENDING`.
 
 PriceBook contains PriceBookEntry; PriceBookEntry contains Price chains keyed by nullable dim_value. SKU type determines
 charge_kind; period is recurring-only. A price carries a pricing model and inputs, min_fee, eligibility, dates,
-state and approval attribution. It contains no frozen descriptors. PlanRevision, PlanItem, Promotion and
-MigrationRequest are phase 3 types; phase 4 assembles Resolution and Quote outputs.
+state and approval attribution. It contains no frozen descriptors. Plan, PlanRevision and PlanItem are
+phase 3 types; Promotion (D-409) and MigrationRequest (D-410) are deferred by the owner; phase 4 assembles Resolution
+outputs (Quote is not built, D-415). A plan projects its published revision number; a revision binds one book and
+its items (D-407).
 
 ```mermaid
 classDiagram
@@ -161,8 +166,9 @@ classDiagram
   ApprovalUnit "1" --> "many" ApprovalDecision
   ApprovalItem --> Price
   PriceBookEntry --> ReferenceReceipt
+  Plan "1" --> "many" PlanRevision
   PlanRevision --> PriceBook
-  PlanRevision --> PlanItem
+  PlanRevision "1" --> "many" PlanItem
   PlanItem --> PriceBookEntry
 ```
 
@@ -171,7 +177,8 @@ keep_for_bound when the successor is new; it cannot rewrite money or remove hist
 end explicitly. Tier arithmetic uses decimal/money types without binary float rounding and [from, to) bands.
 Every decimal of a price (amount, rate, package size and package price, tier up_to and rate) travels as a JSON string;
 a JSON number is refused 400 AMOUNT_INVALID, because reading it would round it through f64.
-Min-fee accounting groups by price/subscription/period across values and slices before promotions.
+Min-fee accounting groups by price/subscription/period across values and slices before promotions; Rating applies it
+(D-415).
 
 ### 3.2 Component Model
 
@@ -191,37 +198,37 @@ Phase 2: price models, chain normalization, pair guard, minimum fees and tempora
 
 **ID**: `cpt-cf-bss-pricing-component-approvals`
 
-Phase 2 prices subject and unit doors; phase 3 plan_revision, promotion and migration subjects. Shared Store and engine, generation refresh, SoD and atomic terminal acts.
+Phase 2 prices subject and unit doors; phase 3 plan_revision subject (the promotion and migration subjects are deferred, D-409, D-410). Shared Store and engine, generation refresh, SoD and atomic terminal acts.
 
 #### Reservations client
 
 **ID**: `cpt-cf-bss-pricing-component-reservations-client`
 
-Phase 2: ProductsClient reserve/re-read/write/confirm and durable cancellation/release. Persist reference loss. Phase 3 extends the protocol to plan_item and sold_as.
+Phase 2: ProductsClient reserve/re-read/write/confirm and durable cancellation/release. Persist reference loss. Phase 3 extends the protocol to plan_item; sold_as is deferred (D-411).
 
 #### Events
 
 **ID**: `cpt-cf-bss-pricing-component-events`
 
-Phase 2 core TypedEvent payloads and toolkit outbox dispatcher; phase 3 adds plan, promotion and migration-request events.
+Phase 2 core TypedEvent payloads and toolkit outbox dispatcher; phase 3 adds plan events (promotion events deferred, D-409; migration-request and retirement events deferred, D-410).
 
 #### Plans
 
 **ID**: `cpt-cf-bss-pricing-component-plans`
 
-Phase 3: revision composition, sale-date checks, blocked_by, clone and retirement prerequisites.
+Phase 3: revision composition, sale-date checks, blocked_by and clone; retirement prerequisites are deferred (D-410).
 
 #### Promotions and migrations
 
 **ID**: `cpt-cf-bss-pricing-component-promotions`
 
-Phase 3: nonoverlapping versioned promotions and approved migration requests, without executing subscription moves.
+Deferred by the owner: approved migration requests without executing subscription moves (D-410) and nonoverlapping versioned promotions (D-409).
 
 #### Read contract
 
 **ID**: `cpt-cf-bss-pricing-component-read-contract`
 
-Phase 4: resolve matrix, renewal walk, period bindings, durable pin reads and Studio quote; versioned Products reads at binding time.
+Phase 4: resolve matrix, renewal walk, period bindings and durable pin reads; the Studio quote is not built (D-415); versioned Products reads at binding time.
 
 ### 3.3 API Contracts
 
@@ -240,13 +247,17 @@ subscriptions read "unavailable until phase 3". Never label unavailable phase 3 
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys |
 | Reference work | 2 | GET /reference-ops?state&limit&cursor lists the tenant's durable reference ops in op-id order (config settings permission); limit 1 to 1000, default 100; the next page starts after next_cursor |
-| Plans | 3 | POST/GET /plans; POST /plans/{id}/revisions; PATCH /plan-revisions/{id}; GET /plan-revisions/{id}/checks; POST /plan-revisions/{id}/submit; POST /plans/{id}/clone, /retire, /migrations |
-| Promotions | 3 | POST /promotions; PATCH /promotions/{id} draft; POST /promotions/{id}/submit, /end-today, /cancel |
+| Plans | 3 | POST /plans with code, name, book_id (201: the plan and its draft rev 1 on that book); GET /plans; GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS); GET /plan-revisions/{id}; PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from fresh SKU reads (D-408); POST /plan-revisions/{id}/submit; POST /plans/{id}/clone with code, name (D-413). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
+| Plan items | 3 | POST /plan-revisions/{id}/items with sku_id, price_book_entry_id?, treatment, included_qty?, qty_min? (a plan_item create op, D-407; at most 200 items per revision); PATCH /plan-items/{id} with treatment?, included_qty?, qty_min?, price_book_entry_id?, draft only and never a SKU change; DELETE /plan-items/{id} (a delete op); the revision's creator edits it and its items (D-404) |
+| Promotions | deferred (D-409) | Deferred by the owner and not built in phase 3; the planned shape: POST /promotions with name, percent, from_date, to_date, plan_ids (at most 50), apply_to; GET /promotions; GET /promotions/{id} (the current approved version, the open version and the history); PATCH /promotions/{id} under If-Match on the promotion, editing the open draft version or creating it from the current approved one; POST /promotions/{id}/submit, /end-today, /cancel |
+| Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
 
 The consumer surface named by spec §7.1 is `GET /pricing/v1/resolve` and `GET /pricing/v1/prices/{id}`.
-Phase 4 explicitly wires those paths and golden contracts; it also provides `GET /pricing/v1/quote` for Studio.
+Phase 4 explicitly wires those paths and golden contracts. `GET /pricing/v1/quote`, planned for the Studio, is not built,
+and the Studio is not wired to the API (D-415).
 Fields/query parameters are snake_case, including plan_revision_id, price_id, dim_value, dim_used, sku_version,
-billing_timing, rounding_policy, promotion_id and promotion_version. Resolve returns inputs, not totals.
+billing_timing, rounding_policy, promotion_id and promotion_version (the last two deferred with promotions, D-409).
+Resolve returns inputs, not totals.
 
 | Condition | Response |
 | --- | --- |
@@ -269,6 +280,8 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |
 | Released receipt on confirm | 409 REFERENCE_RELEASED from Products, or 404 for a reservation Products does not know; the entry stays confirmation_pending and a rereserve_entry op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
+| Phase 3: a red plan check at submit; an item refused at its door; an entry a plan item names, deleted | 400 REVISION_CHECKS_RED with the red checks, no unit; 400 ITEM_BOOK_FOREIGN, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_MISSING, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY, 409 ITEM_SKU_TAKEN; 409 ENTRY_IN_USE (D-408) |
+| Deferred: migration, retirement and promotion refusals | MIGRATION_TARGET_UNPUBLISHED, MIGRATION_TARGET_CURRENT, MIGRATION_TARGET_RETIRING, MIGRATION_CURRENCY_MISMATCH, MIGRATION_SUBSCRIPTION_PENDING and RETIRE_MIGRATION_REQUIRED wait with migration requests and retirement (D-410); PROMOTION_VERSION_OPEN and PROMOTION_NOT_STARTED with promotions (D-409) |
 
 Canonical toolkit RFC-9457 Problem carries code, field and message, retaining typed DbErr for retry classification.
 Malformed body/precondition failures occur before domain work. A body string (value or key) that contains a NUL
@@ -430,8 +443,9 @@ The actual migrations are authored in phase 2c with schema goldens on both backe
 
 The four approval tables are exactly `bss_approval::ddl::up` with prefix `pricing_` (spec §6 with §2.2
 corrections: no unit idempotency_key or unique key index); the schema goldens pin that shape on both backends.
-The shared DDL supports all Pricing subject kinds; only prices is executable in phase 2. Plan/promotion/
-migration tables are intentionally absent here and are added in phase 3, documented in slices 04 and 06.
+The shared DDL supports all Pricing subject kinds; only prices is executable in phase 2. The plan, revision
+and item tables are phase 3's; they follow the reference-op prose below and slice 04 describes them. The promotion
+(D-409) and migration-request (D-410) tables are deferred by the owner.
 
 ```sql
 CREATE TABLE bss.pricing_settings (
@@ -531,6 +545,56 @@ The ticker resumes every op not done with bounded backoff and never drops one. I
 through states(): released receipts are re-reserved when the SKU is not fenced, otherwise the entry becomes
 lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryReferenceLost (D-401).
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
+
+Phase 3 adds m20260926_000010 to m20260926_000012 (D-412). Every partial unique index is its own CREATE UNIQUE
+INDEX … WHERE statement on both dialects, never inline. included_qty is canonical decimal text, like min_fee. A
+plan item's reference starts unreserved when it is copied (D-413), and reservation_id is null until a reserve
+answers; the reference columns of an item in a published or superseded revision change only through the
+reference machine.
+
+```sql
+CREATE TABLE bss.pricing_plan (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, code text NOT NULL, name text NOT NULL, published_rev integer,
+  version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX pricing_plan_code ON bss.pricing_plan (tenant_id, code);
+CREATE TABLE bss.pricing_plan_revision (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, plan_id uuid NOT NULL REFERENCES bss.pricing_plan(id),
+  rev_no integer NOT NULL, book_id uuid NOT NULL REFERENCES bss.pricing_price_book(id), state text NOT NULL,
+  available_from date, pending_unit_id uuid REFERENCES bss.pricing_approval_unit(id),
+  approved_by_unit_id uuid REFERENCES bss.pricing_approval_unit(id), published_at timestamptz,
+  version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CONSTRAINT pricing_plan_revision_no UNIQUE (plan_id, rev_no),
+  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','published','superseded'))
+);
+CREATE UNIQUE INDEX pricing_plan_revision_open ON bss.pricing_plan_revision (plan_id)
+  WHERE state IN ('draft','pending');
+CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision (plan_id)
+  WHERE state = 'published';
+CREATE TABLE bss.pricing_plan_item (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, revision_id uuid NOT NULL REFERENCES bss.pricing_plan_revision(id),
+  sku_id uuid NOT NULL, price_book_entry_id uuid REFERENCES bss.pricing_price_book_entry(id),
+  treatment text NOT NULL, included_qty text, qty_min integer, reservation_id uuid, reference_state text NOT NULL,
+  version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CONSTRAINT pricing_plan_item_sku UNIQUE (revision_id, sku_id),
+  CONSTRAINT chk_pricing_plan_item_treatment CHECK (treatment IN ('paid','optional','included')),
+  CONSTRAINT chk_pricing_plan_item_entry CHECK (treatment = 'included' OR price_book_entry_id IS NOT NULL),
+  CONSTRAINT chk_pricing_plan_item_included_qty CHECK (included_qty ~ '^[0-9]+(\.[0-9]+)?$'),
+  CONSTRAINT chk_pricing_plan_item_qty_min CHECK (qty_min >= 0),
+  CONSTRAINT chk_pricing_plan_item_reference_state
+    CHECK (reference_state IN ('unreserved','confirmation_pending','confirmed','lost'))
+);
+```
+
+Unique conflicts map to stable codes: PLAN_CODE_TAKEN, REVISION_NO_TAKEN, REVISION_DRAFT_EXISTS (the open-revision
+index), REVISION_PUBLISHED_EXISTS and ITEM_SKU_TAKEN. SQLite names only the columns of a partial index, so the two
+single-column revision indexes are told apart by the state the write sets. Deferred by the owner and not in the
+chain: the promotion tables (D-409), the migration-request table and the plan's retiring state (D-410), and the
+plan's bundle SKU with its unique index, the revision's grants and its sold-as columns (D-411); slices 04 and 06
+keep their planned shape.
 
 Audit and idempotency use the Products document's retained shapes, renamed pricing_. The audit trigger permits
 only the reserved one-way seal transition without changing record facts. The following is schema, not a new
@@ -656,8 +720,8 @@ act with 500 instead of being retried by the transaction; Products has the same 
 | 03 Prices, Windows & Dimension | prices-windows-dimension | `cpt-cf-bss-pricing-fr-price`, `cpt-cf-bss-pricing-fr-chain-windows`, `cpt-cf-bss-pricing-fr-pair-guard`, `cpt-cf-bss-pricing-fr-min-fee`, `cpt-cf-bss-pricing-fr-temporary-pair`, `cpt-cf-bss-pricing-fr-reference-protocol`; phase 2. |
 | 04 Plans | plans | `cpt-cf-bss-pricing-fr-plans`; phase 3. |
 | 05 Approvals | approvals | `cpt-cf-bss-pricing-fr-publish-changes`, `cpt-cf-bss-pricing-fr-approval-units`; phase 2. |
-| 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; phase 3. |
-| 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2). |
+| 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; deferred by the owner (D-409, D-410). |
+| 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2; quote not built, D-415). |
 
-All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-406.
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-415.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.

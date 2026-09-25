@@ -25,11 +25,11 @@
 
 Seven features match seven design slices and own 58 DoDs. Part 2a defines every phase in full, with all
 implementation boxes unchecked. Phase 2b demolishes the legacy code; phase 2c builds foundation, books/entries,
-prices/reference recovery, prices approvals and core events. Phase 3 adds plans/promotions/migration requests;
-phase 4 adds resolution, pinned reads, quote and consumer goldens. [DESIGN](DESIGN.md) defines the architecture.
+prices/reference recovery, prices approvals and core events. Phase 3 adds plans (the owner defers promotions, D-409, migration requests and retirement, D-410, and the sold-as bundle and grants, D-411);
+phase 4 adds resolution, pinned reads and consumer goldens; quote is not built (D-415). [DESIGN](DESIGN.md) defines the architecture.
 
 The spec is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, especially §2.2, §5–§8, §12–§13.
-[DECISIONS](DECISIONS.md) D-384–D-406 records the living rules and explicit no-listener/outbox decisions.
+[DECISIONS](DECISIONS.md) D-384–D-415 records the living rules and explicit no-listener/outbox decisions.
 
 ## 2. Entries
 
@@ -81,7 +81,7 @@ The spec is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, espec
 
 - **Type**: Core
 - **Phases**: 3.
-- **Purpose**: Publish independent revision structure against book coverage, preserving existing pins; author items, clone and retirement prerequisites.
+- **Purpose**: Publish independent revision structure against book coverage, preserving existing pins; author items, clone and retirement prerequisites. Retirement is deferred (D-410), and so are the sold-as bundle and grants (D-411).
 - **Depends On**: `cpt-cf-bss-pricing-feature-prices-windows-dimension`, `cpt-cf-bss-pricing-feature-approvals`.
 - **Scope**: 9 implementation DoDs in the linked FEATURE; APIs and storage in slice 04.
 - **Out of scope**: Consumer adapter implementation, actual Subscriptions movement and stand-data conversion. Later-phase behavior remains unimplemented at the phase 2 integration point.
@@ -109,7 +109,7 @@ The spec is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, espec
 
 - **Type**: Core
 - **Phases**: 3.
-- **Purpose**: Version dated percentage promotions and approve explicit subscription migration requests; retain period-aware previews without executing consumer-owned movement.
+- **Purpose**: Version dated percentage promotions and approve explicit subscription migration requests; retain period-aware previews without executing consumer-owned movement. Wholly deferred by the owner: promotions (D-409), migration requests and retirement (D-410).
 - **Depends On**: `cpt-cf-bss-pricing-feature-plans`, `cpt-cf-bss-pricing-feature-approvals`.
 - **Scope**: 7 implementation DoDs in the linked FEATURE; APIs and storage in slice 06.
 - **Out of scope**: Consumer adapter implementation, actual Subscriptions movement and stand-data conversion. Later-phase behavior remains unimplemented at the phase 2 integration point.
@@ -122,8 +122,8 @@ The spec is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, espec
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-feature-read-contract-events`
 
 - **Type**: Supporting
-- **Phases**: 4 for reads/quote; 2c for core events; 3 for added events.
-- **Purpose**: Deliver reproducible resolution matrices, pinned-price reads and Studio quote, plus typed transactional events and consumer goldens.
+- **Phases**: 4 for reads (quote is not built, D-415); 2c for core events; 3 for added events.
+- **Purpose**: Deliver reproducible resolution matrices, pinned-price reads and Studio quote, plus typed transactional events and consumer goldens. The Studio quote is not built (D-415).
 - **Depends On**: `cpt-cf-bss-pricing-feature-plans`, `cpt-cf-bss-pricing-feature-promotions-migrations`, `cpt-cf-bss-pricing-feature-approvals`.
 - **Scope**: 8 implementation DoDs in the linked FEATURE; APIs and storage in slice 07.
 - **Out of scope**: Consumer adapter implementation, actual Subscriptions movement and stand-data conversion. Later-phase behavior remains unimplemented at the phase 2 integration point.

@@ -4,7 +4,9 @@
 Historical decisions remain there and in git history; only living rules restated below govern the new model.
 **Authority:** `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, especially §2, §2.2 and §13,
 then this register, then code, then descriptive prose. D-399 is the explicit phase-plan deviation; D-403 overrides
-the spec's 422 wording.
+the spec's 422 wording; D-407 (items as a sub-resource) and D-413 (a copied reference attaches after its write) are
+the phase 3 plan's deviations; the owner defers promotions (D-409), migration requests and retirement (D-410),
+and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring (D-415).
 **Status:** model decisions accepted; implementation remains unchecked in the FEATUREs.
 
 <!-- toc -->
@@ -41,6 +43,15 @@ the spec's 422 wording.
 | D-404 | H | A draft belongs to its author | DECIDED 2026-09-25 · Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8) |
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
+| D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" |
+| D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
+| D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
+| D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
+| D-412 | M | The phase 2 schema is edited in place until the first deployment | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 15 |
+| D-413 | H | A copied item attaches its reference after the write | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write |
+| D-414 | H | A revision's references outlive it | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 14 |
+| D-415 | H | Quote is not built; the Studio is not wired to the API (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; deviation from spec §7.1 and §11 phase 4 |
 
 ## Entries
 
@@ -70,7 +81,7 @@ All tier bands use [from, to). Quantity 1000 belongs to the band beginning at 10
 
 #### D-388 [H] Minimum fee is per price per subscription per period
 
-Aggregate every bound value and slice rated by the same price, deduct included quantities, then apply its floor prorated by the fraction of the period covered, before promotions. Two values sharing a default price share one floor. Separate valued prices carry separate floors. No plan cap or plan minimum survives.
+Aggregate every bound value and slice rated by the same price, deduct included quantities, then apply its floor prorated by the fraction of the period covered, before promotions. Two values sharing a default price share one floor. Separate valued prices carry separate floors. No plan cap or plan minimum survives. Pricing stores and validates min_fee; Rating applies the floor (D-415).
 
 **Source:** §2 decision 13; §5.
 
@@ -106,13 +117,13 @@ bss-approval owns the shared engine shape; pricing owns prefixed tables and subj
 
 #### D-394 [H] Plans are versioned structure bound to one book
 
-Phase 3 publishes immutable revisions containing one book, paid/optional/included items, minimal Grants and optional sold-as bundle. Validate recurring frequency, meter uniqueness, usage-only included quantities, SKU lifecycle, foreign-book entries, book validity and coverage per value. blocked_by is computed from pending price units. Clone makes a draft; publishing a revision never moves existing pins.
+Phase 3 publishes immutable revisions containing one book, paid/optional/included items, minimal Grants and optional sold-as bundle. Validate recurring frequency, meter uniqueness, usage-only included quantities, SKU lifecycle, foreign-book entries, book validity and coverage per value. blocked_by is computed from pending price units. Clone makes a draft; publishing a revision never moves existing pins. Grants and the sold-as bundle are deferred (D-411), and so is retirement (D-410).
 
 **Source:** §5 plans; §6; §8.
 
 #### D-395 [H] Promotions are versioned and migrations are requests
 
-Phase 3 forbids overlapping plan promotions; [from_date, to_date) applies by period start. Approved edits increment promotion version and bindings pin id/version. An approved migration to a published revision persists its preview and emits SubscriptionMigrationRequested; Subscriptions executes movement and confirms retirement in its separate plan. Pricing never reports a request as an executed move.
+Phase 3 forbids overlapping plan promotions; [from_date, to_date) applies by period start. Approved edits increment promotion version and bindings pin id/version. An approved migration to a published revision persists its preview and emits SubscriptionMigrationRequested; Subscriptions executes movement and confirms retirement in its separate plan. Pricing never reports a request as an executed move. Both halves are deferred by the owner: promotions (D-409) and migration requests (D-410).
 
 **Source:** §5; §6; §11 phase 3.
 
@@ -124,13 +135,13 @@ All pricing POSTs require Idempotency-Key. The 24-hour store is keyed by tenant,
 
 #### D-397 [H] Consumer pins replace cohorts and catalog versions
 
-Phase 4 resolve returns a full per-item chain matrix, versioned descriptors and promotion inputs, never totals. Renewals walk all successors from their pin and stop before the first new price; signup selects the in-force price. Approved prices remain readable by id forever, including keep_for_bound predecessors. Usage binds lazily per value and slices at price boundaries. Quote is the Studio totals preview, not the consumer contract.
+Phase 4 resolve returns a full per-item chain matrix, versioned descriptors and promotion inputs (deferred with promotions, D-409), never totals. Renewals walk all successors from their pin and stop before the first new price; signup selects the in-force price. Approved prices remain readable by id forever, including keep_for_bound predecessors. Usage binds lazily per value and slices at price boundaries. Quote is the Studio totals preview, not the consumer contract, and it is not built (D-415).
 
 **Source:** §2 decision 6; §7.1; §12.
 
 #### D-398 [H] Reference reservation closes the lifecycle race
 
-Before creating an entry, reserve in Products, re-read the SKU, then write the object and receipt durably before confirming. Reserve/fence guards share the Products database. Never release because confirm timed out. Registry outage before the entry write is REGISTRY_UNAVAILABLE and writes no entry. Only entry references are built in phase 2; plan_item and sold_as follow in phase 3. See ADR-0004; bookkeeping: see D-401. The earlier pending_release wording is superseded by D-401.
+Before creating an entry, reserve in Products, re-read the SKU, then write the object and receipt durably before confirming. Reserve/fence guards share the Products database. Never release because confirm timed out. Registry outage before the entry write is REGISTRY_UNAVAILABLE and writes no entry. Only entry references are built in phase 2; plan_item follows in phase 3, and sold_as is deferred (D-411). See ADR-0004; bookkeeping: see D-401. The earlier pending_release wording is superseded by D-401.
 
 **Source:** §2 decision 17; §13.
 
@@ -142,7 +153,7 @@ Pricing reads bss_products_sdk::ProductsClient at write time for type and lifecy
 
 #### D-400 [H] Toolkit outbox and broker TypedEvent own event delivery
 
-Retire the gear-authored pricing_outbox without a relay in phase 2b. The new chain uses toolkit outbox migrations with prefix bss_pricing_outbox; writers accept the same scoped transaction as the state change. Events implement broker TypedEvent and retain the envelope-encoded interim sink pattern proved by Products. Only committed outbox rows dispatch. Core payloads are PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost; phase 3 adds plan, promotion and migration events.
+Retire the gear-authored pricing_outbox without a relay in phase 2b. The new chain uses toolkit outbox migrations with prefix bss_pricing_outbox; writers accept the same scoped transaction as the state change. Events implement broker TypedEvent and retain the envelope-encoded interim sink pattern proved by Products. Only committed outbox rows dispatch. Core payloads are PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost; phase 3 adds plan events (promotion events are deferred, D-409; migration and retirement events, D-410).
 
 **Source:** Phase 2 plan Task 2a.2 and 2c.8; Products phase 1 pattern.
 
@@ -195,3 +206,75 @@ POST /price-books/{id}/publish-changes that ticks one half of a temporary pair a
 On one chain (entry, dim_value), a proposed price that is neither temporary nor a pair's return may not start inside [effective_from, temporary_until) of an approved temporary price or of a temporary price in the same unit: the promo's end (its return, or its closed end) would undo it. It is refused 400 PRICE_INSIDE_TEMPORARY at the draft door (create, and a PATCH that moves the start), at submit, and at apply as APPLY_REFUSED. A temporary price whose window (effective_from, temporary_until) strictly contains the start of an approved price of its chain, or of a price in the same unit, is refused 400 TEMPORARY_SPANS_A_CHANGE at the draft door, at submit after a common-date shift, and at apply: normalisation would cut the promo at that start. A price that starts exactly on temporary_until is allowed, because it ends the promo. A nested pair's return belongs to its pair and is not refused by the first rule. The alternative, a price scheduled inside a promo that takes effect at the promo's end, needs a return re-derived after approval; it is left to the owner.
 
 **Source:** Phase 2 second review (behaviour MEDIUM-2).
+
+#### D-407 [H] Plan items are reserved references; items are a sub-resource
+
+**Status:** DECIDED 2026-09-25.
+
+An item added by POST /plan-revisions/{id}/items reserves kind plan_item with ref_id = the item id, through phase 2's create op (D-401: the op before the reserve, the SKU re-read, the write, the confirm; a 503 writes nothing). plan_item is the only new reference kind of phase 3: the sold_as kind waits with the sold-as bundle (D-411). Items are POST /plan-revisions/{id}/items and PATCH or DELETE /plan-items/{id}, not a list inside PATCH /plan-revisions/{id}. This deviates from spec §7.2 on purpose: each added or removed item is one op with its own Idempotency-Key and its own recovery.
+
+**Source:** Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 (items inside the revision PATCH).
+
+#### D-408 [H] Plan checks read every SKU fresh; descriptors are information, never content
+
+**Status:** DECIDED 2026-09-25.
+
+Checks, submit and apply read each item's SKU through sku_for_write (D-399). A deprecated SKU may stay in a new revision of the SAME plan that carries it over from the published revision; it cannot be added, and a clone (a new plan) that carries it is red (ITEM_SKU_DEPRECATED). A draft, retiring or retired SKU is red (ITEM_SKU_UNAVAILABLE). A bundle SKU cannot be an item (ITEM_BUNDLE_SKU). An entry that a plan item names cannot be deleted (ENTRY_IN_USE). The approval snapshots of revisions and of prices carry each SKU's current descriptors for the reviewer, OUTSIDE the fingerprinted after: a GL change must not refresh every pending unit. They are gathered in collect or validate_submit and cached on the subject, because snapshot is synchronous.
+
+**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots).
+
+#### D-409 [H] Promotions are deferred (owner, 2026-09-25)
+
+**Status:** DECIDED 2026-09-25.
+
+The owner took promotions out of phase 3: there are no promotion tables, doors, promotion approval kind or PromotionPublished event until the owner brings them back. resolve's "active promotion (id, version)" is deferred with them (spec §2.4). The promotion DoDs in features/promotions-migrations.md stay unticked, each marked deferred by the owner; where DESIGN, slice 06 or the features describe promotion routes or tables, the text stays and is marked deferred. The promotion half of D-395 waits with them. The phase 3 plan's earlier shape for promotions (one identity row, one row per version, overlap against each other promotion's current approved and open pending version, end-today and cancel as new versions) is kept in the plan's revision 2 for their return.
+
+**Source:** Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4. Supersedes the Phase 3 plan rev 2 D-409 (versioned promotion rows).
+
+#### D-410 [H] Migration requests and plan retirement are deferred (owner, 2026-09-25)
+
+**Status:** DECIDED 2026-09-25.
+
+The owner took migration requests, their preview and plan retirement out of phase 3: there is no migration-request table, no POST /plans/{id}/migrations or /retire door, no migration approval kind, no retiring plan state, and no SubscriptionMigrationRequested or PlanRetired event until the owner brings them back. The migration and retirement DoDs stay unticked, each marked deferred by the owner; where the DESIGN, the PRD, slices 04 and 06 or the features describe these routes, tables or events, the text stays and is marked deferred. The migration half of D-395 and the retirement prerequisite of D-394 wait with them. The phase 3 plan's rev 2 shape (caller-supplied subscription periods, a request that moves nothing in pricing, retirement as a request against another plan) is kept in the plan for their return.
+
+**Source:** Owner, 2026-09-25, during Run 3.1; spec §11 phase 3. Supersedes the Phase 3 plan rev 2 D-410 (caller-supplied periods) and D-411 (retirement's request half).
+
+#### D-411 [H] The sold-as bundle and plan grants are deferred (owner, 2026-09-25)
+
+**Status:** DECIDED 2026-09-25.
+
+The owner took the sold-as bundle SKU and the revision's grants out of phase 3: pricing_plan carries no bundle_sku_id and no bundle unique index, pricing_plan_revision carries no grants, bundle_sku_id or sold_as reference columns, the BUNDLE_SKU check is not built, and the sold_as reference kind waits with them. A bundle SKU still cannot be an item (ITEM_BUNDLE_SKU). Where the DESIGN, the PRD, slice 04 or the plans feature describe sold-as or grants, the text stays and is marked deferred. The minimal Grants and optional sold-as bundle of D-394 wait with them.
+
+**Source:** Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision.
+
+#### D-412 [M] The phase 2 schema is edited in place until the first deployment
+
+**Status:** DECIDED 2026-09-25.
+
+The chain has never been deployed. This phase edits m20260926_000006 (reference ops) in place in Run 3.2 and adds m20260926_000010 onward. A database migrated before keeps the old shape silently (CREATE … IF NOT EXISTS); the phase 4 legacy-history guard is the protection.
+
+**Source:** Phase 3 plan rev 2; plan review LOW 15.
+
+#### D-413 [H] A copied item attaches its reference after the write
+
+**Status:** DECIDED 2026-09-25.
+
+POST /plans/{id}/revisions (copy) and POST /plans/{id}/clone write the revision and every copied item in ONE transaction with reference_state = unreserved and reservation_id NULL, plus one attach op per item. The attach op has the rereserve shape: reserve, then confirm; a refusal marks the item's reference lost. This deviates from "reserve before write" on purpose: the copied SKU is already protected by the SOURCE revision's live reference, which superseded and published revisions never release, so no retire or type fence can slip in between. Products admits a deprecated SKU for a reservation, so a carried-over deprecated SKU attaches. The door drives the attach ops best-effort and answers 201; the ticker finishes the rest. Submit and apply require every item reference to be confirmed, or confirmation_pending with a receipt; otherwise the checks show ITEM_REFERENCE_PENDING or ITEM_REFERENCE_LOST. POST …/items alone keeps D-401's create op.
+
+**Source:** Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write.
+
+#### D-414 [H] A revision's references outlive it
+
+**Status:** DECIDED 2026-09-25.
+
+Items of published and superseded revisions keep their references, fail-safe, because a pinned subscription may still be rated on them. So a SKU ever sold in a revision cannot be retired until those references are released. The release waits until Subscriptions reports that no subscription pins the revision; that report is owed to the Subscriptions integration. The delete of a draft revision releases its items' references through delete ops.
+
+**Source:** Phase 3 plan rev 2; plan review LOW 14.
+
+#### D-415 [H] Quote is not built; the Studio is not wired to the API (owner, 2026-09-25)
+
+**Status:** DECIDED 2026-09-25.
+
+GET /pricing/v1/quote is not built in this programme, and the PriceBook Studio is not wired to the API; no Studio programme follows. Quote was the Studio's preview, not a consumer contract: consumers read resolve and GET /pricing/v1/prices/{id}. The minimum-fee floor arithmetic of D-388 belongs to Rating, with its acceptance example: two values rated 10 + 10 on one default price with min_fee 30 bill 30; two own prices with min_fee 30 each bill 60 (Rating T-D-38). cpt-cf-bss-pricing-fr-min-fee stays: pricing stores and validates min_fee and resolve returns it. In the PRD, DESIGN, slice 07 and features/read-contract-events.md every quote statement stays and is marked not built (D-415); the quote and minimum-fee-floor DoDs stay unticked for that reason.
+
+**Source:** Owner, 2026-09-25, during Run 3.1; deviation from spec §7.1 (GET /pricing/v1/quote) and §11 phase 4.

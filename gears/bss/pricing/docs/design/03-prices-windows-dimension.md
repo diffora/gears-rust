@@ -33,7 +33,7 @@ Implement immutable money chains, models, temporary pairs and price floors; prot
 Requirements: `cpt-cf-bss-pricing-fr-price`, `cpt-cf-bss-pricing-fr-chain-windows`, `cpt-cf-bss-pricing-fr-pair-guard`, `cpt-cf-bss-pricing-fr-min-fee`, `cpt-cf-bss-pricing-fr-temporary-pair`, `cpt-cf-bss-pricing-fr-reference-protocol`. Architecture: `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-reservations-client`, `cpt-cf-bss-pricing-principle-reserve-before-write`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-seq-reserve-write-confirm`, `cpt-cf-bss-pricing-seq-temporary-pair`.
 [FEATURE](../features/prices-windows-dimension.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: `cpt-cf-bss-pricing-feature-books-entries`.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-406.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-415.
 
 ## 2. Actor Flows (CDSL)
 
@@ -65,7 +65,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-prices-windows-dimension-model-and-f
 1. [ ] - `p1` - Derive permitted models from charge kind; validate nonnegative prices and coherent model parameters. - `inst-prices-windows-dimension-model-and-floor-1`
 2. [ ] - `p1` - Evaluate per_unit, graduated, volume and package with decimal arithmetic and half-open tier bands; recurring/one_time allow flat or per_unit. - `inst-prices-windows-dimension-model-and-floor-2`
 3. [ ] - `p1` - Preserve usage model kind, package size and SKU (unit, usage_type_ref) read as of each price's start across successors, a start before the SKU's first version reading that first version (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-prices-windows-dimension-model-and-floor-3`
-4. [ ] - `p1` - Aggregate rated amounts after included quantities by price/subscription/period across every bound value and slice; apply the prorated price floor, then promotions. - `inst-prices-windows-dimension-model-and-floor-4`
+4. [ ] - `p1` - Aggregate rated amounts after included quantities by price/subscription/period across every bound value and slice; apply the prorated price floor, then promotions; not built in pricing, Rating applies the floor and pricing stores and validates min_fee (D-415). - `inst-prices-windows-dimension-model-and-floor-4`
 
 ### reserve-write-confirm
 
@@ -127,7 +127,7 @@ The sole definitions live in [features/prices-windows-dimension.md](../features/
 3. PRD AC #5 / `cpt-cf-bss-pricing-dod-chain-windows`: Given default and EU prices, when EU gains a successor then default stays unchanged; duplicate approved start, overlap and past start fail.
 4. PRD AC #5 / `cpt-cf-bss-pricing-dod-dimension-fallback`: Given a closed EU tail and an open default, when its end date arrives then default applies; if both are absent selection reports uncovered.
 5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, model, dated unit or meter change returns 400 CHAIN_MODEL_CHANGED.
-6. PRD AC #7 / `cpt-cf-bss-pricing-dod-min-fee-price-period`: Given two 10 charges bound to one price with floor 30 then the result is 30; two distinct floor-30 prices yield 60, not 30 or 120.
+6. PRD AC #7 / `cpt-cf-bss-pricing-dod-min-fee-price-period` (the floor is applied by Rating, D-415): Given two 10 charges bound to one price with floor 30 then the result is 30; two distinct floor-30 prices yield 60, not 30 or 120.
 7. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-pair`: Given an existing EU chain, when a five-day temporary change shifts by three days then both boundaries shift and the return stays EU; partial pair submission fails.
 8. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-value-fallback`: Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return price exists.
 9. PRD AC #4 / `cpt-cf-bss-pricing-dod-price-pending-guard`: Given a pending price and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited.
