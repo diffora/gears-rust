@@ -180,15 +180,40 @@ pub fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Doma
         .map_err(|e| DomainError::InvalidRequest(format!("the request body is not readable: {e}")))
 }
 
-/// Hash the parsed request's serialization, using ordered maps for stable object order.
+/// Hash the request's canonical JSON: object keys sorted at every depth, so the digest never
+/// depends on the order a client (or a `preserve_order` build of `serde_json`) put them in.
 ///
 /// # Errors
 /// Returns an internal error when serialization fails.
 pub fn request_digest<T: Serialize>(request: &T) -> Result<Vec<u8>, DomainError> {
-    let canonical = serde_json::to_string(request).map_err(|e| {
+    let value = serde_json::to_value(request).map_err(|e| {
         DomainError::Internal(format!("cannot render the request for its digest: {e}"))
     })?;
-    Ok(payload_hash(&canonical))
+    Ok(payload_hash(&canonical(&value)))
+}
+
+/// Render a JSON value with object keys sorted recursively (as `bss_approval::hash` does);
+/// arrays keep their order.
+#[must_use]
+pub fn canonical(value: &serde_json::Value) -> String {
+    fn sorted(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(fields) => {
+                let mut keys: Vec<&String> = fields.keys().collect();
+                keys.sort();
+                serde_json::Value::Object(
+                    keys.into_iter()
+                        .map(|k| (k.clone(), sorted(&fields[k])))
+                        .collect(),
+                )
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(sorted).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    sorted(value).to_string()
 }
 
 /// Hash canonical payload bytes with the existing SHA-256 provider.

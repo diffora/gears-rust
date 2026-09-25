@@ -80,3 +80,65 @@ fn payload_hash_keeps_the_sha256_contract() {
         request_digest(&serde_json::json!({"a":3,"b":2})).unwrap()
     );
 }
+
+/// Surface F3: where `serde_json` keeps insertion order (`preserve_order`, on in the e2e server
+/// build through file-parser), a parsed `Value` keeps the client's key order. Two renderings
+/// of the same members in different orders must hash alike; these two structs serialise the
+/// same members in opposite orders on every feature set.
+#[test]
+fn the_digest_is_independent_of_key_order_at_every_depth() {
+    #[derive(serde::Serialize)]
+    struct Inner {
+        z: u8,
+        a: u8,
+    }
+    #[derive(serde::Serialize)]
+    struct InnerSorted {
+        a: u8,
+        z: u8,
+    }
+    #[derive(serde::Serialize)]
+    struct Unsorted {
+        name: &'static str,
+        code: &'static str,
+        items: Vec<Inner>,
+    }
+    #[derive(serde::Serialize)]
+    struct Sorted {
+        code: &'static str,
+        items: Vec<InnerSorted>,
+        name: &'static str,
+    }
+    let unsorted = Unsorted {
+        name: "Standard",
+        code: "standard",
+        items: vec![Inner { z: 2, a: 1 }],
+    };
+    let sorted = Sorted {
+        code: "standard",
+        items: vec![InnerSorted { a: 1, z: 2 }],
+        name: "Standard",
+    };
+    assert_ne!(
+        serde_json::to_string(&unsorted).unwrap(),
+        serde_json::to_string(&sorted).unwrap(),
+        "the renderings really differ in order"
+    );
+    assert_eq!(
+        request_digest(&unsorted).unwrap(),
+        request_digest(&sorted).unwrap()
+    );
+    assert_eq!(
+        canonical(&serde_json::to_value(&unsorted).unwrap()),
+        r#"{"code":"standard","items":[{"a":1,"z":2}],"name":"Standard"}"#
+    );
+    let other = Sorted {
+        code: "standard",
+        items: vec![InnerSorted { a: 1, z: 3 }],
+        name: "Standard",
+    };
+    assert_ne!(
+        request_digest(&unsorted).unwrap(),
+        request_digest(&other).unwrap()
+    );
+}
