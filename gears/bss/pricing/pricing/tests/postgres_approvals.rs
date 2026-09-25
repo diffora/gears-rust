@@ -26,6 +26,7 @@ fn body(from: &str) -> Value {
 /// Two authoring processes on their own pools of one database, one book and one usage price
 /// whose default chain already has an approved row.
 struct Two {
+    pg: pg_support::Pg,
     a: axum::Router,
     b: axum::Router,
     db: DBProvider<DbError>,
@@ -98,6 +99,7 @@ async fn two() -> Two {
     base.effective_from = day("2031-01-01");
     row_repo::insert(&conn, &scope, base).await.unwrap();
     Two {
+        pg,
         a,
         b,
         db,
@@ -319,4 +321,75 @@ async fn postgres_the_approved_start_index_refuses_an_apply_onto_a_taken_start()
         .unwrap()
         .unwrap();
     assert_eq!(still.state, "draft", "the refused transaction rolled back");
+}
+
+/// Every envelope type in the Postgres outbox, in enqueue order.
+async fn event_types(pg: &pg_support::Pg) -> Vec<String> {
+    use sea_orm::{ConnectionTrait, DbBackend, Statement};
+    pg.raw()
+        .await
+        .query_all_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT convert_from(payload, 'UTF8')::jsonb ->> 'type' AS t \
+             FROM public.bss_pricing_outbox_body ORDER BY id"
+                .to_owned(),
+        ))
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.try_get::<String>("", "t").unwrap())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_an_apply_commits_its_rows_and_both_events_and_a_refused_one_leaves_none() {
+    let t = two().await;
+    let published = "gts.cf.core.events.event.v1~cf.bss.pricing.price_rows_published.v1~";
+    let decided = "gts.cf.core.events.event.v1~cf.bss.pricing.approval_unit_decided.v1~";
+    let march = t.unit("m", "2031-03-01").await;
+    let (s, b, _) = request(
+        &t.b,
+        &user_of(t.tenant),
+        "POST",
+        &format!("/approval-units/{march}/approve"),
+        json!({"generation":1}),
+        None,
+        Some("m"),
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(event_types(&t.pg).await, vec![published, decided]);
+    assert_eq!(t.approved_chain().await.len(), 2);
+
+    // A row approved on the unit's start underneath it: the apply is refused and rolls back.
+    let june = t.unit("j", "2031-06-01").await;
+    let conn = t.db.conn().unwrap();
+    let scope = AccessScope::for_tenant(t.tenant);
+    let p = price_repo::find(&conn, &scope, t.tenant, t.price)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut taken = price_support::row(&p);
+    taken.version_no = 99;
+    taken.state = "approved".into();
+    taken.effective_from = day("2031-06-01");
+    row_repo::insert(&conn, &scope, taken).await.unwrap();
+    let (s, b, _) = request(
+        &t.b,
+        &user_of(t.tenant),
+        "POST",
+        &format!("/approval-units/{june}/approve"),
+        json!({"generation":1}),
+        None,
+        Some("j"),
+    )
+    .await;
+    assert_eq!(s, 409, "{b}");
+    assert!(b.to_string().contains("APPLY_REFUSED"), "{b}");
+    assert_eq!(
+        event_types(&t.pg).await,
+        vec![published, decided],
+        "the refused apply left no event"
+    );
 }
