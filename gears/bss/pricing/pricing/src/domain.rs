@@ -37,6 +37,7 @@ pub mod book;
 pub mod dimension;
 pub mod money;
 pub mod price;
+pub mod reference_op;
 pub mod row;
 #[cfg(test)]
 mod test_support;
