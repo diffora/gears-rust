@@ -267,7 +267,7 @@ async fn record(
 /// # Errors
 /// Returns the canonical refusal.
 pub async fn submit_row(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
-    support::transaction(db, move |tx| {
+    support::unit_transaction(db, move |tx| {
         let cmd = cmd.clone();
         Box::pin(async move {
             let endpoint = format!("/bss-pricing/v1/rows/{id}/submit");
@@ -379,7 +379,7 @@ pub async fn publish(
     input: PricingPublishChangesRequest,
 ) -> Result<Response, CanonicalError> {
     let date = support::date(input.common_effective_date.clone(), "common_effective_date")?;
-    support::transaction(db, move |tx| {
+    support::unit_transaction(db, move |tx| {
         let (cmd, input) = (cmd.clone(), input.clone());
         Box::pin(async move {
             let endpoint = format!("/bss-pricing/v1/price-books/{book}/publish-changes");
@@ -567,7 +567,7 @@ pub async fn vote(
     action: Vote,
     body: Option<PricingVoteRequest>,
 ) -> Result<Response, CanonicalError> {
-    let result = support::transaction_door(db, move |tx| {
+    let result = support::unit_transaction_door(db, move |tx| {
         let (cmd, body) = (cmd.clone(), body.clone());
         Box::pin(async move { vote_in(tx, &cmd, id, action, body).await })
     })

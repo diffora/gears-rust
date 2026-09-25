@@ -5,6 +5,7 @@ use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{EmptyRequest, SkuChangeRequest, SkuDto, SubmitReceipt},
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
+    unit_tx_to_canonical,
 };
 use crate::{
     authz::actions,
@@ -464,7 +465,7 @@ async fn execute(
             problem.context["references"] = rows;
             Ok(problem.into_response())
         }
-        Err(e) => Err(tx_to_canonical(e)),
+        Err(e) => Err(unit_tx_to_canonical(e)),
     }
 }
 async fn unfence(

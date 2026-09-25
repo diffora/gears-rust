@@ -6,6 +6,7 @@ use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{UnitDto, UnitList, VoteReceipt, VoteRequest},
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
+    unit_tx_to_canonical,
 };
 use crate::{
     authz::actions,
@@ -659,7 +660,7 @@ async fn vote(
             DomainError::from(ApprovalError::GenerationMismatch { seen, current }).into(),
             current,
         )),
-        Err(e) => Err(tx_to_canonical(e)),
+        Err(e) => Err(unit_tx_to_canonical(e)),
     }
 }
 

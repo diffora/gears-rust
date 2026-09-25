@@ -228,6 +228,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
 | Invalid dimension or row window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
 | Pending item, stale object, contended unit | 409 ROW_LOCKED_PENDING, STALE_REVISION or UNIT_CONTENDED |
+| Transaction still contended after its bounded retries | 409 CONTENDED; UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
 | Author approval | 403 SOD_VIOLATION |
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |

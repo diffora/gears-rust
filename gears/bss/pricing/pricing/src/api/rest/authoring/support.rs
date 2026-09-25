@@ -17,6 +17,9 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 #[resource_error(gts_id!("cf.bss.pricing.price_book.v1~"))]
 struct PricingResource;
+#[cfg(test)]
+#[path = "support_tests.rs"]
+mod tests;
 pub fn require_authenticated(
     ctx: Option<Extension<SecurityContext>>,
 ) -> Result<SecurityContext, CanonicalError> {
@@ -237,6 +240,12 @@ impl From<DoorError> for CanonicalError {
         }
     }
 }
+/// A mutation door's refusal when its transaction still meets retryable contention after
+/// the toolkit's retries: a lost race the client may retry, never a 500.
+pub const CONTENDED: &str = "CONTENDED";
+/// The same refusal at an approval-unit door (submit, publish-changes, approve, reject,
+/// withdraw), where the design names it `UNIT_CONTENDED` (D-403).
+pub const UNIT_CONTENDED: &str = "UNIT_CONTENDED";
 pub async fn transaction<T: Send + 'static>(
     db: &Db,
     work: impl for<'a> FnMut(
@@ -247,11 +256,53 @@ pub async fn transaction<T: Send + 'static>(
 ) -> Result<T, CanonicalError> {
     transaction_door(db, work).await.map_err(Into::into)
 }
-/// The serializable retrying transaction, keeping the door's typed refusal.
+/// [`transaction`] for an approval-unit door: exhausted contention is `UNIT_CONTENDED`.
 /// # Errors
 /// Returns the last attempt's refusal or storage failure.
+pub async fn unit_transaction<T: Send + 'static>(
+    db: &Db,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, CanonicalError> {
+    transaction_coded(db, UNIT_CONTENDED, work)
+        .await
+        .map_err(Into::into)
+}
+/// The serializable retrying transaction, keeping the door's typed refusal.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure; contention the retries could not
+/// clear is `CONTENDED`.
 pub async fn transaction_door<T: Send + 'static>(
     db: &Db,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    transaction_coded(db, CONTENDED, work).await
+}
+/// [`transaction_door`] for an approval-unit door: exhausted contention is `UNIT_CONTENDED`.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure.
+pub async fn unit_transaction_door<T: Send + 'static>(
+    db: &Db,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    transaction_coded(db, UNIT_CONTENDED, work).await
+}
+/// Run `work` serializably with the toolkit's contention retries. A driver error the retry
+/// classifier still calls contention after the last attempt becomes 409 `code`.
+async fn transaction_coded<T: Send + 'static>(
+    db: &Db,
+    code: &'static str,
     work: impl for<'a> FnMut(
         &'a DbTx<'a>,
     ) -> std::pin::Pin<
@@ -267,6 +318,24 @@ pub async fn transaction_door<T: Send + 'static>(
         work,
     )
     .await
+    .map_err(|error| exhausted_contention(db.backend(), code, error))
+}
+/// Classify a finished transaction's error: retryable contention is the door's 409 `code`.
+#[must_use]
+pub fn exhausted_contention(
+    backend: sea_orm::DbBackend,
+    code: &'static str,
+    error: DoorError,
+) -> DoorError {
+    match &error {
+        DoorError::Repo(RepoError::Driver { source, .. })
+            if toolkit_db::contention::is_retryable_contention(backend, source) =>
+        {
+            tracing::warn!(error=%error, code, "pricing transaction contention outlasted its retries");
+            conflict(code).into()
+        }
+        _ => error,
+    }
 }
 pub fn response<T: serde::Serialize>(
     status: StatusCode,

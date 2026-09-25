@@ -173,8 +173,40 @@ pub(crate) fn contention_db_err(e: &TxError) -> Option<&sea_orm::DbErr> {
         | TxError::FencedReferences { .. } => None,
     }
 }
-/// Convert only after the retry loop has finished.
+/// Convert only after the retry loop has finished. Contention the retries could not clear is
+/// a lost race the client may retry: 409 `CONTENDED`, never a 500.
 pub(crate) fn tx_to_canonical(e: TxError) -> CanonicalError {
+    tx_to_canonical_coded(e, false)
+}
+/// [`tx_to_canonical`] for an approval-unit door (submit, change, retire, approve, reject,
+/// withdraw), where exhausted contention is `UNIT_CONTENDED` like a lost version race.
+pub(crate) fn unit_tx_to_canonical(e: TxError) -> CanonicalError {
+    tx_to_canonical_coded(e, true)
+}
+/// Whether a driver error is contention the toolkit's retry classifier would retry. This
+/// gear runs on `PostgreSQL` or `SQLite` only, whose signatures do not overlap, and the
+/// conversion sites hold no backend; the classifier is asked for both.
+fn exhausted_contention(source: &sea_orm::DbErr) -> bool {
+    [sea_orm::DbBackend::Postgres, sea_orm::DbBackend::Sqlite]
+        .into_iter()
+        .any(|backend| toolkit_db::contention::is_retryable_contention(backend, source))
+}
+fn tx_to_canonical_coded(e: TxError, unit: bool) -> CanonicalError {
+    if contention_db_err(&e).is_some_and(exhausted_contention) {
+        tracing::warn!(
+            unit,
+            "bss-products: transaction contention outlasted its retries"
+        );
+        return if unit {
+            DomainError::from(bss_approval::ApprovalError::Contended).into()
+        } else {
+            DomainError::Conflict {
+                code: "CONTENDED",
+                detail: "a concurrent writer held this data through every retry; retry".into(),
+            }
+            .into()
+        };
+    }
     match e {
         TxError::Refused(d) => d.into(),
         TxError::FencedReferences { code, rows } => DomainError::Conflict {
@@ -226,6 +258,10 @@ pub(crate) fn json_body<T>(
         DomainError::Validation(report).into()
     })
 }
+
+#[cfg(test)]
+#[path = "rest_tests.rs"]
+mod tests;
 
 impl From<crate::infra::events::EventsError> for TxError {
     fn from(error: crate::infra::events::EventsError) -> Self {
