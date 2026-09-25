@@ -139,7 +139,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-key`; PRD AC #3.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-metadata`
 
-invoice_line_override remains editable under If-Match. dimension_key changes only before any valued row exists; approved rows also prevent price deletion (spec §7.2, phase 2c.6).
+invoice_line_override remains editable under If-Match. dimension_key changes only before any valued row exists; approved or pending rows prevent price deletion with PRICE_ROWS_IN_USE, while draft and rejected rows are deleted with the price (spec §7.2, phase 2c.6).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-key`; PRD AC #3.
 

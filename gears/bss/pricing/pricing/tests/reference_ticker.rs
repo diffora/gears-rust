@@ -526,6 +526,7 @@ async fn cancelling_releasing_backoff_and_threshold_never_drop_work() {
         } else {
             assert_eq!(first.0, 201);
             script.set(12);
+            // The delete committed; its release proceeds through the op and the ticker.
             assert_eq!(
                 f.call(
                     "DELETE",
@@ -536,7 +537,7 @@ async fn cancelling_releasing_backoff_and_threshold_never_drop_work() {
                 )
                 .await
                 .0,
-                503
+                204
             );
         }
         let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());

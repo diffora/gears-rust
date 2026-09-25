@@ -209,7 +209,7 @@ impact added when those dependencies exist. Never label unavailable phase 3 impa
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
 | Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/prices; GET /price-books/{id}/export |
-| Prices | 2 | POST /price-books/{id}/prices with sku_id, period?, dimension_key?; PATCH /prices/{id} for invoice_line_override and permitted dimension_key changes; DELETE /prices/{id} only without approved rows |
+| Prices | 2 | POST /price-books/{id}/prices with sku_id, period?, dimension_key?; PATCH /prices/{id} for invoice_line_override and permitted dimension_key changes; DELETE /prices/{id} answers 204 once removed, deleting its draft and rejected rows with it; approved or pending rows refuse 409 PRICE_ROWS_IN_USE |
 | Rows | 2 | POST /prices/{id}/rows; PATCH/DELETE /rows/{id} draft only; POST /rows/{id}/submit; POST /price-books/{id}/publish-changes with row_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys |

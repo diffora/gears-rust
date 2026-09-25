@@ -200,12 +200,16 @@ pub(super) async fn delete(
             if m.reference_state == "confirmation_pending" {
                 return Err(support::conflict("PRICE_CONFIRMATION_PENDING").into());
             }
-            for row in row_repo::for_price(tx, &scope, tenant, id).await? {
-                if row.state != "draft" || row.pending_unit_id.is_some() {
-                    return Err(support::conflict("PRICE_ROWS_IN_USE").into());
-                }
-                row_repo::delete_draft(tx, &scope, tenant, row.id, row.version).await?;
+            // Approved or pending money blocks deletion; drafts and rejected proposals go with
+            // the price (a rejected row's history stays in its unit's snapshot).
+            let rows = row_repo::for_price(tx, &scope, tenant, id).await?;
+            if rows.iter().any(|row| {
+                !matches!(row.state.as_str(), "draft" | "rejected") || row.pending_unit_id.is_some()
+            }) {
+                return Err(support::conflict("PRICE_ROWS_IN_USE").into());
             }
+            let rows: Vec<_> = rows.iter().map(|row| (row.id, row.version)).collect();
+            row_repo::delete_unapproved(tx, &scope, tenant, &rows).await?;
             let work = Work {
                 book_id: m.book_id,
                 input: PricingPriceCreate {
@@ -236,13 +240,18 @@ pub(super) async fn delete(
         })
     })
     .await?;
-    reference_work::drive(
+    // The price is gone once the transaction commits: answer 204. The release is durable work;
+    // what this door does not finish, the ticker does.
+    if let Err(error) = reference_work::drive(
         &state,
         &original_ctx,
         op_id,
         Arc::new(WallClock),
         Caller::Door,
     )
-    .await?;
+    .await
+    {
+        tracing::warn!(op_id=%op_id, error=%error, "pricing price release deferred to the ticker");
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

@@ -283,6 +283,51 @@ pub async fn delete_drafts(
         })
     }
 }
+/// Delete every row of a price being deleted, in one statement: only drafts and rejected
+/// rows, none owned by a pending unit, each at its observed version. A rejected row's review
+/// history stays in its approval unit's snapshot.
+/// # Errors
+/// A row that changed or is not deletable is a `VERSION_CONFLICT`; database failures keep
+/// their type.
+pub async fn delete_unapproved(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    rows: &[(Uuid, i64)],
+) -> Result<(), RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut any = Condition::any();
+    for (id, version) in rows {
+        any = any.add(
+            Condition::all()
+                .add(e::Column::Id.eq(*id))
+                .add(e::Column::Version.eq(*version)),
+        );
+    }
+    let result = e::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(any)
+                .add(e::Column::State.is_in(["draft", "rejected"]))
+                .add(e::Column::PendingUnitId.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete unapproved rows".into(), e))?;
+    if usize::try_from(result.rows_affected).ok() == Some(rows.len()) {
+        Ok(())
+    } else {
+        Err(RepoError::Conflict {
+            code: "VERSION_CONFLICT",
+        })
+    }
+}
 /// Run price-row apply work under serializable isolation, retrying driver contention.
 /// The approval subject and doors use this boundary when they arrive in Task 2c.7.
 /// # Errors

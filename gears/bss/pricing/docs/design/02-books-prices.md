@@ -84,7 +84,7 @@ State definition: `cpt-cf-bss-pricing-state-books-prices` in the FEATURE.
 
 ## 5. API Surface
 
-Under /bss-pricing/v1: POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/prices; GET /price-books/{id}/export; POST /price-books/{id}/prices; PATCH/DELETE /prices/{id}; GET/PUT /settings and /dimension-keys. Price deletion requires no approved rows. POST requires Idempotency-Key; PATCH/PUT require If-Match. Permissions are read, author and settings as appropriate.
+Under /bss-pricing/v1: POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/prices; GET /price-books/{id}/export; POST /price-books/{id}/prices; PATCH/DELETE /prices/{id}; GET/PUT /settings and /dimension-keys. Price deletion refuses approved or pending rows with 409 PRICE_ROWS_IN_USE; draft and rejected rows are deleted with the price (a rejected row's review history stays in its unit snapshot), and DELETE answers 204 once the removal commits while the release completes as durable reference work. POST requires Idempotency-Key; PATCH/PUT require If-Match. Permissions are read, author and settings as appropriate.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.

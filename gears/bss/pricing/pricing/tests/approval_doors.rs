@@ -934,3 +934,83 @@ async fn every_act_is_audited_with_its_actor_subject_and_correlation() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_price_with_only_draft_or_rejected_rows_is_deleted_with_them() {
+    // Rejected rows carry no approved money; their review history stays in the unit snapshot.
+    let g = gov(1).await;
+    let reviewer = g.f.user();
+    let rejected = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&g.f.ctx, rejected, "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    let unit = receipt["unit"].clone();
+    let (status, b, _) = g
+        .vote(
+            &reviewer,
+            &unit,
+            "reject",
+            json!({"generation":1,"note":"wrong sku"}),
+            "reject",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(g.row(&rejected["id"]).await.state, "rejected");
+    let draft = &g.draft("b", body("2031-04-01")).await[0];
+    let path = format!("/prices/{}", g.price_id());
+    let deleted = g.f.call("DELETE", &path, json!({}), None, None).await;
+    assert_eq!(deleted.0, 204, "{deleted:?}");
+    assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 404);
+    let tenant = g.f.ctx.subject_tenant_id();
+    for row in [rejected, draft] {
+        assert!(
+            row_repo::find(
+                &g.f.db.conn().unwrap(),
+                &AccessScope::for_tenant(tenant),
+                tenant,
+                row["id"].as_str().unwrap().parse().unwrap(),
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+    }
+    let card = g.card(&unit).await;
+    assert_eq!(card["state"], "rejected");
+    assert_eq!(
+        card["snapshot"]["rows"][0]["after"]["price"],
+        json!({"rate":"0.10"}),
+        "the rejected proposal's history survives its row"
+    );
+}
+
+#[tokio::test]
+async fn a_price_with_pending_or_approved_rows_refuses_deletion() {
+    let g = gov(1).await;
+    let pending = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&g.f.ctx, pending, "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    let path = format!("/prices/{}", g.price_id());
+    let refused = g.f.call("DELETE", &path, json!({}), None, None).await;
+    assert_eq!(refused.0, 409, "{refused:?}");
+    assert!(
+        code(&refused.1).contains("PRICE_ROWS_IN_USE"),
+        "{refused:?}"
+    );
+    let (status, b, _) = g
+        .vote(
+            &g.f.user(),
+            &receipt["unit"],
+            "approve",
+            json!({"generation":1}),
+            "approve",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    let refused = g.f.call("DELETE", &path, json!({}), None, None).await;
+    assert_eq!(refused.0, 409, "{refused:?}");
+    assert!(
+        code(&refused.1).contains("PRICE_ROWS_IN_USE"),
+        "{refused:?}"
+    );
+    assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 200);
+}
