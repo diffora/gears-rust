@@ -40,3 +40,13 @@ fn prototype_dimension_code_grammar() {
         "DIM_KEY_INVALID"
     );
 }
+
+#[test]
+fn prototype_dimension_trims_and_ignores_blank_values() {
+    assert!(validate(" region ", &[" eu ".into(), String::new(), "us".into()]).is_empty());
+    assert!(
+        validate("region", &["eu".into(), " eu ".into()])
+            .iter()
+            .any(|e| e.code == "DIM_VALUE_DUPLICATE")
+    );
+}

@@ -20,6 +20,11 @@ fn value_code(value: &str) -> bool {
 /// Validate a registry entry. Removal of a used value is a door-level rule.
 #[must_use]
 pub fn validate(key: &str, values: &[String]) -> Vec<RuleError> {
+    let values: Vec<_> = values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect();
     let mut errors = Vec::new();
     if !key_code(key.trim()) {
         errors.push(RuleError::new("DIM_KEY_INVALID"));

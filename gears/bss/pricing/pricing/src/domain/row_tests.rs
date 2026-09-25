@@ -347,7 +347,7 @@ fn matrix_12_19_closed_end_survives_twice_and_later_default() {
 #[test]
 fn matrix_18_min_fee_is_only_validated() {
     let mut r = row(9, "2026-12-01", None, RowState::Draft);
-    for fee in ["-1", "1.001"] {
+    for fee in ["-1", "1.001", "1.000"] {
         r.min_fee = Some(dec(fee));
         assert!(
             rules(&r, &[], None)

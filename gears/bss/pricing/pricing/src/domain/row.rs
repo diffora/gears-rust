@@ -79,7 +79,7 @@ pub fn validate(
     }
     if row
         .min_fee
-        .is_some_and(|fee| fee < Decimal::ZERO || fee.normalize().scale() > minor_digits)
+        .is_some_and(|fee| fee < Decimal::ZERO || fee.scale() > minor_digits)
     {
         errors.push(RuleError::new("MIN_FEE_INVALID"));
     }
