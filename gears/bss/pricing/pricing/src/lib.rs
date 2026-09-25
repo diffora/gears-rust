@@ -7,6 +7,8 @@ pub mod authz;
 #[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
+pub mod domain;
+#[doc(hidden)]
 pub mod gts;
 #[doc(hidden)]
 pub mod infra;
