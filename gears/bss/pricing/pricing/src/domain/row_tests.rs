@@ -551,3 +551,25 @@ fn a_temporary_that_ends_on_the_next_approved_start_needs_no_return() {
     normalize_windows(&mut all);
     assert_eq!(all[2].effective_to, Some(date("2026-03-01")));
 }
+#[test]
+fn a_pair_is_stale_when_a_row_of_its_own_unit_is_in_force_at_its_end() {
+    // One unit: a new default row B from 03-15 and a pair T [03-01, 04-01) whose return R
+    // copies A. After apply the chain reads A → T → B → R, so R would undo B from 04-01.
+    let mut a = row(1, "2026-01-01", None, RowState::Approved);
+    a.price = Some(PriceData::PerUnit { rate: dec("10") });
+    let approved = vec![a];
+    let mut b = row(2, "2026-03-15", None, RowState::Draft);
+    b.price = Some(PriceData::PerUnit { rate: dec("12") });
+    let mut promo = row(3, "2026-03-01", None, RowState::Draft);
+    promo.price = Some(PriceData::PerUnit { rate: dec("5") });
+    let pair = temporary(&approved, promo, date("2026-04-01"), Uuid::from_u128(4)).unwrap();
+    assert_eq!(pair.len(), 2);
+    let unit = vec![b, pair[0].clone(), pair[1].clone()];
+    assert!(
+        !temporary_is_current(&approved, &pair[0], &unit),
+        "a return that ignores its own unit's row restores the wrong money"
+    );
+    // Without B in the unit the same pair is current.
+    let alone = vec![pair[0].clone(), pair[1].clone()];
+    assert!(temporary_is_current(&approved, &pair[0], &alone));
+}

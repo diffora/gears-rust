@@ -286,18 +286,36 @@ pub fn temporary(
         Ok(vec![promo])
     }
 }
-/// Whether a temporary row still matches the chain as it now stands (D-391). `rows` are the
-/// approved rows outside the unit; `unit` holds the temporary row's partner. A pair's return
-/// must restore the row in force on the (shifted) end, with that row's money. A temporary row
-/// without a return is right only while nothing of its own chain is in force on its end, or
-/// while the next row starts exactly there and so ends it.
+/// Whether a temporary row still matches its chain as it will stand once the unit applies
+/// (D-391). `rows` are the approved rows outside the unit; `unit` is every row of the unit,
+/// the temporary row and its partner included. The chain the return must honour is the
+/// approved rows PLUS the unit's other rows: a row published in the same unit and in force on
+/// the pair's end would otherwise be undone by a return copied from an older row. A pair's
+/// return must restore the row in force on the (shifted) end, with that row's money. A
+/// temporary row without a return is right only while nothing of its own chain is in force on
+/// its end, or while the next row starts exactly there and so ends it.
 #[must_use]
 pub fn temporary_is_current(rows: &[Row], temporary: &Row, unit: &[Row]) -> bool {
     let Some(until) = temporary.temporary_until else {
         return true;
     };
+    let mut future: Vec<Row> = rows.to_vec();
+    future.extend(
+        unit.iter()
+            .filter(|r| {
+                r.id != temporary.id
+                    && Some(r.id) != temporary.paired_row_id
+                    && r.price_id == temporary.price_id
+            })
+            .cloned()
+            .map(|mut r| {
+                r.state = RowState::Approved;
+                r
+            }),
+    );
+    normalize_windows(&mut future);
     let back = own_version_at(
-        rows,
+        &future,
         temporary.price_id,
         until,
         temporary.dim_value.as_deref(),
