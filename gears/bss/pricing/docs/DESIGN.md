@@ -262,7 +262,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Edit or delete of a price that is not an unlocked draft (a pending price included) | 409 PRICE_NOT_DRAFT |
 | Stale If-Match, or a conditional write that lost its version | 409 STALE_REVISION |
 | A price another pending unit owns, at submit; a contended unit | 409 PRICE_LOCKED_PENDING; 409 UNIT_CONTENDED |
-| Transaction still contended after its bounded retries | 409 CONTENDED; UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
+| Transaction still contended after its bounded retries | 409 CONTENDED (an entry create that fails so, or with a 500, after its reserve is cancelled before the answer: no entry, key free, receipt released); UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
 | Author approval; a draft price edited or deleted by anyone but its author | 403 SOD_VIOLATION; 403 NOT_DRAFT_AUTHOR (D-404) |
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |

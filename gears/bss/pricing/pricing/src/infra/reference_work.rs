@@ -410,8 +410,11 @@ fn contended(error: &CanonicalError) -> bool {
 /// Drive a durable op until terminal completion or the next scheduled retry.
 ///
 /// A door that gets no definite answer before the write cancels its create and answers 503
-/// (nothing written, key released, any receipt released by the cancellation). The ticker never makes a first reservation on a user's
-/// behalf: it cancels a create still `reserving` without a reservation id the same way.
+/// (nothing written, key released, any receipt released by the cancellation). Any other error
+/// that ends a door's drive after its reserve and before its write (a 409 `CONTENDED`, a 500)
+/// cancels the create the same way before it is answered. The ticker never makes a first
+/// reservation on a user's behalf: it cancels a create still `reserving` without a reservation
+/// id the same way.
 /// # Errors
 /// Returns registry unavailability or a storage failure; the operation remains durable.
 pub async fn drive(
@@ -455,7 +458,10 @@ async fn step(
 ) -> Result<(), CanonicalError> {
     warn_past_threshold(op);
     let registry = super::reference_registry::resolve(&state.hub);
-    let (event, entry, refusal) = observe(registry, ctx, op).await?;
+    let (event, entry, refusal) = match observe(registry, ctx, op).await {
+        Ok(observation) => observation,
+        Err(error) => return cancel_then(state, caller, op, work, current, clock, error).await,
+    };
     if caller == Caller::Door
         && event == Event::RegistryUnavailable
         && reserving_create(op, current)
@@ -475,8 +481,36 @@ async fn step(
         Err(error) if refuses_the_write(&error) && current == OpState::Reserving => {
             cancel(state, op, work, error, clock).await
         }
-        Err(error) if !contended(&error) => Err(error),
+        Err(error) if !contended(&error) => {
+            cancel_then(state, caller, op, work, current, clock, error).await
+        }
         _ => Ok(()),
+    }
+}
+/// A door's create that holds a receipt but is not written yet, and whose drive ends with
+/// `error` (409 `CONTENDED`, a 500): cancel it first, exactly as [`give_up`] does, so an
+/// answered error never becomes an entry later. A lost race means another driver moved the op
+/// first, and the loop re-reads it. A failed cancellation is logged and the error is answered
+/// as it is: the ticker rule applies to that op unchanged.
+async fn cancel_then(
+    state: &AuthoringState,
+    caller: Caller,
+    op: &entity::Model,
+    work: Work,
+    current: OpState,
+    clock: Arc<dyn Clock>,
+    error: CanonicalError,
+) -> Result<(), CanonicalError> {
+    if caller != Caller::Door || !reserving_create(op, current) || op.reservation_id.is_none() {
+        return Err(error);
+    }
+    match abandon(state, op, work, clock).await {
+        Ok(()) => Err(error),
+        Err(lost) if contended(&lost) => Ok(()),
+        Err(failed) => {
+            tracing::warn!(op_id=%op.op_id, error=%failed, "pricing create not cancelled before its error answer");
+            Err(error)
+        }
     }
 }
 fn warn_past_threshold(op: &entity::Model) {

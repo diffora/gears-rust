@@ -466,3 +466,65 @@ async fn the_registry_is_seeded_with_region_and_an_entry_naming_it_stores_the_se
         .await;
     assert_ne!(stored, empty, "PATCH stored the seed in its transaction");
 }
+
+async fn raw(f: &Fixture, sql: &str) {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    Database::connect(&f.dsn)
+        .await
+        .unwrap()
+        .execute_raw(Statement::from_string(DbBackend::Sqlite, sql.to_owned()))
+        .await
+        .unwrap();
+}
+
+// Behaviour LOW-2: a door that fails after its reserve and before its entry write cancels the
+// create before it answers, as a 503 does. Here Tx B stays contended past its retries, so the
+// door answers 409 CONTENDED. No ticker pass turns that answer into an entry: the receipt is
+// released, and a same-key retry runs afresh.
+#[tokio::test]
+async fn a_contended_entry_write_after_the_reserve_cancels_the_create() {
+    let (f, script, path, input) = setup(0).await;
+    raw(
+        &f,
+        "CREATE TRIGGER entry_busy BEFORE INSERT ON pricing_price_book_entry \
+         BEGIN SELECT RAISE(ABORT, '(code: 5) database is locked'); END",
+    )
+    .await;
+    let first = f
+        .call("POST", &path, input.clone(), None, Some("one"))
+        .await;
+    assert_eq!(first.0, 409, "{first:?}");
+    assert!(first.1.to_string().contains("CONTENDED"), "{first:?}");
+    assert_eq!(
+        Script::count(&script.reserve_calls),
+        1,
+        "the reserve succeeded"
+    );
+    raw(&f, "DROP TRIGGER entry_busy").await;
+    bss_pricing::infra::reference_ticker::Ticker::new(
+        f.state.clone(),
+        Arc::new(LaterClock),
+        10,
+        100,
+    )
+    .tick()
+    .await
+    .unwrap();
+    let (status, listed, _) = f.call("GET", &path, json!({}), None, None).await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(
+        listed["items"],
+        json!([]),
+        "the answered 409 wrote no entry"
+    );
+    assert_eq!(
+        Script::count(&script.releases),
+        1,
+        "the cancellation released the receipt"
+    );
+    let retry = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(retry.0, 201, "a same-key retry runs afresh: {retry:?}");
+    assert_eq!(retry.1["reference_state"], "confirmed");
+    let (_, listed, _) = f.call("GET", &path, json!({}), None, None).await;
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+}
