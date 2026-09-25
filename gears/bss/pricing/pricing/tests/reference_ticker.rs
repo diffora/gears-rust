@@ -668,3 +668,102 @@ async fn a_live_door_owns_its_op_for_the_grace_period() {
     );
     drop(door);
 }
+
+#[tokio::test]
+async fn one_tenants_states_failure_skips_only_that_tenant_and_the_cursor_moves_on() {
+    use price_support::{app_for, request, user_of};
+    let (f, script, path, input) = setup().await;
+    let first = f.call("POST", &path, input, None, Some("a")).await;
+    assert_eq!(first.0, 201, "{first:?}");
+    // A second tenant on the same pricing database, created after the first.
+    let other = Uuid::new_v4();
+    let (app, ctx) = (app_for(f.state.clone(), other), user_of(other));
+    let (s, book, _) = request(
+        &app,
+        &ctx,
+        "POST",
+        "/price-books",
+        json!({"code":"standard","name":"Standard","currency":"EUR"}),
+        None,
+        Some("book"),
+    )
+    .await;
+    assert_eq!(s, 201, "{book}");
+    let second = request(
+        &app,
+        &ctx,
+        "POST",
+        &format!("/price-books/{}/prices", book["id"].as_str().unwrap()),
+        json!({"sku_id":Uuid::new_v4()}),
+        None,
+        Some("b"),
+    )
+    .await;
+    assert_eq!(second.0, 201, "{second:?}");
+    for value in script.refs.lock().await.values_mut() {
+        value.1 = bss_products_sdk::models::ReferenceState::Released;
+    }
+    *script.states_down_for.lock().unwrap() = Some(f.ctx.subject_tenant_id());
+    // One price per reconciliation pass, every pass.
+    let mut ticker = Ticker::new(f.state.clone(), clock(), 1, 1);
+    ticker.tick().await.unwrap();
+    ticker.tick().await.unwrap();
+    let read = |id: &serde_json::Value| {
+        let id: Uuid = id.as_str().unwrap().parse().unwrap();
+        let state = f.state.clone();
+        async move {
+            let conn = state.db.conn().unwrap();
+            price_repo::find(
+                &conn,
+                &AccessScope::allow_all(),
+                tenant_of(&conn, id).await,
+                id,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        }
+    };
+    let a = read(&first.1["id"]).await;
+    let b = read(&second.1["id"]).await;
+    assert_eq!(a.reference_state, "confirmed");
+    assert_eq!(
+        a.reservation_id.to_string(),
+        first.1["reservation_id"].as_str().unwrap(),
+        "the failing tenant was skipped"
+    );
+    assert_eq!(b.reference_state, "confirmed");
+    assert_ne!(
+        b.reservation_id.to_string(),
+        second.1["reservation_id"].as_str().unwrap(),
+        "the next tenant was still reconciled"
+    );
+}
+/// The tenant of a price, read by id alone (the ticker's own view).
+async fn tenant_of(conn: &toolkit_db::DbConn<'_>, id: Uuid) -> Uuid {
+    use sea_orm::EntityTrait;
+    use toolkit_db::secure::SecureEntityExt;
+    bss_pricing::infra::storage::entity::price::Entity::find_by_id(id)
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .one(conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .tenant_id
+}
+#[tokio::test]
+async fn a_reservation_products_does_not_know_is_treated_as_released() {
+    let (f, script, path, input) = setup().await;
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    // Products' database was restored from a backup that predates this reservation.
+    script.refs.lock().await.clear();
+    Ticker::new(f.state.clone(), clock(), 10, 1)
+        .tick()
+        .await
+        .unwrap();
+    let read = read_price(&f, &created.1["id"]).await;
+    assert_eq!(read["reference_state"], "confirmed", "{read}");
+    assert_ne!(read["reservation_id"], created.1["reservation_id"]);
+}

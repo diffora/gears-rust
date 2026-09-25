@@ -128,8 +128,14 @@ impl Ticker {
         }
         let registry = super::reference_registry::resolve(&self.state.hub)?;
         for (tenant, prices) in tenants {
-            self.reconcile_tenant(registry.as_ref(), tenant, prices)
-                .await?;
+            // One tenant's divergence (an unreachable or disagreeing registry, a storage
+            // error) never halts reconciliation for the others; the cursor moves on.
+            if let Err(error) = self
+                .reconcile_tenant(registry.as_ref(), tenant, prices)
+                .await
+            {
+                tracing::warn!(%tenant, error=%error, "pricing reconciliation skipped a tenant");
+            }
         }
         self.cursor = next_cursor;
         Ok(())
@@ -149,7 +155,7 @@ impl Ticker {
         let mut due = Vec::new();
         if !confirmed.is_empty() {
             let ids: Vec<_> = confirmed.iter().map(|p| p.reservation_id).collect();
-            let states = registry.states(&ctx, tenant, &ids).await?;
+            let states = receipt_states(registry, &ctx, tenant, &ids).await?;
             due.extend(confirmed.into_iter().filter(|price| {
                 states.iter().any(|(id, state)| {
                     *id == price.reservation_id && *state == RegistryState::Released
@@ -239,6 +245,29 @@ impl Ticker {
         })
         .await
     }
+}
+/// Products' view of confirmed receipts. A batch answered 404 names a reservation Products
+/// does not know (for example after a restore): each id is then asked alone, and an unknown
+/// one counts as released, so its price is re-reserved like any other released receipt.
+async fn receipt_states(
+    registry: &dyn bss_products_sdk::ReferenceRegistryV1,
+    ctx: &SecurityContext,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<(Uuid, RegistryState)>, CanonicalError> {
+    match registry.states(ctx, tenant, ids).await {
+        Err(error) if error.status_code() == 404 => {}
+        other => return other,
+    }
+    let mut states = Vec::with_capacity(ids.len());
+    for id in ids {
+        match registry.states(ctx, tenant, &[*id]).await {
+            Ok(found) => states.extend(found),
+            Err(error) if error.status_code() == 404 => states.push((*id, RegistryState::Released)),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(states)
 }
 /// Whether a lost price's SKU admits its reservation again: published or deprecated, not
 /// fenced, and of the price's charge kind (a changed type cannot be healed by a reservation).

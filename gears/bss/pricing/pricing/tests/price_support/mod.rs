@@ -273,6 +273,8 @@ pub struct Script {
     pub version_reads: AtomicUsize,
     /// When set, dated reads fail as an unavailable registry.
     pub versions_down: std::sync::atomic::AtomicBool,
+    /// A tenant whose `states()` calls fail as an unavailable registry.
+    pub states_down_for: std::sync::Mutex<Option<Uuid>>,
 }
 impl Script {
     pub fn set(&self, mode: usize) {
@@ -376,14 +378,26 @@ impl ReferenceRegistryV1 for Script {
     async fn states(
         &self,
         _: &SecurityContext,
-        _: Uuid,
+        tenant: Uuid,
         ids: &[Uuid],
     ) -> Result<Vec<(Uuid, ReferenceState)>, CanonicalError> {
+        if *self.states_down_for.lock().unwrap() == Some(tenant) {
+            return Err(CanonicalError::service_unavailable().create());
+        }
         let refs = self.refs.lock().await;
-        Ok(ids
-            .iter()
-            .map(|id| (*id, refs.values().find(|v| v.0 == *id).unwrap().1))
-            .collect())
+        // Products answers the batch 404 when it does not know one of the reservations.
+        ids.iter()
+            .map(|id| {
+                refs.values()
+                    .find(|v| v.0 == *id)
+                    .map(|v| (*id, v.1))
+                    .ok_or_else(|| {
+                        TestResource::not_found("reference not found")
+                            .with_resource("reference")
+                            .create()
+                    })
+            })
+            .collect()
     }
     async fn sku_for_write(
         &self,
