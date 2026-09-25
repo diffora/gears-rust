@@ -146,6 +146,8 @@ classDiagram
 Approved rows are immutable money facts. Conditional normalization may close predecessor windows and set
 keep_for_bound when the successor is new; it cannot rewrite money or remove historical pins. Value chains can
 end explicitly. Tier arithmetic uses decimal/money types without binary float rounding and [from, to) bands.
+Every decimal of a price (amount, rate, package size and price, tier up_to and rate) travels as a JSON string;
+a JSON number is refused 400 AMOUNT_INVALID, because reading it would round it through f64.
 Min-fee accounting groups by row/subscription/period across values and slices before promotions.
 
 ### 3.2 Component Model

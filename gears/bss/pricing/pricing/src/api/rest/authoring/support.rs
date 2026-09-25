@@ -47,8 +47,12 @@ pub fn authz_failure(error: authz::AuthzError) -> CanonicalError {
     }
 }
 pub fn invalid(field: &str, code: &str) -> CanonicalError {
+    invalid_because(field, code, code)
+}
+/// [`invalid`] whose violation tells the client what to send instead.
+pub fn invalid_because(field: &str, code: &str, description: &str) -> CanonicalError {
     PricingResource::invalid_argument()
-        .with_field_violation(field, code, code)
+        .with_field_violation(field, description, code)
         .create()
 }
 /// A 403 with its own code: the caller may act on the resource type, not on this one.

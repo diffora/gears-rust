@@ -41,6 +41,14 @@ const VERSION_ATTEMPTS: u32 = 3;
 fn refuse(error: RuleError) -> DoorError {
     support::invalid(row::field_of(error.code), error.code).into()
 }
+/// A price body refusal; a decimal sent as a JSON number is told to send a string.
+fn refuse_price(error: RuleError) -> DoorError {
+    if error.code == "AMOUNT_INVALID" {
+        support::invalid_because("price", error.code, money::DECIMALS_ARE_STRINGS).into()
+    } else {
+        refuse(error)
+    }
+}
 
 /// A draft belongs to its author (D-404): only its creator edits or deletes it, so every
 /// number in a unit is its item author's and separation of duties excludes the right person.
@@ -215,7 +223,7 @@ async fn create_in(
         version_no: next_version(&pc.rows)?,
         dim_value: input.dim_value,
         model,
-        price: Some(money::decode(model, input.price).map_err(refuse)?),
+        price: Some(money::decode(model, input.price).map_err(refuse_price)?),
         min_fee: parse_min_fee(input.min_fee.as_deref())?,
         eligibility: parse_eligibility(&input.eligibility)?,
         effective_from: row::parse_start(&input.effective_from).map_err(refuse)?,
@@ -325,7 +333,7 @@ pub async fn patch(
         r.model = parse_model(model)?;
     }
     if let Some(data) = input.price {
-        r.price = Some(money::decode(r.model, data).map_err(refuse)?);
+        r.price = Some(money::decode(r.model, data).map_err(refuse_price)?);
     }
     if let Some(fee) = input.min_fee {
         r.min_fee = parse_min_fee(fee.as_deref())?;

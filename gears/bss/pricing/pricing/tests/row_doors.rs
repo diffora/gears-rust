@@ -608,3 +608,41 @@ async fn two_writers_creating_rows_at_once_get_distinct_version_numbers() {
     numbers.sort_unstable();
     assert_eq!(numbers, [1, 2]);
 }
+
+// Chains LOW-4 at the door: a JSON number is refused 400 AMOUNT_INVALID, create and patch.
+#[tokio::test]
+async fn money_as_a_json_number_is_refused_and_the_detail_says_strings() {
+    let (f, price) = priced(false).await;
+    let mut body = draft("2031-03-01");
+    body["price"] = json!({"rate": 0.123_456_789_012_345_67});
+    let (status, b, _) = f
+        .call("POST", &rows_path(&price), body, None, Some("n"))
+        .await;
+    assert_eq!(status, 400, "{b}");
+    assert!(b.to_string().contains("AMOUNT_INVALID"), "{b}");
+    assert!(
+        b.to_string().contains("string"),
+        "the detail says decimals are strings: {b}"
+    );
+    let (status, row, _) = f
+        .call(
+            "POST",
+            &rows_path(&price),
+            draft("2031-03-01"),
+            None,
+            Some("s"),
+        )
+        .await;
+    assert_eq!(status, 201, "{row}");
+    let (status, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/rows/{}", row["items"][0]["id"].as_str().unwrap()),
+            json!({"price":{"rate": 1}}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(status, 400, "{b}");
+    assert!(b.to_string().contains("AMOUNT_INVALID"), "{b}");
+}

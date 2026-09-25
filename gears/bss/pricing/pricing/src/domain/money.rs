@@ -32,10 +32,27 @@ pub enum PriceData {
         tiers: Vec<Tier>,
     },
 }
+/// Every decimal of a price is exact text: serde reads a JSON number through f64 and would
+/// round it silently, so any number anywhere in the price is refused.
+fn has_number(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Number(_) => true,
+        serde_json::Value::Array(items) => items.iter().any(has_number),
+        serde_json::Value::Object(fields) => fields.values().any(has_number),
+        _ => false,
+    }
+}
+/// What a client is told when it sent a decimal as a JSON number.
+pub const DECIMALS_ARE_STRINGS: &str =
+    "decimals are JSON strings (\"0.10\"), never JSON numbers, so no digit is lost to f64";
 /// Decode only the shape declared by the model.
 /// # Errors
-/// Malformed JSON, extra fields, or a model/shape mismatch are refused.
+/// A decimal sent as a JSON number is `AMOUNT_INVALID`; malformed JSON, extra fields, or a
+/// model/shape mismatch are refused.
 pub fn decode(model: Model, value: serde_json::Value) -> Result<PriceData, RuleError> {
+    if has_number(&value) {
+        return Err(RuleError::new("AMOUNT_INVALID"));
+    }
     let data: PriceData =
         serde_json::from_value(value).map_err(|_| RuleError::new("PRICE_MISSING"))?;
     if shape_matches(model, &data) {

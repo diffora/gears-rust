@@ -164,3 +164,44 @@ fn arithmetic_overflow_is_typed() {
         "AMOUNT_INVALID"
     );
 }
+#[test]
+fn money_sent_as_json_numbers_is_refused_never_rounded() {
+    // Chains LOW-4: serde_json reads a number through f64; 0.12345678901234567891 would be
+    // stored as "0.12345678901234568". Every decimal field is exact text.
+    for (model, price) in [
+        (
+            Model::PerUnit,
+            serde_json::json!({"rate": 0.123_456_789_012_345_67}),
+        ),
+        (Model::Flat, serde_json::json!({"amount": 10})),
+        (
+            Model::Package,
+            serde_json::json!({"package_size": "10", "package_price": 5}),
+        ),
+        (
+            Model::Graduated,
+            serde_json::json!({"tiers":[{"up_to": 100, "rate":"1"},{"up_to":null,"rate":"0.5"}]}),
+        ),
+        (
+            Model::Volume,
+            serde_json::json!({"tiers":[{"up_to":null,"rate": 1}]}),
+        ),
+    ] {
+        assert_eq!(
+            decode(model, price.clone()).unwrap_err().code,
+            "AMOUNT_INVALID",
+            "{price}"
+        );
+    }
+    assert_eq!(
+        decode(
+            Model::PerUnit,
+            serde_json::json!({"rate":"0.12345678901234567891"})
+        )
+        .unwrap(),
+        PriceData::PerUnit {
+            rate: dec("0.12345678901234567891")
+        },
+        "a string keeps every digit"
+    );
+}
