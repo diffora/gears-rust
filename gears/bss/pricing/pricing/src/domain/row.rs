@@ -111,7 +111,7 @@ pub fn approved_rows<'a>(rows: &'a [Row], price_id: Uuid, dim: Option<&str>) -> 
     chain.sort_by_key(|r| (r.effective_from, r.version_no));
     chain
 }
-/// Recompute only implicit ends; an explicitly closed row retains its end forever.
+/// Recompute implicit ends; an explicit end is kept unless a successor starts inside it.
 pub fn normalize_windows(rows: &mut [Row]) {
     let mut order: Vec<usize> = (0..rows.len())
         .filter(|i| rows[*i].state == RowState::Approved)
@@ -125,14 +125,21 @@ pub fn normalize_windows(rows: &mut [Row]) {
         )
     });
     for (pos, index) in order.iter().copied().enumerate() {
-        if rows[index].closed_explicitly {
-            continue;
-        }
-        rows[index].effective_to = order.get(pos + 1).and_then(|next| {
+        let next_start = order.get(pos + 1).and_then(|next| {
             let r = &rows[*next];
             (r.price_id == rows[index].price_id && r.dim_value == rows[index].dim_value)
                 .then_some(r.effective_from)
         });
+        rows[index].effective_to = if rows[index].closed_explicitly {
+            // An explicit end survives every normalisation, but a successor that
+            // starts inside it still closes it: one row in force per chain and date.
+            match (rows[index].effective_to, next_start) {
+                (Some(end), Some(next)) => Some(end.min(next)),
+                (end, next) => end.or(next),
+            }
+        } else {
+            next_start
+        };
     }
 }
 fn own_version_at<'a>(
@@ -229,9 +236,10 @@ pub fn temporary(
     promo.temporary_until = Some(until);
     promo.paired_row_id = None;
     promo.return_of_row_id = None;
-    let chain = approved_rows(rows, promo.price_id, promo.dim_value.as_deref());
-    let back = own_version_at(rows, promo.price_id, until, promo.dim_value.as_deref())
-        .or_else(|| chain.last().copied());
+    // Return only to the chain's own row in force on the end date. A chain that
+    // has ended, or that starts later, is neither revived nor copied backwards:
+    // the value then falls back to the default after the temporary row.
+    let back = own_version_at(rows, promo.price_id, until, promo.dim_value.as_deref());
     if let Some(back) = back {
         let mut returned = promo.clone();
         returned.id = return_id;

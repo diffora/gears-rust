@@ -402,3 +402,67 @@ fn matrix_24_dated_metering_guard() {
     assert!(chain_guard(ChargeKind::Recurring, &a, &old, &b, &new).is_ok());
     assert!(chain_guard(ChargeKind::Usage, &a, &old, &b, &old).is_err());
 }
+#[test]
+fn a_closed_row_is_still_closed_by_a_successor_that_starts_inside_it() {
+    // A temporary value row [10-01, 10-11) closed explicitly; a later value row
+    // approved from 10-05 must cap it, or two rows are in force on 10-05..10-11.
+    let mut r = vec![
+        row(1, "2026-01-01", None, RowState::Approved),
+        row(2, "2026-10-01", Some("us"), RowState::Approved),
+        row(3, "2026-10-05", Some("us"), RowState::Approved),
+    ];
+    r[1].effective_to = Some(date("2026-10-11"));
+    r[1].closed_explicitly = true;
+    normalize_windows(&mut r);
+    assert_eq!(r[1].effective_to, Some(date("2026-10-05")));
+    assert!(r[1].closed_explicitly, "the closure itself is kept");
+    assert_eq!(r[2].effective_to, None);
+    // A successor after the explicit end leaves the explicit end alone.
+    r[2].effective_from = date("2026-12-01");
+    r[1].effective_to = Some(date("2026-10-11"));
+    normalize_windows(&mut r);
+    assert_eq!(r[1].effective_to, Some(date("2026-10-11")));
+}
+#[test]
+fn a_temporary_row_returns_only_to_a_row_in_force_on_its_end() {
+    let promo = |from: &str| {
+        let mut p = row(9, from, Some("us"), RowState::Draft);
+        p.price = Some(PriceData::PerUnit { rate: dec("4") });
+        p
+    };
+    // The value's chain ended before the promo ends: no return row, one closed row.
+    let mut ended = vec![
+        row(1, "2026-01-01", None, RowState::Approved),
+        row(2, "2026-03-01", Some("us"), RowState::Approved),
+    ];
+    ended[1].effective_to = Some(date("2026-05-01"));
+    ended[1].closed_explicitly = true;
+    let out = temporary(
+        &ended,
+        promo("2026-10-01"),
+        date("2026-10-11"),
+        Uuid::from_u128(77),
+    )
+    .unwrap();
+    assert_eq!(out.len(), 1, "an ended value chain is not revived");
+    assert!(out[0].closed_explicitly);
+    assert_eq!(out[0].effective_to, Some(date("2026-10-11")));
+    // The value's chain starts only after the promo ends: the value falls back
+    // to the default between the two, so again no return row.
+    let later = vec![
+        row(1, "2026-01-01", None, RowState::Approved),
+        row(2, "2027-01-01", Some("us"), RowState::Approved),
+    ];
+    let out = temporary(
+        &later,
+        promo("2026-10-01"),
+        date("2026-10-11"),
+        Uuid::from_u128(77),
+    )
+    .unwrap();
+    assert_eq!(
+        out.len(),
+        1,
+        "a chain that has not started yet is not copied backwards"
+    );
+}
