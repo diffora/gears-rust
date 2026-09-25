@@ -127,7 +127,7 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 | `PATCH /categories/{id}` | products:author; direct edit under If-Match; return the new ETag. |
 | `POST /categories/{id}/retire` | products:author; retire only without referencing SKUs, otherwise CATEGORY_IN_USE. |
 
-Submit-time subject validation failures are 422 with no unit created; apply-time environment refusal
+Submit-time subject validation failures are 400 with their code and no unit created (never 422, pricing D-403); apply-time environment refusal
 rolls back through slice 03's APPLY_REFUSED path. P-D-184's draft-save behavior remains distinct.
 No Product, clone, category-tree or CatalogVersion routes are added.
 

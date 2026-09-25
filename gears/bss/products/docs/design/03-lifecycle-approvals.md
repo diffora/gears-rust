@@ -159,7 +159,7 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 | `GET /approval-policy`, `PUT /approval-policy` | products:settings for both reads and writes; direct tenant default/per-kind quorum management. |
 | `GET /settings`, `PUT /settings` | products:read/settings respectively; includes fence_ttl_minutes; policy uses the same tenant settings source. |
 
-Submit validation failure returns 422 with no new unit. Conflicts include ROW_LOCKED_PENDING,
+Submit validation failure returns 400 with its code and no new unit (never 422, pricing D-403). Conflicts include ROW_LOCKED_PENDING,
 VERSION_ORDER, SKU_REFERENCED, SKU_TYPE_FROZEN, UNIT_CONTENDED and UNIT_ALREADY_DECIDED (409).
 SOD_VIOLATION and NOT_SUBMITTER are 403. UNIT_STALE and GENERATION_MISMATCH are 400 with generation.
 An apply environment error is APPLY_REFUSED with the underlying domain reason and no success outcome.
