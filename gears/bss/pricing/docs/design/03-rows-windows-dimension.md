@@ -126,7 +126,7 @@ The sole definitions live in [features/rows-windows-dimension.md](../features/ro
 2. PRD AC #4 / `cpt-cf-bss-pricing-dod-tier-bands-half-open`: Given a boundary of 1000, when quantity equals 1000 then volume selects the next band; 999 remains in the prior band.
 3. PRD AC #5 / `cpt-cf-bss-pricing-dod-chain-windows`: Given default and EU rows, when EU gains a successor then default stays unchanged; duplicate approved start, overlap and past start fail.
 4. PRD AC #5 / `cpt-cf-bss-pricing-dod-dimension-fallback`: Given a closed EU tail and an open default, when its end date arrives then default applies; if both are absent selection reports uncovered.
-5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, model, dated unit or meter change returns 422 CHAIN_MODEL_CHANGED.
+5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, model, dated unit or meter change returns 400 CHAIN_MODEL_CHANGED.
 6. PRD AC #7 / `cpt-cf-bss-pricing-dod-min-fee-row-period`: Given two 10 charges bound to one row with floor 30 then the result is 30; two distinct floor-30 rows yield 60, not 30 or 120.
 7. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-pair`: Given an existing EU chain, when a five-day temporary change shifts by three days then both boundaries shift and the return stays EU; partial pair submission fails.
 8. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-value-fallback`: Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return row exists.

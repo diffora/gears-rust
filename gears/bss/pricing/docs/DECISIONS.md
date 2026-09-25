@@ -3,7 +3,8 @@
 **Replaces:** the charge-line/market-price register on `bss/products-backup` (`3a38f0b28`), ending at D-383.
 Historical decisions remain there and in git history; only living rules restated below govern the new model.
 **Authority:** `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, especially §2, §2.2 and §13,
-then this register, then code, then descriptive prose. D-399 is the explicit phase-plan deviation.
+then this register, then code, then descriptive prose. D-399 is the explicit phase-plan deviation; D-403 overrides
+the spec's 422 wording.
 **Status:** model decisions accepted; implementation remains unchecked in the FEATUREs.
 
 <!-- toc -->
@@ -36,6 +37,7 @@ then this register, then code, then descriptive prose. D-399 is the explicit pha
 | D-400 | H | Toolkit outbox and broker TypedEvent own event delivery | DECIDED 2026-09-25 · Phase 2 plan Task 2a.2 and 2c.8; Products phase 1 pattern |
 | D-401 | H | Reference work is a durable op written before reserve | DECIDED 2026-09-25 · Phase 2 plan 2c.1/2c.6; plan review findings 2, 3 |
 | D-402 | H | The pair guard compares SKU metering as of each row's start | DECIDED 2026-09-25 · Phase 2 reconciliation matrix row 24; spec §5 pair guard; supersession-continuity family |
+| D-403 | M | Validation refusals are 400 with a code; no wire 422 | DECIDED 2026-09-25 · toolkit canonical error mapping; Products phase 1 behaviour; deviation from spec §2 decision 16 and §6 |
 
 ## Entries
 
@@ -158,3 +160,11 @@ A ticker drives every op not done with bounded backoff and never drops one. It a
 On a usage chain the successor keeps model, package_size and the SKU's (unit, usage_type_ref) read from the SKU version in force at each row's effective_from; otherwise CHAIN_MODEL_CHANGED. Products freezes the SKU type while referenced but versions its metering, hence the dated read. The meter is included because the supersession-continuity family (spec §5 "asserts exactly this") rejects a meter change. Submit checks the guard and apply rechecks it.
 
 **Source:** Phase 2 reconciliation matrix row 24; spec §5 pair guard; supersession-continuity family.
+
+#### D-403 [M] Validation refusals are 400 with a code; no wire 422
+
+**Status:** DECIDED 2026-09-25.
+
+The toolkit's canonical errors have no 422: InvalidArgument and FailedPrecondition both answer 400, and Products phase 1 already answers its failed submit checks with 400. Pricing keeps its route census rule that no operation declares a 422. Therefore CHAIN_MODEL_CHANGED, PAIR_SPLIT and every other pure-rule refusal at a door or at submit are 400 with their stable code in the problem body, and no approval unit is created. Conflicts stay 409 (ROW_LOCKED_PENDING, ROW_NOT_DRAFT, PRICE_REFERENCE_LOST, UNIT_CONTENDED, APPLY_REFUSED). The spec's "422 at submit" wording in §2 decision 16 and the §6 trait comment are superseded by this entry.
+
+**Source:** toolkit canonical error mapping; Products phase 1 behaviour; deviation from spec §2 decision 16 and §6.

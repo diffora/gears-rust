@@ -225,7 +225,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | --- | --- |
 | Products unavailable before reservation/write | 503 REGISTRY_UNAVAILABLE; no price |
 | SKU fenced / retiring / deprecated for new price | 409 SKU_FENCED / SKU_RETIRING / ROW_SKU_DEPRECATED |
-| Usage-chain structure changed | 422 CHAIN_MODEL_CHANGED |
+| Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
 | Invalid dimension or row window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
 | Pending item, stale object, contended unit | 409 ROW_LOCKED_PENDING, STALE_REVISION or UNIT_CONTENDED |
 | Author approval | 403 SOD_VIOLATION |

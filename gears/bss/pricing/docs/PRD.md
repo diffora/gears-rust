@@ -200,7 +200,7 @@ Windows are half-open and close independently for each (price_id, dim_value), in
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-On a usage chain, a successor preserves model kind, package size and the SKU unit. Submit refuses CHAIN_MODEL_CHANGED with 422 when any changes. Apply revalidates the same invariant under the chain transaction; a new dimension chain is checked against its own predecessors.
+On a usage chain, a successor preserves model kind, package size and the SKU unit. Submit refuses CHAIN_MODEL_CHANGED with 400 when any changes (D-403). Apply revalidates the same invariant under the chain transaction; a new dimension chain is checked against its own predecessors.
 
 #### `fr-min-fee`
 
@@ -402,7 +402,7 @@ earlier pins retain the original GL. Pricing creates no refreeze rows or approva
 | AC #3 | `cpt-cf-bss-pricing-fr-price-key` | Given a published recurring SKU, when its monthly price is created then charge_kind is recurring; a duplicate key is refused, a bundle cannot be priced, and changing the dimension key after a valued row exists is refused. |
 | AC #4 | `cpt-cf-bss-pricing-fr-price-row` | Given a volume ladder with a boundary at 1000, when quantity is 1000 then the band starting at 1000 applies; editing approved money or attaching flat to usage is refused. |
 | AC #5 | `cpt-cf-bss-pricing-fr-chain-windows` | Given EU and default chains, when a new EU row is approved then only the EU predecessor closes; after an explicit EU tail ends the default applies, and overlapping rows on the same chain are refused. |
-| AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or SKU (unit, usage_type_ref) as of each row's start produces 422 CHAIN_MODEL_CHANGED. |
+| AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or SKU (unit, usage_type_ref) as of each row's start produces 400 CHAIN_MODEL_CHANGED. |
 | AC #7 | `cpt-cf-bss-pricing-fr-min-fee` | Given two regions rated at 10 each, when both bind one default row with min_fee 30 then their combined charge floors at 30; two separate rows each carrying 30 floor at 60, without applying the shared floor twice. |
 | AC #8 | `cpt-cf-bss-pricing-fr-temporary-pair` | Given an existing chain, when a temporary pair is shifted by five days then both boundaries shift five days; for a value with no chain only one closed row is created, and an invalid end before the start is refused. |
 | AC #9 | `cpt-cf-bss-pricing-fr-publish-changes` | Given three draft rows and a temporary companion, when the author deselects a normal row and supplies a common date then only the selected atomic set enters one unit; a foreign-book row or broken pair is refused without partial locks. |

@@ -339,7 +339,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `UNIT_CONTENDED`, `UNIT_ALREADY_DECIDED`, `DUPLICATE_VOTE` | 409; conditional unit write, terminal state or duplicate generation vote |
 | `GENERATION_MISMATCH`, `UNIT_STALE` | 400 with current/new generation; mismatch refuses vote, stale refresh commits |
 | `SOD_VIOLATION`, `NOT_SUBMITTER` | 403; author/submitter approval or unauthorized withdrawal |
-| `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 422 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
+| `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 400 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
 | `APPLY_REFUSED` | Apply failure with domain reason, including SKU_REFERENCED; transaction rolls back without success events |
 | `NO_VERSION_IN_FORCE` | 404; date precedes first version |
 | `SKU_RETIRING`, `ROW_SKU_DEPRECATED` | Pricing-side adoption guards for prices/items and new plan revisions |
