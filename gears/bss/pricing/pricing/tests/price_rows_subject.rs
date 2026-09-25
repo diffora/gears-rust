@@ -173,6 +173,22 @@ impl Setup {
         r.effective_to = to.map(day);
         row_repo::insert(&conn, &scope, r).await.unwrap().id
     }
+    /// The value a chain reads on a date once every approved row is applied (default fallback).
+    async fn reads(&self, on: &str, dim: Option<&str>) -> Option<Value> {
+        let rows: Vec<_> = row_repo::for_price(
+            &self.f.db.conn().unwrap(),
+            &AccessScope::for_tenant(self.tenant()),
+            self.tenant(),
+            self.price_id(),
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|m| row_repo::to_domain(m).unwrap())
+        .collect();
+        bss_pricing::domain::row::version_at(&rows, self.price_id(), day(on), dim)
+            .map(|r| serde_json::to_value(&r.price).unwrap())
+    }
     async fn row(&self, id: Uuid) -> price_row::Model {
         row_repo::find(
             &self.f.db.conn().unwrap(),
@@ -746,4 +762,51 @@ async fn a_single_closed_row_whose_value_gained_a_chain_is_refused() {
     let err = s.submit(shifted, closed.clone(), 1).await.unwrap_err();
     assert_eq!(code(&err), "PAIR_RETURN_STALE");
     assert!(s.submit(s.subject(), closed, 1).await.is_ok());
+}
+
+// Chains HIGH-2: a temporary nested in a closed value row returns to it only until its end.
+#[tokio::test]
+async fn a_temporary_nested_in_a_closed_row_returns_to_the_default_after_the_outer_end() {
+    for (shift, promo_from) in [(None, "2031-02-10"), (Some("2031-02-12"), "2031-02-12")] {
+        let s = setup_with(0, true).await;
+        s.approved_at(1, ("2031-01-01", None), None, "10").await;
+        let outer = s
+            .draft("outer", promo("2031-02-01", "2031-03-01", "5", Some("us")))
+            .await;
+        assert_eq!(outer.len(), 1, "no own row on 03-01: one closed row");
+        assert!(
+            s.submit(s.subject(), outer.clone(), 0)
+                .await
+                .unwrap()
+                .applied
+        );
+        let inner = s
+            .draft("inner", promo("2031-02-10", "2031-02-20", "3", Some("us")))
+            .await;
+        assert_eq!(inner.len(), 2, "the outer row is in force on 02-20: a pair");
+        let back = s.row(inner[1]).await;
+        assert_eq!(back.return_of_row_id, Some(outer[0]));
+        assert_eq!(
+            (back.effective_to, back.closed_explicitly),
+            (Some(day("2031-03-01")), true),
+            "the return keeps the closed row's end"
+        );
+        let mut subject = s.subject();
+        subject.common_effective_date = shift.map(day);
+        assert!(s.submit(subject, inner.clone(), 0).await.unwrap().applied);
+        let (promo_row, back) = (s.row(inner[0]).await, s.row(inner[1]).await);
+        assert_eq!(promo_row.effective_from, day(promo_from));
+        assert_eq!(back.effective_to, Some(day("2031-03-01")), "{shift:?}");
+        assert!(back.closed_explicitly);
+        assert_eq!(
+            s.reads("2031-02-25", Some("us")).await,
+            Some(json!({"rate":"5"})),
+            "back on the outer promo until its end"
+        );
+        assert_eq!(
+            s.reads("2031-04-01", Some("us")).await,
+            Some(json!({"rate":"10"})),
+            "after the outer end the value reads the default again ({shift:?})"
+        );
+    }
 }

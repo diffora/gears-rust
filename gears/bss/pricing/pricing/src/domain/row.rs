@@ -258,9 +258,11 @@ pub fn temporary(
             .checked_add(1)
             .ok_or_else(|| RuleError::new("VERSION_EXHAUSTED"))?;
         returned.effective_from = until;
-        returned.effective_to = None;
+        // Back to a row that itself ends explicitly (a closed value row): only until that end,
+        // after which the value falls back to the default again.
+        returned.effective_to = back.effective_to.filter(|_| back.closed_explicitly);
         returned.temporary_until = None;
-        returned.closed_explicitly = false;
+        returned.closed_explicitly = back.closed_explicitly;
         returned.model = back.model;
         returned.price.clone_from(&back.price);
         returned.min_fee = back.min_fee;
@@ -329,7 +331,8 @@ pub fn shift(row: &Row, new_from: Date) -> Result<Row, RuleError> {
 }
 /// Apply a common effective date to a selection (decision 7): every row starts on it,
 /// except a pair's return half, which moves by its promo half's displacement so the
-/// pair keeps its length. `None` moves nothing.
+/// pair keeps its length. A return closed at its outer row's end keeps that end: the
+/// outer row does not move. `None` moves nothing.
 /// # Errors
 /// Refuses date overflow.
 pub fn shift_selection(rows: &[Row], date: Option<Date>) -> Result<Vec<Row>, RuleError> {
@@ -349,7 +352,11 @@ pub fn shift_selection(rows: &[Row], date: Option<Date>) -> Result<Vec<Row>, Rul
                         .effective_from
                         .checked_add(delta)
                         .ok_or_else(|| RuleError::new("WINDOW_START_INVALID"))?;
-                    shift(r, start)
+                    let mut moved = shift(r, start)?;
+                    if r.closed_explicitly {
+                        moved.effective_to = r.effective_to;
+                    }
+                    Ok(moved)
                 }
                 None => shift(r, date),
             }
