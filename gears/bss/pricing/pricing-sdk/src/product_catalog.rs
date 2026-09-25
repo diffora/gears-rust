@@ -20,7 +20,7 @@
 //!
 //! # Why it lives in the SDK
 //!
-//! [`CatalogVersionRegistryV1`](crate::catalog_version_registry)'s reason,
+//! The former `CatalogVersionRegistryV1` port's reason (removed with the legacy model),
 //! unchanged: the contract belongs where the registry gear can implement it
 //! without depending on `bss-pricing`. The two ports are the same relationship
 //! seen from two sides — that one asks the registry to increment, this one asks
