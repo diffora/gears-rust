@@ -116,7 +116,8 @@ impl Setup {
             tenant_id: self.tenant(),
         }
     }
-    async fn draft(&self, key: &str, body: Value) -> Vec<Uuid> {
+    /// A draft through the door, answered as it is.
+    async fn try_draft(&self, key: &str, body: Value) -> (u16, Value) {
         let (status, b, _) = self
             .f
             .call(
@@ -127,6 +128,10 @@ impl Setup {
                 Some(key),
             )
             .await;
+        (status, b)
+    }
+    async fn draft(&self, key: &str, body: Value) -> Vec<Uuid> {
+        let (status, b) = self.try_draft(key, body).await;
         assert_eq!(status, 201, "{b}");
         b["items"]
             .as_array()
@@ -993,4 +998,217 @@ async fn a_price_before_the_first_sku_version_is_guarded_by_the_earliest_version
         "CHAIN_MODEL_CHANGED",
         "GB (earliest) against TB"
     );
+}
+
+fn increase(from: &str, dim: Option<&str>) -> Value {
+    let mut b = body(from);
+    b["price"] = json!({"rate":"12"});
+    if let Some(dim) = dim {
+        b["dim_value"] = json!(dim);
+    }
+    b
+}
+fn refused_with(answer: &(u16, Value), status: u16, code: &str) {
+    assert_eq!(answer.0, status, "{answer:?}");
+    assert!(answer.1.to_string().contains(code), "{code}: {answer:?}");
+}
+
+// Behaviour MEDIUM-2 (D-406): no price starts inside a temporary window. B inside an approved
+// promo would be undone by the promo's return at its end. It is refused at the draft door; a B
+// drafted before the promo was approved is refused at submit; a B already pending is refused at
+// apply. The promo keeps its window throughout.
+#[tokio::test]
+async fn a_price_inside_an_approved_promo_window_is_refused_at_draft_submit_and_apply() {
+    let s = setup(0).await;
+    s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    let early = s.draft("early", increase("2031-02-15", None)).await;
+    let pending = s.draft("pending", increase("2031-02-20", None)).await;
+    let (status, queued, _) =
+        s.f.call(
+            "POST",
+            &format!("/prices/{}/submit", pending[0]),
+            json!({}),
+            None,
+            Some("p"),
+        )
+        .await;
+    assert_eq!(status, 201, "{queued}");
+    assert_eq!(queued["applied"], false, "quorum one: pending");
+    let pair = s
+        .draft("promo", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    assert!(
+        s.submit(s.subject(), pair, 0).await.unwrap().applied,
+        "a pending price is neither approved nor of this unit: the promo spans no start"
+    );
+    let at_draft = s.try_draft("late", increase("2031-02-10", None)).await;
+    refused_with(&at_draft, 400, "PRICE_INSIDE_TEMPORARY");
+    // A draft outside the window cannot be moved into it either.
+    let outside = s.draft("outside", increase("2031-04-01", None)).await;
+    let (status, b, _) =
+        s.f.call(
+            "PATCH",
+            &format!("/prices/{}", outside[0]),
+            json!({"effective_from":"2031-02-12"}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    refused_with(&(status, b), 400, "PRICE_INSIDE_TEMPORARY");
+    let (status, b, _) =
+        s.f.call(
+            "POST",
+            &format!("/prices/{}/submit", early[0]),
+            json!({}),
+            None,
+            Some("e"),
+        )
+        .await;
+    refused_with(&(status, b), 400, "PRICE_INSIDE_TEMPORARY");
+    assert_eq!(s.price(early[0]).await.state, "draft", "no unit, no lock");
+    let (status, b, _) =
+        s.f.call_as(
+            &s.f.user(),
+            "POST",
+            &format!(
+                "/approval-units/{}/approve",
+                queued["unit"]["id"].as_str().unwrap()
+            ),
+            json!({"generation":1}),
+            None,
+            Some("a"),
+        )
+        .await;
+    refused_with(&(status, b.clone()), 409, "APPLY_REFUSED");
+    assert!(b.to_string().contains("PRICE_INSIDE_TEMPORARY"), "{b}");
+    assert_eq!(s.price(pending[0]).await.state, "pending", "rolled back");
+    assert_eq!(s.reads("2031-02-25", None).await, Some(json!({"rate":"5"})));
+    assert_eq!(
+        s.reads("2031-04-01", None).await,
+        Some(json!({"rate":"10"}))
+    );
+}
+
+// D-406: a temporary whose window strictly contains an approved start would be cut there by
+// normalisation. Drafted across it: refused at the door. Approved after a price started inside
+// it (the price was approved while the promo was pending): refused at apply.
+#[tokio::test]
+async fn a_promo_across_an_approved_start_is_refused_at_draft_and_at_apply() {
+    let s = setup(0).await;
+    s.approved_at(1, ("2031-01-01", Some("2031-03-01")), None, "10")
+        .await;
+    s.approved_at(2, ("2031-03-01", None), None, "12").await;
+    let across = s
+        .try_draft("across", promo("2031-02-01", "2031-03-15", "5", None))
+        .await;
+    refused_with(&across, 400, "TEMPORARY_SPANS_A_CHANGE");
+    // Ending exactly on the approved start is allowed: that start ends the promo.
+    let alone = s
+        .draft("alone", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    assert_eq!(
+        alone.len(),
+        1,
+        "the promo alone, ended by the approved start"
+    );
+    let unit = s.submit(s.subject(), alone.clone(), 1).await.unwrap().unit;
+    let inside = s.draft("inside", increase("2031-02-15", None)).await;
+    assert!(
+        s.submit(s.subject(), inside, 0).await.unwrap().applied,
+        "the promo is still pending"
+    );
+    let err = s.approve(s.subject(), &unit).await.unwrap_err();
+    assert_eq!(code(&err), "APPLY_REFUSED");
+    assert!(
+        format!("{err:?}").contains("TEMPORARY_SPANS_A_CHANGE"),
+        "{err:?}"
+    );
+    assert_eq!(s.price(alone[0]).await.state, "pending", "rolled back");
+}
+
+// D-406 boundaries: a start exactly on a promo's end is allowed (it ends the promo); a start one
+// day before is refused, and so is one inside a temporary of the same unit.
+#[tokio::test]
+async fn a_start_on_a_promo_end_is_accepted_and_one_inside_its_own_unit_is_refused() {
+    let s = setup_with(0, true).await;
+    s.approved_at(1, ("2031-01-01", Some("2031-03-01")), None, "10")
+        .await;
+    s.approved_at(2, ("2031-03-01", None), None, "12").await;
+    let closed = s
+        .draft("us", promo("2031-02-01", "2031-03-01", "4", Some("us")))
+        .await;
+    assert_eq!(closed.len(), 1, "no own price on 03-01: one closed price");
+    assert!(s.submit(s.subject(), closed, 0).await.unwrap().applied);
+    let on_end = s.draft("on-end", increase("2031-03-01", Some("us"))).await;
+    assert!(
+        s.submit(s.subject(), on_end, 0).await.unwrap().applied,
+        "a price starting exactly on the promo's end is accepted"
+    );
+    assert_eq!(
+        s.reads("2031-02-15", Some("us")).await,
+        Some(json!({"rate":"4"}))
+    );
+    assert_eq!(
+        s.reads("2031-03-15", Some("us")).await,
+        Some(json!({"rate":"12"}))
+    );
+    let day_before = s
+        .try_draft("day-before", increase("2031-02-28", Some("us")))
+        .await;
+    refused_with(&day_before, 400, "PRICE_INSIDE_TEMPORARY");
+    // The default chain: a draft promo ended by the approved 03-01 start, and a draft price
+    // inside it, published together.
+    let alone = s
+        .draft("alone", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    let inside = s.draft("inside", increase("2031-02-15", None)).await;
+    let err = s
+        .submit(s.subject(), vec![alone[0], inside[0]], 1)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err), "PRICE_INSIDE_TEMPORARY", "a same-unit window");
+}
+
+// D-406 and D-391: a common-date shift that moves a nested promo across its outer promo's
+// start is refused: apply would cut it at that start, so the shift would not keep its length.
+// Unshifted, the nested pair is accepted and returns to the outer promo.
+#[tokio::test]
+async fn a_common_date_that_moves_a_promo_across_an_approved_start_is_refused() {
+    let s = setup(0).await;
+    s.approved_at(1, ("2031-01-01", None), None, "10").await;
+    let outer = s
+        .draft("outer", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    assert!(
+        s.submit(s.subject(), outer.clone(), 0)
+            .await
+            .unwrap()
+            .applied
+    );
+    let inner = s
+        .draft("inner", promo("2031-02-10", "2031-02-20", "3", None))
+        .await;
+    assert_eq!(inner.len(), 2);
+    assert_eq!(s.price(inner[1]).await.return_of_price_id, Some(outer[0]));
+    let mut shifted = s.subject();
+    shifted.common_effective_date = Some(day("2031-01-25"));
+    let err = s.submit(shifted, inner.clone(), 1).await.unwrap_err();
+    assert_eq!(
+        code(&err),
+        "TEMPORARY_SPANS_A_CHANGE",
+        "[01-25, 02-04) contains the outer start 02-01"
+    );
+    assert_eq!(s.price(inner[0]).await.state, "draft", "no unit, no lock");
+    assert!(s.submit(s.subject(), inner, 0).await.unwrap().applied);
+    for (on, rate) in [
+        ("2031-02-15", "3"),
+        ("2031-02-25", "5"),
+        ("2031-03-15", "10"),
+    ] {
+        assert_eq!(
+            s.reads(on, None).await,
+            Some(json!({ "rate": rate })),
+            "{on}"
+        );
+    }
 }

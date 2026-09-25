@@ -40,6 +40,7 @@ the spec's 422 wording.
 | D-403 | M | Validation refusals are 400 with a code; no wire 422 | DECIDED 2026-09-25 · toolkit canonical error mapping; Products phase 1 behaviour; deviation from spec §2 decision 16 and §6 |
 | D-404 | H | A draft belongs to its author | DECIDED 2026-09-25 · Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8) |
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
+| D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
 
 ## Entries
 
@@ -186,3 +187,11 @@ A draft belongs to its author: only its creator edits or deletes it. PATCH or DE
 POST /price-books/{id}/publish-changes that ticks one half of a temporary pair adds the other half to the unit and records it in the snapshot's added_partner: a pair is never split, and an untick of one half is not refused. Submitting one half alone through POST /prices/{id}/submit stays 400 PAIR_SPLIT, and the subject's submit validation still refuses a partial pair (PAIR_SPLIT) as a safety net. A foreign-book price is refused PRICE_NOT_IN_BOOK with no unit.
 
 **Source:** Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4).
+
+#### D-406 [H] A temporary window is not crossed
+
+**Status:** DECIDED 2026-09-25.
+
+On one chain (entry, dim_value), a proposed price that is neither temporary nor a pair's return may not start inside [effective_from, temporary_until) of an approved temporary price or of a temporary price in the same unit: the promo's end (its return, or its closed end) would undo it. It is refused 400 PRICE_INSIDE_TEMPORARY at the draft door (create, and a PATCH that moves the start), at submit, and at apply as APPLY_REFUSED. A temporary price whose window (effective_from, temporary_until) strictly contains the start of an approved price of its chain, or of a price in the same unit, is refused 400 TEMPORARY_SPANS_A_CHANGE at the draft door, at submit after a common-date shift, and at apply: normalisation would cut the promo at that start. A price that starts exactly on temporary_until is allowed, because it ends the promo. A nested pair's return belongs to its pair and is not refused by the first rule. The alternative, a price scheduled inside a promo that takes effect at the promo's end, needs a return re-derived after approval; it is left to the owner.
+
+**Source:** Phase 2 second review (behaviour MEDIUM-2).

@@ -366,6 +366,51 @@ pub fn temporary_is_current(prices: &[Price], temporary: &Price, unit: &[Price])
         },
     }
 }
+/// The other prices of `price`'s chain (same entry, same dimension value), itself excluded.
+fn chain_of<'a>(price: &'a Price, others: &'a [Price]) -> impl Iterator<Item = &'a Price> + 'a {
+    others.iter().filter(move |o| {
+        o.id != price.id
+            && o.price_book_entry_id == price.price_book_entry_id
+            && o.dim_value == price.dim_value
+    })
+}
+/// D-406: the temporary price whose window `[effective_from, temporary_until)` holds the start
+/// of `price`, when `price` is neither temporary nor a pair's return. Such a price would be
+/// undone at the promo's end (by its return, or by its closed end). A pair's return starts on
+/// its own promo's end and belongs to that pair: a nested pair's return is not refused here.
+#[must_use]
+pub fn temporary_holding<'a>(price: &'a Price, others: &'a [Price]) -> Option<&'a Price> {
+    if price.temporary_until.is_some() || price.return_of_price_id.is_some() {
+        return None;
+    }
+    chain_of(price, others).find(|o| {
+        o.temporary_until.is_some_and(|until| {
+            o.effective_from <= price.effective_from && price.effective_from < until
+        })
+    })
+}
+/// D-406: the price of `price`'s chain whose start falls strictly inside `price`'s temporary
+/// window `(effective_from, temporary_until)`. Normalisation would cut the promo at that start.
+/// A start exactly on `temporary_until` ends the promo and is not a crossing.
+#[must_use]
+pub fn start_spanned<'a>(price: &'a Price, others: &'a [Price]) -> Option<&'a Price> {
+    let until = price.temporary_until?;
+    chain_of(price, others)
+        .find(|o| price.effective_from < o.effective_from && o.effective_from < until)
+}
+/// Both D-406 refusals for one price, in rule order: `PRICE_INSIDE_TEMPORARY`, then
+/// `TEMPORARY_SPANS_A_CHANGE`. `others` are the approved prices and the other prices of the
+/// same unit (or of the same draft).
+#[must_use]
+pub fn window_crossing(price: &Price, others: &[Price]) -> Option<RuleError> {
+    if temporary_holding(price, others).is_some() {
+        Some(RuleError::new("PRICE_INSIDE_TEMPORARY"))
+    } else if start_spanned(price, others).is_some() {
+        Some(RuleError::new("TEMPORARY_SPANS_A_CHANGE"))
+    } else {
+        None
+    }
+}
 /// Shift a price and its explicit/temporary end by the same duration.
 /// Call with the same displacement for the return partner.
 /// # Errors
@@ -433,8 +478,13 @@ pub fn in_force_before<'a>(chain: &'a [Price], price: &Price) -> Option<&'a Pric
 pub fn field_of(code: &str) -> &'static str {
     match code {
         "MODEL_KIND_CHARGEKIND_MISMATCH" | "MODEL_INVALID" | "CHAIN_MODEL_CHANGED" => "model",
-        "WINDOW_START_IN_PAST" | "WINDOW_START_INVALID" | "WINDOW_OVERLAP" => "effective_from",
-        "WINDOW_END_INVALID" | "PAIR_RETURN_STALE" => "temporary_until",
+        "WINDOW_START_IN_PAST"
+        | "WINDOW_START_INVALID"
+        | "WINDOW_OVERLAP"
+        | "PRICE_INSIDE_TEMPORARY" => "effective_from",
+        "WINDOW_END_INVALID" | "PAIR_RETURN_STALE" | "TEMPORARY_SPANS_A_CHANGE" => {
+            "temporary_until"
+        }
         "DIM_NOT_DECLARED" | "DIM_VALUE_UNKNOWN" => "dim_value",
         "MIN_FEE_INVALID" => "min_fee",
         "ELIGIBILITY_INVALID" => "eligibility",

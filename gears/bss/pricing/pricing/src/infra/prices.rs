@@ -439,6 +439,30 @@ impl PricesSubject {
         {
             return Err(invalid("PAIR_RETURN_STALE", format!("price {}", stale.id)));
         }
+        // D-406: a temporary window is not crossed, by the approved chain or by the unit itself.
+        let mut around = siblings.clone();
+        around.extend(proposed.iter().cloned());
+        if let Some((r, promo)) = proposed
+            .iter()
+            .find_map(|r| price::temporary_holding(r, &around).map(|t| (r, t)))
+        {
+            return Err(invalid(
+                "PRICE_INSIDE_TEMPORARY",
+                format!("price {} starts inside temporary price {}", r.id, promo.id),
+            ));
+        }
+        if let Some((r, start)) = proposed
+            .iter()
+            .find_map(|r| price::start_spanned(r, &around).map(|s| (r, s)))
+        {
+            return Err(invalid(
+                "TEMPORARY_SPANS_A_CHANGE",
+                format!(
+                    "temporary price {} spans the start of price {}",
+                    r.id, start.id
+                ),
+            ));
+        }
         let mut chain = siblings;
         chain.extend(proposed.iter().cloned().map(|mut r| {
             r.state = PriceState::Approved;

@@ -255,6 +255,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Products refuses a dated SKU read (for example no SKU read) | Products' own status and code; only unavailability is 503 REGISTRY_UNAVAILABLE (D-402) |
 | Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
 | A temporary's return (or closed end) no longer matches the approved chain | 400 PAIR_RETURN_STALE at submit; APPLY_REFUSED at apply (D-391) |
+| A price that starts inside a temporary window; a temporary whose window contains another price's start | 400 PRICE_INSIDE_TEMPORARY; 400 TEMPORARY_SPANS_A_CHANGE, at the draft door and at submit; APPLY_REFUSED at apply (D-406) |
 | Invalid dimension or price window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
 | Money sent as a JSON number; NUL in body text | 400 AMOUNT_INVALID; 400 VALIDATION |
 | Removing a registry key an entry names / a value a price uses | 409 DIMENSION_KEY_IN_USE / DIM_VALUE_IN_USE |

@@ -589,3 +589,52 @@ fn a_pair_is_stale_when_a_price_of_its_own_unit_is_in_force_at_its_end() {
     let alone = vec![pair[0].clone(), pair[1].clone()];
     assert!(temporary_is_current(&approved, &pair[0], &alone));
 }
+#[test]
+fn d406_no_price_starts_inside_a_temporary_window_and_no_temporary_spans_a_start() {
+    let mut promo = price(2, "2026-02-01", None, PriceState::Approved);
+    promo.temporary_until = Some(date("2026-03-01"));
+    let chain = vec![
+        price(1, "2026-01-01", None, PriceState::Approved),
+        promo.clone(),
+    ];
+    for (from, code) in [
+        ("2026-01-31", None),
+        ("2026-02-01", Some("PRICE_INSIDE_TEMPORARY")),
+        ("2026-02-28", Some("PRICE_INSIDE_TEMPORARY")),
+        ("2026-03-01", None),
+    ] {
+        let p = price(9, from, None, PriceState::Draft);
+        assert_eq!(window_crossing(&p, &chain).map(|e| e.code), code, "{from}");
+    }
+    let elsewhere = price(9, "2026-02-15", Some("us"), PriceState::Draft);
+    assert!(
+        window_crossing(&elsewhere, &chain).is_none(),
+        "another chain"
+    );
+    let mut nested_return = price(9, "2026-02-15", None, PriceState::Draft);
+    nested_return.return_of_price_id = Some(promo.id);
+    assert!(
+        window_crossing(&nested_return, &chain).is_none(),
+        "a nested pair's return belongs to its pair"
+    );
+    let starts = vec![
+        price(1, "2026-01-01", None, PriceState::Approved),
+        price(2, "2026-03-01", None, PriceState::Approved),
+    ];
+    for (from, until, code) in [
+        ("2026-02-01", "2026-03-01", None),
+        ("2026-02-01", "2026-03-02", Some("TEMPORARY_SPANS_A_CHANGE")),
+        ("2026-03-01", "2026-03-10", None),
+        ("2025-12-01", "2026-02-01", Some("TEMPORARY_SPANS_A_CHANGE")),
+    ] {
+        let mut t = price(9, from, None, PriceState::Draft);
+        t.temporary_until = Some(date(until));
+        assert_eq!(
+            window_crossing(&t, &starts).map(|e| e.code),
+            code,
+            "{from}..{until}"
+        );
+    }
+    assert_eq!(field_of("PRICE_INSIDE_TEMPORARY"), "effective_from");
+    assert_eq!(field_of("TEMPORARY_SPANS_A_CHANGE"), "temporary_until");
+}

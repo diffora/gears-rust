@@ -72,6 +72,14 @@ fn parse_min_fee(text: Option<&str>) -> Result<Option<Decimal>, DoorError> {
     })
     .transpose()
 }
+/// The approved prices of an entry: the chain a draft is judged against at the door.
+fn approved_of(prices: &[Price]) -> Vec<Price> {
+    prices
+        .iter()
+        .filter(|r| r.state == PriceState::Approved)
+        .cloned()
+        .collect()
+}
 fn price_json(r: &Price) -> Result<serde_json::Value, DoorError> {
     Ok(support::value(&r.price)?)
 }
@@ -250,6 +258,15 @@ async fn create_in(
             return Err(refuse(error));
         }
     }
+    // D-406: no price starts inside an approved temporary window, and no temporary spans an
+    // approved start; the draft's own pair is judged with it.
+    let mut around = approved_of(&siblings);
+    around.extend(prices.iter().cloned());
+    for r in &prices {
+        if let Some(error) = price::window_crossing(r, &around) {
+            return Err(refuse(error));
+        }
+    }
     let children = AccessScope::for_tenant(tenant);
     let mut items = Vec::with_capacity(prices.len());
     for r in &prices {
@@ -345,8 +362,14 @@ pub async fn patch(
         r.eligibility = parse_eligibility(eligibility)?;
     }
     let now = OffsetDateTime::now_utc();
-    if let Some(error) = pc.first_refusal(&r, &pc.domain_prices()?, now.date()) {
+    let siblings = pc.domain_prices()?;
+    if let Some(error) = pc.first_refusal(&r, &siblings, now.date()) {
         return Err(refuse(error));
+    }
+    // D-406: a moved start may not land inside an approved temporary window. A temporary
+    // price keeps its window here; submit judges it against the chain.
+    if price::temporary_holding(&r, &approved_of(&siblings)).is_some() {
+        return Err(refuse(RuleError::new("PRICE_INSIDE_TEMPORARY")));
     }
     let mut next = m.clone();
     next.dim_value = r.dim_value.clone();
