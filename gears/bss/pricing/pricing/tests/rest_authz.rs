@@ -34,6 +34,14 @@ fn census() -> census::Routes {
         ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
         ("GET", "/bss-pricing/v1/approval-policy"),
         ("PUT", "/bss-pricing/v1/approval-policy"),
+        ("POST", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/{id}"),
+        ("PATCH", "/bss-pricing/v1/plans/{id}"),
+        ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("DELETE", "/bss-pricing/v1/plan-revisions/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -56,8 +64,8 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 28);
-    assert_eq!(bss_pricing::authz::labels::ALL.len(), 5);
+    assert_eq!(registered.len(), 36);
+    assert_eq!(bss_pricing::authz::labels::ALL.len(), 6);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
         .filter(|i| i.instance_id.contains("~cf.bss.pricing."))
@@ -72,9 +80,9 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
         assert_eq!(
             census::production_count(needle),
             if needle == "require_authenticated(" {
-                29
+                37
             } else {
-                28
+                36
             }
         );
     }
@@ -86,7 +94,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 28);
+    assert_eq!(census::source_routes().len(), 36);
 }
 
 #[test]
@@ -152,3 +160,13 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // POST /approval-units/{id}/withdraw approval_unit:submit false true
 // GET /approval-policy config:read false false
 // PUT /approval-policy config:settings true false
+
+// Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plans plan:author false true
+// GET /plans plan:read false false
+// GET /plans/{id} plan:read false false
+// PATCH /plans/{id} plan:author true false
+// POST /plans/{id}/revisions plan:author false true
+// GET /plan-revisions/{id} plan:read false false
+// PATCH /plan-revisions/{id} plan:author true false
+// DELETE /plan-revisions/{id} plan:author false false

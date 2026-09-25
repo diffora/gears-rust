@@ -1,9 +1,11 @@
-//! Books, entries, prices, approvals, dimension keys and settings REST doors.
+//! Books, entries, prices, approvals, plans, dimension keys and settings REST doors.
 mod approvals;
 mod books;
 mod configuration;
 pub mod dto;
 pub mod plan_items;
+mod plan_routes;
+mod plans;
 mod price_book_entries;
 pub(crate) mod prices;
 pub(crate) mod support;
@@ -293,6 +295,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .standard_errors(openapi)
         .register(router, openapi);
+    let router = plan_routes::routes(router, openapi);
     approval_routes(price_routes(router, openapi), openapi)
         .layer(Extension(state))
         .layer(axum::middleware::from_fn(correlation::establish))

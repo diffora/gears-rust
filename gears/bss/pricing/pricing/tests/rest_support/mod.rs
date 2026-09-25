@@ -201,6 +201,14 @@ impl Harness {
             ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
             ("GET", "/bss-pricing/v1/approval-policy"),
             ("PUT", "/bss-pricing/v1/approval-policy"),
+            ("POST", "/bss-pricing/v1/plans"),
+            ("GET", "/bss-pricing/v1/plans"),
+            ("GET", "/bss-pricing/v1/plans/{id}"),
+            ("PATCH", "/bss-pricing/v1/plans/{id}"),
+            ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
+            ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
+            ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
+            ("DELETE", "/bss-pricing/v1/plan-revisions/{id}"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -245,3 +253,13 @@ impl Harness {
 // POST /approval-units/{id}/withdraw approval_unit:submit false true
 // GET /approval-policy config:read false false
 // PUT /approval-policy config:settings true false
+
+// Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plans plan:author false true
+// GET /plans plan:read false false
+// GET /plans/{id} plan:read false false
+// PATCH /plans/{id} plan:author true false
+// POST /plans/{id}/revisions plan:author false true
+// GET /plan-revisions/{id} plan:read false false
+// PATCH /plan-revisions/{id} plan:author true false
+// DELETE /plan-revisions/{id} plan:author false false

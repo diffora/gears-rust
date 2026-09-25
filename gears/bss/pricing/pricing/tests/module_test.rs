@@ -36,6 +36,14 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
         ("GET", "/bss-pricing/v1/approval-policy"),
         ("PUT", "/bss-pricing/v1/approval-policy"),
+        ("POST", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/{id}"),
+        ("PATCH", "/bss-pricing/v1/plans/{id}"),
+        ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("DELETE", "/bss-pricing/v1/plan-revisions/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -50,6 +58,8 @@ fn if_match_routes() -> Routes {
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
         ("DELETE", "/bss-pricing/v1/prices/{id}"),
         ("PUT", "/bss-pricing/v1/approval-policy"),
+        ("PATCH", "/bss-pricing/v1/plans/{id}"),
+        ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -65,6 +75,8 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
+        ("POST", "/bss-pricing/v1/plans"),
+        ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -85,7 +97,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 28);
+    assert_eq!(registered.len(), 36);
     assert!(router.has_routes());
 }
 
@@ -114,11 +126,12 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 7),
-        ("preconditions::idempotency_key(", 1, 8),
+        ("preconditions::if_match(", 1, 9),
+        ("preconditions::idempotency_key(", 1, 10),
         ("Query<", 1, 0),
-        // + 1: plan_items::delete answers 204 below its run 3.3 door.
-        ("StatusCode::", 2, 58),
+        // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
+        // (eight registrations and the statuses their handlers and operations answer).
+        ("StatusCode::", 2, 74),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -206,3 +219,13 @@ async fn no_operation_declares_a_422() {
 // POST /approval-units/{id}/withdraw approval_unit:submit false true
 // GET /approval-policy config:read false false
 // PUT /approval-policy config:settings true false
+
+// Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plans plan:author false true
+// GET /plans plan:read false false
+// GET /plans/{id} plan:read false false
+// PATCH /plans/{id} plan:author true false
+// POST /plans/{id}/revisions plan:author false true
+// GET /plan-revisions/{id} plan:read false false
+// PATCH /plan-revisions/{id} plan:author true false
+// DELETE /plan-revisions/{id} plan:author false false

@@ -44,13 +44,14 @@ async fn pricing_alone_initializes_serves_authoring_routes_and_stops() {
     );
     let (empty, openapi) = harness.router(Router::new()).unwrap();
     assert!(empty.has_routes());
-    assert_eq!(openapi.operation_specs.len(), 28);
+    assert_eq!(openapi.operation_specs.len(), 36);
     let (router, _) = harness
         .router(Router::new().route("/host", get(|| async { "host" })))
         .unwrap();
     for (path, status) in [
         ("/bss-pricing/v1/anything", StatusCode::NOT_FOUND),
-        ("/bss-pricing/v1/plans", StatusCode::NOT_FOUND),
+        // Promotions are deferred by the owner (D-409): nothing is mounted there.
+        ("/bss-pricing/v1/promotions", StatusCode::NOT_FOUND),
         ("/host", StatusCode::OK),
     ] {
         let response = router

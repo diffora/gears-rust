@@ -13,7 +13,16 @@ pub mod labels {
     pub const PRICE: &str = gts_id!("cf.bss.pricing.price.v1~");
     pub const APPROVAL_UNIT: &str = gts_id!("cf.bss.pricing.approval_unit.v1~");
     pub const CONFIG: &str = gts_id!("cf.bss.pricing.config.v1~");
-    pub const ALL: &[&str] = &[PRICE_BOOK, PRICE_BOOK_ENTRY, PRICE, APPROVAL_UNIT, CONFIG];
+    /// A plan, its revisions and their items: one label, read and author (phase 3).
+    pub const PLAN: &str = gts_id!("cf.bss.pricing.plan.v1~");
+    pub const ALL: &[&str] = &[
+        PRICE_BOOK,
+        PRICE_BOOK_ENTRY,
+        PRICE,
+        APPROVAL_UNIT,
+        CONFIG,
+        PLAN,
+    ];
 }
 /// Independent authoring and governance actions.
 pub mod actions {
@@ -35,6 +44,7 @@ pub mod resource_types {
         ResourceType::from_static(labels::APPROVAL_UNIT, SUPPORTED_PROPERTIES);
     pub const CONFIG: ResourceType =
         ResourceType::from_static(labels::CONFIG, SUPPORTED_PROPERTIES);
+    pub const PLAN: ResourceType = ResourceType::from_static(labels::PLAN, SUPPORTED_PROPERTIES);
 }
 
 /// Supported tenant and resource constraints for future doors.

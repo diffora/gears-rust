@@ -311,6 +311,145 @@ impl From<entity::plan_item::Model> for PricingPlanItemDto {
         }
     }
 }
+/// `POST /plans`: a plan and its draft rev 1 on `book_id`.
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPlanCreate {
+    pub code: String,
+    pub name: String,
+    pub book_id: Uuid,
+}
+/// `PATCH /plans/{id}`: the plan's name, under If-Match.
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPlanPatch {
+    pub name: String,
+}
+/// One revision of a plan as its plan lists it: the header, without items.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanRevisionHeader {
+    pub id: Uuid,
+    pub rev_no: i32,
+    pub book_id: Uuid,
+    pub state: String,
+    pub available_from: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub published_at: Option<time::OffsetDateTime>,
+}
+impl From<&entity::plan_revision::Model> for PricingPlanRevisionHeader {
+    fn from(m: &entity::plan_revision::Model) -> Self {
+        Self {
+            id: m.id,
+            rev_no: m.rev_no,
+            book_id: m.book_id,
+            state: m.state.clone(),
+            available_from: m.available_from.map(|d| d.to_string()),
+            published_at: m.published_at,
+        }
+    }
+}
+/// A plan with the headers of its revisions in revision order.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanDto {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub code: String,
+    pub name: String,
+    /// The revision number the last applied `plan_revision` unit published.
+    pub published_rev: Option<i32>,
+    pub version: i64,
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+    pub revisions: Vec<PricingPlanRevisionHeader>,
+}
+impl PricingPlanDto {
+    #[must_use]
+    pub fn of(m: entity::plan::Model, revisions: &[entity::plan_revision::Model]) -> Self {
+        Self {
+            id: m.id,
+            tenant_id: m.tenant_id,
+            code: m.code,
+            name: m.name,
+            published_rev: m.published_rev,
+            version: m.version,
+            created_by: m.created_by,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+            revisions: revisions.iter().map(Into::into).collect(),
+        }
+    }
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanList {
+    pub items: Vec<PricingPlanDto>,
+}
+/// A revision with its items (D-407: items are a sub-resource, read with their revision).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanRevisionDto {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub plan_id: Uuid,
+    pub rev_no: i32,
+    pub book_id: Uuid,
+    /// `draft`, `pending`, `published` or `superseded`.
+    pub state: String,
+    /// The sale date; null means "at publish".
+    pub available_from: Option<String>,
+    pub pending_unit_id: Option<Uuid>,
+    pub approved_by_unit_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub published_at: Option<time::OffsetDateTime>,
+    pub version: i64,
+    /// The draft's author: the one principal who edits it and its items (D-404).
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+    pub items: Vec<PricingPlanItemDto>,
+}
+impl PricingPlanRevisionDto {
+    #[must_use]
+    pub fn of(m: entity::plan_revision::Model, items: Vec<entity::plan_item::Model>) -> Self {
+        Self {
+            id: m.id,
+            tenant_id: m.tenant_id,
+            plan_id: m.plan_id,
+            rev_no: m.rev_no,
+            book_id: m.book_id,
+            state: m.state,
+            available_from: m.available_from.map(|d| d.to_string()),
+            pending_unit_id: m.pending_unit_id,
+            approved_by_unit_id: m.approved_by_unit_id,
+            published_at: m.published_at,
+            version: m.version,
+            created_by: m.created_by,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+            items: items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+/// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list
+/// (D-407). A book change remaps each item to the new book's entry of the same (SKU, charge kind,
+/// period); an unmatched item keeps its entry and the checks show it foreign.
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(
+    clippy::option_option,
+    reason = "PATCH distinguishes omission, null clearing and a new date"
+)]
+pub struct PricingPlanRevisionPatch {
+    pub book_id: Option<Uuid>,
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub available_from: Option<Option<String>>,
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {
     pub op_id: Uuid,

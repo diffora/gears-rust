@@ -215,3 +215,13 @@ impl MigrationTrait for InvalidOutboxMigration {
 // POST /approval-units/{id}/withdraw approval_unit:submit false true
 // GET /approval-policy config:read false false
 // PUT /approval-policy config:settings true false
+
+// Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
+// POST /plans plan:author false true
+// GET /plans plan:read false false
+// GET /plans/{id} plan:read false false
+// PATCH /plans/{id} plan:author true false
+// POST /plans/{id}/revisions plan:author false true
+// GET /plan-revisions/{id} plan:read false false
+// PATCH /plan-revisions/{id} plan:author true false
+// DELETE /plan-revisions/{id} plan:author false false

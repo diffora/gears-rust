@@ -370,6 +370,14 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/approval-units/{id}/withdraw")),
         ("GET", "/approval-policy".into()),
         ("PUT", "/approval-policy".into()),
+        ("POST", "/plans".into()),
+        ("GET", "/plans".into()),
+        ("GET", format!("/plans/{id}")),
+        ("PATCH", format!("/plans/{id}")),
+        ("POST", format!("/plans/{id}/revisions")),
+        ("GET", format!("/plan-revisions/{id}")),
+        ("PATCH", format!("/plan-revisions/{id}")),
+        ("DELETE", format!("/plan-revisions/{id}")),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -647,6 +655,14 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ),
         ("GET", "/approval-policy".into(), "config", "read"),
         ("PUT", "/approval-policy".into(), "config", "settings"),
+        ("POST", "/plans".into(), "plan", "author"),
+        ("GET", "/plans".into(), "plan", "read"),
+        ("GET", format!("/plans/{id}"), "plan", "read"),
+        ("PATCH", format!("/plans/{id}"), "plan", "author"),
+        ("POST", format!("/plans/{id}/revisions"), "plan", "author"),
+        ("GET", format!("/plan-revisions/{id}"), "plan", "read"),
+        ("PATCH", format!("/plan-revisions/{id}"), "plan", "author"),
+        ("DELETE", format!("/plan-revisions/{id}"), "plan", "author"),
     ] {
         let context = |grant: &str| {
             SecurityContext::builder()
