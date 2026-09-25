@@ -231,7 +231,8 @@ pub fn validate_temporary(start: Date, until: &str) -> Result<Date, RuleError> {
         Ok(end)
     }
 }
-/// Build a pair on an owned chain, or a single explicitly closed row on an empty chain.
+/// Build a pair on an owned chain, or a single explicitly closed row on an empty chain, or
+/// the promo alone when the chain's next row starts exactly on the end.
 /// # Errors
 /// Refuses a nonpositive duration or an exhausted version number.
 pub fn temporary(
@@ -250,6 +251,13 @@ pub fn temporary(
     // has ended, or that starts later, is neither revived nor copied backwards:
     // the value then falls back to the default after the temporary row.
     let back = own_version_at(rows, promo.price_id, until, promo.dim_value.as_deref());
+    if back.is_some_and(|b| b.effective_from == until) {
+        // The next approved row starts exactly on the end and already ends the promo: the
+        // promo alone, which normalisation closes at that start; nothing to return to.
+        promo.effective_to = Some(until);
+        promo.closed_explicitly = false;
+        return Ok(vec![promo]);
+    }
     if let Some(back) = back {
         let mut returned = promo.clone();
         returned.id = return_id;

@@ -810,3 +810,35 @@ async fn a_temporary_nested_in_a_closed_row_returns_to_the_default_after_the_out
         );
     }
 }
+
+// Chains LOW-2: a temporary that ends on the next approved start is the promo row alone.
+#[tokio::test]
+async fn a_temporary_ending_on_the_next_approved_start_is_one_row_ended_by_it() {
+    let s = setup(0).await;
+    s.approved_at(1, ("2031-01-01", Some("2031-03-01")), None, "10")
+        .await;
+    s.approved_at(2, ("2031-03-01", None), None, "12").await;
+    let only = s
+        .draft("promo", promo("2031-02-01", "2031-03-01", "5", None))
+        .await;
+    assert_eq!(only.len(), 1, "B already ends the promo: no return row");
+    let stored = s.row(only[0]).await;
+    assert!(!stored.closed_explicitly);
+    assert!(stored.paired_row_id.is_none());
+    assert!(
+        s.submit(s.subject(), only.clone(), 0)
+            .await
+            .unwrap()
+            .applied
+    );
+    let applied = s.row(only[0]).await;
+    assert_eq!(
+        (applied.effective_from, applied.effective_to),
+        (day("2031-02-01"), Some(day("2031-03-01")))
+    );
+    assert_eq!(s.reads("2031-02-15", None).await, Some(json!({"rate":"5"})));
+    assert_eq!(
+        s.reads("2031-03-15", None).await,
+        Some(json!({"rate":"12"}))
+    );
+}

@@ -527,3 +527,27 @@ fn every_refusal_code_names_its_input_field() {
         assert_eq!(field_of(code), field, "{code}");
     }
 }
+#[test]
+fn a_temporary_that_ends_on_the_next_approved_start_needs_no_return() {
+    // Chains LOW-2: B already ends the promo, so a return starting on B's start is refused
+    // WINDOW_OVERLAP and restores nothing B does not.
+    let mut chain = vec![
+        row(1, "2026-01-01", None, RowState::Approved),
+        row(2, "2026-03-01", None, RowState::Approved),
+    ];
+    normalize_windows(&mut chain);
+    let mut promo = row(9, "2026-02-01", None, RowState::Draft);
+    promo.price = Some(PriceData::PerUnit { rate: dec("4") });
+    let out = temporary(&chain, promo, date("2026-03-01"), Uuid::from_u128(77)).unwrap();
+    assert_eq!(out.len(), 1, "the promo alone");
+    assert!(!out[0].closed_explicitly, "normalisation ends it at B");
+    assert_eq!(out[0].temporary_until, Some(date("2026-03-01")));
+    assert!(out[0].paired_row_id.is_none());
+    assert!(temporary_is_current(&chain, &out[0], &out));
+    let mut all = chain.clone();
+    let mut approved = out[0].clone();
+    approved.state = RowState::Approved;
+    all.push(approved);
+    normalize_windows(&mut all);
+    assert_eq!(all[2].effective_to, Some(date("2026-03-01")));
+}
