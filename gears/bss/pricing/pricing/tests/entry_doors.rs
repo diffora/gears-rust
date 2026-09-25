@@ -528,3 +528,38 @@ async fn a_contended_entry_write_after_the_reserve_cancels_the_create() {
     let (_, listed, _) = f.call("GET", &path, json!({}), None, None).await;
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
 }
+
+// Rename L1: a missing entry is a missing price_book_entry with ENTRY_NOT_FOUND on every entry
+// door, never a missing price book or a missing price.
+#[tokio::test]
+async fn a_missing_entry_is_named_as_an_entry_on_every_door() {
+    let (f, _, _, _) = setup(0).await;
+    let path = format!("/price-book-entries/{}", Uuid::new_v4());
+    let draft = json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-01-01"});
+    for (method, path, body, tag, key) in [
+        ("GET", path.clone(), json!({}), None, None),
+        (
+            "PATCH",
+            path.clone(),
+            json!({"invoice_line_override":"{sku}"}),
+            Some("\"1\""),
+            None,
+        ),
+        ("DELETE", path.clone(), json!({}), None, None),
+        ("POST", format!("{path}/prices"), draft, None, Some("k")),
+    ] {
+        let (status, b, _) = f.call(method, &path, body, tag, key).await;
+        assert_eq!(status, 404, "{method} {path}: {b}");
+        assert_eq!(
+            b["context"]["resource_name"], "price_book_entry",
+            "{method}: {b}"
+        );
+        assert!(
+            b["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("ENTRY_NOT_FOUND"),
+            "{method}: {b}"
+        );
+    }
+}

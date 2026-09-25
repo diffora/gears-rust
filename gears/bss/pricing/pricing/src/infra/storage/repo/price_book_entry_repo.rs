@@ -53,10 +53,10 @@ pub async fn insert(
     e::Entity::insert(active.clone())
         .secure()
         .scope_with_model(scope, &active)
-        .map_err(|e| driver_failure("insert scope".into(), e))?
+        .map_err(|e| driver_failure("insert price book entry scope".into(), e))?
         .exec_with_returning(runner)
         .await
-        .map_err(|e| map_unique("insert price".into(), e))
+        .map_err(|e| map_unique("insert price book entry".into(), e))
 }
 /// Read by tenant and identity within the authorized scope.
 /// # Errors
@@ -73,7 +73,7 @@ pub async fn find(
         .filter(key(tenant, id))
         .one(runner)
         .await
-        .map_err(|e| driver_failure("find price".into(), e))
+        .map_err(|e| driver_failure("find price book entry".into(), e))
 }
 /// List tenant rows in stable identity order.
 /// # Errors
@@ -90,7 +90,7 @@ pub async fn list(
         .order_by(e::Column::Id, Order::Asc)
         .all(runner)
         .await
-        .map_err(|e| driver_failure("list price".into(), e))
+        .map_err(|e| driver_failure("list price book entries".into(), e))
 }
 /// Change business columns only if the caller's version still owns the row.
 /// # Errors
@@ -121,7 +121,7 @@ pub async fn update(
         .filter(predicate)
         .exec(runner)
         .await
-        .map_err(|e| map_unique("update price".into(), e))?;
+        .map_err(|e| map_unique("update price book entry".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
 /// List rows of one scoped parent in stable order.
@@ -144,7 +144,7 @@ pub async fn for_book(
         .order_by(e::Column::Id, Order::Asc)
         .all(runner)
         .await
-        .map_err(|e| driver_failure("list parent rows".into(), e))
+        .map_err(|e| driver_failure("list price book entries of a book".into(), e))
 }
 /// Change the reference receipt/state at the observed version.
 /// # Errors
@@ -173,7 +173,7 @@ pub async fn set_reference(
         .filter(key(tenant, id).add(e::Column::Version.eq(version)))
         .exec(runner)
         .await
-        .map_err(|e| driver_failure("update price reference".into(), e))?;
+        .map_err(|e| driver_failure("update price book entry reference".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
 /// Delete an entry after the caller has removed its drafts, with the release op in the same transaction.
@@ -204,7 +204,7 @@ pub async fn delete_empty(
         )
         .exec(runner)
         .await
-        .map_err(|e| driver_failure("delete empty price".into(), e))?;
+        .map_err(|e| driver_failure("delete empty price book entry".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
 
@@ -231,5 +231,8 @@ pub async fn reconcile_batch(
         .limit(limit)
         .all(runner)
         .await
-        .map_err(|e| driver_failure("confirmed price batch".into(), e))
+        .map_err(|e| driver_failure("confirmed price book entry batch".into(), e))
 }
+#[cfg(test)]
+#[path = "price_book_entry_repo_tests.rs"]
+mod tests;

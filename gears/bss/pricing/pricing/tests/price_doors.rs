@@ -137,6 +137,17 @@ async fn a_draft_price_is_created_once_per_key_and_numbered_per_entry() {
         )
         .await;
     assert_eq!(missing.0, 404, "{missing:?}");
+    assert_eq!(
+        missing.1["context"]["resource_name"], "price_book_entry",
+        "the missing object is the entry, not the price being created: {missing:?}"
+    );
+    assert!(
+        missing.1["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("ENTRY_NOT_FOUND"),
+        "{missing:?}"
+    );
 }
 
 #[tokio::test]

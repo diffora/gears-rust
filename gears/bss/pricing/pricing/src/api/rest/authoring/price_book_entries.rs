@@ -41,7 +41,7 @@ pub(super) async fn find(
 ) -> Result<entity::price_book_entry::Model, DoorError> {
     price_book_entry_repo::find(tx, scope, tenant, id)
         .await?
-        .ok_or_else(|| support::missing().into())
+        .ok_or_else(|| support::missing_entry().into())
 }
 fn validate_template(input: Option<&str>) -> Result<(), CanonicalError> {
     if let Some(template) = input {

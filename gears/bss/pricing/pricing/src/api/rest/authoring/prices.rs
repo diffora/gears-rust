@@ -135,7 +135,7 @@ async fn live_entry(
 ) -> Result<price_book_entry::Model, DoorError> {
     let entry = price_book_entry_repo::find(tx, scope, tenant, id)
         .await?
-        .ok_or_else(|| support::missing_what("price"))?;
+        .ok_or_else(support::missing_entry)?;
     if entry.reference_state == "lost" {
         return Err(support::conflict("ENTRY_REFERENCE_LOST").into());
     }

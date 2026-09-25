@@ -114,3 +114,28 @@ fn a_forbidden_answer_keeps_its_code_and_names_its_cause() {
         Problem::from(forbidden("NOT_DRAFT_AUTHOR")).context["resource_type"]
     );
 }
+/// Rename L1: the subject's entry lookup names its own code, and the door answers it as a
+/// missing entry, never as a missing price.
+#[test]
+fn a_subject_entry_not_found_is_a_missing_entry() {
+    let problem = |error: DoorError| Problem::from(CanonicalError::from(error));
+    let entry = problem(approval_failure(
+        bss_approval::ApprovalError::InvalidSubmit {
+            code: "ENTRY_NOT_FOUND",
+            field: "price".into(),
+            detail: "entry 1".into(),
+        },
+    ));
+    assert_eq!(entry.status, Some(404));
+    assert_eq!(entry.context["resource_name"], "price_book_entry");
+    assert!(entry.detail.starts_with("ENTRY_NOT_FOUND"), "{entry:?}");
+    let price = problem(approval_failure(
+        bss_approval::ApprovalError::InvalidSubmit {
+            code: "PRICE_NOT_FOUND",
+            field: "price".into(),
+            detail: "price 1".into(),
+        },
+    ));
+    assert_eq!(price.status, Some(404));
+    assert_eq!(price.context["resource_name"], "price");
+}

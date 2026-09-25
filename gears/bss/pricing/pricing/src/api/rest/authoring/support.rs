@@ -77,6 +77,13 @@ pub fn missing() -> CanonicalError {
         .with_resource("price_book")
         .create()
 }
+/// A price book entry the caller's tenant does not hold: 404 on resource `price_book_entry`.
+/// A not-found problem carries no reason, so its detail leads with the code `ENTRY_NOT_FOUND`.
+pub fn missing_entry() -> CanonicalError {
+    PricingResource::not_found("ENTRY_NOT_FOUND: price book entry not found")
+        .with_resource("price_book_entry")
+        .create()
+}
 /// A named pricing resource that the caller's tenant does not hold.
 pub fn missing_what(what: &str) -> CanonicalError {
     PricingResource::not_found(format!("{what} not found"))
@@ -196,6 +203,7 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             "PRICE_NOT_DRAFT" | "ENTRY_REFERENCE_LOST" => conflict(code).into(),
             "REGISTRY_UNAVAILABLE" => unavailable().into(),
             "PRICE_NOT_FOUND" => missing_what("price").into(),
+            "ENTRY_NOT_FOUND" => missing_entry().into(),
             _ => invalid(&field, code).into(),
         },
         A::ApplyRefused { code, detail } => {

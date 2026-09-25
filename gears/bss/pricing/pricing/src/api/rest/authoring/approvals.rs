@@ -297,7 +297,7 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
                 price.price_book_entry_id,
             )
             .await?
-            .ok_or_else(|| support::missing_what("price_book_entry"))?;
+            .ok_or_else(support::missing_entry)?;
             let subject = PricesSubject::new(
                 cmd.ctx.clone(),
                 cmd.hub.clone(),

@@ -389,7 +389,7 @@ impl PricesSubject {
                 .await
                 .map_err(storage)?
                 .ok_or_else(|| {
-                    invalid("PRICE_NOT_FOUND", format!("entry {price_book_entry_id}"))
+                    invalid("ENTRY_NOT_FOUND", format!("entry {price_book_entry_id}"))
                 })?;
         if entry.book_id != self.book_id {
             return Err(invalid(
