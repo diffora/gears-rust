@@ -368,6 +368,13 @@ impl Gear for BssProductsGear {
             reference_principals: cfg.reference_principals.clone(),
         });
         register_products_client(&ctx.client_hub(), api_state.db.db(), Arc::clone(&enforcer));
+        ctx.client_hub()
+            .register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
+                bss_products_sdk::PricingReferenceRegistry(Arc::new(
+                    crate::infra::reference_registry::LocalReferenceRegistry::for_owner("pricing")
+                        .with_runtime(api_state.clone(), enforcer.clone()),
+                )),
+            ));
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             api_state,

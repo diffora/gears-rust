@@ -100,7 +100,7 @@ fn owner<'a>(state: &'a ApiState, ctx: &SecurityContext) -> Option<&'a str> {
         .get(&ctx.subject_id())
         .map(String::as_str)
 }
-fn forbidden() -> DomainError {
+pub(crate) fn forbidden() -> DomainError {
     DomainError::Forbidden {
         code: "REFERENCE_OWNER_MISMATCH",
         detail: "principal is not the registered owner gear".into(),
@@ -152,76 +152,30 @@ async fn reserve(
                 let owner = owner_tx.clone();
                 Box::pin(async move {
                     let tenant = ctx.subject_tenant_id();
-                    let now = time::OffsetDateTime::now_utc();
-                    let s = g::find(tx, &scope, tenant, id).await?;
+                    g::find(tx, &scope, tenant, id).await?;
                     if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
                         return Ok(response);
                     }
-                    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
-                    g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
-                    if let Some(row) =
-                        repo::find_live_reference(tx, &scope, tenant, &owner, kind, body.ref_id)
-                            .await
-                            .map_err(TxError::Repo)?
-                    {
-                        if row.sku_id != id {
-                            return Err(g::conflict(
-                                "REFERENCE_EXISTS",
-                                "logical reference already belongs to another SKU",
-                            ));
-                        }
-                        return replay::finish(
-                            tx,
-                            tenant,
-                            claim.as_ref(),
-                            StatusCode::OK,
-                            &ReferenceReceipt::from(row),
-                        )
-                        .await;
-                    }
-                    // Re-read after orphan-fence recovery.
-                    let s = if s.type_change_pending
-                        || s.lifecycle == bss_products_sdk::models::Lifecycle::Retiring
-                    {
-                        g::find(tx, &scope, tenant, id).await?
-                    } else {
-                        s
-                    };
-                    reservation_allowed(
-                        s.lifecycle,
-                        s.type_change_pending
-                            || s.lifecycle == bss_products_sdk::models::Lifecycle::Retiring,
-                    )
-                    .map_err(TxError::Refused)?;
-                    let row = repo::reserve_reference(
-                        tx,
-                        &scope,
-                        tenant,
-                        id,
-                        &owner,
-                        kind,
-                        body.ref_id,
-                        ctx.subject_id(),
-                        now,
-                    )
-                    .await
-                    .map_err(TxError::Repo)?;
-                    g::audit(
+                    let (row, created) = reserve_tx(
                         tx,
                         &scope,
                         &ctx,
-                        "reference.reserve",
-                        "sku_reference",
-                        row.id,
-                        None,
-                        now,
+                        &owner,
+                        id,
+                        kind,
+                        body.ref_id,
+                        state.fence_ttl_minutes,
                     )
                     .await?;
                     replay::finish(
                         tx,
                         tenant,
                         claim.as_ref(),
-                        StatusCode::CREATED,
+                        if created {
+                            StatusCode::CREATED
+                        } else {
+                            StatusCode::OK
+                        },
                         &ReferenceReceipt::from(row),
                     )
                     .await
@@ -268,7 +222,6 @@ async fn confirm(
             let claim = claim.clone();
             Box::pin(async move {
                 let tenant = ctx.subject_tenant_id();
-                let now = time::OffsetDateTime::now_utc();
                 let row = repo::find_reference(tx, &scope, tenant, id)
                     .await
                     .map_err(TxError::Repo)?
@@ -283,46 +236,7 @@ async fn confirm(
                 if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
                     return Ok(response);
                 }
-                let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
-                g::expire(tx, &scope, tenant, row.sku_id, ttl, now).await?;
-                match repo::confirm_reference(tx, &scope, tenant, id, now)
-                    .await
-                    .map_err(TxError::Repo)?
-                {
-                    repo::ConfirmOutcome::Released => {
-                        return Err(g::conflict(
-                            "REFERENCE_RELEASED",
-                            "released attempts cannot be confirmed",
-                        ));
-                    }
-                    repo::ConfirmOutcome::Missing => {
-                        return Err(TxError::Refused(DomainError::NotFound {
-                            what: "reference",
-                            id,
-                        }));
-                    }
-                    repo::ConfirmOutcome::Confirmed => {
-                        g::audit(
-                            tx,
-                            &scope,
-                            &ctx,
-                            "reference.confirm",
-                            "sku_reference",
-                            id,
-                            None,
-                            now,
-                        )
-                        .await?;
-                    }
-                    repo::ConfirmOutcome::AlreadyConfirmed => {}
-                }
-                let row = repo::find_reference(tx, &scope, tenant, id)
-                    .await
-                    .map_err(TxError::Repo)?
-                    .ok_or(TxError::Refused(DomainError::NotFound {
-                        what: "reference",
-                        id,
-                    }))?;
+                let row = confirm_tx(tx, &scope, &ctx, &owner, id, ttl).await?;
                 replay::finish(
                     tx,
                     tenant,
@@ -383,6 +297,17 @@ async fn release(
             let reason = body.reason.clone();
             Box::pin(async move {
                 let tenant = ctx.subject_tenant_id();
+                if !forced {
+                    return release_tx(
+                        tx,
+                        &scope,
+                        &ctx,
+                        principal_owner.as_deref().unwrap_or_default(),
+                        id,
+                        state.fence_ttl_minutes,
+                    )
+                    .await;
+                }
                 let now = time::OffsetDateTime::now_utc();
                 let row = repo::find_reference(tx, &scope, tenant, id)
                     .await
@@ -449,4 +374,174 @@ async fn release(
         .await
         .map_err(tx_to_canonical)?;
     Ok(Json(ReferenceReceipt::from(row)).into_response())
+}
+
+// Shared transaction operations: REST adds replay envelopes, local callers add owner binding.
+use crate::infra::storage::entity::sku_reference;
+use toolkit_db::secure::{AccessScope, DBRunner};
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Explicit reservation identity and transaction context"
+)]
+pub(crate) async fn reserve_tx(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    owner: &str,
+    id: Uuid,
+    kind: RefKind,
+    ref_id: Uuid,
+    ttl: u32,
+) -> Result<(sku_reference::Model, bool), TxError> {
+    let tenant = ctx.subject_tenant_id();
+    g::find(tx, scope, tenant, id).await?;
+    let scope = AccessScope::for_tenant(tenant);
+    let now = time::OffsetDateTime::now_utc();
+    g::expire(tx, &scope, tenant, id, ttl, now).await?;
+    if let Some(row) = repo::find_live_reference(tx, &scope, tenant, owner, kind, ref_id)
+        .await
+        .map_err(TxError::Repo)?
+    {
+        if row.sku_id != id {
+            return Err(g::conflict(
+                "REFERENCE_EXISTS",
+                "logical reference already belongs to another SKU",
+            ));
+        }
+        return Ok((row, false));
+    }
+    let s = g::find(tx, &scope, tenant, id).await?;
+    // Distinguish the actual retirement fence from an unfenced retiring head.
+    // Both refuse adoption; normal retire operations retain their existing SKU_FENCED code.
+    let retiring_fence = if s.lifecycle == bss_products_sdk::Lifecycle::Retiring {
+        repo::find_sku_fence(tx, &scope, tenant, id)
+            .await
+            .map_err(TxError::Repo)?
+            .is_some_and(|row| {
+                row.fenced_at.is_some()
+                    || row.fence_op_id.is_some()
+                    || row.pending_unit_id.is_some()
+            })
+    } else {
+        false
+    };
+    reservation_allowed(s.lifecycle, s.type_change_pending || retiring_fence)
+        .map_err(TxError::Refused)?;
+    let row = repo::reserve_reference(
+        tx,
+        &scope,
+        tenant,
+        id,
+        owner,
+        kind,
+        ref_id,
+        ctx.subject_id(),
+        now,
+    )
+    .await
+    .map_err(TxError::Repo)?;
+    reference_audit(tx, ctx, owner, "reference.reserve", row.id, now).await?;
+    Ok((row, true))
+}
+pub(crate) async fn owned(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    owner: &str,
+    id: Uuid,
+) -> Result<sku_reference::Model, TxError> {
+    let row = repo::find_reference(tx, scope, tenant, id)
+        .await
+        .map_err(TxError::Repo)?
+        .ok_or(TxError::Refused(DomainError::NotFound {
+            what: "reference",
+            id,
+        }))?;
+    if row.owner_gear != owner {
+        return Err(TxError::Refused(forbidden()));
+    }
+    Ok(row)
+}
+pub(crate) async fn confirm_tx(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    owner: &str,
+    id: Uuid,
+    ttl: u32,
+) -> Result<sku_reference::Model, TxError> {
+    let tenant = ctx.subject_tenant_id();
+    let row = owned(tx, scope, tenant, owner, id).await?;
+    let scope = AccessScope::for_tenant(tenant);
+    let now = time::OffsetDateTime::now_utc();
+    g::expire(tx, &scope, tenant, row.sku_id, ttl, now).await?;
+    match repo::confirm_reference(tx, &scope, tenant, id, now)
+        .await
+        .map_err(TxError::Repo)?
+    {
+        repo::ConfirmOutcome::Released => {
+            return Err(g::conflict(
+                "REFERENCE_RELEASED",
+                "released attempts cannot be confirmed",
+            ));
+        }
+        repo::ConfirmOutcome::Missing => {
+            return Err(TxError::Refused(DomainError::NotFound {
+                what: "reference",
+                id,
+            }));
+        }
+        repo::ConfirmOutcome::Confirmed => {
+            reference_audit(tx, ctx, owner, "reference.confirm", id, now).await?;
+        }
+        repo::ConfirmOutcome::AlreadyConfirmed => {}
+    }
+    owned(tx, &scope, tenant, owner, id).await
+}
+pub(crate) async fn release_tx(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    owner: &str,
+    id: Uuid,
+    ttl: u32,
+) -> Result<sku_reference::Model, TxError> {
+    let tenant = ctx.subject_tenant_id();
+    let row = owned(tx, scope, tenant, owner, id).await?;
+    let now = time::OffsetDateTime::now_utc();
+    g::expire(tx, scope, tenant, row.sku_id, ttl, now).await?;
+    if let repo::HeadWrite::Written(row) =
+        repo::release_reference(tx, scope, tenant, id, ctx.subject_id(), None, false, now)
+            .await
+            .map_err(TxError::Repo)?
+    {
+        reference_audit(tx, ctx, owner, "reference.release", id, now).await?;
+        return Ok(row);
+    }
+    Ok(row)
+}
+async fn reference_audit(
+    tx: &impl DBRunner,
+    ctx: &SecurityContext,
+    owner: &str,
+    action: &str,
+    id: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<(), TxError> {
+    let actor_kind = if ctx.subject_type().is_some_and(|s| s.ends_with(".system")) {
+        "system"
+    } else {
+        "subject"
+    };
+    g::audit(
+        tx,
+        &AccessScope::for_tenant(ctx.subject_tenant_id()),
+        ctx,
+        action,
+        "sku_reference",
+        id,
+        Some(format!("owner={owner}; actor_kind={actor_kind}")),
+        now,
+    )
+    .await
 }

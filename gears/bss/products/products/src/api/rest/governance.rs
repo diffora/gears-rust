@@ -21,7 +21,7 @@ use uuid::Uuid;
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct Resource;
 
-pub(super) async fn scope(
+pub async fn scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
     action: &str,
@@ -53,13 +53,13 @@ pub(super) fn validation(field: &str, detail: impl Into<String>) -> DomainError 
     r.violate("VALIDATION", field, detail);
     DomainError::Validation(r)
 }
-pub(super) fn conflict(code: &'static str, detail: impl Into<String>) -> TxError {
+pub fn conflict(code: &'static str, detail: impl Into<String>) -> TxError {
     TxError::Refused(DomainError::Conflict {
         code,
         detail: detail.into(),
     })
 }
-pub(super) async fn find(
+pub async fn find(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
@@ -85,7 +85,7 @@ pub(super) async fn resolve(
     Ok(Some(answer))
 }
 /// Maintenance never releases a pending unit's fence and compares the observed operation.
-pub(super) async fn expire(
+pub async fn expire(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
@@ -136,7 +136,7 @@ pub(super) async fn touch(
     reason = "Audit inputs explicitly bind subject and actor to the caller transaction"
 )]
 /// Audit row identifiers belong to a separate aggregate from the authorized resource.
-pub(super) async fn audit(
+pub async fn audit(
     tx: &impl DBRunner,
     _scope: &AccessScope,
     ctx: &SecurityContext,

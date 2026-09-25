@@ -10,3 +10,5 @@ pub(crate) mod sdk_client;
 pub mod serde_date;
 pub mod storage;
 pub mod usage_types;
+
+pub mod reference_registry;

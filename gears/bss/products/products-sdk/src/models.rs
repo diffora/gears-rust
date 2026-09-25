@@ -191,3 +191,27 @@ mod registry_tests {
         }
     }
 }
+
+/// Kind of owner object protected by a reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceKind {
+    Price,
+    PlanItem,
+    SoldAs,
+}
+/// Released attempts remain tombstones and no longer block a fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReferenceState {
+    Reserved,
+    Confirmed,
+    Released,
+}
+/// The attempt handle used for confirmation, release and reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ReservationReceipt {
+    pub reservation_id: Uuid,
+    pub state: ReferenceState,
+}

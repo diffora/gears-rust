@@ -1686,3 +1686,339 @@ async fn sku_only_reader_sees_reference_counts() {
         404
     );
 }
+
+// Phase 2c: exercise the bound transport against the very same REST fixture.
+fn local(f: &Fixture, owner: &str) -> crate::infra::reference_registry::LocalReferenceRegistry {
+    crate::infra::reference_registry::LocalReferenceRegistry::for_owner(owner)
+        .with_runtime(f.state.clone(), Arc::new(flat_in_enforcer(f.tenant)))
+}
+fn canonical_code(error: toolkit_canonical_errors::CanonicalError) -> String {
+    let problem = toolkit::api::canonical_prelude::Problem::from(error);
+    problem_code(&serde_json::to_value(problem).unwrap())
+}
+#[tokio::test]
+async fn bound_registry_reserve_confirm_release_states_and_owner_isolation() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1, ReferenceState};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let registry = local(&f, "pricing");
+    let ref_id = Uuid::new_v4();
+    let r = registry
+        .reserve(&f.author, f.tenant, f.id, ReferenceKind::Price, ref_id)
+        .await
+        .unwrap();
+    assert_eq!(r.state, ReferenceState::Reserved);
+    assert_eq!(
+        registry
+            .reserve(&f.author, f.tenant, f.id, ReferenceKind::Price, ref_id)
+            .await
+            .unwrap(),
+        r
+    );
+    registry
+        .confirm(&f.author, f.tenant, r.reservation_id)
+        .await
+        .unwrap();
+    registry
+        .confirm(&f.author, f.tenant, r.reservation_id)
+        .await
+        .unwrap();
+    let r2 = registry
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::Price,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    registry
+        .release(&f.author, f.tenant, r2.reservation_id)
+        .await
+        .unwrap();
+    registry
+        .release(&f.author, f.tenant, r2.reservation_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        registry
+            .states(&f.author, f.tenant, &[r2.reservation_id, r.reservation_id])
+            .await
+            .unwrap(),
+        vec![
+            (r2.reservation_id, ReferenceState::Released),
+            (r.reservation_id, ReferenceState::Confirmed)
+        ]
+    );
+    let foreign = local(&f, "subscriptions")
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::PlanItem,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    for error in [
+        registry
+            .confirm(&f.author, f.tenant, foreign.reservation_id)
+            .await
+            .unwrap_err(),
+        registry
+            .release(&f.author, f.tenant, foreign.reservation_id)
+            .await
+            .unwrap_err(),
+        registry
+            .states(&f.author, f.tenant, &[foreign.reservation_id])
+            .await
+            .unwrap_err(),
+    ] {
+        assert_eq!(canonical_code(error), "REFERENCE_OWNER_MISMATCH");
+    }
+    assert_eq!(
+        local(&f, "subscriptions")
+            .states(&f.author, f.tenant, &[foreign.reservation_id])
+            .await
+            .unwrap()[0]
+            .1,
+        ReferenceState::Reserved
+    );
+}
+#[tokio::test]
+async fn bound_registry_refusals_match_rest_codes() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    let registry = local(&f, "pricing");
+    let (_, rest) = f.reserve(Uuid::new_v4()).await;
+    let error = registry
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::Price,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(canonical_code(error), problem_code(&rest));
+    f.publish().await;
+    let r = registry
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::Price,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    registry
+        .release(&f.author, f.tenant, r.reservation_id)
+        .await
+        .unwrap();
+    let (_, rest) = call(
+        &f.app,
+        &f.owner,
+        Method::POST,
+        &format!("/references/{}/confirm", r.reservation_id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        canonical_code(
+            registry
+                .confirm(&f.author, f.tenant, r.reservation_id)
+                .await
+                .unwrap_err()
+        ),
+        problem_code(&rest)
+    );
+    let missing = Uuid::new_v4();
+    let (_, rest) = call(
+        &f.app,
+        &f.owner,
+        Method::POST,
+        &format!("/references/{missing}/confirm"),
+        json!({}),
+        None,
+    )
+    .await;
+    let local = serde_json::to_value(toolkit::api::canonical_prelude::Problem::from(
+        registry
+            .confirm(&f.author, f.tenant, missing)
+            .await
+            .unwrap_err(),
+    ))
+    .unwrap();
+    assert_eq!(local["type"], rest["type"]);
+    assert_eq!(local["status"], 404);
+    f.policy(1).await;
+    assert_eq!(f.post("/retire", json!({})).await.0, 200);
+    let (_, rest) = f.reserve(Uuid::new_v4()).await;
+    assert_eq!(
+        canonical_code(
+            registry
+                .reserve(
+                    &f.author,
+                    f.tenant,
+                    f.id,
+                    ReferenceKind::Price,
+                    Uuid::new_v4()
+                )
+                .await
+                .unwrap_err()
+        ),
+        problem_code(&rest)
+    );
+    assert_eq!(problem_code(&rest), "SKU_FENCED");
+    // SKU_RETIRING is the existing domain refusal for an unfenced retiring head.
+    assert_eq!(
+        canonical_code(
+            crate::domain::references::reservation_allowed(
+                bss_products_sdk::Lifecycle::Retiring,
+                false
+            )
+            .unwrap_err()
+            .into()
+        ),
+        "SKU_RETIRING"
+    );
+}
+#[tokio::test]
+async fn bound_registry_fresh_head_and_dated_versions() {
+    use bss_products_sdk::ReferenceRegistryV1;
+    let f = Fixture::new(0).await;
+    let registry = local(&f, "pricing");
+    assert_eq!(
+        registry
+            .sku_for_write(&f.author, f.tenant, f.id)
+            .await
+            .unwrap()
+            .lifecycle,
+        bss_products_sdk::Lifecycle::Draft
+    );
+    let today = time::OffsetDateTime::now_utc().date();
+    assert!(
+        registry
+            .sku_version_as_of(&f.author, f.tenant, f.id, today)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    f.publish().await;
+    let date = today + time::Duration::days(7);
+    assert_eq!(
+        f.post(
+            "/changes",
+            json!({"gl_code":"new","effective_from":date.to_string()})
+        )
+        .await
+        .0,
+        200
+    );
+    for (day, version) in [
+        (today - time::Duration::days(1), None),
+        (date - time::Duration::days(1), Some(1)),
+        (date, Some(2)),
+        (date + time::Duration::days(1), Some(2)),
+    ] {
+        assert_eq!(
+            registry
+                .sku_version_as_of(&f.author, f.tenant, f.id, day)
+                .await
+                .unwrap()
+                .map(|v| v.published_version),
+            version
+        );
+    }
+    assert_eq!(
+        registry
+            .sku_for_write(&f.author, f.tenant, f.id)
+            .await
+            .unwrap()
+            .gl_code
+            .as_deref(),
+        Some("new")
+    );
+}
+#[tokio::test]
+async fn bound_registry_system_identity_and_tenant_are_checked() {
+    use bss_products_sdk::{PRICING_SYSTEM_ACTOR, ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let registry = local(&f, "pricing");
+    let system = SecurityContext::builder()
+        .subject_id(PRICING_SYSTEM_ACTOR)
+        .subject_type("bss-pricing.system")
+        .subject_tenant_id(f.tenant)
+        .build()
+        .unwrap();
+    registry
+        .reserve(
+            &system,
+            f.tenant,
+            f.id,
+            ReferenceKind::Price,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    let other = SecurityContext::builder()
+        .subject_id(PRICING_SYSTEM_ACTOR)
+        .subject_type("bss-products.system")
+        .subject_tenant_id(f.tenant)
+        .build()
+        .unwrap();
+    assert_eq!(
+        canonical_code(
+            registry
+                .reserve(&other, f.tenant, f.id, ReferenceKind::Price, Uuid::new_v4())
+                .await
+                .unwrap_err()
+        ),
+        "REFERENCE_OWNER_MISMATCH"
+    );
+    assert!(
+        registry
+            .sku_for_write(&system, Uuid::new_v4(), f.id)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
+    use bss_products_sdk::{Lifecycle, ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let db = f.state.db.db();
+    let conn = db.conn().unwrap();
+    let scope = toolkit_db::secure::AccessScope::for_tenant(f.tenant);
+    repo::set_lifecycle(
+        &conn,
+        &scope,
+        f.tenant,
+        f.id,
+        &[Lifecycle::Published],
+        Lifecycle::Retiring,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    let (_, rest) = f.reserve(Uuid::new_v4()).await;
+    assert_eq!(problem_code(&rest), "SKU_RETIRING");
+    let error = local(&f, "pricing")
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::Price,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(canonical_code(error), problem_code(&rest));
+}

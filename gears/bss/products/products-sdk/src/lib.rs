@@ -11,3 +11,7 @@ pub use errors::ErrorCode;
 pub use models::{
     BillingTiming, Category, Lifecycle, Sku, SkuChangedPayload, SkuContent, SkuType, SkuVersion,
 };
+
+pub mod references;
+pub use models::{ReferenceKind, ReferenceState, ReservationReceipt};
+pub use references::{PRICING_SYSTEM_ACTOR, PricingReferenceRegistry, ReferenceRegistryV1};

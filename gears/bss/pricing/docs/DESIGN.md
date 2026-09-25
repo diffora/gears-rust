@@ -247,7 +247,16 @@ outbox_migrations_with_prefix("bss_pricing_outbox") belongs in DatabaseCapabilit
 
 ### 3.5 External Dependencies
 
-ProductsClient is resolved from ClientHub and is called with trusted owner pricing for reference operations.
+Products registers LocalReferenceRegistry::for_owner("pricing") during init under the
+PricingReferenceRegistry ClientHub key. Pricing lazily resolves ReferenceRegistryV1 at each use; absence
+returns 503 REGISTRY_UNAVAILABLE and does not prevent boot. Ownership is bound by Products, never by
+request input. This is an explicit same-binary, same-deployment trust boundary. Calls use the caller's
+subject for audit and record the bound owner. PRICING_SYSTEM_ACTOR with subject type bss-pricing.system
+uses only the operation tenant's scope and is audited as system; other system subjects are refused.
+A future out-of-process transport uses the REST reference_principals mapping and pricing's configured
+service_principal_id credentials with the same semantics; that transport is not implemented here.
+The fresh sku_for_write read accepts every lifecycle; sku_version_as_of resolves the version in force
+at each row start for the D-402 pair guard.
 Reserve is idempotent on the live logical reference, not on a released receipt. The same tenant and SKU must be
 bound to the receipt and object. Products versions?as_of provides descriptor history in phase 4. There is no
 SkuChanged listener/local SKU read model in phase 2 (D-399). Subscriptions migration execution and Rating
