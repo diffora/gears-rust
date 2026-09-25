@@ -82,21 +82,29 @@ async fn refusal_branches_answer_key_and_release_only_after_reservation() {
     }
 }
 #[tokio::test]
-async fn lost_reserve_and_confirm_timeout_leave_unanswered_keys() {
-    for mode in [5, 6] {
-        let (f, script, path, input) = setup(mode).await;
-        let result = f
-            .call("POST", &path, input.clone(), None, Some("one"))
-            .await;
-        assert_eq!(result.0, 503, "{result:?}");
-        let retry = f.call("POST", &path, input, None, Some("one")).await;
-        assert_eq!(retry.0, 409);
-        assert!(
-            retry.1.to_string().contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
-            "{retry:?}"
-        );
-        assert_eq!(Script::count(&script.releases), 0);
-    }
+async fn a_503_before_the_write_frees_the_key_and_a_confirm_timeout_keeps_it() {
+    // Mode 5: the reserve answer is lost. Nothing was written, so the same key runs afresh.
+    let (f, script, path, input) = setup(5).await;
+    let result = f
+        .call("POST", &path, input.clone(), None, Some("one"))
+        .await;
+    assert_eq!(result.0, 503, "{result:?}");
+    let retry = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(retry.0, 201, "{retry:?}");
+    assert_eq!(Script::count(&script.reserve_calls), 2);
+    // Mode 6: the price is written and its confirm timed out; the key stays in flight.
+    let (f, script, path, input) = setup(6).await;
+    let result = f
+        .call("POST", &path, input.clone(), None, Some("one"))
+        .await;
+    assert_eq!(result.0, 503, "{result:?}");
+    let retry = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(retry.0, 409);
+    assert!(
+        retry.1.to_string().contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
+        "{retry:?}"
+    );
+    assert_eq!(Script::count(&script.releases), 0);
 }
 #[tokio::test]
 async fn released_on_confirm_is_lost_and_replayable() {

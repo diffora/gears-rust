@@ -2,7 +2,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-confirmation-retry:p1
 use super::{
-    reference_work::{self, Clock, Work},
+    reference_work::{self, Caller, Clock, Work},
     storage::{
         entity::price,
         repo::{price_repo, reference_op_repo as ops},
@@ -80,8 +80,14 @@ impl Ticker {
         .map_err(|e| CanonicalError::from(DoorError::from(e)))?;
         for op in due {
             let ctx = system_actor(op.tenant_id)?;
-            if let Err(error) =
-                reference_work::drive(&self.state, &ctx, op.op_id, self.clock.clone()).await
+            if let Err(error) = reference_work::drive(
+                &self.state,
+                &ctx,
+                op.op_id,
+                self.clock.clone(),
+                Caller::Ticker,
+            )
+            .await
             {
                 tracing::warn!(op_id=%op.op_id, attempts=op.attempts, error=%error, "pricing reference recovery deferred");
             }
@@ -129,8 +135,14 @@ impl Ticker {
                 }) {
                     let id = self.begin_rereserve(&ctx, price).await?;
                     if let Some(id) = id
-                        && let Err(error) =
-                            reference_work::drive(&self.state, &ctx, id, self.clock.clone()).await
+                        && let Err(error) = reference_work::drive(
+                            &self.state,
+                            &ctx,
+                            id,
+                            self.clock.clone(),
+                            Caller::Ticker,
+                        )
+                        .await
                     {
                         // The rereserve op stays durable and due; the next tick resumes it.
                         tracing::warn!(op_id=%id, error=%error, "pricing re-reservation deferred");
@@ -166,6 +178,7 @@ impl Ticker {
                     correlation: Uuid::now_v7(),
                     refusal: None,
                     receipt: None,
+                    outcome: None,
                 };
                 let op = reference_work::new_op(
                     &ctx,

@@ -40,6 +40,20 @@ pub struct Work {
     pub correlation: Uuid,
     pub refusal: Option<Receipt>,
     pub receipt: Option<Receipt>,
+    /// [`CANCELLED`] once a create was given up before its reservation outcome was known:
+    /// no price was written, the Idempotency-Key claim was released in that same
+    /// transaction, and the cancellation releases whatever reservation exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+}
+/// The recorded outcome of a create cancelled before its reservation outcome was known.
+pub const CANCELLED: &str = "cancelled";
+/// Who drives an op. A door drives the work it just began, under the requesting principal;
+/// the ticker resumes abandoned work under the pricing system actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    Door,
+    Ticker,
 }
 /// Store the exact body rendering, including problem bodies, inside the JSON replay store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +123,11 @@ impl Work {
     #[must_use]
     pub fn endpoint(&self) -> String {
         format!("/bss-pricing/v1/price-books/{}/prices", self.book_id)
+    }
+    /// Whether this create was cancelled before its reservation outcome was known.
+    #[must_use]
+    pub fn cancelled(&self) -> bool {
+        self.outcome.as_deref() == Some(CANCELLED)
     }
 }
 /// Start a durable record inside Tx A or the price-delete transaction.
@@ -287,6 +306,11 @@ async fn answer_key(
     let Some(key) = &op.idempotency_key else {
         return Ok(());
     };
+    if work.cancelled() {
+        // The claim was released when the create was cancelled; the key may now belong to a
+        // fresh attempt, which this op must never answer.
+        return Ok(());
+    }
     let scope = AccessScope::for_tenant(op.tenant_id);
     let receipt = work
         .receipt
@@ -309,7 +333,74 @@ async fn answer_key(
     }
     Ok(())
 }
+/// Give up a create whose reserve got no definite answer (spec §13: nothing is written). In
+/// one transaction the op moves `reserving → cancelling`, is recorded [`CANCELLED`], and its
+/// Idempotency-Key claim is released, so a same-key retry runs afresh with a new price id.
+/// The cancellation then releases whatever reservation the unanswered call made.
+async fn abandon(
+    state: &AuthoringState,
+    op: &entity::Model,
+    mut work: Work,
+    clock: Arc<dyn Clock>,
+) -> Result<(), CanonicalError> {
+    work.outcome = Some(CANCELLED.into());
+    let op = op.clone();
+    support::transaction(&state.db.db(), move |tx| {
+        let (op, work, clock) = (op.clone(), work.clone(), clock.clone());
+        Box::pin(async move {
+            advance(tx, &op, &work, Event::ReservationUnknown, clock.as_ref()).await?;
+            if let Some(key) = &op.idempotency_key {
+                idem::release_idempotency_claim(
+                    tx,
+                    &AccessScope::for_tenant(op.tenant_id),
+                    op.tenant_id,
+                    &work.endpoint(),
+                    key,
+                )
+                .await?;
+            }
+            Ok(())
+        })
+    })
+    .await
+}
+/// A create in `reserving` that never learned a reservation id.
+fn unreserved_create(op: &entity::Model, state: OpState) -> bool {
+    state == OpState::Reserving && op.reservation_id.is_none() && op.kind == OpKind::Create.as_str()
+}
+/// What the loop does with an op before any registry call.
+enum Gate {
+    /// The op finished: hand back its stored answer.
+    Finished,
+    /// A door's create was cancelled before its reservation outcome was known.
+    Cancelled,
+    /// The ticker found a create it must not reserve for: cancel it.
+    Abandon,
+    /// Observe the registry and commit the observation.
+    Observe,
+}
+fn gate(caller: Caller, op: &entity::Model, work: &Work, current: OpState) -> Gate {
+    if caller == Caller::Door && work.cancelled() {
+        // Cancelled before its reservation outcome was known, by this door or, past the
+        // in-flight grace, by the ticker: nothing was written and the key is free again.
+        Gate::Cancelled
+    } else if current == OpState::Done {
+        Gate::Finished
+    } else if caller == Caller::Ticker && unreserved_create(op, current) {
+        Gate::Abandon
+    } else {
+        Gate::Observe
+    }
+}
+/// Whether a failed transaction's error is the lost compare-and-swap of a racing driver.
+fn contended(error: &CanonicalError) -> bool {
+    error_code(error).as_deref() == Some("REFERENCE_OP_CONTENDED")
+}
 /// Drive a durable op until terminal completion or the next scheduled retry.
+///
+/// A door whose first reserve gets no definite answer cancels its create and answers 503
+/// (nothing written, key released). The ticker never makes a first reservation on a user's
+/// behalf: it cancels a create still `reserving` without a reservation id the same way.
 /// # Errors
 /// Returns registry unavailability or a storage failure; the operation remains durable.
 pub async fn drive(
@@ -317,6 +408,7 @@ pub async fn drive(
     ctx: &SecurityContext,
     id: Uuid,
     clock: Arc<dyn Clock>,
+    caller: Caller,
 ) -> Result<Option<Receipt>, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
     let scope = AccessScope::for_tenant(tenant);
@@ -326,164 +418,240 @@ pub async fn drive(
             .map_err(|e| CanonicalError::from(DoorError::Repo(e)))?
             .ok_or_else(corrupt)?;
         let work = Work::read(&op)?;
-        if parse_state(&op)? == OpState::Done {
-            return Ok(work.receipt.or(work.refusal));
+        let current = parse_state(&op)?;
+        match gate(caller, &op, &work, current) {
+            Gate::Cancelled => return Err(support::unavailable()),
+            Gate::Finished => return Ok(work.receipt.or(work.refusal)),
+            Gate::Abandon => match abandon(state, &op, work, clock.clone()).await {
+                Err(error) if !contended(&error) => return Err(error),
+                _ => continue,
+            },
+            Gate::Observe => {}
         }
-        if op.attempts >= 10 {
-            tracing::warn!(op_id=%op.op_id, attempts=op.attempts, "pricing reference operation retry threshold reached");
-        }
-        let registry = super::reference_registry::resolve(&state.hub);
-        let observation = observe(registry, ctx, &op).await;
-        let (event, price, refusal) = observation?;
-        let retry = matches!(
-            event,
-            Event::RegistryUnavailable | Event::ConfirmFailed | Event::ReleaseFailed
-        );
-        let (op2, mut work2, ctx2, clock2) = (op.clone(), work.clone(), ctx.clone(), clock.clone());
-        if let Some(refusal) = refusal {
-            work2.refusal = Some(refusal);
-        }
-        let outbox = state.outbox.clone();
-        let result = support::transaction(&state.db.db(), move |tx| {
-            let (op, mut work, ctx, clock, event, price) = (
-                op2.clone(),
-                work2.clone(),
-                ctx2.clone(),
-                clock2.clone(),
-                event.clone(),
-                price.clone(),
-            );
-            let outbox = outbox.clone();
-            Box::pin(async move {
-                let scope = AccessScope::for_tenant(op.tenant_id);
-                if ops::find(tx, &scope, op.tenant_id, op.op_id)
-                    .await?
-                    .as_ref()
-                    != Some(&op)
-                {
-                    return Err(RepoError::Conflict {
-                        code: "REFERENCE_OP_CONTENDED",
-                    }
-                    .into());
-                }
-                let now = clock.now();
-                let (planned, effects) = reference_op::next(
-                    Op {
-                        state: parse_state(&op)?,
-                        reservation_id: op.reservation_id,
-                        refusal: op.last_error.clone(),
-                    },
-                    event.clone(),
-                )
-                .map_err(|_| corrupt())?;
-                let next = planned.state;
-                let scope = AccessScope::for_tenant(op.tenant_id);
-                if let Some(price) = price {
-                    if op.kind == OpKind::Rereserve.as_str() {
-                        let current = price_repo::find(tx, &scope, op.tenant_id, op.price_id)
-                            .await?
-                            .ok_or_else(corrupt)?;
-                        if current.charge_kind != price.charge_kind {
-                            return Err(support::conflict("CHARGE_KIND_SKU_TYPE").into());
-                        }
-                        price_repo::set_reference(
-                            tx,
-                            &scope,
-                            op.tenant_id,
-                            op.price_id,
-                            current.version,
-                            ReferenceState::ConfirmationPending,
-                            price.reservation_id,
-                            now,
-                        )
-                        .await?;
-                    } else {
-                        price_repo::insert(tx, &scope, price).await?;
-                    }
-                }
-                if next == OpState::Done {
-                    if op.state == OpState::Written.as_str() {
-                        let mut price = price_repo::find(tx, &scope, op.tenant_id, op.price_id)
-                            .await?
-                            .ok_or_else(corrupt)?;
-                        let reference = if effects.contains(&Effect::MarkLost) {
-                            ReferenceState::Lost
-                        } else {
-                            ReferenceState::Confirmed
-                        };
-                        price_repo::set_reference(
-                            tx,
-                            &scope,
-                            op.tenant_id,
-                            op.price_id,
-                            price.version,
-                            reference,
-                            price.reservation_id,
-                            now,
-                        )
-                        .await?;
-                        price.reference_state = reference.as_str().into();
-                        price.version += 1;
-                        price.updated_at = now;
-                        support::audit(
-                            tx,
-                            &ctx,
-                            work.correlation,
-                            if reference == ReferenceState::Lost {
-                                "PriceReferenceLost"
-                            } else {
-                                "price.confirm"
-                            },
-                            price.id,
-                            price.version,
-                        )
-                        .await?;
-                        if reference == ReferenceState::Lost {
-                            super::reference_events::lost(
-                                &outbox,
-                                tx,
-                                &price,
-                                ctx.subject_id(),
-                                now,
-                            )
-                            .await?;
-                        }
-                        work.receipt = Some(Receipt::price(price)?);
-                    } else if op.kind == OpKind::Rereserve.as_str() {
-                        mark_rereserve_lost(tx, &outbox, &ctx, &work, &op, now).await?;
-                    }
-                    answer_key(tx, &op, &work).await?;
-                }
-                advance(tx, &op, &work, event, clock.as_ref()).await?;
-                Ok(())
-            })
-        })
-        .await;
-        if let Err(error) = result {
-            let code = error_code(&error);
-            if code.as_deref() == Some("REFERENCE_OP_CONTENDED") {
-                continue;
-            }
-            if matches!(
-                code.as_deref(),
-                Some(
-                    "PRICE_KEY_TAKEN"
-                        | "DIM_NOT_DECLARED"
-                        | "BOOK_NOT_FOUND"
-                        | "CHARGE_KIND_SKU_TYPE"
-                )
-            ) && op.state == OpState::Reserving.as_str()
-            {
-                cancel(state, &op, work, error, clock.clone()).await?;
-                continue;
-            }
-            return Err(error);
-        }
-        if retry {
-            return Err(unavailable());
-        }
+        step(state, ctx, &op, work, current, caller, clock.clone()).await?;
     }
     Err(unavailable())
+}
+/// One observation and its commit. `Ok` loops again; `Err` ends the drive with that answer.
+async fn step(
+    state: &AuthoringState,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+    work: Work,
+    current: OpState,
+    caller: Caller,
+    clock: Arc<dyn Clock>,
+) -> Result<(), CanonicalError> {
+    warn_past_threshold(op);
+    let registry = super::reference_registry::resolve(&state.hub);
+    let (event, price, refusal) = observe(registry, ctx, op).await?;
+    if caller == Caller::Door
+        && event == Event::RegistryUnavailable
+        && unreserved_create(op, current)
+    {
+        return give_up(state, op, work, clock).await;
+    }
+    let retry = matches!(
+        event,
+        Event::RegistryUnavailable | Event::ConfirmFailed | Event::ReleaseFailed
+    );
+    let mut observed = work.clone();
+    if let Some(refusal) = refusal {
+        observed.refusal = Some(refusal);
+    }
+    match commit_observation(state, ctx, op, observed, event, price, clock.clone()).await {
+        Ok(()) if retry => Err(unavailable()),
+        Err(error) if refuses_the_write(&error) && current == OpState::Reserving => {
+            cancel(state, op, work, error, clock).await
+        }
+        Err(error) if !contended(&error) => Err(error),
+        _ => Ok(()),
+    }
+}
+fn warn_past_threshold(op: &entity::Model) {
+    if op.attempts >= 10 {
+        tracing::warn!(op_id=%op.op_id, attempts=op.attempts, "pricing reference operation retry threshold reached");
+    }
+}
+/// The door's first reserve got no definite answer: cancel the create and answer 503. A lost
+/// race means another driver moved the op first; the loop re-reads it.
+async fn give_up(
+    state: &AuthoringState,
+    op: &entity::Model,
+    work: Work,
+    clock: Arc<dyn Clock>,
+) -> Result<(), CanonicalError> {
+    match abandon(state, op, work, clock).await {
+        Ok(()) => Err(support::unavailable()),
+        Err(error) if contended(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+/// A local refusal of Tx B that cancels the op (and releases its reservation).
+fn refuses_the_write(error: &CanonicalError) -> bool {
+    matches!(
+        error_code(error).as_deref(),
+        Some("PRICE_KEY_TAKEN" | "DIM_NOT_DECLARED" | "BOOK_NOT_FOUND" | "CHARGE_KIND_SKU_TYPE")
+    )
+}
+/// Commit one observation in one transaction: the price write it carries, the completion
+/// work of a finishing op and the op's own compare-and-swap transition, or none of them.
+async fn commit_observation(
+    state: &AuthoringState,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+    work: Work,
+    event: Event,
+    price: Option<price::Model>,
+    clock: Arc<dyn Clock>,
+) -> Result<(), CanonicalError> {
+    let (op, ctx, outbox) = (op.clone(), ctx.clone(), state.outbox.clone());
+    support::transaction(&state.db.db(), move |tx| {
+        let (op, work, ctx, clock, event, price, outbox) = (
+            op.clone(),
+            work.clone(),
+            ctx.clone(),
+            clock.clone(),
+            event.clone(),
+            price.clone(),
+            outbox.clone(),
+        );
+        Box::pin(
+            async move { commit(tx, &outbox, &ctx, &op, work, event, price, clock.as_ref()).await },
+        )
+    })
+    .await
+}
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the observed op, its work and the observation are the transaction's operands"
+)]
+async fn commit(
+    tx: &(impl DBRunner + Sync),
+    outbox: &toolkit_db::outbox::Outbox,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+    mut work: Work,
+    event: Event,
+    price: Option<price::Model>,
+    clock: &dyn Clock,
+) -> Result<(), DoorError> {
+    let scope = AccessScope::for_tenant(op.tenant_id);
+    if ops::find(tx, &scope, op.tenant_id, op.op_id)
+        .await?
+        .as_ref()
+        != Some(op)
+    {
+        return Err(RepoError::Conflict {
+            code: "REFERENCE_OP_CONTENDED",
+        }
+        .into());
+    }
+    let now = clock.now();
+    let (planned, effects) = reference_op::next(
+        Op {
+            state: parse_state(op)?,
+            reservation_id: op.reservation_id,
+            refusal: op.last_error.clone(),
+        },
+        event.clone(),
+    )
+    .map_err(|_| corrupt())?;
+    if let Some(price) = price {
+        write_price(tx, &scope, op, price, now).await?;
+    }
+    if planned.state == OpState::Done {
+        if op.state == OpState::Written.as_str() {
+            work.receipt = Some(finish_written(tx, outbox, ctx, op, &work, &effects, now).await?);
+        } else if op.kind == OpKind::Rereserve.as_str() {
+            mark_rereserve_lost(tx, outbox, ctx, &work, op, now).await?;
+        }
+        answer_key(tx, op, &work).await?;
+    }
+    advance(tx, op, &work, event, clock).await?;
+    Ok(())
+}
+/// Tx B: a create inserts its price; a rereserve re-points its price at the new receipt.
+async fn write_price(
+    tx: &(impl DBRunner + Sync),
+    scope: &AccessScope,
+    op: &entity::Model,
+    price: price::Model,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    if op.kind != OpKind::Rereserve.as_str() {
+        price_repo::insert(tx, scope, price).await?;
+        return Ok(());
+    }
+    let current = price_repo::find(tx, scope, op.tenant_id, op.price_id)
+        .await?
+        .ok_or_else(corrupt)?;
+    if current.charge_kind != price.charge_kind {
+        return Err(support::conflict("CHARGE_KIND_SKU_TYPE").into());
+    }
+    price_repo::set_reference(
+        tx,
+        scope,
+        op.tenant_id,
+        op.price_id,
+        current.version,
+        ReferenceState::ConfirmationPending,
+        price.reservation_id,
+        now,
+    )
+    .await?;
+    Ok(())
+}
+/// Tx C: the confirm answered, so the price leaves `confirmation_pending`.
+async fn finish_written(
+    tx: &(impl DBRunner + Sync),
+    outbox: &toolkit_db::outbox::Outbox,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+    work: &Work,
+    effects: &[Effect],
+    now: OffsetDateTime,
+) -> Result<Receipt, DoorError> {
+    let scope = AccessScope::for_tenant(op.tenant_id);
+    let mut price = price_repo::find(tx, &scope, op.tenant_id, op.price_id)
+        .await?
+        .ok_or_else(corrupt)?;
+    let reference = if effects.contains(&Effect::MarkLost) {
+        ReferenceState::Lost
+    } else {
+        ReferenceState::Confirmed
+    };
+    price_repo::set_reference(
+        tx,
+        &scope,
+        op.tenant_id,
+        op.price_id,
+        price.version,
+        reference,
+        price.reservation_id,
+        now,
+    )
+    .await?;
+    price.reference_state = reference.as_str().into();
+    price.version += 1;
+    price.updated_at = now;
+    support::audit(
+        tx,
+        ctx,
+        work.correlation,
+        if reference == ReferenceState::Lost {
+            "PriceReferenceLost"
+        } else {
+            "price.confirm"
+        },
+        price.id,
+        price.version,
+    )
+    .await?;
+    if reference == ReferenceState::Lost {
+        super::reference_events::lost(outbox, tx, &price, ctx.subject_id(), now).await?;
+    }
+    Ok(Receipt::price(price)?)
 }
 fn unavailable() -> CanonicalError {
     CanonicalError::service_unavailable()
@@ -518,6 +686,10 @@ async fn cancel(
     .await
 }
 type Observation = (Event, Option<price::Model>, Option<Receipt>);
+/// A Products answer that settles the call: a client error. Everything else is unavailability.
+fn definite_refusal(error: &CanonicalError) -> bool {
+    (400..500).contains(&error.status_code())
+}
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
     ctx: &SecurityContext,
@@ -535,7 +707,12 @@ async fn observe(
             None,
         )
     };
-    if matches!(current, OpState::Cancelling | OpState::Releasing) && op.reservation_id.is_none() {
+    let cancelled = Work::read(op)?.cancelled();
+    if matches!(current, OpState::Cancelling | OpState::Releasing)
+        && op.reservation_id.is_none()
+        && !cancelled
+    {
+        // A definite refusal before any receipt: nothing was reserved.
         return Ok((Event::Released, None, None));
     }
     let Ok(registry) = registry else {
@@ -555,7 +732,7 @@ async fn observe(
                     None,
                     None,
                 )),
-                Err(error) if (400..500).contains(&error.status_code()) => {
+                Err(error) if definite_refusal(&error) => {
                     let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
                     Ok((
                         Event::ReserveRefused { code },
@@ -581,10 +758,20 @@ async fn observe(
             Ok((event, None, None))
         }
         OpState::Cancelling | OpState::Releasing => {
-            let result = if let Some(id) = op.reservation_id {
-                registry.release(ctx, tenant, id).await
-            } else {
-                Ok(())
+            let result = match op.reservation_id {
+                Some(id) => registry.release(ctx, tenant, id).await,
+                // The reserve outcome was never learned. Reserve is idempotent per logical
+                // reference, so it answers the reservation the lost call made (or makes one),
+                // and releasing that leaves none. A definite refusal means none can exist:
+                // a fence requires zero live references.
+                None => match registry
+                    .reserve(ctx, tenant, op.sku_id, ReferenceKind::Price, op.price_id)
+                    .await
+                {
+                    Ok(receipt) => registry.release(ctx, tenant, receipt.reservation_id).await,
+                    Err(error) if definite_refusal(&error) => Ok(()),
+                    Err(error) => Err(error),
+                },
             };
             Ok((
                 if result.is_ok() {
@@ -608,7 +795,7 @@ async fn observe_sku(
     let tenant = op.tenant_id;
     let sku = match registry.sku_for_write(ctx, tenant, op.sku_id).await {
         Ok(sku) => sku,
-        Err(error) if (400..500).contains(&error.status_code()) => {
+        Err(error) if definite_refusal(&error) => {
             return Ok((
                 Event::SkuRefused {
                     code: "SKU_REFUSED".into(),

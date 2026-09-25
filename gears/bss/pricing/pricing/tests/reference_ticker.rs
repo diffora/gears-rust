@@ -75,9 +75,90 @@ async fn crash_create(mode: usize, expected_state: &str) {
         Some(idem::IdempotencyClaim::Answered { .. })
     ));
 }
+/// The key and its op as the store holds them after the given op finished.
+async fn key_claim(f: &Fixture, path: &str, key: &str) -> Option<idem::IdempotencyClaim> {
+    idem::lookup_idempotency_key(
+        &f.db.conn().unwrap(),
+        &AccessScope::for_tenant(f.ctx.subject_tenant_id()),
+        f.ctx.subject_tenant_id(),
+        &format!("/bss-pricing/v1{path}"),
+        key,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap()
+}
+/// A create cancelled before its reservation outcome was known: done, recorded `cancelled`,
+/// no price, and its key free for a fresh attempt.
+async fn assert_cancelled_without_price(f: &Fixture, op_id: Uuid, path: &str, key: &str) {
+    let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+    let conn = f.db.conn().unwrap();
+    let op = ops::find(&conn, &scope, f.ctx.subject_tenant_id(), op_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.state, "done");
+    let work = bss_pricing::infra::reference_work::Work::read(&op).unwrap();
+    assert_eq!(work.outcome.as_deref(), Some("cancelled"), "{op:?}");
+    assert!(
+        price_repo::find(&conn, &scope, f.ctx.subject_tenant_id(), op.price_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a cancelled create writes no price"
+    );
+    assert_eq!(
+        key_claim(f, path, key).await,
+        None,
+        "the claim was released"
+    );
+}
 #[tokio::test]
-async fn crash_after_tx_a_recovers_and_answers_key() {
-    crash_create(1, "reserving").await;
+async fn crash_after_tx_a_cancels_the_create_and_frees_the_key() {
+    // The door died before it learned whether Products reserved. The ticker never reserves on
+    // a user's behalf: it cancels, releases the key, and releases whatever reservation exists.
+    let (f, script, path, input) = setup().await;
+    script.set(1);
+    let mut door = Box::pin(f.call("POST", &path, input.clone(), None, Some("crash")));
+    tokio::select! { result = &mut door => panic!("door did not park: {result:?}"), () = script.parked.notified() => {} }
+    drop(door);
+    let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+    let before = ops::due(&f.db.conn().unwrap(), &scope, clock().now(), 10)
+        .await
+        .unwrap();
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].state, "reserving");
+    assert_eq!(before[0].reservation_id, None);
+    script.set(0);
+    Ticker::new(f.state.clone(), clock(), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    assert_cancelled_without_price(&f, before[0].op_id, &path, "crash").await;
+    assert_eq!(
+        Script::count(&script.releases),
+        1,
+        "the cancellation's own reserve found the reservation and released it"
+    );
+    assert!(
+        script
+            .refs
+            .lock()
+            .await
+            .get(&before[0].price_id)
+            .is_none_or(|r| r.1 == bss_products_sdk::models::ReferenceState::Released)
+    );
+    let retry = f.call("POST", &path, input, None, Some("crash")).await;
+    assert_eq!(retry.0, 201, "{retry:?}");
+    assert_ne!(
+        retry.1["id"],
+        before[0].price_id.to_string(),
+        "a fresh price"
+    );
+    assert!(matches!(
+        key_claim(&f, &path, "crash").await,
+        Some(idem::IdempotencyClaim::Answered { .. })
+    ));
 }
 #[tokio::test]
 async fn crash_after_tx_b_recovers_and_answers_key() {
@@ -107,28 +188,81 @@ async fn crash_after_delete_tx_recovers_release() {
     );
 }
 #[tokio::test]
-async fn ticker_recovers_lost_reserve_response_and_confirm_timeout() {
-    for mode in [5, 6] {
-        let (f, script, path, input) = setup().await;
-        script.set(mode);
-        assert_eq!(
-            f.call("POST", &path, input.clone(), None, Some("one"))
-                .await
-                .0,
-            503
-        );
-        let receipt_before = script.refs.lock().await.values().next().unwrap().0;
-        script.set(0);
-        Ticker::new(f.state.clone(), clock(), 10, 100)
-            .tick()
+async fn a_lost_reserve_response_writes_no_price_and_its_reservation_is_released() {
+    // Products reserved but the answer never arrived: the door answers 503, writes no price and
+    // frees the key; the ticker's cancellation finds that reservation and releases it.
+    let (f, script, path, input) = setup().await;
+    script.set(5);
+    let first = f
+        .call("POST", &path, input.clone(), None, Some("one"))
+        .await;
+    assert_eq!(first.0, 503, "{first:?}");
+    assert!(
+        first.1.to_string().contains("REGISTRY_UNAVAILABLE"),
+        "{first:?}"
+    );
+    let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+    let cancelling = ops::page(
+        &f.db.conn().unwrap(),
+        &scope,
+        f.ctx.subject_tenant_id(),
+        Some(OpState::Cancelling),
+        None,
+        10,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cancelling.len(), 1, "the door cancelled its own op");
+    assert_eq!(
+        key_claim(&f, &path, "one").await,
+        None,
+        "and released the key"
+    );
+    let (lost_ref, lost_receipt) = {
+        let refs = script.refs.lock().await;
+        let (id, (receipt, _)) = refs.iter().next().unwrap();
+        (*id, *receipt)
+    };
+    assert_eq!(lost_ref, cancelling[0].price_id);
+    Ticker::new(f.state.clone(), clock(), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    assert_cancelled_without_price(&f, cancelling[0].op_id, &path, "one").await;
+    assert_eq!(Script::count(&script.releases), 1);
+    assert_eq!(
+        script.refs.lock().await[&lost_ref],
+        (
+            lost_receipt,
+            bss_products_sdk::models::ReferenceState::Released
+        )
+    );
+    let retry = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(retry.0, 201, "{retry:?}");
+    assert_ne!(retry.1["id"], lost_ref.to_string());
+    assert_ne!(retry.1["reservation_id"], lost_receipt.to_string());
+}
+#[tokio::test]
+async fn ticker_recovers_a_confirm_timeout_and_answers_the_key() {
+    let (f, script, path, input) = setup().await;
+    script.set(6);
+    assert_eq!(
+        f.call("POST", &path, input.clone(), None, Some("one"))
             .await
-            .unwrap();
-        let replay = f.call("POST", &path, input, None, Some("one")).await;
-        assert_eq!(replay.0, 201);
-        assert_eq!(replay.1["reservation_id"], receipt_before.to_string());
-        assert_eq!(script.refs.lock().await.len(), 1);
-        assert_eq!(Script::count(&script.releases), 0);
-    }
+            .0,
+        503
+    );
+    let receipt_before = script.refs.lock().await.values().next().unwrap().0;
+    script.set(0);
+    Ticker::new(f.state.clone(), clock(), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    let replay = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(replay.0, 201);
+    assert_eq!(replay.1["reservation_id"], receipt_before.to_string());
+    assert_eq!(script.refs.lock().await.len(), 1);
+    assert_eq!(Script::count(&script.releases), 0);
 }
 #[tokio::test]
 async fn forced_release_reconciles_unfenced_and_fenced_prices() {

@@ -13,16 +13,24 @@ pub struct Op {
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    Reserved { id: Uuid },
-    ReserveRefused { code: String },
+    Reserved {
+        id: Uuid,
+    },
+    ReserveRefused {
+        code: String,
+    },
     RegistryUnavailable,
-    SkuRefused { code: String },
+    SkuRefused {
+        code: String,
+    },
     Written,
     Confirmed,
     ConfirmFailed,
     ReleasedOnConfirm,
     Released,
     ReleaseFailed,
+    /// The reserve got no definite answer before any receipt was known.
+    ReservationUnknown,
 }
 /// Work authorized by a transition; effects are executed outside the pure model.
 #[toolkit_macros::domain_model]
@@ -58,6 +66,12 @@ pub fn next(mut op: Op, event: Event) -> Result<(Op, Vec<Effect>), IllegalTransi
             (Cancelling, Effect::Release)
         }
         (Reserving, Event::RegistryUnavailable) => (Reserving, Effect::Retry),
+        // No receipt was ever learned, so no price can be written: cancel, and let the
+        // cancellation find and release whatever reservation the lost call may have made.
+        (Reserving, Event::ReservationUnknown) if op.reservation_id.is_none() => {
+            op.refusal = Some("RESERVATION_UNKNOWN".into());
+            (Cancelling, Effect::Release)
+        }
         (Reserving, Event::Written) => (Written, Effect::Confirm),
         (Written, Event::Confirmed) | (Cancelling | Releasing, Event::Released) => {
             (Done, Effect::Complete)

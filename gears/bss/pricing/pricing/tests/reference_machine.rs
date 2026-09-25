@@ -25,6 +25,7 @@ fn every_state_event_pair_is_typed_and_never_panics() {
         Event::ReleasedOnConfirm,
         Event::Released,
         Event::ReleaseFailed,
+        Event::ReservationUnknown,
     ];
     let table = [
         (
@@ -40,6 +41,8 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 None,
                 None,
                 None,
+                // A reserve with a receipt in hand is completed, never abandoned.
+                None,
             ],
         ),
         (
@@ -53,6 +56,7 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 Some((Done, Complete)),
                 Some((Written, Retry)),
                 Some((Done, MarkLost)),
+                None,
                 None,
                 None,
             ],
@@ -70,6 +74,7 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 None,
                 Some((Done, Complete)),
                 Some((Cancelling, Retry)),
+                None,
             ],
         ),
         (
@@ -85,9 +90,10 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 None,
                 Some((Done, Complete)),
                 Some((Releasing, Retry)),
+                None,
             ],
         ),
-        (Done, vec![None; 10]),
+        (Done, vec![None; 11]),
     ];
     let mut count = 0;
     for (state, expected) in table {
@@ -109,7 +115,7 @@ fn every_state_event_pair_is_typed_and_never_panics() {
             count += 1;
         }
     }
-    assert_eq!(count, 50);
+    assert_eq!(count, 55);
 }
 #[test]
 fn receipts_and_refusals_survive_until_completion() {
@@ -131,4 +137,24 @@ fn receipts_and_refusals_survive_until_completion() {
     let (op, _) = next(op, Event::Released).unwrap();
     assert_eq!(op.reservation_id, Some(id));
     assert_eq!(op.refusal.as_deref(), Some("SKU_DRAFT"));
+}
+#[test]
+fn an_unknown_reserve_outcome_cancels_only_work_without_a_receipt() {
+    // The door (or a crash) never learned whether Products reserved: the op is cancelled with
+    // no receipt, and the cancellation must find and release whatever reservation exists.
+    let (op, effects) = next(
+        Op {
+            state: OpState::Reserving,
+            reservation_id: None,
+            refusal: None,
+        },
+        Event::ReservationUnknown,
+    )
+    .unwrap();
+    assert_eq!(op.state, OpState::Cancelling);
+    assert_eq!(op.reservation_id, None);
+    assert_eq!(op.refusal.as_deref(), Some("RESERVATION_UNKNOWN"));
+    assert_eq!(effects, vec![Effect::Release]);
+    let (op, _) = next(op, Event::Released).unwrap();
+    assert_eq!(op.state, OpState::Done);
 }

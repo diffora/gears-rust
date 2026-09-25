@@ -11,7 +11,7 @@ use super::{
 use crate::{
     domain::price::{self, OpKind},
     infra::{
-        reference_work::{self, Receipt, WallClock, Work},
+        reference_work::{self, Caller, Receipt, WallClock, Work},
         storage::{
             entity,
             repo::{book_repo, idempotency_repo as idem, price_repo, reference_op_repo, row_repo},
@@ -118,6 +118,7 @@ pub(super) async fn create(
                 correlation,
                 refusal: None,
                 receipt: None,
+                outcome: None,
             };
             let op = reference_work::new_op(
                 &ctx,
@@ -137,10 +138,12 @@ pub(super) async fn create(
     .await?;
     match result {
         Begun::Replay(receipt) => receipt.response(),
-        Begun::Op(id) => reference_work::drive(&state, &original_ctx, id, Arc::new(WallClock))
-            .await?
-            .ok_or_else(|| CanonicalError::internal("missing create receipt").create())?
-            .response(),
+        Begun::Op(id) => {
+            reference_work::drive(&state, &original_ctx, id, Arc::new(WallClock), Caller::Door)
+                .await?
+                .ok_or_else(|| CanonicalError::internal("missing create receipt").create())?
+                .response()
+        }
     }
 }
 pub(super) async fn patch(
@@ -214,6 +217,7 @@ pub(super) async fn delete(
                 correlation,
                 refusal: None,
                 receipt: None,
+                outcome: None,
             };
             let op = reference_work::new_op(
                 &ctx,
@@ -232,6 +236,13 @@ pub(super) async fn delete(
         })
     })
     .await?;
-    reference_work::drive(&state, &original_ctx, op_id, Arc::new(WallClock)).await?;
+    reference_work::drive(
+        &state,
+        &original_ctx,
+        op_id,
+        Arc::new(WallClock),
+        Caller::Door,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }

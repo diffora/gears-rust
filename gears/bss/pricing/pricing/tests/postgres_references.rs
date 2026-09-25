@@ -188,7 +188,27 @@ async fn postgres_every_crash_window_is_resumed_by_the_ticker() {
         );
         let replay = p.create("crash").await;
         assert_eq!(replay.0, 201, "{state}: {replay:?}");
-        assert_eq!(replay.1["id"], due[0].price_id.to_string());
+        if mode == 1 {
+            // Before Tx B the reserve outcome was unknown: the ticker cancelled the create,
+            // released the key and the reservation, and the same key ran afresh.
+            assert_ne!(replay.1["id"], due[0].price_id.to_string());
+            assert_eq!(Script::count(&p.script.releases), 1);
+            let op = ops::find(&p.db.conn().unwrap(), &p.scope(), p.tenant(), due[0].op_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(op.state, "done");
+            assert_eq!(
+                bss_pricing::infra::reference_work::Work::read(&op)
+                    .unwrap()
+                    .outcome
+                    .as_deref(),
+                Some("cancelled")
+            );
+            assert_eq!(p.reference_state(&json!(due[0].price_id)).await, "");
+        } else {
+            assert_eq!(replay.1["id"], due[0].price_id.to_string());
+        }
         assert_eq!(p.reference_state(&replay.1["id"]).await, "confirmed");
     }
     let p = setup().await;
