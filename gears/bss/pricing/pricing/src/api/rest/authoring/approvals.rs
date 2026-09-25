@@ -17,8 +17,9 @@ use super::{
 use crate::{
     domain::price::{self, PriceState},
     infra::{
+        approval_kinds::{Kind, Subject},
         events::{self, ApprovalUnitDecided, PricesPublished, PublishedPrice},
-        prices::{KIND_PRICES, PricesSubject, Release},
+        prices::{PricesSubject, Release},
         storage::{
             RepoError, entity,
             repo::{
@@ -156,9 +157,22 @@ async fn decided(
     events::enqueue(&cmd.outbox, tx, &event, now).await?;
     Ok(())
 }
-/// `PricesPublished` for an applied unit, in the apply transaction: every price with the
-/// window its chain was approved with.
+/// The domain event of an applied unit, by its kind, in the apply transaction.
 async fn published(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    subject: &Subject,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    match subject {
+        Subject::Prices(_) => prices_published(tx, cmd, store, id, now).await,
+    }
+}
+/// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
+/// approved with.
+async fn prices_published(
     tx: &DbTx<'_>,
     cmd: &Command,
     store: &PricingApprovalStore,
@@ -197,21 +211,29 @@ async fn published(
 
 /// An engine refusal as the door answers it: a Products refusal the subject met while judging
 /// keeps its own status and code; everything else maps through [`approval_failure`].
-fn refusal(subject: &PricesSubject) -> impl Fn(bss_approval::ApprovalError) -> DoorError + '_ {
+fn refusal(subject: &Subject) -> impl Fn(bss_approval::ApprovalError) -> DoorError + '_ {
     move |error| {
         subject
             .take_refusal()
             .map_or_else(|| approval_failure(error), DoorError::Api)
     }
 }
-/// Record one unit over the selected prices, applying it at once under quorum zero.
+/// What one submission names besides its items: the aggregate the unit references, the shared
+/// start and the submission time.
+struct Submission {
+    ref_id: Uuid,
+    common_effective_date: Option<time::Date>,
+    now: OffsetDateTime,
+}
+/// Record one unit over the items through the kind's subject, applying it at once under quorum
+/// zero with its domain event and `ApprovalUnitDecided`. The caller answers the key.
 async fn record(
     tx: &DbTx<'_>,
     cmd: &Command,
-    endpoint: &str,
-    subject: &PricesSubject,
+    subject: &Subject,
+    submission: Submission,
     ids: &[Uuid],
-) -> Result<Response, DoorError> {
+) -> Result<bss_approval::Submitted, DoorError> {
     let store = cmd.store();
     let policy = approval_repo::read_policy(tx, &store.scope, cmd.tenant()).await?;
     let submitted = Engine::submit(
@@ -220,17 +242,17 @@ async fn record(
         tx,
         SubmitRequest {
             tenant_id: cmd.tenant(),
-            ref_id: subject.book_id,
+            ref_id: submission.ref_id,
             item_ids: ids,
             actor: cmd.ctx.subject_id(),
             policy: &policy,
-            common_effective_date: subject.common_effective_date,
-            now: subject.now,
+            common_effective_date: submission.common_effective_date,
+            now: submission.now,
         },
     )
     .await
     .map_err(refusal(subject))?;
-    let unit = submitted.unit;
+    let unit = &submitted.unit;
     support::audit(
         tx,
         &cmd.ctx,
@@ -250,13 +272,30 @@ async fn record(
             unit.version,
         )
         .await?;
-        published(tx, cmd, &store, unit.id, subject.now).await?;
-        decided(tx, cmd, &store, unit.id, subject.now).await?;
+        published(tx, cmd, &store, subject, unit.id, submission.now).await?;
+        decided(tx, cmd, &store, unit.id, submission.now).await?;
     }
-    let prices = prices_of(tx, &store, unit.id).await?;
+    Ok(submitted)
+}
+/// Record a `prices` unit and answer the key with the unit and its prices.
+async fn record_prices(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    endpoint: &str,
+    subject: PricesSubject,
+    ids: &[Uuid],
+) -> Result<Response, DoorError> {
+    let submission = Submission {
+        ref_id: subject.book_id,
+        common_effective_date: subject.common_effective_date,
+        now: subject.now,
+    };
+    let submitted = record(tx, cmd, &Subject::Prices(subject), submission, ids).await?;
+    let store = cmd.store();
+    let prices = prices_of(tx, &store, submitted.unit.id).await?;
     let receipt = PricingSubmitReceipt {
         applied: submitted.applied,
-        unit: unit_dto(tx, &store, unit).await?,
+        unit: unit_dto(tx, &store, submitted.unit).await?,
         prices,
     };
     support::answer(
@@ -304,7 +343,7 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
                 entry.book_id,
                 OffsetDateTime::now_utc(),
             );
-            record(tx, &cmd, &endpoint, &subject, &[id]).await
+            record_prices(tx, &cmd, &endpoint, subject, &[id]).await
         })
     })
     .await
@@ -444,7 +483,7 @@ pub async fn publish(
             );
             subject.common_effective_date = date;
             subject.added_partner = added;
-            record(tx, &cmd, &endpoint, &subject, &selected).await
+            record_prices(tx, &cmd, &endpoint, subject, &selected).await
         })
     })
     .await
@@ -476,9 +515,10 @@ pub async fn list_units(
     };
     let mut items = Vec::new();
     for unit in approval_repo::list_units(tx, scope, tenant, state, kind, reference).await? {
+        let kind = Kind::of(&unit)?;
         let touched = store.items(tx, unit.id).await.map_err(approval_failure)?;
         let mut dto = unit_dto(tx, &store, unit).await?;
-        dto.impact = Some(crate::infra::prices::impact(&touched));
+        dto.impact = Some(kind.impact(&touched));
         items.push(dto);
     }
     Ok(support::response(
@@ -501,35 +541,49 @@ pub async fn get_unit(
         tenant_id: tenant,
     };
     let unit = load_unit(tx, &store, id).await?;
+    let kind = Kind::of(&unit)?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
     let mut dto = unit_dto(tx, &store, unit).await?;
-    dto.impact = Some(crate::infra::prices::impact(&items));
+    dto.impact = Some(kind.impact(&items));
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }
 
-/// The subject a pending unit was submitted with: its book, shift and pulled-in partners.
-fn subject_of(cmd: &Command, unit: &Unit, action: Vote) -> PricesSubject {
-    let mut subject = PricesSubject::new(
-        cmd.ctx.clone(),
-        cmd.hub.clone(),
-        unit.ref_id,
-        OffsetDateTime::now_utc(),
-    );
-    subject.common_effective_date = unit.common_effective_date;
-    subject.added_partner =
-        serde_json::from_value(unit.snapshot["added_partner"].clone()).unwrap_or_default();
-    subject.release = if action == Vote::Reject {
-        Release::Rejected
-    } else {
-        Release::Draft
-    };
-    subject
+/// The subject a pending unit is judged by, chosen by its stored kind: for `prices`, its book,
+/// shift and pulled-in partners.
+/// # Errors
+/// An unknown stored kind is a corrupt row (500), never judged as `prices`.
+fn subject_of(
+    cmd: &Command,
+    unit: &Unit,
+    action: Vote,
+    now: OffsetDateTime,
+) -> Result<Subject, DoorError> {
+    match Kind::of(unit)? {
+        Kind::Prices => {
+            let mut subject =
+                PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), unit.ref_id, now);
+            subject.common_effective_date = unit.common_effective_date;
+            subject.added_partner =
+                serde_json::from_value(unit.snapshot["added_partner"].clone()).unwrap_or_default();
+            subject.release = if action == Vote::Reject {
+                Release::Rejected
+            } else {
+                Release::Draft
+            };
+            Ok(Subject::Prices(subject))
+        }
+        Kind::PlanRevision => Err(CanonicalError::internal(
+            "the plan_revision subject is not built yet",
+        )
+        .create()
+        .into()),
+    }
 }
 /// Rejects obey the same content-generation barrier without applying.
 async fn refresh_reject(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
-    subject: &PricesSubject,
+    subject: &Subject,
     unit: &Unit,
     seen: i32,
 ) -> Result<Option<i32>, DoorError> {
@@ -615,8 +669,8 @@ async fn vote_in(
     if unit.state != UnitState::Pending {
         return Err(support::conflict("UNIT_ALREADY_DECIDED").into());
     }
-    let subject = subject_of(cmd, &unit, action);
-    let now = subject.now;
+    let now = OffsetDateTime::now_utc();
+    let subject = subject_of(cmd, &unit, action, now)?;
     let actor = cmd.ctx.subject_id();
     let seen = || {
         body.as_ref()
@@ -686,7 +740,7 @@ async fn vote_in(
         }
         ApproveOutcome::Applied => {
             if action == Vote::Approve {
-                published(tx, cmd, &store, id, now).await?;
+                published(tx, cmd, &store, &subject, id, now).await?;
             }
             decided(tx, cmd, &store, id, now).await?;
             match action {
@@ -743,7 +797,8 @@ pub async fn get_policy(
         Some(tag),
     )?)
 }
-/// `PUT /approval-policy`: set the default (`*`) or the `prices` quorum under If-Match.
+/// `PUT /approval-policy`: set the default (`*`) or one kind's quorum (`prices`,
+/// `plan_revision`) under If-Match.
 /// # Errors
 /// Returns `POLICY_KIND_INVALID`, `QUORUM_INVALID` or `STALE_REVISION`.
 pub async fn put_policy(
@@ -756,7 +811,7 @@ pub async fn put_policy(
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
     let kind = input.kind.unwrap_or_else(|| "*".into());
-    if !matches!(kind.as_str(), "*" | KIND_PRICES) {
+    if kind != "*" && Kind::parse(&kind).is_none() {
         return Err(support::invalid("kind", "POLICY_KIND_INVALID").into());
     }
     if i32::try_from(input.quorum).is_err() {

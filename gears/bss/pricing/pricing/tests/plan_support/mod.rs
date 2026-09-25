@@ -20,6 +20,10 @@ use bss_products_sdk::{
         Lifecycle, ReferenceKind, ReferenceState, ReservationReceipt, Sku, SkuType, SkuVersion,
     },
 };
+#[allow(
+    unused_imports,
+    reason = "not every suite that shares this fixture calls a door raw"
+)]
 pub use entry_support::{Fixture, request};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -360,9 +364,14 @@ pub async fn items(f: &Fixture, revision: Uuid) -> Vec<plan_item::Model> {
 }
 /// A pending `plan_revision` approval unit, so a lock can name it.
 pub async fn unit(f: &Fixture) -> Uuid {
+    unit_of_kind(f, "plan_revision").await
+}
+/// A pending approval unit of any stored kind, with no items, written through the store.
+pub async fn unit_of_kind(f: &Fixture, kind: &str) -> Uuid {
     let (id, tenant, scope) = (Uuid::new_v4(), f.ctx.subject_tenant_id(), scope(f));
+    let kind = kind.to_owned();
     price_repo::transaction(&f.db.db(), move |tx| {
-        let scope = scope.clone();
+        let (scope, kind) = (scope.clone(), kind.clone());
         Box::pin(async move {
             PricingApprovalStore {
                 scope,
@@ -373,8 +382,8 @@ pub async fn unit(f: &Fixture) -> Uuid {
                 &Unit {
                     id,
                     tenant_id: tenant,
-                    kind: "plan_revision".into(),
-                    ref_type: "plan_revision".into(),
+                    ref_type: kind.clone(),
+                    kind,
                     ref_id: Uuid::new_v4(),
                     state: UnitState::Pending,
                     common_effective_date: None,

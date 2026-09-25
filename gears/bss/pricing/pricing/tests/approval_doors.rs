@@ -802,8 +802,10 @@ async fn the_approval_policy_is_read_and_written_under_if_match() {
     assert_eq!(stale.0, 409);
     assert!(code(&stale.1).contains("STALE_REVISION"), "{stale:?}");
     for (bad, what) in [
+        // `plan_revision` is a kind since run 3.4 (tests/approval_kinds.rs); promotions are
+        // deferred (D-409), so their kind is still refused.
         (
-            json!({"kind":"plan_revision","quorum":1}),
+            json!({"kind":"promotion","quorum":1}),
             "POLICY_KIND_INVALID",
         ),
         (json!({"quorum":3_000_000_000_u64}), "QUORUM_INVALID"),
