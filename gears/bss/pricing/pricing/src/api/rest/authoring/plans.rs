@@ -1,6 +1,7 @@
 //! Plans and their revisions below their doors (D-404, D-407, D-413, D-414): a plan with its
-//! draft rev 1, the rename, the copy of the published revision into a new draft, and the draft
-//! revision's PATCH and delete, and the revision's checks read over fresh SKUs (D-408).
+//! draft rev 1, the rename, the copy of the published revision into a new draft, the clone of a
+//! plan's published revision into a new plan, the draft revision's PATCH and delete, and the
+//! revision's checks read over fresh SKUs (D-408).
 //!
 //! A copy writes the revision, every copied item (`unreserved`, no receipt) and one attach op per
 //! item in ONE transaction (D-413); the door then drives the attach ops best-effort and answers
@@ -9,8 +10,8 @@
 use super::{
     AuthoringState, configuration,
     dto::{
-        PricingPlanChecksDto, PricingPlanCreate, PricingPlanDto, PricingPlanList, PricingPlanPatch,
-        PricingPlanRevisionDto, PricingPlanRevisionPatch,
+        PricingPlanChecksDto, PricingPlanClone, PricingPlanCreate, PricingPlanDto, PricingPlanList,
+        PricingPlanPatch, PricingPlanRevisionDto, PricingPlanRevisionPatch,
     },
     plan_items,
     support::{self, DoorError},
@@ -347,16 +348,50 @@ async fn copy_in(
         },
     )
     .await?;
+    let (items, ops) = copy_items(tx, &children, ctx, correlation, source.id, r.id, now).await?;
+    support::audit(tx, ctx, correlation, "plan_revision.copy", r.id, 1).await?;
+    let body = PricingPlanRevisionDto::of(r, items);
+    let response = support::answer(
+        tx,
+        tenant,
+        &endpoint,
+        key,
+        StatusCode::CREATED,
+        &body,
+        Some(1),
+    )
+    .await?;
+    Ok((response, ops))
+}
+
+/// Copy every item of the `source` revision into the new draft `target`, in the caller's
+/// transaction (D-413): each copy is written `unreserved` with no receipt and authored by the
+/// caller, with one attach op per copy. Answers the copies and their op ids, for the door to drive
+/// after its commit.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the copy's context, both revisions and its clock belong to one transaction"
+)]
+async fn copy_items(
+    tx: &impl DBRunner,
+    children: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    source: Uuid,
+    target: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<(Vec<plan_item::Model>, Vec<Uuid>), DoorError> {
+    let tenant = ctx.subject_tenant_id();
     let mut items = Vec::new();
     let mut ops = Vec::new();
-    for from in plan_item_repo::for_revision(tx, &children, tenant, source.id).await? {
+    for from in plan_item_repo::for_revision(tx, children, tenant, source).await? {
         let copy = plan_item_repo::insert(
             tx,
-            &children,
+            children,
             plan_item::Model {
                 id: Uuid::now_v7(),
                 tenant_id: tenant,
-                revision_id: r.id,
+                revision_id: target,
                 sku_id: from.sku_id,
                 price_book_entry_id: from.price_book_entry_id,
                 treatment: from.treatment,
@@ -373,11 +408,122 @@ async fn copy_in(
         .await?;
         let op = reference_work::attach_op(ctx, &copy, correlation, now)?;
         ops.push(op.op_id);
-        reference_op_repo::insert(tx, &children, op).await?;
+        reference_op_repo::insert(tx, children, op).await?;
         items.push(copy);
     }
-    support::audit(tx, ctx, correlation, "plan_revision.copy", r.id, 1).await?;
-    let body = PricingPlanRevisionDto::of(r, items);
+    Ok((items, ops))
+}
+
+/// `POST /plans/{id}/clone`: a new plan (its own code and name) whose draft rev 1 copies the
+/// source plan's PUBLISHED revision — book, sale date and items — under D-413, then drive the
+/// attach ops of its items best-effort and answer 201 with the new plan. Nothing of the source's
+/// approval is copied: no decision, no `approved_by_unit_id` or `published_at`, no pin; a
+/// deprecated SKU is carried, and the new plan's checks show it red (D-408).
+/// # Errors
+/// 400 `PLAN_CODE_REQUIRED`; 404 for a plan the tenant does not hold; 409
+/// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 409 `PLAN_CODE_TAKEN`;
+/// a replayed or conflicting key.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "authorized context, replay identity and input belong to one transaction"
+)]
+pub(super) async fn clone(
+    state: Arc<AuthoringState>,
+    scope: AccessScope,
+    ctx: SecurityContext,
+    correlation: Uuid,
+    source: Uuid,
+    key: String,
+    digest: Vec<u8>,
+    input: PricingPlanClone,
+) -> Result<Response, CanonicalError> {
+    let original_ctx = ctx.clone();
+    let (response, ops) = support::transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+        let input = input.clone();
+        Box::pin(async move {
+            clone_in(
+                tx,
+                &scope,
+                &ctx,
+                correlation,
+                source,
+                (&key, &digest),
+                input,
+            )
+            .await
+        })
+    })
+    .await?;
+    plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
+    Ok(response)
+}
+async fn clone_in(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    source: Uuid,
+    (key, digest): (&str, &[u8]),
+    input: PricingPlanClone,
+) -> Result<(Response, Vec<Uuid>), DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    let endpoint = format!("/bss-pricing/v1/plans/{source}/clone");
+    if let Some(replay) = support::claim(tx, tenant, &endpoint, key, digest).await? {
+        return Ok((replay, Vec::new()));
+    }
+    if input.code.trim().is_empty() {
+        return Err(support::invalid("code", "PLAN_CODE_REQUIRED").into());
+    }
+    let children = AccessScope::for_tenant(tenant);
+    let from = find_plan(tx, scope, tenant, source).await?;
+    let published = plan_revision_repo::for_plan(tx, &children, tenant, from.id)
+        .await?
+        .into_iter()
+        .find(|r| r.state == RevisionState::Published.as_str())
+        .ok_or_else(|| support::conflict("CLONE_SOURCE_UNPUBLISHED"))?;
+    let now = time::OffsetDateTime::now_utc();
+    let p = plan_repo::insert(
+        tx,
+        scope,
+        plan_entity::Model {
+            id: Uuid::now_v7(),
+            tenant_id: tenant,
+            code: input.code,
+            name: input.name,
+            published_rev: None,
+            version: 1,
+            created_by: ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
+    let r = plan_revision_repo::insert(
+        tx,
+        &children,
+        plan_revision::Model {
+            id: Uuid::now_v7(),
+            tenant_id: tenant,
+            plan_id: p.id,
+            rev_no: 1,
+            book_id: published.book_id,
+            state: RevisionState::Draft.as_str().into(),
+            available_from: published.available_from,
+            pending_unit_id: None,
+            approved_by_unit_id: None,
+            published_at: None,
+            version: 1,
+            created_by: ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await?;
+    let (_, ops) = copy_items(tx, &children, ctx, correlation, published.id, r.id, now).await?;
+    support::audit(tx, ctx, correlation, "plan.clone", p.id, 1).await?;
+    support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
+    let body = PricingPlanDto::of(p, &[r]);
     let response = support::answer(
         tx,
         tenant,

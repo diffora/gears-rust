@@ -21,8 +21,8 @@ use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-/// Plans and their revisions: create, list, read, rename, copy, and the draft revision's read,
-/// PATCH and delete.
+/// Plans and their revisions: create, list, read, rename, copy, clone, and the draft revision's
+/// read, PATCH and delete.
 #[allow(
     clippy::too_many_lines,
     reason = "one OperationBuilder chain per route keeps every door's contract in one place"
@@ -88,6 +88,19 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::CREATED,
             "Response",
         )
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/plans/{id}/clone")
+        .operation_id("bss_pricing.clone_plan")
+        .summary("clone_plan")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Source plan id")
+        .json_request::<dto::PricingPlanClone>(openapi, "Request")
+        .param(header("Idempotency-Key"))
+        .handler(clone_plan)
+        .json_response_with_schema::<dto::PricingPlanDto>(openapi, StatusCode::CREATED, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}")
@@ -270,6 +283,33 @@ async fn copy_revision(
     let key = preconditions::idempotency_key(&headers)?;
     let digest = preconditions::request_digest(&super::support::empty_body(&body)?)?;
     plans::copy(state, scope, ctx, correlation, id, key, digest).await
+}
+async fn clone_plan(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    let digest = preconditions::request_digest(&payload)?;
+    let input: dto::PricingPlanClone = preconditions::parse_body(&body)?;
+    plans::clone(state, scope, ctx, correlation, id, key, digest, input).await
 }
 async fn get_revision(
     Extension(state): Extension<Arc<AuthoringState>>,

@@ -214,6 +214,7 @@ impl Harness {
             ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
             ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
+            ("POST", "/bss-pricing/v1/plans/{id}/clone"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -277,3 +278,4 @@ impl Harness {
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit approval_unit:submit false true
+// POST /plans/{id}/clone plan:author false true

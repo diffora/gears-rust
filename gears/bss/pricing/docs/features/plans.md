@@ -183,7 +183,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-clone`
 
-Clone preserves authorable structure while allocating new plan/revision ids and reference attempts. It does not inherit approval decisions, published state or subscription pins (spec §3 item 28).
+Clone preserves authorable structure while allocating new plan/revision ids and reference attempts: the new plan's draft rev 1 copies the source's published revision (book, availability, items), each item written unreserved and attached after the write (D-413). It does not inherit approval decisions, published state (approved_by_unit_id, published_at) or subscription pins; a source with no published revision is refused CLONE_SOURCE_UNPUBLISHED, and a carried deprecated SKU is red in the new plan's checks (D-408) (spec §3 item 28).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 

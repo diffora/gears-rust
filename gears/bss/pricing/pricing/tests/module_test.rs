@@ -49,6 +49,7 @@ fn declared_paths() -> Routes {
         ("DELETE", "/bss-pricing/v1/plan-items/{id}"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
+        ("POST", "/bss-pricing/v1/plans/{id}/clone"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -85,6 +86,7 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
+        ("POST", "/bss-pricing/v1/plans/{id}/clone"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -105,7 +107,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 41);
+    assert_eq!(registered.len(), 42);
     assert!(router.has_routes());
 }
 
@@ -135,13 +137,14 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
     );
     for (needle, control, production) in [
         ("preconditions::if_match(", 1, 10),
-        ("preconditions::idempotency_key(", 1, 12),
+        ("preconditions::idempotency_key(", 1, 13),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
         // (eight registrations and the statuses their handlers and operations answer); + 6: the
         // item and checks doors (four registrations, the item PATCH and the checks answer); + 2:
-        // the revision submit door (its registration and its 201 answer).
-        ("StatusCode::", 2, 82),
+        // the revision submit door (its registration and its 201 answer); + 2: the clone door
+        // (its registration and its 201 answer).
+        ("StatusCode::", 2, 84),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -248,3 +251,4 @@ async fn no_operation_declares_a_422() {
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit approval_unit:submit false true
+// POST /plans/{id}/clone plan:author false true
