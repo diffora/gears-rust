@@ -344,6 +344,16 @@ pub async fn try_lock(
         .map_err(|e| driver_failure("lock row conditionally".into(), e))?;
     Ok(result.rows_affected == 1)
 }
+/// What closing a unit leaves on each of its rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unlock {
+    /// Apply already approved the row; the lock turns into `approved_by_unit_id`.
+    Approved,
+    /// Withdrawn: the row is an editable draft again.
+    Draft,
+    /// Rejected: the row keeps its review history and stays rejected.
+    Rejected,
+}
 /// Release only the owning unit's row; approved rows retain the unit identity.
 /// # Errors
 /// Returns a conditional conflict or typed database failure.
@@ -353,20 +363,67 @@ pub async fn unlock(
     tenant: Uuid,
     id: Uuid,
     unit: Uuid,
-    approved: bool,
+    outcome: Unlock,
 ) -> Result<(), RepoError> {
+    let (state, from) = match outcome {
+        Unlock::Approved => ("approved", "approved"),
+        Unlock::Draft => ("draft", "pending"),
+        Unlock::Rejected => ("rejected", "pending"),
+    };
     let result = e::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(e::Column::PendingUnitId, Expr::value(None::<Uuid>))
         .col_expr(
             e::Column::ApprovedByUnitId,
-            Expr::value(approved.then_some(unit)),
+            Expr::value((outcome == Unlock::Approved).then_some(unit)),
         )
+        .col_expr(e::Column::State, Expr::value(state))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::PendingUnitId.eq(unit))
+                .add(e::Column::State.eq(from)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| map_unique("unlock row".into(), e))?;
+    matched(result.rows_affected, "VERSION_CONFLICT")
+}
+/// The window an applied row takes, after the unit's shift and the chain's normalisation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Approval {
+    pub effective_from: time::Date,
+    pub effective_to: Option<time::Date>,
+    pub temporary_until: Option<time::Date>,
+    pub keep_for_bound: bool,
+}
+/// Approve a row the unit holds; the approved-start index arbitrates a racing chain.
+/// # Errors
+/// `WINDOW_OVERLAP` when the chain already has an approved row on that start,
+/// `ROW_NOT_PENDING` when the unit does not hold the row.
+pub async fn approve(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    unit: Uuid,
+    window: Approval,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::State, Expr::value("approved"))
+        .col_expr(e::Column::EffectiveFrom, Expr::value(window.effective_from))
+        .col_expr(e::Column::EffectiveTo, Expr::value(window.effective_to))
         .col_expr(
-            e::Column::State,
-            Expr::value(if approved { "approved" } else { "draft" }),
+            e::Column::TemporaryUntil,
+            Expr::value(window.temporary_until),
         )
+        .col_expr(e::Column::KeepForBound, Expr::value(window.keep_for_bound))
+        .col_expr(e::Column::ApprovedAt, Expr::value(Some(now)))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(
             key(tenant, id)
@@ -375,6 +432,40 @@ pub async fn unlock(
         )
         .exec(runner)
         .await
-        .map_err(|e| map_unique("unlock row".into(), e))?;
+        .map_err(|e| map_unique("approve row".into(), e))?;
+    matched(result.rows_affected, "ROW_NOT_PENDING")
+}
+/// Re-close an approved row after its chain changed, at the version the caller read.
+/// # Errors
+/// A concurrent change is `VERSION_CONFLICT`; database failures keep their type.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "tenant identity, version and the two recomputed columns are the write's operands"
+)]
+pub async fn set_window(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+    effective_to: Option<time::Date>,
+    keep_for_bound: bool,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::EffectiveTo, Expr::value(effective_to))
+        .col_expr(e::Column::KeepForBound, Expr::value(keep_for_bound))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::Version.eq(version))
+                .add(e::Column::State.eq("approved")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| map_unique("re-close row".into(), e))?;
     matched(result.rows_affected, "VERSION_CONFLICT")
 }

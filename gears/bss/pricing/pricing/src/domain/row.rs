@@ -287,6 +287,55 @@ pub fn shift(row: &Row, new_from: Date) -> Result<Row, RuleError> {
     shifted.effective_to = row.effective_to.map(move_date).transpose()?;
     Ok(shifted)
 }
+/// Apply a common effective date to a selection (decision 7): every row starts on it,
+/// except a pair's return half, which moves by its promo half's displacement so the
+/// pair keeps its length. `None` moves nothing.
+/// # Errors
+/// Refuses date overflow.
+pub fn shift_selection(rows: &[Row], date: Option<Date>) -> Result<Vec<Row>, RuleError> {
+    let Some(date) = date else {
+        return Ok(rows.to_vec());
+    };
+    rows.iter()
+        .map(|r| {
+            let promo = r
+                .return_of_row_id
+                .and(r.paired_row_id)
+                .and_then(|partner| rows.iter().find(|p| p.id == partner));
+            match promo {
+                Some(promo) => {
+                    let delta = date - promo.effective_from;
+                    let start = r
+                        .effective_from
+                        .checked_add(delta)
+                        .ok_or_else(|| RuleError::new("WINDOW_START_INVALID"))?;
+                    shift(r, start)
+                }
+                None => shift(r, date),
+            }
+        })
+        .collect()
+}
+/// The row of the same chain in force on the day before `row` starts, if any.
+#[must_use]
+pub fn in_force_before<'a>(chain: &'a [Row], row: &Row) -> Option<&'a Row> {
+    let eve = row.effective_from.previous_day()?;
+    own_version_at(chain, row.price_id, eve, row.dim_value.as_deref())
+}
+/// The input field a refusal code names, for the wire problem.
+#[must_use]
+pub fn field_of(code: &str) -> &'static str {
+    match code {
+        "MODEL_KIND_CHARGEKIND_MISMATCH" | "MODEL_INVALID" | "CHAIN_MODEL_CHANGED" => "model",
+        "WINDOW_START_IN_PAST" | "WINDOW_START_INVALID" | "WINDOW_OVERLAP" => "effective_from",
+        "WINDOW_END_INVALID" => "temporary_until",
+        "DIM_NOT_DECLARED" | "DIM_VALUE_UNKNOWN" => "dim_value",
+        "MIN_FEE_INVALID" => "min_fee",
+        "ELIGIBILITY_INVALID" => "eligibility",
+        "PAIR_SPLIT" | "ROW_NOT_IN_BOOK" | "ROW_NOT_DRAFT" => "row_ids",
+        _ => "price",
+    }
+}
 /// Draft rows of one book ordered by start, price id and version number.
 #[must_use]
 pub fn proposed_rows<'a>(

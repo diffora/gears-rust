@@ -861,11 +861,18 @@ async fn row_pending_ownership_is_a_conditional_versioned_write() {
     assert_eq!(locked.version, 2);
     assert!(row_repo::update_draft(&conn, &scope, locked).await.is_err());
     assert!(
-        row_repo::unlock(&conn, &scope, tenant, id, Uuid::new_v4(), false)
-            .await
-            .is_err()
+        row_repo::unlock(
+            &conn,
+            &scope,
+            tenant,
+            id,
+            Uuid::new_v4(),
+            row_repo::Unlock::Draft
+        )
+        .await
+        .is_err()
     );
-    row_repo::unlock(&conn, &scope, tenant, id, unit, false)
+    row_repo::unlock(&conn, &scope, tenant, id, unit, row_repo::Unlock::Draft)
         .await
         .unwrap();
     let draft = row_repo::find(&conn, &scope, tenant, id)

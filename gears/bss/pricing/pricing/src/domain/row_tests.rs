@@ -466,3 +466,64 @@ fn a_temporary_row_returns_only_to_a_row_in_force_on_its_end() {
         "a chain that has not started yet is not copied backwards"
     );
 }
+#[test]
+fn decision_7_a_common_date_moves_singles_to_it_and_a_pair_by_one_delta() {
+    let back = row(1, "2026-01-01", None, RowState::Approved);
+    let mut promo = row(2, "2026-10-01", None, RowState::Draft);
+    promo.price = Some(PriceData::PerUnit { rate: dec("4") });
+    let pair = temporary(&[back], promo, date("2026-10-11"), Uuid::from_u128(3)).unwrap();
+    let single = row(5, "2026-11-01", None, RowState::Draft);
+    let mut selection = pair;
+    selection.push(single);
+    let moved = shift_selection(&selection, Some(date("2026-10-05"))).unwrap();
+    assert_eq!(moved[0].effective_from, date("2026-10-05"));
+    assert_eq!(moved[0].temporary_until, Some(date("2026-10-15")));
+    assert_eq!(moved[0].effective_to, Some(date("2026-10-15")));
+    assert_eq!(
+        moved[1].effective_from,
+        date("2026-10-15"),
+        "the return keeps the pair's length"
+    );
+    assert_eq!(moved[1].effective_to, None);
+    assert_eq!(moved[2].effective_from, date("2026-10-05"));
+    assert_eq!(
+        shift_selection(&selection, None).unwrap(),
+        selection,
+        "no common date moves nothing"
+    );
+}
+#[test]
+fn the_predecessor_is_the_same_chain_row_in_force_the_day_before() {
+    let mut chain = vec![
+        row(1, "2026-01-01", None, RowState::Approved),
+        row(2, "2026-02-01", Some("us"), RowState::Approved),
+        row(3, "2026-06-01", Some("us"), RowState::Approved),
+    ];
+    normalize_windows(&mut chain);
+    assert_eq!(in_force_before(&chain, &chain[2]).unwrap().version_no, 2);
+    assert!(
+        in_force_before(&chain, &chain[1]).is_none(),
+        "the default chain is not a value's predecessor"
+    );
+    chain[1].effective_to = Some(date("2026-04-01"));
+    chain[1].closed_explicitly = true;
+    assert!(
+        in_force_before(&chain, &chain[2]).is_none(),
+        "an ended value row does not precede a later start"
+    );
+}
+#[test]
+fn every_refusal_code_names_its_input_field() {
+    for (code, field) in [
+        ("MODEL_KIND_CHARGEKIND_MISMATCH", "model"),
+        ("CHAIN_MODEL_CHANGED", "model"),
+        ("WINDOW_OVERLAP", "effective_from"),
+        ("WINDOW_END_INVALID", "temporary_until"),
+        ("DIM_VALUE_UNKNOWN", "dim_value"),
+        ("MIN_FEE_INVALID", "min_fee"),
+        ("PAIR_SPLIT", "row_ids"),
+        ("AMOUNT_INVALID", "price"),
+    ] {
+        assert_eq!(field_of(code), field, "{code}");
+    }
+}

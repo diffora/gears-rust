@@ -7,14 +7,17 @@ use super::{
 };
 use crate::{
     domain::{
-        RuleError, book, money,
-        price::{ChargeKind, Model},
+        RuleError, money,
+        price::Model,
         row::{self, Eligibility, Row, RowState},
     },
-    infra::storage::{
-        RepoError,
-        entity::{price, price_row},
-        repo::{book_repo, dimension_repo, price_repo, row_repo},
+    infra::{
+        price_rows::PriceContext,
+        storage::{
+            RepoError,
+            entity::{price, price_row},
+            repo::{price_repo, row_repo},
+        },
     },
 };
 use axum::{
@@ -23,7 +26,7 @@ use axum::{
 };
 use rust_decimal::Decimal;
 use std::str::FromStr;
-use time::{Date, OffsetDateTime};
+use time::OffsetDateTime;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
@@ -32,90 +35,8 @@ use uuid::Uuid;
 /// Attempts of the create transaction when a concurrent writer took the next `version_no`.
 const VERSION_ATTEMPTS: u32 = 3;
 
-/// The wire field a pure refusal belongs to.
-#[must_use]
-pub fn field_of(code: &str) -> &'static str {
-    match code {
-        "MODEL_KIND_CHARGEKIND_MISMATCH" | "MODEL_INVALID" | "CHAIN_MODEL_CHANGED" => "model",
-        "WINDOW_START_IN_PAST" | "WINDOW_START_INVALID" | "WINDOW_OVERLAP" => "effective_from",
-        "WINDOW_END_INVALID" => "temporary_until",
-        "DIM_NOT_DECLARED" | "DIM_VALUE_UNKNOWN" => "dim_value",
-        "MIN_FEE_INVALID" => "min_fee",
-        "ELIGIBILITY_INVALID" => "eligibility",
-        _ => "price",
-    }
-}
 fn refuse(error: RuleError) -> DoorError {
-    support::invalid(field_of(error.code), error.code).into()
-}
-
-/// What the pure rules need to judge a row of one price.
-pub struct PriceContext {
-    pub kind: ChargeKind,
-    pub values: Option<Vec<String>>,
-    pub digits: u32,
-    pub rows: Vec<price_row::Model>,
-}
-impl PriceContext {
-    /// Read the book currency, the declared dimension values and every row of the price.
-    /// # Errors
-    /// Returns storage failures or a corrupt stored vocabulary.
-    pub async fn load(
-        tx: &impl DBRunner,
-        tenant: Uuid,
-        price: &price::Model,
-    ) -> Result<Self, RepoError> {
-        let children = AccessScope::for_tenant(tenant);
-        let kind = price
-            .charge_kind
-            .parse()
-            .map_err(|_| RepoError::CorruptRow(format!("price {} charge_kind", price.id)))?;
-        let book = book_repo::find(tx, &children, tenant, price.book_id)
-            .await?
-            .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no book", price.id)))?;
-        let values = match &price.dimension_key {
-            Some(key) => dimension_repo::find(tx, &children, tenant, key)
-                .await?
-                .map(|d| {
-                    serde_json::from_value::<Vec<String>>(d.values)
-                        .map_err(|_| RepoError::CorruptRow(format!("dimension {key} values")))
-                })
-                .transpose()?,
-            None => None,
-        };
-        let rows = row_repo::for_price(tx, &children, tenant, price.id).await?;
-        Ok(Self {
-            kind,
-            values,
-            digits: book::minor_digits(&book.currency),
-            rows,
-        })
-    }
-    /// Every row of the price in the pure model.
-    /// # Errors
-    /// Returns a corrupt stored row.
-    pub fn domain_rows(&self) -> Result<Vec<Row>, RepoError> {
-        self.rows.iter().map(row_repo::to_domain).collect()
-    }
-    /// The first pure refusal of a candidate against the price's approved rows.
-    #[must_use]
-    pub fn first_refusal(
-        &self,
-        candidate: &Row,
-        siblings: &[Row],
-        today: Date,
-    ) -> Option<RuleError> {
-        row::validate(
-            candidate,
-            self.kind,
-            self.values.as_deref(),
-            siblings,
-            today,
-            self.digits,
-        )
-        .first()
-        .copied()
-    }
+    support::invalid(row::field_of(error.code), error.code).into()
 }
 
 fn parse_model(text: &str) -> Result<Model, DoorError> {
