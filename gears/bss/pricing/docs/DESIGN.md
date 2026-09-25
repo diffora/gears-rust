@@ -618,6 +618,10 @@ The old 22-file set remains on bss/products-backup and in history. Seven slices 
 Part 2a writes all phases' contracts; phase 2b removes the legacy implementation; phase 2c builds only the core.
 The prototype is the pure-model reference except where the spec corrects it, especially half-open tier bands.
 
+Known limits (accepted by the owner). In broker mode (an EventBrokerApi is registered) the event-broker SDK's
+ProducerOutbox::enqueue turns the outbox's database error into a string, so a contended outbox insert fails the
+act with 500 instead of being retried by the transaction; Products has the same limit, and the SDK stays unchanged.
+
 ## 5. Traceability
 
 | Slice | Feature | Requirements / delivery |
