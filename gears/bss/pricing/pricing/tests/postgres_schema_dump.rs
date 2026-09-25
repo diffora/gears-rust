@@ -20,20 +20,8 @@ mod schema_dump;
 
 use schema_dump::postgres_dump;
 
-/// Every `pricing_` table the chain leaves standing, counted from the dump's `COLUMN` lines.
-///
-/// The same number the `SQLite` half asserts, and asserted here for the same reason: an
-/// over-eager filter produces a dump that is perfectly deterministic and perfectly useless.
-///
-/// 43 until the charge-line split, which added `pricing_charge_line`, its version and
-/// `pricing_market_price`; `pricing_charge_tier` came with them and left again when the
-/// ladder became the market's own. **This half once fell behind its
-/// sibling by one task**: the `SQLite` golden is regenerated from an in-memory
-/// database and moved with the migrations, while this one needs the Postgres
-/// harness, which the programme runs once at the end rather than per task. So the
-/// count and the golden below were both stale while every fast-tier run stayed
-/// green — the two cases that read them are `#[ignore]`d behind that harness.
-const PRICING_TABLES: usize = 46;
+/// No pricing-owned tables exist in the skeleton; coord remains in the runtime chain.
+const PRICING_TABLES: usize = 0;
 
 fn tables_in(dump: &str) -> Vec<String> {
     let mut names: Vec<String> = dump
@@ -91,19 +79,17 @@ async fn the_dump_reaches_every_kind_of_object() {
         pricing.len()
     );
 
-    for kind in ["COLUMN ", "CONSTRAINT ", "INDEX ", "TRIGGER ", "FUNCTION "] {
+    assert_eq!(tables, vec!["bss.coord_leases".to_owned()]);
+    for kind in ["COLUMN ", "CONSTRAINT ", "INDEX "] {
         assert!(
             dump.lines().any(|line| line.starts_with(kind)),
-            "no {kind}line reached the dump; that query returned nothing"
+            "missing {kind}"
         );
     }
-
-    // The `EXCLUDE` added by `pricing_price_window` is the one constraint kind `SQLite` cannot
-    // express, so it is the one the two goldens can never agree about and the one a Postgres-only
-    // oracle exists to watch.
     assert!(
-        dump.contains("EXCLUDE USING gist"),
-        "the window non-overlap exclusion constraint is not in the dump"
+        !dump
+            .lines()
+            .any(|line| line.starts_with("TRIGGER ") || line.starts_with("FUNCTION "))
     );
 
     // Objects belong in `bss`. A `public` object is not necessarily wrong -- the runner's own

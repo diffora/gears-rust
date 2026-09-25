@@ -9,6 +9,8 @@
 //! `tests/rest_plans.rs::two_records_of_one_patch_carry_one_correlation_id`, and
 //! it needs a database.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

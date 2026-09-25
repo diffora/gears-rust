@@ -15,19 +15,8 @@ mod schema_dump;
 
 use schema_dump::{migrate_and_dump_sqlite, normalise_sql, tables_in};
 
-/// Every `pricing_` table the chain leaves standing.
-///
-/// A count, not a roster, and deliberately so: the roster's home is the golden dump frozen in
-/// Task 3, and two rosters would drift apart. What this number is for is to catch a dump that
-/// silently renders **fewer** objects than the schema has — a filter that is too eager reads as
-/// a passing determinism case, because an empty dump is perfectly deterministic.
-///
-/// 43 until the charge-line split, which added `pricing_charge_line`, its version and
-/// `pricing_market_price`: three tables that carry the scope key, the shared calculation
-/// and the market a price row used to hold itself. The split briefly had a fourth,
-/// `pricing_charge_tier`, for tier geometry shared across a line's markets; a ladder is a
-/// market's own now and lives whole on `pricing_price_tier_band`, so that table is gone.
-const PRICING_TABLES: usize = 46;
+/// No pricing-owned tables exist in the skeleton; coord remains in the runtime chain.
+const PRICING_TABLES: usize = 0;
 
 async fn migrated_dump() -> String {
     let conn = Database::connect("sqlite::memory:")
@@ -76,15 +65,7 @@ async fn the_dump_names_every_table_the_chain_creates() {
         pricing.len()
     );
 
-    // Named rather than counted, because these three are the ones the re-authoring will touch
-    // last and hardest: the two with the widest scatter across the current chain, and the one
-    // whose guard was added by `pricing_price_window`.
-    for required in ["pricing_plan", "pricing_price", "pricing_price_window"] {
-        assert!(
-            tables.iter().any(|name| name == required),
-            "the dump does not name {required}"
-        );
-    }
+    assert_eq!(tables, vec!["coord_leases".to_owned()]);
 
     // Every stanza carries its DDL, so a table rendered with no definition would be a hole the
     // comparison could not see through.
