@@ -243,9 +243,13 @@ async fn card_and_reference_details_read_the_live_registry() {
     )
     .await
     .unwrap();
-    for (i, kind) in [RefKind::Price, RefKind::Price, RefKind::PlanItem]
-        .into_iter()
-        .enumerate()
+    for (i, kind) in [
+        RefKind::PriceBookEntry,
+        RefKind::PriceBookEntry,
+        RefKind::PlanItem,
+    ]
+    .into_iter()
+    .enumerate()
     {
         let r = repo::reserve_reference(
             &conn,
@@ -295,7 +299,7 @@ async fn card_and_reference_details_read_the_live_registry() {
     let card = body_json(get(&app, tenant, &url).await).await;
     assert_eq!(
         card["references"],
-        json!({"prices":2,"plans":1,"reserved":1,"by_owner":{"pricing":{"price":2,"plan_item":1,"reserved":1}}})
+        json!({"price_book_entries":2,"plans":1,"reserved":1,"by_owner":{"pricing":{"price_book_entry":2,"plan_item":1,"reserved":1}}})
     );
     let refs = body_json(get(&app, tenant, &format!("{url}/references")).await).await;
     assert_eq!(refs["summary"], card["references"]);

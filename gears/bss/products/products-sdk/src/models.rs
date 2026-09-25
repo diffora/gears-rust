@@ -196,7 +196,7 @@ mod registry_tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceKind {
-    Price,
+    PriceBookEntry,
     PlanItem,
     SoldAs,
 }

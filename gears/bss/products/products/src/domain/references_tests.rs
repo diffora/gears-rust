@@ -36,11 +36,11 @@ fn live_references_block_both_fence_kinds() {
     }
     assert_eq!(
         [
-            RefKind::Price.as_str(),
+            RefKind::PriceBookEntry.as_str(),
             RefKind::PlanItem.as_str(),
             RefKind::SoldAs.as_str()
         ],
-        ["price", "plan_item", "sold_as"]
+        ["price_book_entry", "plan_item", "sold_as"]
     );
     assert_eq!(
         [

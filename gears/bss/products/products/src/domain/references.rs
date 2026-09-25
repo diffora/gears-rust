@@ -6,7 +6,7 @@ use toolkit_macros::domain_model;
 #[domain_model]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
-    Price,
+    PriceBookEntry,
     PlanItem,
     SoldAs,
 }
@@ -15,7 +15,7 @@ impl RefKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Price => "price",
+            Self::PriceBookEntry => "price_book_entry",
             Self::PlanItem => "plan_item",
             Self::SoldAs => "sold_as",
         }
@@ -41,12 +41,12 @@ impl RefState {
     }
 }
 /// Live counts by owner object, with the reserved subset reported separately.
-/// `prices` and `plans` include reserved and confirmed rows; `plans` includes
+/// `price_book_entries` and `plans` include reserved and confirmed rows; `plans` includes
 /// both plan items and sold-as references. `reserved` is not an extra total.
 #[domain_model]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReferenceSummary {
-    pub prices: u32,
+    pub price_book_entries: u32,
     pub plans: u32,
     pub reserved: u32,
     /// Live counts by owner and kind, including each owner’s reserved subset.

@@ -130,7 +130,7 @@ async fn reserve(
         return Err(forbidden().into());
     }
     let kind = match body.kind.as_str() {
-        "price" => RefKind::Price,
+        "price_book_entry" => RefKind::PriceBookEntry,
         "plan_item" => RefKind::PlanItem,
         "sold_as" => RefKind::SoldAs,
         _ => return Err(g::validation("kind", "unknown reference kind").into()),

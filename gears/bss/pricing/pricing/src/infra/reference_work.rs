@@ -777,7 +777,13 @@ async fn observe(
     match current {
         OpState::Reserving if op.reservation_id.is_none() => {
             match registry
-                .reserve(ctx, tenant, op.sku_id, ReferenceKind::Price, op.price_id)
+                .reserve(
+                    ctx,
+                    tenant,
+                    op.sku_id,
+                    ReferenceKind::PriceBookEntry,
+                    op.price_id,
+                )
                 .await
             {
                 Ok(receipt) => Ok((
@@ -826,7 +832,13 @@ async fn observe(
                 // and releasing that leaves none. A definite refusal means none can exist:
                 // a fence requires zero live references.
                 None => match registry
-                    .reserve(ctx, tenant, op.sku_id, ReferenceKind::Price, op.price_id)
+                    .reserve(
+                        ctx,
+                        tenant,
+                        op.sku_id,
+                        ReferenceKind::PriceBookEntry,
+                        op.price_id,
+                    )
                     .await
                 {
                     Ok(receipt) => registry.release(ctx, tenant, receipt.reservation_id).await,

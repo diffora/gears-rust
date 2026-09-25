@@ -159,7 +159,7 @@ impl Fixture {
             &self.owner,
             Method::POST,
             &format!("/skus/{}/references/reserve", self.id),
-            json!({"owner":"pricing","kind":"price","ref_id":ref_id}),
+            json!({"owner":"pricing","kind":"price_book_entry","ref_id":ref_id}),
             None,
         )
         .await
@@ -842,7 +842,7 @@ async fn reference_owner_is_bound_to_the_principal_and_cannot_be_spoofed() {
             &f.author,
             Method::POST,
             &path,
-            json!({"owner":"pricing","kind":"price","ref_id":Uuid::new_v4()}),
+            json!({"owner":"pricing","kind":"price_book_entry","ref_id":Uuid::new_v4()}),
             None
         )
         .await
@@ -855,7 +855,7 @@ async fn reference_owner_is_bound_to_the_principal_and_cannot_be_spoofed() {
             &f.owner,
             Method::POST,
             &path,
-            json!({"owner":"other","kind":"price","ref_id":Uuid::new_v4()}),
+            json!({"owner":"other","kind":"price_book_entry","ref_id":Uuid::new_v4()}),
             None
         )
         .await
@@ -1477,7 +1477,7 @@ async fn keyed_reserve_and_confirm_replay_the_original_attempt_after_release() {
     let f = Fixture::new(0).await;
     f.publish().await;
     let path = format!("/skus/{}/references/reserve", f.id);
-    let body = json!({"owner":"pricing","kind":"price","ref_id":Uuid::new_v4()});
+    let body = json!({"owner":"pricing","kind":"price_book_entry","ref_id":Uuid::new_v4()});
     let first = call(
         &f.app,
         &f.owner,
@@ -1704,13 +1704,25 @@ async fn bound_registry_reserve_confirm_release_states_and_owner_isolation() {
     let registry = local(&f, "pricing");
     let ref_id = Uuid::new_v4();
     let r = registry
-        .reserve(&f.author, f.tenant, f.id, ReferenceKind::Price, ref_id)
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::PriceBookEntry,
+            ref_id,
+        )
         .await
         .unwrap();
     assert_eq!(r.state, ReferenceState::Reserved);
     assert_eq!(
         registry
-            .reserve(&f.author, f.tenant, f.id, ReferenceKind::Price, ref_id)
+            .reserve(
+                &f.author,
+                f.tenant,
+                f.id,
+                ReferenceKind::PriceBookEntry,
+                ref_id
+            )
             .await
             .unwrap(),
         r
@@ -1728,7 +1740,7 @@ async fn bound_registry_reserve_confirm_release_states_and_owner_isolation() {
             &f.author,
             f.tenant,
             f.id,
-            ReferenceKind::Price,
+            ReferenceKind::PriceBookEntry,
             Uuid::new_v4(),
         )
         .await
@@ -1797,7 +1809,7 @@ async fn bound_registry_refusals_match_rest_codes() {
             &f.author,
             f.tenant,
             f.id,
-            ReferenceKind::Price,
+            ReferenceKind::PriceBookEntry,
             Uuid::new_v4(),
         )
         .await
@@ -1809,7 +1821,7 @@ async fn bound_registry_refusals_match_rest_codes() {
             &f.author,
             f.tenant,
             f.id,
-            ReferenceKind::Price,
+            ReferenceKind::PriceBookEntry,
             Uuid::new_v4(),
         )
         .await
@@ -1865,7 +1877,7 @@ async fn bound_registry_refusals_match_rest_codes() {
                     &f.author,
                     f.tenant,
                     f.id,
-                    ReferenceKind::Price,
+                    ReferenceKind::PriceBookEntry,
                     Uuid::new_v4()
                 )
                 .await
@@ -1961,7 +1973,7 @@ async fn bound_registry_system_identity_and_tenant_are_checked() {
             &system,
             f.tenant,
             f.id,
-            ReferenceKind::Price,
+            ReferenceKind::PriceBookEntry,
             Uuid::new_v4(),
         )
         .await
@@ -1975,7 +1987,13 @@ async fn bound_registry_system_identity_and_tenant_are_checked() {
     assert_eq!(
         canonical_code(
             registry
-                .reserve(&other, f.tenant, f.id, ReferenceKind::Price, Uuid::new_v4())
+                .reserve(
+                    &other,
+                    f.tenant,
+                    f.id,
+                    ReferenceKind::PriceBookEntry,
+                    Uuid::new_v4()
+                )
                 .await
                 .unwrap_err()
         ),
@@ -2010,7 +2028,7 @@ async fn bound_registry_serves_a_principal_without_a_subject_type() {
             &untyped,
             f.tenant,
             f.id,
-            ReferenceKind::Price,
+            ReferenceKind::PriceBookEntry,
             Uuid::new_v4(),
         )
         .await
@@ -2055,7 +2073,7 @@ async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
             &f.author,
             f.tenant,
             f.id,
-            ReferenceKind::Price,
+            ReferenceKind::PriceBookEntry,
             Uuid::new_v4(),
         )
         .await

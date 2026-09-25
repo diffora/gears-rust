@@ -211,7 +211,7 @@ pub async fn list_references(
         .await
         .map_err(|e| driver_failure("list references".into(), e))
 }
-/// Summarize live prices/plans and the reserved subset.
+/// Summarize live price book entries/plans and the reserved subset.
 /// # Errors
 /// Returns scoped storage failures or an unknown stored reference kind.
 pub async fn reference_summary(
@@ -223,7 +223,9 @@ pub async fn reference_summary(
     let mut summary = ReferenceSummary::default();
     for r in live_references(runner, scope, tenant_id, sku_id).await? {
         match r.ref_kind.as_str() {
-            "price" => summary.prices = summary.prices.saturating_add(1),
+            "price_book_entry" => {
+                summary.price_book_entries = summary.price_book_entries.saturating_add(1);
+            }
             "plan_item" | "sold_as" => summary.plans = summary.plans.saturating_add(1),
             _ => {
                 return Err(RepoError::CorruptRow(format!(

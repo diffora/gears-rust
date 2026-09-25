@@ -391,7 +391,7 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
         tenant,
         s.id,
         "pricing",
-        RefKind::Price,
+        RefKind::PriceBookEntry,
         ref_id,
         tenant,
         now(),
@@ -399,7 +399,7 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
     .await
     .unwrap();
     assert!(
-        matches!(reserve_reference(&conn,&scope,tenant,s.id,"pricing",RefKind::Price,ref_id,tenant,now()).await,Err(RepoError::Db(c)) if c=="REFERENCE_EXISTS")
+        matches!(reserve_reference(&conn,&scope,tenant,s.id,"pricing",RefKind::PriceBookEntry,ref_id,tenant,now()).await,Err(RepoError::Db(c)) if c=="REFERENCE_EXISTS")
     );
     for kind in [Fence::Retire, Fence::TypeChange] {
         assert!(matches!(
@@ -422,12 +422,15 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
             .await
             .unwrap(),
         crate::domain::references::ReferenceSummary {
-            prices: 1,
+            price_book_entries: 1,
             plans: 0,
             reserved: 1,
             by_owner: std::collections::BTreeMap::from([(
                 "pricing".into(),
-                std::collections::BTreeMap::from([("price".into(), 1), ("reserved".into(), 1)])
+                std::collections::BTreeMap::from([
+                    ("price_book_entry".into(), 1),
+                    ("reserved".into(), 1)
+                ])
             )]),
         }
     );
@@ -496,10 +499,17 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
             .is_empty()
     );
     assert!(
-        find_live_reference(&conn, &scope, tenant, "pricing", RefKind::Price, ref_id)
-            .await
-            .unwrap()
-            .is_none()
+        find_live_reference(
+            &conn,
+            &scope,
+            tenant,
+            "pricing",
+            RefKind::PriceBookEntry,
+            ref_id
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
     let op = uuid::Uuid::new_v4();
     let HeadWrite::Written(fenced) =
@@ -558,7 +568,7 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
         tenant,
         s.id,
         "pricing",
-        RefKind::Price,
+        RefKind::PriceBookEntry,
         ref_id,
         tenant,
         now(),

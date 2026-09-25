@@ -387,7 +387,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
         tenant,
         id,
         "pricing",
-        crate::domain::references::RefKind::Price,
+        crate::domain::references::RefKind::PriceBookEntry,
         Uuid::new_v4(),
         base.actor,
         at(10),

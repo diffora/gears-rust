@@ -67,7 +67,7 @@ fn usage_needs_a_meter_and_a_resolved_type_bundle_has_none() {
     ));
 }
 #[test]
-fn the_type_is_frozen_once_a_price_exists() {
+fn the_type_is_frozen_once_a_price_book_entry_exists() {
     assert!(validate_type_change(0).is_ok());
     assert!(matches!(
         validate_type_change(1),

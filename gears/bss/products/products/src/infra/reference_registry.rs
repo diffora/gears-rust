@@ -120,7 +120,7 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
     ) -> Result<ReservationReceipt, CanonicalError> {
         let scope = self.scope(ctx, tenant, actions::REFERENCE).await?;
         let kind = match kind {
-            ReferenceKind::Price => RefKind::Price,
+            ReferenceKind::PriceBookEntry => RefKind::PriceBookEntry,
             ReferenceKind::PlanItem => RefKind::PlanItem,
             ReferenceKind::SoldAs => RefKind::SoldAs,
         };
