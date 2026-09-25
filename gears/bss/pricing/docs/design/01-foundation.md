@@ -30,7 +30,7 @@
 
 Provide the fresh schema, scoped repositories, conditional approval Store, canonical errors, replay, audit and live toolkit outbox infrastructure.
 
-Requirements: `cpt-cf-bss-pricing-nfr-authz`, `cpt-cf-bss-pricing-nfr-audit`, `cpt-cf-bss-pricing-nfr-tenant-isolation`, `cpt-cf-bss-pricing-nfr-two-backends`, `cpt-cf-bss-pricing-nfr-idempotency-concurrency`. Architecture: `cpt-cf-bss-pricing-component-books`, `cpt-cf-bss-pricing-component-rows`, `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`.
+Requirements: `cpt-cf-bss-pricing-nfr-authz`, `cpt-cf-bss-pricing-nfr-audit`, `cpt-cf-bss-pricing-nfr-tenant-isolation`, `cpt-cf-bss-pricing-nfr-two-backends`, `cpt-cf-bss-pricing-nfr-idempotency-concurrency`. Architecture: `cpt-cf-bss-pricing-component-books`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`.
 [FEATURE](../features/foundation.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: shared bss-approval and toolkit infrastructure.
 Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-400.
@@ -54,9 +54,9 @@ Actors: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-au
 Feature algorithm: `cpt-cf-bss-pricing-algo-foundation-conditional-store`.
 
 1. [ ] - `p1` - Load tenant-scoped unit and item versions. - `inst-foundation-conditional-store-1`
-2. [ ] - `p1` - Acquire pending ownership only where pending_unit_id is null and the observed version matches; zero affected rows is ROW_LOCKED_PENDING. - `inst-foundation-conditional-store-2`
+2. [ ] - `p1` - Acquire pending ownership only where pending_unit_id is null and the observed version matches; zero affected rows is PRICE_LOCKED_PENDING. - `inst-foundation-conditional-store-2`
 3. [ ] - `p1` - Bump unit version conditionally; a lost race returns UNIT_CONTENDED without a second decision or apply. - `inst-foundation-conditional-store-3`
-4. [ ] - `p1` - Clear locks only for the owning unit, following unit, price-id, row-id, revision, promotion order. - `inst-foundation-conditional-store-4`
+4. [ ] - `p1` - Clear locks only for the owning unit, following unit, entry-id, price-id, revision, promotion order. - `inst-foundation-conditional-store-4`
 
 ### replay-and-audit
 
@@ -73,7 +73,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-foundation-toolkit-outbox`.
 
 1. [ ] - `p1` - Install toolkit outbox migrations under bss_pricing_outbox in DatabaseCapability. - `inst-foundation-toolkit-outbox-1`
 2. [ ] - `p1` - Encode domain payloads through TypedEvent using the Products envelope sink pattern. - `inst-foundation-toolkit-outbox-2`
-3. [ ] - `p1` - Append through the caller transaction and dispatch only committed rows. - `inst-foundation-toolkit-outbox-3`
+3. [ ] - `p1` - Append through the caller transaction and dispatch only committed prices. - `inst-foundation-toolkit-outbox-3`
 4. [ ] - `p1` - Wire lifecycle-managed delivery and retry; failure leaves a durable record rather than an unrelayed pricing_outbox row. - `inst-foundation-toolkit-outbox-4`
 
 ## 4. States (CDSL)
@@ -91,7 +91,7 @@ Each mounted route must appear in all four censuses with authz and precondition 
 
 ## 6. Data Model
 
-DESIGN §3.7 is the phase 2 schema: pricing_settings, pricing_dimension_key, pricing_price_book, pricing_price, pricing_price_row, four pricing_approval tables, pricing_audit, pricing_idempotency and pricing_reference_op. Toolkit supplies bss_pricing_outbox tables. Replay has one key per tenant/endpoint/client_key; approval children are accessed through scoped units. Migrations are replay-safe on both engines, with no legacy data conversion.
+DESIGN §3.7 is the phase 2 schema: pricing_settings, pricing_dimension_key, pricing_price_book, pricing_price_book_entry, pricing_price, four pricing_approval tables, pricing_audit, pricing_idempotency and pricing_reference_op. Toolkit supplies bss_pricing_outbox tables. Replay has one key per tenant/endpoint/client_key; approval children are accessed through scoped units. Migrations are replay-safe on both engines, with no legacy data conversion.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.
@@ -117,7 +117,7 @@ The sole definitions live in [features/foundation.md](../features/foundation.md)
 
 ## 9. Acceptance Criteria
 
-1. PRD AC #24 / `cpt-cf-bss-pricing-dod-tables-two-backends`: Given empty SQLite and Postgres databases, when the chain runs twice then both schemas remain correct; duplicate book/price/approved-start keys are refused.
+1. PRD AC #24 / `cpt-cf-bss-pricing-dod-tables-two-backends`: Given empty SQLite and Postgres databases, when the chain runs twice then both schemas remain correct; duplicate book/entry/approved-start keys are refused.
 2. PRD AC #23 / `cpt-cf-bss-pricing-dod-scoped-repositories`: Given two tenants and a foreign child id, when a scoped repository reads or writes then no other tenant data is exposed or changed.
 3. PRD AC #22 / `cpt-cf-bss-pricing-dod-audit-append-only`: Given a successful act, when audit is read then actor/subject/correlation are present; an injected audit failure rolls back the act and direct deletion fails.
 4. PRD AC #25 / `cpt-cf-bss-pricing-dod-idempotency-key-store`: Given a retained key, when the same request repeats then its response replays without mutation; another payload conflicts and simultaneous claims produce one act.

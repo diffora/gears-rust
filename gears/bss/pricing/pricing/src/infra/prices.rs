@@ -6,7 +6,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-chain-windows:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-pair-guard:p1
-//! @cpt-dod:cpt-cf-bss-pricing-dod-price-rows-unit:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-prices-unit:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-sod-excludes-authors:p1
 use crate::{
     domain::{

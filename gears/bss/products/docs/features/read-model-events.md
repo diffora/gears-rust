@@ -196,7 +196,7 @@ GET skus searches code/name and intersects type, category and lifecycle filters 
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/skus.rs`.
 
-The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat prices/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
+The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat price_book_entries/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
 
 ### Durable reference identity and release
 
@@ -204,7 +204,7 @@ The SKU card and GET references return local registry rows and live counts group
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/references.rs`.
 
-Products stores tenant-scoped price/plan_item/sold_as attempts with a unique live logical key and retained released history. Reserve retries return the same live ID; a later attempt after release gets a fresh ID. Confirm is idempotent on confirmed and returns REFERENCE_RELEASED on released. Owner release checks authenticated ownership; operator release requires force and reason and atomically records actor/reason, audit and ReferenceForceReleased. Products never expires a reservation and cannot detect release beneath a live owner object (spec decision 17, §13; DESIGN §3.7).
+Products stores tenant-scoped price_book_entry/plan_item/sold_as attempts with a unique live logical key and retained released history. Reserve retries return the same live ID; a later attempt after release gets a fresh ID. Confirm is idempotent on confirmed and returns REFERENCE_RELEASED on released. Owner release checks authenticated ownership; operator release requires force and reason and atomically records actor/reason, audit and ReferenceForceReleased. Products never expires a reservation and cannot detect release beneath a live owner object (spec decision 17, §13; DESIGN §3.7).
 
 ### Reserve and fence exclude each other
 

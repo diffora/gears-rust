@@ -20,13 +20,13 @@
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [submit-unit](#submit-unit)
   - [vote-and-refresh](#vote-and-refresh)
-  - [apply-price-rows](#apply-price-rows)
+  - [apply-prices](#apply-prices)
   - [withdraw-unit](#withdraw-unit)
 - [4. States (CDSL)](#4-states-cdsl)
   - [Approvals states](#approvals-states)
 - [5. Definitions of Done](#5-definitions-of-done)
-  - [Selected row batch](#selected-row-batch)
-  - [Transactional row apply](#transactional-row-apply)
+  - [Selected price batch](#selected-price-batch)
+  - [Transactional price apply](#transactional-price-apply)
   - [Separation from every author](#separation-from-every-author)
   - [Copied quorum including zero](#copied-quorum-including-zero)
   - [Committed refresh of stale content](#committed-refresh-of-stale-content)
@@ -41,7 +41,7 @@
 
 ### 1.1 Overview
 
-**Delivery:** phase 2c for price_rows; 3 for the other subjects. Every checkbox is an implementation obligation, not an assertion about the legacy code.
+**Delivery:** phase 2c for prices; 3 for the other subjects. Every checkbox is an implementation obligation, not an assertion about the legacy code.
 
 This feature implements [slice 05](../design/05-approvals.md) — `cpt-cf-bss-pricing-design-slice-05`.
 [DECOMPOSITION](../DECOMPOSITION.md) records integration order; [DESIGN §3](../DESIGN.md#3-technical-architecture)
@@ -49,11 +49,11 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 
 ### 1.2 Purpose
 
-Compose row batches and govern every pricing subject with shared quorum, author separation, generation refresh and atomic terminal outcomes.
+Compose price batches and govern every pricing subject with shared quorum, author separation, generation refresh and atomic terminal outcomes.
 
 Requirements: `cpt-cf-bss-pricing-fr-publish-changes`, `cpt-cf-bss-pricing-fr-approval-units`, `cpt-cf-bss-pricing-fr-events`.
 
-Architecture: `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-rows`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`, `cpt-cf-bss-pricing-seq-publish-changes`, `cpt-cf-bss-pricing-seq-temporary-pair`, `cpt-cf-bss-pricing-seq-blocked-revision`.
+Architecture: `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`, `cpt-cf-bss-pricing-seq-publish-changes`, `cpt-cf-bss-pricing-seq-temporary-pair`, `cpt-cf-bss-pricing-seq-blocked-revision`.
 
 ### 1.3 Actors
 
@@ -74,8 +74,8 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-flow-approvals`
 
-1. [ ] - `p1` - Finance Manager sees all draft rows of the book with full predecessor, money, chain, dates and impact; all start selected. - `inst-approvals-flow-1`
-2. [ ] - `p1` - Untick ordinary rows or select atomic temporary pairs; optionally supply a common effective date. - `inst-approvals-flow-2`
+1. [ ] - `p1` - Finance Manager sees all draft prices of the book with full predecessor, money, chain, dates and impact; all start selected. - `inst-approvals-flow-1`
+2. [ ] - `p1` - Untick ordinary prices or select atomic temporary pairs; optionally supply a common effective date. - `inst-approvals-flow-2`
 3. [ ] - `p1` - Submit validates one-book membership and shifts dates, then locks items conditionally and copies policy quorum. - `inst-approvals-flow-3`
 4. [ ] - `p1` - Finance Reviewer reads the stored snapshot, live impact and generation, then approves or rejects with a required client key. - `inst-approvals-flow-4`
 5. [ ] - `p1` - Apply only when the current generation meets quorum and fingerprint/revalidation pass; otherwise retain pending votes, refresh stale content or refuse as specified. - `inst-approvals-flow-5`
@@ -101,15 +101,15 @@ Holding multiple permissions never bypasses separation of duties.
 4. [ ] - `p1` - Otherwise insert a decision; an approval below quorum stays pending, a rejection with note unlocks and closes the unit. - `inst-approvals-vote-and-refresh-4`
 5. [ ] - `p1` - At quorum revalidate and apply; environment failure rolls back, successful apply emits domain plus terminal events. - `inst-approvals-vote-and-refresh-5`
 
-### apply-price-rows
+### apply-prices
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-approvals-apply-price-rows`
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-approvals-apply-prices`
 
-1. [ ] - `p1` - Order affected prices by id and rows by id after the unit; use conditional guards and serializable Postgres transaction. - `inst-approvals-apply-price-rows-1`
-2. [ ] - `p1` - Shift selected rows to the common date with temporary duration preserved. - `inst-approvals-apply-price-rows-2`
-3. [ ] - `p1` - Re-read each chain, enforce usage pair guard and approved start uniqueness, and recompute effective_to independently per value. - `inst-approvals-apply-price-rows-3`
-4. [ ] - `p1` - Set keep_for_bound on the current predecessor of every new row of each touched chain, including a new row approved earlier that a row of this unit now precedes, and never clear it; preserve approved money and historical ids. - `inst-approvals-apply-price-rows-4`
-5. [ ] - `p1` - Replace owned pending locks with approved_by_unit_id and atomically persist audit, PriceRowsPublished and ApprovalUnitDecided. - `inst-approvals-apply-price-rows-5`
+1. [ ] - `p1` - Order affected entries by id and prices by id after the unit; use conditional guards and serializable Postgres transaction. - `inst-approvals-apply-prices-1`
+2. [ ] - `p1` - Shift selected prices to the common date with temporary duration preserved. - `inst-approvals-apply-prices-2`
+3. [ ] - `p1` - Re-read each chain, enforce usage pair guard and approved start uniqueness, and recompute effective_to independently per value. - `inst-approvals-apply-prices-3`
+4. [ ] - `p1` - Set keep_for_bound on the current predecessor of every new price of each touched chain, including a new price approved earlier that a price of this unit now precedes, and never clear it; preserve approved money and historical ids. - `inst-approvals-apply-prices-4`
+5. [ ] - `p1` - Replace owned pending locks with approved_by_unit_id and atomically persist audit, PricesPublished and ApprovalUnitDecided. - `inst-approvals-apply-prices-5`
 
 ### withdraw-unit
 
@@ -131,19 +131,19 @@ Unit states are pending → approved/rejected/withdrawn; every terminal state is
 
 Every DoD below is required for this feature's delivery phase. Constraints: `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`.
 
-### Selected row batch
+### Selected price batch
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-publish-changes-selection`
 
-Publish changes exposes all book drafts and their full review information, initially selected. The selected subset and optional common date form one atomic price_rows unit, preserving temporary pairs: a ticked half brings its partner, recorded as added_partner (spec §2 decision 7, D-405).
+Publish changes exposes all book drafts and their full review information, initially selected. The selected subset and optional common date form one atomic prices unit, preserving temporary pairs: a ticked half brings its partner, recorded as added_partner (spec §2 decision 7, D-405).
 
 Requirement: `cpt-cf-bss-pricing-fr-publish-changes`; PRD AC #9.
 
-### Transactional row apply
+### Transactional price apply
 
-- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-rows-unit`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-prices-unit`
 
-PriceRowsSubject revalidates shifted rows and chain invariants, normalizes windows and sets keep_for_bound. Approved money, audit and events commit atomically with ordered conditional ownership (spec §6).
+PricesSubject revalidates shifted prices and chain invariants, normalizes windows and sets keep_for_bound. Approved money, audit and events commit atomically with ordered conditional ownership (spec §6).
 
 Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
@@ -199,13 +199,13 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 | DoD | PRD criterion | Given / When / Then |
 | --- | --- | --- |
-| `cpt-cf-bss-pricing-dod-publish-changes-selection` | AC #9; `cpt-cf-bss-pricing-fr-publish-changes` | Given three drafts and one temporary companion, when an ordinary row is unticked then only the selected atomic set is locked; a ticked pair half brings its partner (added_partner, D-405), and a foreign-book row fails with no unit. |
-| `cpt-cf-bss-pricing-dod-price-rows-unit` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given two overlapping batches, when approvals race then no overlapping approved windows survive; a valid batch applies all rows and a failed batch applies none. |
-| `cpt-cf-bss-pricing-dod-sod-excludes-authors` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given a row authored by A but submitted by B, when A approves then SOD_VIOLATION refuses it; independent C with approve-only permission may vote. |
+| `cpt-cf-bss-pricing-dod-publish-changes-selection` | AC #9; `cpt-cf-bss-pricing-fr-publish-changes` | Given three drafts and one temporary companion, when an ordinary price is unticked then only the selected atomic set is locked; a ticked pair half brings its partner (added_partner, D-405), and a foreign-book price fails with no unit. |
+| `cpt-cf-bss-pricing-dod-prices-unit` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given two overlapping batches, when approvals race then no overlapping approved windows survive; a valid batch applies all prices and a failed batch applies none. |
+| `cpt-cf-bss-pricing-dod-sod-excludes-authors` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given a price authored by A but submitted by B, when A approves then SOD_VIOLATION refuses it; independent C with approve-only permission may vote. |
 | `cpt-cf-bss-pricing-dod-quorum-policy` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given quorum 0, 1 and 2 units, when the valid number of independent votes is supplied then each applies once; changing policy cannot silently lower an existing unit's snapshot. |
 | `cpt-cf-bss-pricing-dod-stale-refresh-generation` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given content drift after a vote, when another vote arrives then the unit refreshes and old votes stop counting; repeated keyed request replays the refresh outcome. |
 | `cpt-cf-bss-pricing-dod-generation-and-duplicate-vote` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given refreshed generation 2, when a generation-1 vote arrives then it counts nothing; two votes by one actor in generation 2 cannot meet quorum 2. |
-| `cpt-cf-bss-pricing-dod-unit-contended` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given two connections observing one version, when both approve then one terminal apply persists; if environment validation fails neither partial rows nor success events survive. |
-| `cpt-cf-bss-pricing-dod-terminal-audit-event` | AC #14; `cpt-cf-bss-pricing-fr-events` | Given a reject or withdraw, when it succeeds then locks clear and a terminal event exists without PriceRowsPublished; missing reject note or foreign withdrawal fails. |
+| `cpt-cf-bss-pricing-dod-unit-contended` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given two connections observing one version, when both approve then one terminal apply persists; if environment validation fails neither partial prices nor success events survive. |
+| `cpt-cf-bss-pricing-dod-terminal-audit-event` | AC #14; `cpt-cf-bss-pricing-fr-events` | Given a reject or withdraw, when it succeeds then locks clear and a terminal event exists without PricesPublished; missing reject note or foreign withdrawal fails. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.

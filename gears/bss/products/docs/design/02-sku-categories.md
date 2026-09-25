@@ -88,7 +88,7 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 ### bundle-unpriced
 
 1. [ ] - `p1` - Persist bundle identity and descriptors without component members or usage metering - `inst-sku-bundle-content`
-2. [ ] - `p1` - Expose bundle type to Pricing so it cannot create a price or plan item for it; a plan may be sold_as that SKU - `inst-sku-bundle-pricing`
+2. [ ] - `p1` - Expose bundle type to Pricing so it cannot create a price book entry or plan item for it; a plan may be sold_as that SKU - `inst-sku-bundle-pricing`
 3. [ ] - `p1` - Apply the same reference barrier to sold_as reservations; bundle type does not bypass retire/type fencing - `inst-sku-bundle-reference`
 
 ### category-retire-refused
@@ -174,7 +174,7 @@ Numbered criteria refer to [PRD §9](../PRD.md#9-acceptance-criteria).
 | Trace | Given / When / Then |
 | --- | --- |
 | `cpt-cf-bss-products-fr-sku-define`; AC #1 | Given a tenant code/name already used, when a concurrent create reuses either, then 409 SKU_CODE_TAKEN or SKU_NAME_TAKEN leaves no second SKU; another tenant may use the same values. |
-| `cpt-cf-bss-products-fr-sku-type-frozen`; AC #2 | Given any live price, plan_item or sold_as reference, when type changes, then SKU_TYPE_FROZEN leaves both type and fence unchanged; drafts cannot have reservations and change type without fencing. |
+| `cpt-cf-bss-products-fr-sku-type-frozen`; AC #2 | Given any live price book entry, plan_item or sold_as reference, when type changes, then SKU_TYPE_FROZEN leaves both type and fence unchanged; drafts cannot have reservations and change type without fencing. |
 | `cpt-cf-bss-products-fr-sku-metering`; AC #5 | Given missing or unresolved usage metering, when publication is submitted, then USAGE_NEEDS_METER or USAGE_TYPE_UNRESOLVED prevents a unit/version; apply revalidates if the catalog changes. A draft-save catalog non-answer remains saveable per P-D-184. |
 | `cpt-cf-bss-products-fr-sku-bundle`; AC #6 | Given a bundle, when usage metering is assigned, then BUNDLE_HAS_NO_METER refuses it; the exposed type supports sold_as and prevents Pricing treating it as a priced SKU or item. |
 | `cpt-cf-bss-products-fr-sku-versions`; AC #8–9 | Given publication on September 24 and a change effective October 1, when reading September 30/October 1/September 23, then return old/new/NO_VERSION_IN_FORCE. Earlier-date changes fail VERSION_ORDER; equal dates retain both versions and select the larger number. |

@@ -34,8 +34,8 @@
 Products owns two catalog entities, `Sku` and flat `Category`. A SKU is an independent definition;
 publication, changes and retirement share one approval-unit shape from `bss-approval`. Append-only
 `SkuVersion` snapshots preserve the descriptor history and its effective dates. Pricing owns books,
-prices and plans: it reads SKU type, descriptors and metering, binds the version in force at a period's
-start, and consumes `SkuChanged`. Before writing a price, plan item or sold-as relationship it reserves
+price book entries, prices and plans: it reads SKU type, descriptors and metering, binds the version in force at a period's
+start, and consumes `SkuChanged`. Before writing a price book entry, plan item or sold-as relationship it reserves
 that reference in Products, then confirms after its own commit. Products answers reference reads from
 its own registry and fences against that registry in one local transaction (spec §2.2, §4, §6, §7.3,
 §13; [DECISIONS](DECISIONS.md), P-D-185, P-D-189–194).
@@ -166,7 +166,7 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 | `SkuVersion` | Tenant, sku_id, published_version, effective_from, snapshot. Immutable history appended by publication and every applied change. |
 | `ApprovalUnit` | Shared crate type: kind, subject reference, state, quorum, generation, snapshot/hash, date, submitter, decision metadata and concurrency version. |
 | `Decision` | Shared crate type: unit, actor, generation, approve/reject, note, timestamp and stale flag. One vote per actor per generation. |
-| `SkuReference` | Tenant, id, sku_id, owner_gear, price/plan_item/sold_as kind, ref_id, reserved/confirmed/released state, timestamps, released_by and release_reason. Released attempts remain recorded. |
+| `SkuReference` | Tenant, id, sku_id, owner_gear, price_book_entry/plan_item/sold_as kind, ref_id, reserved/confirmed/released state, timestamps, released_by and release_reason. Released attempts remain recorded. |
 
 A usage SKU needs both `usage_type_ref` and `unit` at publication; submit and apply resolve the reference.
 Metering fields are usage-only. Bundles reject metering, have no composition, and can only be sold as a
@@ -305,7 +305,7 @@ registration and standardized errors.
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
 | Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction; unfence only expired orphans. |
-| Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains prices/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
+| Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
 | Confirm | `POST /references/{id}/confirm` | 200 also when already confirmed; released rows cannot reactivate. |
 | Release | `DELETE /references/{id}` | Owner after durable cancellation/deletion; operator requires `force: true` and reason, with actor attribution and event. |
@@ -344,7 +344,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 400 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
 | `APPLY_REFUSED` | Apply failure with domain reason, including SKU_REFERENCED; transaction rolls back without success events |
 | `NO_VERSION_IN_FORCE` | 404; date precedes first version |
-| `SKU_RETIRING`, `SKU_DEPRECATED`, `ROW_SKU_DEPRECATED` | Pricing-side adoption guards: a new price refuses a retiring (`SKU_RETIRING`) or deprecated (`SKU_DEPRECATED`) SKU; in phase 3 a new plan revision refuses a deprecated SKU (`ROW_SKU_DEPRECATED`) |
+| `SKU_RETIRING`, `SKU_DEPRECATED`, `ITEM_SKU_DEPRECATED` | Pricing-side adoption guards: a new price book entry refuses a retiring (`SKU_RETIRING`) or deprecated (`SKU_DEPRECATED`) SKU; in phase 3 a new plan revision refuses a deprecated SKU (`ITEM_SKU_DEPRECATED`) |
 | `REGISTRY_UNAVAILABLE` | 503 from Pricing when reserve cannot succeed; Pricing writes nothing |
 
 An unreachable configured usage-type catalog is 503 during publication validation. The usage catalog's
@@ -511,7 +511,7 @@ sequenceDiagram
 
 Pricing's transaction stores the object, reservation id and confirmation work together. An unconfirmed
 reservation remains live indefinitely; neither caller death nor a confirmation timeout releases it.
-The same sequence covers price, plan-item and sold-as references. Release follows durable cancellation
+The same sequence covers price book entry, plan-item and sold-as references. Release follows durable cancellation
 or removal; operator force-release is audited and evented so the owner can verify and re-reserve an
 object that still exists. Products cannot detect a dishonest release beneath a live owner object
 (P-D-194; spec §13).
@@ -683,7 +683,7 @@ CREATE TABLE bss.products_sku_reference (
     tenant_id uuid NOT NULL,
     sku_id uuid NOT NULL,
     owner_gear text NOT NULL,
-    ref_kind text NOT NULL CHECK (ref_kind IN ('price', 'plan_item', 'sold_as')),
+    ref_kind text NOT NULL CHECK (ref_kind IN ('price_book_entry', 'plan_item', 'sold_as')),
     ref_id uuid NOT NULL,
     state text NOT NULL CHECK (state IN ('reserved', 'confirmed', 'released')),
     reserved_at timestamptz NOT NULL,

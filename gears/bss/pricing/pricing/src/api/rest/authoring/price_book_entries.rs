@@ -1,8 +1,8 @@
 //! Price book entry writes and their durable registry operations.
 //!
-//! @cpt-dod:cpt-cf-bss-pricing-dod-price-key-unique:p1
-//! @cpt-dod:cpt-cf-bss-pricing-dod-price-metadata:p1
-//! @cpt-dod:cpt-cf-bss-pricing-dod-price-reference-handoff:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-entry-key-unique:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-entry-metadata:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-entry-reference-handoff:p1
 use super::{
     AuthoringState,
     dto::{PricingPriceBookEntryCreate, PricingPriceBookEntryDto, PricingPriceBookEntryPatch},

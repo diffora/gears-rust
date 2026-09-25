@@ -43,7 +43,7 @@
 
 Products provides a tenant-scoped SKU registry with flat categories, billing descriptors, metering declarations,
 durable versions and governed lifecycle changes. A SKU is the catalog's unit and has no parent entity.
-Pricing reads these definitions and owns books, prices and plans (spec §1, §2 decisions 3 and 12, §4).
+Pricing reads these definitions and owns books, price book entries, prices and plans (spec §1, §2 decisions 3 and 12, §4).
 
 ### 1.2 Background / Problem Statement
 
@@ -77,7 +77,7 @@ reference. The prototype model and the explicit dispositions in spec §3 define 
 | Approval unit | One reviewable proposed action with items, snapshot, fingerprint, quorum, state and decisions. |
 | Generation | The unit content revision a reviewer saw; refresh increments it and makes earlier decisions stale. |
 | Fence | A durable barrier (`retiring` or `type_change_pending`) preventing new reference reservations. |
-| Reservation | A `price`, `plan_item` or `sold_as` reference attempt; reserved and confirmed rows both count as live. |
+| Reservation | A `price_book_entry`, `plan_item` or `sold_as` reference attempt; reserved and confirmed rows both count as live. |
 | Binding | Pricing's period-specific choice of SKU version and descriptors, retained by the consumer. |
 
 ## 2. Actors
@@ -145,7 +145,7 @@ concurrency and idempotency; browse/search and reference summaries; audit and tr
 
 Product entities; attributes, localization and display fields; CatalogVersion snapshots, freeze and diff;
 PlanTier; bundle composition signals; bulk import/export; environment promotion; SKU clone; retention and
-right-to-erasure. Pricing owns books, prices, plans, promotions and migrations. Rating and Subscriptions
+right-to-erasure. Pricing owns books, price book entries, prices, plans, promotions and migrations. Rating and Subscriptions
 adaptation, and Studio API wiring, are separate programmes (spec §3 D, §4, §10–§11).
 
 ## 5. Functional Requirements
@@ -171,11 +171,11 @@ category, description, sellable flag, descriptors, billing timing and type-appro
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-sku-type-frozen`
 
-A SKU's type shall determine its price charge kind; a type change must pass the reference barrier.
+A SKU's type shall determine the charge kind of its price book entries; a type change must pass the reference barrier.
 
 **Rules**
 
-- A SKU with a price cannot change type (`SKU_TYPE_FROZEN`, 409).
+- A SKU with a price book entry cannot change type (`SKU_TYPE_FROZEN`, 409).
 - The type-change fence is refused while any registry reservation is reserved or confirmed, including
   `plan_item` and `sold_as` references (`SKU_TYPE_FROZEN`, 409).
 - The live-reference check and setting `type_change_pending` occur in one transaction; while fenced, new
@@ -230,7 +230,7 @@ A bundle shall be a SKU that a Pricing plan is sold as, without composition stor
 
 - A bundle is never priced and cannot be a plan item; its relationship to a plan is `sold_as`.
 - Bundles have no meter; attempts to assign usage metering fail with `BUNDLE_HAS_NO_METER`.
-- Sold-as references use the same reservation barrier as prices and plan items; a fenced bundle rejects a new
+- Sold-as references use the same reservation barrier as price book entries and plan items; a fenced bundle rejects a new
   reservation with 409 `SKU_FENCED`.
 
 **Rationale**: spec §2 decision 17, §3 items 13 and 39, §4 (bundle rule), §5 (plan rules), §13.
@@ -248,8 +248,8 @@ retirement fence and `retired` as the retirement result.
 - `sku_change` governs content and/or lifecycle changes on published or deprecated SKUs, including deprecation
   and return to published status, with an effective date.
 - `sku_retire` applies only with zero live references; a referenced retirement is refused (`SKU_REFERENCED`).
-- Pricing refuses a new price or plan item on a retiring SKU (`SKU_RETIRING`); its new-plan-revision check
-  refuses a deprecated SKU (`ROW_SKU_DEPRECATED`).
+- Pricing refuses a new price book entry or plan item on a retiring SKU (`SKU_RETIRING`); its new-plan-revision check
+  refuses a deprecated SKU (`ITEM_SKU_DEPRECATED`).
 - A pending unit owns the mutation lock (`ROW_LOCKED_PENDING`, 409); rejection or withdrawal unlocks it.
 
 **Rationale**: spec §3 item 35, §4 (fence and lifecycle), §5 (deprecated guard), §6, §7.2.
@@ -262,7 +262,7 @@ Every publish and every applied change appends a `sku_version (sku_id, published
 snapshot)`. A version's `effective_from` is the `effectiveFrom` of the `sku_change` unit that produced it (the
 publish itself is effective at once). `GET /skus/{id}/versions?asOf=<date>` returns the version whose
 `effective_from` is the latest not after the date. Pricing binds a period's descriptors from this read
-(spec §7.1); nothing in this gear is frozen per price row.
+(spec §7.1); nothing in this gear is frozen per price.
 
 **Rules**
 
@@ -392,7 +392,7 @@ succeed in a race.
 
 **Rules**
 
-- Records contain `id`, `sku_id`, `owner_gear`, `ref_kind` (`price | plan_item | sold_as`), `ref_id`,
+- Records contain `id`, `sku_id`, `owner_gear`, `ref_kind` (`price_book_entry | plan_item | sold_as`), `ref_id`,
   `state` (`reserved | confirmed | released`), reservation/confirmation/release timestamps, `released_by`
   and `release_reason`.
 - Within tenant scope, `(owner_gear, ref_kind, ref_id)` is unique over live rows only. Each new attempt after
@@ -579,7 +579,7 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 
 **AC #2. Referenced type is frozen — `fr-sku-type-frozen`**
 
-- **Given** a SKU with a reserved or confirmed price, plan-item or sold-as reference.
+- **Given** a SKU with a reserved or confirmed price book entry, plan-item or sold-as reference.
 - **When** an author attempts to change its type.
 - **Then** the fence and change are refused with 409 `SKU_TYPE_FROZEN`, leaving the type unchanged.
 
@@ -608,14 +608,14 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 - **Given** a bundle SKU.
 - **When** an author assigns metering to it.
 - **Then** the change fails with `BUNDLE_HAS_NO_METER`; its supported commercial relationship remains a plan's
-  sold-as reference, with no composition in Products or price on the bundle.
+  sold-as reference, with no composition in Products or price book entry on the bundle.
 
 **AC #7. Lifecycle adoption guards — `fr-sku-lifecycle`**
 
 - **Given** a retiring SKU and a deprecated SKU.
-- **When** Pricing tries to add a price or plan item on the retiring SKU, or adds the deprecated SKU to a new
+- **When** Pricing tries to add a price book entry or plan item on the retiring SKU, or adds the deprecated SKU to a new
   plan revision.
-- **Then** it refuses with `SKU_RETIRING` or `ROW_SKU_DEPRECATED`, respectively.
+- **Then** it refuses with `SKU_RETIRING` or `ITEM_SKU_DEPRECATED`, respectively.
 
 **AC #8. Version timeline and equal dates — `fr-sku-versions`**
 

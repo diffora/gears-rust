@@ -1,6 +1,6 @@
-# ADR-0002: Row Chains per Dimension Value with Default Fallback
+# ADR-0002: Price Chains per Dimension Value with Default Fallback
 
-**ID**: `cpt-cf-bss-pricing-adr-row-chains-per-dimension-value`
+**ID**: `cpt-cf-bss-pricing-adr-price-chains-per-dimension-value`
 
 - [ ] `p1` - **ADR implementation status**
 
@@ -36,15 +36,15 @@ concurrent writes and either supported database, and must remain explainable to 
 
 ## Decision Outcome
 
-Chosen: **Use value chains with a default**. A price optionally selects one tenant dimension key. Rows form independent chains by nullable dim_value. Resolve prefers a value chain at the date, then default. Approval normalizes windows per chain; default tail stays open, while a value tail may end explicitly. A temporary override on a value without its own chain is one closed row; an existing chain gets a pair whose return copies versionAt at the end date.
+Chosen: **Use value chains with a default**. An entry optionally selects one tenant dimension key. Prices form independent chains by nullable dim_value. Resolve prefers a value chain at the date, then default. Approval normalizes windows per chain; default tail stays open, while a value tail may end explicitly. A temporary override on a value without its own chain is one closed price; an existing chain gets a pair whose return copies versionAt at the end date.
 
 ### Consequences
 
-A default chain is optional and plan coverage checks every value. Registry values with rows cannot be removed. Usage successor model/package/unit guards apply per chain. Copying a default return onto a formerly unowned value would destroy future fallback and is forbidden.
+A default chain is optional and plan coverage checks every value. Registry values with prices cannot be removed. Usage successor model/package/unit guards apply per chain. Copying a default return onto a formerly unowned value would destroy future fallback and is forbidden.
 
 ### Confirmation
 
-Approve rows for two values and prove only the selected predecessor closes. End a value tail and observe default fallback. A temporary row for a previously unowned value creates no return row. Changed usage model/package/unit is CHAIN_MODEL_CHANGED. These are implementation acceptance conditions; Part 2a replaces documents only.
+Approve prices for two values and prove only the selected predecessor closes. End a value tail and observe default fallback. A temporary price for a previously unowned value creates no return price. Changed usage model/package/unit is CHAIN_MODEL_CHANGED. These are implementation acceptance conditions; Part 2a replaces documents only.
 
 ## Pros and Cons of the Options
 

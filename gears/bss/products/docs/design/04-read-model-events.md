@@ -136,7 +136,7 @@ use snake_case, scoped SDK types and Foundation's Problem mapping.
 | --- | --- |
 | `GET /skus?q&type&category&lifecycle&limit&after` | products:read; search code/name, intersect provided filters, enforce bounded limit and exclusive code cursor ordering (codes are tenant-unique). Scope before filtering and cursor evaluation. |
 | `GET /skus/{id}` | products:read; current card with ETag and reference summary, including unconfirmed reservations. Shares slice 02's head read. |
-| `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains prices/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
+| `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | products:author plus authenticated owner check; 201 `{ reservation_id }` or 200 for the same live attempt; 409 SKU_FENCED for a new reservation through a fence. |
 | `POST /references/{id}/confirm` | products:author plus owner check; 200 also when already confirmed; 409 REFERENCE_RELEASED for a released id. |
 | `DELETE /references/{id}` | products:author plus owner check, or explicit operator authorization with `force: true` and reason. Records release, never deletes history. |
@@ -155,7 +155,7 @@ integration required before the Products phase gate.
 
 | Shape | Constraint/use |
 | --- | --- |
-| Reference row | id, tenant_id, sku_id, owner_gear, ref_kind, ref_id, state, reserved_at, confirmed_at, released_at, released_by, release_reason. Kinds are price/plan_item/sold_as; SKU link is tenant-qualified. |
+| Reference row | id, tenant_id, sku_id, owner_gear, ref_kind, ref_id, state, reserved_at, confirmed_at, released_at, released_by, release_reason. Kinds are price_book_entry/plan_item/sold_as; SKU link is tenant-qualified. |
 | Live identity index | UNIQUE `(tenant_id, owner_gear, ref_kind, ref_id) WHERE state <> 'released'`; sku_id is checked for retry identity but not added to this key. |
 | Live SKU index | `(tenant_id, sku_id, owner_gear, ref_kind) WHERE state <> 'released'`; serves fence predicates and grouped live counts. |
 | Browse index | `(tenant_id, lifecycle, type, category_id, id)` over current SKU heads; combine tenant-scoped query predicates for code/name search and optional filters. |

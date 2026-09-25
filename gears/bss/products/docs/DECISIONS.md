@@ -49,7 +49,7 @@ unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog i
 
 A SKU is the independent catalog definition; it has no Product parent or parent-child lifecycle cascade.
 See [ADR-0001](ADR/0001-cpt-cf-bss-products-adr-no-product-entity.md). A bundle is a SKU sold as a Pricing
-plan, never a price or plan item; Products stores no bundle composition.
+plan, never a price book entry or plan item; Products stores no bundle composition.
 
 **Traceability:** [PRD `fr-sku-define`](PRD.md#fr-sku-define),
 [`fr-sku-bundle`](PRD.md#fr-sku-bundle); spec §3 items 32 and 39, §4.
@@ -74,7 +74,7 @@ Product entity and brand axis.
 
 #### P-D-188 [H] Live registry references freeze SKU type
 
-A SKU with a price cannot change type (`SKU_TYPE_FROZEN`, 409). The final reservation protocol makes the
+A SKU with a price book entry cannot change type (`SKU_TYPE_FROZEN`, 409). The final reservation protocol makes the
 guard broader: any `reserved` or `confirmed` reference, including `plan_item` and `sold_as`, refuses the
 type-change fence with the same error. Products checks its registry in the transaction that sets the fence
 (P-D-189 and P-D-194); pricing does not supply a remote count. Drafts cannot be priced or reserved and change type freely without a fence.
@@ -99,7 +99,7 @@ the unit id and fence operation id, restoring the pre-fence state.
 
 Apply revalidates the reference environment. A failed retirement check is `APPLY_REFUSED` with reason
 `SKU_REFERENCED`; the apply transaction rolls back and the SKU stays `retiring` until withdrawal or
-rejection. Pricing also refuses a new price or plan item on a retiring SKU (`SKU_RETIRING`).
+rejection. Pricing also refuses a new price book entry or plan item on a retiring SKU (`SKU_RETIRING`).
 
 **Traceability:** [PRD `fr-sku-retire-fenced`](PRD.md#fr-sku-retire-fenced),
 [`fr-sku-type-frozen`](PRD.md#fr-sku-type-frozen), [`fr-sku-lifecycle`](PRD.md#fr-sku-lifecycle),
@@ -177,7 +177,7 @@ idempotency independently of client keys. PATCH requires `If-Match`; stale revis
 #### P-D-194 [H] The reference registry replaces the remote count
 
 Products owns `sku_reference`, with states `reserved | confirmed | released` and kinds
-`price | plan_item | sold_as`. Within tenant scope, uniqueness is over live rows only per
+`price_book_entry | plan_item | sold_as`. Within tenant scope, uniqueness is over live rows only per
 `(owner_gear, ref_kind, ref_id)`. A new attempt after release gets a fresh id; released rows remain and
 are never reactivated. `POST /skus/{id}/references/reserve` creates with 201 or returns 200 and the
 existing reservation for the same live logical reference. A fenced SKU refuses new reservations with

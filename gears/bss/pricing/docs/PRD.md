@@ -43,7 +43,7 @@
 
 ### 1.1 Purpose
 
-Pricing owns per-currency books, SKU prices, dated dimension chains and their approval units. Later phases add
+Pricing owns per-currency books, SKU entries, dated dimension chains and their approval units. Later phases add
 plans, promotions, migration requests and the consumer read contract. Products owns SKU identity and history.
 
 ### 1.2 Background / Problem Statement
@@ -54,9 +54,9 @@ and a reference barrier that cannot race SKU retirement (spec §1, §2 decisions
 
 ### 1.3 Goals (Business Outcomes)
 
-- Author one SKU × charge kind × period price in each currency book.
+- Author one SKU × charge kind × period entry in each currency book.
 - Publish clear, reviewable batches and temporary changes without changing unrelated chains.
-- Preserve historical billing inputs through row and SKU-version pins.
+- Preserve historical billing inputs through price and SKU-version pins.
 - Keep references safe while either gear fails and preserve review accountability.
 
 ### 1.4 Glossary
@@ -64,12 +64,12 @@ and a reference barrier that cannot race SKU retirement (spec §1, §2 decisions
 | Term | Meaning |
 | --- | --- |
 | Book | Tenant commercial schedule in one currency, optionally date-bounded. |
-| Price | SKU × charge kind × period identity within a book. |
-| Row | Immutable approved money, model, eligibility and window on one price chain. |
-| Dimension | One registered key on a price; a nullable row value selects a chain. |
-| Default chain | Rows whose dim_value is null; fallback for an uncovered value. |
+| Entry | SKU × charge kind × period identity within a book. |
+| Price | Immutable approved money, model, eligibility and window on one entry chain. |
+| Dimension | One registered key on an entry; a nullable price value selects a chain. |
+| Default chain | Prices whose dim_value is null; fallback for an uncovered value. |
 | Approval unit | Proposed content, snapshot, generation, quorum and decisions. |
-| Binding / pin | Consumer-held money row and versioned descriptors for a period. |
+| Binding / pin | Consumer-held money price and versioned descriptors for a period. |
 | Eligibility | all reprices renewals; new stops a renewal walking the chain. |
 | Reservation | Products-owned reference receipt protecting SKU lifecycle and type. |
 | Migration | Approved request to change subscription structure or pins, executed by Subscriptions. |
@@ -82,7 +82,7 @@ and a reference barrier that cannot race SKU retirement (spec §1, §2 decisions
 
 **ID**: `cpt-cf-bss-pricing-actor-finance-manager`
 
-Authors books, prices and row batches; sets effective dates and requests approval.
+Authors books, entries and price batches; sets effective dates and requests approval.
 
 #### Finance Reviewer
 
@@ -114,7 +114,7 @@ Supplies current SKUs, versions in force and the reserve/confirm/release registr
 
 **ID**: `cpt-cf-bss-pricing-actor-rating`
 
-Consumes row resolution and durable pinned rows in its own adaptation plan.
+Consumes price resolution and durable pinned prices in its own adaptation plan.
 
 #### Subscriptions
 
@@ -135,15 +135,15 @@ versioned descriptors at resolve time. Toolkit outbox and broker TypedEvent prov
 
 ### 4.1 In Scope
 
-Phase 2: dimension registry, books, prices, rows, windows, minimum fees, temporary pairs, batch publication,
-price_rows approval, reference reservations, export, settings and core events. Phase 3: plans/revisions/items,
-promotions and migration requests. Phase 4: resolve, durable row reads, quote and golden consumer contracts.
+Phase 2: dimension registry, books, entries, prices, windows, minimum fees, temporary pairs, batch publication,
+prices approval, reference reservations, export, settings and core events. Phase 3: plans/revisions/items,
+promotions and migration requests. Phase 4: resolve, durable price reads, quote and golden consumer contracts.
 
 ### 4.2 Out of Scope
 
 **Dropped, spec §3 A–C item numbers:** 1 phases/trials; 2 overlays; 4 region market axis; 5 brand axis now;
-6 cohort (eligibility stays as a row flag); 8 PlanTier; 9 net/gross market display; 10 plan minimum/cap
-(minimum moves to rows, cap is dropped); 11 derived meters/level aggregation; 13 bundle-of-plans;
+6 cohort (eligibility stays as a price flag); 8 PlanTier; 9 net/gross market display; 10 plan minimum/cap
+(minimum moves to prices, cap is dropped); 11 derived meters/level aggregation; 13 bundle-of-plans;
 14 structural schedules; 15 materiality; 18 CatalogVersion; 29 bulk import; 30 mass repricing.
 Allowance compiled to zero-price bands, prepaid grants, FixtureGate and per-row frozen descriptors are removed.
 
@@ -160,7 +160,7 @@ The fixtures crate deletion and deployment reset occur in phase 4, not in this d
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A tenant registry stores dimension keys and their allowed values, seeded with region (declared with no values until the tenant adds them). A price selects at most one key. Validate DIM_KEY_INVALID and DIM_VALUES_FEW (a key has no values yet or at least two); a row value outside the registry is DIM_VALUE_UNKNOWN and a value without a declared key is DIM_NOT_DECLARED. Registry changes need no approval, but a value referenced by any row cannot be removed.
+A tenant registry stores dimension keys and their allowed values, seeded with region (declared with no values until the tenant adds them). An entry selects at most one key. Validate DIM_KEY_INVALID and DIM_VALUES_FEW (a key has no values yet or at least two); a price value outside the registry is DIM_VALUE_UNKNOWN and a value without a declared key is DIM_NOT_DECLARED. Registry changes need no approval, but a value referenced by any price cannot be removed.
 
 #### `fr-price-book`
 
@@ -168,23 +168,23 @@ A tenant registry stores dimension keys and their allowed values, seeded with re
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A book has a tenant-unique code, name, immutable currency and optional valid_from/valid_until dates. Name and validity can be patched under If-Match. Every price and row uses the book currency; validity must describe a nonempty interval. A different price for one plan requires another book or another SKU.
+A book has a tenant-unique code, name, immutable currency and optional valid_from/valid_until dates. Name and validity can be patched under If-Match. Every entry and price uses the book currency; validity must describe a nonempty interval. A different entry for one plan requires another book or another SKU.
 
-#### `fr-price-key`
+#### `fr-entry-key`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-key`
-
-**Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
-
-Inside a book there is one price per (sku_id, charge_kind, period), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. A bundle is never priced. A price can override invoice-line text and change dimension_key only while no row carries a value. New prices require a published, unfenced SKU, with type re-read after reservation.
-
-#### `fr-price-row`
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-row`
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-entry-key`
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Draft rows carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. Usage supports per_unit, graduated, volume and package; recurring and one_time support flat and per_unit. Approved money is append-only and survives forever for pins. Draft-only PATCH/DELETE and pending ownership prevent changing reviewed content. Tier bands are half-open [from, to), including volume boundaries.
+Inside a book there is one entry per (sku_id, charge_kind, period), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation.
+
+#### `fr-price`
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price`
+
+**Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
+
+Draft prices carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. Usage supports per_unit, graduated, volume and package; recurring and one_time support flat and per_unit. Approved money is append-only and survives forever for pins. Draft-only PATCH/DELETE and pending ownership prevent changing reviewed content. Tier bands are half-open [from, to), including volume boundaries.
 
 #### `fr-chain-windows`
 
@@ -192,7 +192,7 @@ Draft rows carry model, price_json, dates, optional dim_value and min_fee, eligi
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Windows are half-open and close independently for each (price_id, dim_value), including the null default chain. Approval recomputes each predecessor end from the next start. The default tail is open; a value tail may explicitly end and resume default fallback. A default chain is optional; coverage is evaluated per value. Refuse starts in the past and chain overlap with WINDOW_START_IN_PAST and WINDOW_OVERLAP.
+Windows are half-open and close independently for each (price_book_entry_id, dim_value), including the null default chain. Approval recomputes each predecessor end from the next start. The default tail is open; a value tail may explicitly end and resume default fallback. A default chain is optional; coverage is evaluated per value. Refuse starts in the past and chain overlap with WINDOW_START_IN_PAST and WINDOW_OVERLAP.
 
 #### `fr-pair-guard`
 
@@ -208,7 +208,7 @@ On a usage chain, a successor preserves model kind, package size and the SKU uni
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-The floor belongs to a row per subscription per billing period, aggregating every value and slice rated by that row. Apply after included quantities and before promotions, prorated by the fraction of the period the row covered. There is no plan minimum or cap.
+The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price. Apply after included quantities and before promotions, prorated by the fraction of the period the price covered. There is no plan minimum or cap.
 
 #### `fr-temporary-pair`
 
@@ -216,7 +216,7 @@ The floor belongs to a row per subscription per billing period, aggregating ever
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A temporary change on an existing chain creates two rows in one approval unit. The return row copies the money versionAt would apply at temporary_until and inherits dim_value; shifting the start preserves the interval length. A value with no own chain receives one closed row ending at temporary_until and no return row, then falls back to default.
+A temporary change on an existing chain creates two prices in one approval unit. The return price copies the money versionAt would apply at temporary_until and inherits dim_value; shifting the start preserves the interval length. A value with no own chain receives one closed price ending at temporary_until and no return price, then falls back to default.
 
 #### `fr-publish-changes`
 
@@ -224,7 +224,7 @@ A temporary change on an existing chain creates two rows in one approval unit. T
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Publish changes lists all draft rows of one book with full money, window, chain, predecessor and impact information, all pre-selected. The author may choose a subset and an optional common_effective_date. One price_rows unit contains the selected rows, keeping temporary companions together. Rows and plan revisions remain independent units.
+Publish changes lists all draft prices of one book with full money, window, chain, predecessor and impact information, all pre-selected. The author may choose a subset and an optional common_effective_date. One prices unit contains the selected prices, keeping temporary companions together. Prices and plan revisions remain independent units.
 
 #### `fr-approval-units`
 
@@ -232,7 +232,7 @@ Publish changes lists all draft rows of one book with full money, window, chain,
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Use bss-approval for price_rows now and plan_revision, promotion and migration in phase 3. Copy quorum from tenant policy (kind override, otherwise *, fail-safe 1). Exclude submitter and every item author from approving. Votes name generation; GENERATION_MISMATCH is 400, DUPLICATE_VOTE and UNIT_CONTENDED are 409. Content drift commits a refreshed snapshot and generation with UNIT_STALE; environmental apply failure rolls back as APPLY_REFUSED. Reject requires a note; only the submitter withdraws. Quorum zero still records an approved unit, audit and terminal event.
+Use bss-approval for prices now and plan_revision, promotion and migration in phase 3. Copy quorum from tenant policy (kind override, otherwise *, fail-safe 1). Exclude submitter and every item author from approving. Votes name generation; GENERATION_MISMATCH is 400, DUPLICATE_VOTE and UNIT_CONTENDED are 409. Content drift commits a refreshed snapshot and generation with UNIT_STALE; environmental apply failure rolls back as APPLY_REFUSED. Reject requires a note; only the submitter withdraws. Quorum zero still records an approved unit, audit and terminal event.
 
 #### `fr-reference-protocol`
 
@@ -240,7 +240,7 @@ Use bss-approval for price_rows now and plan_revision, promotion and migration i
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Before reserve, Tx A claims the key and persists a create_price op in reserving. Reserve kind price with Products, re-read SKU type/lifecycle; Tx B commits the price with reservation_id and reference_state = confirmation_pending and op written. Confirm, then Tx C sets price confirmed, op done and answers the key (D-401). Registry outage before write is 503 REGISTRY_UNAVAILABLE; a fence refuses reserve as SKU_FENCED. A confirm timeout never releases the reservation. Retry durably; REFERENCE_RELEASED during confirm keeps the price confirmation_pending and re-reserves it through a rereserve_price op. The ticker also reconciles confirmed prices through states(): a released receipt is re-reserved if the SKU is not fenced; otherwise the price becomes lost and new rows fail PRICE_REFERENCE_LOST. Definite rollback requires durable cancellation before release; deletion commits removal and a delete_price op in releasing before release. Every op not done is retried with bounded backoff and never dropped. Phase 3 uses the same protocol for plan_item and sold_as.
+Before reserve, Tx A claims the key and persists a create_entry op in reserving. Reserve kind entry with Products, re-read SKU type/lifecycle; Tx B commits the entry with reservation_id and reference_state = confirmation_pending and op written. Confirm, then Tx C sets entry confirmed, op done and answers the key (D-401). Registry outage before write is 503 REGISTRY_UNAVAILABLE; a fence refuses reserve as SKU_FENCED. A confirm timeout never releases the reservation. Retry durably; REFERENCE_RELEASED during confirm keeps the entry confirmation_pending and re-reserves it through a rereserve_entry op. The ticker also reconciles confirmed entries through states(): a released receipt is re-reserved if the SKU is not fenced; otherwise the entry becomes lost and new prices fail ENTRY_REFERENCE_LOST. Definite rollback requires durable cancellation before release; deletion commits removal and a delete_entry op in releasing before release. Every op not done is retried with bounded backoff and never dropped. Phase 3 uses the same protocol for plan_item and sold_as.
 
 #### `fr-book-export`
 
@@ -248,7 +248,7 @@ Before reserve, Tx A claims the key and persists a create_price op in reserving.
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Provide one read-only JSON export of a tenant-scoped book with its prices and rows. Export preserves currency, chain values, windows, model inputs and row identities for operator inspection. It creates no mutation or approval unit.
+Provide one read-only JSON export of a tenant-scoped book with its entries and prices. Export preserves currency, chain values, windows, model inputs and price identities for operator inspection. It creates no mutation or approval unit.
 
 #### `fr-settings`
 
@@ -264,7 +264,7 @@ Tenant settings provide default billing timing, rounding, GL code, tax category 
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Persist PriceRowsPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceReferenceLost for a failed reference confirmation that proves release. Every terminal unit path emits ApprovalUnitDecided; submission audits without that event. Phase 3 adds PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested. No SkuChanged listener or local SKU cache is built in phase 2.
+Persist PricesPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceBookEntryReferenceLost for a failed reference confirmation that proves release. Every terminal unit path emits ApprovalUnitDecided; submission audits without that event. Phase 3 adds PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested. No SkuChanged listener or local SKU cache is built in phase 2.
 
 #### `fr-plans`
 
@@ -272,7 +272,7 @@ Persist PriceRowsPublished and ApprovalUnitDecided with state and audit in the t
 
 **Phase:** 3. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU in a new revision (ROW_SKU_DEPRECATED), and prices only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending row units. Clone produces a draft; retirement requires migration.
+A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU in a new revision (ITEM_SKU_DEPRECATED), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units. Clone produces a draft; retirement requires migration.
 
 #### `fr-promotions`
 
@@ -296,15 +296,15 @@ An approved migration_request records target plan/revision, subscription ids, ne
 
 **Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-GET /pricing/v1/resolve accepts plan_revision_id, date and optional pins and returns each item's full default/value chain matrix and active promotion (id, version), without totals. Renewal walks a pinned chain through all successors, stopping before the first new successor. New subscriptions bind the row in force. Usage binds lazily per (item, dim_value); slice at chain boundaries. Bind sku_version and descriptors using Products versions?as_of at period start, with timing, rounding and currency scale.
+GET /pricing/v1/resolve accepts plan_revision_id, date and optional pins and returns each item's full default/value chain matrix and active promotion (id, version), without totals. Renewal walks a pinned chain through all successors, stopping before the first new successor. New subscriptions bind the price in force. Usage binds lazily per (item, dim_value); slice at chain boundaries. Bind sku_version and descriptors using Products versions?as_of at period start, with timing, rounding and currency scale.
 
-#### `fr-price-row-read`
+#### `fr-price-read`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-row-read`
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-read`
 
 **Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-GET /pricing/v1/price-rows/{id} serves a pinned row forever, including closed, superseded and keep_for_bound rows. The consumer retains row id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version in its binding; later descriptor changes do not rewrite earlier pins.
+GET /pricing/v1/prices/{id} serves a pinned price forever, including closed, superseded and keep_for_bound prices. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version in its binding; later descriptor changes do not rewrite earlier pins.
 
 #### `fr-quote`
 
@@ -312,7 +312,7 @@ GET /pricing/v1/price-rows/{id} serves a pinned row forever, including closed, s
 
 **Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. Apply row selection, half-open tiers, included quantities, per-row prorated min_fee and promotions in that order. Recurring slices prorate by calendar days; usage readings use their timestamps and counters restart per slice. Quote is separate from the consumer resolve contract.
+GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. Apply price selection, half-open tiers, included quantities, per-price prorated min_fee and promotions in that order. Recurring slices prorate by calendar days; usage readings use their timestamps and counters restart per slice. Quote is separate from the consumer resolve contract.
 
 ## 6. Non-Functional Requirements
 
@@ -322,7 +322,7 @@ GET /pricing/v1/quote is the Studio preview with quantities and optional-item ch
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. Resource labels cover books, prices, approval units and config; the four route censuses carry positive, denial and precondition probes. Combined grants never bypass author separation.
+Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. Resource labels cover books, entries, prices, approval units and config; the four route censuses carry positive, denial and precondition probes. Combined grants never bypass author separation.
 
 #### `nfr-audit`
 
@@ -338,7 +338,7 @@ Append tenant, actor, subject, correlation and before/after facts with each gove
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Every repository uses SecureORM and PDP-derived AccessScope; child rows are reached through scoped parents. Uniqueness and replay identity include tenant boundaries. Cross-tenant ids never grant access through parent, child, export, approval or reservation paths.
+Every repository uses SecureORM and PDP-derived AccessScope; child prices are reached through scoped parents. Uniqueness and replay identity include tenant boundaries. Cross-tenant ids never grant access through parent, child, export, approval or reservation paths.
 
 #### `nfr-two-backends`
 
@@ -360,9 +360,9 @@ All pricing POSTs require Idempotency-Key; PATCH/PUT require If-Match. Replay us
 
 ### 7.1 Public API Surface
 
-Authoring routes mount at `/bss-pricing/v1`: books and export, prices, rows, publish-changes, approval-units,
+Authoring routes mount at `/bss-pricing/v1`: books and export, entries, prices, publish-changes, approval-units,
 approval-policy, settings and dimension-keys. Later routes add plans/revisions/checks, promotions and migrations.
-The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/price-rows/{id}` in spec §7.1;
+The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose
 code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag; mutation preconditions are required.
@@ -378,13 +378,13 @@ ProductCatalogClientV1 transport exists for compatibility until later demolition
 
 #### Publish a dated repricing batch
 
-A Finance Manager drafts three rows for October 1 and selects Publish changes. An independent reviewer compares
-predecessors, proposed rows and live impact, then approves one price_rows unit. The changed book affects every
+A Finance Manager drafts three prices for October 1 and selects Publish changes. An independent reviewer compares
+predecessors, proposed prices and live impact, then approves one prices unit. The changed book affects every
 plan using it; rejection of a separately proposed plan revision cannot undo this approved book fact (spec §8).
 
 #### Recover a confirmation outage
 
-Pricing reserves a SKU, commits a price and loses the confirm response. The price shows confirmation_pending;
+Pricing reserves a SKU, commits an entry and loses the confirm response. The entry shows confirmation_pending;
 the durable worker retries. Products refuses retirement while the live receipt exists. An operator-forced release
 is re-reserved, or surfaced as reference_state = lost while the SKU is fenced; a confirm timeout itself never
 triggers release (spec §13).
@@ -392,35 +392,35 @@ triggers release (spec §13).
 #### Bind a descriptor change
 
 A SKU GL change effective October 1 creates a Products version. A period starting October 1 binds that version;
-earlier pins retain the original GL. Pricing creates no refreeze rows or approval unit for the descriptor change.
+earlier pins retain the original GL. Pricing creates no refreeze prices or approval unit for the descriptor change.
 
 ## 9. Acceptance Criteria
 
 | Criterion | Requirement | Given / When / Then |
 | --- | --- | --- |
-| AC #1 | `cpt-cf-bss-pricing-fr-dimension-registry` | Given a registered region with priced EU rows, when an operator adds US then it is available; removing EU is refused and a row for an unknown value is DIM_VALUE_UNKNOWN. |
+| AC #1 | `cpt-cf-bss-pricing-fr-dimension-registry` | Given a registered region with priced EU prices, when an operator adds US then it is available; removing EU is refused and a price for an unknown value is DIM_VALUE_UNKNOWN. |
 | AC #2 | `cpt-cf-bss-pricing-fr-price-book` | Given a EUR book, when USD commercial terms are needed then a separate book is created; duplicate book code in the same tenant and invalid validity bounds are refused. |
-| AC #3 | `cpt-cf-bss-pricing-fr-price-key` | Given a published recurring SKU, when its monthly price is created then charge_kind is recurring; a duplicate key is refused, a bundle cannot be priced, and changing the dimension key after a valued row exists is refused. |
-| AC #4 | `cpt-cf-bss-pricing-fr-price-row` | Given a volume ladder with a boundary at 1000, when quantity is 1000 then the band starting at 1000 applies; editing approved money or attaching flat to usage is refused. |
-| AC #5 | `cpt-cf-bss-pricing-fr-chain-windows` | Given EU and default chains, when a new EU row is approved then only the EU predecessor closes; after an explicit EU tail ends the default applies, and overlapping rows on the same chain are refused. |
-| AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or SKU (unit, usage_type_ref) as of each row's start produces 400 CHAIN_MODEL_CHANGED. |
-| AC #7 | `cpt-cf-bss-pricing-fr-min-fee` | Given two regions rated at 10 each, when both bind one default row with min_fee 30 then their combined charge floors at 30; two separate rows each carrying 30 floor at 60, without applying the shared floor twice. |
-| AC #8 | `cpt-cf-bss-pricing-fr-temporary-pair` | Given an existing chain, when a temporary pair is shifted by five days then both boundaries shift five days; for a value with no chain only one closed row is created, and an invalid end before the start is refused. |
-| AC #9 | `cpt-cf-bss-pricing-fr-publish-changes` | Given three draft rows and a temporary companion, when the author deselects a normal row and supplies a common date then only the selected atomic set enters one unit; a ticked half of a temporary pair brings its partner into the unit (added_partner, D-405), and a foreign-book row is refused without partial locks. |
+| AC #3 | `cpt-cf-bss-pricing-fr-entry-key` | Given a published recurring SKU, when its monthly entry is created then charge_kind is recurring; a duplicate key is refused, a bundle cannot be priced, and changing the dimension key after a valued price exists is refused. |
+| AC #4 | `cpt-cf-bss-pricing-fr-price` | Given a volume ladder with a boundary at 1000, when quantity is 1000 then the band starting at 1000 applies; editing approved money or attaching flat to usage is refused. |
+| AC #5 | `cpt-cf-bss-pricing-fr-chain-windows` | Given EU and default chains, when a new EU price is approved then only the EU predecessor closes; after an explicit EU tail ends the default applies, and overlapping prices on the same chain are refused. |
+| AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or SKU (unit, usage_type_ref) as of each price's start produces 400 CHAIN_MODEL_CHANGED. |
+| AC #7 | `cpt-cf-bss-pricing-fr-min-fee` | Given two regions rated at 10 each, when both bind one default price with min_fee 30 then their combined charge floors at 30; two separate prices each carrying 30 floor at 60, without applying the shared floor twice. |
+| AC #8 | `cpt-cf-bss-pricing-fr-temporary-pair` | Given an existing chain, when a temporary pair is shifted by five days then both boundaries shift five days; for a value with no chain only one closed price is created, and an invalid end before the start is refused. |
+| AC #9 | `cpt-cf-bss-pricing-fr-publish-changes` | Given three draft prices and a temporary companion, when the author deselects a normal price and supplies a common date then only the selected atomic set enters one unit; a ticked half of a temporary pair brings its partner into the unit (added_partner, D-405), and a foreign-book price is refused without partial locks. |
 | AC #10 | `cpt-cf-bss-pricing-fr-approval-units` | Given a pending unit, when an independent reviewer meets quorum then it applies atomically; an item author receives SOD_VIOLATION, a stale generation cannot count, and content drift commits UNIT_STALE without publishing the old content. |
-| AC #11 | `cpt-cf-bss-pricing-fr-reference-protocol` | Given a reservation and committed price, when confirm times out then the price remains confirmation_pending and retry is durable; retire remains blocked, and only durable cancellation/deletion permits release. An op is durable before reserve and survives restart even without a price. Confirmed prices reconcile released receipts through re-reserve when unfenced, or lost state otherwise. |
-| AC #12 | `cpt-cf-bss-pricing-fr-book-export` | Given an authorized reader, when a book is exported then its scoped prices and rows appear; another tenant cannot obtain its data and export creates no writes. |
+| AC #11 | `cpt-cf-bss-pricing-fr-reference-protocol` | Given a reservation and committed entry, when confirm times out then the entry remains confirmation_pending and retry is durable; retire remains blocked, and only durable cancellation/deletion permits release. An op is durable before reserve and survives restart even without an entry. Confirmed entries reconcile released receipts through re-reserve when unfenced, or lost state otherwise. |
+| AC #12 | `cpt-cf-bss-pricing-fr-book-export` | Given an authorized reader, when a book is exported then its scoped entries and prices appear; another tenant cannot obtain its data and export creates no writes. |
 | AC #13 | `cpt-cf-bss-pricing-fr-settings` | Given arrears as the tenant default and advance on the SKU, when binding resolves timing then advance wins; stale settings If-Match and unauthorized settings changes are refused. |
-| AC #14 | `cpt-cf-bss-pricing-fr-events` | Given an approved row unit, when commit succeeds then domain and terminal events are durable; an outbox failure rolls back state and no rejected or withdrawn unit emits PriceRowsPublished. |
-| AC #15 | `cpt-cf-bss-pricing-fr-plans` | Given a revision awaiting a row unit, when checks run then ITEM_UNCOVERED names the blocking unit and submit is refused; once rows are approved checks pass, while mixed recurring frequencies and foreign-book prices still fail. |
+| AC #14 | `cpt-cf-bss-pricing-fr-events` | Given an approved price unit, when commit succeeds then domain and terminal events are durable; an outbox failure rolls back state and no rejected or withdrawn unit emits PricesPublished. |
+| AC #15 | `cpt-cf-bss-pricing-fr-plans` | Given a revision awaiting a price unit, when checks run then ITEM_UNCOVERED names the blocking unit and submit is refused; once prices are approved checks pass, while mixed recurring frequencies and foreign-book entries still fail. |
 | AC #16 | `cpt-cf-bss-pricing-fr-promotions` | Given an approved promotion, when a period starts on its end date then it receives no discount; overlapping promotions are refused, and an approved edit creates a new version without changing a prior pin. |
 | AC #17 | `cpt-cf-bss-pricing-fr-migrations` | Given subscriptions pinned to revision 3, when revision 5 publishes then the pins remain; approving an eligible migration emits a request, an unpublished target is refused, and Pricing does not claim the move completed. |
-| AC #18 | `cpt-cf-bss-pricing-fr-resolve` | Given pinned 10, an all row at 12 and a new row at 15, when renewal resolves then it binds 12 while signup binds 15; a date with no coverage is refused, and no resolve response contains quantity-derived totals. |
-| AC #19 | `cpt-cf-bss-pricing-fr-price-row-read` | Given a closed row referenced by a prior invoice, when its id is read then the original money remains available; an unknown id or another tenant's id exposes no row. |
-| AC #20 | `cpt-cf-bss-pricing-fr-quote` | Given quantities spanning a temporary boundary, when preview runs then slices use their own models and the row floor aggregates correctly before promotion; invalid quantities fail and preview does not mutate pins. |
+| AC #18 | `cpt-cf-bss-pricing-fr-resolve` | Given pinned 10, an all price at 12 and a new price at 15, when renewal resolves then it binds 12 while signup binds 15; a date with no coverage is refused, and no resolve response contains quantity-derived totals. |
+| AC #19 | `cpt-cf-bss-pricing-fr-price-read` | Given a closed price referenced by a prior invoice, when its id is read then the original money remains available; an unknown id or another tenant's id exposes no price. |
+| AC #20 | `cpt-cf-bss-pricing-fr-quote` | Given quantities spanning a temporary boundary, when preview runs then slices use their own models and the price floor aggregates correctly before promotion; invalid quantities fail and preview does not mutate pins. |
 | AC #21 | `cpt-cf-bss-pricing-nfr-authz` | Given an otherwise valid request without the required action, when the door runs then it denies without a mutation; the permitted action succeeds under the same tenant scope. |
 | AC #22 | `cpt-cf-bss-pricing-nfr-audit` | Given an approval or withdrawal, when its audit insert fails then its state change rolls back; successfully committed audit cannot be changed or deleted. |
-| AC #23 | `cpt-cf-bss-pricing-nfr-tenant-isolation` | Given two tenants with the same book code or replay key, when they act then each remains independent; using the other tenant's row or unit id cannot read or mutate it. |
+| AC #23 | `cpt-cf-bss-pricing-nfr-tenant-isolation` | Given two tenants with the same book code or replay key, when they act then each remains independent; using the other tenant's price or unit id cannot read or mutate it. |
 | AC #24 | `cpt-cf-bss-pricing-nfr-two-backends` | Given two writers approving intersecting chains on either backend, when they race then approved windows stay nonoverlapping; a losing conditional unit write is UNIT_CONTENDED rather than a second apply. |
 | AC #25 | `cpt-cf-bss-pricing-nfr-idempotency-concurrency` | Given a successful keyed POST, when the same body repeats then the saved response returns without a second object/unit; a changed payload conflicts, stale If-Match preserves state, and concurrent claims cannot both mutate. |
 

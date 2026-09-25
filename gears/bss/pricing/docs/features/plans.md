@@ -76,7 +76,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Product Manager copies published structure into a new draft revision, or starts a new plan. - `inst-plans-flow-1`
 2. [ ] - `p1` - Select one book, items, included quantities, availability and grants; reserve any new SKU item or sold-as reference before writing. - `inst-plans-flow-2`
-3. [ ] - `p1` - Read checks for the sale date and all dimension values; show ITEM_UNCOVERED and computed blocked_by row units when coverage is missing. - `inst-plans-flow-3`
+3. [ ] - `p1` - Read checks for the sale date and all dimension values; show ITEM_UNCOVERED and computed blocked_by price units when coverage is missing. - `inst-plans-flow-3`
 4. [ ] - `p1` - After checks pass, submit a separate plan_revision unit; revalidate on apply. - `inst-plans-flow-4`
 5. [ ] - `p1` - On approval publish the revision, supersede the previous published revision and advance plan.published_rev atomically; existing subscription pins remain unchanged. - `inst-plans-flow-5`
 
@@ -87,9 +87,9 @@ Holding multiple permissions never bypasses separation of duties.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-checks`
 
 1. [ ] - `p1` - Check every item SKU is allowed, non-bundle and not newly deprecated; validate receipt and charge treatment. - `inst-plans-revision-checks-1`
-2. [ ] - `p1` - Enforce one recurring frequency, unique usage meter and usage-only included_qty; reject foreign-book prices. - `inst-plans-revision-checks-2`
+2. [ ] - `p1` - Enforce one recurring frequency, unique usage meter and usage-only included_qty; reject foreign-book entries. - `inst-plans-revision-checks-2`
 3. [ ] - `p1` - For every registered dimension value, verify sale-date coverage and an open tail through its own or the default chain; check book validity. - `inst-plans-revision-checks-3`
-4. [ ] - `p1` - When uncovered, compute blocking pending row unit ids from current rows; return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
+4. [ ] - `p1` - When uncovered, compute blocking pending price unit ids from current prices; return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
 
 ### revision-apply
 
@@ -133,7 +133,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-item-rules`
 
-Validate recurring frequency, duplicate usage meters, treatment and usage-only included quantities. Reject bundle items, deprecated SKUs in new revisions and foreign-book prices using the named spec errors (spec §5).
+Validate recurring frequency, duplicate usage meters, treatment and usage-only included quantities. Reject bundle items, deprecated SKUs in new revisions and foreign-book entries using the named spec errors (spec §5).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
@@ -149,7 +149,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-blocked-by`
 
-Checks derive blocked_by from current pending rows of uncovered prices. A red draft creates no plan_revision unit and becomes eligible only after a fresh successful check (spec §6, §8).
+Checks derive blocked_by from current pending prices of uncovered entries. A red draft creates no plan_revision unit and becomes eligible only after a fresh successful check (spec §6, §8).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
@@ -165,7 +165,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-reference-protocol`
 
-New plan_item and sold_as references use reserve, SKU re-read, local receipt/work commit and confirm. Removal/cancellation precedes durable release, with the same lost-receipt handling as prices (spec §13).
+New plan_item and sold_as references use reserve, SKU re-read, local receipt/work commit and confirm. Removal/cancellation precedes durable release, with the same lost-receipt handling as entries (spec §13).
 
 Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 
@@ -173,7 +173,7 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-grants`
 
-Revision grants remain structural entitlement inputs. Included items have no price charge, and usage included_qty is applied before money floors at quote/rating time; no phase schedule or prepaid-grant system returns (spec §3 item 25, §5).
+Revision grants remain structural entitlement inputs. Included items have no entry charge, and usage included_qty is applied before money floors at quote/rating time; no phase schedule or prepaid-grant system returns (spec §3 item 25, §5).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
@@ -198,9 +198,9 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 | DoD | PRD criterion | Given / When / Then |
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-dod-plan-revision-book` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given published rev 4 in EUR book A, when rev 5 chooses book B then rev 4 keeps A; direct published PATCH is refused. |
-| `cpt-cf-bss-pricing-dod-plan-item-rules` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given otherwise valid items, when a second recurring period or foreign-book price is added then FREQUENCY_MIXED or ITEM_BOOK_FOREIGN blocks submit; the valid set passes. |
+| `cpt-cf-bss-pricing-dod-plan-item-rules` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given otherwise valid items, when a second recurring period or foreign-book entry is added then FREQUENCY_MIXED or ITEM_BOOK_FOREIGN blocks submit; the valid set passes. |
 | `cpt-cf-bss-pricing-dod-plan-coverage` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given EU coverage but uncovered US, when checks run then ITEM_UNCOVERED identifies US; complete own-value chains pass without a default, while invalid book dates fail. |
-| `cpt-cf-bss-pricing-dod-plan-blocked-by` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given pending row unit ap-12 covering a gap, when revision checks run then they name ap-12; rejection or withdrawal changes the next check rather than leaving a stored dependency. |
+| `cpt-cf-bss-pricing-dod-plan-blocked-by` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given pending price unit ap-12 covering a gap, when revision checks run then they name ap-12; rejection or withdrawal changes the next check rather than leaving a stored dependency. |
 | `cpt-cf-bss-pricing-dod-plan-revision-unit` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given an approved repricing and rejected revision, when both outcomes are read then the old revision uses the new book money and the rejected revision is not published. |
 | `cpt-cf-bss-pricing-dod-plan-reference-protocol` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a sold-as reservation and confirmation outage, when the draft commits then the reference stays protective and retryable; bundle items remain forbidden although sold-as bundles are allowed. |
 | `cpt-cf-bss-pricing-dod-plan-grants` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given a revision with an included usage item, when structure is read then grant and included quantity survive; an included quantity on recurring is refused. |

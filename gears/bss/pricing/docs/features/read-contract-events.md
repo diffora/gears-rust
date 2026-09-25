@@ -27,7 +27,7 @@
   - [Full chain resolution matrix](#full-chain-resolution-matrix)
   - [Renewal walk and eligibility](#renewal-walk-and-eligibility)
   - [Descriptors from the dated SKU version](#descriptors-from-the-dated-sku-version)
-  - [Durable pinned-row read](#durable-pinned-row-read)
+  - [Durable pinned-price read](#durable-pinned-price-read)
   - [Period boundary semantics](#period-boundary-semantics)
   - [Studio quote calculation](#studio-quote-calculation)
   - [Typed transactional domain events](#typed-transactional-domain-events)
@@ -48,11 +48,11 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 
 ### 1.2 Purpose
 
-Deliver reproducible resolution matrices, pinned-row reads and Studio quote, plus typed transactional events and consumer goldens.
+Deliver reproducible resolution matrices, pinned-price reads and Studio quote, plus typed transactional events and consumer goldens.
 
-Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-row-read`, `cpt-cf-bss-pricing-fr-quote`, `cpt-cf-bss-pricing-fr-events`.
+Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`, `cpt-cf-bss-pricing-fr-events`.
 
-Architecture: `cpt-cf-bss-pricing-component-read-contract`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-component-rows`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`.
+Architecture: `cpt-cf-bss-pricing-component-read-contract`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`.
 
 ### 1.3 Actors
 
@@ -75,9 +75,9 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Rating or Subscriptions sends the revision id, period start and optional current pins. - `inst-read-contract-events-flow-1`
 2. [ ] - `p1` - Load immutable revision structure and the full chain matrix, scoped to the tenant. - `inst-read-contract-events-flow-2`
-3. [ ] - `p1` - For existing pins walk eligible all successors, stopping before the first new row; for signup select in-force rows. - `inst-read-contract-events-flow-3`
+3. [ ] - `p1` - For existing pins walk eligible all successors, stopping before the first new price; for signup select in-force prices. - `inst-read-contract-events-flow-3`
 4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit and return the whole dimension matrix plus promotion version. - `inst-read-contract-events-flow-4`
-5. [ ] - `p1` - Consumers lazily bind usage per value and retain the complete inputs; later replay reads the pinned row and stored binding without choosing new descriptors. - `inst-read-contract-events-flow-5`
+5. [ ] - `p1` - Consumers lazily bind usage per value and retain the complete inputs; later replay reads the pinned price and stored binding without choosing new descriptors. - `inst-read-contract-events-flow-5`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -85,25 +85,25 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk`
 
-1. [ ] - `p1` - Validate the supplied pin belongs to the tenant, revision item and price chain. - `inst-read-contract-events-renewal-walk-1`
-2. [ ] - `p1` - From the pinned row walk successors with eligibility all, bounded by the relevant date; stop before the first new successor. - `inst-read-contract-events-renewal-walk-2`
-3. [ ] - `p1` - Without a pin choose the in-force row per value, falling back to default where the value has no active row. - `inst-read-contract-events-renewal-walk-3`
-4. [ ] - `p1` - Return uncovered rather than inventing a row when neither chain covers; preserve historical keep_for_bound rows. - `inst-read-contract-events-renewal-walk-4`
+1. [ ] - `p1` - Validate the supplied pin belongs to the tenant, revision item and entry chain. - `inst-read-contract-events-renewal-walk-1`
+2. [ ] - `p1` - From the pinned price walk successors with eligibility all, bounded by the relevant date; stop before the first new successor. - `inst-read-contract-events-renewal-walk-2`
+3. [ ] - `p1` - Without a pin choose the in-force price per value, falling back to default where the value has no active price. - `inst-read-contract-events-renewal-walk-3`
+4. [ ] - `p1` - Return uncovered rather than inventing a price when neither chain covers; preserve historical keep_for_bound prices. - `inst-read-contract-events-renewal-walk-4`
 
 ### period-slices-and-quote
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-and-quote`
 
-1. [ ] - `p1` - Split the period at every row boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
+1. [ ] - `p1` - Split the period at every price boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
 2. [ ] - `p1` - Prorate recurring slices by calendar days; rate usage by reading timestamp with tier counters per slice. - `inst-read-contract-events-period-slices-and-quote-2`
-3. [ ] - `p1` - Deduct included quantities, aggregate per row/subscription/period and apply the coverage-prorated min_fee once per row. - `inst-read-contract-events-period-slices-and-quote-3`
+3. [ ] - `p1` - Deduct included quantities, aggregate per price/subscription/period and apply the coverage-prorated min_fee once per price. - `inst-read-contract-events-period-slices-and-quote-3`
 4. [ ] - `p1` - Apply period-start promotion after floors, then the bound rounding/currency policy; quote returns totals while resolve never does. - `inst-read-contract-events-period-slices-and-quote-4`
 
 ### typed-events
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-typed-events`
 
-1. [ ] - `p1` - Implement PriceRowsPublished, ApprovalUnitDecided and PriceReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
+1. [ ] - `p1` - Implement PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
 2. [ ] - `p1` - Add PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real. - `inst-read-contract-events-typed-events-2`
 3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
 4. [ ] - `p1` - Deliver from the toolkit dispatcher after commit; test restart/retry and prevent domain publish on reject/withdraw/refresh. - `inst-read-contract-events-typed-events-4`
@@ -114,7 +114,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-read-contract-events`
 
-A consumer binding is created for a period and stays immutable for replay. New all rows affect later renewal binding; a new row blocks forward renewal walking until explicit migration. Closed/superseded/keep_for_bound rows remain readable. Event states belong to toolkit delivery; Pricing does not maintain a second outbound state machine.
+A consumer binding is created for a period and stays immutable for replay. New all prices affect later renewal binding; a new price blocks forward renewal walking until explicit migration. Closed/superseded/keep_for_bound prices remain readable. Event states belong to toolkit delivery; Pricing does not maintain a second outbound state machine.
 
 ## 5. Definitions of Done
 
@@ -132,7 +132,7 @@ Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-renewal-all-new`
 
-Existing pins advance through all successors and stop before the first new row. Signup chooses the in-force row and keep_for_bound preserves the predecessor needed by renewals (spec §7.1, §12).
+Existing pins advance through all successors and stop before the first new price. Signup chooses the in-force price and keep_for_bound preserves the predecessor needed by renewals (spec §7.1, §12).
 
 Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
@@ -144,19 +144,19 @@ Binding reads versions?as_of at period start, not the latest mutable SKU. Preser
 
 Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
-### Durable pinned-row read
+### Durable pinned-price read
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-row-read-forever`
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-read-forever`
 
-The public row-id read serves original approved money after closure, supersession or keep_for_bound. Tenant scope remains enforced and no retention deletes a pinned fact (spec §7.1).
+The public price-id read serves original approved money after closure, supersession or keep_for_bound. Tenant scope remains enforced and no retention deletes a pinned fact (spec §7.1).
 
-Requirement: `cpt-cf-bss-pricing-fr-price-row-read`; PRD AC #19.
+Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 
 ### Period boundary semantics
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-period-slices`
 
-Recurring slices prorate by calendar days and usage follows timestamp-selected rows, with counters per slice. Temporary boundaries inside a period produce multiple slices and row-level floor aggregation (spec §7.1).
+Recurring slices prorate by calendar days and usage follows timestamp-selected prices, with counters per slice. Temporary boundaries inside a period produce multiple slices and price-level floor aggregation (spec §7.1).
 
 Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
@@ -164,7 +164,7 @@ Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quote-totals`
 
-Quote adds quantities and optional-item choices to selection, included quantities, row floors and promotions. It is read-only and separate from resolve, with exact tier-edge and rounding goldens (spec §7.1).
+Quote adds quantities and optional-item choices to selection, included quantities, price floors and promotions. It is read-only and separate from resolve, with exact tier-edge and rounding goldens (spec §7.1).
 
 Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
@@ -180,21 +180,21 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-consumer-golden-contracts`
 
-Golden responses cover resolve matrix, renewal eligibility, descriptor dates, promotion versions and forever-readable rows. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
+Golden responses cover resolve matrix, renewal eligibility, descriptor dates, promotion versions and forever-readable prices. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
 
-Requirement: `cpt-cf-bss-pricing-fr-price-row-read`; PRD AC #19.
+Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 
 ## 6. Acceptance Criteria
 
 | DoD | PRD criterion | Given / When / Then |
 | --- | --- | --- |
-| `cpt-cf-bss-pricing-dod-resolve-matrix` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given one item with EU/default rows, when resolve runs then both inputs are returned; an uncovered chain is explicit and no quantity total appears. |
+| `cpt-cf-bss-pricing-dod-resolve-matrix` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given one item with EU/default prices, when resolve runs then both inputs are returned; an uncovered chain is explicit and no quantity total appears. |
 | `cpt-cf-bss-pricing-dod-renewal-all-new` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given pinned 10 → all 12 → new 15, when renewal resolves then it chooses 12 and signup 15; a forged foreign-chain pin is refused. |
 | `cpt-cf-bss-pricing-dod-binding-sku-version` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given an October 1 GL change already applied to the current SKU, when September resolves then it binds the earlier version; October binds the new one and prior pins do not change. |
-| `cpt-cf-bss-pricing-dod-price-row-read-forever` | AC #19; `cpt-cf-bss-pricing-fr-price-row-read` | Given a closed row id from an old invoice, when read then its original money is returned; unknown/foreign ids reveal no row. |
-| `cpt-cf-bss-pricing-dod-period-slices` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Given a temporary row ending October 11 inside October 5–November 5, when preview runs then two slices appear; their common-row floors are not charged twice. |
+| `cpt-cf-bss-pricing-dod-price-read-forever` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given a closed price id from an old invoice, when read then its original money is returned; unknown/foreign ids reveal no price. |
+| `cpt-cf-bss-pricing-dod-period-slices` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Given a temporary price ending October 11 inside October 5–November 5, when preview runs then two slices appear; their common-price floors are not charged twice. |
 | `cpt-cf-bss-pricing-dod-quote-totals` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Given valid quantities and a promotion, when quote runs then totals apply included quantities before prorated floor and promotion afterward; invalid quantities fail without changing pins. |
 | `cpt-cf-bss-pricing-dod-events-typed-outbox` | AC #14; `cpt-cf-bss-pricing-fr-events` | Given approve/reject/withdraw/quorum-zero outcomes, when committed then each has its terminal event and only successful apply has its domain publication; rollback has neither. |
-| `cpt-cf-bss-pricing-dod-consumer-golden-contracts` | AC #19; `cpt-cf-bss-pricing-fr-price-row-read` | Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate. |
+| `cpt-cf-bss-pricing-dod-consumer-golden-contracts` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.

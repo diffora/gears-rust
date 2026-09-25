@@ -43,8 +43,8 @@ The previous registry kept Product → SKU: name uniqueness on the Product, a pa
 Option 2. A SKU is an independent tenant-scoped commercial definition with its own type, category and lifecycle.
 `sku.name` and `sku.code` are each unique per tenant. Category is a flat list with `is_default`, with one
 category per SKU. A `bundle` SKU has no composition in Products; it is never priced and cannot be a plan item.
-A Pricing plan is sold as it through a `sold_as` reference, protected by the same reservation barrier as prices
-and plan items (spec §2 decision 17).
+A Pricing plan is sold as it through a `sold_as` reference, protected by the same reservation barrier as price
+book entries and plan items (spec §2 decision 17).
 
 ### Consequences
 

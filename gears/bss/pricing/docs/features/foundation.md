@@ -52,7 +52,7 @@ Provide the fresh schema, scoped repositories, conditional approval Store, canon
 
 Requirements: `cpt-cf-bss-pricing-nfr-authz`, `cpt-cf-bss-pricing-nfr-audit`, `cpt-cf-bss-pricing-nfr-tenant-isolation`, `cpt-cf-bss-pricing-nfr-two-backends`, `cpt-cf-bss-pricing-nfr-idempotency-concurrency`.
 
-Architecture: `cpt-cf-bss-pricing-component-books`, `cpt-cf-bss-pricing-component-rows`, `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`.
+Architecture: `cpt-cf-bss-pricing-component-books`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`.
 
 ### 1.3 Actors
 
@@ -86,9 +86,9 @@ Holding multiple permissions never bypasses separation of duties.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-foundation-conditional-store`
 
 1. [ ] - `p1` - Load tenant-scoped unit and item versions. - `inst-foundation-conditional-store-1`
-2. [ ] - `p1` - Acquire pending ownership only where pending_unit_id is null and the observed version matches; zero affected rows is ROW_LOCKED_PENDING. - `inst-foundation-conditional-store-2`
+2. [ ] - `p1` - Acquire pending ownership only where pending_unit_id is null and the observed version matches; zero affected rows is PRICE_LOCKED_PENDING. - `inst-foundation-conditional-store-2`
 3. [ ] - `p1` - Bump unit version conditionally; a lost race returns UNIT_CONTENDED without a second decision or apply. - `inst-foundation-conditional-store-3`
-4. [ ] - `p1` - Clear locks only for the owning unit, following unit, price-id, row-id, revision, promotion order. - `inst-foundation-conditional-store-4`
+4. [ ] - `p1` - Clear locks only for the owning unit, following unit, entry-id, price-id, revision, promotion order. - `inst-foundation-conditional-store-4`
 
 ### replay-and-audit
 
@@ -105,7 +105,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Install toolkit outbox migrations under bss_pricing_outbox in DatabaseCapability. - `inst-foundation-toolkit-outbox-1`
 2. [ ] - `p1` - Encode domain payloads through TypedEvent using the Products envelope sink pattern. - `inst-foundation-toolkit-outbox-2`
-3. [ ] - `p1` - Append through the caller transaction and dispatch only committed rows. - `inst-foundation-toolkit-outbox-3`
+3. [ ] - `p1` - Append through the caller transaction and dispatch only committed prices. - `inst-foundation-toolkit-outbox-3`
 4. [ ] - `p1` - Wire lifecycle-managed delivery and retry; failure leaves a durable record rather than an unrelayed pricing_outbox row. - `inst-foundation-toolkit-outbox-4`
 
 ## 4. States (CDSL)
@@ -156,7 +156,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-idempotency-concurrency`; PRD AC #25.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-if-match-version`
 
-PATCH/PUT require the version in If-Match and return the updated ETag. The conditional write preserves state on stale tokens and is independent of row version_no or approval generation (spec §3 item 23).
+PATCH/PUT require the version in If-Match and return the updated ETag. The conditional write preserves state on stale tokens and is independent of price version_no or approval generation (spec §3 item 23).
 
 Requirement: `cpt-cf-bss-pricing-nfr-idempotency-concurrency`; PRD AC #25.
 
@@ -188,7 +188,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-audit`; PRD AC #22.
 
 | DoD | PRD criterion | Given / When / Then |
 | --- | --- | --- |
-| `cpt-cf-bss-pricing-dod-tables-two-backends` | AC #24; `cpt-cf-bss-pricing-nfr-two-backends` | Given empty SQLite and Postgres databases, when the chain runs twice then both schemas remain correct; duplicate book/price/approved-start keys are refused. |
+| `cpt-cf-bss-pricing-dod-tables-two-backends` | AC #24; `cpt-cf-bss-pricing-nfr-two-backends` | Given empty SQLite and Postgres databases, when the chain runs twice then both schemas remain correct; duplicate book/entry/approved-start keys are refused. |
 | `cpt-cf-bss-pricing-dod-scoped-repositories` | AC #23; `cpt-cf-bss-pricing-nfr-tenant-isolation` | Given two tenants and a foreign child id, when a scoped repository reads or writes then no other tenant data is exposed or changed. |
 | `cpt-cf-bss-pricing-dod-audit-append-only` | AC #22; `cpt-cf-bss-pricing-nfr-audit` | Given a successful act, when audit is read then actor/subject/correlation are present; an injected audit failure rolls back the act and direct deletion fails. |
 | `cpt-cf-bss-pricing-dod-idempotency-key-store` | AC #25; `cpt-cf-bss-pricing-nfr-idempotency-concurrency` | Given a retained key, when the same request repeats then its response replays without mutation; another payload conflicts and simultaneous claims produce one act. |

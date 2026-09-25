@@ -21,7 +21,7 @@
 
 ## Context and Problem Statement
 
-Materiality-dependent governance and separate publication workflows make reviewers learn multiple protocols. Book rows and plan revisions remain independently meaningful facts even when operators schedule them for the same day.
+Materiality-dependent governance and separate publication workflows make reviewers learn multiple protocols. Book prices and plan revisions remain independently meaningful facts even when operators schedule them for the same day.
 
 ## Decision Drivers
 
@@ -36,11 +36,11 @@ concurrent writes and either supported database, and must remain explainable to 
 
 ## Decision Outcome
 
-Chosen: **Share one unit engine with separate subjects**. Use bss-approval with gear-owned tables and ApprovalSubject implementations. Pricing kinds are price_rows, plan_revision, promotion and migration; phase 2 implements price_rows. A unit copies policy quorum, stores proposed business content and fingerprint, and counts votes for one generation. Drift commits a refresh and UNIT_STALE; conditional unit version detects contention. Submitter and every item author are excluded from approval.
+Chosen: **Share one unit engine with separate subjects**. Use bss-approval with gear-owned tables and ApprovalSubject implementations. Pricing kinds are prices, plan_revision, promotion and migration; phase 2 implements prices. A unit copies policy quorum, stores proposed business content and fingerprint, and counts votes for one generation. Drift commits a refresh and UNIT_STALE; conditional unit version detects contention. Submitter and every item author are excluded from approval.
 
 ### Consequences
 
-Quorum zero still records a terminal unit, audit and event. Rows and revisions have separate queues and outcomes; blocked_by is computed rather than stored. Units use conditional writes, not FOR UPDATE. Client-key replay is a separate 24-hour store; the obsolete idempotency column in spec §6 is superseded by §2.2.
+Quorum zero still records a terminal unit, audit and event. Prices and revisions have separate queues and outcomes; blocked_by is computed rather than stored. Units use conditional writes, not FOR UPDATE. Client-key replay is a separate 24-hour store; the obsolete idempotency column in spec §6 is superseded by §2.2.
 
 ### Confirmation
 
@@ -48,7 +48,7 @@ Exercise quorum 0/1/2, item-author SoD, duplicate votes, generation mismatch, co
 
 ## Pros and Cons of the Options
 
-Materiality gates retain a second approval policy and inconsistent paths. Shared subjects centralize review semantics while each gear owns its state transaction. A composite unit obscures independent book facts and couples a rejected plan revision to already useful prices.
+Materiality gates retain a second approval policy and inconsistent paths. Shared subjects centralize review semantics while each gear owns its state transaction. A composite unit obscures independent book facts and couples a rejected plan revision to already useful entries.
 
 ## More Information
 

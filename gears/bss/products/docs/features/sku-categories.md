@@ -131,7 +131,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-sku-categories-bundle-unpriced`
 
 1. [ ] - `p1` - Persist bundle identity and descriptors without component members or usage metering - `inst-sku-bundle-content`
-2. [ ] - `p1` - Expose bundle type to Pricing so it cannot create a price or plan item for it; a plan may be sold_as that SKU - `inst-sku-bundle-pricing`
+2. [ ] - `p1` - Expose bundle type to Pricing so it cannot create a price book entry or plan item for it; a plan may be sold_as that SKU - `inst-sku-bundle-pricing`
 3. [ ] - `p1` - Apply the same reference barrier to sold_as reservations; bundle type does not bypass retire/type fencing - `inst-sku-bundle-reference`
 
 ### category-retire-refused
@@ -180,7 +180,7 @@ Create persists an independent draft with tenant-scoped code and name uniqueness
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/domain/approvals/change.rs`.
 
-A draft is never priced and cannot have a reservation, so its type changes freely through draft PATCH without a fence, subject to content validation and pending ownership. Only published/deprecated type changes use the local reference barrier and sku_change: any reserved or confirmed price, plan_item or sold_as reference refuses the fence with SKU_TYPE_FROZEN. Fence and submission share one transaction, with apply revalidation (spec decision 17; DESIGN §3.1).
+A draft is never priced and cannot have a reservation, so its type changes freely through draft PATCH without a fence, subject to content validation and pending ownership. Only published/deprecated type changes use the local reference barrier and sku_change: any reserved or confirmed price book entry, plan_item or sold_as reference refuses the fence with SKU_TYPE_FROZEN. Fence and submission share one transaction, with apply revalidation (spec decision 17; DESIGN §3.1).
 
 ### Usage metering resolves through the retained port
 
@@ -222,7 +222,7 @@ Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in
 
 Category retirement refuses any referencing SKU with CATEGORY_IN_USE, regardless of that SKU's lifecycle. Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
 
-**Owed by pricing (phase 2).** Pricing must refuse bundle prices and plan items and allow a bundle only as a plan’s sold_as identity.
+**Owed by pricing (phase 2).** Pricing must refuse bundle price book entries and plan items and allow a bundle only as a plan’s sold_as identity.
 
 ## 6. Acceptance Criteria
 
@@ -234,7 +234,7 @@ obligations here and integration checks when its phase 2 caller path exists.
 | DoD | PRD trace | Given / When / Then |
 | --- | --- | --- |
 | `cpt-cf-bss-products-dod-sku-create-unique` | AC #1, #4, #19, #27; `cpt-cf-bss-products-fr-sku-define`, `cpt-cf-bss-products-fr-concurrency-idempotency` | Given a tenant category and unused SKU identity, when an author creates and patches a draft with current If-Match, then the draft and new ETag persist; concurrent code/name reuse fails with SKU_CODE_TAKEN/SKU_NAME_TAKEN, stale PATCH fails with STALE_REVISION, and a locked edit fails with ROW_LOCKED_PENDING. |
-| `cpt-cf-bss-products-dod-sku-type-frozen` | AC #2, #23; `cpt-cf-bss-products-fr-sku-type-frozen` | Given an unreferenced draft, when its type changes without a fence, then target-type validation and the update succeed; given a published/deprecated SKU with a reserved or confirmed price, plan_item or sold_as reference, a type-change request fails with SKU_TYPE_FROZEN without changing type or acquiring a fence. |
+| `cpt-cf-bss-products-dod-sku-type-frozen` | AC #2, #23; `cpt-cf-bss-products-fr-sku-type-frozen` | Given an unreferenced draft, when its type changes without a fence, then target-type validation and the update succeed; given a published/deprecated SKU with a reserved or confirmed price book entry, plan_item or sold_as reference, a type-change request fails with SKU_TYPE_FROZEN without changing type or acquiring a fence. |
 | `cpt-cf-bss-products-dod-usage-type-resolves` | AC #5; `cpt-cf-bss-products-fr-sku-metering` | Given a usage draft and a resolving configured catalog, when complete metering is submitted and applied, then publication succeeds; missing fields give USAGE_NEEDS_METER, an unresolved ref gives USAGE_TYPE_UNRESOLVED, and catalog outage at submit/apply gives 503 without publication, while a draft-save non-answer remains saveable. |
 | `cpt-cf-bss-products-dod-bundle-unpriced` | AC #6, #23; `cpt-cf-bss-products-fr-sku-bundle` | Given a bundle SKU, when it is read for a sold_as relationship, then its bundle identity and descriptors are available without composition; assigning usage metering fails with BUNDLE_HAS_NO_METER, and Pricing contract checks refuse pricing or plan-item use rather than treating it as another charge kind. |
 | `cpt-cf-bss-products-dod-versions-as-of` | AC #8, #9; `cpt-cf-bss-products-fr-sku-versions` | Given publication September 24 and an applied change effective October 1, when as_of is September 30, October 1 or September 23, then return the old snapshot, new snapshot or NO_VERSION_IN_FORCE respectively; September 30 proposed after the October version fails with VERSION_ORDER, while another October 1 version wins by its higher number. |

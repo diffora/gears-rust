@@ -55,7 +55,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-promotions-migrations-promotion-wind
 1. [ ] - `p1` - Validate percentage, target plans, apply_to and a nonempty half-open date interval. - `inst-promotions-migrations-promotion-window-1`
 2. [ ] - `p1` - Reject overlap against approved competing promotions on any shared plan under transactional revalidation. - `inst-promotions-migrations-promotion-window-2`
 3. [ ] - `p1` - On approval preserve the old approved version and increment the new version; bindings retain id/version. - `inst-promotions-migrations-promotion-window-3`
-4. [ ] - `p1` - Apply discount only to periods starting inside the interval and after row floors; end-today/cancel do not rewrite earlier pins. - `inst-promotions-migrations-promotion-window-4`
+4. [ ] - `p1` - Apply discount only to periods starting inside the interval and after price floors; end-today/cancel do not rewrite earlier pins. - `inst-promotions-migrations-promotion-window-4`
 
 ### migration-request
 

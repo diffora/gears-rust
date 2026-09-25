@@ -25,7 +25,7 @@ The former charge-line and market-price keys mix commercial identity with curren
 
 ## Decision Drivers
 
-`cpt-cf-bss-pricing-fr-price-book`, `cpt-cf-bss-pricing-fr-price-key`, `cpt-cf-bss-pricing-fr-book-export`. The approved PriceBook model is the content authority. The decision must hold under tenant isolation,
+`cpt-cf-bss-pricing-fr-price-book`, `cpt-cf-bss-pricing-fr-entry-key`, `cpt-cf-bss-pricing-fr-book-export`. The approved PriceBook model is the content authority. The decision must hold under tenant isolation,
 concurrent writes and either supported database, and must remain explainable to operators and reviewers.
 
 ## Considered Options
@@ -36,19 +36,19 @@ concurrent writes and either supported database, and must remain explainable to 
 
 ## Decision Outcome
 
-Chosen: **Use per-currency books**. One currency per book; one price per SKU × charge kind × period in that book. Region becomes an optional dimension value, and variant disappears. A plan revision binds one book; plan-specific money requires another book or SKU.
+Chosen: **Use per-currency books**. One currency per book; one entry per SKU × charge kind × period in that book. Region becomes an optional dimension value, and variant disappears. A plan revision binds one book; plan-specific money requires another book or SKU.
 
 ### Consequences
 
-Currency and validity are inspectable at the book boundary. The price key has no plan or variant. A plan-specific exception costs a new book or SKU; that duplication is intentional.
+Currency and validity are inspectable at the book boundary. The entry key has no plan or variant. A plan-specific exception costs a new book or SKU; that duplication is intentional.
 
 ### Confirmation
 
-Tests enforce tenant book-code uniqueness, normalized nullable-period price-key uniqueness and revision book membership. Export exposes only the chosen book currency. A foreign-book item returns ITEM_BOOK_FOREIGN in phase 3. These are implementation acceptance conditions; Part 2a replaces documents only.
+Tests enforce tenant book-code uniqueness, normalized nullable-period entry-key uniqueness and revision book membership. Export exposes only the chosen book currency. A foreign-book item returns ITEM_BOOK_FOREIGN in phase 3. These are implementation acceptance conditions; Part 2a replaces documents only.
 
 ## Pros and Cons of the Options
 
-The legacy split preserves compatibility but retains redundant axes. Per-currency books simplify operator reasoning at the cost of duplicate books for plan-specific money. A multi-currency book hides the commercial boundary and retains currency branching in each row.
+The legacy split preserves compatibility but retains redundant axes. Per-currency books simplify operator reasoning at the cost of duplicate books for plan-specific money. A multi-currency book hides the commercial boundary and retains currency branching in each price.
 
 ## More Information
 

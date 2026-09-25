@@ -1,6 +1,6 @@
 //! SKU-derived charge kinds, permitted models and invoice-line placeholders.
 //!
-//! @cpt-dod:cpt-cf-bss-pricing-dod-row-models:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-models:p1
 use super::RuleError;
 use bss_products_sdk::models::SkuType;
 

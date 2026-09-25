@@ -1,7 +1,7 @@
 //! Draft prices: a single price, a temporary pair or one explicitly closed price; draft-only edits.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-temporary-pair:p1
-//! @cpt-dod:cpt-cf-bss-pricing-dod-row-pending-guard:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-pending-guard:p1
 use super::{
     dto::{PricingPriceCreate, PricingPriceCreated, PricingPriceDto, PricingPricePatch},
     support::{self, DoorError},
