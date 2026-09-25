@@ -257,6 +257,60 @@ pub struct PricingPriceBookEntryPatch {
     pub invoice_line_override: Option<Option<String>>,
 }
 
+/// `POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A null entry
+/// is an included item with no charge.
+#[toolkit_macros::api_dto(request)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPlanItemCreate {
+    pub sku_id: Uuid,
+    pub price_book_entry_id: Option<Uuid>,
+    /// `paid`, `optional` or `included`.
+    pub treatment: String,
+    /// Canonical decimal text, for an included usage item.
+    pub included_qty: Option<String>,
+    pub qty_min: Option<i32>,
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanItemDto {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub revision_id: Uuid,
+    pub sku_id: Uuid,
+    pub price_book_entry_id: Option<Uuid>,
+    pub treatment: String,
+    pub included_qty: Option<String>,
+    pub qty_min: Option<i32>,
+    /// None until a reserve answers: a copied item attaches after its write (D-413).
+    pub reservation_id: Option<Uuid>,
+    pub reference_state: String,
+    pub version: i64,
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: time::OffsetDateTime,
+}
+impl From<entity::plan_item::Model> for PricingPlanItemDto {
+    fn from(m: entity::plan_item::Model) -> Self {
+        Self {
+            id: m.id,
+            tenant_id: m.tenant_id,
+            revision_id: m.revision_id,
+            sku_id: m.sku_id,
+            price_book_entry_id: m.price_book_entry_id,
+            treatment: m.treatment,
+            included_qty: m.included_qty,
+            qty_min: m.qty_min,
+            reservation_id: m.reservation_id,
+            reference_state: m.reference_state,
+            version: m.version,
+            created_by: m.created_by,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {
     pub op_id: Uuid,

@@ -43,11 +43,13 @@ async fn entry_in_tenant(
     }
     Ok(())
 }
-/// Insert an item into an unlocked draft revision of the tenant. The revision is re-read here,
-/// in the caller's transaction, so a racing submit or delete orders against this write.
+/// Insert an item into an unlocked draft revision of the tenant. The revision and the item's
+/// entry are re-read here, in the caller's transaction, so a racing submit, book change or
+/// delete orders against this write (D-407): the entry must be an entry of the revision's book
+/// for the item's own SKU.
 /// # Errors
-/// `REVISION_NOT_FOUND`, `REVISION_NOT_DRAFT`, `ENTRY_NOT_FOUND` or `ITEM_SKU_TAKEN`; database
-/// failures keep their type.
+/// `REVISION_NOT_FOUND`, `REVISION_NOT_DRAFT`, `ENTRY_NOT_FOUND`, `ITEM_BOOK_FOREIGN`,
+/// `ITEM_ENTRY_SKU_MISMATCH` or `ITEM_SKU_TAKEN`; database failures keep their type.
 pub async fn insert(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -63,7 +65,23 @@ pub async fn insert(
             code: "REVISION_NOT_DRAFT",
         });
     }
-    entry_in_tenant(runner, scope, m.tenant_id, m.price_book_entry_id).await?;
+    if let Some(id) = m.price_book_entry_id {
+        let entry = super::price_book_entry_repo::find(runner, scope, m.tenant_id, id)
+            .await?
+            .ok_or(RepoError::Conflict {
+                code: "ENTRY_NOT_FOUND",
+            })?;
+        if entry.book_id != revision.book_id {
+            return Err(RepoError::Conflict {
+                code: "ITEM_BOOK_FOREIGN",
+            });
+        }
+        if entry.sku_id != m.sku_id {
+            return Err(RepoError::Conflict {
+                code: "ITEM_ENTRY_SKU_MISMATCH",
+            });
+        }
+    }
     let active = e::ActiveModel {
         id: Set(m.id),
         tenant_id: Set(m.tenant_id),
@@ -213,6 +231,34 @@ pub async fn set_reference(
         .await
         .map_err(|e| driver_failure("update plan item reference".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
+}
+/// Bounded identity-ordered scan for the trusted reconciliation worker: confirmed items, whose
+/// receipts it checks, and lost items, which it re-reserves once their SKU admits a reservation
+/// again. Items of every revision state are scanned: a revision's references outlive it (D-414).
+/// # Errors
+/// Returns typed scoped storage failures.
+pub async fn reconcile_batch(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    cursor: Option<Uuid>,
+    limit: u64,
+) -> Result<Vec<e::Model>, RepoError> {
+    let mut filter = Condition::all().add(e::Column::ReferenceState.is_in([
+        ReferenceState::Confirmed.as_str(),
+        ReferenceState::Lost.as_str(),
+    ]));
+    if let Some(cursor) = cursor {
+        filter = filter.add(e::Column::Id.gt(cursor));
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .order_by(e::Column::Id, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("confirmed plan item batch".into(), e))
 }
 /// Delete an item of an unlocked draft revision at its observed version; the caller writes its
 /// delete op in the same transaction.

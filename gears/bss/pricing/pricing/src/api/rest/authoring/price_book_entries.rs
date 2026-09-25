@@ -9,9 +9,13 @@ use super::{
     support::{self, DoorError},
 };
 use crate::{
-    domain::{price::PriceState, price_book_entry, reference_op::OpKind},
+    domain::{
+        price::PriceState,
+        price_book_entry,
+        reference_op::{OpKind, RefKind},
+    },
     infra::{
-        reference_work::{self, Caller, Receipt, WallClock, Work},
+        reference_work::{self, Caller, Receipt, Ref, Target, WallClock, Work},
         storage::{
             entity,
             repo::{
@@ -52,7 +56,7 @@ enum Begun {
     Op(Uuid),
 }
 /// What a held Idempotency-Key answers: `None` when this call holds it (or may take it).
-fn settled(
+pub(super) fn settled(
     claim: idem::IdempotencyClaim,
     digest: &[u8],
 ) -> Result<Option<Receipt>, CanonicalError> {
@@ -78,7 +82,7 @@ fn settled(
 }
 /// The key's stored answer, read without claiming it: a replay or an in-flight duplicate is
 /// answered from the store alone, before any Products call.
-async fn stored(
+pub(super) async fn stored(
     state: &AuthoringState,
     tenant: Uuid,
     endpoint: &str,
@@ -195,9 +199,16 @@ pub(super) async fn create(
             if book_repo::find(tx, &scope, tenant, book).await?.is_none() {
                 return Err(support::missing().into());
             }
+            let reference = Ref {
+                kind: RefKind::Entry,
+                id: Uuid::now_v7(),
+                sku_id: input.sku_id,
+            };
             let work = Work {
-                book_id: book,
-                input,
+                target: Target::PriceBookEntry {
+                    book_id: book,
+                    input,
+                },
                 correlation,
                 refusal: None,
                 receipt: None,
@@ -205,7 +216,7 @@ pub(super) async fn create(
             };
             let op = reference_work::new_op(
                 &ctx,
-                Uuid::now_v7(),
+                reference,
                 &work,
                 OpKind::Create,
                 None,
@@ -317,13 +328,20 @@ pub(super) async fn delete(
                 .map(|price| (price.id, price.version))
                 .collect();
             price_repo::delete_unapproved(tx, &scope, tenant, &prices).await?;
+            let reference = Ref {
+                kind: RefKind::Entry,
+                id,
+                sku_id: m.sku_id,
+            };
             let work = Work {
-                book_id: m.book_id,
-                input: PricingPriceBookEntryCreate {
-                    sku_id: m.sku_id,
-                    period: m.period,
-                    dimension_key: m.dimension_key,
-                    invoice_line_override: m.invoice_line_override,
+                target: Target::PriceBookEntry {
+                    book_id: m.book_id,
+                    input: PricingPriceBookEntryCreate {
+                        sku_id: m.sku_id,
+                        period: m.period,
+                        dimension_key: m.dimension_key,
+                        invoice_line_override: m.invoice_line_override,
+                    },
                 },
                 correlation,
                 refusal: None,
@@ -332,7 +350,7 @@ pub(super) async fn delete(
             };
             let op = reference_work::new_op(
                 &ctx,
-                id,
+                reference,
                 &work,
                 OpKind::Delete,
                 Some(m.reservation_id),

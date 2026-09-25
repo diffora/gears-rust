@@ -396,18 +396,24 @@ async fn postgres_pricing_plan_item_keys_checks_and_reference() {
         ),
         (
             "signed quantity",
+            // No entry: an entry of the base item's SKU would refuse a new SKU on its own
+            // (ITEM_ENTRY_SKU_MISMATCH), before the CHECK under test is reached.
             plan_item::Model {
                 id: Uuid::new_v4(),
                 sku_id: Uuid::new_v4(),
+                price_book_entry_id: None,
                 included_qty: Some("-1".into()),
                 ..item.clone()
             },
         ),
         (
             "negative minimum",
+            // No entry: an entry of the base item's SKU would refuse a new SKU on its own
+            // (ITEM_ENTRY_SKU_MISMATCH), before the CHECK under test is reached.
             plan_item::Model {
                 id: Uuid::new_v4(),
                 sku_id: Uuid::new_v4(),
+                price_book_entry_id: None,
                 qty_min: Some(-1),
                 ..item.clone()
             },

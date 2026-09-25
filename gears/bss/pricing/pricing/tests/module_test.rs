@@ -117,7 +117,8 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         ("preconditions::if_match(", 1, 7),
         ("preconditions::idempotency_key(", 1, 8),
         ("Query<", 1, 0),
-        ("StatusCode::", 2, 57),
+        // + 1: plan_items::delete answers 204 below its run 3.3 door.
+        ("StatusCode::", 2, 58),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");

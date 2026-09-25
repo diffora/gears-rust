@@ -8,7 +8,7 @@ use bss_pricing::infra::{
         APPROVAL_UNIT_SUBJECT_TYPE, ApprovalUnitDecided, PRICE_BOOK_SUBJECT_TYPE, PricesPublished,
         PublishedPrice, SOURCE, TOPIC,
     },
-    reference_events::PriceBookEntryReferenceLost,
+    reference_events::{PlanReferenceLost, PriceBookEntryReferenceLost},
     storage::{
         entity::price,
         repo::{price_book_entry_repo, price_repo},
@@ -550,4 +550,42 @@ async fn an_apply_rolled_back_after_its_events_were_written_leaves_none() {
     assert_eq!(status, 200, "{b}");
     assert_eq!(g.of(PUBLISHED).await.len(), 1);
     assert_eq!(g.of(DECIDED).await.len(), 1);
+}
+
+/// A lost plan-item reference (D-407) is announced about the item, naming its plan and revision.
+#[test]
+fn plan_reference_lost_is_a_typed_event_about_the_item() {
+    let (tenant, plan, revision, item, sku, actor) = (
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let lost = PlanReferenceLost {
+        tenant_id: tenant,
+        plan_id: plan,
+        revision_id: revision,
+        item_id: item,
+        sku_id: sku,
+        reservation_id: None,
+        actor_ref: actor,
+    };
+    assert_eq!(
+        PlanReferenceLost::TYPE_ID,
+        "gts.cf.core.events.event.v1~cf.bss.pricing.plan_reference_lost.v1~"
+    );
+    assert_eq!(
+        PlanReferenceLost::SUBJECT_TYPE,
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.plan_item.v1"
+    );
+    assert_eq!(PlanReferenceLost::SOURCE, SOURCE);
+    assert_eq!(lost.subject(), item.to_string());
+    assert_eq!(lost.tenant_id(), Some(tenant));
+    assert_eq!(
+        serde_json::to_value(&lost).unwrap(),
+        json!({"tenantId":tenant,"planId":plan,"revisionId":revision,"itemId":item,
+            "skuId":sku,"reservationId":null,"actorRef":actor})
+    );
 }

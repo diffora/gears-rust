@@ -8,7 +8,7 @@ use bss_pricing::{
     api::rest::authoring::AuthoringState,
     infra::{
         events::{self, APPROVAL_UNIT_SUBJECT_TYPE, PRICE_BOOK_SUBJECT_TYPE, TOPIC},
-        reference_events::PriceBookEntryReferenceLost,
+        reference_events::{PlanReferenceLost, PriceBookEntryReferenceLost},
     },
 };
 use entry_support::{Script, app_for, request, test_db, user_of};
@@ -79,6 +79,7 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     let object = json!({"type":"object"});
     for (type_id, subject) in [
         (PriceBookEntryReferenceLost::TYPE_ID, ENTRY_SUBJECT_TYPE),
+        (PlanReferenceLost::TYPE_ID, PlanReferenceLost::SUBJECT_TYPE),
         (PUBLISHED, PRICE_BOOK_SUBJECT_TYPE),
         (DECIDED, APPROVAL_UNIT_SUBJECT_TYPE),
     ] {

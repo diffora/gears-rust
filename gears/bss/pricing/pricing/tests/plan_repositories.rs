@@ -756,6 +756,117 @@ async fn item_parents_are_tenant_scoped_and_the_revision_must_be_an_unlocked_dra
     );
 }
 
+/// An item's entry must be an entry of its revision's book for the item's own SKU (D-407): the
+/// insert re-reads both in the caller's transaction, so every writer is held to it.
+#[tokio::test]
+async fn item_entry_must_be_of_the_revisions_book_and_the_items_sku() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let other = book_repo::insert(&conn, &w.scope, book(w.tenant))
+        .await
+        .unwrap();
+    let foreign = price_book_entry_repo::insert(&conn, &w.scope, entry(&other, w.entry.sku_id))
+        .await
+        .unwrap();
+    conflict(
+        plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &foreign)).await,
+        "ITEM_BOOK_FOREIGN",
+    );
+    let mut mismatched = item(&w.revision, &w.entry);
+    mismatched.sku_id = Uuid::new_v4();
+    conflict(
+        plan_item_repo::insert(&conn, &w.scope, mismatched).await,
+        "ITEM_ENTRY_SKU_MISMATCH",
+    );
+    assert!(
+        plan_item_repo::for_revision(&conn, &w.scope, w.tenant, w.revision.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry))
+        .await
+        .unwrap();
+}
+/// The insert honours a revision's lock on its own, not only its pending state (D-407): a
+/// revision naming a pending unit refuses an item even while its state still reads draft. No
+/// repository writes that shape (the lock writes both); it is set here to isolate the lock half.
+#[tokio::test]
+async fn item_insert_honours_the_lock_without_the_pending_state() {
+    use sea_orm::{ColumnTrait, EntityTrait, sea_query::Expr};
+    use toolkit_db::secure::{SecureEntityExt, SecureUpdateExt};
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let u = unit(&w.db, &w.scope, w.tenant, "plan_revision").await;
+    plan_revision::Entity::update_many()
+        .secure()
+        .scope_with(&w.scope)
+        .col_expr(plan_revision::Column::PendingUnitId, Expr::value(Some(u)))
+        .filter(sea_orm::Condition::all().add(plan_revision::Column::Id.eq(w.revision.id)))
+        .exec(&conn)
+        .await
+        .unwrap();
+    let locked = plan_revision::Entity::find_by_id(w.revision.id)
+        .secure()
+        .scope_with(&w.scope)
+        .one(&conn)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (locked.state.as_str(), locked.pending_unit_id),
+        ("draft", Some(u))
+    );
+    conflict(
+        plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry)).await,
+        "REVISION_NOT_DRAFT",
+    );
+}
+/// The reconciliation scan: confirmed and lost items of every revision state, in id order after
+/// the cursor, bounded, across tenants for the trusted ticker.
+#[tokio::test]
+async fn item_reconcile_batch_is_ordered_bounded_and_skips_unsettled_references() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let mut ids = Vec::new();
+    for state in [
+        "confirmed",
+        "lost",
+        "unreserved",
+        "confirmation_pending",
+        "confirmed",
+    ] {
+        let mut m = item(&w.revision, &w.entry);
+        m.id = Uuid::now_v7();
+        m.sku_id = Uuid::new_v4();
+        m.price_book_entry_id = None;
+        m.treatment = "included".into();
+        m.reference_state = state.into();
+        m.reservation_id = (state != "unreserved").then(Uuid::new_v4);
+        plan_item_repo::insert(&conn, &w.scope, m.clone())
+            .await
+            .unwrap();
+        if matches!(state, "confirmed" | "lost") {
+            ids.push(m.id);
+        }
+    }
+    let all = AccessScope::allow_all();
+    let first = plan_item_repo::reconcile_batch(&conn, &all, None, 2)
+        .await
+        .unwrap();
+    assert_eq!(first.iter().map(|m| m.id).collect::<Vec<_>>(), ids[..2]);
+    let rest = plan_item_repo::reconcile_batch(&conn, &all, Some(first[1].id), 10)
+        .await
+        .unwrap();
+    assert_eq!(rest.iter().map(|m| m.id).collect::<Vec<_>>(), ids[2..]);
+    assert!(
+        plan_item_repo::reconcile_batch(&conn, &AccessScope::for_tenant(Uuid::new_v4()), None, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a tenant scope sees only its own"
+    );
+}
 #[tokio::test]
 async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
     let w = world().await;

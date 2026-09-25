@@ -546,7 +546,11 @@ An op names its reference as (ref_kind, ref_id), a price book entry or a plan it
 m20260926_000006 in place for this (D-412).
 The ticker resumes every op not done with bounded backoff and never drops one. It reconciles confirmed entries
 through states(): released receipts are re-reserved when the SKU is not fenced, otherwise the entry becomes
-lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryReferenceLost (D-401).
+lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryReferenceLost (D-401). Plan items
+use the same machine, with their own cursor: an item's write re-reads its revision (an unlocked draft) and its
+entry (of the revision's book, for the item's SKU), so SSI orders it against a submit, a book change or a
+delete (D-407); an attach of a copied item admits a deprecated SKU and a refusal makes the item lost (D-413);
+a lost item emits PlanReferenceLost and is re-reserved once its SKU admits a reservation again.
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
 
 Phase 3 adds m20260926_000010 to m20260926_000012 (D-412). Every partial unique index is its own CREATE UNIQUE

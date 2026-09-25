@@ -270,6 +270,8 @@ pub type Metering = (time::Date, Option<String>, Option<String>);
 #[derive(Default)]
 pub struct Script {
     pub reserve_calls: AtomicUsize,
+    /// The reference kind of every reserve call, in call order.
+    pub reserve_kinds: std::sync::Mutex<Vec<ReferenceKind>>,
     pub confirm_calls: AtomicUsize,
     pub releases: AtomicUsize,
     pub mode: AtomicUsize,
@@ -317,10 +319,11 @@ impl ReferenceRegistryV1 for Script {
         ctx: &SecurityContext,
         _: Uuid,
         _: Uuid,
-        _: ReferenceKind,
+        kind: ReferenceKind,
         ref_id: Uuid,
     ) -> Result<ReservationReceipt, CanonicalError> {
         self.actors.lock().await.push(ctx.subject_id());
+        self.reserve_kinds.lock().unwrap().push(kind);
         self.reserve_calls.fetch_add(1, Ordering::SeqCst);
         let mode = self.mode.load(Ordering::SeqCst);
         if mode == 1 {
@@ -554,4 +557,353 @@ pub fn price(p: &price_book_entry::Model) -> price::Model {
         created_at: at(9),
         updated_at: at(9),
     }
+}
+
+// ------------------------------------------------------------------ the two reference kinds
+
+use bss_pricing::api::rest::authoring::{AuthoringState, dto, plan_items};
+use bss_pricing::infra::storage::{
+    entity::{plan, plan_item, plan_revision},
+    repo::{plan_item_repo, plan_repo, plan_revision_repo, price_book_entry_repo},
+};
+use toolkit_db::secure::AccessScope;
+/// The two kinds of reference the durable machine drives (D-407).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Entry,
+    Item,
+}
+/// Every kind, for the suites parameterised over them.
+pub const KINDS: [Kind; 2] = [Kind::Entry, Kind::Item];
+/// Who calls: the router, the state beneath it and the principal.
+pub struct Caller<'a> {
+    pub app: &'a Router,
+    pub state: &'a Arc<AuthoringState>,
+    pub ctx: &'a SecurityContext,
+}
+impl Fixture {
+    #[must_use]
+    pub fn caller(&self) -> Caller<'_> {
+        Caller {
+            app: &self.app,
+            state: &self.state,
+            ctx: &self.ctx,
+        }
+    }
+    /// A book and, for items, a plan with a draft revision 1 on it.
+    pub async fn target(&self, kind: Kind) -> Target {
+        Target::new(kind, &self.caller()).await
+    }
+}
+/// Where one kind's references are made: an entry through the entries REST door of a book, a
+/// plan item through the plan-item op-level API on a draft revision of a plan on that book (its
+/// REST door is run 3.3's).
+#[derive(Debug, Clone)]
+pub struct Target {
+    pub kind: Kind,
+    pub book: Uuid,
+    /// The plan and its draft revision; nil for entries.
+    pub plan: Uuid,
+    pub revision: Uuid,
+}
+/// Read a door's answer as `(status, body, etag)`, the shape [`request`] returns.
+pub async fn answer(
+    result: Result<axum::response::Response, CanonicalError>,
+) -> (u16, Value, String) {
+    use axum::response::IntoResponse;
+    let response = result.unwrap_or_else(IntoResponse::into_response);
+    let status = response.status().as_u16();
+    let tag = response
+        .headers()
+        .get("etag")
+        .map_or("", |v| v.to_str().unwrap())
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(json!(null)),
+        tag,
+    )
+}
+/// A plan and its draft revision 1 on `book`, written through the repositories.
+pub async fn plan_on(
+    state: &AuthoringState,
+    ctx: &SecurityContext,
+    book: Uuid,
+) -> (plan::Model, plan_revision::Model) {
+    let tenant = ctx.subject_tenant_id();
+    let scope = AccessScope::for_tenant(tenant);
+    let conn = state.db.conn().unwrap();
+    let now = time::OffsetDateTime::now_utc();
+    let p = plan_repo::insert(
+        &conn,
+        &scope,
+        plan::Model {
+            id: Uuid::now_v7(),
+            tenant_id: tenant,
+            code: format!("plan-{}", Uuid::new_v4()),
+            name: "Pro".into(),
+            published_rev: None,
+            version: 1,
+            created_by: ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap();
+    let r = plan_revision_repo::insert(
+        &conn,
+        &scope,
+        plan_revision::Model {
+            id: Uuid::now_v7(),
+            tenant_id: tenant,
+            plan_id: p.id,
+            rev_no: 1,
+            book_id: book,
+            state: "draft".into(),
+            available_from: None,
+            pending_unit_id: None,
+            approved_by_unit_id: None,
+            published_at: None,
+            version: 1,
+            created_by: ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap();
+    (p, r)
+}
+impl Target {
+    pub async fn new(kind: Kind, c: &Caller<'_>) -> Self {
+        let (s, book, _) = request(
+            c.app,
+            c.ctx,
+            "POST",
+            "/price-books",
+            json!({"code":format!("book-{}", Uuid::new_v4()),"name":"Standard","currency":"EUR"}),
+            None,
+            Some("book"),
+        )
+        .await;
+        assert_eq!(s, 201, "{book}");
+        let book: Uuid = book["id"].as_str().unwrap().parse().unwrap();
+        let (plan, revision) = if kind == Kind::Item {
+            let (p, r) = plan_on(c.state, c.ctx, book).await;
+            (p.id, r.id)
+        } else {
+            (Uuid::nil(), Uuid::nil())
+        };
+        Self {
+            kind,
+            book,
+            plan,
+            revision,
+        }
+    }
+    /// The endpoint a create's Idempotency-Key belongs to, below `/bss-pricing/v1`.
+    #[must_use]
+    pub fn endpoint(&self) -> String {
+        match self.kind {
+            Kind::Entry => format!("/price-books/{}/entries", self.book),
+            Kind::Item => format!("/plan-revisions/{}/items", self.revision),
+        }
+    }
+    /// The op's `ref_kind`.
+    #[must_use]
+    pub const fn ref_kind(&self) -> &'static str {
+        match self.kind {
+            Kind::Entry => "price_book_entry",
+            Kind::Item => "plan_item",
+        }
+    }
+    /// The type of the kind's lost-reference event, and the field naming the reference in it.
+    #[must_use]
+    pub const fn lost_event(&self) -> (&'static str, &'static str) {
+        match self.kind {
+            Kind::Entry => (
+                "gts.cf.core.events.event.v1~cf.bss.pricing.price_book_entry_reference_lost.v1~",
+                "priceBookEntryId",
+            ),
+            Kind::Item => (
+                "gts.cf.core.events.event.v1~cf.bss.pricing.plan_reference_lost.v1~",
+                "itemId",
+            ),
+        }
+    }
+    /// A create body for `sku`: an entry, or an included item, which names no entry and so
+    /// makes no second reservation.
+    #[must_use]
+    pub fn input_for(&self, sku: Uuid) -> Value {
+        match self.kind {
+            Kind::Entry => json!({"sku_id":sku}),
+            Kind::Item => json!({"sku_id":sku,"treatment":"included"}),
+        }
+    }
+    /// A create body for a fresh SKU.
+    #[must_use]
+    pub fn input(&self) -> Value {
+        self.input_for(Uuid::new_v4())
+    }
+    /// Create through the kind's front door and read its answer.
+    pub async fn create(&self, c: &Caller<'_>, input: Value, key: &str) -> (u16, Value, String) {
+        match self.kind {
+            Kind::Entry => {
+                request(
+                    c.app,
+                    c.ctx,
+                    "POST",
+                    &self.endpoint(),
+                    input,
+                    None,
+                    Some(key),
+                )
+                .await
+            }
+            Kind::Item => {
+                let digest = bss_pricing::api::rest::preconditions::request_digest(&input).unwrap();
+                let body: dto::PricingPlanItemCreate = serde_json::from_value(input).unwrap();
+                answer(
+                    plan_items::create(
+                        c.state.clone(),
+                        AccessScope::for_tenant(c.ctx.subject_tenant_id()),
+                        c.ctx.clone(),
+                        self.revision,
+                        Uuid::now_v7(),
+                        key.to_owned(),
+                        digest,
+                        body,
+                    )
+                    .await,
+                )
+                .await
+            }
+        }
+    }
+    /// Delete one reference through the kind's front door.
+    pub async fn delete(&self, c: &Caller<'_>, id: &Value) -> (u16, Value, String) {
+        let id: Uuid = id.as_str().unwrap().parse().unwrap();
+        match self.kind {
+            Kind::Entry => {
+                request(
+                    c.app,
+                    c.ctx,
+                    "DELETE",
+                    &format!("/price-book-entries/{id}"),
+                    json!({}),
+                    None,
+                    None,
+                )
+                .await
+            }
+            Kind::Item => {
+                answer(
+                    plan_items::delete(
+                        c.state.clone(),
+                        AccessScope::for_tenant(c.ctx.subject_tenant_id()),
+                        c.ctx.clone(),
+                        Uuid::now_v7(),
+                        id,
+                    )
+                    .await,
+                )
+                .await
+            }
+        }
+    }
+    /// The stored reference `(reference_state, reservation_id)`, `None` once the row is gone.
+    pub async fn stored(&self, state: &AuthoringState, id: Uuid) -> Option<(String, Option<Uuid>)> {
+        let conn = state.db.conn().unwrap();
+        let scope = AccessScope::allow_all();
+        match self.kind {
+            Kind::Entry => {
+                let tenant = entry_tenant(&conn, id).await?;
+                price_book_entry_repo::find(&conn, &scope, tenant, id)
+                    .await
+                    .unwrap()
+                    .map(|e| (e.reference_state, Some(e.reservation_id)))
+            }
+            Kind::Item => {
+                let tenant = item_tenant(&conn, id).await?;
+                plan_item_repo::find(&conn, &scope, tenant, id)
+                    .await
+                    .unwrap()
+                    .map(|i| (i.reference_state, i.reservation_id))
+            }
+        }
+    }
+    /// The reference as its kind reads it: the entry door's body, or the item's DTO.
+    pub async fn read(&self, c: &Caller<'_>, id: &Value) -> Value {
+        let uuid: Uuid = id.as_str().unwrap().parse().unwrap();
+        match self.kind {
+            Kind::Entry => {
+                let (status, body, _) = request(
+                    c.app,
+                    c.ctx,
+                    "GET",
+                    &format!("/price-book-entries/{uuid}"),
+                    json!({}),
+                    None,
+                    None,
+                )
+                .await;
+                assert_eq!(status, 200, "{body}");
+                body
+            }
+            Kind::Item => {
+                let item = plan_item_repo::find(
+                    &c.state.db.conn().unwrap(),
+                    &AccessScope::for_tenant(c.ctx.subject_tenant_id()),
+                    c.ctx.subject_tenant_id(),
+                    uuid,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                serde_json::to_value(dto::PricingPlanItemDto::from(item)).unwrap()
+            }
+        }
+    }
+}
+async fn entry_tenant(conn: &toolkit_db::DbConn<'_>, id: Uuid) -> Option<Uuid> {
+    use sea_orm::EntityTrait;
+    use toolkit_db::secure::SecureEntityExt;
+    price_book_entry::Entity::find_by_id(id)
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .one(conn)
+        .await
+        .unwrap()
+        .map(|m| m.tenant_id)
+}
+async fn item_tenant(conn: &toolkit_db::DbConn<'_>, id: Uuid) -> Option<Uuid> {
+    use sea_orm::EntityTrait;
+    use toolkit_db::secure::SecureEntityExt;
+    plan_item::Entity::find_by_id(id)
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .one(conn)
+        .await
+        .unwrap()
+        .map(|m| m.tenant_id)
+}
+/// Every envelope of `type_id` in the outbox of the database at `dsn` (either dialect's raw
+/// connection answers the same `payload` column).
+pub async fn outbox_events(dsn: &str, type_id: &str) -> Vec<Value> {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let raw = Database::connect(dsn).await.unwrap();
+    raw.query_all_raw(Statement::from_string(
+        DbBackend::Sqlite,
+        "SELECT CAST(payload AS TEXT) AS payload FROM bss_pricing_outbox_body",
+    ))
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| serde_json::from_str(&r.try_get::<String>("", "payload").unwrap()).unwrap())
+    .filter(|e: &Value| e["type"] == type_id)
+    .collect()
 }

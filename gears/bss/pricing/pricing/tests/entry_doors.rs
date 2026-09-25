@@ -1,7 +1,7 @@
 //! Price book entry authoring protocol branches through the production router.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod entry_support;
-use entry_support::{Fixture, Script};
+use entry_support::{Fixture, KINDS, Kind, Script, Target};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -93,41 +93,51 @@ async fn refusal_branches_answer_key_and_release_only_after_reservation() {
         assert_eq!(Script::count(&script.releases), releases);
     }
 }
+/// A fresh fixture for one reference kind, its target and a create body.
+async fn setup_kind(mode: usize, kind: Kind) -> (Fixture, Arc<Script>, Target, Value) {
+    let script = Arc::new(Script::default());
+    script.set(mode);
+    let f = Fixture::new(script.clone()).await;
+    let t = f.target(kind).await;
+    let input = t.input();
+    (f, script, t, input)
+}
 #[tokio::test]
 async fn a_503_before_the_write_frees_the_key_and_a_confirm_timeout_keeps_it() {
-    // Mode 5: the reserve answer is lost. Nothing was written, so the same key runs afresh.
-    let (f, script, path, input) = setup(5).await;
-    let result = f
-        .call("POST", &path, input.clone(), None, Some("one"))
-        .await;
-    assert_eq!(result.0, 503, "{result:?}");
-    let retry = f.call("POST", &path, input, None, Some("one")).await;
-    assert_eq!(retry.0, 201, "{retry:?}");
-    assert_eq!(Script::count(&script.reserve_calls), 2);
-    // Mode 6: the entry is written and its confirm timed out; the key stays in flight.
-    let (f, script, path, input) = setup(6).await;
-    let result = f
-        .call("POST", &path, input.clone(), None, Some("one"))
-        .await;
-    assert_eq!(result.0, 503, "{result:?}");
-    let retry = f.call("POST", &path, input, None, Some("one")).await;
-    assert_eq!(retry.0, 409);
-    assert!(
-        retry.1.to_string().contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
-        "{retry:?}"
-    );
-    assert_eq!(Script::count(&script.releases), 0);
+    for kind in KINDS {
+        // Mode 5: the reserve answer is lost. Nothing was written, so the same key runs afresh.
+        let (f, script, t, input) = setup_kind(5, kind).await;
+        let c = f.caller();
+        let result = t.create(&c, input.clone(), "one").await;
+        assert_eq!(result.0, 503, "{kind:?}: {result:?}");
+        let retry = t.create(&c, input, "one").await;
+        assert_eq!(retry.0, 201, "{kind:?}: {retry:?}");
+        assert_eq!(Script::count(&script.reserve_calls), 2);
+        // Mode 6: the reference is written and its confirm timed out; the key stays in flight.
+        let (f, script, t, input) = setup_kind(6, kind).await;
+        let c = f.caller();
+        let result = t.create(&c, input.clone(), "one").await;
+        assert_eq!(result.0, 503, "{kind:?}: {result:?}");
+        let retry = t.create(&c, input, "one").await;
+        assert_eq!(retry.0, 409);
+        assert!(
+            retry.1.to_string().contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
+            "{kind:?}: {retry:?}"
+        );
+        assert_eq!(Script::count(&script.releases), 0);
+    }
 }
 #[tokio::test]
 async fn released_on_confirm_is_answered_pending_never_lost() {
-    let (f, script, path, input) = setup(7).await;
-    let first = f
-        .call("POST", &path, input.clone(), None, Some("one"))
-        .await;
-    assert_eq!(first.0, 201, "{first:?}");
-    assert_eq!(first.1["reference_state"], "confirmation_pending");
-    assert_eq!(f.call("POST", &path, input, None, Some("one")).await, first);
-    assert_eq!(Script::count(&script.releases), 0);
+    for kind in KINDS {
+        let (f, script, t, input) = setup_kind(7, kind).await;
+        let c = f.caller();
+        let first = t.create(&c, input.clone(), "one").await;
+        assert_eq!(first.0, 201, "{kind:?}: {first:?}");
+        assert_eq!(first.1["reference_state"], "confirmation_pending");
+        assert_eq!(t.create(&c, input, "one").await, first);
+        assert_eq!(Script::count(&script.releases), 0);
+    }
 }
 #[tokio::test]
 async fn patch_template_and_dimension_preconditions() {
@@ -248,42 +258,45 @@ async fn translated_dimension_key_change_rejected_and_approved_delete_refused() 
 
 #[tokio::test]
 async fn products_contention_and_rate_limits_are_unavailability_not_refusals() {
-    // A reserve answered 409 UNIT_CONTENDED or 429: nothing was written, the key is free.
-    for mode in [17, 19] {
-        let (f, script, path, input) = setup(mode).await;
-        let first = f
-            .call("POST", &path, input.clone(), None, Some("one"))
-            .await;
-        assert_eq!(first.0, 503, "{mode}: {first:?}");
+    for kind in KINDS {
+        // A reserve answered 409 UNIT_CONTENDED or 429: nothing was written, the key is free.
+        for mode in [17, 19] {
+            let (f, script, t, input) = setup_kind(mode, kind).await;
+            let c = f.caller();
+            let first = t.create(&c, input.clone(), "one").await;
+            assert_eq!(first.0, 503, "{kind:?} {mode}: {first:?}");
+            script.set(0);
+            let retry = t.create(&c, input, "one").await;
+            assert_eq!(retry.0, 201, "{kind:?} {mode}: {retry:?}");
+        }
+        // The SKU re-read after a successful reserve answered 409 CONTENDED. The door answers
+        // 503, and a 503 writes nothing (spec section 13) even with a receipt in hand: the create is
+        // cancelled, its key is free again, and the cancellation releases the receipt it holds.
+        let (f, script, t, input) = setup_kind(18, kind).await;
+        let c = f.caller();
+        let first = t.create(&c, input.clone(), "one").await;
+        assert_eq!(first.0, 503, "{kind:?}: {first:?}");
         script.set(0);
-        let retry = f.call("POST", &path, input, None, Some("one")).await;
-        assert_eq!(retry.0, 201, "{mode}: {retry:?}");
+        let retry = t.create(&c, input, "one").await;
+        assert_eq!(
+            retry.0, 201,
+            "{kind:?}: a same-key retry runs afresh: {retry:?}"
+        );
+        bss_pricing::infra::reference_ticker::Ticker::new(
+            f.state.clone(),
+            Arc::new(LaterClock),
+            10,
+            100,
+        )
+        .tick()
+        .await
+        .unwrap();
+        assert_eq!(
+            Script::count(&script.releases),
+            1,
+            "{kind:?}: the abandoned create's reservation is released"
+        );
     }
-    // The SKU re-read after a successful reserve answered 409 CONTENDED. The door answers 503,
-    // and a 503 writes nothing (spec §13) even with a receipt in hand: the create is cancelled,
-    // its key is free again, and the cancellation releases the receipt it already holds.
-    let (f, script, path, input) = setup(18).await;
-    let first = f
-        .call("POST", &path, input.clone(), None, Some("one"))
-        .await;
-    assert_eq!(first.0, 503, "{first:?}");
-    script.set(0);
-    let retry = f.call("POST", &path, input, None, Some("one")).await;
-    assert_eq!(retry.0, 201, "a same-key retry runs afresh: {retry:?}");
-    bss_pricing::infra::reference_ticker::Ticker::new(
-        f.state.clone(),
-        Arc::new(LaterClock),
-        10,
-        100,
-    )
-    .tick()
-    .await
-    .unwrap();
-    assert_eq!(
-        Script::count(&script.releases),
-        1,
-        "the abandoned create's reservation is released"
-    );
 }
 /// A clock past the in-flight grace, so the ticker may take over abandoned work.
 struct LaterClock;

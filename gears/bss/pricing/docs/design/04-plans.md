@@ -98,7 +98,7 @@ cross-gear read for transactional local ownership/version guards. Approved money
 
 ## 7. Events & Alarms
 
-PlanRevisionPublished shares the successful apply transaction and terminal ApprovalUnitDecided. PlanReferenceLost reports a lost item reference. PlanRetired represents an actual completed retirement, not merely an approved migration request; it is deferred with retirement (D-410). SubscriptionMigrationRequested belongs to slice 06. Existing pins remain readable after either event.
+PlanRevisionPublished shares the successful apply transaction and terminal ApprovalUnitDecided. PlanReferenceLost reports a lost item reference: { plan_id, revision_id, item_id, sku_id, reservation_id (null when a copied item never attached), actor_ref }, about the item and naming its tenant_id. PlanRetired represents an actual completed retirement, not merely an approved migration request; it is deferred with retirement (D-410). SubscriptionMigrationRequested belongs to slice 06. Existing pins remain readable after either event.
 
 Audit and outbox inserts use the same mutation transaction; retry is lifecycle-managed and observes shutdown.
 

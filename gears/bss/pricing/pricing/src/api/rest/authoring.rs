@@ -3,6 +3,7 @@ mod approvals;
 mod books;
 mod configuration;
 pub mod dto;
+pub mod plan_items;
 mod price_book_entries;
 pub(crate) mod prices;
 pub(crate) mod support;
