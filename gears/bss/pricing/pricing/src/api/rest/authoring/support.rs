@@ -155,6 +155,69 @@ pub enum DoorError {
     Repo(#[from] RepoError),
     #[error(transparent)]
     Api(#[from] CanonicalError),
+    /// A vote named another generation; the answer carries the current one.
+    #[error("the vote names another generation; the unit is at {current}")]
+    Generation { current: i32 },
+}
+/// Refusals of the shared approval engine and the `price_rows` subject, with their codes.
+///
+/// A pure-rule refusal is 400 with its code (D-403); a conflict is 409; separation of duties
+/// and the submitter-only withdraw are 403. Database errors stay typed for the retry loop.
+#[must_use]
+pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
+    use bss_approval::ApprovalError as A;
+    match error {
+        A::Db(source) => DoorError::Repo(RepoError::Driver {
+            context: "approval".into(),
+            source,
+        }),
+        A::InvalidSubmit { code, field, .. } => match code {
+            "ROW_NOT_DRAFT" | "PRICE_REFERENCE_LOST" => conflict(code).into(),
+            "REGISTRY_UNAVAILABLE" => unavailable().into(),
+            "ROW_NOT_FOUND" => missing_what("price_row").into(),
+            _ => invalid(&field, code).into(),
+        },
+        A::ApplyRefused { code, detail } => {
+            if code == "REGISTRY_UNAVAILABLE" {
+                unavailable().into()
+            } else {
+                PricingResource::aborted(format!("{code}: {detail}"))
+                    .with_reason("APPLY_REFUSED")
+                    .create()
+                    .into()
+            }
+        }
+        A::SodViolation | A::NotSubmitter => PricingResource::permission_denied()
+            .with_reason(error.code())
+            .create()
+            .into(),
+        A::NoteRequired => invalid("note", "NOTE_REQUIRED").into(),
+        A::Empty => invalid("row_ids", "NO_DRAFT_ROWS").into(),
+        A::GenerationMismatch { current, .. } => DoorError::Generation { current },
+        A::AlreadyDecided | A::DuplicateVote | A::Contended | A::Locked { .. } => {
+            conflict(error.code()).into()
+        }
+        A::Store(detail) if detail.starts_with("DUPLICATE") => conflict("DUPLICATE_VOTE").into(),
+        A::Store(detail) => {
+            tracing::error!(detail, "pricing approval store failure");
+            CanonicalError::internal("pricing approval store failure")
+                .create()
+                .into()
+        }
+    }
+}
+/// The Products registry is not reachable from this process.
+pub fn unavailable() -> CanonicalError {
+    CanonicalError::service_unavailable()
+        .with_detail("REGISTRY_UNAVAILABLE: Products reference registry is unavailable")
+        .create()
+}
+/// A 400 problem that names the unit's current generation for the reviewer's client.
+#[must_use]
+pub fn generation_problem(code: &str, generation: i32) -> toolkit::api::canonical_prelude::Problem {
+    let mut problem = toolkit::api::canonical_prelude::Problem::from(invalid("generation", code));
+    problem.context["generation"] = serde_json::json!(generation);
+    problem
 }
 impl From<toolkit_db::DbError> for DoorError {
     fn from(e: toolkit_db::DbError) -> Self {
@@ -165,6 +228,7 @@ impl From<DoorError> for CanonicalError {
     fn from(e: DoorError) -> Self {
         match e {
             DoorError::Api(e) => e,
+            DoorError::Generation { .. } => invalid("generation", "GENERATION_MISMATCH"),
             DoorError::Repo(RepoError::Conflict { code }) => conflict(code),
             DoorError::Repo(e) => {
                 tracing::error!(error=%e,"pricing storage failure");
@@ -233,6 +297,21 @@ pub fn date(raw: Option<String>, field: &str) -> Result<Option<time::Date>, Cano
         .map_err(|_| invalid(field, "DATE_INVALID"))
     })
     .transpose()
+}
+/// A command POST that carries no fields: an empty body or `{}`.
+/// # Errors
+/// Any other body is refused with `BODY_UNEXPECTED`.
+pub fn empty_body(body: &[u8]) -> Result<serde_json::Value, CanonicalError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(serde_json::json!({}));
+    }
+    let value: serde_json::Value =
+        crate::api::rest::preconditions::parse_body(body).map_err(CanonicalError::from)?;
+    if value.as_object().is_some_and(serde_json::Map::is_empty) {
+        Ok(value)
+    } else {
+        Err(invalid("body", "BODY_UNEXPECTED"))
+    }
 }
 pub fn check_version(seen: u64, actual: i64) -> Result<(), CanonicalError> {
     if u64::try_from(actual).ok() == Some(seen) {

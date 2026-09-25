@@ -201,3 +201,15 @@ impl MigrationTrait for InvalidOutboxMigration {
 // POST /prices/{id}/rows price:author false true
 // PATCH /rows/{id} price:author true false
 // DELETE /rows/{id} price:author true false
+
+// Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
+// POST /rows/{id}/submit price:submit false true
+// GET /price-books/{id}/publish-changes price_book:read false false
+// POST /price-books/{id}/publish-changes price_book:submit false true
+// GET /approval-units approval_unit:read false false
+// GET /approval-units/{id} approval_unit:read false false
+// POST /approval-units/{id}/approve approval_unit:approve false true
+// POST /approval-units/{id}/reject approval_unit:approve false true
+// POST /approval-units/{id}/withdraw approval_unit:submit false true
+// GET /approval-policy config:read false false
+// PUT /approval-policy config:settings true false

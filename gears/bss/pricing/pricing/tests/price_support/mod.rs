@@ -53,6 +53,43 @@ impl authz_resolver_sdk::AuthZResolverApi for Resolver {
         })
     }
 }
+/// Authoring state over any database, with the scripted registry in its hub.
+pub async fn state_on(
+    db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
+) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
+    let hub = Arc::new(toolkit::ClientHub::default());
+    hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
+        bss_products_sdk::PricingReferenceRegistry(registry),
+    ));
+    Arc::new(
+        bss_pricing::api::rest::authoring::AuthoringState::new(db, hub)
+            .await
+            .unwrap(),
+    )
+}
+/// The production router over a state, allowing every user of `tenant`.
+pub fn app_for(
+    state: Arc<bss_pricing::api::rest::authoring::AuthoringState>,
+    tenant: Uuid,
+) -> Router {
+    bss_pricing::api::rest::authoring::router(state, &toolkit::api::OpenApiRegistryImpl::new())
+        .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
+            Arc::new(Resolver {
+                tenant,
+                allow: true,
+            }),
+        )))
+}
+/// A user principal of a tenant.
+pub fn user_of(tenant: Uuid) -> SecurityContext {
+    SecurityContext::builder()
+        .subject_id(Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap()
+}
 pub struct Fixture {
     pub dsn: String,
     pub state: Arc<bss_pricing::api::rest::authoring::AuthoringState>,

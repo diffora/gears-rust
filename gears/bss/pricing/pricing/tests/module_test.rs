@@ -26,6 +26,16 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/prices/{id}/rows"),
         ("PATCH", "/bss-pricing/v1/rows/{id}"),
         ("DELETE", "/bss-pricing/v1/rows/{id}"),
+        ("POST", "/bss-pricing/v1/rows/{id}/submit"),
+        ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+        ("GET", "/bss-pricing/v1/approval-units"),
+        ("GET", "/bss-pricing/v1/approval-units/{id}"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
+        ("GET", "/bss-pricing/v1/approval-policy"),
+        ("PUT", "/bss-pricing/v1/approval-policy"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -39,6 +49,7 @@ fn if_match_routes() -> Routes {
         ("PUT", "/bss-pricing/v1/dimension-keys"),
         ("PATCH", "/bss-pricing/v1/rows/{id}"),
         ("DELETE", "/bss-pricing/v1/rows/{id}"),
+        ("PUT", "/bss-pricing/v1/approval-policy"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -49,6 +60,11 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/price-books"),
         ("POST", "/bss-pricing/v1/price-books/{id}/prices"),
         ("POST", "/bss-pricing/v1/prices/{id}/rows"),
+        ("POST", "/bss-pricing/v1/rows/{id}/submit"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -69,7 +85,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 18);
+    assert_eq!(registered.len(), 28);
     assert!(router.has_routes());
 }
 
@@ -98,10 +114,10 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 6),
-        ("preconditions::idempotency_key(", 1, 3),
+        ("preconditions::if_match(", 1, 7),
+        ("preconditions::idempotency_key(", 1, 8),
         ("Query<", 1, 0),
-        ("StatusCode::", 2, 38),
+        ("StatusCode::", 2, 57),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -177,3 +193,15 @@ async fn no_operation_declares_a_422() {
 // POST /prices/{id}/rows price:author false true
 // PATCH /rows/{id} price:author true false
 // DELETE /rows/{id} price:author true false
+
+// Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
+// POST /rows/{id}/submit price:submit false true
+// GET /price-books/{id}/publish-changes price_book:read false false
+// POST /price-books/{id}/publish-changes price_book:submit false true
+// GET /approval-units approval_unit:read false false
+// GET /approval-units/{id} approval_unit:read false false
+// POST /approval-units/{id}/approve approval_unit:approve false true
+// POST /approval-units/{id}/reject approval_unit:approve false true
+// POST /approval-units/{id}/withdraw approval_unit:submit false true
+// GET /approval-policy config:read false false
+// PUT /approval-policy config:settings true false

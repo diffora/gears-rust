@@ -191,6 +191,16 @@ impl Harness {
             ("POST", "/bss-pricing/v1/prices/{id}/rows"),
             ("PATCH", "/bss-pricing/v1/rows/{id}"),
             ("DELETE", "/bss-pricing/v1/rows/{id}"),
+            ("POST", "/bss-pricing/v1/rows/{id}/submit"),
+            ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+            ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+            ("GET", "/bss-pricing/v1/approval-units"),
+            ("GET", "/bss-pricing/v1/approval-units/{id}"),
+            ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
+            ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
+            ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
+            ("GET", "/bss-pricing/v1/approval-policy"),
+            ("PUT", "/bss-pricing/v1/approval-policy"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -223,3 +233,15 @@ impl Harness {
 // POST /prices/{id}/rows price:author false true
 // PATCH /rows/{id} price:author true false
 // DELETE /rows/{id} price:author true false
+
+// Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
+// POST /rows/{id}/submit price:submit false true
+// GET /price-books/{id}/publish-changes price_book:read false false
+// POST /price-books/{id}/publish-changes price_book:submit false true
+// GET /approval-units approval_unit:read false false
+// GET /approval-units/{id} approval_unit:read false false
+// POST /approval-units/{id}/approve approval_unit:approve false true
+// POST /approval-units/{id}/reject approval_unit:approve false true
+// POST /approval-units/{id}/withdraw approval_unit:submit false true
+// GET /approval-policy config:read false false
+// PUT /approval-policy config:settings true false

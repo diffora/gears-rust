@@ -24,6 +24,16 @@ fn census() -> census::Routes {
         ("POST", "/bss-pricing/v1/prices/{id}/rows"),
         ("PATCH", "/bss-pricing/v1/rows/{id}"),
         ("DELETE", "/bss-pricing/v1/rows/{id}"),
+        ("POST", "/bss-pricing/v1/rows/{id}/submit"),
+        ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
+        ("GET", "/bss-pricing/v1/approval-units"),
+        ("GET", "/bss-pricing/v1/approval-units/{id}"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
+        ("POST", "/bss-pricing/v1/approval-units/{id}/withdraw"),
+        ("GET", "/bss-pricing/v1/approval-policy"),
+        ("PUT", "/bss-pricing/v1/approval-policy"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -46,7 +56,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 18);
+    assert_eq!(registered.len(), 28);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 4);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -62,9 +72,9 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
         assert_eq!(
             census::production_count(needle),
             if needle == "require_authenticated(" {
-                19
+                29
             } else {
-                18
+                28
             }
         );
     }
@@ -76,7 +86,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 18);
+    assert_eq!(census::source_routes().len(), 28);
 }
 
 #[test]
@@ -130,3 +140,15 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // POST /prices/{id}/rows price:author false true
 // PATCH /rows/{id} price:author true false
 // DELETE /rows/{id} price:author true false
+
+// Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
+// POST /rows/{id}/submit price:submit false true
+// GET /price-books/{id}/publish-changes price_book:read false false
+// POST /price-books/{id}/publish-changes price_book:submit false true
+// GET /approval-units approval_unit:read false false
+// GET /approval-units/{id} approval_unit:read false false
+// POST /approval-units/{id}/approve approval_unit:approve false true
+// POST /approval-units/{id}/reject approval_unit:approve false true
+// POST /approval-units/{id}/withdraw approval_unit:submit false true
+// GET /approval-policy config:read false false
+// PUT /approval-policy config:settings true false

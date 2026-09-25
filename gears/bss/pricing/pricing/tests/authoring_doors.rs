@@ -356,6 +356,16 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/prices/{id}/rows")),
         ("PATCH", format!("/rows/{id}")),
         ("DELETE", format!("/rows/{id}")),
+        ("POST", format!("/rows/{id}/submit")),
+        ("GET", format!("/price-books/{id}/publish-changes")),
+        ("POST", format!("/price-books/{id}/publish-changes")),
+        ("GET", "/approval-units".into()),
+        ("GET", format!("/approval-units/{id}")),
+        ("POST", format!("/approval-units/{id}/approve")),
+        ("POST", format!("/approval-units/{id}/reject")),
+        ("POST", format!("/approval-units/{id}/withdraw")),
+        ("GET", "/approval-policy".into()),
+        ("PUT", "/approval-policy".into()),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -566,6 +576,46 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("POST", format!("/prices/{id}/rows"), "price", "author"),
         ("PATCH", format!("/rows/{id}"), "price", "author"),
         ("DELETE", format!("/rows/{id}"), "price", "author"),
+        ("POST", format!("/rows/{id}/submit"), "price", "submit"),
+        (
+            "GET",
+            format!("/price-books/{id}/publish-changes"),
+            "price_book",
+            "read",
+        ),
+        (
+            "POST",
+            format!("/price-books/{id}/publish-changes"),
+            "price_book",
+            "submit",
+        ),
+        ("GET", "/approval-units".into(), "approval_unit", "read"),
+        (
+            "GET",
+            format!("/approval-units/{id}"),
+            "approval_unit",
+            "read",
+        ),
+        (
+            "POST",
+            format!("/approval-units/{id}/approve"),
+            "approval_unit",
+            "approve",
+        ),
+        (
+            "POST",
+            format!("/approval-units/{id}/reject"),
+            "approval_unit",
+            "approve",
+        ),
+        (
+            "POST",
+            format!("/approval-units/{id}/withdraw"),
+            "approval_unit",
+            "submit",
+        ),
+        ("GET", "/approval-policy".into(), "config", "read"),
+        ("PUT", "/approval-policy".into(), "config", "settings"),
     ] {
         let context = |grant: &str| {
             SecurityContext::builder()

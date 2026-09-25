@@ -332,3 +332,146 @@ pub struct PricingPriceRowPatch {
 pub struct PricingPriceRowCreated {
     pub items: Vec<PricingPriceRowDto>,
 }
+
+/// One reviewer decision; decisions of earlier generations are kept and marked stale.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingDecisionDto {
+    pub actor: Uuid,
+    pub generation: i32,
+    pub decision: String,
+    pub note: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: time::OffsetDateTime,
+    pub stale: bool,
+}
+impl From<bss_approval::Decision> for PricingDecisionDto {
+    fn from(d: bss_approval::Decision) -> Self {
+        Self {
+            actor: d.actor,
+            generation: d.generation,
+            decision: d.verdict.as_str().into(),
+            note: d.note,
+            at: d.at,
+            stale: d.stale,
+        }
+    }
+}
+/// An approval unit with its snapshot, decisions and, on the card, the live impact.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingApprovalUnitDto {
+    pub id: Uuid,
+    pub kind: String,
+    pub ref_type: String,
+    pub ref_id: Uuid,
+    pub state: String,
+    pub generation: i32,
+    pub quorum_required: u32,
+    pub common_effective_date: Option<String>,
+    pub submitted_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub submitted_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub decided_at: Option<time::OffsetDateTime>,
+    pub decided_note: Option<String>,
+    pub snapshot: serde_json::Value,
+    pub decisions: Vec<PricingDecisionDto>,
+    pub impact: Option<serde_json::Value>,
+}
+impl From<bss_approval::Unit> for PricingApprovalUnitDto {
+    fn from(u: bss_approval::Unit) -> Self {
+        Self {
+            id: u.id,
+            kind: u.kind,
+            ref_type: u.ref_type,
+            ref_id: u.ref_id,
+            state: u.state.as_str().into(),
+            generation: u.generation,
+            quorum_required: u.quorum_required,
+            common_effective_date: u.common_effective_date.map(|d| d.to_string()),
+            submitted_by: u.submitted_by,
+            submitted_at: u.submitted_at,
+            decided_at: u.decided_at,
+            decided_note: u.decided_note,
+            snapshot: u.snapshot,
+            decisions: Vec::new(),
+            impact: None,
+        }
+    }
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingApprovalUnitList {
+    pub items: Vec<PricingApprovalUnitDto>,
+}
+/// A vote names the generation its reviewer saw; a reject needs a note.
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingVoteRequest {
+    pub generation: i32,
+    pub note: Option<String>,
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingVoteReceipt {
+    pub have: Option<u32>,
+    pub need: Option<u32>,
+    pub outcome: String,
+    pub unit: PricingApprovalUnitDto,
+}
+/// The unit a submission recorded and its rows after the transaction.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingSubmitReceipt {
+    pub applied: bool,
+    pub unit: PricingApprovalUnitDto,
+    pub rows: Vec<PricingPriceRowDto>,
+}
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPublishChangesRequest {
+    pub row_ids: Option<Vec<Uuid>>,
+    pub common_effective_date: Option<String>,
+}
+/// One draft row as the operator sees it before publishing: the price key, the chain,
+/// the approved predecessor it follows, its pair partner and the default selection.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingProposedRow {
+    pub row: PricingPriceRowDto,
+    pub price: PricingPriceDto,
+    pub chain: String,
+    pub before: Option<PricingPriceRowDto>,
+    pub pair_partner_id: Option<Uuid>,
+    pub selected: bool,
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPublishChanges {
+    pub book: PriceBookDto,
+    pub rows: Vec<PricingProposedRow>,
+}
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingApprovalPolicyPut {
+    pub kind: Option<String>,
+    pub quorum: u32,
+}
+#[toolkit_macros::api_dto(response)]
+pub struct PricingApprovalPolicyDto {
+    pub default_quorum: u32,
+    pub overrides: std::collections::BTreeMap<String, u32>,
+}
+impl From<bss_approval::Policy> for PricingApprovalPolicyDto {
+    fn from(p: bss_approval::Policy) -> Self {
+        Self {
+            default_quorum: p.default_quorum,
+            overrides: p.overrides,
+        }
+    }
+}
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingApprovalUnitQuery {
+    pub state: Option<String>,
+    pub kind: Option<String>,
+    pub ref_id: Option<Uuid>,
+    pub book_id: Option<Uuid>,
+}

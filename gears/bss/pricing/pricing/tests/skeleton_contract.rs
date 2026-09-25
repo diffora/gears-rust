@@ -44,7 +44,7 @@ async fn pricing_alone_initializes_serves_authoring_routes_and_stops() {
     );
     let (empty, openapi) = harness.router(Router::new()).unwrap();
     assert!(empty.has_routes());
-    assert_eq!(openapi.operation_specs.len(), 18);
+    assert_eq!(openapi.operation_specs.len(), 28);
     let (router, _) = harness
         .router(Router::new().route("/host", get(|| async { "host" })))
         .unwrap();
