@@ -160,7 +160,7 @@ The fixtures crate deletion and deployment reset occur in phase 4, not in this d
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A tenant registry stores dimension keys and their allowed values, seeded with region. A price selects at most one key. Validate DIM_KEY_INVALID and DIM_VALUES_FEW; a row value outside the registry is DIM_VALUE_UNKNOWN and a value without a declared key is DIM_NOT_DECLARED. Registry changes need no approval, but a value referenced by any row cannot be removed.
+A tenant registry stores dimension keys and their allowed values, seeded with region (declared with no values until the tenant adds them). A price selects at most one key. Validate DIM_KEY_INVALID and DIM_VALUES_FEW (a key has no values yet or at least two); a row value outside the registry is DIM_VALUE_UNKNOWN and a value without a declared key is DIM_NOT_DECLARED. Registry changes need no approval, but a value referenced by any row cannot be removed.
 
 #### `fr-price-book`
 

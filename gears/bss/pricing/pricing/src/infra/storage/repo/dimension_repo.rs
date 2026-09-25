@@ -109,3 +109,47 @@ pub async fn delete(
         .map_err(|e| driver_failure("delete dimension key".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
+
+/// Whether a key is declared: stored, or the seed key while the tenant stores no registry.
+/// # Errors
+/// Returns typed database failures.
+pub async fn declared(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    key: &str,
+) -> Result<bool, RepoError> {
+    if find(runner, scope, tenant, key).await?.is_some() {
+        return Ok(true);
+    }
+    Ok(key == crate::domain::dimension::SEED_KEY && list(runner, scope, tenant).await?.is_empty())
+}
+/// [`declared`] for a price that is about to name the key: the seed key of a tenant with no
+/// stored registry is stored now, in the caller's transaction, so the price's foreign key holds.
+/// # Errors
+/// Returns typed database failures.
+pub async fn declare_for_price(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    key: &str,
+) -> Result<bool, RepoError> {
+    if find(runner, scope, tenant, key).await?.is_some() {
+        return Ok(true);
+    }
+    if key != crate::domain::dimension::SEED_KEY || !list(runner, scope, tenant).await?.is_empty() {
+        return Ok(false);
+    }
+    insert(
+        runner,
+        scope,
+        e::Model {
+            tenant_id: tenant,
+            key: key.to_owned(),
+            values: serde_json::json!([]),
+            version: 1,
+        },
+    )
+    .await?;
+    Ok(true)
+}

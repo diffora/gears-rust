@@ -122,6 +122,14 @@ pub async fn dimensions(
                 .map_err(|_| CanonicalError::internal("invalid stored dimension").create())?,
         });
     }
+    if items.is_empty() {
+        // Spec decision 4: a tenant that stores no registry reads the seed, declared and not
+        // yet valued; the tag still covers only what is stored.
+        items.push(PricingDimensionEntry {
+            key: dimension::SEED_KEY.into(),
+            values: Vec::new(),
+        });
+    }
     Ok((PricingDimensions { items }, tag))
 }
 pub async fn put_dimensions(

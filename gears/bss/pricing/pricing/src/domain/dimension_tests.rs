@@ -50,3 +50,11 @@ fn prototype_dimension_trims_and_ignores_blank_values() {
             .any(|e| e.code == "DIM_VALUE_DUPLICATE")
     );
 }
+
+#[test]
+fn a_key_may_be_declared_with_no_values_but_never_with_one() {
+    // Spec decision 4: the registry is seeded with `region`, declared and not yet valued.
+    assert!(validate("region", &[]).is_empty());
+    assert!(validate("region", &[String::new(), " ".into()]).is_empty());
+    assert_eq!(validate("region", &["eu".into()])[0].code, "DIM_VALUES_FEW");
+}

@@ -127,7 +127,8 @@ async fn check_period(
         Err(support::invalid("period", "PRICE_PERIOD_INVALID"))
     }
 }
-/// A named dimension key must be declared in the tenant's registry.
+/// A named dimension key must be declared in the tenant's registry (the seed key counts while
+/// the tenant stores none; the price write stores it).
 async fn check_dimension(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -135,9 +136,7 @@ async fn check_dimension(
     key: Option<&str>,
 ) -> Result<(), DoorError> {
     if let Some(key) = key
-        && dimension_repo::find(tx, scope, tenant, key)
-            .await?
-            .is_none()
+        && !dimension_repo::declared(tx, scope, tenant, key).await?
     {
         return Err(support::invalid("dimension_key", "DIM_NOT_DECLARED").into());
     }

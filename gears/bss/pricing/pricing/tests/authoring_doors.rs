@@ -292,7 +292,11 @@ async fn dimension_registry_positive_preconditions_and_matrix_11() {
         .call("GET", "/dimension-keys", json!({}), None, None)
         .await;
     assert_eq!(s, 200);
-    assert_eq!(b, json!({"items":[]}));
+    assert_eq!(
+        b,
+        json!({"items":[{"key":"region","values":[]}]}),
+        "seeded with region, declared and not yet valued"
+    );
     let input = json!({"items":[{"key":" region ","values":[" eu ","us",""]}]});
     assert_eq!(
         f.call("PUT", "/dimension-keys", input.clone(), None, None)

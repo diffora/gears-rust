@@ -93,7 +93,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-books-prices-dimension-registry`
 
-1. [ ] - `p1` - Validate key syntax and sufficient distinct values; seed region for the tenant. - `inst-books-prices-dimension-registry-1`
+1. [ ] - `p1` - Validate key syntax and distinct values (none yet, or at least two; exactly one is DIM_VALUES_FEW); a tenant with no stored registry reads the seed region with no values, and the first price naming region stores it in that price's transaction. - `inst-books-prices-dimension-registry-1`
 2. [ ] - `p1` - Reject unknown row values or values without a declared price dimension. - `inst-books-prices-dimension-registry-2`
 3. [ ] - `p1` - Before removing a value, atomically check all tenant rows referencing it, including historical rows. - `inst-books-prices-dimension-registry-3`
 4. [ ] - `p1` - Apply the direct versioned registry edit without an approval unit. - `inst-books-prices-dimension-registry-4`
@@ -147,7 +147,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-key`; PRD AC #3.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-registry`
 
-Keys and values are tenant-owned and validated with the four DIM errors. A referenced value cannot be removed even when its row is historical, and registry edits require no approval (spec §5, §14).
+Keys and values are tenant-owned and validated with the four DIM errors. The registry starts seeded with region, declared with no values; the first price naming it stores the seed. A referenced value cannot be removed even when its row is historical, and registry edits require no approval (spec §5, §14).
 
 Requirement: `cpt-cf-bss-pricing-fr-dimension-registry`; PRD AC #1.
 

@@ -29,9 +29,7 @@ pub async fn insert(
         });
     }
     if let Some(dimension) = &m.dimension_key
-        && super::dimension_repo::find(runner, scope, m.tenant_id, dimension)
-            .await?
-            .is_none()
+        && !super::dimension_repo::declare_for_price(runner, scope, m.tenant_id, dimension).await?
     {
         return Err(RepoError::Conflict {
             code: "DIM_NOT_DECLARED",
@@ -104,9 +102,7 @@ pub async fn update(
 ) -> Result<(), RepoError> {
     let predicate = key(m.tenant_id, m.id).add(e::Column::Version.eq(m.version));
     if let Some(dimension) = &m.dimension_key
-        && super::dimension_repo::find(runner, scope, m.tenant_id, dimension)
-            .await?
-            .is_none()
+        && !super::dimension_repo::declare_for_price(runner, scope, m.tenant_id, dimension).await?
     {
         return Err(RepoError::Conflict {
             code: "DIM_NOT_DECLARED",

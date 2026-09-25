@@ -300,7 +300,7 @@ async fn period_and_dimension_refusals_are_400_before_any_reservation() {
         ),
         (
             0,
-            json!({"dimension_key":"region"}),
+            json!({"dimension_key":"zone"}),
             "dimension_key",
             "DIM_NOT_DECLARED",
         ),
@@ -327,7 +327,7 @@ async fn period_and_dimension_refusals_are_400_before_any_reservation() {
             .call(
                 "PATCH",
                 &format!("/prices/{}", created.1["id"].as_str().unwrap()),
-                json!({"dimension_key":"region"}),
+                json!({"dimension_key":"zone"}),
                 Some(&created.2),
                 None,
             )
@@ -386,4 +386,68 @@ async fn removing_a_dimension_key_a_price_names_is_refused_409() {
         )
         .await;
     assert_eq!(changed.0, 200, "{changed:?}");
+}
+
+// Docs F7, spec decision 4: a tenant's registry starts seeded with `region`, declared with no
+// values yet; the first price naming it stores the seed in the price's own transaction.
+#[tokio::test]
+async fn the_registry_is_seeded_with_region_and_a_price_naming_it_stores_the_seed() {
+    let (f, _, path, input) = setup(0).await;
+    let (status, dims, seed_tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    assert_eq!(status, 200, "{dims}");
+    assert_eq!(dims, json!({"items":[{"key":"region","values":[]}]}));
+    let mut body = input.clone();
+    body["dimension_key"] = json!("region");
+    let (status, price, _) = f.call("POST", &path, body, None, Some("region")).await;
+    assert_eq!(status, 201, "{price}");
+    assert_eq!(price["dimension_key"], "region");
+    let (status, dims, stored_tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    assert_eq!(status, 200, "{dims}");
+    assert_eq!(dims, json!({"items":[{"key":"region","values":[]}]}));
+    assert_ne!(stored_tag, seed_tag, "the seed is now a stored row");
+    let rows = format!("/prices/{}/rows", price["id"].as_str().unwrap());
+    let eu = json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all",
+        "effective_from":"2031-03-01","dim_value":"eu"});
+    let (status, b, _) = f.call("POST", &rows, eu.clone(), None, Some("eu")).await;
+    assert_eq!(status, 400, "no value is declared yet: {b}");
+    assert!(b.to_string().contains("DIM_VALUE_UNKNOWN"), "{b}");
+    let (status, b, _) = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":"region","values":["eu","us"]}]}),
+            Some(&stored_tag),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    let (status, b, _) = f.call("POST", &rows, eu, None, Some("eu2")).await;
+    assert_eq!(status, 201, "{b}");
+    // PATCH names the seeded key on another new tenant the same way.
+    let (f, _, path, input) = setup(0).await;
+    let (status, price, tag) = f.call("POST", &path, input, None, Some("plain")).await;
+    assert_eq!(status, 201, "{price}");
+    let (status, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/prices/{}", price["id"].as_str().unwrap()),
+            json!({"dimension_key":"region"}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    let (_, _, stored) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    let (_, _, empty) = setup(0)
+        .await
+        .0
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    assert_ne!(stored, empty, "PATCH stored the seed in its transaction");
 }

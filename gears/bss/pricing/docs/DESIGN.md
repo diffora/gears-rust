@@ -43,7 +43,7 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 
 | Requirement | Driver | Satisfied by |
 | --- | --- | --- |
-| `cpt-cf-bss-pricing-fr-dimension-registry` | A tenant registry stores dimension keys and their allowed values, seeded with region. | Books & Prices, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-dimension-registry` | A tenant registry stores dimension keys and their allowed values, seeded with region: with nothing stored, GET /dimension-keys reads region with no values, and the first price naming it stores the seed in its own transaction. A key has no values yet or at least two (DIM_VALUES_FEW). | Books & Prices, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price-book` | A book has a tenant-unique code, name, immutable currency and optional valid_from/valid_until dates. | Books & Prices, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price-key` | Inside a book there is one price per (sku_id, charge_kind, period), with null period normalized for uniqueness. | Books & Prices, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price-row` | Draft rows carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. | Rows, Windows & Dimension, phase 2; §3 and slice 03. |

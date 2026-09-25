@@ -17,7 +17,10 @@ fn value_code(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
-/// Validate a registry entry. Removal of a used value is a door-level rule.
+/// The key every tenant's registry is seeded with (spec decision 4): declared, not yet valued.
+pub const SEED_KEY: &str = "region";
+/// Validate a registry entry. Removal of a used value is a door-level rule. A key may be
+/// declared with no values yet; one value alone is not a dimension (`DIM_VALUES_FEW`).
 #[must_use]
 pub fn validate(key: &str, values: &[String]) -> Vec<RuleError> {
     let values: Vec<_> = values
@@ -29,7 +32,7 @@ pub fn validate(key: &str, values: &[String]) -> Vec<RuleError> {
     if !key_code(key.trim()) {
         errors.push(RuleError::new("DIM_KEY_INVALID"));
     }
-    if values.len() < 2 {
+    if values.len() == 1 {
         errors.push(RuleError::new("DIM_VALUES_FEW"));
     }
     let mut seen = BTreeSet::new();
