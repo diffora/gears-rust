@@ -729,3 +729,237 @@ fn plan_revision_published_is_a_typed_event_about_the_plan() {
         ]
     );
 }
+
+/// The red codes a refused submit answered in its `detail`.
+fn refused_codes(b: &Value) -> Vec<String> {
+    let detail: Value = serde_json::from_str(b["detail"].as_str().unwrap()).unwrap();
+    detail
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["code"].as_str().unwrap().to_owned())
+        .collect()
+}
+async fn patch_revision(f: &Fixture, id: Uuid, body: Value) -> (u16, Value) {
+    let path = format!("/plan-revisions/{id}");
+    let (_, _, tag) = f.call("GET", &path, json!({}), None, None).await;
+    let (s, b, _) = f.call("PATCH", &path, body, Some(&tag), None).await;
+    (s, b)
+}
+
+/// The `plan-revision-book` definition of done (AC #15): a published revision owns its book. A
+/// copy is rev 2 on a book of its own choosing while rev 1 keeps its book; rev 1 cannot be pointed
+/// at another book directly; publishing rev 2 supersedes rev 1 without rewriting its binding.
+#[tokio::test]
+async fn a_new_revision_on_another_book_leaves_the_published_one_on_its_own() {
+    let (f, catalog) = setup().await;
+    let g = green(&f, &catalog, "pro").await;
+    policy(&f, 0).await;
+    let (s, b) = submit(&f, &f.ctx, g.revision, "rev1").await;
+    assert_eq!(s, 201, "{b}");
+    let book_a = revision(&f, g.revision).await["book_id"].clone();
+    let book_b = book(&f, "other").await;
+    let entry_b = entry(&f, book_b, g.sku, "usage", None).await;
+    approved(&f, entry_b, "2020-01-01").await;
+    let (s, copy, _) = f
+        .call(
+            "POST",
+            &format!("/plans/{}/revisions", g.plan),
+            json!({}),
+            None,
+            Some("copy"),
+        )
+        .await;
+    assert_eq!(s, 201, "{copy}");
+    assert_eq!(copy["rev_no"], 2, "a copy takes the next revision number");
+    let rev2 = id_of(&copy["id"]);
+    let (s, moved) = patch_revision(&f, rev2, json!({"book_id":book_b})).await;
+    assert_eq!(s, 200, "{moved}");
+    assert_eq!(moved["book_id"], book_b.to_string());
+    assert_eq!(
+        moved["items"][0]["price_book_entry_id"],
+        entry_b.to_string()
+    );
+    assert_eq!(revision(&f, g.revision).await["book_id"], book_a);
+    let (s, refused) = patch_revision(&f, g.revision, json!({"book_id":book_b})).await;
+    assert_eq!(s, 409, "a published revision is not re-bound: {refused}");
+    assert!(text(&refused).contains("REVISION_NOT_DRAFT"), "{refused}");
+    let (s, b) = submit(&f, &f.ctx, rev2, "rev2").await;
+    assert_eq!(s, 201, "{b}");
+    let r1 = revision(&f, g.revision).await;
+    assert_eq!(r1["state"], "superseded");
+    assert_eq!(r1["book_id"], book_a, "publishing rev 2 left rev 1's book");
+    assert_eq!(r1["items"][0]["price_book_entry_id"], g.entry.to_string());
+    let r2 = revision(&f, rev2).await;
+    assert_eq!(
+        (r2["state"].clone(), r2["book_id"].clone()),
+        (json!("published"), json!(book_b.to_string()))
+    );
+    assert_eq!(plan_of(&f, g.plan).await["published_rev"], 2);
+}
+
+/// The `plan-item-rules` definition of done (AC #15): a second recurring period
+/// (`FREQUENCY_MIXED`) or an item priced in another book (`ITEM_BOOK_FOREIGN`) blocks submit with
+/// no unit; the valid set passes.
+#[tokio::test]
+async fn a_second_recurring_period_or_a_foreign_entry_blocks_submit_and_the_valid_set_passes() {
+    let (f, catalog) = setup().await;
+    let (eur, other) = (book(&f, "eur").await, book(&f, "other").await);
+    let (_, rev) = plan(&f, "pro", eur).await;
+    policy(&f, 0).await;
+    let monthly = catalog.sku(SkuType::Recurring);
+    let month = entry(&f, eur, monthly, "recurring", Some("month")).await;
+    approved(&f, month, "2020-01-01").await;
+    item(&f, rev, monthly, Some(month), "paid").await;
+    assert_eq!(red_codes(&checks(&f, rev).await), Vec::<String>::new());
+    let yearly = catalog.sku(SkuType::Recurring);
+    let year = entry(&f, eur, yearly, "recurring", Some("year")).await;
+    approved(&f, year, "2020-01-01").await;
+    let second = item(&f, rev, yearly, Some(year), "paid").await;
+    let (s, b) = submit(&f, &f.ctx, rev, "mixed").await;
+    assert_eq!(s, 400, "{b}");
+    assert!(text(&b).contains("REVISION_CHECKS_RED"), "{b}");
+    assert_eq!(refused_codes(&b), vec!["FREQUENCY_MIXED".to_owned()], "{b}");
+    assert!(units(&f).await.is_empty(), "no unit is written");
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-items/{}", second.id),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    // The item has no entry in the other book, so it keeps its EUR entry: priced elsewhere.
+    let (s, b) = patch_revision(&f, rev, json!({"book_id":other})).await;
+    assert_eq!(s, 200, "{b}");
+    let (s, b) = submit(&f, &f.ctx, rev, "foreign").await;
+    assert_eq!(s, 400, "{b}");
+    assert_eq!(
+        refused_codes(&b),
+        vec!["ITEM_BOOK_FOREIGN".to_owned()],
+        "{b}"
+    );
+    assert!(units(&f).await.is_empty(), "no unit is written");
+    let (s, b) = patch_revision(&f, rev, json!({"book_id":eur})).await;
+    assert_eq!(s, 200, "{b}");
+    let (s, b) = submit(&f, &f.ctx, rev, "valid").await;
+    assert_eq!(s, 201, "the valid set passes: {b}");
+    assert_eq!(b["revision"]["state"], "published", "{b}");
+}
+
+/// The `plan-revision-unit` definition of done (AC #15): an approved repricing reaches the
+/// published revision through its book with no new revision, and a rejected revision is never
+/// published.
+#[tokio::test]
+async fn an_approved_repricing_reaches_the_published_revision_and_a_rejected_one_is_not_published()
+{
+    let (f, catalog) = setup().await;
+    let g = green(&f, &catalog, "pro").await;
+    policy(&f, 0).await;
+    let (s, b) = submit(&f, &f.ctx, g.revision, "rev1").await;
+    assert_eq!(s, 201, "{b}");
+    let published = revision(&f, g.revision).await;
+    let book_id = published["book_id"].as_str().unwrap().to_owned();
+    let (_, _, tag) = f
+        .call("GET", "/approval-policy", json!({}), None, None)
+        .await;
+    let (s, b, _) = f
+        .call(
+            "PUT",
+            "/approval-policy",
+            json!({"kind":"prices","quorum":0}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let today = time::OffsetDateTime::now_utc().date().to_string();
+    let (s, drafted, _) = f
+        .call(
+            "POST",
+            &format!("/price-book-entries/{}/prices", g.entry),
+            json!({"model":"per_unit","price":{"rate":"0.25"},"eligibility":"all","effective_from":today}),
+            None,
+            Some("reprice"),
+        )
+        .await;
+    assert_eq!(s, 201, "{drafted}");
+    let price = drafted["items"][0]["id"].clone();
+    let (s, receipt, _) = f
+        .call(
+            "POST",
+            &format!("/prices/{}/submit", price.as_str().unwrap()),
+            json!({}),
+            None,
+            Some("reprice-submit"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["applied"], true, "{receipt}");
+    // The published revision did not move: it still names the entry whose chain now carries the
+    // new money from today.
+    assert_eq!(revision(&f, g.revision).await, published);
+    let (s, export, _) = f
+        .call(
+            "GET",
+            &format!("/price-books/{book_id}/export"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{export}");
+    let chain = export["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["entry"]["id"] == g.entry.to_string())
+        .unwrap()["prices"]
+        .clone();
+    let repriced = chain
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == price)
+        .unwrap_or_else(|| panic!("the new price is in the book: {chain}"));
+    assert_eq!(repriced["state"], "approved");
+    assert_eq!(repriced["effective_from"], today);
+    assert_eq!(repriced["price_json"], json!({"rate":"0.25"}));
+    assert_eq!(plan_of(&f, g.plan).await["published_rev"], 1);
+    // A revision whose unit is rejected is never published.
+    policy(&f, 1).await;
+    let (s, copy, _) = f
+        .call(
+            "POST",
+            &format!("/plans/{}/revisions", g.plan),
+            json!({}),
+            None,
+            Some("copy"),
+        )
+        .await;
+    assert_eq!(s, 201, "{copy}");
+    let rev2 = id_of(&copy["id"]);
+    let (s, receipt) = submit(&f, &f.ctx, rev2, "rev2").await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["applied"], false);
+    let (s, b) = vote(
+        &f,
+        &f.user(),
+        &receipt["unit"]["id"],
+        "reject",
+        json!({"generation":1,"note":"not this one"}),
+        "reject",
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let r2 = revision(&f, rev2).await;
+    assert_eq!(r2["state"], "draft", "{r2}");
+    for field in ["published_at", "approved_by_unit_id", "pending_unit_id"] {
+        assert_eq!(r2[field], json!(null), "{field}: {r2}");
+    }
+    assert_eq!(revision(&f, g.revision).await["state"], "published");
+    assert_eq!(plan_of(&f, g.plan).await["published_rev"], 1);
+    assert_eq!(outbox_events(&f.dsn, PUBLISHED).await.len(), 1);
+}

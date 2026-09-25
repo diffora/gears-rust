@@ -56,6 +56,8 @@ struct Fixture {
     denied: Router,
     ctx: SecurityContext,
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    /// Every `(method, path)` the production router registers.
+    registered: std::collections::BTreeSet<(String, String)>,
 }
 impl Fixture {
     async fn new() -> Self {
@@ -83,11 +85,22 @@ impl Fixture {
             .subject_type("user")
             .build()
             .unwrap();
+        let registry = toolkit::api::OpenApiRegistryImpl::new();
+        let _counted = bss_pricing::api::rest::authoring::router(state.clone(), &registry);
+        let registered = registry
+            .operation_specs
+            .iter()
+            .map(|e| {
+                let (method, path) = e.key().split_once(':').unwrap();
+                (method.to_owned(), path.to_owned())
+            })
+            .collect();
         Self {
             app: make(true),
             denied: make(false),
             ctx,
             db,
+            registered,
         }
     }
     async fn call(
@@ -562,7 +575,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
     let f = Fixture::new().await;
     let (b, _) = f.book().await;
     let id = b["id"].as_str().unwrap();
-    for (method, path, label, action) in [
+    let table = [
         ("POST", "/price-books".into(), "price_book", "author"),
         (
             "POST",
@@ -690,7 +703,24 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "submit",
         ),
         ("POST", format!("/plans/{id}/clone"), "plan", "author"),
-    ] {
+    ];
+    // The label table is a route census: exactly the routes the router registers, one row each.
+    let rows: std::collections::BTreeSet<(String, String)> = table
+        .iter()
+        .map(|(method, path, _, _): &(&str, String, &str, &str)| {
+            (
+                (*method).to_owned(),
+                format!("/bss-pricing/v1{}", path.replace(id, "{id}")),
+            )
+        })
+        .collect();
+    assert_eq!(table.len(), 42);
+    assert_eq!(rows.len(), table.len(), "one row per route");
+    assert_eq!(
+        rows, f.registered,
+        "the label table covers every registered route"
+    );
+    for (method, path, label, action) in table {
         let context = |grant: &str| {
             SecurityContext::builder()
                 .subject_id(f.ctx.subject_id())

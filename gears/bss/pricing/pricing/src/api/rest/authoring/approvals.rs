@@ -192,6 +192,7 @@ async fn plan_revision_published(
         .ok_or_else(|| {
             RepoError::CorruptRow(format!("unit {} lost revision {}", unit.id, unit.ref_id))
         })?;
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
     let event = PlanRevisionPublished {
         tenant_id: unit.tenant_id,
         plan_id: r.plan_id,
@@ -203,6 +204,7 @@ async fn plan_revision_published(
         actor_ref: cmd.ctx.subject_id(),
     };
     events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
     Ok(())
 }
 /// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
@@ -405,6 +407,7 @@ pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response
                 return Err(support::conflict("REVISION_NOT_DRAFT").into());
             }
             let now = OffsetDateTime::now_utc();
+            // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
             let subject = PlanRevisionSubject::new(cmd.ctx.clone(), cmd.hub.clone(), id, now);
             let submission = Submission {
                 ref_id: id,
@@ -413,6 +416,7 @@ pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response
             };
             let submitted =
                 record(tx, &cmd, &Subject::PlanRevision(subject), submission, &[id]).await?;
+            // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
             let children = AccessScope::for_tenant(cmd.tenant());
             let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
             let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
@@ -768,6 +772,7 @@ async fn vote_in(
     };
     let note = body.as_ref().and_then(|b| b.note.clone());
     let outcome = match action {
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-1
         Vote::Approve => Engine::approve(
             &store,
             &subject,
@@ -780,6 +785,7 @@ async fn vote_in(
         )
         .await
         .map_err(refusal(&subject))?,
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-1
         Vote::Reject => {
             let note = note
                 .as_deref()

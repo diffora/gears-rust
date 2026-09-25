@@ -6,6 +6,10 @@
 //! item's SKU fresh through `sku_for_write` (D-408) and every entry with its prices, and hands the
 //! lot in. The sold-as bundle and grants (D-411) and retirement (D-410) are deferred by the owner,
 //! so neither `BUNDLE_SKU` nor `PLAN_RETIRING` is a check yet.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-item-rules:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-coverage:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-blocked-by:p1
 use super::{
     book::{self, Book},
     price::{self, Price},
@@ -196,12 +200,14 @@ fn values_of<'a>(ctx: &'a PlanContext, e: &Entry) -> &'a [String] {
 /// Every approval unit holding a pending price of the entry: the default chain can cover a value,
 /// so a pending default price blocks it as much as the value's own.
 fn pending_units(e: &Entry) -> Vec<Uuid> {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
     e.pending
         .iter()
         .map(|p| p.unit_id)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
 }
 fn uncovered(detail: String, blocked_by: Vec<Uuid>) -> ItemCoverage {
     ItemCoverage {
@@ -238,6 +244,7 @@ pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverag
     let date = sale_date(&ctx.revision, today);
     let values = values_of(ctx, e);
     let key = e.dimension_key.as_deref().unwrap_or_default();
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
     let cov = price::coverage_on(&e.prices, e.id, date, values);
     if !cov.missing.is_empty() {
         let detail = if values.is_empty() {
@@ -265,6 +272,7 @@ pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverag
         };
         return uncovered(detail, pending_units(e));
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
     let version_no = cov.version.map(|p| p.version_no);
     let dims = if values.is_empty() {
         String::new()
@@ -306,6 +314,7 @@ struct Tally {
 
 /// Lifecycle and reference, for every item: a fresh SKU read and a receipt (D-408, D-413).
 fn tally_sku_and_reference(ctx: &PlanContext, item: &Item, name: &str, t: &mut Tally) {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     match sku_of(ctx, item.sku_id).map(|s| s.lifecycle) {
         None => t.unavailable.push(format!("{name} - not found")),
         Some(Lifecycle::Draft | Lifecycle::Retiring | Lifecycle::Retired) => {
@@ -324,9 +333,11 @@ fn tally_sku_and_reference(ctx: &PlanContext, item: &Item, name: &str, t: &mut T
             t.pending.push(name.to_owned());
         }
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
 }
 /// Structure (the prototype's walk up to its entry): charge kind, meter and included quantity.
 fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mut Tally) {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     if let Some(e) = e
         && validate_entry_kind(e.charge_kind, sku.r#type).is_err()
     {
@@ -336,6 +347,8 @@ fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mu
             sku.r#type.as_str()
         ));
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     if let Some(meter) = &sku.usage_type_ref
         && (e.is_some() || item.treatment == Treatment::Included)
     {
@@ -355,6 +368,7 @@ fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mu
         t.included_qty
             .push(format!("{name}: an included quantity is for usage only"));
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
 }
 /// Pricing: the entry, its book and its coverage on the sale date.
 fn tally_pricing(
@@ -372,6 +386,7 @@ fn tally_pricing(
     if e.reference_state == EntryReferenceState::Lost {
         t.entry_lost.push(name.to_owned());
     }
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     if e.book_id != ctx.revision.book_id {
         let describe = |id: Uuid| {
             book_by_id(ctx, id).map_or_else(
@@ -390,6 +405,7 @@ fn tally_pricing(
         t.periods
             .insert(e.period.clone().unwrap_or_else(|| "-".to_owned()));
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     let cov = item_coverage(ctx, item, today);
     if !cov.ok {
         t.uncovered.push(format!("{name} - {}", cov.detail));
@@ -403,10 +419,12 @@ fn tally(ctx: &PlanContext, today: Date) -> Tally {
         tally_sku_and_reference(ctx, item, &name, &mut t);
         let e = entry(ctx, item.price_book_entry_id);
         if let Some(sku) = sku_of(ctx, item.sku_id) {
+            // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
             if sku.r#type == SkuType::Bundle {
                 t.bundle.push(name);
                 continue;
             }
+            // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
             tally_structure(sku, e, item, &name, &mut t);
         }
         if item.treatment == Treatment::Included && item.price_book_entry_id.is_none() {
@@ -465,7 +483,9 @@ fn plan_rows(ctx: &PlanContext, sale: Date) -> Vec<Check> {
     if let Some(b) = b
         && (b.book.valid_from.is_some() || b.book.valid_until.is_some())
     {
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
         let valid = book::valid_on(&b.book, sale);
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
         let window = format!(
             "{} -> {}",
             b.book

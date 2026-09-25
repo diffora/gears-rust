@@ -1,4 +1,6 @@
 //! Scoped plan revision persistence with conditional versions and pending ownership (D-394).
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-revision-book:p1
 use super::{driver_failure, map_unique, matched};
 use crate::domain::plan::RevisionState;
 use crate::infra::storage::{RepoError, entity::plan_revision as e};
@@ -265,6 +267,7 @@ pub async fn supersede(
     version: i64,
     now: time::OffsetDateTime,
 ) -> Result<(), RepoError> {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-4
     let result = e::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -282,6 +285,7 @@ pub async fn supersede(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("supersede plan revision".into(), e))?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-4
     matched(result.rows_affected, "STALE_REVISION")
 }
 /// Delete an unlocked draft that has no items left, at its observed version; the caller deletes

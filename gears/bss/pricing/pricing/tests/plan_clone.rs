@@ -34,6 +34,13 @@ async fn revision(f: &Fixture, id: Uuid) -> Value {
     assert_eq!(s, 200, "{b}");
     b
 }
+async fn plan_body(f: &Fixture, id: Uuid) -> Value {
+    let (s, b, _) = f
+        .call("GET", &format!("/plans/{id}"), json!({}), None, None)
+        .await;
+    assert_eq!(s, 200, "{b}");
+    b
+}
 fn row<'a>(body: &'a Value, code: &str) -> &'a Value {
     body["checks"]
         .as_array()
@@ -318,4 +325,96 @@ async fn the_clone_door_needs_plan_author() {
         .await;
         assert_eq!(s, status, "{b}");
     }
+}
+
+/// The `plan-clone` definition of done (AC #15): the clone is a separate plan and draft; renaming
+/// it, moving its sale date, editing and removing its items leaves the source plan and its
+/// published revision exactly as they were.
+#[tokio::test]
+async fn changing_the_clone_leaves_the_source_unchanged() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (p, rev1) = plan(&f, "pro", eur).await;
+    let source = id_of(&p["id"]);
+    let (seats, storage) = (catalog.sku(SkuType::Recurring), catalog.sku(SkuType::Usage));
+    let seats_entry = entry(&f, eur, seats, "recurring", Some("month")).await;
+    item(&f, rev1, seats, Some(seats_entry), "paid").await;
+    item_with_qty(&f, rev1, storage, "100").await;
+    publish(&f, source, rev1).await;
+    let (plan_before, rev_before) = (plan_body(&f, source).await, revision(&f, rev1).await);
+    let (s, cloned, _) = clone(
+        &f,
+        source,
+        json!({"code":"pro-2","name":"Pro 2"}),
+        Some("clone"),
+    )
+    .await;
+    assert_eq!(s, 201, "{cloned}");
+    let target = id_of(&cloned["id"]);
+    let draft = id_of(&cloned["revisions"][0]["id"]);
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/plans/{target}"),
+            json!({"name":"Pro 2, changed"}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let path = format!("/plan-revisions/{draft}");
+    let (_, current, tag) = f.call("GET", &path, json!({}), None, None).await;
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"available_from":"2031-06-01"}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let copies = current["items"].as_array().unwrap();
+    let copy_of = |sku: Uuid| {
+        copies
+            .iter()
+            .find(|i| i["sku_id"] == sku.to_string())
+            .unwrap()
+            .clone()
+    };
+    let (seats_copy, storage_copy) = (copy_of(seats), copy_of(storage));
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/plan-items/{}", storage_copy["id"].as_str().unwrap()),
+            json!({"included_qty":"250"}),
+            Some(&format!("\"{}\"", storage_copy["version"])),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-items/{}", seats_copy["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    let changed = revision(&f, draft).await;
+    assert_eq!(changed["available_from"], "2031-06-01");
+    assert_eq!(changed["items"].as_array().unwrap().len(), 1, "{changed}");
+    assert_eq!(changed["items"][0]["included_qty"], "250");
+    assert_eq!(
+        plan_body(&f, source).await,
+        plan_before,
+        "the source plan is untouched"
+    );
+    assert_eq!(
+        revision(&f, rev1).await,
+        rev_before,
+        "the source revision is untouched"
+    );
 }

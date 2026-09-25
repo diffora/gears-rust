@@ -7,6 +7,8 @@
 //! item in ONE transaction (D-413); the door then drives the attach ops best-effort and answers
 //! 201, and the ticker finishes what it could not. A draft revision belongs to its author (D-404):
 //! only its `created_by` edits or deletes it and its items.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-clone:p1
 use super::{
     AuthoringState, configuration,
     dto::{
@@ -148,6 +150,7 @@ pub(super) async fn create(
         return Err(support::missing().into());
     }
     let now = time::OffsetDateTime::now_utc();
+    // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     let p = plan_repo::insert(
         tx,
         scope,
@@ -185,6 +188,7 @@ pub(super) async fn create(
         },
     )
     .await?;
+    // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
     let body = PricingPlanDto::of(p, &[r]);
@@ -315,6 +319,7 @@ async fn copy_in(
     if revisions.iter().any(|r| open.contains(&r.state.as_str())) {
         return Err(support::conflict("REVISION_DRAFT_EXISTS").into());
     }
+    // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     let source = revisions
         .iter()
         .find(|r| r.state == RevisionState::Published.as_str())
@@ -349,6 +354,7 @@ async fn copy_in(
     )
     .await?;
     let (items, ops) = copy_items(tx, &children, ctx, correlation, source.id, r.id, now).await?;
+    // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan_revision.copy", r.id, 1).await?;
     let body = PricingPlanRevisionDto::of(r, items);
     let response = support::answer(
@@ -406,9 +412,11 @@ async fn copy_items(
             },
         )
         .await?;
+        // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
         let op = reference_work::attach_op(ctx, &copy, correlation, now)?;
         ops.push(op.op_id);
         reference_op_repo::insert(tx, children, op).await?;
+        // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
         items.push(copy);
     }
     Ok((items, ops))
@@ -477,6 +485,7 @@ async fn clone_in(
     }
     let children = AccessScope::for_tenant(tenant);
     let from = find_plan(tx, scope, tenant, source).await?;
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     let published = plan_revision_repo::for_plan(tx, &children, tenant, from.id)
         .await?
         .into_iter()
@@ -521,6 +530,7 @@ async fn clone_in(
     )
     .await?;
     let (_, ops) = copy_items(tx, &children, ctx, correlation, published.id, r.id, now).await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     support::audit(tx, ctx, correlation, "plan.clone", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
     let body = PricingPlanDto::of(p, &[r]);
@@ -706,10 +716,12 @@ pub(super) async fn checks(
         Box::pin(async move { stored_context(tx, &scope, tenant, id).await })
     })
     .await?;
+    // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
     context.skus = fresh_skus(&state.hub, &ctx, context.items.iter().map(|i| i.sku_id)).await?;
     let today = time::OffsetDateTime::now_utc().date();
     let rows = plan::checks(&context, today);
     let ready = plan::ready(&rows);
+    // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
     let body = PricingPlanChecksDto {
         checks: rows.into_iter().map(Into::into).collect(),
         ready,
@@ -731,6 +743,7 @@ pub async fn fresh_skus(
     let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
     let wanted: BTreeSet<Uuid> = skus.into_iter().collect();
     let mut found = Vec::with_capacity(wanted.len());
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     for sku in wanted {
         match registry
             .sku_for_write(ctx, ctx.subject_tenant_id(), sku)
@@ -742,6 +755,7 @@ pub async fn fresh_skus(
             Err(_) => return Err(support::unavailable()),
         }
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     Ok(found)
 }
 fn corrupt(what: String) -> DoorError {

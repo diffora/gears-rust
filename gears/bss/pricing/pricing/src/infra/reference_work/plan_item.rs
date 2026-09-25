@@ -5,6 +5,8 @@
 //! the write against a submit, a book change or a delete. An attached or rereserved item only has
 //! its reference columns moved, in any revision state: the machine is the one writer allowed to
 //! touch an item of a published or superseded revision (D-413).
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-reference-protocol:p1
 use super::{
     super::{events::EventSink, reference_events},
     Observation, Receipt, Ref, Target, Work, Write, corrupt, new_op,

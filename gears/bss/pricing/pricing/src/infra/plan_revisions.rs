@@ -9,6 +9,8 @@
 //! and kept beside `after`, never in it: a GL change must not refresh a pending unit (D-408).
 //! Submit and apply judge the revision with the checks of `GET /plan-revisions/{id}/checks`,
 //! built by the same function from the same fresh reads.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-revision-unit:p1
 use crate::{
     api::rest::authoring::{
         dto::PricingPlanCheckDto,
@@ -341,12 +343,14 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         if r.state != RevisionState::Draft.as_str() || r.pending_unit_id.is_some() {
             return Err(invalid("REVISION_NOT_DRAFT", format!("revision {}", r.id)));
         }
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
         let red = red(self.judge(tx).await?);
         if red.is_empty() {
             return Ok(());
         }
         self.refuse(support::checks_red(&red));
         Err(invalid("REVISION_CHECKS_RED", codes(&red)))
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
     }
     /// `pending_unit_id` on an unlocked draft at the version read; a lost write is
     /// `ROW_LOCKED_PENDING` and the whole submit rolls back.
@@ -415,6 +419,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
                 detail: format!("revision {}", r.id),
             });
         }
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-2
         let red = red(self.judge(tx).await.map_err(applied)?);
         if !red.is_empty() {
             return Err(ApprovalError::ApplyRefused {
@@ -422,6 +427,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
                 detail: codes(&red),
             });
         }
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-2
         let scope = self.scope();
         let previous = plan_revision_repo::for_plan(tx, &scope, self.tenant_id, r.plan_id)
             .await
@@ -432,6 +438,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
             RepoError::Conflict { .. } => ApprovalError::Contended,
             other => storage(other),
         };
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
+        // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-5
         if let Some(previous) = &previous {
             plan_revision_repo::supersede(
                 tx,
@@ -462,6 +470,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         )
         .await
         .map_err(contended)?;
+        // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-5
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
         if let Ok(mut review) = self.review.lock() {
             review.superseded = previous.map(|x| x.id);
         }

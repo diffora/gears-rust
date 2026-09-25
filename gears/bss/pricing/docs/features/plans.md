@@ -72,33 +72,33 @@ Holding multiple permissions never bypasses separation of duties.
 
 ### Prepare and publish a revision
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-flow-plans`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-flow-plans`
 
-1. [ ] - `p1` - Product Manager copies published structure into a new draft revision, or starts a new plan. - `inst-plans-flow-1`
-2. [ ] - `p1` - Select one book, items, included quantities and availability; add each item through the item sub-resource, which reserves its reference before the write (D-407), while a copied item attaches its reference after the copy is written (D-413). Grants and the sold-as bundle SKU are deferred by the owner (D-411). - `inst-plans-flow-2`
-3. [ ] - `p1` - Read checks for the sale date and all dimension values; show ITEM_UNCOVERED and computed blocked_by price units when coverage is missing. - `inst-plans-flow-3`
-4. [ ] - `p1` - After checks pass, submit a separate plan_revision unit; revalidate on apply. - `inst-plans-flow-4`
-5. [ ] - `p1` - On approval publish the revision, supersede the previous published revision and advance plan.published_rev atomically; existing subscription pins remain unchanged. - `inst-plans-flow-5`
+1. [x] - `p1` - Product Manager copies published structure into a new draft revision, or starts a new plan. - `inst-plans-flow-1`
+2. [x] - `p1` - Select one book, items, included quantities and availability; add each item through the item sub-resource, which reserves its reference before the write (D-407), while a copied item attaches its reference after the copy is written (D-413). Grants and the sold-as bundle SKU are deferred by the owner (D-411). - `inst-plans-flow-2`
+3. [x] - `p1` - Read checks for the sale date and all dimension values; show ITEM_UNCOVERED and computed blocked_by price units when coverage is missing. - `inst-plans-flow-3`
+4. [x] - `p1` - After checks pass, submit a separate plan_revision unit; revalidate on apply. - `inst-plans-flow-4`
+5. [x] - `p1` - On approval publish the revision, supersede the previous published revision and advance plan.published_rev atomically; existing subscription pins remain unchanged. - `inst-plans-flow-5`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### revision-checks
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-checks`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-checks`
 
-1. [ ] - `p1` - Read every item SKU fresh and check it is allowed, non-bundle and not newly deprecated (D-408); validate every item reference's receipt (D-413) and the charge treatment. - `inst-plans-revision-checks-1`
-2. [ ] - `p1` - Enforce one recurring frequency, unique usage meter and usage-only included_qty; reject foreign-book entries. - `inst-plans-revision-checks-2`
-3. [ ] - `p1` - For every registered dimension value, verify sale-date coverage and an open tail through its own or the default chain; check book validity. - `inst-plans-revision-checks-3`
-4. [ ] - `p1` - When uncovered, compute blocking pending price unit ids from current prices; return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
+1. [x] - `p1` - Read every item SKU fresh and check it is allowed, non-bundle and not newly deprecated (D-408); validate every item reference's receipt (D-413) and the charge treatment. - `inst-plans-revision-checks-1`
+2. [x] - `p1` - Enforce one recurring frequency, unique usage meter and usage-only included_qty; reject foreign-book entries. - `inst-plans-revision-checks-2`
+3. [x] - `p1` - For every registered dimension value, verify sale-date coverage and an open tail through its own or the default chain; check book validity. - `inst-plans-revision-checks-3`
+4. [x] - `p1` - When uncovered, compute blocking pending price unit ids from current prices; return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
 
 ### revision-apply
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-apply`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-apply`
 
-1. [ ] - `p1` - Claim the unit version and verify generation, SoD and business-content fingerprint through slice 05. - `inst-plans-revision-apply-1`
-2. [ ] - `p1` - Revalidate book, SKU lifecycle and complete coverage inside apply; changed environment refuses apply without partial publication. - `inst-plans-revision-apply-2`
-3. [ ] - `p1` - Publish the selected revision, supersede the previous one and update published_rev, audit and PlanRevisionPublished in one transaction. - `inst-plans-revision-apply-3`
-4. [ ] - `p1` - Keep all historical revision/book bindings and subscription pins intact. - `inst-plans-revision-apply-4`
+1. [x] - `p1` - Claim the unit version and verify generation, SoD and business-content fingerprint through slice 05. - `inst-plans-revision-apply-1`
+2. [x] - `p1` - Revalidate book, SKU lifecycle and complete coverage inside apply; changed environment refuses apply without partial publication. - `inst-plans-revision-apply-2`
+3. [x] - `p1` - Publish the selected revision, supersede the previous one and update published_rev, audit and PlanRevisionPublished in one transaction. - `inst-plans-revision-apply-3`
+4. [x] - `p1` - Keep all historical revision/book bindings and subscription pins intact. - `inst-plans-revision-apply-4`
 
 ### clone-and-retire
 
@@ -106,7 +106,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 Retirement (steps 2 to 4) is deferred by the owner (D-410, 2026-09-25) and not built in phase 3; clone stays.
 
-1. [ ] - `p1` - Clone creates a new uniquely coded draft with copied structure and fresh reference attempts; it does not clone approved identity or decisions. - `inst-plans-clone-and-retire-1`
+1. [x] - `p1` - Clone creates a new uniquely coded draft with copied structure and fresh reference attempts; it does not clone approved identity or decisions. - `inst-plans-clone-and-retire-1`
 2. [ ] - `p1` - Retirement requires an explicit migration proposal against an eligible published target. - `inst-plans-clone-and-retire-2`
 3. [ ] - `p1` - Persist and approve the migration request through slice 06, retaining references required by live or historical bindings. - `inst-plans-clone-and-retire-3`
 4. [ ] - `p1` - Wait for the separately implemented Subscriptions completion contract before claiming retirement completion; release references only after durable cancellation/removal is valid. - `inst-plans-clone-and-retire-4`
@@ -125,7 +125,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 ### Immutable revision book binding
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-revision-book`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-revision-book`
 
 Each published revision owns one book and immutable item structure. Copying to draft allocates a new revision number; publishing cannot rewrite a historical book binding (spec §5).
 
@@ -133,7 +133,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 ### Item and frequency rules
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-item-rules`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-item-rules`
 
 Validate recurring frequency, duplicate usage meters, treatment and usage-only included quantities. Reject bundle items, deprecated SKUs in new revisions and foreign-book entries using the named spec errors (spec §5).
 
@@ -141,7 +141,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 ### Coverage for every value
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-coverage`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-coverage`
 
 Sale-date checks include each dimension value via own chain or default plus open-tail coverage and book validity. Missing default alone is not an error when every value is covered (spec §5, §14).
 
@@ -149,7 +149,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 ### Computed blocking units
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-blocked-by`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-blocked-by`
 
 Checks derive blocked_by from current pending prices of uncovered entries. A red draft creates no plan_revision unit and becomes eligible only after a fresh successful check (spec §6, §8).
 
@@ -157,7 +157,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 ### Independent revision approval
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-revision-unit`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-revision-unit`
 
 plan_revision uses the shared generation/SoD/quorum rules and revalidates coverage on apply. It publishes structure independently of approved money and never migrates pins (spec §6, §12).
 
@@ -165,7 +165,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 ### Item references
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-reference-protocol`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-reference-protocol`
 
 A new plan_item reference, added through the item sub-resource, uses reserve, SKU re-read, local receipt/work commit and confirm (D-407). A copied item is written unreserved and attaches after the write (D-413). Removal/cancellation precedes durable release, with the same lost-receipt handling as entries; published and superseded revisions keep their references (D-414) (spec §13). The sold_as reference is deferred with the sold-as bundle (D-411).
 
@@ -181,7 +181,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 ### Clone into a fresh draft
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-clone`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-clone`
 
 Clone preserves authorable structure while allocating new plan/revision ids and reference attempts: the new plan's draft rev 1 copies the source's published revision (book, availability, items), each item written unreserved and attached after the write (D-413). It does not inherit approval decisions, published state (approved_by_unit_id, published_at) or subscription pins; a source with no published revision is refused CLONE_SOURCE_UNPUBLISHED, and a carried deprecated SKU is red in the new plan's checks (D-408) (spec §3 item 28).
 

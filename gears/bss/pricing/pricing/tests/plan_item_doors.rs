@@ -754,3 +754,92 @@ async fn item_and_check_doors_need_the_plan_permissions() {
     }
     assert_eq!(items(&f, rev).await.len(), 1);
 }
+
+/// The `plan-blocked-by` definition of done (AC #15): `blocked_by` is computed from the current
+/// pending prices, never stored: once the unit that would cover the item is rejected, or
+/// withdrawn, the next check no longer names it and the item is simply uncovered.
+#[tokio::test]
+async fn a_rejected_or_withdrawn_price_unit_is_no_longer_named_by_the_next_check() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (_, rev) = plan(&f, "pro", eur).await;
+    available_from(&f, rev, "2031-03-01").await;
+    let storage = catalog.sku(SkuType::Usage);
+    let e = entry(&f, eur, storage, "usage", None).await;
+    let (s, b, _) = add(
+        &f,
+        rev,
+        json!({"sku_id":storage,"price_book_entry_id":e,"treatment":"paid"}),
+        "one",
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    let (_, _, tag) = f
+        .call("GET", "/approval-policy", json!({}), None, None)
+        .await;
+    let (s, b, _) = f
+        .call(
+            "PUT",
+            "/approval-policy",
+            json!({"kind":"prices","quorum":1}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    for (act, from) in [("reject", "2031-03-01"), ("withdraw", "2031-02-01")] {
+        let (s, drafted, _) = f
+            .call(
+                "POST",
+                &format!("/price-book-entries/{e}/prices"),
+                json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
+                None,
+                Some(&format!("price-{act}")),
+            )
+            .await;
+        assert_eq!(s, 201, "{act}: {drafted}");
+        let price = drafted["items"][0]["id"].as_str().unwrap();
+        let (s, receipt, _) = f
+            .call(
+                "POST",
+                &format!("/prices/{price}/submit"),
+                json!({}),
+                None,
+                Some(&format!("submit-{act}")),
+            )
+            .await;
+        assert_eq!(s, 201, "{act}: {receipt}");
+        let unit = receipt["unit"]["id"].as_str().unwrap();
+        let (_, red) = checks(&f, rev).await;
+        assert_eq!(
+            row(&red, "ITEM_UNCOVERED")["blocked_by"],
+            json!([unit]),
+            "{act}: {red}"
+        );
+        let (who, body) = if act == "reject" {
+            (f.user(), json!({"generation":1,"note":"not yet"}))
+        } else {
+            (f.ctx.clone(), json!({}))
+        };
+        let (s, b, _) = f
+            .call_as(
+                &who,
+                "POST",
+                &format!("/approval-units/{unit}/{act}"),
+                body,
+                None,
+                Some(act),
+            )
+            .await;
+        assert_eq!(s, 200, "{act}: {b}");
+        let (_, next) = checks(&f, rev).await;
+        let uncovered = row(&next, "ITEM_UNCOVERED");
+        assert_eq!(uncovered["ok"], false, "{act}: still uncovered: {next}");
+        assert_eq!(
+            uncovered["blocked_by"],
+            json!([]),
+            "{act}: no dependency outlives the unit: {next}"
+        );
+        assert_eq!(next["ready"], false);
+    }
+}

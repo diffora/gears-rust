@@ -132,8 +132,10 @@ pub async fn add(
         Box::pin(async move { admissible(tx, &scope, &ctx, revision, &input).await })
     })
     .await?;
+    // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
     fresh_sku(&state, &ctx, input.sku_id).await?;
     create(state, scope, ctx, revision, correlation, key, digest, input).await
+    // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
 }
 /// The revision, the entry and the revision's items, judged in one read.
 async fn admissible(
