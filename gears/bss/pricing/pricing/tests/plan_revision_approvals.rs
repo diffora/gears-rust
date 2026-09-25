@@ -349,18 +349,16 @@ async fn submit_needs_an_unlocked_draft_of_the_tenant_and_an_answering_registry(
     assert_eq!(units(&f).await.len(), 1);
     let (s, b) = submit(&f, &plan_support::stranger(), g.revision, "stranger").await;
     assert_eq!(s, 403, "a stranger may not submit here: {b}");
-    let (s, b) = submit(
-        &f,
-        &plan_support::holding(&f, "plan:author"),
-        g.revision,
-        "author",
-    )
-    .await;
-    assert_eq!(s, 403, "submitting needs approval_unit:submit: {b}");
+    // D-418: a plan revision is submitted under `plan:submit`, the plan label's own action, as a
+    // price is under `price:submit`; neither authoring the plan nor `approval_unit:submit` is it.
+    for grant in ["plan:author", "approval_unit:submit"] {
+        let (s, b) = submit(&f, &plan_support::holding(&f, grant), g.revision, grant).await;
+        assert_eq!(s, 403, "submitting needs plan:submit, not {grant}: {b}");
+    }
     let other = green(&f, &catalog, "other").await;
     let (s, b) = submit(
         &f,
-        &plan_support::holding(&f, "approval_unit:submit"),
+        &plan_support::holding(&f, "plan:submit"),
         other.revision,
         "submitter",
     )

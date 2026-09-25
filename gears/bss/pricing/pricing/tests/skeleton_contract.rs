@@ -75,3 +75,28 @@ async fn pricing_alone_initializes_serves_authoring_routes_and_stops() {
         .unwrap()
         .unwrap();
 }
+
+// Surface S-5: each plan request body documents its own door in the served spec; the clone body
+// is not described as the rename under If-Match.
+#[tokio::test]
+async fn the_served_spec_documents_each_plan_body_on_its_own_schema() {
+    use toolkit::api::OpenApiInfo;
+    let harness = rest_support::Harness::new().await.unwrap();
+    let (_, openapi) = harness.router(axum::Router::new()).unwrap();
+    let api =
+        serde_json::to_value(openapi.build_openapi(&OpenApiInfo::default()).unwrap()).unwrap();
+    let described = |schema: &str| {
+        api["components"]["schemas"][schema]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let patch = described("PricingPlanPatch");
+    assert!(
+        patch.contains("PATCH /plans/{id}") && patch.contains("If-Match"),
+        "{patch:?}"
+    );
+    let clone = described("PricingPlanClone");
+    assert!(clone.contains("POST /plans/{id}/clone"), "{clone:?}");
+    assert!(!clone.contains("PATCH"), "{clone:?}");
+}

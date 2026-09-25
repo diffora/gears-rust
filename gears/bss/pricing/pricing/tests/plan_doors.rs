@@ -281,30 +281,13 @@ async fn a_copy_needs_a_published_revision_and_no_open_one() {
         text(&pending.1).contains("REVISION_DRAFT_EXISTS"),
         "{pending:?}"
     );
-    let (_, basic_rev) = plan(&f, "basic", eur).await;
-    let deleted = f
-        .call(
-            "DELETE",
-            &format!("/plan-revisions/{basic_rev}"),
-            json!({}),
-            None,
-            None,
-        )
-        .await;
-    assert_eq!(deleted.0, 204, "{deleted:?}");
-    let (_, plans, _) = f.call("GET", "/plans", json!({}), None, None).await;
-    let basic = plans["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|x| x["code"] == "basic")
-        .unwrap()
-        .clone();
-    assert_eq!(basic["revisions"], json!([]));
+    // D-417: a plan that loses its only, never-published revision is deleted with it, so no door
+    // can reach a plan without a revision; the store still refuses a copy of one.
+    let basic = bare_plan(&f, "basic").await;
     let none = f
         .call(
             "POST",
-            &format!("/plans/{}/revisions", basic["id"].as_str().unwrap()),
+            &format!("/plans/{basic}/revisions"),
             json!({}),
             None,
             Some("none"),
@@ -547,6 +530,148 @@ async fn a_draft_revision_delete_removes_its_items_with_a_delete_op_each() {
     }
     assert_eq!(catalog.releases(), 2);
     assert_eq!(f.call("DELETE", &path, json!({}), None, None).await.0, 404);
+}
+
+/// A plan row with no revision at all, written straight to the store: no door leaves one (D-417).
+async fn bare_plan(f: &plan_support::Fixture, code: &str) -> Uuid {
+    use bss_pricing::infra::storage::{entity::plan as p, repo::plan_repo};
+    let now = time::OffsetDateTime::now_utc();
+    plan_repo::insert(
+        &f.db.conn().unwrap(),
+        &plan_support::scope(f),
+        p::Model {
+            id: Uuid::now_v7(),
+            tenant_id: f.ctx.subject_tenant_id(),
+            code: code.into(),
+            name: code.into(),
+            published_rev: None,
+            version: 1,
+            created_by: f.ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap()
+    .id
+}
+/// The audit actions written about one subject, in order.
+async fn audited(f: &plan_support::Fixture, subject: &str) -> Vec<String> {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    Database::connect(&f.dsn)
+        .await
+        .unwrap()
+        .query_all_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT action FROM pricing_audit WHERE subject_id = ? ORDER BY written_at, action",
+            [subject.parse::<Uuid>().unwrap().into()],
+        ))
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.try_get::<String>("", "action").unwrap())
+        .collect()
+}
+
+// D-417: the last revision of a never-published plan takes the plan with it, in the same
+// transaction, and frees its code.
+#[tokio::test]
+async fn deleting_a_never_published_plans_last_revision_deletes_the_plan_and_frees_its_code() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (p, rev) = plan(&f, "pro", eur).await;
+    let gone = item(&f, rev, catalog.sku(SkuType::Usage), None, "included").await;
+    let id = p["id"].as_str().unwrap();
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-revisions/{rev}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    let (s, b, _) = f
+        .call("GET", &format!("/plans/{id}"), json!({}), None, None)
+        .await;
+    assert_eq!(s, 404, "the plan went with its last revision: {b}");
+    let (_, list, _) = f.call("GET", "/plans", json!({}), None, None).await;
+    assert_eq!(list["items"], json!([]));
+    assert_eq!(audited(&f, id).await, vec!["plan.create", "plan.delete"]);
+    assert_eq!(
+        ops_for(&f, gone.id).await[0].kind,
+        "delete",
+        "the item still has its delete op"
+    );
+    let (s, again, _) = f
+        .call(
+            "POST",
+            "/plans",
+            json!({"code":"pro","name":"Pro again","book_id":eur}),
+            None,
+            Some("again"),
+        )
+        .await;
+    assert_eq!(s, 201, "the code is free again: {again}");
+    assert_ne!(again["id"], p["id"]);
+}
+
+// D-417: a plan with a published revision keeps itself, its code and its published revision when
+// its draft is deleted.
+#[tokio::test]
+async fn a_draft_delete_leaves_a_plan_with_a_published_revision_as_it_was() {
+    let (f, _) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (p, rev1) = plan(&f, "pro", eur).await;
+    let id = p["id"].as_str().unwrap();
+    publish(&f, id_of(&p["id"]), rev1).await;
+    let (s, copy, _) = f
+        .call(
+            "POST",
+            &format!("/plans/{id}/revisions"),
+            json!({}),
+            None,
+            Some("copy"),
+        )
+        .await;
+    assert_eq!(s, 201, "{copy}");
+    let (_, before, _) = f
+        .call("GET", &format!("/plans/{id}"), json!({}), None, None)
+        .await;
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-revisions/{}", copy["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    let (s, after, _) = f
+        .call("GET", &format!("/plans/{id}"), json!({}), None, None)
+        .await;
+    assert_eq!(s, 200, "{after}");
+    assert_eq!(after["published_rev"], 1);
+    assert_eq!(
+        after["version"], before["version"],
+        "the plan row is untouched"
+    );
+    assert_eq!(after["revisions"].as_array().unwrap().len(), 1, "{after}");
+    assert_eq!(after["revisions"][0]["state"], "published");
+    assert!(!audited(&f, id).await.contains(&"plan.delete".to_owned()));
+    let (s, taken, _) = f
+        .call(
+            "POST",
+            "/plans",
+            json!({"code":"pro","name":"Pro again","book_id":eur}),
+            None,
+            Some("again"),
+        )
+        .await;
+    assert_eq!(s, 409, "{taken}");
+    assert!(text(&taken).contains("PLAN_CODE_TAKEN"), "{taken}");
 }
 
 #[tokio::test]

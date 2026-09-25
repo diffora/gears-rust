@@ -320,7 +320,6 @@ pub struct PricingPlanCreate {
     pub name: String,
     pub book_id: Uuid,
 }
-/// `PATCH /plans/{id}`: the plan's name, under If-Match.
 /// `POST /plans/{id}/clone`: the new plan's own code and name; its draft rev 1 copies the source's
 /// published revision.
 #[toolkit_macros::api_dto(request)]
@@ -330,6 +329,7 @@ pub struct PricingPlanClone {
     pub code: String,
     pub name: String,
 }
+/// `PATCH /plans/{id}`: the plan's name, under If-Match.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]

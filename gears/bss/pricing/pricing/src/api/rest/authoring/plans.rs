@@ -664,7 +664,8 @@ async fn remap(
 }
 /// `DELETE /plan-revisions/{id}`: remove an unlocked draft of the caller with every item, each
 /// with its delete op, in one transaction (D-414); then drive the releases best-effort and
-/// answer 204.
+/// answer 204. The last revision of a never-published plan takes the plan with it in the same
+/// transaction, freeing its code (D-417); a plan with a published revision stays as it is.
 /// # Errors
 /// 404; 409 `REVISION_NOT_DRAFT`; 403 `NOT_DRAFT_AUTHOR`; 409 `ITEM_CONFIRMATION_PENDING` while
 /// an item's confirm is outstanding; 409 `STALE_REVISION` for a lost race.
@@ -689,6 +690,18 @@ pub(super) async fn delete_revision(
             }
             plan_revision_repo::delete_draft(tx, &children, tenant, id, m.version).await?;
             support::audit(tx, &ctx, correlation, "plan_revision.delete", id, m.version).await?;
+            // D-417: a never-published plan left without a revision goes with it.
+            let p = plan_repo::find(tx, &children, tenant, m.plan_id)
+                .await?
+                .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
+            if p.published_rev.is_none()
+                && plan_revision_repo::for_plan(tx, &children, tenant, p.id)
+                    .await?
+                    .is_empty()
+            {
+                plan_repo::delete_unpublished(tx, &children, tenant, p.id, p.version).await?;
+                support::audit(tx, &ctx, correlation, "plan.delete", p.id, p.version).await?;
+            }
             Ok(ops)
         })
     })

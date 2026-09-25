@@ -48,13 +48,16 @@ fn treatment(text: &str) -> Result<Treatment, DoorError> {
     text.parse()
         .map_err(|_| support::invalid("treatment", "TREATMENT_INVALID").into())
 }
-/// Canonical unsigned decimal text, the column's own CHECK: digits, then an optional fraction.
+/// Canonical unsigned decimal text, the column's own CHECK: digits, then an optional fraction;
+/// and the domain's decimal, which the checks and submit parse it as (a text too long for it
+/// would be a stored row every later read answers 500 for).
 fn included_qty(text: Option<&str>) -> Result<(), DoorError> {
     let canonical = |q: &str| {
         let (whole, fraction) = q.split_once('.').map_or((q, None), |(w, f)| (w, Some(f)));
         !whole.is_empty()
             && whole.bytes().all(|b| b.is_ascii_digit())
             && fraction.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
+            && q.parse::<rust_decimal::Decimal>().is_ok()
     };
     if text.is_some_and(|q| !canonical(q)) {
         return Err(support::invalid("included_qty", "INCLUDED_QTY_INVALID").into());

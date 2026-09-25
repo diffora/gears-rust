@@ -230,6 +230,54 @@ async fn item_door_refusals_are_answered_before_any_reservation() {
     );
 }
 
+// Surface S-3: an included quantity is the domain's decimal. A canonical text too long for it
+// (30 integer digits) is 400 INCLUDED_QTY_INVALID at both item doors, never an item that every
+// later checks read and submit answers 500 for.
+#[tokio::test]
+async fn an_included_quantity_beyond_the_decimal_is_refused_at_both_item_doors() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (_, rev) = plan(&f, "pro", eur).await;
+    let storage = catalog.sku(SkuType::Usage);
+    let huge = format!("1{}", "0".repeat(29));
+    assert_eq!(huge.len(), 30);
+    let (s, b, _) = add(
+        &f,
+        rev,
+        json!({"sku_id":storage,"treatment":"included","included_qty":huge}),
+        "huge",
+    )
+    .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(text(&b).contains("INCLUDED_QTY_INVALID"), "{b}");
+    assert_eq!(catalog.reserves(), 0, "the refusal cost no reservation");
+    assert!(items(&f, rev).await.is_empty());
+    let widest = "9".repeat(28);
+    let (s, b, _) = add(
+        &f,
+        rev,
+        json!({"sku_id":storage,"treatment":"included","included_qty":widest}),
+        "widest",
+    )
+    .await;
+    assert_eq!(s, 201, "28 digits are a decimal: {b}");
+    let path = format!("/plan-items/{}", b["id"].as_str().unwrap());
+    let tag = format!("\"{}\"", b["version"]);
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"included_qty":huge}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(text(&b).contains("INCLUDED_QTY_INVALID"), "{b}");
+    let (s, b) = checks(&f, rev).await;
+    assert_eq!(s, 200, "the stored quantity still reads: {b}");
+}
+
 #[tokio::test]
 async fn a_revision_holds_at_most_two_hundred_items_at_the_door_and_at_the_write() {
     let (f, catalog) = setup().await;

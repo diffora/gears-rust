@@ -516,10 +516,11 @@ async fn submit_plan_revision(
     body: Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
+    // D-418: the plan label's own submit action, as `price:submit` gates a price's submit.
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
-        &resource_types::APPROVAL_UNIT,
+        &resource_types::PLAN,
         actions::SUBMIT,
         Some(OwnerTenant(ctx.subject_tenant_id())),
         None,

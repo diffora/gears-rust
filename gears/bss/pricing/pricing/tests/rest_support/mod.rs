@@ -277,5 +277,5 @@ impl Harness {
 // GET /plan-revisions/{id}/checks plan:read false false
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
-// POST /plan-revisions/{id}/submit approval_unit:submit false true
+// POST /plan-revisions/{id}/submit plan:submit false true
 // POST /plans/{id}/clone plan:author false true

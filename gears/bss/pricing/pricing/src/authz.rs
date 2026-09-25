@@ -13,7 +13,8 @@ pub mod labels {
     pub const PRICE: &str = gts_id!("cf.bss.pricing.price.v1~");
     pub const APPROVAL_UNIT: &str = gts_id!("cf.bss.pricing.approval_unit.v1~");
     pub const CONFIG: &str = gts_id!("cf.bss.pricing.config.v1~");
-    /// A plan, its revisions and their items: one label, read and author (phase 3).
+    /// A plan, its revisions and their items: one label, read and author (phase 3), and submit
+    /// for a revision's approval (D-418), as `price:submit` is for a price.
     pub const PLAN: &str = gts_id!("cf.bss.pricing.plan.v1~");
     pub const ALL: &[&str] = &[
         PRICE_BOOK,

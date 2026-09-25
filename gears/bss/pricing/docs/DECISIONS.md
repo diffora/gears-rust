@@ -53,6 +53,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-414 | H | A revision's references outlive it | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 14 |
 | D-415 | H | Quote is not built; the Studio is not wired to the API (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; deviation from spec §7.1 and §11 phase 4 |
 | D-416 | H | Descriptors are read best-effort; the reads a rule needs stay hard | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F2, surface S-1, docs F1 and F2) |
+| D-417 | M | The last revision of a never-published plan takes the plan with it | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F1, surface S-2) |
+| D-418 | H | A plan revision is submitted under plan:submit | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief |
 
 ## Entries
 
@@ -287,3 +289,19 @@ GET /pricing/v1/quote is not built in this programme, and the PriceBook Studio i
 The SKU descriptors an approval unit shows (D-408) are information, so their read is best-effort: when Products cannot answer it (503) or definitely refuses it (for example 403 for a caller without products read), the snapshot records "descriptors": "unavailable" and the submit, the vote or the reject goes on. The reads that feed a RULE stay hard and are made as the caller: the plan checks (GET /plan-revisions/{id}/checks, and the plan_revision subject's validate_submit and apply) and a usage chain's dated metering (the pair guard, D-402). There only unavailability is 503 REGISTRY_UNAVAILABLE, and a refusal keeps Products' own status and code on submit, approve and reject alike, never 400 REGISTRY_REFUSED. So an approve-only reviewer votes on any unit whose rules read no SKU and rejects any unit, while a rule read needs products read too: the plan_revision submitter and its final approver (apply re-runs the checks), readers of the checks, plan item authors (the item door and its create re-read), and the submitter and final approver of a prices unit on a usage chain.
 
 **Source:** Phase 3 review, fix run 7 (plans F2, surface S-1, docs F1 and F2; controller notes 4 and 5).
+
+#### D-417 [M] The last revision of a never-published plan takes the plan with it
+
+**Status:** DECIDED 2026-09-26.
+
+DELETE /plan-revisions/{id} of the last revision of a plan that was never published (published_rev IS NULL and no other revision) deletes the plan in the same transaction, with a plan.delete audit row, and frees its code; the door still answers 204. Without it such a plan was stranded: a copy answered PLAN_UNPUBLISHED, a clone CLONE_SOURCE_UNPUBLISHED, no door deletes a plan, and its code stayed taken. Nothing refers to a never-published plan: it has no published revision, no pin and no event, and an approval unit names a revision by ref_id without a foreign key. A plan with a published revision keeps its behaviour: deleting its draft leaves the plan, its code and its published revision as they are.
+
+**Source:** Phase 3 review, fix run 7 (plans F1, surface S-2; controller note 1).
+
+#### D-418 [H] A plan revision is submitted under plan:submit
+
+**Status:** DECIDED 2026-09-26.
+
+POST /plan-revisions/{id}/submit checks the plan label's own submit action, plan:submit: the label-specific analogue of price:submit on POST /prices/{id}/submit and of price_book:submit on publish-changes. The plan label's actions are read, author and submit. approval_unit:submit, which the run 3.4 brief bound to this door, stays the right to withdraw a unit; it no longer lets a prices submitter submit, or read through the receipt, a plan revision, so a tenant can withhold plan submission from its prices submitters.
+
+**Source:** Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief.

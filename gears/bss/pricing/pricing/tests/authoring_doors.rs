@@ -699,7 +699,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         (
             "POST",
             format!("/plan-revisions/{id}/submit"),
-            "approval_unit",
+            "plan",
             "submit",
         ),
         ("POST", format!("/plans/{id}/clone"), "plan", "author"),

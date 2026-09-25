@@ -121,3 +121,37 @@ pub async fn set_published(
         .map_err(|e| driver_failure("publish plan projection".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
+/// Delete a plan that was never published and has no revision left, at the version the caller
+/// read, in the caller's transaction (D-417): its code is free again.
+/// # Errors
+/// A published plan, a remaining revision or a lost version is `STALE_REVISION`; database
+/// failures keep their type.
+pub async fn delete_unpublished(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+) -> Result<(), RepoError> {
+    use crate::infra::storage::entity::plan_revision;
+    use toolkit_db::secure::SecureDeleteExt;
+    let revisions = sea_orm::sea_query::Query::select()
+        .expr(Expr::val(1))
+        .from(plan_revision::Entity)
+        .and_where(plan_revision::Column::TenantId.eq(tenant))
+        .and_where(plan_revision::Column::PlanId.eq(id))
+        .to_owned();
+    let result = e::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            key(tenant, id)
+                .add(e::Column::Version.eq(version))
+                .add(e::Column::PublishedRev.is_null())
+                .add(Expr::exists(revisions).not()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete unpublished plan".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
