@@ -233,3 +233,32 @@ async fn translated_dimension_key_change_rejected_and_approved_delete_refused() 
     );
     assert_eq!(f.call("DELETE", &path, json!({}), None, None).await.0, 409);
 }
+
+#[tokio::test]
+async fn products_contention_and_rate_limits_are_unavailability_not_refusals() {
+    // A reserve answered 409 UNIT_CONTENDED or 429: nothing was written, the key is free.
+    for mode in [17, 19] {
+        let (f, script, path, input) = setup(mode).await;
+        let first = f
+            .call("POST", &path, input.clone(), None, Some("one"))
+            .await;
+        assert_eq!(first.0, 503, "{mode}: {first:?}");
+        script.set(0);
+        let retry = f.call("POST", &path, input, None, Some("one")).await;
+        assert_eq!(retry.0, 201, "{mode}: {retry:?}");
+    }
+    // The SKU re-read after a successful reserve answered 409 CONTENDED: the op keeps its
+    // receipt for recovery instead of cancelling and releasing it.
+    let (f, script, path, input) = setup(18).await;
+    let first = f
+        .call("POST", &path, input.clone(), None, Some("one"))
+        .await;
+    assert_eq!(first.0, 503, "{first:?}");
+    assert_eq!(Script::count(&script.releases), 0);
+    let retry = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(retry.0, 409);
+    assert!(
+        retry.1.to_string().contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
+        "{retry:?}"
+    );
+}

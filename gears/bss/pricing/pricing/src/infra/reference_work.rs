@@ -723,9 +723,16 @@ async fn cancel(
     .await
 }
 type Observation = (Event, Option<price::Model>, Option<Receipt>);
-/// A Products answer that settles the call: a client error. Everything else is unavailability.
-fn definite_refusal(error: &CanonicalError) -> bool {
-    (400..500).contains(&error.status_code())
+/// Products 409 codes a retry can clear: a lost race, not a refusal.
+const RETRYABLE_CONFLICTS: [&str; 2] = ["UNIT_CONTENDED", "CONTENDED"];
+/// A Products answer that settles the call: a client error, except rate limiting (429) and
+/// a contention conflict. Those, 5xx and timeouts are unavailability, never a refusal.
+#[must_use]
+pub fn definite_refusal(error: &CanonicalError) -> bool {
+    let status = error.status_code();
+    (400..500).contains(&status)
+        && status != 429
+        && !error_code(error).is_some_and(|code| RETRYABLE_CONFLICTS.contains(&code.as_str()))
 }
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,

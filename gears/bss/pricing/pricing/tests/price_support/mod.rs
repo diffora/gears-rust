@@ -312,6 +312,15 @@ impl ReferenceRegistryV1 for Script {
         if mode == 4 {
             return Err(refusal("SKU_FENCED"));
         }
+        if mode == 17 {
+            // Products lost a race on the SKU and rolled back: retryable.
+            return Err(refusal("UNIT_CONTENDED"));
+        }
+        if mode == 19 {
+            return Err(TestResource::resource_exhausted("slow down")
+                .with_quota_violation("reserve", "rate limited")
+                .create());
+        }
         if mode == 16 {
             // A refusal that says nothing about the SKU admitting references.
             return Err(TestResource::permission_denied()
@@ -406,6 +415,9 @@ impl ReferenceRegistryV1 for Script {
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
         let mode = self.mode.load(Ordering::SeqCst);
+        if mode == 18 {
+            return Err(refusal("CONTENDED"));
+        }
         Ok(Sku {
             id,
             tenant_id: tenant,
