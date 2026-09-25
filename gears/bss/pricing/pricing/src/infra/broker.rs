@@ -7,7 +7,10 @@
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-outbox-toolkit:p1
 use super::{
-    events::{ApprovalUnitDecided, EventSink, PricesPublished, QUEUE, SOURCE, TOPIC},
+    events::{
+        ApprovalUnitDecided, EventSink, PlanRevisionPublished, PricesPublished, QUEUE, SOURCE,
+        TOPIC,
+    },
     reference_events::{PlanReferenceLost, PriceBookEntryReferenceLost},
 };
 use anyhow::Context;
@@ -71,6 +74,7 @@ pub async fn bind_producer(
     producer.prepare::<PriceBookEntryReferenceLost>().await?;
     producer.prepare::<PlanReferenceLost>().await?;
     producer.prepare::<PricesPublished>().await?;
+    producer.prepare::<PlanRevisionPublished>().await?;
     producer.prepare::<ApprovalUnitDecided>().await?;
     // One queue name across both processors, so an arm switch strands no row.
     let queue = producer.outbox_queue(QUEUE, partitions)?;

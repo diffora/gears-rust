@@ -117,7 +117,7 @@ Retirement (steps 2 to 4) is deferred by the owner (D-410, 2026-09-25) and not b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-plans`
 
-Revision states are draft → pending → published → superseded; a rejected or withdrawn unit returns its revision to draft without publishing it. Plan retirement is deferred by the owner (D-410). A blocked draft has no unit; blocked_by is a computed check result. A retirement request does not mean all subscriptions have moved.
+Revision states are draft → pending → published → superseded; submit locks the draft under its unit (pending_unit_id, conditional), a rejected or withdrawn unit returns its revision to an editable draft without publishing it, and apply supersedes the published revision before it publishes this one. Plan retirement is deferred by the owner (D-410). A blocked draft has no unit; blocked_by is a computed check result. A retirement request does not mean all subscriptions have moved.
 
 ## 5. Definitions of Done
 

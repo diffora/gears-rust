@@ -27,6 +27,8 @@ pub const SOURCE: &str = "bss-pricing";
 /// `PricesPublished` is about a book.
 pub const PRICE_BOOK_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1";
+/// `PlanRevisionPublished` is about a plan: which revision it sells moved.
+pub const PLAN_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.pricing.plan.v1";
 /// `ApprovalUnitDecided` is about a unit.
 pub const APPROVAL_UNIT_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.pricing.approval_unit.v1";
@@ -93,6 +95,37 @@ impl TypedEvent for PricesPublished {
     const SOURCE: &'static str = SOURCE;
     fn subject(&self) -> Cow<'_, str> {
         Cow::Owned(self.book_id.to_string())
+    }
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+}
+
+/// A `plan_revision` unit was applied: the revision is the plan's published one, the revision
+/// published before it (if any) is superseded, and the plan's `published_rev` is its number.
+/// Existing subscription pins do not move (D-394).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRevisionPublished {
+    pub tenant_id: Uuid,
+    pub plan_id: Uuid,
+    pub revision_id: Uuid,
+    pub rev_no: i32,
+    /// The book the revision reads its money from.
+    pub book_id: Uuid,
+    /// The revision this one superseded; `None` for a plan's first publication.
+    pub superseded_revision_id: Option<Uuid>,
+    pub unit_id: Uuid,
+    /// The principal whose act applied the unit.
+    pub actor_ref: Uuid,
+}
+impl TypedEvent for PlanRevisionPublished {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event.v1~cf.bss.pricing.plan_revision_published.v1~";
+    const SUBJECT_TYPE: &'static str = PLAN_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.plan_id.to_string())
     }
     fn tenant_id(&self) -> Option<Uuid> {
         Some(self.tenant_id)

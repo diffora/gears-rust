@@ -46,6 +46,8 @@ pub struct Entry {
     pub lifecycle: Lifecycle,
     pub meter: Option<String>,
     pub name: String,
+    /// The SKU's current GL code, a descriptor (D-408): information, never content.
+    pub gl_code: Option<String>,
 }
 /// Products as pricing sees it: SKUs a test declares and ages, reservations that always
 /// succeed, and a switch that takes the whole registry down.
@@ -69,8 +71,13 @@ impl Catalog {
                 lifecycle,
                 meter: meter.map(str::to_owned),
                 name: format!("sku-{}", &id.to_string()[..8]),
+                gl_code: None,
             },
         );
+    }
+    /// Change a declared SKU's GL code, as a published `sku_change` would.
+    pub fn describe(&self, id: Uuid, gl_code: &str) {
+        self.skus.lock().unwrap().get_mut(&id).unwrap().gl_code = Some(gl_code.to_owned());
     }
     /// A new published SKU of a type.
     pub fn sku(&self, r#type: SkuType) -> Uuid {
@@ -193,7 +200,7 @@ impl ReferenceRegistryV1 for Catalog {
             lifecycle: entry.lifecycle,
             revision: 1,
             published_version: 1,
-            gl_code: None,
+            gl_code: entry.gl_code,
             tax_category: None,
             invoice_line_template: None,
             billing_timing: None,

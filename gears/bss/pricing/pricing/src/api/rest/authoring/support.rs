@@ -200,9 +200,12 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             source,
         }),
         A::InvalidSubmit { code, field, .. } => match code {
-            "PRICE_NOT_DRAFT" | "ENTRY_REFERENCE_LOST" => conflict(code).into(),
+            "PRICE_NOT_DRAFT" | "ENTRY_REFERENCE_LOST" | "REVISION_NOT_DRAFT" => {
+                conflict(code).into()
+            }
             "REGISTRY_UNAVAILABLE" => unavailable().into(),
             "PRICE_NOT_FOUND" => missing_what("price").into(),
+            "REVISION_NOT_FOUND" => missing_what("plan_revision").into(),
             "ENTRY_NOT_FOUND" => missing_entry().into(),
             _ => invalid(&field, code).into(),
         },
@@ -224,8 +227,13 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
         A::Empty => invalid("price_ids", "NO_DRAFT_PRICES").into(),
         A::GenerationMismatch { current, .. } => DoorError::Generation { current },
         // The shared engine names its lock conflict for every gear (`ROW_LOCKED_PENDING`);
-        // a pending unit holds a Price here, and the door says so.
-        A::Locked { .. } => conflict("PRICE_LOCKED_PENDING").into(),
+        // where a pending unit holds a Price, the door says so.
+        A::Locked { item_type, .. } => conflict(if item_type == "price" {
+            "PRICE_LOCKED_PENDING"
+        } else {
+            "ROW_LOCKED_PENDING"
+        })
+        .into(),
         A::AlreadyDecided | A::DuplicateVote | A::Contended => conflict(error.code()).into(),
         A::Store(detail) if detail.starts_with("DUPLICATE") => conflict("DUPLICATE_VOTE").into(),
         A::Store(detail) => {
@@ -235,6 +243,36 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
                 .into()
         }
     }
+}
+/// A revision whose checks are red cannot be submitted (400 `REVISION_CHECKS_RED`, D-403): the
+/// problem's detail is the red checks as the checks door renders them (code, label, detail,
+/// `blocked_by`), and each red check is also a field violation under `checks.<code>`.
+#[must_use]
+pub fn checks_red(red: &[super::dto::PricingPlanCheckDto]) -> CanonicalError {
+    let mut builder = PricingResource::invalid_argument().with_field_violation(
+        "checks",
+        format!("{} check(s) are red", red.len()),
+        "REVISION_CHECKS_RED",
+    );
+    for check in red {
+        let mut description = format!("{}: {}", check.label, check.detail);
+        if !check.blocked_by.is_empty() {
+            let units: Vec<String> = check.blocked_by.iter().map(Uuid::to_string).collect();
+            description = format!("{description} (blocked by {})", units.join(", "));
+        }
+        builder = builder.with_field_violation(
+            format!("checks.{}", check.code),
+            description,
+            check.code.clone(),
+        );
+    }
+    let refusal = builder.create();
+    let Ok(detail) = serde_json::to_string(red) else {
+        return refusal;
+    };
+    let mut problem = toolkit::api::canonical_prelude::Problem::from(refusal.clone());
+    problem.detail = detail;
+    CanonicalError::try_from(problem).unwrap_or(refusal)
 }
 /// The Products registry is not reachable from this process.
 pub fn unavailable() -> CanonicalError {

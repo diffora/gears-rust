@@ -8,23 +8,27 @@
 use super::{
     dto::{
         PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut, PricingApprovalUnitDto,
-        PricingApprovalUnitList, PricingPriceBookEntryDto, PricingPriceDto, PricingProposedPrice,
-        PricingPublishChanges, PricingPublishChangesRequest, PricingSubmitReceipt,
-        PricingVoteReceipt, PricingVoteRequest,
+        PricingApprovalUnitList, PricingPlanRevisionDto, PricingPlanRevisionSubmitReceipt,
+        PricingPriceBookEntryDto, PricingPriceDto, PricingProposedPrice, PricingPublishChanges,
+        PricingPublishChangesRequest, PricingSubmitReceipt, PricingVoteReceipt, PricingVoteRequest,
     },
+    plans,
     support::{self, DoorError, approval_failure},
 };
 use crate::{
     domain::price::{self, PriceState},
     infra::{
         approval_kinds::{Kind, Subject},
-        events::{self, ApprovalUnitDecided, PricesPublished, PublishedPrice},
+        events::{
+            self, ApprovalUnitDecided, PlanRevisionPublished, PricesPublished, PublishedPrice,
+        },
+        plan_revisions::PlanRevisionSubject,
         prices::{PricesSubject, Release},
         storage::{
             RepoError, entity,
             repo::{
                 approval_repo::{self, PricingApprovalStore},
-                book_repo, price_book_entry_repo, price_repo,
+                book_repo, plan_item_repo, plan_revision_repo, price_book_entry_repo, price_repo,
             },
         },
     },
@@ -168,7 +172,38 @@ async fn published(
 ) -> Result<(), DoorError> {
     match subject {
         Subject::Prices(_) => prices_published(tx, cmd, store, id, now).await,
+        Subject::PlanRevision(s) => plan_revision_published(tx, cmd, store, s, id, now).await,
     }
+}
+/// `PlanRevisionPublished` for an applied `plan_revision` unit: the revision now published, the
+/// one its apply superseded, and the book it reads.
+async fn plan_revision_published(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    subject: &PlanRevisionSubject,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let unit = load_unit(tx, store, id).await?;
+    let scope = AccessScope::for_tenant(store.tenant_id);
+    let r = plan_revision_repo::find(tx, &scope, store.tenant_id, unit.ref_id)
+        .await?
+        .ok_or_else(|| {
+            RepoError::CorruptRow(format!("unit {} lost revision {}", unit.id, unit.ref_id))
+        })?;
+    let event = PlanRevisionPublished {
+        tenant_id: unit.tenant_id,
+        plan_id: r.plan_id,
+        revision_id: r.id,
+        rev_no: r.rev_no,
+        book_id: r.book_id,
+        superseded_revision_id: subject.superseded(),
+        unit_id: unit.id,
+        actor_ref: cmd.ctx.subject_id(),
+    };
+    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    Ok(())
 }
 /// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
 /// approved with.
@@ -344,6 +379,58 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
                 OffsetDateTime::now_utc(),
             );
             record_prices(tx, &cmd, &endpoint, subject, &[id]).await
+        })
+    })
+    .await
+}
+
+/// `POST /plan-revisions/{id}/submit`: one unlocked draft revision whose checks are all green
+/// becomes a `plan_revision` unit; quorum zero publishes it in the same transaction.
+/// # Errors
+/// 404 for a revision the tenant does not hold; 409 `REVISION_NOT_DRAFT`; 400
+/// `REVISION_CHECKS_RED` with the red checks and no unit; 409 `ROW_LOCKED_PENDING` for a lost
+/// lock; 503 when the registry cannot answer.
+pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
+    support::unit_transaction(db, move |tx| {
+        let cmd = cmd.clone();
+        Box::pin(async move {
+            let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/submit");
+            if let Some(replay) =
+                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+            {
+                return Ok(replay);
+            }
+            let r = plans::find_revision(tx, &cmd.scope, cmd.tenant(), id).await?;
+            if !plans::open_draft(&r) {
+                return Err(support::conflict("REVISION_NOT_DRAFT").into());
+            }
+            let now = OffsetDateTime::now_utc();
+            let subject = PlanRevisionSubject::new(cmd.ctx.clone(), cmd.hub.clone(), id, now);
+            let submission = Submission {
+                ref_id: id,
+                common_effective_date: None,
+                now,
+            };
+            let submitted =
+                record(tx, &cmd, &Subject::PlanRevision(subject), submission, &[id]).await?;
+            let children = AccessScope::for_tenant(cmd.tenant());
+            let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
+            let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
+            let receipt = PricingPlanRevisionSubmitReceipt {
+                applied: submitted.applied,
+                unit: unit_dto(tx, &cmd.store(), submitted.unit).await?,
+                revision: PricingPlanRevisionDto::of(r, items),
+            };
+            support::answer(
+                tx,
+                cmd.tenant(),
+                &endpoint,
+                &cmd.key,
+                StatusCode::CREATED,
+                &receipt,
+                None,
+            )
+            .await
         })
     })
     .await
@@ -572,11 +659,12 @@ fn subject_of(
             };
             Ok(Subject::Prices(subject))
         }
-        Kind::PlanRevision => Err(CanonicalError::internal(
-            "the plan_revision subject is not built yet",
-        )
-        .create()
-        .into()),
+        Kind::PlanRevision => Ok(Subject::PlanRevision(PlanRevisionSubject::new(
+            cmd.ctx.clone(),
+            cmd.hub.clone(),
+            unit.ref_id,
+            now,
+        ))),
     }
 }
 /// Rejects obey the same content-generation barrier without applying.

@@ -37,6 +37,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use bss_products_sdk::models::Sku;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
@@ -559,16 +560,7 @@ pub(super) async fn checks(
         Box::pin(async move { stored_context(tx, &scope, tenant, id).await })
     })
     .await?;
-    let registry = reference_registry::resolve(&state.hub).map_err(|_| support::unavailable())?;
-    let wanted: BTreeSet<Uuid> = context.items.iter().map(|i| i.sku_id).collect();
-    for sku in wanted {
-        match registry.sku_for_write(&ctx, tenant, sku).await {
-            Ok(found) => context.skus.push(found),
-            Err(error) if error.status_code() == 404 => {}
-            Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(_) => return Err(support::unavailable()),
-        }
-    }
+    context.skus = fresh_skus(&state.hub, &ctx, context.items.iter().map(|i| i.sku_id)).await?;
     let today = time::OffsetDateTime::now_utc().date();
     let rows = plan::checks(&context, today);
     let ready = plan::ready(&rows);
@@ -579,11 +571,41 @@ pub(super) async fn checks(
     };
     support::response(StatusCode::OK, &body, None)
 }
+/// Every SKU named, read fresh through `sku_for_write` and never from a cache (D-408): the checks
+/// door, submit and apply all read the item SKUs this way. A SKU Products no longer knows (404)
+/// is left out, so the checks show it unavailable.
+/// # Errors
+/// Any other definite refusal as Products gave it; a registry that cannot answer is 503
+/// `REGISTRY_UNAVAILABLE`.
+pub async fn fresh_skus(
+    hub: &toolkit::ClientHub,
+    ctx: &SecurityContext,
+    skus: impl IntoIterator<Item = Uuid>,
+) -> Result<Vec<Sku>, CanonicalError> {
+    let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
+    let wanted: BTreeSet<Uuid> = skus.into_iter().collect();
+    let mut found = Vec::with_capacity(wanted.len());
+    for sku in wanted {
+        match registry
+            .sku_for_write(ctx, ctx.subject_tenant_id(), sku)
+            .await
+        {
+            Ok(read) => found.push(read),
+            Err(error) if error.status_code() == 404 => {}
+            Err(error) if reference_work::definite_refusal(&error) => return Err(error),
+            Err(_) => return Err(support::unavailable()),
+        }
+    }
+    Ok(found)
+}
 fn corrupt(what: String) -> DoorError {
     RepoError::CorruptRow(what).into()
 }
-/// Everything the checks read from storage, with no SKU yet.
-async fn stored_context(
+/// Everything the checks read from storage, with no SKU yet: the checks door and the
+/// `plan_revision` subject build the checks' context through this one function.
+/// # Errors
+/// 404 for a revision the tenant does not hold; storage failures.
+pub async fn stored_context(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,

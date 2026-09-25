@@ -682,6 +682,14 @@ pub struct PricingSubmitReceipt {
     pub unit: PricingApprovalUnitDto,
     pub prices: Vec<PricingPriceDto>,
 }
+/// The `plan_revision` unit a submission recorded and the revision after the transaction:
+/// pending under the unit, or published when quorum zero applied it at once.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanRevisionSubmitReceipt {
+    pub applied: bool,
+    pub unit: PricingApprovalUnitDto,
+    pub revision: PricingPlanRevisionDto,
+}
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]

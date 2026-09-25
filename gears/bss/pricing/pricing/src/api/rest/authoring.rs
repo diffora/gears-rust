@@ -5,7 +5,7 @@ mod configuration;
 pub mod dto;
 pub mod plan_items;
 mod plan_routes;
-mod plans;
+pub(crate) mod plans;
 mod price_book_entries;
 pub(crate) mod prices;
 pub(crate) mod support;
@@ -322,6 +322,22 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .standard_errors(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/submit")
+        .operation_id("bss_pricing.submit_plan_revision")
+        .summary("submit_plan_revision")
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan revision id")
+        .param(header("Idempotency-Key"))
+        .handler(submit_plan_revision)
+        .json_response_with_schema::<dto::PricingPlanRevisionSubmitReceipt>(
+            openapi,
+            StatusCode::CREATED,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/publish-changes")
         .operation_id("bss_pricing.list_publish_changes")
         .summary("list_publish_changes")
@@ -489,6 +505,40 @@ async fn submit_price(
         digest,
     };
     approvals::submit_price(&state.db.db(), cmd, id).await
+}
+async fn submit_plan_revision(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::SUBMIT,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    let cmd = approvals::Command {
+        scope,
+        ctx,
+        hub: state.hub.clone(),
+        outbox: state.outbox.clone(),
+        correlation,
+        key,
+        digest,
+    };
+    approvals::submit_revision(&state.db.db(), cmd, id).await
 }
 async fn list_publish_changes(
     Extension(state): Extension<Arc<AuthoringState>>,

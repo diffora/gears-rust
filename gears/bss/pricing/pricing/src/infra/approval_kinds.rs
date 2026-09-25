@@ -5,7 +5,7 @@
 //! shows. A kind pricing does not record (promotions are deferred, D-409; migration requests,
 //! D-410) is a corrupt row, never judged as another kind.
 use super::{
-    plan_revisions::{self, KIND_PLAN_REVISION},
+    plan_revisions::{self, KIND_PLAN_REVISION, PlanRevisionSubject},
     prices::{KIND_PRICES, PricesSubject},
     storage::RepoError,
 };
@@ -65,6 +65,7 @@ impl Kind {
 #[derive(Clone)]
 pub enum Subject {
     Prices(PricesSubject),
+    PlanRevision(PlanRevisionSubject),
 }
 impl Subject {
     /// The Products refusal that ended the last judgement, if any; the door answers it as is.
@@ -72,6 +73,7 @@ impl Subject {
     pub fn take_refusal(&self) -> Option<CanonicalError> {
         match self {
             Self::Prices(s) => s.take_refusal(),
+            Self::PlanRevision(s) => s.take_refusal(),
         }
     }
     /// The kind this subject judges.
@@ -79,6 +81,7 @@ impl Subject {
     pub const fn kind_of(&self) -> Kind {
         match self {
             Self::Prices(_) => Kind::Prices,
+            Self::PlanRevision(_) => Kind::PlanRevision,
         }
     }
 }
@@ -88,21 +91,25 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Subject {
     fn kind(&self) -> &'static str {
         match self {
             Self::Prices(s) => ApprovalSubject::<DbTx<'a>>::kind(s),
+            Self::PlanRevision(s) => ApprovalSubject::<DbTx<'a>>::kind(s),
         }
     }
     fn ref_type(&self) -> &'static str {
         match self {
             Self::Prices(s) => ApprovalSubject::<DbTx<'a>>::ref_type(s),
+            Self::PlanRevision(s) => ApprovalSubject::<DbTx<'a>>::ref_type(s),
         }
     }
     async fn collect(&self, tx: &DbTx<'a>, ids: &[Uuid]) -> Result<Vec<ItemRef>, ApprovalError> {
         match self {
             Self::Prices(s) => s.collect(tx, ids).await,
+            Self::PlanRevision(s) => s.collect(tx, ids).await,
         }
     }
     async fn validate_submit(&self, tx: &DbTx<'a>, items: &[ItemRef]) -> Result<(), ApprovalError> {
         match self {
             Self::Prices(s) => s.validate_submit(tx, items).await,
+            Self::PlanRevision(s) => s.validate_submit(tx, items).await,
         }
     }
     async fn lock(
@@ -113,11 +120,15 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Subject {
     ) -> Result<(), ApprovalError> {
         match self {
             Self::Prices(s) => s.lock(tx, unit_id, items).await,
+            Self::PlanRevision(s) => s.lock(tx, unit_id, items).await,
         }
     }
     fn snapshot(&self, items: &[ItemRef], common_effective_date: Option<Date>) -> Value {
         match self {
             Self::Prices(s) => {
+                ApprovalSubject::<DbTx<'a>>::snapshot(s, items, common_effective_date)
+            }
+            Self::PlanRevision(s) => {
                 ApprovalSubject::<DbTx<'a>>::snapshot(s, items, common_effective_date)
             }
         }
@@ -130,6 +141,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Subject {
     ) -> Result<(), ApprovalError> {
         match self {
             Self::Prices(s) => s.apply(tx, unit, items).await,
+            Self::PlanRevision(s) => s.apply(tx, unit, items).await,
         }
     }
     async fn unlock(
@@ -141,6 +153,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Subject {
     ) -> Result<(), ApprovalError> {
         match self {
             Self::Prices(s) => s.unlock(tx, unit, items, approved).await,
+            Self::PlanRevision(s) => s.unlock(tx, unit, items, approved).await,
         }
     }
 }

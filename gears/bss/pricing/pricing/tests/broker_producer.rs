@@ -81,6 +81,10 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
         (PriceBookEntryReferenceLost::TYPE_ID, ENTRY_SUBJECT_TYPE),
         (PlanReferenceLost::TYPE_ID, PlanReferenceLost::SUBJECT_TYPE),
         (PUBLISHED, PRICE_BOOK_SUBJECT_TYPE),
+        (
+            events::PlanRevisionPublished::TYPE_ID,
+            events::PlanRevisionPublished::SUBJECT_TYPE,
+        ),
         (DECIDED, APPROVAL_UNIT_SUBJECT_TYPE),
     ] {
         control

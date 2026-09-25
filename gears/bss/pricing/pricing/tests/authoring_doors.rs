@@ -382,6 +382,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("PATCH", format!("/plan-items/{id}")),
         ("DELETE", format!("/plan-items/{id}")),
         ("GET", format!("/plan-revisions/{id}/checks")),
+        ("POST", format!("/plan-revisions/{id}/submit")),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -680,6 +681,12 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             format!("/plan-revisions/{id}/checks"),
             "plan",
             "read",
+        ),
+        (
+            "POST",
+            format!("/plan-revisions/{id}/submit"),
+            "approval_unit",
+            "submit",
         ),
     ] {
         let context = |grant: &str| {
