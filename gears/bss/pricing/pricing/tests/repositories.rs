@@ -55,7 +55,7 @@ fn row(p: &price::Model) -> price_row::Model {
         dim_value: None,
         model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.1"}),
-        min_fee: Some(rust_decimal::Decimal::new(1234, 2)),
+        min_fee: Some("12.34".into()),
         eligibility: "all".into(),
         effective_from: at(9).date(),
         effective_to: None,
@@ -882,4 +882,55 @@ async fn row_pending_ownership_is_a_conditional_versioned_write() {
     assert_eq!(draft.state, "draft");
     assert!(draft.pending_unit_id.is_none());
     assert_eq!(draft.version, 3);
+}
+#[tokio::test]
+async fn min_fee_round_trips_exactly_on_sqlite() {
+    // sea-orm decodes every SQLite Decimal through f64: an authored "30.00" came back
+    // as "30", and digits past f64's precision were lost. A fee is money: exact text.
+    let (db, scope, tenant, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    let b = book(tenant);
+    book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
+    let p = price(&b);
+    price_repo::insert(&conn, &scope, p.clone()).await.unwrap();
+    for (n, text) in ["30.00", "0.10", "12345678901234567.89", "0"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut r = row(&p);
+        r.version_no = i32::try_from(n).unwrap() + 1;
+        r.min_fee = Some(text.into());
+        row_repo::insert(&conn, &scope, r.clone()).await.unwrap();
+        let back = row_repo::find(&conn, &scope, tenant, r.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let fee = row_repo::to_domain(&back).unwrap().min_fee.unwrap();
+        assert_eq!(
+            fee.to_string(),
+            text,
+            "min_fee {text} must read back exactly"
+        );
+    }
+}
+#[tokio::test]
+async fn min_fee_column_refuses_anything_but_an_unsigned_plain_decimal() {
+    let (db, scope, tenant, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    let b = book(tenant);
+    book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
+    let p = price(&b);
+    price_repo::insert(&conn, &scope, p.clone()).await.unwrap();
+    for (n, text) in ["-1", "1.", "1.2.3", "1e5", "", " 3"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut r = row(&p);
+        r.version_no = i32::try_from(n).unwrap() + 1;
+        r.min_fee = Some(text.into());
+        assert!(
+            row_repo::insert(&conn, &scope, r).await.is_err(),
+            "the column must refuse min_fee {text:?}"
+        );
+    }
 }

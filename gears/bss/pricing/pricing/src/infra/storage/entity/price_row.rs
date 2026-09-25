@@ -17,7 +17,9 @@ pub struct Model {
     pub dim_value: Option<String>,
     pub model: String,
     pub price_json: Json,
-    pub min_fee: Option<Decimal>,
+    /// Canonical decimal text ("30.00"): exact on both dialects. sea-orm decodes a `SQLite`
+    /// `Decimal` through `f64`, which drops the scale and every digit past `f64`'s precision.
+    pub min_fee: Option<String>,
     pub eligibility: String,
     pub effective_from: TimeDate,
     pub effective_to: Option<TimeDate>,

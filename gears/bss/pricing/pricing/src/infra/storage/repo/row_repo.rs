@@ -198,7 +198,12 @@ pub fn to_domain(m: &e::Model) -> Result<crate::domain::row::Row, RepoError> {
         dim_value: m.dim_value.clone(),
         model,
         price: Some(money::decode(model, m.price_json.clone()).map_err(|_| corrupt("price_json"))?),
-        min_fee: m.min_fee,
+        min_fee: m
+            .min_fee
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| corrupt("min_fee"))?,
         eligibility: m.eligibility.parse().map_err(|_| corrupt("eligibility"))?,
         effective_from: m.effective_from,
         effective_to: m.effective_to,

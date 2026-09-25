@@ -80,7 +80,7 @@ fn stored(
         dim_value: r.dim_value.clone(),
         model: r.model.as_str().into(),
         price_json: price_json(r)?,
-        min_fee: r.min_fee,
+        min_fee: r.min_fee.map(|fee| fee.to_string()),
         eligibility: r.eligibility.as_str().into(),
         effective_from: r.effective_from,
         effective_to: r.effective_to,
@@ -327,7 +327,7 @@ pub async fn patch(
     next.dim_value = r.dim_value.clone();
     next.model = r.model.as_str().into();
     next.price_json = price_json(&r)?;
-    next.min_fee = r.min_fee;
+    next.min_fee = r.min_fee.map(|fee| fee.to_string());
     next.eligibility = r.eligibility.as_str().into();
     next.effective_from = r.effective_from;
     if let Some(note) = input.note {

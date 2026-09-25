@@ -450,7 +450,7 @@ CREATE TABLE bss.pricing_price_row (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, price_id uuid NOT NULL REFERENCES bss.pricing_price(id),
   version_no integer NOT NULL, dim_value text,
   model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json jsonb NOT NULL,
-  min_fee numeric CHECK (min_fee >= 0), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
+  min_fee text CHECK (min_fee ~ '^[0-9]+(\.[0-9]+)?$'), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
   effective_from date NOT NULL, effective_to date, keep_for_bound boolean NOT NULL DEFAULT false,
   closed_explicitly boolean NOT NULL DEFAULT false,
   temporary_until date, paired_row_id uuid REFERENCES bss.pricing_price_row(id),

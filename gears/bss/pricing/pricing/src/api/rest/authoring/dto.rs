@@ -124,7 +124,7 @@ impl From<entity::price_row::Model> for PricingPriceRowDto {
             dim_value: m.dim_value,
             model: m.model,
             price_json: m.price_json,
-            min_fee: m.min_fee.map(|v| v.to_string()),
+            min_fee: m.min_fee,
             eligibility: m.eligibility,
             effective_from: m.effective_from.to_string(),
             effective_to: m.effective_to.map(|v| v.to_string()),

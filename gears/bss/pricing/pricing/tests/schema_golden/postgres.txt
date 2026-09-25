@@ -102,7 +102,7 @@ COLUMN bss.pricing_price_row effective_to date NULL DEFAULT -
 COLUMN bss.pricing_price_row eligibility text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_row id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price_row keep_for_bound boolean NOT NULL DEFAULT false
-COLUMN bss.pricing_price_row min_fee numeric NULL DEFAULT -
+COLUMN bss.pricing_price_row min_fee text NULL DEFAULT -
 COLUMN bss.pricing_price_row model text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_row note text NULL DEFAULT -
 COLUMN bss.pricing_price_row paired_row_id uuid NULL DEFAULT -
@@ -216,7 +216,7 @@ CONSTRAINT bss.pricing_price_row pricing_price_row_approved_by_unit_id_fkey FORE
 CONSTRAINT bss.pricing_price_row pricing_price_row_check CHECK (((effective_to IS NULL) OR (effective_from < effective_to)))
 CONSTRAINT bss.pricing_price_row pricing_price_row_dim_value_check CHECK (((dim_value IS NULL) OR (dim_value <> ''::text)))
 CONSTRAINT bss.pricing_price_row pricing_price_row_eligibility_check CHECK ((eligibility = ANY (ARRAY['all'::text, 'new'::text])))
-CONSTRAINT bss.pricing_price_row pricing_price_row_min_fee_check CHECK ((min_fee >= (0)::numeric))
+CONSTRAINT bss.pricing_price_row pricing_price_row_min_fee_check CHECK ((min_fee ~ '^[0-9]+(\.[0-9]+)?$'::text))
 CONSTRAINT bss.pricing_price_row pricing_price_row_model_check CHECK ((model = ANY (ARRAY['flat'::text, 'per_unit'::text, 'graduated'::text, 'volume'::text, 'package'::text])))
 CONSTRAINT bss.pricing_price_row pricing_price_row_paired_row_id_fkey FOREIGN KEY (paired_row_id) REFERENCES bss.pricing_price_row(id)
 CONSTRAINT bss.pricing_price_row pricing_price_row_pending_unit_id_fkey FOREIGN KEY (pending_unit_id) REFERENCES bss.pricing_approval_unit(id)

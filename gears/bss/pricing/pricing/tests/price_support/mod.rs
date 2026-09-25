@@ -465,7 +465,7 @@ pub fn row(p: &price::Model) -> price_row::Model {
         dim_value: None,
         model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.1"}),
-        min_fee: Some(rust_decimal::Decimal::new(1234, 2)),
+        min_fee: Some("12.34".into()),
         eligibility: "all".into(),
         effective_from: at(9).date(),
         effective_to: None,

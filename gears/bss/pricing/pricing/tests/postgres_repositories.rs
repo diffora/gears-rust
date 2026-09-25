@@ -83,7 +83,7 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         dim_value: None,
         model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.123456789"}),
-        min_fee: Some(rust_decimal::Decimal::new(1234, 2)),
+        min_fee: Some("12.34".into()),
         eligibility: "all".into(),
         effective_from: now.date(),
         effective_to: None,
