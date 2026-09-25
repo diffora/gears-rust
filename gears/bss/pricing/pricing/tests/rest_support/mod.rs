@@ -159,9 +159,47 @@ impl Harness {
     ///
     /// # Errors
     /// Propagates router registration failures.
+    /// # Panics
+    /// Fails if the runtime route inventory differs from the exact census.
     pub fn router(&self, host: Router) -> anyhow::Result<(Router, OpenApiRegistryImpl)> {
         let registry = OpenApiRegistryImpl::new();
         let router = self.gear.register_rest(&self.ctx, host, &registry)?;
+        let registered: std::collections::BTreeSet<_> = registry
+            .operation_specs
+            .iter()
+            .map(|e| {
+                let (m, p) = e.key().split_once(':').unwrap();
+                (m.to_owned(), p.to_owned())
+            })
+            .collect();
+        let expected: std::collections::BTreeSet<_> = [
+            ("POST", "/bss-pricing/v1/price-books"),
+            ("GET", "/bss-pricing/v1/price-books"),
+            ("GET", "/bss-pricing/v1/price-books/{id}"),
+            ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+            ("GET", "/bss-pricing/v1/price-books/{id}/prices"),
+            ("GET", "/bss-pricing/v1/price-books/{id}/export"),
+            ("GET", "/bss-pricing/v1/settings"),
+            ("PUT", "/bss-pricing/v1/settings"),
+            ("GET", "/bss-pricing/v1/dimension-keys"),
+            ("PUT", "/bss-pricing/v1/dimension-keys"),
+        ]
+        .into_iter()
+        .map(|(m, p)| (m.to_owned(), p.to_owned()))
+        .collect();
+        assert_eq!(registered, expected);
         Ok((router, registry))
     }
 }
+
+// Run-2 route contract: method | path | resource:action | If-Match | Idempotency-Key
+// POST /price-books price_book:author false true
+// GET /price-books price_book:read false false
+// GET /price-books/{id} price_book:read false false
+// PATCH /price-books/{id} price_book:author true false
+// GET /price-books/{id}/prices price:read false false
+// GET /price-books/{id}/export price_book:read false false
+// GET /settings config:read false false
+// PUT /settings config:settings true false
+// GET /dimension-keys config:read false false
+// PUT /dimension-keys config:settings true false

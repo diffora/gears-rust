@@ -25,7 +25,7 @@ fn skeleton_config_tolerates_old_deployment_keys() {
 pub mod rest_support;
 
 #[tokio::test]
-async fn pricing_alone_initializes_serves_zero_routes_and_stops() {
+async fn pricing_alone_initializes_serves_authoring_routes_and_stops() {
     use axum::{
         Router,
         body::Body,
@@ -43,8 +43,8 @@ async fn pricing_alone_initializes_serves_zero_routes_and_stops() {
         "real init must register schemas"
     );
     let (empty, openapi) = harness.router(Router::new()).unwrap();
-    assert!(!empty.has_routes());
-    assert_eq!(openapi.operation_specs.len(), 0);
+    assert!(empty.has_routes());
+    assert_eq!(openapi.operation_specs.len(), 10);
     let (router, _) = harness
         .router(Router::new().route("/host", get(|| async { "host" })))
         .unwrap();

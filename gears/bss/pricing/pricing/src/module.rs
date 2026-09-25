@@ -15,6 +15,7 @@ use toolkit::{Gear, GearCtx};
 
 struct PricingRuntime {
     enforcer: Arc<authz_resolver_sdk::PolicyEnforcer>,
+    state: Arc<crate::api::rest::authoring::AuthoringState>,
 }
 
 #[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver, account_management], lifecycle(entry = "serve", stop_timeout = "30s"))]
@@ -46,7 +47,8 @@ impl Gear for BssPricingGear {
             Err(ConfigError::GearNotFound { .. }) => return Ok(()),
             Err(error) => return Err(error).context("bss-pricing: invalid config"),
         }
-        ctx.db_required()
+        let db = ctx
+            .db_required()
             .context("bss-pricing: database is required")?;
         let authz_client = ctx
             .client_hub()
@@ -83,8 +85,10 @@ impl Gear for BssPricingGear {
             }
         }
 
-        self.runtime
-            .store(Some(Arc::new(PricingRuntime { enforcer })));
+        self.runtime.store(Some(Arc::new(PricingRuntime {
+            enforcer,
+            state: Arc::new(crate::api::rest::authoring::AuthoringState { db }),
+        })));
         Ok(())
     }
 }
@@ -106,11 +110,15 @@ impl RestApiCapability for BssPricingGear {
         &self,
         _ctx: &GearCtx,
         router: Router,
-        _openapi: &dyn OpenApiRegistry,
+        openapi: &dyn OpenApiRegistry,
     ) -> Result<Router> {
         let inner = Router::new();
         let inner = if let Some(runtime) = self.runtime.load_full() {
             inner
+                .merge(crate::api::rest::authoring::router(
+                    runtime.state.clone(),
+                    openapi,
+                ))
                 .layer(axum::Extension((*runtime.enforcer).clone()))
                 .layer(axum::middleware::from_fn(
                     toolkit::api::canonical_error_middleware,
@@ -118,7 +126,7 @@ impl RestApiCapability for BssPricingGear {
         } else {
             inner
         };
-        Ok(router.nest("/bss-pricing/v1", inner))
+        Ok(router.merge(inner))
     }
 }
 
@@ -139,3 +147,15 @@ impl MigrationTrait for InvalidOutboxMigration {
         Err(sea_orm::DbErr::Migration(self.0.clone()))
     }
 }
+
+// Run-2 route contract: method | path | resource:action | If-Match | Idempotency-Key
+// POST /price-books price_book:author false true
+// GET /price-books price_book:read false false
+// GET /price-books/{id} price_book:read false false
+// PATCH /price-books/{id} price_book:author true false
+// GET /price-books/{id}/prices price:read false false
+// GET /price-books/{id}/export price_book:read false false
+// GET /settings config:read false false
+// PUT /settings config:settings true false
+// GET /dimension-keys config:read false false
+// PUT /dimension-keys config:settings true false

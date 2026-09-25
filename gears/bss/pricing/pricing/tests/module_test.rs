@@ -7,13 +7,37 @@ pub mod rest_support;
 use census::Routes;
 
 fn declared_paths() -> Routes {
-    Routes::new()
+    [
+        ("POST", "/bss-pricing/v1/price-books"),
+        ("GET", "/bss-pricing/v1/price-books"),
+        ("GET", "/bss-pricing/v1/price-books/{id}"),
+        ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        ("GET", "/bss-pricing/v1/price-books/{id}/prices"),
+        ("GET", "/bss-pricing/v1/price-books/{id}/export"),
+        ("GET", "/bss-pricing/v1/settings"),
+        ("PUT", "/bss-pricing/v1/settings"),
+        ("GET", "/bss-pricing/v1/dimension-keys"),
+        ("PUT", "/bss-pricing/v1/dimension-keys"),
+    ]
+    .into_iter()
+    .map(|(m, p)| (m.to_owned(), p.to_owned()))
+    .collect()
 }
 fn if_match_routes() -> Routes {
-    Routes::new()
+    [
+        ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        ("PUT", "/bss-pricing/v1/settings"),
+        ("PUT", "/bss-pricing/v1/dimension-keys"),
+    ]
+    .into_iter()
+    .map(|(m, p)| (m.to_owned(), p.to_owned()))
+    .collect()
 }
 fn idempotency_key_routes() -> Routes {
-    Routes::new()
+    [("POST", "/bss-pricing/v1/price-books")]
+        .into_iter()
+        .map(|(m, p)| (m.to_owned(), p.to_owned()))
+        .collect()
 }
 
 #[tokio::test]
@@ -30,8 +54,8 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 0);
-    assert!(!router.has_routes());
+    assert_eq!(registered.len(), 10);
+    assert!(router.has_routes());
 }
 
 #[test]
@@ -58,22 +82,14 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         census::readers("preconditions::idempotency_key("),
         idempotency_key_routes()
     );
-    for (needle, expected) in [
-        ("preconditions::if_match(", 1),
-        ("preconditions::idempotency_key(", 1),
-        ("Query<", 1),
-        ("StatusCode::", 2),
+    for (needle, control, production) in [
+        ("preconditions::if_match(", 1, 3),
+        ("preconditions::idempotency_key(", 1, 1),
+        ("Query<", 1, 0),
+        ("StatusCode::", 2, 21),
     ] {
-        assert_eq!(
-            census::count_in_functions(census::CONTROL, needle),
-            expected,
-            "positive control: {needle}"
-        );
-        assert_eq!(
-            census::production_count(needle),
-            0,
-            "exact skeleton census: {needle}"
-        );
+        assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
+        assert_eq!(census::production_count(needle), production, "{needle}");
     }
 }
 
@@ -122,3 +138,15 @@ async fn no_operation_declares_a_422() {
         }
     }
 }
+
+// Run-2 route contract: method | path | resource:action | If-Match | Idempotency-Key
+// POST /price-books price_book:author false true
+// GET /price-books price_book:read false false
+// GET /price-books/{id} price_book:read false false
+// PATCH /price-books/{id} price_book:author true false
+// GET /price-books/{id}/prices price:read false false
+// GET /price-books/{id}/export price_book:read false false
+// GET /settings config:read false false
+// PUT /settings config:settings true false
+// GET /dimension-keys config:read false false
+// PUT /dimension-keys config:settings true false

@@ -88,3 +88,24 @@ pub async fn update(
         .map_err(|e| map_unique("update dimension_key".into(), e))?;
     matched(result.rows_affected, "VERSION_CONFLICT")
 }
+
+/// Remove an unused registry key at its observed version in the caller's transaction.
+/// # Errors
+/// Refuses concurrent edits and preserves typed database failures.
+pub async fn delete(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: &str,
+    version: i64,
+) -> Result<(), RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    let result = e::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(key(tenant, id).add(e::Column::Version.eq(version)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete dimension key".into(), e))?;
+    matched(result.rows_affected, "VERSION_CONFLICT")
+}

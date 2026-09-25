@@ -1,0 +1,594 @@
+//! Books, configuration and export contracts against the real router and database.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+use axum::{Router, body::Body, http::Request};
+use serde_json::{Value, json};
+use std::sync::Arc;
+use toolkit_security::SecurityContext;
+use tower::ServiceExt;
+use uuid::Uuid;
+mod storage_support;
+struct Resolver {
+    tenant: Uuid,
+    allow: bool,
+}
+#[async_trait::async_trait]
+impl authz_resolver_sdk::AuthZResolverApi for Resolver {
+    async fn evaluate(
+        &self,
+        _: toolkit_security::PlatformSecurityContext,
+        request: authz_resolver_sdk::EvaluationRequest,
+    ) -> Result<authz_resolver_sdk::EvaluationResponse, toolkit_canonical_errors::CanonicalError>
+    {
+        use authz_resolver_sdk::*;
+        Ok(EvaluationResponse {
+            decision: self.allow
+                && request
+                    .subject
+                    .subject_type
+                    .as_deref()
+                    .is_some_and(|grant| {
+                        grant == "user"
+                            || grant
+                                == format!(
+                                    "{}:{}",
+                                    request
+                                        .resource
+                                        .resource_type
+                                        .trim_start_matches("gts.cf.bss.pricing.")
+                                        .trim_end_matches(".v1~"),
+                                    request.action.name
+                                )
+                    }),
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        toolkit_security::pep_properties::OWNER_TENANT_ID,
+                        vec![self.tenant],
+                    ))],
+                }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+struct Fixture {
+    app: Router,
+    denied: Router,
+    ctx: SecurityContext,
+    db: toolkit_db::DBProvider<toolkit_db::DbError>,
+}
+impl Fixture {
+    async fn new() -> Self {
+        let (db, _, tenant, _) = storage_support::test_db().await;
+        let state = Arc::new(bss_pricing::api::rest::authoring::AuthoringState { db: db.clone() });
+        let make = |allow| {
+            bss_pricing::api::rest::authoring::router(
+                state.clone(),
+                &toolkit::api::OpenApiRegistryImpl::new(),
+            )
+            .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
+                Arc::new(Resolver { tenant, allow }),
+            )))
+        };
+        let ctx = SecurityContext::builder()
+            .subject_id(Uuid::new_v4())
+            .subject_tenant_id(tenant)
+            .subject_type("user")
+            .build()
+            .unwrap();
+        Self {
+            app: make(true),
+            denied: make(false),
+            ctx,
+            db,
+        }
+    }
+    async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Value,
+        tag: Option<&str>,
+        key: Option<&str>,
+    ) -> (u16, Value, String) {
+        request(&self.app, &self.ctx, method, path, body, tag, key).await
+    }
+    async fn book(&self) -> (Value, String) {
+        let (s, b, t) = self
+            .call(
+                "POST",
+                "/price-books",
+                json!({"code":"standard","name":"Standard","currency":"EUR"}),
+                None,
+                Some("create"),
+            )
+            .await;
+        assert_eq!(s, 201, "{b}");
+        (b, t)
+    }
+}
+async fn request(
+    app: &Router,
+    ctx: &SecurityContext,
+    method: &str,
+    path: &str,
+    body: Value,
+    tag: Option<&str>,
+    key: Option<&str>,
+) -> (u16, Value, String) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(format!("/bss-pricing/v1{path}"))
+        .extension(ctx.clone())
+        .header("content-type", "application/json");
+    if let Some(tag) = tag {
+        req = req.header("if-match", tag);
+    }
+    if let Some(key) = key {
+        req = req.header("idempotency-key", key);
+    }
+    let response = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let tag = response
+        .headers()
+        .get("etag")
+        .map_or("", |v| v.to_str().unwrap())
+        .to_owned();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(json!(null)),
+        tag,
+    )
+}
+#[tokio::test]
+async fn books_positive_preconditions_validation_and_post_replay() {
+    let f = Fixture::new().await;
+    let payload = json!({"code":"standard","name":"Standard","currency":"EUR"});
+    assert_eq!(
+        f.call("POST", "/price-books", payload.clone(), None, None)
+            .await
+            .0,
+        400
+    );
+    let (b, tag) = f.book().await;
+    assert_eq!(tag, "\"1\"");
+    let replay = f
+        .call("POST", "/price-books", payload, None, Some("create"))
+        .await;
+    assert_eq!(replay, (201, b.clone(), tag.clone()));
+    let duplicate = f
+        .call(
+            "POST",
+            "/price-books",
+            json!({"code":"standard","name":"Other","currency":"EUR"}),
+            None,
+            Some("dup"),
+        )
+        .await;
+    assert_eq!(duplicate.0, 409);
+    assert!(duplicate.1.to_string().contains("BOOK_CODE_TAKEN"));
+    assert_eq!(
+        f.call(
+            "POST",
+            "/price-books",
+            json!({"code":"new","name":"","currency":"eur"}),
+            None,
+            Some("invalid")
+        )
+        .await
+        .0,
+        400
+    );
+    let path = format!("/price-books/{}", b["id"].as_str().unwrap());
+    assert_eq!(
+        f.call("GET", "/price-books", json!({}), None, None).await.1["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(f.call("GET", &path, json!({}), None, None).await.1, b);
+    assert_eq!(
+        f.call("PATCH", &path, json!({"name":"Changed"}), None, None)
+            .await
+            .0,
+        400
+    );
+    let edited = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"name":"Changed","valid_from":"2026-10-01","valid_until":"2026-11-01"}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(edited.0, 200, "{edited:?}");
+    assert_eq!(edited.2, "\"2\"");
+    assert_eq!(
+        f.call("PATCH", &path, json!({"name":"stale"}), Some(&tag), None)
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        f.call(
+            "PATCH",
+            &path,
+            json!({"currency":"USD"}),
+            Some(&edited.2),
+            None
+        )
+        .await
+        .0,
+        400
+    );
+    let clear = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"valid_until":null}),
+            Some(&edited.2),
+            None,
+        )
+        .await;
+    assert_eq!(clear.0, 200);
+    assert!(clear.1["valid_until"].is_null());
+}
+#[tokio::test]
+async fn settings_positive_preconditions_and_matrix_8_templates() {
+    let f = Fixture::new().await;
+    let (s, mut body, tag) = f.call("GET", "/settings", json!({}), None, None).await;
+    assert_eq!(s, 200);
+    assert_eq!(tag, "\"0\"");
+    body.as_object_mut().unwrap().remove("version");
+    body["invoice_line_templates"] = json!({"usage":"{sku}"});
+    assert_eq!(
+        f.call("PUT", "/settings", body.clone(), None, None).await.0,
+        400
+    );
+    let saved = f
+        .call("PUT", "/settings", body.clone(), Some(&tag), None)
+        .await;
+    assert_eq!(saved.0, 200, "{saved:?}");
+    assert_eq!(
+        f.call("PUT", "/settings", body.clone(), Some(&tag), None)
+            .await
+            .0,
+        409
+    );
+    for template in ["", "{phase}", "{unknown}", "{sku_name"] {
+        body["invoice_line_templates"] = json!({"usage":template});
+        assert_eq!(
+            f.call("PUT", "/settings", body.clone(), Some(&saved.2), None)
+                .await
+                .0,
+            400
+        );
+    }
+    assert_eq!(
+        f.call("GET", "/settings", json!({}), None, None).await.1,
+        saved.1
+    );
+}
+#[tokio::test]
+async fn dimension_registry_positive_preconditions_and_matrix_11() {
+    let f = Fixture::new().await;
+    let (s, b, tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    assert_eq!(s, 200);
+    assert_eq!(b, json!({"items":[]}));
+    let input = json!({"items":[{"key":" region ","values":[" eu ","us",""]}]});
+    assert_eq!(
+        f.call("PUT", "/dimension-keys", input.clone(), None, None)
+            .await
+            .0,
+        400
+    );
+    let saved = f
+        .call("PUT", "/dimension-keys", input.clone(), Some(&tag), None)
+        .await;
+    assert_eq!(saved.0, 200, "{saved:?}");
+    assert_eq!(saved.1["items"][0]["key"], "region");
+    assert_eq!(saved.1["items"][0]["values"], json!(["eu", "us"]));
+    assert_eq!(
+        f.call("PUT", "/dimension-keys", input, Some(&tag), None)
+            .await
+            .0,
+        409
+    );
+    for item in [
+        json!({"key":"Region","values":["eu","us"]}),
+        json!({"key":"region","values":["eu"]}),
+        json!({"key":"region","values":["eu","eu"]}),
+        json!({"key":"region","values":["eu","bad value"]}),
+    ] {
+        assert_eq!(
+            f.call(
+                "PUT",
+                "/dimension-keys",
+                json!({"items":[item]}),
+                Some(&saved.2),
+                None
+            )
+            .await
+            .0,
+            400
+        );
+    }
+}
+#[tokio::test]
+async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
+    let f = Fixture::new().await;
+    let (b, _) = f.book().await;
+    let id = b["id"].as_str().unwrap();
+    for (method, path) in [
+        ("POST", "/price-books".into()),
+        ("GET", "/price-books".into()),
+        ("GET", format!("/price-books/{id}")),
+        ("PATCH", format!("/price-books/{id}")),
+        ("GET", format!("/price-books/{id}/prices")),
+        ("GET", format!("/price-books/{id}/export")),
+        ("GET", "/settings".into()),
+        ("PUT", "/settings".into()),
+        ("GET", "/dimension-keys".into()),
+        ("PUT", "/dimension-keys".into()),
+    ] {
+        assert_eq!(
+            request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
+                .await
+                .0,
+            403,
+            "{method} {path}"
+        );
+    }
+}
+
+use bss_pricing::infra::storage::{
+    entity::{price, price_book, price_row},
+    repo::{book_repo, price_repo, row_repo},
+};
+use storage_support::at;
+fn book(tenant: Uuid) -> price_book::Model {
+    price_book::Model {
+        id: Uuid::new_v4(),
+        tenant_id: tenant,
+        code: "standard".into(),
+        name: "Standard".into(),
+        currency: "EUR".into(),
+        valid_from: None,
+        valid_until: None,
+        version: 1,
+        created_at: at(9),
+        updated_at: at(9),
+    }
+}
+fn price(b: &price_book::Model) -> price::Model {
+    price::Model {
+        id: Uuid::new_v4(),
+        tenant_id: b.tenant_id,
+        book_id: b.id,
+        sku_id: Uuid::new_v4(),
+        charge_kind: "usage".into(),
+        period: None,
+        dimension_key: None,
+        invoice_line_override: None,
+        reservation_id: Uuid::new_v4(),
+        reference_state: "confirmed".into(),
+        version: 1,
+        created_at: at(9),
+        updated_at: at(9),
+    }
+}
+fn row(p: &price::Model) -> price_row::Model {
+    price_row::Model {
+        id: Uuid::new_v4(),
+        tenant_id: p.tenant_id,
+        price_id: p.id,
+        version_no: 1,
+        dim_value: None,
+        model: "per_unit".into(),
+        price_json: serde_json::json!({"rate":"0.1"}),
+        min_fee: Some(rust_decimal::Decimal::new(1234, 2)),
+        eligibility: "all".into(),
+        effective_from: at(9).date(),
+        effective_to: None,
+        keep_for_bound: false,
+        closed_explicitly: false,
+        temporary_until: None,
+        paired_row_id: None,
+        return_of_row_id: None,
+        state: "draft".into(),
+        pending_unit_id: None,
+        approved_by_unit_id: None,
+        note: None,
+        created_by: Uuid::new_v4(),
+        approved_at: None,
+        version: 1,
+        created_at: at(9),
+        updated_at: at(9),
+    }
+}
+
+#[tokio::test]
+async fn export_contains_all_states_in_order_and_used_dimension_cannot_be_removed() {
+    let f = Fixture::new().await;
+    let tenant = f.ctx.subject_tenant_id();
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    let (_, _, tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    let saved = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":"region","values":["eu","us","ap"]}]}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(saved.0, 200);
+    let conn = f.db.conn().unwrap();
+    let b = book_repo::insert(&conn, &scope, book(tenant))
+        .await
+        .unwrap();
+    for sku in [2, 1] {
+        let mut p = price(&b);
+        p.sku_id = Uuid::from_u128(sku);
+        p.dimension_key = Some("region".into());
+        let p = price_repo::insert(&conn, &scope, p).await.unwrap();
+        for (n, value, state) in [
+            (3, "us", "approved"),
+            (1, "eu", "draft"),
+            (2, "ap", "rejected"),
+            (4, "eu", "pending"),
+        ] {
+            let mut r = row(&p);
+            r.version_no = n;
+            r.dim_value = Some(value.into());
+            r.state = state.into();
+            row_repo::insert(&conn, &scope, r).await.unwrap();
+        }
+    }
+    let path = format!("/price-books/{}/export", b.id);
+    let first = f.call("GET", &path, json!({}), None, None).await;
+    assert_eq!(first.0, 200, "{first:?}");
+    assert_eq!(first, f.call("GET", &path, json!({}), None, None).await);
+    assert_eq!(first.1["prices"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        first.1["prices"][0]["price"]["sku_id"],
+        Uuid::from_u128(1).to_string()
+    );
+    assert_eq!(
+        first.1["prices"][0]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["dim_value"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["ap", "eu", "eu", "us"]
+    );
+    assert_eq!(
+        f.call(
+            "GET",
+            &format!("/price-books/{}/prices", b.id),
+            json!({}),
+            None,
+            None
+        )
+        .await
+        .1["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for items in [json!([]), json!([{"key":"region","values":["eu","us"]}])] {
+        let refused = f
+            .call(
+                "PUT",
+                "/dimension-keys",
+                json!({"items":items}),
+                Some(&saved.2),
+                None,
+            )
+            .await;
+        assert_eq!(refused.0, 409);
+        assert!(refused.1.to_string().contains("DIM_VALUE_IN_USE"));
+    }
+    assert_eq!(
+        f.call("GET", "/dimension-keys", json!({}), None, None)
+            .await
+            .1,
+        saved.1
+    );
+}
+
+#[tokio::test]
+async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
+    let f = Fixture::new().await;
+    let (b, _) = f.book().await;
+    let id = b["id"].as_str().unwrap();
+    for (method, path, label, action) in [
+        ("POST", "/price-books".into(), "price_book", "author"),
+        ("GET", "/price-books".into(), "price_book", "read"),
+        ("GET", format!("/price-books/{id}"), "price_book", "read"),
+        (
+            "PATCH",
+            format!("/price-books/{id}"),
+            "price_book",
+            "author",
+        ),
+        ("GET", format!("/price-books/{id}/prices"), "price", "read"),
+        (
+            "GET",
+            format!("/price-books/{id}/export"),
+            "price_book",
+            "read",
+        ),
+        ("GET", "/settings".into(), "config", "read"),
+        ("PUT", "/settings".into(), "config", "settings"),
+        ("GET", "/dimension-keys".into(), "config", "read"),
+        ("PUT", "/dimension-keys".into(), "config", "settings"),
+    ] {
+        let context = |grant: &str| {
+            SecurityContext::builder()
+                .subject_id(f.ctx.subject_id())
+                .subject_tenant_id(f.ctx.subject_tenant_id())
+                .subject_type(grant)
+                .build()
+                .unwrap()
+        };
+        let allowed = context(&format!("{label}:{action}"));
+        assert_ne!(
+            request(&f.app, &allowed, method, &path, json!({}), None, None)
+                .await
+                .0,
+            403,
+            "{method} {path}"
+        );
+        assert_eq!(
+            request(
+                &f.app,
+                &context("wrong:wrong"),
+                method,
+                &path,
+                json!({}),
+                None,
+                None
+            )
+            .await
+            .0,
+            403,
+            "{method} {path}"
+        );
+    }
+    let stranger = SecurityContext::builder()
+        .subject_id(Uuid::new_v4())
+        .subject_tenant_id(Uuid::new_v4())
+        .subject_type("user")
+        .build()
+        .unwrap();
+    assert_eq!(
+        request(
+            &f.app,
+            &stranger,
+            "GET",
+            &format!("/price-books/{id}"),
+            json!({}),
+            None,
+            None
+        )
+        .await
+        .0,
+        404
+    );
+}

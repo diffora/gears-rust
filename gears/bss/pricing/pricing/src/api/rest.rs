@@ -4,3 +4,5 @@ pub mod auth_context;
 pub mod correlation;
 pub mod error;
 pub mod preconditions;
+
+pub mod authoring;

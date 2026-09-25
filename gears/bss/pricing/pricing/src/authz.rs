@@ -1,21 +1,38 @@
-//! Generic PEP gate and empty label catalog for the pricing skeleton.
+//! Pricing resource labels and the deny-by-default PEP gate.
 
 use authz_resolver_sdk::PolicyEnforcer;
 use authz_resolver_sdk::pep::{AccessRequest, ResourceType};
 use toolkit_security::{AccessScope, SecurityContext, pep_properties};
 use uuid::Uuid;
 
-/// Pricing resource labels will be declared with their phase-2c operations.
+/// Concrete PDP-visible pricing resources.
 pub mod labels {
-    /// Exact label set: the skeleton exposes no operations.
-    pub const ALL: &[&str] = &[];
+    use toolkit_gts::gts_id;
+    pub const PRICE_BOOK: &str = gts_id!("cf.bss.pricing.price_book.v1~");
+    pub const PRICE: &str = gts_id!("cf.bss.pricing.price.v1~");
+    pub const APPROVAL_UNIT: &str = gts_id!("cf.bss.pricing.approval_unit.v1~");
+    pub const CONFIG: &str = gts_id!("cf.bss.pricing.config.v1~");
+    pub const ALL: &[&str] = &[PRICE_BOOK, PRICE, APPROVAL_UNIT, CONFIG];
 }
-
-/// Action catalog frame.
-pub mod actions {}
-
-/// Resource descriptor frame.
-pub mod resource_types {}
+/// Independent authoring and governance actions.
+pub mod actions {
+    pub const READ: &str = "read";
+    pub const AUTHOR: &str = "author";
+    pub const SUBMIT: &str = "submit";
+    pub const APPROVE: &str = "approve";
+    pub const SETTINGS: &str = "settings";
+}
+/// Resource descriptors retain tenant and resource constraints.
+pub mod resource_types {
+    use super::{ResourceType, SUPPORTED_PROPERTIES, labels};
+    pub const PRICE_BOOK: ResourceType =
+        ResourceType::from_static(labels::PRICE_BOOK, SUPPORTED_PROPERTIES);
+    pub const PRICE: ResourceType = ResourceType::from_static(labels::PRICE, SUPPORTED_PROPERTIES);
+    pub const APPROVAL_UNIT: ResourceType =
+        ResourceType::from_static(labels::APPROVAL_UNIT, SUPPORTED_PROPERTIES);
+    pub const CONFIG: ResourceType =
+        ResourceType::from_static(labels::CONFIG, SUPPORTED_PROPERTIES);
+}
 
 /// Supported tenant and resource constraints for future doors.
 pub const SUPPORTED_PROPERTIES: &[&str] =
