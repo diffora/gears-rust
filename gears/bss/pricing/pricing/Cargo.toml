@@ -53,6 +53,9 @@ toolkit-canonical-errors = { workspace = true }
 # (`producer::ProducerOutboxEnvelope`), which the `outbox` feature exposes.
 event-broker-sdk = { workspace = true, features = ["db", "outbox", "test-util"] }
 toml = { workspace = true }
+# The shipped binary keeps a parsed body's key order (file-parser pulls in `preserve_order`);
+# the tests run in that order too, so the key-order digest test can fail (behaviour LOW-4).
+serde_json = { workspace = true, features = ["preserve_order"] }
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules = { workspace = true }
 test-containers = { workspace = true }

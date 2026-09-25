@@ -81,47 +81,28 @@ fn payload_hash_keeps_the_sha256_contract() {
     );
 }
 
-/// Surface F3: where `serde_json` keeps insertion order (`preserve_order`, on in the e2e server
-/// build through file-parser), a parsed `Value` keeps the client's key order. Two renderings
-/// of the same members in different orders must hash alike; these two structs serialise the
-/// same members in opposite orders on every feature set.
+/// Surface F3 and behaviour LOW-4: the shipped binary keeps a parsed body's key order
+/// (`serde_json`'s `preserve_order`, pulled in through file-parser), and the pricing
+/// dev-dependency turns it on here, so this test runs in the order the client sent. Two bodies
+/// with the same members in different orders, at every depth, must hash alike.
 #[test]
 fn the_digest_is_independent_of_key_order_at_every_depth() {
-    #[derive(serde::Serialize)]
-    struct Inner {
-        z: u8,
-        a: u8,
-    }
-    #[derive(serde::Serialize)]
-    struct InnerSorted {
-        a: u8,
-        z: u8,
-    }
-    #[derive(serde::Serialize)]
-    struct Unsorted {
-        name: &'static str,
-        code: &'static str,
-        items: Vec<Inner>,
-    }
-    #[derive(serde::Serialize)]
-    struct Sorted {
-        code: &'static str,
-        items: Vec<InnerSorted>,
-        name: &'static str,
-    }
-    let unsorted = Unsorted {
-        name: "Standard",
-        code: "standard",
-        items: vec![Inner { z: 2, a: 1 }],
-    };
-    let sorted = Sorted {
-        code: "standard",
-        items: vec![InnerSorted { a: 1, z: 2 }],
-        name: "Standard",
-    };
+    let unsorted: serde_json::Value = parse_body(
+        br#"{"name":"Standard","code":"standard","price":{"tiers":[{"up_to":null,"rate":"1"}],"model":"graduated"}}"#,
+    )
+    .unwrap();
+    let sorted: serde_json::Value = parse_body(
+        br#"{"code":"standard","name":"Standard","price":{"model":"graduated","tiers":[{"rate":"1","up_to":null}]}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        unsorted.to_string(),
+        r#"{"name":"Standard","code":"standard","price":{"tiers":[{"up_to":null,"rate":"1"}],"model":"graduated"}}"#,
+        "this build keeps the client's key order (serde_json preserve_order), as the shipped binary does"
+    );
     assert_ne!(
-        serde_json::to_string(&unsorted).unwrap(),
-        serde_json::to_string(&sorted).unwrap(),
+        unsorted.to_string(),
+        sorted.to_string(),
         "the renderings really differ in order"
     );
     assert_eq!(
@@ -129,17 +110,17 @@ fn the_digest_is_independent_of_key_order_at_every_depth() {
         request_digest(&sorted).unwrap()
     );
     assert_eq!(
-        canonical(&serde_json::to_value(&unsorted).unwrap()),
-        r#"{"code":"standard","items":[{"a":1,"z":2}],"name":"Standard"}"#
+        canonical(&unsorted),
+        r#"{"code":"standard","name":"Standard","price":{"model":"graduated","tiers":[{"rate":"1","up_to":null}]}}"#
     );
-    let other = Sorted {
-        code: "standard",
-        items: vec![InnerSorted { a: 1, z: 3 }],
-        name: "Standard",
-    };
+    let other: serde_json::Value = parse_body(
+        br#"{"code":"standard","name":"Standard","price":{"model":"graduated","tiers":[{"rate":"2","up_to":null}]}}"#,
+    )
+    .unwrap();
     assert_ne!(
         request_digest(&unsorted).unwrap(),
-        request_digest(&other).unwrap()
+        request_digest(&other).unwrap(),
+        "a changed member still changes the digest"
     );
 }
 
