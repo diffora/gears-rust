@@ -47,6 +47,7 @@ toolkit-gts = { workspace = true }
 toolkit-canonical-errors = { workspace = true }
 
 [dev-dependencies]
+toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules = { workspace = true }
 test-containers = { workspace = true }
