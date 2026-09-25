@@ -67,3 +67,19 @@ def api():
         yield client
     finally:
         client.close()
+
+
+@pytest.fixture
+def reviewer():
+    """A second principal of tenant A (``config/e2e-local.yaml``), for a two-person approval."""
+    base_url = os.getenv("E2E_BASE_URL", "http://localhost:8086")
+    token = os.getenv("E2E_REVIEWER_TOKEN", "e2e-token-tenant-a-reviewer")
+    client = httpx.Client(
+        base_url=base_url,
+        timeout=REQUEST_TIMEOUT,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        yield client
+    finally:
+        client.close()
