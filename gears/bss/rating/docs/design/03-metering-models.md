@@ -91,7 +91,7 @@ guarantee — capping is a period-level obligation).
 | ADR ID | Decision Summary |
 |--------|------------------|
 | `cpt-cf-bss-rating-adr-scope-key-adoption` | The window key is the pricing **ten-axis** key (T-D-35, resolving SEAMS K6): a usage line's `(skuId, dimensionKey)` are **selection axes** — each priced usage line resolves its own row/window (pricing D-196 stores one price row per usage line); the pre-D-196 "line within the selected row" reading is retired. |
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | Key definition SoR; the usage-only restriction for tier models rides the key's `chargeKind` axis (pricing D-18). |
+| Canonical scope key (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | Key definition SoR; the usage-only restriction for tier models rides the key's `chargeKind` axis (pricing D-18). |
 
 ### 1.3 Architecture Layers
 

@@ -3,6 +3,14 @@
 
 # Subscriptions — Decisions Log
 
+
+<!-- toc -->
+
+- [Status board](#status-board)
+- [Decisions](#decisions)
+
+<!-- /toc -->
+
 Decision IDs are `SUB-D-NN`. Autonomous decisions follow the pricing-gear pattern: adopted into
 the docs immediately, **flagged for veto** until Product/Architecture confirms. Severity:
 H (high — commercial/model shape), M (medium), L (low).
@@ -58,6 +66,7 @@ H (high — commercial/model shape), M (medium), L (low).
 | SUB-D-26 | M | The grandfathered cohort does **not** carry across a cancel+new (`supersedesSubscriptionId`) pair — the successor is a fresh purchase gate; the loss of price protection MUST be disclosed on the change preview before execution (same doctrine as credit-forfeiture disclosure) | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
 | SUB-D-27 | M | `billingAnchorPolicy` adopted **verbatim** (pricing K2 enum + D-20 no-drift month-end clamp), executed by the emitter's period derivation (SUB-P9 unparked — SB1 resolved this gear's way, rating T-D-33/34); an anchor-altering plan change takes effect at the **next** period boundary; the K5 joint anchor fixture (calendar geometry ≡ fact identity) is a design-freeze gate | **DECIDED (autonomous) 2026-08-01 · CONFIRMED 2026-08-01** |
 | SUB-D-28 | H | **One-time dedup is per phase-entry occurrence, not per subscription lifetime** (pricing D-375, 2026-09-20 — contract-version break): this gear owns a durable `phaseEntryId` per actual phase entry, reused on retries; dedup identity `(tenantId, subscriptionId, phaseEntryId, componentOccurrenceId, chargeLineId)`; usage continuation excludes phase-local line ids and monetary-version ids; missing usage tariff = `USAGE_PRICE_MISSING`. Supersedes SUB-D-24's `(subscriptionId, priceId)` key | **ADOPTED 2026-09-20** (pricing D-375 consumer break; not runtime-tested — no runtime in the workspace) |
+| SUB-D-29 | H | **The pricing contract is replaced by the PriceBook model:** the eight-axis key (later extended to ten), phases, cohort, grandfatherUntil and the catalog-version contract are superseded; Subscriptions adapts in its own plan against `GET /pricing/v1/resolve` and `GET /pricing/v1/price-rows/{id}` | **DECIDED 2026-09-25; adapter implementation deferred** |
 
 ## Decisions
 
@@ -259,3 +268,9 @@ H (high — commercial/model shape), M (medium), L (low).
 - **Usage continuation (same break):** the continuation key is the subscription, the priced `skuId`/`meter`/`dimensionKey` and the compatible aggregation-window identity — no phase-local `chargeLineId` and no monetary-version id may reset a counter. A trial that ends at 800 of a 1 000 allowance continues at 800; 250 more units make 1 050, of which 50 lie above the shared boundary. Incompatible quantity semantics are refused by pricing at publish (`PHASE_USAGE_INCOMPATIBLE`), so none reaches a transition. A missing selected phase/market usage tariff is `USAGE_PRICE_MISSING` — no cross-phase and no FX fallback; an explicit zero price accepts and accumulates.
 - **Not runtime-tested**: this gear has no runtime in the workspace. The contract is specified; emission, dedup storage and counter persistence are owed with the implementation.
 
+
+#### SUB-D-29 [H] PriceBook replaces the pricing contract
+
+- **Source:** PriceBook spec §7.1 and §12, `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`; pricing D-384–D-400.
+- **Decision (2026-09-25):** the eight-axis key (later extended to ten), phases, cohort, grandfatherUntil and the catalog-version contract are replaced. Subscriptions adapts in its own plan against `GET /pricing/v1/resolve` and `GET /pricing/v1/price-rows/{id}`. Bindings pin row ids, dimension choices, SKU versions/descriptors and promotion versions per period; renewal walks all successors and stops before the first new row. Publishing a revision alone never changes existing pins.
+- **Delivery boundary:** Pricing approves and emits migration requests; Subscriptions executes movement and confirms retirement in its own implementation plan. This entry records the contract break and does not claim consumer adaptation or migration execution is implemented.

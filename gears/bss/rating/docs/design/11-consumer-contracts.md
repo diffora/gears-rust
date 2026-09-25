@@ -94,9 +94,9 @@ reads frozen inputs, records lineage, and seals exactly its own `pricingSnapshot
 | ADR ID | Decision Summary |
 |--------|------------------|
 | `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing canonical scope key (ten axes since D-196) verbatim (selection + non-overlap); cohort generation selected by the pinned price id; no Rating-local key — the §4.2 read model is consumed on exactly this key (SEAMS K1–K5; K6 resolved T-D-35). |
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | The key definition itself — the manifest key extended additively; the pricing gear is its SoR. |
-| `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` (adopted) | `cohort` = the cutover instant; Rating resolves the generation by the cohort of the subscription's pinned price id (§4.3 eligibility inputs). |
-| `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | `PriceWindow*` events are produced by the pricing gear; Rating consumes all four (incl. `Cancelled`) as read-only resolution inputs (§4.2). |
+| Canonical scope key (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | The key definition itself — the manifest key extended additively; the pricing gear is its SoR. |
+| Grandfathering cohort axis (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | `cohort` = the cutover instant; Rating resolves the generation by the cohort of the subscription's pinned price id (§4.3 eligibility inputs). |
+| PriceWindow consolidation (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | `PriceWindow*` events are produced by the pricing gear; Rating consumes all four (incl. `Cancelled`) as read-only resolution inputs (§4.2). |
 
 ### 1.3 Architecture Layers
 
@@ -219,7 +219,7 @@ duties, and idempotency per §4.1.
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-interface-pricing-readmodel-cc`
 
 **Pricing read-model input** (required): the pricing catalog read-model interface
-(`cpt-cf-bss-pricing-interface-catalog-read-model`) plus the event set — pin discipline, payload,
+(Catalog read model (superseded by the PriceBook model, see T-D-37 in rating DECISIONS)) plus the event set — pin discipline, payload,
 and guarantees per §4.2.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-interface-context-inputs-cc`
@@ -272,7 +272,7 @@ and the rev-share pass-through recorded in §4.2.
 
 **Consume the pricing event set** (SEAMS W1):
 
-1. **Two producers, two streams** (corrected 2026-07-29 cross-gear review, pricing D-66 — the earlier text attributed both to pricing's outbox): (a) the **pricing** gear emits `PriceWindowScheduled/Activated/Expired/Cancelled` from its outbox — at-least-once, idempotency-keyed, ordered per `(tenant, plan)` (pricing design 07 §7); `CatalogVersionPublished` is **not** in pricing's frozen event-name set (pricing `fr-event-contract`). (b) `CatalogVersionPublished` is emitted by the **registry (products gear)**, which is the **sole** `CatalogVersion` incrementer (products `cpt-cf-bss-products-fr-catalog-version-publish`; pricing design 01 §3 step 5 — the Foundation only *requests* addressability on publish). It is a tenant-wide catalog-publish event, **not** per-plan: rating MUST subscribe to it on the registry's stream and MUST NOT assume `(tenant, plan)` ordering for it. Wiring the pin adapter to pricing's topic alone would mean no `CatalogVersion` ever becomes pin-eligible (step 3) and every resolution run failing closed.
+1. **Two producers, two streams** (corrected 2026-07-29 cross-gear review, pricing D-66 — the earlier text attributed both to pricing's outbox): (a) the **pricing** gear emits `PriceWindowScheduled/Activated/Expired/Cancelled` from its outbox — at-least-once, idempotency-keyed, ordered per `(tenant, plan)` (pricing design 07 §7); `CatalogVersionPublished` is **not** in pricing's frozen event-name set (pricing `fr-event-contract`). (b) `CatalogVersionPublished` is emitted by the **registry (products gear)**, which is the **sole** `CatalogVersion` incrementer (products Catalog-version publication (superseded by the PriceBook model, see T-D-37 in rating DECISIONS); pricing design 01 §3 step 5 — the Foundation only *requests* addressability on publish). It is a tenant-wide catalog-publish event, **not** per-plan: rating MUST subscribe to it on the registry's stream and MUST NOT assume `(tenant, plan)` ordering for it. Wiring the pin adapter to pricing's topic alone would mean no `CatalogVersion` ever becomes pin-eligible (step 3) and every resolution run failing closed.
 2. Each event invalidates the matching pages of the non-authoritative resolved-window cache (01 §3.7) — **including `Cancelled`**, so a pre-cached scheduled window that pricing later voids is retracted (the W1 failure this contract closes).
 3. A `CatalogVersion` becomes pin-eligible only after `CatalogVersionPublished`, the warm-completion marker, **and every earlier version being pin-eligible** (the prefix-closed frontier — pricing D-114 / T-D-31; §4.2); events carry no rate authority — resolution always reads the pinned model.
 
@@ -449,7 +449,7 @@ balance-sequencing point of T-D-10.
 
 SEAMS N1: the canonical name of the upstream catalog gear is **"Pricing (Product Catalog)"**;
 "Catalog / Price Book" and bare "Product Catalog" are superseded aliases in this design set.
-The pricing gear names this consumer `cpt-cf-bss-pricing-actor-rating` (pricing design 06 §1.3;
+The pricing gear names this consumer Rating consumer (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (pricing design 06 §1.3;
 renamed to the rating actor with the consolidation — ADR-0002 commit C). On the rating side
 ([`../PRD.md`](../PRD.md) §2.1): **Rating** names the gear and domain, **rating-core** the pure
 evaluation crate, and **Tariffs / PLAL / tariff-core** are deprecated (ADR-0002); "tariff" is
