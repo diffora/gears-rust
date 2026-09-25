@@ -227,10 +227,17 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Condition | Response |
 | --- | --- |
 | Products unavailable before reservation/write | 503 REGISTRY_UNAVAILABLE; no price |
-| SKU fenced / retiring / deprecated for new price | 409 SKU_FENCED / SKU_RETIRING / ROW_SKU_DEPRECATED |
+| SKU fenced / retiring or retired / deprecated / draft for a new price | 409 SKU_FENCED (Products' reserve refusal, passed through) / SKU_RETIRING / SKU_DEPRECATED / SKU_DRAFT |
+| Bundle SKU, or a SKU type that no longer matches the charge kind | 409 BUNDLE_SKU_NOT_PRICEABLE / CHARGE_KIND_SKU_TYPE |
+| Products refuses a dated SKU read (for example no SKU read) | Products' own status and code; only unavailability is 503 REGISTRY_UNAVAILABLE (D-402) |
 | Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
+| A temporary's return (or closed end) no longer matches the approved chain | 400 PAIR_RETURN_STALE at submit; APPLY_REFUSED at apply (D-391) |
 | Invalid dimension or row window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
-| Pending item, stale object, contended unit | 409 ROW_LOCKED_PENDING, STALE_REVISION or UNIT_CONTENDED |
+| Money sent as a JSON number; NUL in body text | 400 AMOUNT_INVALID; 400 VALIDATION |
+| Removing a registry key a price names / a value a row uses | 409 DIMENSION_KEY_IN_USE / DIM_VALUE_IN_USE |
+| Edit or delete of a row that is not an unlocked draft (a pending row included) | 409 ROW_NOT_DRAFT |
+| Stale If-Match, or a conditional write that lost its version | 409 STALE_REVISION |
+| A row another pending unit owns, at submit; a contended unit | 409 ROW_LOCKED_PENDING; 409 UNIT_CONTENDED |
 | Transaction still contended after its bounded retries | 409 CONTENDED; UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
 | Author approval; a draft row edited or deleted by anyone but its author | 403 SOD_VIOLATION; 403 NOT_DRAFT_AUTHOR (D-404) |
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
@@ -396,7 +403,8 @@ bytea to blob, preserving checks and indexes. Mutable tenant entities carry conc
 Tenant-scoped parent checks accompany entity-id foreign keys. Approval children are accessed through scoped units.
 The actual migrations are authored in phase 2c with schema goldens on both backends, not in Part 2a.
 
-The four approval tables follow spec §6 with §2.2 corrections: no unit idempotency_key or unique key index.
+The four approval tables are exactly `bss_approval::ddl::up` with prefix `pricing_` (spec §6 with §2.2
+corrections: no unit idempotency_key or unique key index); the schema goldens pin that shape on both backends.
 The shared DDL supports all Pricing subject kinds; only price_rows is executable in phase 2. Plan/promotion/
 migration tables are intentionally absent here and are added in phase 3, documented in slices 04 and 06.
 
@@ -425,20 +433,22 @@ CREATE TABLE bss.pricing_approval_policy (
 CREATE TABLE bss.pricing_approval_unit (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, kind text NOT NULL, ref_type text NOT NULL, ref_id uuid NOT NULL,
   state text NOT NULL CHECK (state IN ('pending','approved','rejected','withdrawn')),
-  common_effective_date date, quorum_required integer NOT NULL CHECK (quorum_required >= 0),
+  common_effective_date date, quorum_required integer NOT NULL,
   generation integer NOT NULL DEFAULT 1, submitted_by uuid NOT NULL, submitted_at timestamptz NOT NULL,
   decided_at timestamptz, decided_note text, snapshot jsonb NOT NULL, snapshot_hash text NOT NULL,
-  version bigint NOT NULL DEFAULT 1, UNIQUE (tenant_id, id)
+  version bigint NOT NULL DEFAULT 1
 );
-CREATE INDEX ix_pricing_approval_unit_queue ON bss.pricing_approval_unit (tenant_id, state, kind, submitted_at);
+CREATE INDEX ix_pricing_approval_unit_queue ON bss.pricing_approval_unit USING btree
+  (tenant_id, state, kind, submitted_at);
 CREATE TABLE bss.pricing_approval_unit_item (
-  unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), item_type text NOT NULL, item_id uuid NOT NULL,
-  created_by uuid NOT NULL, before jsonb, after jsonb NOT NULL, PRIMARY KEY (unit_id, item_type, item_id)
+  unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), tenant_id uuid NOT NULL, item_type text NOT NULL,
+  item_id uuid NOT NULL, created_by uuid NOT NULL, before_json jsonb, after_json jsonb NOT NULL,
+  PRIMARY KEY (unit_id, item_type, item_id)
 );
 CREATE TABLE bss.pricing_approval_decision (
-  unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), actor uuid NOT NULL, generation integer NOT NULL,
-  decision text NOT NULL CHECK (decision IN ('approve','reject')), note text, at timestamptz NOT NULL,
-  stale boolean NOT NULL DEFAULT false, PRIMARY KEY (unit_id, actor, generation)
+  unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), tenant_id uuid NOT NULL, actor uuid NOT NULL,
+  generation integer NOT NULL, decision text NOT NULL CHECK (decision IN ('approve','reject')), note text,
+  at timestamptz NOT NULL, stale boolean NOT NULL DEFAULT false, PRIMARY KEY (unit_id, actor, generation)
 );
 CREATE TABLE bss.pricing_price (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, book_id uuid NOT NULL REFERENCES bss.pricing_price_book(id),

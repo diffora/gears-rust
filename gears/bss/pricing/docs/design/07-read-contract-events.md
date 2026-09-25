@@ -73,7 +73,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-typed-events`.
 
 1. [ ] - `p1` - Implement PriceRowsPublished, ApprovalUnitDecided and PriceReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
 2. [ ] - `p1` - Add PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real. - `inst-read-contract-events-typed-events-2`
-3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode tenant/correlation and stable subject identities in the durable envelope. - `inst-read-contract-events-typed-events-3`
+3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
 4. [ ] - `p1` - Deliver from the toolkit dispatcher after commit; test restart/retry and prevent domain publish on reject/withdraw/refresh. - `inst-read-contract-events-typed-events-4`
 
 ## 4. States (CDSL)
@@ -98,7 +98,7 @@ cross-gear read for transactional local ownership/version guards. Approved money
 
 ## 7. Events & Alarms
 
-Core payloads (camelCase on the wire): PriceRowsPublished { book_id, unit_id, rows[] { row_id, price_id, dim_value (null is the default chain), effective_from, effective_to, eligibility }, actor_ref }, ApprovalUnitDecided { unit_id, kind, state (approved, rejected or withdrawn), generation, actors[] }, PriceReferenceLost { price_id, sku_id, reservation_id, actor_ref }; each also names its tenant_id. Later payloads name the published revision, retired plan, promotion id/version or migration request/target/subscriptions. Tenant and correlation are envelope facts. No SkuChanged subscription is required by phase 2.
+Core payloads (camelCase on the wire): PriceRowsPublished { book_id, unit_id, rows[] { row_id, price_id, dim_value (null is the default chain), effective_from, effective_to, eligibility }, actor_ref }, ApprovalUnitDecided { unit_id, kind, state (approved, rejected or withdrawn), generation, actors[] }, PriceReferenceLost { price_id, sku_id, reservation_id, actor_ref }; each also names its tenant_id. Later payloads name the published revision, retired plan, promotion id/version or migration request/target/subscriptions. The tenant is an envelope fact. The envelope carries no correlation id (trace_parent is unset); an event joins its audit rows through the subject ids it names (unit_id, price_id), which the same transaction audits with the request's correlation id. No SkuChanged subscription is required by phase 2.
 
 Audit and outbox inserts use the same mutation transaction; retry is lifecycle-managed and observes shutdown.
 

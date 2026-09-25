@@ -39,6 +39,7 @@ the spec's 422 wording.
 | D-402 | H | The pair guard compares SKU metering as of each row's start | DECIDED 2026-09-25 · Phase 2 reconciliation matrix row 24; spec §5 pair guard; supersession-continuity family |
 | D-403 | M | Validation refusals are 400 with a code; no wire 422 | DECIDED 2026-09-25 · toolkit canonical error mapping; Products phase 1 behaviour; deviation from spec §2 decision 16 and §6 |
 | D-404 | H | A draft belongs to its author | DECIDED 2026-09-25 · Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8) |
+| D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 
 ## Entries
 
@@ -92,7 +93,7 @@ On an existing chain, temporary_until creates a promo row and a return row in on
 
 #### D-392 [H] Publish changes is a selected book batch
 
-List all draft book rows with full predecessor, proposed content and impact, pre-select all, then submit the operator-selected atomic rows and optional common_effective_date as one price_rows unit. Book money and plan structure remain independently approved. A rejected revision cannot undo an approved repricing that also affects the old revision.
+List all draft book rows with full predecessor, proposed content and impact, pre-select all, then submit the operator-selected atomic rows and optional common_effective_date as one price_rows unit; a ticked half of a temporary pair brings its partner (D-405). Book money and plan structure remain independently approved. A rejected revision cannot undo an approved repricing that also affects the old revision.
 
 **Source:** §2 decision 7; §6; §8.
 
@@ -177,3 +178,11 @@ The toolkit's canonical errors have no 422: InvalidArgument and FailedPreconditi
 A draft belongs to its author: only its creator edits or deletes it. PATCH or DELETE of a draft price row by anyone but its created_by is 403 NOT_DRAFT_AUTHOR, and a temporary pair's partner follows its creator. Separation of duties (D-393) excludes the submitter and every item's created_by; because no one else can change a draft, every number in a unit is its item author's, and an editor can never approve money they wrote under another author's name. Products applies the same rule to SKU drafts. Another author proposes a different number with a draft of their own.
 
 **Source:** Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8).
+
+#### D-405 [M] Publish changes completes a selected pair
+
+**Status:** DECIDED 2026-09-25.
+
+POST /price-books/{id}/publish-changes that ticks one half of a temporary pair adds the other half to the unit and records it in the snapshot's added_partner: a pair is never split, and an untick of one half is not refused. Submitting one half alone through POST /rows/{id}/submit stays 400 PAIR_SPLIT, and the subject's submit validation still refuses a partial pair (PAIR_SPLIT) as a safety net. A foreign-book row is refused ROW_NOT_IN_BOOK with no unit.
+
+**Source:** Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4).

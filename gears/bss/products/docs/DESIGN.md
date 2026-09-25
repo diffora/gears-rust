@@ -344,7 +344,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 400 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
 | `APPLY_REFUSED` | Apply failure with domain reason, including SKU_REFERENCED; transaction rolls back without success events |
 | `NO_VERSION_IN_FORCE` | 404; date precedes first version |
-| `SKU_RETIRING`, `ROW_SKU_DEPRECATED` | Pricing-side adoption guards for prices/items and new plan revisions |
+| `SKU_RETIRING`, `SKU_DEPRECATED`, `ROW_SKU_DEPRECATED` | Pricing-side adoption guards: a new price refuses a retiring (`SKU_RETIRING`) or deprecated (`SKU_DEPRECATED`) SKU; in phase 3 a new plan revision refuses a deprecated SKU (`ROW_SKU_DEPRECATED`) |
 | `REGISTRY_UNAVAILABLE` | 503 from Pricing when reserve cannot succeed; Pricing writes nothing |
 
 An unreachable configured usage-type catalog is 503 during publication validation. The usage catalog's

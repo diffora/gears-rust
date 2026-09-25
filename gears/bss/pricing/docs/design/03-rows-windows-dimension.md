@@ -86,7 +86,7 @@ State definition: `cpt-cf-bss-pricing-state-rows-windows-dimension` in the FEATU
 
 ## 5. API Surface
 
-POST /bss-pricing/v1/prices/{id}/rows; PATCH/DELETE /bss-pricing/v1/rows/{id} draft only. Submit and publish-changes enter slice 05. Price create/delete use slice 02 doors but this slice owns their reference protocol. Products calls are reserve, SKU read, confirm and release through ProductsClient.
+POST /bss-pricing/v1/prices/{id}/rows; PATCH/DELETE /bss-pricing/v1/rows/{id} draft only (409 ROW_NOT_DRAFT for a pending, approved or rejected row), by its author only (403 NOT_DRAFT_AUTHOR, D-404), at the current version (409 STALE_REVISION). A decimal sent as a JSON number is 400 AMOUNT_INVALID. Submit and publish-changes enter slice 05. Price create/delete use slice 02 doors but this slice owns their reference protocol. Products calls are reserve, SKU read, confirm and release through ProductsClient.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
@@ -132,7 +132,7 @@ The sole definitions live in [features/rows-windows-dimension.md](../features/ro
 8. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-value-fallback`: Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return row exists.
 9. PRD AC #4 / `cpt-cf-bss-pricing-dod-row-pending-guard`: Given a pending row and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited.
 10. PRD AC #11 / `cpt-cf-bss-pricing-dod-reference-protocol`: Given Products and Pricing on real SQLite/Postgres storage, when reserve races retire then both cannot succeed; a live price blocks retire until durable removal and release.
-11. PRD AC #11 / `cpt-cf-bss-pricing-dod-confirmation-retry`: Given a committed price and lost confirm response, when retry resumes then it confirms safely without release; a forced released receipt is surfaced and deletion release failure remains queued.
+11. PRD AC #11 / `cpt-cf-bss-pricing-dod-confirmation-retry`: Given a committed price and lost confirm response, when retry resumes then it confirms safely without release; a receipt released before its confirm is re-reserved (lost, with PriceReferenceLost, only when the SKU is fenced, retiring or retired) and deletion release failure remains queued.
 
 ## 10. Non-Functional Considerations
 

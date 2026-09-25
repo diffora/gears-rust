@@ -84,7 +84,7 @@ State definition: `cpt-cf-bss-pricing-state-books-prices` in the FEATURE.
 
 ## 5. API Surface
 
-Under /bss-pricing/v1: POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/prices; GET /price-books/{id}/export; POST /price-books/{id}/prices; PATCH/DELETE /prices/{id}; GET/PUT /settings and /dimension-keys. Price deletion refuses approved or pending rows with 409 PRICE_ROWS_IN_USE; draft and rejected rows are deleted with the price (a rejected row's review history stays in its unit snapshot), and DELETE answers 204 once the removal commits while the release completes as durable reference work. POST requires Idempotency-Key; PATCH/PUT require If-Match. Permissions are read, author and settings as appropriate.
+Under /bss-pricing/v1: POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/prices; GET /price-books/{id}/export; POST /price-books/{id}/prices; PATCH/DELETE /prices/{id}; GET/PUT /settings and /dimension-keys. Price deletion refuses approved or pending rows with 409 PRICE_ROWS_IN_USE; draft and rejected rows are deleted with the price (a rejected row's review history stays in its unit snapshot), and DELETE answers 204 once the removal commits while the release completes as durable reference work. POST requires Idempotency-Key; PATCH/PUT require If-Match, and a stale token is 409 STALE_REVISION. A new price on a SKU that is fenced, retiring or retired, deprecated or still draft is 409 SKU_FENCED (Products' own refusal), SKU_RETIRING, SKU_DEPRECATED or SKU_DRAFT; a bundle SKU is 409 BUNDLE_SKU_NOT_PRICEABLE. A dimension_key change after a valued row, or removing a registry key a price names, is 409 DIMENSION_KEY_IN_USE. Permissions are read, author and settings as appropriate.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
@@ -118,7 +118,7 @@ The sole definitions live in [features/books-prices.md](../features/books-prices
 
 1. PRD AC #2 / `cpt-cf-bss-pricing-dod-book-currency-validity`: Given a EUR book, when name/validity changes with its ETag then currency stays EUR; duplicate tenant code or inverted dates are refused.
 2. PRD AC #3 / `cpt-cf-bss-pricing-dod-price-key-unique`: Given the same nonrecurring SKU twice, when concurrent creates use null period then only one price persists; a bundle has no price.
-3. PRD AC #3 / `cpt-cf-bss-pricing-dod-price-metadata`: Given a valued or approved row, when dimension change or price deletion is requested then it is refused; allowed metadata updates retain receipt identity.
+3. PRD AC #3 / `cpt-cf-bss-pricing-dod-price-metadata`: Given a valued row, when a dimension change is requested then it is refused DIMENSION_KEY_IN_USE; given an approved or pending row, price deletion is refused PRICE_ROWS_IN_USE, while draft and rejected rows are deleted with the price; allowed metadata updates retain receipt identity.
 4. PRD AC #1 / `cpt-cf-bss-pricing-dod-dimension-registry`: Given EU rows, when US is added then it is available; deleting EU or drafting UNKNOWN is refused without changing the registry.
 5. PRD AC #13 / `cpt-cf-bss-pricing-dod-settings-defaults`: Given default arrears and SKU advance, when inputs bind then advance wins; stale settings update fails with no partial changes.
 6. PRD AC #12 / `cpt-cf-bss-pricing-dod-book-export`: Given two tenants, when one exports its book then only its facts appear; foreign-book access is denied and row/unit counts do not change.

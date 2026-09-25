@@ -87,7 +87,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-approvals-submit-unit`
 
 1. [ ] - `p1` - Resolve replay before any work; collect selected business content with every item author and the common date. - `inst-approvals-submit-unit-1`
-2. [ ] - `p1` - Validate submit, pair completeness, chain rules and ownership; red checks return 400 with their code and no unit. - `inst-approvals-submit-unit-2`
+2. [ ] - `p1` - Validate submit, pair completeness, each temporary's return against the approved chain on its shifted end (PAIR_RETURN_STALE, D-391), chain rules and ownership; red checks return 400 with their code and no unit. - `inst-approvals-submit-unit-2`
 3. [ ] - `p1` - Read kind quorum or tenant default (missing default is fail-safe one), insert unit/items and acquire ordered conditional ownership. - `inst-approvals-submit-unit-3`
 4. [ ] - `p1` - Write submission audit; if quorum is zero, apply and write terminal audit/events in the same transaction with no votes. - `inst-approvals-submit-unit-4`
 
@@ -135,7 +135,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-publish-changes-selection`
 
-Publish changes exposes all book drafts and their full review information, initially selected. The selected subset and optional common date form one atomic price_rows unit, preserving temporary pairs (spec §2 decision 7).
+Publish changes exposes all book drafts and their full review information, initially selected. The selected subset and optional common date form one atomic price_rows unit, preserving temporary pairs: a ticked half brings its partner, recorded as added_partner (spec §2 decision 7, D-405).
 
 Requirement: `cpt-cf-bss-pricing-fr-publish-changes`; PRD AC #9.
 
@@ -199,7 +199,7 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 | DoD | PRD criterion | Given / When / Then |
 | --- | --- | --- |
-| `cpt-cf-bss-pricing-dod-publish-changes-selection` | AC #9; `cpt-cf-bss-pricing-fr-publish-changes` | Given three drafts and one temporary companion, when an ordinary row is unticked then only the selected atomic set is locked; a foreign-book row or partial pair fails with no unit. |
+| `cpt-cf-bss-pricing-dod-publish-changes-selection` | AC #9; `cpt-cf-bss-pricing-fr-publish-changes` | Given three drafts and one temporary companion, when an ordinary row is unticked then only the selected atomic set is locked; a ticked pair half brings its partner (added_partner, D-405), and a foreign-book row fails with no unit. |
 | `cpt-cf-bss-pricing-dod-price-rows-unit` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given two overlapping batches, when approvals race then no overlapping approved windows survive; a valid batch applies all rows and a failed batch applies none. |
 | `cpt-cf-bss-pricing-dod-sod-excludes-authors` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given a row authored by A but submitted by B, when A approves then SOD_VIOLATION refuses it; independent C with approve-only permission may vote. |
 | `cpt-cf-bss-pricing-dod-quorum-policy` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given quorum 0, 1 and 2 units, when the valid number of independent votes is supplied then each applies once; changing policy cannot silently lower an existing unit's snapshot. |

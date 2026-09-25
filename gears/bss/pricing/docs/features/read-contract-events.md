@@ -105,7 +105,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Implement PriceRowsPublished, ApprovalUnitDecided and PriceReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
 2. [ ] - `p1` - Add PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real. - `inst-read-contract-events-typed-events-2`
-3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode tenant/correlation and stable subject identities in the durable envelope. - `inst-read-contract-events-typed-events-3`
+3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
 4. [ ] - `p1` - Deliver from the toolkit dispatcher after commit; test restart/retry and prevent domain publish on reject/withdraw/refresh. - `inst-read-contract-events-typed-events-4`
 
 ## 4. States (CDSL)
@@ -172,7 +172,7 @@ Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-events-typed-outbox`
 
-Core and later domain events use TypedEvent and toolkit delivery, preserving envelope and payload identity. Terminal units always event; submission and committed refresh do not falsely publish domain success (spec §6–§7.3, D-400).
+Core domain events are TypedEvents enqueued on the toolkit outbox in the mutation transaction and delivered by the broker SDK producer when an EventBrokerApi is registered (D-400); later payloads take the same shape. Envelope and payload identity are preserved. Terminal units always event; submission and committed refresh do not falsely publish domain success (spec §6–§7.3, D-400).
 
 Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 

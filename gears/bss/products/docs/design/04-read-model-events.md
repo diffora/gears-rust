@@ -55,7 +55,7 @@ that integration gate. The retained ProductCatalogClientV1 transport is an inter
 ### Pricing reserves, writes and confirms
 
 1. [ ] - `p1` - Allocate the logical owner/kind/ref_id identity and reserve it in Products; if Products is unavailable, return REGISTRY_UNAVAILABLE and write no Pricing object - `inst-ref-reserve`
-2. [ ] - `p1` - After reserve succeeds, re-read the SKU and apply Pricing's type/lifecycle guards, including SKU_RETIRING and ROW_SKU_DEPRECATED where applicable - `inst-ref-reread`
+2. [ ] - `p1` - After reserve succeeds, re-read the SKU and apply Pricing's type/lifecycle guards, including SKU_RETIRING and SKU_DEPRECATED where applicable - `inst-ref-reread`
 3. [ ] - `p1` - Commit the Pricing object, reservation_id and durable confirmation work in one Pricing transaction; the sold_as relation follows the same sequence - `inst-ref-owner-commit`
 4. [ ] - `p1` - Confirm in Products and clear confirmation_pending after success; retry durably after timeout, accepting already-confirmed as success - `inst-ref-confirm`
 5. [ ] - `p1` - After definite rollback or failed validation, durably cancel the attempt then release; after deletion, durably remove the object then release; never release merely because confirmation timed out - `inst-ref-cancel`

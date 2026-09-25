@@ -209,7 +209,7 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-confirmation-retry`
 
-Restart resumes every pricing_reference_op not done with bounded backoff, including reserving before any price exists; an unknown commit is reconciled before release. Confirmed prices are checked through states(): a released receipt is re-reserved when the SKU is not fenced, otherwise reference_state becomes lost, new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted (D-401).
+Restart resumes every pricing_reference_op not done with bounded backoff. The ticker never makes a first reservation for a user: it cancels a create still reserving without a receipt (releasing whatever a lost reserve call made, and freeing its key), and completes one holding a receipt only when its door is gone; an unknown commit is reconciled before release. A receipt released before its confirm, and a released receipt found on a confirmed price through states(), are re-reserved while the SKU admits a reservation; only a fenced, retiring or retired SKU makes reference_state lost, after which new rows fail PRICE_REFERENCE_LOST and PriceReferenceLost is emitted (D-401).
 
 Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 
@@ -227,6 +227,6 @@ Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 | `cpt-cf-bss-pricing-dod-temporary-value-fallback` | AC #8; `cpt-cf-bss-pricing-fr-temporary-pair` | Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return row exists. |
 | `cpt-cf-bss-pricing-dod-row-pending-guard` | AC #4; `cpt-cf-bss-pricing-fr-price-row` | Given a pending row and its old ETag, when PATCH or DELETE runs then it is refused and unit content is unchanged; an unlocked current draft can be edited. |
 | `cpt-cf-bss-pricing-dod-reference-protocol` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given Products and Pricing on real SQLite/Postgres storage, when reserve races retire then both cannot succeed; a live price blocks retire until durable removal and release. |
-| `cpt-cf-bss-pricing-dod-confirmation-retry` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a committed price and lost confirm response, when retry resumes then it confirms safely without release; a forced released receipt is surfaced and deletion release failure remains queued. |
+| `cpt-cf-bss-pricing-dod-confirmation-retry` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a committed price and lost confirm response, when retry resumes then it confirms safely without release; a receipt released before its confirm is re-reserved (lost, with PriceReferenceLost, only when the SKU is fenced, retiring or retired) and deletion release failure remains queued. |
 
 Verification uses domain tests, scoped repository tests on both backends and REST positive/denial/precondition probes as applicable. Phase 2 checks must not mark later-phase behavior implemented. Golden consumer contracts belong to phase 4.

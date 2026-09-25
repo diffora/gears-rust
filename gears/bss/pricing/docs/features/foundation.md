@@ -124,7 +124,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-tables-two-backends`
 
-The new migration chain preserves keys, checks and chain indexes on SQLite and Postgres. Schema goldens and two-writer integration tests verify DESIGN §3.7, without migrating stand data.
+The new migration chain preserves keys, checks and chain indexes on SQLite and Postgres. Schema goldens pin the resulting shape, which DESIGN §3.7 states (the approval tables as bss_approval::ddl writes them), and two-writer integration tests verify it, without migrating stand data.
 
 Requirement: `cpt-cf-bss-pricing-nfr-two-backends`; PRD AC #24.
 

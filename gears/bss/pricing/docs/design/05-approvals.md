@@ -55,7 +55,7 @@ Actors: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-fi
 Feature algorithm: `cpt-cf-bss-pricing-algo-approvals-submit-unit`.
 
 1. [ ] - `p1` - Resolve replay before any work; collect selected business content with every item author and the common date. - `inst-approvals-submit-unit-1`
-2. [ ] - `p1` - Validate submit, pair completeness, chain rules and ownership; red checks return 400 with their code and no unit. - `inst-approvals-submit-unit-2`
+2. [ ] - `p1` - Validate submit, pair completeness, each temporary's return against the approved chain on its shifted end (PAIR_RETURN_STALE, D-391), chain rules and ownership; red checks return 400 with their code and no unit. - `inst-approvals-submit-unit-2`
 3. [ ] - `p1` - Read kind quorum or tenant default (missing default is fail-safe one), insert unit/items and acquire ordered conditional ownership. - `inst-approvals-submit-unit-3`
 4. [ ] - `p1` - Write submission audit; if quorum is zero, apply and write terminal audit/events in the same transaction with no votes. - `inst-approvals-submit-unit-4`
 
@@ -95,7 +95,7 @@ State definition: `cpt-cf-bss-pricing-state-approvals` in the FEATURE.
 
 ## 5. API Surface
 
-POST /bss-pricing/v1/rows/{id}/submit; POST /price-books/{id}/publish-changes with row_ids? and common_effective_date?; GET /approval-units?state&kind&ref_id and /approval-units/{id}; POST /approval-units/{id}/approve, /reject (generation required; reject note required) and /withdraw; GET/PUT /approval-policy. read, submit, approve and settings permissions are separate. All POSTs require client keys; policy PUT requires If-Match.
+POST /bss-pricing/v1/rows/{id}/submit; POST /price-books/{id}/publish-changes with row_ids? and common_effective_date?; GET /approval-units?state&kind&ref_id and /approval-units/{id}; POST /approval-units/{id}/approve, /reject (generation required; reject note required) and /withdraw; GET/PUT /approval-policy. read, submit, approve and settings permissions are separate. All POSTs require client keys; policy PUT requires If-Match (409 STALE_REVISION when stale). One half of a pair submitted alone is 400 PAIR_SPLIT, while publish-changes adds a ticked half's partner (D-405); a return that no longer matches the approved chain is 400 PAIR_RETURN_STALE at submit and APPLY_REFUSED at apply (D-391); a lost race on the unit, or contention that outlasts the retries at these doors, is 409 UNIT_CONTENDED (CONTENDED at every other door).
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
@@ -128,7 +128,7 @@ The sole definitions live in [features/approvals.md](../features/approvals.md):
 
 ## 9. Acceptance Criteria
 
-1. PRD AC #9 / `cpt-cf-bss-pricing-dod-publish-changes-selection`: Given three drafts and one temporary companion, when an ordinary row is unticked then only the selected atomic set is locked; a foreign-book row or partial pair fails with no unit.
+1. PRD AC #9 / `cpt-cf-bss-pricing-dod-publish-changes-selection`: Given three drafts and one temporary companion, when an ordinary row is unticked then only the selected atomic set is locked; a ticked pair half brings its partner (added_partner, D-405), and a foreign-book row fails with no unit.
 2. PRD AC #10 / `cpt-cf-bss-pricing-dod-price-rows-unit`: Given two overlapping batches, when approvals race then no overlapping approved windows survive; a valid batch applies all rows and a failed batch applies none.
 3. PRD AC #10 / `cpt-cf-bss-pricing-dod-sod-excludes-authors`: Given a row authored by A but submitted by B, when A approves then SOD_VIOLATION refuses it; independent C with approve-only permission may vote.
 4. PRD AC #10 / `cpt-cf-bss-pricing-dod-quorum-policy`: Given quorum 0, 1 and 2 units, when the valid number of independent votes is supplied then each applies once; changing policy cannot silently lower an existing unit's snapshot.
