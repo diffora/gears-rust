@@ -42,6 +42,15 @@ fn refuse(error: RuleError) -> DoorError {
     support::invalid(row::field_of(error.code), error.code).into()
 }
 
+/// A draft belongs to its author (D-404): only its creator edits or deletes it, so every
+/// number in a unit is its item author's and separation of duties excludes the right person.
+fn own_draft(m: &price_row::Model, ctx: &SecurityContext) -> Result<(), DoorError> {
+    if m.created_by == ctx.subject_id() {
+        Ok(())
+    } else {
+        Err(support::forbidden("NOT_DRAFT_AUTHOR").into())
+    }
+}
 fn parse_model(text: &str) -> Result<Model, DoorError> {
     text.parse()
         .map_err(|_| support::invalid("model", "MODEL_INVALID").into())
@@ -264,7 +273,8 @@ async fn create_in(
 /// Change business fields of an unlocked draft at the version the caller read.
 /// A temporary row keeps its start and value: its window belongs to its pair or closure.
 /// # Errors
-/// Returns `ROW_NOT_DRAFT`, `VERSION_CONFLICT`, `TEMPORARY_ROW_FIXED` or a pure-rule refusal.
+/// Returns `ROW_NOT_DRAFT`, `NOT_DRAFT_AUTHOR`, `VERSION_CONFLICT`, `TEMPORARY_ROW_FIXED` or a
+/// pure-rule refusal.
 #[allow(
     clippy::too_many_arguments,
     reason = "Conditional resource identity and audit context are explicit"
@@ -285,6 +295,7 @@ pub async fn patch(
     if m.state != RowState::Draft.as_str() || m.pending_unit_id.is_some() {
         return Err(support::conflict("ROW_NOT_DRAFT").into());
     }
+    own_draft(&m, ctx)?;
     support::check_version(version, m.version)?;
     let children = AccessScope::for_tenant(tenant);
     let pc = PriceContext::load(
@@ -349,7 +360,7 @@ pub async fn patch(
 
 /// Delete an unlocked draft at its version; a pair half takes its partner with it.
 /// # Errors
-/// Returns `ROW_NOT_DRAFT` or `VERSION_CONFLICT`.
+/// Returns `ROW_NOT_DRAFT`, `NOT_DRAFT_AUTHOR` or `VERSION_CONFLICT`.
 pub async fn delete(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -367,6 +378,7 @@ pub async fn delete(
     if !draft(&m) {
         return Err(support::conflict("ROW_NOT_DRAFT").into());
     }
+    own_draft(&m, ctx)?;
     support::check_version(version, m.version)?;
     let children = AccessScope::for_tenant(tenant);
     let mut targets = vec![(m.id, m.version)];
@@ -376,6 +388,7 @@ pub async fn delete(
         if !draft(&p) {
             return Err(support::conflict("ROW_NOT_DRAFT").into());
         }
+        own_draft(&p, ctx)?;
         targets.push((p.id, p.version));
     }
     row_repo::delete_drafts(tx, &children, tenant, &targets).await?;

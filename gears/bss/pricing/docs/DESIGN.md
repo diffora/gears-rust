@@ -210,7 +210,7 @@ impact added when those dependencies exist. Never label unavailable phase 3 impa
 | --- | --- | --- |
 | Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/prices; GET /price-books/{id}/export |
 | Prices | 2 | POST /price-books/{id}/prices with sku_id, period?, dimension_key?; PATCH /prices/{id} for invoice_line_override and permitted dimension_key changes; DELETE /prices/{id} answers 204 once removed, deleting its draft and rejected rows with it; approved or pending rows refuse 409 PRICE_ROWS_IN_USE |
-| Rows | 2 | POST /prices/{id}/rows; PATCH/DELETE /rows/{id} draft only; POST /rows/{id}/submit; POST /price-books/{id}/publish-changes with row_ids? and common_effective_date? |
+| Rows | 2 | POST /prices/{id}/rows; PATCH/DELETE /rows/{id} draft only, by its author (D-404); POST /rows/{id}/submit; POST /price-books/{id}/publish-changes with row_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys |
 | Plans | 3 | POST/GET /plans; POST /plans/{id}/revisions; PATCH /plan-revisions/{id}; GET /plan-revisions/{id}/checks; POST /plan-revisions/{id}/submit; POST /plans/{id}/clone, /retire, /migrations |
@@ -229,7 +229,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Invalid dimension or row window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
 | Pending item, stale object, contended unit | 409 ROW_LOCKED_PENDING, STALE_REVISION or UNIT_CONTENDED |
 | Transaction still contended after its bounded retries | 409 CONTENDED; UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
-| Author approval | 403 SOD_VIOLATION |
+| Author approval; a draft row edited or deleted by anyone but its author | 403 SOD_VIOLATION; 403 NOT_DRAFT_AUTHOR (D-404) |
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |

@@ -142,6 +142,7 @@ Use `bss-approval` for `sku_publish`, `sku_change` and `sku_retire`, with Produc
 Tenant policy supplies quorum with per-kind overrides; a missing `'*'` row means quorum 1.
 No materiality threshold applies. Authors and submitters cannot approve their own unit even if both
 permissions are held; category and policy edits are direct operations (P-D-190; spec §6, §14).
+A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404).
 
 #### No database row locks
 
@@ -339,7 +340,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `UNIT_CONTENDED`, `UNIT_ALREADY_DECIDED`, `DUPLICATE_VOTE` | 409; conditional unit write, terminal state or duplicate generation vote |
 | `CONTENDED` | 409; a transaction still contended after its bounded retries (an approval-unit door answers `UNIT_CONTENDED`) |
 | `GENERATION_MISMATCH`, `UNIT_STALE` | 400 with current/new generation; mismatch refuses vote, stale refresh commits |
-| `SOD_VIOLATION`, `NOT_SUBMITTER` | 403; author/submitter approval or unauthorized withdrawal |
+| `SOD_VIOLATION`, `NOT_SUBMITTER`, `NOT_DRAFT_AUTHOR` | 403; author/submitter approval, unauthorized withdrawal, or a SKU draft edited by anyone but its author |
 | `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 400 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
 | `APPLY_REFUSED` | Apply failure with domain reason, including SKU_REFERENCED; transaction rolls back without success events |
 | `NO_VERSION_IN_FORCE` | 404; date precedes first version |

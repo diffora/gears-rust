@@ -4,8 +4,8 @@ use crate::api::rest::{ApiState, categories};
 use crate::domain::{recognized::UsageTypeAnswer, references::RefKind};
 use crate::infra::storage::repo;
 use crate::test_support::{
-    StubUsageTypes, at, body_json, get, patch, post, problem_code, raw_i64, repo_connection,
-    rest_app, rest_app_with_catalog, violation_for,
+    StubUsageTypes, at, authed_ctx, body_json, get, patch, post, problem_code, raw_i64,
+    repo_connection, request_as, rest_app, rest_app_with_catalog, violation_for,
 };
 use axum::{Router, http::StatusCode};
 use bss_products_sdk::models::{Lifecycle, SkuContent};
@@ -655,4 +655,44 @@ async fn reassignment_and_rename_apply_the_same_category_and_uniqueness_guards()
         .await,
         0
     );
+}
+
+// D-404 (review chains MEDIUM-1 = docs F2): a SKU draft belongs to its author. Another author,
+// who may also approve, cannot rewrite it and then approve it as someone else's work.
+#[tokio::test]
+async fn only_the_drafts_author_may_patch_it() {
+    let tenant = Uuid::new_v4();
+    let (app, _dsn) = rest_app(tenant, doors).await;
+    let cat = category(&app, tenant).await;
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/skus",
+        new(cat, "STOR", "Storage"),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    let url = format!(
+        "/bss-products/v1/skus/{}",
+        body_json(r).await["id"].as_str().unwrap()
+    );
+    let bob = authed_ctx(tenant);
+    let r = request_as(
+        &app,
+        &bob,
+        axum::http::Method::PATCH,
+        &url,
+        Some(json!({"name":"Bob's"})),
+        Some(&tag),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem_code(&body_json(r).await), "NOT_DRAFT_AUTHOR");
+    assert_eq!(
+        body_json(get(&app, tenant, &url).await).await["sku"]["name"],
+        "Storage"
+    );
+    let r = patch(&app, tenant, &url, json!({"name":"Renamed"}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK, "the author still edits");
 }

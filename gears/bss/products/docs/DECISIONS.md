@@ -111,7 +111,7 @@ The shared `bss-approval` shape serves `sku_publish`, `sku_change` (with `effect
 `sku_retire`. Quorum comes from tenant `approval_policy`, with an optional per-kind override, and is
 copied into the unit on submit; a missing `'*'` row means quorum 1, fail-safe. There is no materiality
 threshold. The submitter and every item's author are excluded from approving (403 `SOD_VIOLATION`),
-even with both permissions; a reviewer need not have submit permission.
+even with both permissions; a reviewer need not have submit permission. A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404).
 
 Submit validates and conditionally acquires `pending_unit_id` (`ROW_LOCKED_PENDING`, 409, on failure).
 Quorum zero still records an approved unit with `decided_at = submitted_at`, no decisions, and the

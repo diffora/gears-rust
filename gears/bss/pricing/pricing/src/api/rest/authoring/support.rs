@@ -51,6 +51,12 @@ pub fn invalid(field: &str, code: &str) -> CanonicalError {
         .with_field_violation(field, code, code)
         .create()
 }
+/// A 403 with its own code: the caller may act on the resource type, not on this one.
+pub fn forbidden(code: &str) -> CanonicalError {
+    PricingResource::permission_denied()
+        .with_reason(code)
+        .create()
+}
 pub fn conflict(code: &str) -> CanonicalError {
     PricingResource::aborted(code).with_reason(code).create()
 }

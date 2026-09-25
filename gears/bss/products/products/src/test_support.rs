@@ -160,6 +160,22 @@ pub fn authed_ctx(tenant: Uuid) -> SecurityContext {
         .expect("authed SecurityContext must build")
 }
 
+/// The tenant's one door-test author: every [`request`] of a tenant acts as the same
+/// principal, so a draft's creator can edit it (D-404 refuses anyone else).
+#[must_use]
+///
+/// # Panics
+/// Panics if the fixed fixture identity cannot build a security context.
+pub fn tenant_user(tenant: Uuid) -> SecurityContext {
+    SecurityContext::builder()
+        .subject_id(Uuid::from_u128(tenant.as_u128() ^ 0xa11ce))
+        .subject_tenant_id(tenant)
+        .subject_type(gts_id!("cf.core.security.subject_user.v1~"))
+        .token_scopes(vec!["*".to_owned()])
+        .build()
+        .expect("tenant SecurityContext must build")
+}
+
 /// Run `sql` (a `SELECT ... AS v FROM ...`) on its own auxiliary connection
 /// into `dsn` and return the single integer column it names `v`.
 ///
@@ -671,7 +687,7 @@ pub async fn seed_rest_sku(
             usage_type_ref: None,
             unit: None,
         },
-        authed_ctx(tenant).subject_id(),
+        tenant_user(tenant).subject_id(),
         OffsetDateTime::now_utc(),
     )
     .await
@@ -689,11 +705,24 @@ pub async fn request(
     body: Option<serde_json::Value>,
     etag: Option<&str>,
 ) -> axum::response::Response {
+    request_as(app, &tenant_user(tenant), method, uri, body, etag).await
+}
+/// Exercise the router as a given principal.
+/// # Panics
+/// Panics if fixture setup or the asserted operation fails.
+pub async fn request_as(
+    app: &axum::Router,
+    ctx: &SecurityContext,
+    method: axum::http::Method,
+    uri: &str,
+    body: Option<serde_json::Value>,
+    etag: Option<&str>,
+) -> axum::response::Response {
     use tower::ServiceExt;
     let mut builder = axum::http::Request::builder()
         .method(method)
         .uri(uri)
-        .extension(authed_ctx(tenant));
+        .extension(ctx.clone());
     if let Some(etag) = etag {
         builder = builder.header("If-Match", etag);
     }

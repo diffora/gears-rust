@@ -410,7 +410,8 @@ async fn find(
         .ok_or(TxError::Refused(DomainError::NotFound { what: "sku", id }))
 }
 /// Check editing eligibility before resolving a ref and again within the write transaction.
-fn editable(s: &Sku, expected: i64) -> Result<(), TxError> {
+/// A draft belongs to its author (D-404): only its creator edits it.
+fn editable(s: &Sku, expected: i64, actor: Uuid) -> Result<(), TxError> {
     if s.lifecycle != Lifecycle::Draft {
         return Err(TxError::Refused(DomainError::Conflict {
             code: "NOT_A_DRAFT",
@@ -421,6 +422,12 @@ fn editable(s: &Sku, expected: i64) -> Result<(), TxError> {
         return Err(TxError::Refused(DomainError::Conflict {
             code: "ROW_LOCKED_PENDING",
             detail: "a pending approval unit locks this draft".into(),
+        }));
+    }
+    if s.created_by != actor {
+        return Err(TxError::Refused(DomainError::Forbidden {
+            code: "NOT_DRAFT_AUTHOR",
+            detail: "only the draft's author edits it".into(),
         }));
     }
     if s.revision != expected {
@@ -469,7 +476,7 @@ async fn update_sku_draft(
             .await
             .map_err(tx_to_canonical)?
     };
-    editable(&current, expected).map_err(tx_to_canonical)?;
+    editable(&current, expected, actor).map_err(tx_to_canonical)?;
     let proposed = apply_patch(&SkuContent::from(&current), &patch_tx);
     if proposed.usage_type_ref != current.usage_type_ref {
         resolve_draft_ref(&state, &ctx, proposed.usage_type_ref.as_deref()).await?;
@@ -486,7 +493,7 @@ async fn update_sku_draft(
                 let patch = patch_tx.clone();
                 Box::pin(async move {
                     let current = find(tx, &scope, tenant_id, id).await?;
-                    editable(&current, expected)?;
+                    editable(&current, expected, actor)?;
                     let content = apply_patch(&SkuContent::from(&current), &patch);
                     let s = match repo::update_sku_draft(
                         tx, &scope, tenant_id, id, expected, &content, now,

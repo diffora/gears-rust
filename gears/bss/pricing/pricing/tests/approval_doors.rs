@@ -252,6 +252,62 @@ async fn quorum_one_neither_the_author_nor_the_submitter_may_approve() {
     );
 }
 
+// Chains MEDIUM-1 = docs F2 (D-404): Bob, who may author and approve, cannot rewrite Alice's
+// draft and then approve his own numbers under her name.
+#[tokio::test]
+async fn only_a_drafts_author_edits_or_deletes_it() {
+    let g = gov(1).await;
+    let (alice, bob) = (g.f.ctx.clone(), g.f.user());
+    let mut ten = body("2031-03-01");
+    ten["price"] = json!({"rate":"10"});
+    let row = &g.draft_as(&alice, "a", ten).await[0];
+    let path = format!("/rows/{}", row["id"].as_str().unwrap());
+    let (status, b, _) =
+        g.f.call_as(
+            &bob,
+            "PATCH",
+            &path,
+            json!({"price":{"rate":"1"}}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(status, 403, "{b}");
+    assert!(code(&b).contains("NOT_DRAFT_AUTHOR"), "{b}");
+    assert_eq!(g.row(&row["id"]).await.price_json, json!({"rate":"10"}));
+    let (status, b, _) =
+        g.f.call_as(&bob, "DELETE", &path, json!({}), Some("\"1\""), None)
+            .await;
+    assert_eq!(status, 403, "{b}");
+    assert!(code(&b).contains("NOT_DRAFT_AUTHOR"), "{b}");
+    let mut promo = body("2031-04-01");
+    promo["temporary_until"] = json!("2031-04-10");
+    g.approved(9, "2031-01-01").await;
+    let pair = g.draft_as(&alice, "pair", promo).await;
+    let partner = format!("/rows/{}", pair[1]["id"].as_str().unwrap());
+    let (status, b, _) =
+        g.f.call_as(&bob, "DELETE", &partner, json!({}), Some("\"2\""), None)
+            .await;
+    assert_eq!(status, 403, "a pair's partner follows its creator: {b}");
+    let (status, b, _) =
+        g.f.call_as(
+            &alice,
+            "PATCH",
+            &path,
+            json!({"price":{"rate":"9"}}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "the author still edits: {b}");
+    let (status, b, _) = g.submit_as(&alice, row, "submit").await;
+    assert_eq!(status, 201, "{b}");
+    let (status, b, _) = g
+        .vote(&bob, &b["unit"], "approve", json!({"generation":1}), "bob")
+        .await;
+    assert_eq!(status, 200, "Bob reviews money he did not write: {b}");
+}
+
 #[tokio::test]
 async fn quorum_two_needs_two_reviewers_and_a_second_vote_by_one_is_refused() {
     let g = gov(2).await;
