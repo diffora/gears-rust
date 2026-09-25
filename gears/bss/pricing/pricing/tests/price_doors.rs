@@ -247,20 +247,38 @@ async fn products_contention_and_rate_limits_are_unavailability_not_refusals() {
         let retry = f.call("POST", &path, input, None, Some("one")).await;
         assert_eq!(retry.0, 201, "{mode}: {retry:?}");
     }
-    // The SKU re-read after a successful reserve answered 409 CONTENDED: the op keeps its
-    // receipt for recovery instead of cancelling and releasing it.
+    // The SKU re-read after a successful reserve answered 409 CONTENDED. The door answers 503,
+    // and a 503 writes nothing (spec §13) even with a receipt in hand: the create is cancelled,
+    // its key is free again, and the cancellation releases the receipt it already holds.
     let (f, script, path, input) = setup(18).await;
     let first = f
         .call("POST", &path, input.clone(), None, Some("one"))
         .await;
     assert_eq!(first.0, 503, "{first:?}");
-    assert_eq!(Script::count(&script.releases), 0);
+    script.set(0);
     let retry = f.call("POST", &path, input, None, Some("one")).await;
-    assert_eq!(retry.0, 409);
-    assert!(
-        retry.1.to_string().contains("IDEMPOTENCY_KEY_IN_FLIGHT"),
-        "{retry:?}"
+    assert_eq!(retry.0, 201, "a same-key retry runs afresh: {retry:?}");
+    bss_pricing::infra::reference_ticker::Ticker::new(
+        f.state.clone(),
+        Arc::new(LaterClock),
+        10,
+        100,
+    )
+    .tick()
+    .await
+    .unwrap();
+    assert_eq!(
+        Script::count(&script.releases),
+        1,
+        "the abandoned create's reservation is released"
     );
+}
+/// A clock past the in-flight grace, so the ticker may take over abandoned work.
+struct LaterClock;
+impl bss_pricing::infra::reference_work::Clock for LaterClock {
+    fn now(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::now_utc() + time::Duration::days(2)
+    }
 }
 
 #[tokio::test]

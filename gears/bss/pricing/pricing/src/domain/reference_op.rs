@@ -29,7 +29,8 @@ pub enum Event {
     ReleasedOnConfirm,
     Released,
     ReleaseFailed,
-    /// The reserve got no definite answer before any receipt was known.
+    /// The door answered 503 before the price was written (spec §13: nothing is written),
+    /// whether or not its reserve had already returned a receipt.
     ReservationUnknown,
 }
 /// Work authorized by a transition; effects are executed outside the pure model.
@@ -68,10 +69,18 @@ pub fn next(mut op: Op, event: Event) -> Result<(Op, Vec<Effect>), IllegalTransi
             (Cancelling, Effect::Release)
         }
         (Reserving, Event::RegistryUnavailable) => (Reserving, Effect::Retry),
-        // No receipt was ever learned, so no price can be written: cancel, and let the
-        // cancellation find and release whatever reservation the lost call may have made.
-        (Reserving, Event::ReservationUnknown) if op.reservation_id.is_none() => {
-            op.refusal = Some("RESERVATION_UNKNOWN".into());
+        // The door gave up before the write, so no price may be written: cancel. Without a
+        // receipt the cancellation finds and releases whatever reservation the lost call may
+        // have made; with one it releases that receipt.
+        (Reserving, Event::ReservationUnknown) => {
+            op.refusal = Some(
+                if op.reservation_id.is_none() {
+                    "RESERVATION_UNKNOWN"
+                } else {
+                    "ABANDONED_BEFORE_WRITE"
+                }
+                .into(),
+            );
             (Cancelling, Effect::Release)
         }
         (Reserving, Event::Written) => (Written, Effect::Confirm),

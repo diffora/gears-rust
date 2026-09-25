@@ -337,7 +337,7 @@ async fn answer_key(
     }
     Ok(())
 }
-/// Give up a create whose reserve got no definite answer (spec §13: nothing is written). In
+/// Give up a create before its write (spec §13: a 503 writes nothing). In
 /// one transaction the op moves `reserving → cancelling`, is recorded [`CANCELLED`], and its
 /// Idempotency-Key claim is released, so a same-key retry runs afresh with a new price id.
 /// The cancellation then releases whatever reservation the unanswered call made.
@@ -368,9 +368,13 @@ async fn abandon(
     })
     .await
 }
+/// A create still before its write (`reserving`), with or without a receipt.
+fn reserving_create(op: &entity::Model, state: OpState) -> bool {
+    state == OpState::Reserving && op.kind == OpKind::Create.as_str()
+}
 /// A create in `reserving` that never learned a reservation id.
 fn unreserved_create(op: &entity::Model, state: OpState) -> bool {
-    state == OpState::Reserving && op.reservation_id.is_none() && op.kind == OpKind::Create.as_str()
+    reserving_create(op, state) && op.reservation_id.is_none()
 }
 /// What the loop does with an op before any registry call.
 enum Gate {
@@ -402,8 +406,8 @@ fn contended(error: &CanonicalError) -> bool {
 }
 /// Drive a durable op until terminal completion or the next scheduled retry.
 ///
-/// A door whose first reserve gets no definite answer cancels its create and answers 503
-/// (nothing written, key released). The ticker never makes a first reservation on a user's
+/// A door that gets no definite answer before the write cancels its create and answers 503
+/// (nothing written, key released, any receipt released by the cancellation). The ticker never makes a first reservation on a user's
 /// behalf: it cancels a create still `reserving` without a reservation id the same way.
 /// # Errors
 /// Returns registry unavailability or a storage failure; the operation remains durable.
@@ -451,7 +455,7 @@ async fn step(
     let (event, price, refusal) = observe(registry, ctx, op).await?;
     if caller == Caller::Door
         && event == Event::RegistryUnavailable
-        && unreserved_create(op, current)
+        && reserving_create(op, current)
     {
         return give_up(state, op, work, clock).await;
     }
@@ -477,8 +481,9 @@ fn warn_past_threshold(op: &entity::Model) {
         tracing::warn!(op_id=%op.op_id, attempts=op.attempts, "pricing reference operation retry threshold reached");
     }
 }
-/// The door's first reserve got no definite answer: cancel the create and answer 503. A lost
-/// race means another driver moved the op first; the loop re-reads it.
+/// The door got no definite answer before the write (the reserve, or the SKU re-read after a
+/// successful reserve): cancel the create and answer 503, so a 503 never becomes a price. A
+/// lost race means another driver moved the op first; the loop re-reads it.
 async fn give_up(
     state: &AuthoringState,
     op: &entity::Model,

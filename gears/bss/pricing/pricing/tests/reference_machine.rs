@@ -41,8 +41,8 @@ fn every_state_event_pair_is_typed_and_never_panics() {
                 None,
                 None,
                 None,
-                // A reserve with a receipt in hand is completed, never abandoned.
-                None,
+                // The door gave up before the write: cancel, releasing the receipt in hand.
+                Some((Cancelling, Release)),
             ],
         ),
         (
