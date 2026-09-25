@@ -271,6 +271,6 @@ H (high — commercial/model shape), M (medium), L (low).
 
 #### SUB-D-29 [H] PriceBook replaces the pricing contract
 
-- **Source:** PriceBook spec §7.1 and §12, `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`; pricing D-384–D-400.
+- **Source:** PriceBook spec §7.1 and §12, `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`; pricing D-384–D-406.
 - **Decision (2026-09-25):** the eight-axis key (later extended to ten), phases, cohort, grandfatherUntil and the catalog-version contract are replaced. Subscriptions adapts in its own plan against `GET /pricing/v1/resolve` and `GET /pricing/v1/prices/{id}`. Bindings pin price ids, dimension choices, SKU versions/descriptors and promotion versions per period; renewal walks all successors and stops before the first new price. Publishing a revision alone never changes existing pins.
 - **Delivery boundary:** Pricing approves and emits migration requests; Subscriptions executes movement and confirms retirement in its own implementation plan. This entry records the contract break and does not claim consumer adaptation or migration execution is implemented.

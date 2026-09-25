@@ -2,16 +2,16 @@
 //!
 //! # What the catalog actually needs from the registry, and nothing more
 //!
-//! A price is keyed on a **meter** and a plan may be **bound to a SKU**, and
+//! A legacy price row is keyed on a **meter** and a plan may be **bound to a SKU**, and
 //! both of those are strings and ids this gear takes as given: it owns no
 //! registry, validates neither against one, and is not made correct by having
 //! this port. What the port buys is the one thing missing without it — an
-//! operator authoring a price or binding a plan has **no way to know what the
+//! operator authoring a legacy price row or binding a plan has **no way to know what the
 //! catalog sells**, so the pick-lists can only ever offer what the tenant has
-//! already used, and a first price for a new SKU is typed from memory.
+//! already used, and a first legacy price row for a new SKU is typed from memory.
 //!
 //! SKU browsing is a suggestion source. `list_tax_categories` also exposes the
-//! registry-owned category dictionary: pricing owns the assignment on a price,
+//! registry-owned category dictionary: pricing owns the assignment on a legacy price row,
 //! not a category default on a SKU or region. The dictionary defines codes
 //! and labels, not rates or tax calculation rules.
 //! No create, no lifecycle, no resolution — those belong to the registry's own
@@ -121,7 +121,7 @@ pub struct CatalogSkuPage {
 
 /// A tax-category definition owned by Product Catalog, not a tax rate.
 ///
-/// Pricing assigns `code` to a price's `tax_category_ref`. Neither a SKU nor
+/// Pricing assigns `code` to a legacy price row's `tax_category_ref`. Neither a SKU nor
 /// a region supplies a second editable assignment or fallback. Labels are read
 /// from the provider rather than stored alongside each assignment.
 #[derive(Debug, Clone, PartialEq, Eq)]

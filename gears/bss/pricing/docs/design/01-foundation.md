@@ -33,7 +33,7 @@ Provide the fresh schema, scoped repositories, conditional approval Store, canon
 Requirements: `cpt-cf-bss-pricing-nfr-authz`, `cpt-cf-bss-pricing-nfr-audit`, `cpt-cf-bss-pricing-nfr-tenant-isolation`, `cpt-cf-bss-pricing-nfr-two-backends`, `cpt-cf-bss-pricing-nfr-idempotency-concurrency`. Architecture: `cpt-cf-bss-pricing-component-books`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-approvals`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-principle-business-content-fingerprint`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-constraint-one-replay-store`.
 [FEATURE](../features/foundation.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: shared bss-approval and toolkit infrastructure.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-400.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-406.
 
 ## 2. Actor Flows (CDSL)
 
@@ -73,7 +73,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-foundation-toolkit-outbox`.
 
 1. [ ] - `p1` - Install toolkit outbox migrations under bss_pricing_outbox in DatabaseCapability. - `inst-foundation-toolkit-outbox-1`
 2. [ ] - `p1` - Encode domain payloads through TypedEvent using the Products envelope sink pattern. - `inst-foundation-toolkit-outbox-2`
-3. [ ] - `p1` - Append through the caller transaction and dispatch only committed prices. - `inst-foundation-toolkit-outbox-3`
+3. [ ] - `p1` - Append through the caller transaction and dispatch only committed outbox rows. - `inst-foundation-toolkit-outbox-3`
 4. [ ] - `p1` - Wire lifecycle-managed delivery and retry; failure leaves a durable record rather than an unrelayed pricing_outbox row. - `inst-foundation-toolkit-outbox-4`
 
 ## 4. States (CDSL)

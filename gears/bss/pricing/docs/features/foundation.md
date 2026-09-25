@@ -64,7 +64,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 01](../design/01-foundation.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-400; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-406; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -105,7 +105,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Install toolkit outbox migrations under bss_pricing_outbox in DatabaseCapability. - `inst-foundation-toolkit-outbox-1`
 2. [ ] - `p1` - Encode domain payloads through TypedEvent using the Products envelope sink pattern. - `inst-foundation-toolkit-outbox-2`
-3. [ ] - `p1` - Append through the caller transaction and dispatch only committed prices. - `inst-foundation-toolkit-outbox-3`
+3. [ ] - `p1` - Append through the caller transaction and dispatch only committed outbox rows. - `inst-foundation-toolkit-outbox-3`
 4. [ ] - `p1` - Wire lifecycle-managed delivery and retry; failure leaves a durable record rather than an unrelayed pricing_outbox row. - `inst-foundation-toolkit-outbox-4`
 
 ## 4. States (CDSL)

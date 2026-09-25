@@ -235,10 +235,11 @@ subscriptions read "unavailable until phase 3". Never label unavailable phase 3 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
 | Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; PATCH /price-book-entries/{id} for invoice_line_override and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404) |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404) |
 | Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys |
+| Reference work | 2 | GET /reference-ops?state&limit&cursor lists the tenant's durable reference ops in op-id order (config settings permission); limit 1 to 1000, default 100; the next page starts after next_cursor |
 | Plans | 3 | POST/GET /plans; POST /plans/{id}/revisions; PATCH /plan-revisions/{id}; GET /plan-revisions/{id}/checks; POST /plan-revisions/{id}/submit; POST /plans/{id}/clone, /retire, /migrations |
 | Promotions | 3 | POST /promotions; PATCH /promotions/{id} draft; POST /promotions/{id}/submit, /end-today, /cancel |
 
@@ -658,5 +659,5 @@ act with 500 instead of being retried by the transaction; Products has the same 
 | 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; phase 3. |
 | 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2). |
 
-All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-400.
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-406.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.

@@ -67,7 +67,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 03](../design/03-prices-windows-dimension.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-400; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-406; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -80,7 +80,7 @@ Holding multiple permissions never bypasses separation of duties.
 2. [ ] - `p1` - Read chain history and validate model, dates, dimension membership and usage structure. - `inst-prices-windows-dimension-flow-2`
 3. [ ] - `p1` - For an existing chain, copy the return money selected at the end into a linked price; for a previously unowned value create only one closed price. - `inst-prices-windows-dimension-flow-3`
 4. [ ] - `p1` - Persist draft prices atomically with author attribution and return their ETags; later edits require draft/unlocked state. - `inst-prices-windows-dimension-flow-4`
-5. [ ] - `p1` - Submit the complete pair or single price through slice 05; common-date shifts preserve temporary duration. - `inst-prices-windows-dimension-flow-5`
+5. [ ] - `p1` - Submit the complete pair or single price through slice 05; common-date shifts preserve temporary duration, and a shift that would carry a temporary across another start of its chain is refused TEMPORARY_SPANS_A_CHANGE (D-406). - `inst-prices-windows-dimension-flow-5`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -177,7 +177,7 @@ Requirement: `cpt-cf-bss-pricing-fr-min-fee`; PRD AC #7.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-temporary-pair`
 
-A temporary price and return are created, edited and submitted atomically. Return money comes from versionAt at the end, inherits dim_value and shifts with preserved duration (spec §5).
+A temporary price and return are created, edited and submitted atomically. Return money comes from versionAt at the end, inherits dim_value and shifts with preserved duration (spec §5); no price starts inside its window and it spans no other start of its chain (D-406).
 
 Requirement: `cpt-cf-bss-pricing-fr-temporary-pair`; PRD AC #8.
 

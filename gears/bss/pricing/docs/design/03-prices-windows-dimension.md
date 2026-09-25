@@ -33,7 +33,7 @@ Implement immutable money chains, models, temporary pairs and price floors; prot
 Requirements: `cpt-cf-bss-pricing-fr-price`, `cpt-cf-bss-pricing-fr-chain-windows`, `cpt-cf-bss-pricing-fr-pair-guard`, `cpt-cf-bss-pricing-fr-min-fee`, `cpt-cf-bss-pricing-fr-temporary-pair`, `cpt-cf-bss-pricing-fr-reference-protocol`. Architecture: `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-reservations-client`, `cpt-cf-bss-pricing-principle-reserve-before-write`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-seq-reserve-write-confirm`, `cpt-cf-bss-pricing-seq-temporary-pair`.
 [FEATURE](../features/prices-windows-dimension.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: `cpt-cf-bss-pricing-feature-books-entries`.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-400.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-406.
 
 ## 2. Actor Flows (CDSL)
 
@@ -45,7 +45,7 @@ Actors: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-pr
 2. [ ] - `p1` - Read chain history and validate model, dates, dimension membership and usage structure. - `inst-prices-windows-dimension-flow-2`
 3. [ ] - `p1` - For an existing chain, copy the return money selected at the end into a linked price; for a previously unowned value create only one closed price. - `inst-prices-windows-dimension-flow-3`
 4. [ ] - `p1` - Persist draft prices atomically with author attribution and return their ETags; later edits require draft/unlocked state. - `inst-prices-windows-dimension-flow-4`
-5. [ ] - `p1` - Submit the complete pair or single price through slice 05; common-date shifts preserve temporary duration. - `inst-prices-windows-dimension-flow-5`
+5. [ ] - `p1` - Submit the complete pair or single price through slice 05; common-date shifts preserve temporary duration, and a shift that would carry a temporary across another start of its chain is refused TEMPORARY_SPANS_A_CHANGE (D-406). - `inst-prices-windows-dimension-flow-5`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -86,7 +86,7 @@ State definition: `cpt-cf-bss-pricing-state-prices-windows-dimension` in the FEA
 
 ## 5. API Surface
 
-POST /bss-pricing/v1/price-book-entries/{id}/prices; PATCH/DELETE /bss-pricing/v1/prices/{id} draft only (409 PRICE_NOT_DRAFT for a pending, approved or rejected price), by its author only (403 NOT_DRAFT_AUTHOR, D-404), at the current version (409 STALE_REVISION). A decimal sent as a JSON number is 400 AMOUNT_INVALID. Submit and publish-changes enter slice 05. Entry create/delete use slice 02 doors but this slice owns their reference protocol. Products calls are reserve, SKU read, confirm and release through ProductsClient.
+POST /bss-pricing/v1/price-book-entries/{id}/prices; PATCH/DELETE /bss-pricing/v1/prices/{id} draft only (409 PRICE_NOT_DRAFT for a pending, approved or rejected price), by its author only (403 NOT_DRAFT_AUTHOR, D-404), at the current version (409 STALE_REVISION). A decimal sent as a JSON number is 400 AMOUNT_INVALID. Submit and publish-changes enter slice 05. Entry create/delete use slice 02 doors but this slice owns their reference protocol, and GET /bss-pricing/v1/reference-ops?state&limit&cursor (config settings permission) lists that durable reference work for operators, in op-id order and paged by an exclusive cursor. Products calls are reserve, SKU read, confirm and release through ProductsClient.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.

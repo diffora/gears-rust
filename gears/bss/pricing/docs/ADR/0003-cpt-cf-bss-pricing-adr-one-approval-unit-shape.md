@@ -48,7 +48,7 @@ Exercise quorum 0/1/2, item-author SoD, duplicate votes, generation mismatch, co
 
 ## Pros and Cons of the Options
 
-Materiality gates retain a second approval policy and inconsistent paths. Shared subjects centralize review semantics while each gear owns its state transaction. A composite unit obscures independent book facts and couples a rejected plan revision to already useful entries.
+Materiality gates retain a second approval policy and inconsistent paths. Shared subjects centralize review semantics while each gear owns its state transaction. A composite unit obscures independent book facts and couples a rejected plan revision to already approved prices.
 
 ## More Information
 
