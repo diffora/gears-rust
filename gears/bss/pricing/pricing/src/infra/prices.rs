@@ -154,7 +154,8 @@ pub struct PricesSubject {
 #[derive(Default)]
 struct Review {
     plans: Vec<Value>,
-    descriptors: Vec<Value>,
+    /// The entry SKUs' descriptors, or `"unavailable"` when Products did not answer the read.
+    descriptors: Value,
 }
 
 /// One entry's part of a unit, judged against the entry's current approved prices.
@@ -381,7 +382,10 @@ impl PricesSubject {
         AccessScope::for_tenant(self.tenant_id)
     }
     /// The plans reading the unit's entries and each entry SKU's current descriptors, read fresh
-    /// for the reviewer (D-408) and kept for `snapshot`, never in `after`.
+    /// for the reviewer (D-408) and kept for `snapshot`, never in `after`. The descriptors are
+    /// information, so their read is best-effort (D-416): a registry that cannot answer or refuses
+    /// the caller records them `"unavailable"` and never refuses the submit, vote or reject. The
+    /// reads a rule needs (a usage chain's dated metering, D-402) stay hard in `judge`.
     async fn review(&self, tx: &DbTx<'_>, entries: &BTreeSet<Uuid>) -> Result<(), ApprovalError> {
         let plans = plans_reading(tx, self.tenant_id, entries)
             .await
@@ -395,18 +399,12 @@ impl PricesSubject {
                 skus.insert(entry.sku_id);
             }
         }
-        let read = crate::api::rest::authoring::plans::fresh_skus(&self.hub, &self.ctx, skus)
-            .await
-            .map_err(|error| {
-                if error.status_code() == 503 {
-                    invalid("REGISTRY_UNAVAILABLE", "Products reference registry")
-                } else {
-                    self.registry_failure(error)
-                }
-            })?;
+        let descriptors = plan_revisions::descriptors_or_unavailable(
+            crate::api::rest::authoring::plans::fresh_skus(&self.hub, &self.ctx, skus).await,
+        );
         if let Ok(mut review) = self.review.lock() {
             review.plans = plans;
-            review.descriptors = read.iter().map(plan_revisions::descriptors).collect();
+            review.descriptors = descriptors;
         }
         Ok(())
     }
@@ -673,7 +671,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
     }
     fn snapshot(&self, items: &[ItemRef], common_effective_date: Option<Date>) -> Value {
         let (plans, descriptors) = self.review.lock().map_or_else(
-            |_| (Vec::new(), Vec::new()),
+            |_| (Vec::new(), Value::Null),
             |r| (r.plans.clone(), r.descriptors.clone()),
         );
         json!({

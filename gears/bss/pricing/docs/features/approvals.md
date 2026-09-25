@@ -65,7 +65,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 05](../design/05-approvals.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-415; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-416; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -201,7 +201,7 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-dod-publish-changes-selection` | AC #9; `cpt-cf-bss-pricing-fr-publish-changes` | Given three drafts and one temporary companion, when an ordinary price is unticked then only the selected atomic set is locked; a ticked pair half brings its partner (added_partner, D-405), and a foreign-book price fails with no unit. |
 | `cpt-cf-bss-pricing-dod-prices-unit` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given two overlapping batches, when approvals race then no overlapping approved windows survive; a valid batch applies all prices and a failed batch applies none. |
-| `cpt-cf-bss-pricing-dod-sod-excludes-authors` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given a price authored by A but submitted by B, when A approves then SOD_VIOLATION refuses it; independent C with approve-only permission may vote. |
+| `cpt-cf-bss-pricing-dod-sod-excludes-authors` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given a price authored by A but submitted by B, when A approves then SOD_VIOLATION refuses it; independent C with approve-only permission votes on any unit whose rules read no SKU, and a rule read (usage metering, plan checks) needs products read too (D-416). |
 | `cpt-cf-bss-pricing-dod-quorum-policy` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given quorum 0, 1 and 2 units, when the valid number of independent votes is supplied then each applies once; changing policy cannot silently lower an existing unit's snapshot. |
 | `cpt-cf-bss-pricing-dod-stale-refresh-generation` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given content drift after a vote, when another vote arrives then the unit refreshes and old votes stop counting; repeated keyed request replays the refresh outcome. |
 | `cpt-cf-bss-pricing-dod-generation-and-duplicate-vote` | AC #10; `cpt-cf-bss-pricing-fr-approval-units` | Given refreshed generation 2, when a generation-1 vote arrives then it counts nothing; two votes by one actor in generation 2 cannot meet quorum 2. |

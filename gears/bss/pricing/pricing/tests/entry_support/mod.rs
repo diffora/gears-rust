@@ -288,10 +288,32 @@ pub struct Script {
     pub versions_refused: std::sync::atomic::AtomicBool,
     /// A tenant whose `states()` calls fail as an unavailable registry.
     pub states_down_for: std::sync::Mutex<Option<Uuid>>,
+    /// Opt-in: when set, only these principals hold products `read`. Any other caller's SKU read
+    /// (`sku_for_write`, `sku_version_as_of`) is Products' 403, as Products' registry authorizes
+    /// the caller before it reads. Unset (the default) admits every caller.
+    pub readers: std::sync::Mutex<Option<std::collections::BTreeSet<Uuid>>>,
+    /// Opt-in: `sku_for_write` fails as an unavailable registry.
+    pub skus_down: std::sync::atomic::AtomicBool,
 }
 impl Script {
     pub fn set(&self, mode: usize) {
         self.mode.store(mode, Ordering::SeqCst);
+    }
+    /// Only these principals may read SKUs from now on (products `read`).
+    pub fn readers(&self, principals: impl IntoIterator<Item = Uuid>) {
+        *self.readers.lock().unwrap() = Some(principals.into_iter().collect());
+    }
+    /// Products' 403 for a caller without products `read`, when the opt-in set is armed.
+    fn read_denied(&self, ctx: &SecurityContext) -> Option<CanonicalError> {
+        let readers = self.readers.lock().unwrap();
+        let denied = readers
+            .as_ref()
+            .is_some_and(|set| !set.contains(&ctx.subject_id()));
+        denied.then(|| {
+            TestResource::permission_denied()
+                .with_reason("SKU_READ_DENIED")
+                .create()
+        })
     }
     pub fn count(value: &AtomicUsize) -> usize {
         value.load(Ordering::SeqCst)
@@ -438,10 +460,16 @@ impl ReferenceRegistryV1 for Script {
     }
     async fn sku_for_write(
         &self,
-        _: &SecurityContext,
+        ctx: &SecurityContext,
         tenant: Uuid,
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
+        if let Some(denied) = self.read_denied(ctx) {
+            return Err(denied);
+        }
+        if self.skus_down.load(Ordering::SeqCst) {
+            return Err(CanonicalError::service_unavailable().create());
+        }
         let mode = self.mode.load(Ordering::SeqCst);
         if mode == 18 && Self::count(&self.reserve_calls) > 0 {
             // The re-read after a successful reserve lost a race in Products.
@@ -494,6 +522,9 @@ impl ReferenceRegistryV1 for Script {
         date: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
         self.version_reads.fetch_add(1, Ordering::SeqCst);
+        if let Some(denied) = self.read_denied(ctx) {
+            return Err(denied);
+        }
         if self.versions_down.load(Ordering::SeqCst) {
             return Err(CanonicalError::service_unavailable().create());
         }

@@ -90,6 +90,20 @@ pub fn descriptors(sku: &Sku) -> Value {
     })
 }
 
+/// The snapshot's `descriptors` when Products could not answer their read (D-416).
+pub const DESCRIPTORS_UNAVAILABLE: &str = "unavailable";
+
+/// The snapshot's `descriptors` from a best-effort SKU read (D-416): each SKU's descriptors, or
+/// `"unavailable"` when the registry could not answer or refused the caller. Descriptors are
+/// information, never content: their read never refuses a submit, a vote or a reject.
+#[must_use]
+pub fn descriptors_or_unavailable(read: Result<Vec<Sku>, CanonicalError>) -> Value {
+    read.map_or_else(
+        |_| Value::from(DESCRIPTORS_UNAVAILABLE),
+        |skus| Value::Array(skus.iter().map(descriptors).collect()),
+    )
+}
+
 /// What changes against the published revision: the book, the sale date, and the items added,
 /// removed or changed, by SKU.
 fn diff(before: Option<&Value>, after: &Value) -> Value {
@@ -133,7 +147,8 @@ struct Review {
     plan_code: Option<String>,
     rev_no: Option<i32>,
     diff: Value,
-    descriptors: Vec<Value>,
+    /// The item SKUs' descriptors, or `"unavailable"` when Products did not answer the read.
+    descriptors: Value,
     superseded: Option<Uuid>,
 }
 
@@ -242,13 +257,14 @@ impl PlanRevisionSubject {
                 )
             })
     }
-    /// The item SKUs, read fresh (D-408), with their descriptors kept for the snapshot. Only
-    /// unavailability is `REGISTRY_UNAVAILABLE`; a definite refusal is answered as Products gave it.
+    /// The item SKUs, read fresh for the checks (D-408), a rule: the read is hard and made as the
+    /// caller, and the descriptors are kept for the snapshot. Only unavailability is
+    /// `REGISTRY_UNAVAILABLE`; a definite refusal is answered as Products gave it.
     async fn skus(&self, ids: impl IntoIterator<Item = Uuid>) -> Result<Vec<Sku>, ApprovalError> {
         match plans::fresh_skus(&self.hub, &self.ctx, ids).await {
             Ok(skus) => {
                 if let Ok(mut review) = self.review.lock() {
-                    review.descriptors = skus.iter().map(descriptors).collect();
+                    review.descriptors = Value::Array(skus.iter().map(descriptors).collect());
                 }
                 Ok(skus)
             }
@@ -290,8 +306,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         REF_TYPE
     }
     /// The revision's business content, the published revision's as `before`, the diff and the
-    /// item SKUs' current descriptors; its author is the item author separation of duties
-    /// excludes.
+    /// item SKUs' current descriptors (best-effort, D-416); its author is the item author
+    /// separation of duties excludes.
     async fn collect(&self, tx: &DbTx<'a>, _ids: &[Uuid]) -> Result<Vec<ItemRef>, ApprovalError> {
         let r = self.revision(tx).await?;
         let scope = self.scope();
@@ -317,8 +333,13 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
             None => None,
         };
         let after = content(&r, &items);
-        self.skus(items.iter().map(|i| i.sku_id)).await?;
+        // The descriptors are information (D-416): best-effort, never a refusal. The checks'
+        // hard reads are `validate_submit`'s and `apply`'s.
+        let described = descriptors_or_unavailable(
+            plans::fresh_skus(&self.hub, &self.ctx, items.iter().map(|i| i.sku_id)).await,
+        );
         if let Ok(mut review) = self.review.lock() {
+            review.descriptors = described;
             review.plan_id = Some(p.id);
             review.plan_code = Some(p.code);
             review.rev_no = Some(r.rev_no);
@@ -376,7 +397,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
     fn snapshot(&self, items: &[ItemRef], _common_effective_date: Option<Date>) -> Value {
         let item = items.first();
         let (plan_id, plan_code, rev_no, diff, descriptors) = self.review.lock().map_or_else(
-            |_| (None, None, None, Value::Null, Vec::new()),
+            |_| (None, None, None, Value::Null, Value::Null),
             |r| {
                 (
                     r.plan_id,

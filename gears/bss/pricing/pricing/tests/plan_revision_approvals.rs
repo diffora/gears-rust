@@ -532,6 +532,79 @@ async fn the_author_and_the_submitter_may_not_approve_and_an_independent_reviewe
     );
 }
 
+// D-416: a voter without products `read`. The submit and the final approve run the checks, a
+// rule, and read the SKUs as the caller: Products' own 403. A non-final approve and a reject apply
+// no rule, and their descriptor read is information only: they pass.
+#[tokio::test]
+async fn a_voter_without_products_read_is_refused_only_by_the_checks() {
+    let (f, catalog) = setup().await;
+    let g = green(&f, &catalog, "pro").await;
+    policy(&f, 2).await;
+    catalog.readers([f.ctx.subject_id()]);
+    let (s, b) = submit(&f, &f.user(), g.revision, "foreign-submit").await;
+    assert_eq!(s, 403, "the submit runs the checks as its caller: {b}");
+    assert!(text(&b).contains("SKU_READ_DENIED"), "{b}");
+    let (s, receipt) = submit(&f, &f.ctx, g.revision, "submit").await;
+    assert_eq!(s, 201, "{receipt}");
+    let unit = &receipt["unit"]["id"];
+    let (one, two) = (f.user(), f.user());
+    let (s, b) = vote(&f, &one, unit, "approve", json!({"generation":1}), "one").await;
+    assert_eq!(s, 200, "a non-final approve reads no SKU for a rule: {b}");
+    assert_eq!(b["outcome"], "pending");
+    let (s, b) = vote(&f, &two, unit, "approve", json!({"generation":1}), "two").await;
+    assert_eq!(s, 403, "the final approve re-runs the checks: {b}");
+    assert!(
+        text(&b).contains("SKU_READ_DENIED"),
+        "Products' own code: {b}"
+    );
+    assert_eq!(revision(&f, g.revision).await["state"], "pending");
+    let (s, b) = vote(
+        &f,
+        &two,
+        unit,
+        "reject",
+        json!({"generation":1,"note":"not yet"}),
+        "reject",
+    )
+    .await;
+    assert_eq!(s, 200, "a reject reads no SKU for a rule: {b}");
+    assert_eq!(b["outcome"], "rejected");
+    assert_eq!(revision(&f, g.revision).await["state"], "draft");
+}
+
+// D-416: a registry outage refuses only what reads a SKU for a rule; a non-final approve and a
+// reject of a plan_revision unit pass.
+#[tokio::test]
+async fn a_registry_outage_refuses_only_the_final_approve_of_a_revision() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let (f, catalog) = setup().await;
+    let g = green(&f, &catalog, "pro").await;
+    policy(&f, 2).await;
+    let (s, receipt) = submit(&f, &f.ctx, g.revision, "submit").await;
+    assert_eq!(s, 201, "{receipt}");
+    let unit = &receipt["unit"]["id"];
+    catalog.down.store(true, SeqCst);
+    let (one, two) = (f.user(), f.user());
+    let (s, b) = vote(&f, &one, unit, "approve", json!({"generation":1}), "one").await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["outcome"], "pending");
+    let (s, b) = vote(&f, &two, unit, "approve", json!({"generation":1}), "two").await;
+    assert_eq!(s, 503, "{b}");
+    assert!(text(&b).contains("REGISTRY_UNAVAILABLE"), "{b}");
+    let (s, b) = vote(
+        &f,
+        &two,
+        unit,
+        "reject",
+        json!({"generation":1,"note":"not yet"}),
+        "reject",
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["outcome"], "rejected");
+    assert_eq!(revision(&f, g.revision).await["state"], "draft");
+}
+
 #[tokio::test]
 async fn apply_supersedes_the_published_revision_first_and_advances_published_rev() {
     let (f, catalog) = setup().await;

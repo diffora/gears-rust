@@ -240,7 +240,12 @@ publish-changes listing carry the same impact object, {prices, entries, plans, s
 every plan revision, in any state, whose items name an entry of the unit or listing, as { plan_id, code, revision_id,
 rev_no, state }, and subscriptions reads "unavailable until the Subscriptions integration" (it read "unavailable until
 phase 3" in phase 2). Never label unavailable impact as a measured zero. The stored prices snapshot also carries each
-entry SKU's current descriptors, beside the fingerprinted after, never in it (D-408).
+entry SKU's current descriptors, beside the fingerprinted after, never in it (D-408); their read is best-effort, and a
+registry that cannot answer or refuses the caller records "descriptors": "unavailable" and refuses nothing (D-416).
+Products read (D-416): the reads a rule needs are made as the caller, so the plan_revision submitter and its final
+approver, readers of GET /plan-revisions/{id}/checks, plan item authors, and the submitter and final approver of a prices
+unit on a usage chain (the dated metering read, D-402) need products read; an approve-only reviewer votes on every other
+unit and rejects any unit.
 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
@@ -267,7 +272,7 @@ Resolve returns inputs, not totals.
 | Products unavailable before reservation/write | 503 REGISTRY_UNAVAILABLE; no entry |
 | SKU fenced / retiring or retired / deprecated / draft for a new entry | 409 SKU_FENCED (Products' reserve refusal, passed through) / SKU_RETIRING / SKU_DEPRECATED / SKU_DRAFT |
 | Bundle SKU, or a SKU type that no longer matches the charge kind | 409 BUNDLE_SKU_NOT_PRICEABLE / CHARGE_KIND_SKU_TYPE |
-| Products refuses a dated SKU read (for example no SKU read) | Products' own status and code; only unavailability is 503 REGISTRY_UNAVAILABLE (D-402) |
+| Products refuses a SKU read a rule needs (a dated metering read, a plan check's read; for example no SKU read) | Products' own status and code, at submit, approve, reject and the checks door; only unavailability is 503 REGISTRY_UNAVAILABLE (D-402, D-416); a descriptor read refuses nothing and records "descriptors": "unavailable" (D-416) |
 | Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
 | A temporary's return (or closed end) no longer matches the approved chain | 400 PAIR_RETURN_STALE at submit; APPLY_REFUSED at apply (D-391) |
 | A price that starts inside a temporary window; a temporary whose window contains another price's start | 400 PRICE_INSIDE_TEMPORARY; 400 TEMPORARY_SPANS_A_CHANGE, at the draft door and at submit; APPLY_REFUSED at apply (D-406) |
@@ -734,5 +739,5 @@ act with 500 instead of being retried by the transaction; Products has the same 
 | 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; deferred by the owner (D-409, D-410). |
 | 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2; quote not built, D-415). |
 
-All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-415.
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-416.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.

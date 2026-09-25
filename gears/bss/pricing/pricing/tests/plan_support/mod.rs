@@ -60,8 +60,29 @@ pub struct Catalog {
     pub reserve_kinds: Mutex<Vec<ReferenceKind>>,
     pub releases: AtomicUsize,
     pub refs: Mutex<BTreeMap<Uuid, (Uuid, ReferenceState)>>,
+    /// Opt-in: when set, only these principals hold products `read`; any other caller's SKU read
+    /// is Products' 403, as Products' registry authorizes the caller before it reads. Unset (the
+    /// default) admits every caller.
+    pub readers: Mutex<Option<std::collections::BTreeSet<Uuid>>>,
 }
 impl Catalog {
+    /// Only these principals may read SKUs from now on (products `read`).
+    pub fn readers(&self, principals: impl IntoIterator<Item = Uuid>) {
+        *self.readers.lock().unwrap() = Some(principals.into_iter().collect());
+    }
+    /// Products' 403 for a caller without products `read`, when the opt-in set is armed.
+    fn read_denied(&self, ctx: &SecurityContext) -> Result<(), CanonicalError> {
+        let readers = self.readers.lock().unwrap();
+        if readers
+            .as_ref()
+            .is_some_and(|set| !set.contains(&ctx.subject_id()))
+        {
+            return Err(SkuResource::permission_denied()
+                .with_reason("SKU_READ_DENIED")
+                .create());
+        }
+        Ok(())
+    }
     /// Declare (or re-declare) a SKU.
     pub fn put(&self, id: Uuid, r#type: SkuType, lifecycle: Lifecycle, meter: Option<&str>) {
         self.skus.lock().unwrap().insert(
@@ -175,11 +196,12 @@ impl ReferenceRegistryV1 for Catalog {
     }
     async fn sku_for_write(
         &self,
-        _: &SecurityContext,
+        ctx: &SecurityContext,
         tenant: Uuid,
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        self.read_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }
@@ -216,11 +238,12 @@ impl ReferenceRegistryV1 for Catalog {
     }
     async fn sku_version_as_of(
         &self,
-        _: &SecurityContext,
+        ctx: &SecurityContext,
         _: Uuid,
         _: Uuid,
         _: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
+        self.read_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }

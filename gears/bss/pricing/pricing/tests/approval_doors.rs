@@ -19,14 +19,25 @@ struct Gov {
     entry: Value,
 }
 async fn gov(quorum: u32) -> Gov {
-    let f = Fixture::new(Arc::new(Script::default())).await;
+    gov_on(quorum, Arc::new(Script::default())).await
+}
+/// A book with one entry over a scripted registry the test keeps: a usage SKU in the script's
+/// default mode, a monthly recurring one in mode 11.
+async fn gov_on(quorum: u32, script: Arc<Script>) -> Gov {
+    let recurring = Script::count(&script.mode) == 11;
+    let f = Fixture::new(script).await;
     let (book, _) = f.book().await;
     let book = book["id"].as_str().unwrap().to_owned();
+    let entry = if recurring {
+        json!({"sku_id":Uuid::new_v4(),"period":"month"})
+    } else {
+        json!({"sku_id":Uuid::new_v4()})
+    };
     let (status, entry, _) = f
         .call(
             "POST",
             &format!("/price-books/{book}/entries"),
-            json!({"sku_id":Uuid::new_v4()}),
+            entry,
             None,
             Some("entry"),
         )
@@ -835,25 +846,45 @@ async fn the_approval_policy_is_read_and_written_under_if_match() {
     );
 }
 
+/// A reviewer who holds `approval_unit:approve` and nothing else: no products `read`.
+fn approve_only(g: &Gov) -> SecurityContext {
+    SecurityContext::builder()
+        .subject_id(Uuid::new_v4())
+        .subject_tenant_id(g.f.ctx.subject_tenant_id())
+        .subject_type("approval_unit:approve")
+        .build()
+        .unwrap()
+}
+
+// D-416: the registry double is armed, so Products refuses every SKU read of a caller without
+// products `read`. A recurring unit's rules read no SKU: the approve-only reviewer's votes pass,
+// and the descriptors its reads cannot see are information only.
 #[tokio::test]
 async fn a_units_quorum_is_its_own_snapshot_and_an_approve_only_reviewer_may_vote() {
-    let g = gov(2).await;
+    let script = Arc::new(Script::default());
+    script.set(11);
+    let g = gov_on(2, script.clone()).await;
+    script.readers([g.f.ctx.subject_id()]);
     let price = &g.draft("a", body("2031-03-01")).await[0];
     let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     assert_eq!(unit["quorum_required"], 2);
+    assert_eq!(
+        g.card(unit).await["snapshot"]["descriptors"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+        "the submitter holds products read: the entry SKU's descriptors"
+    );
     g.policy(None, 0).await;
-    // A reviewer who holds `approval_unit:approve` and nothing else.
-    let approver = || {
-        SecurityContext::builder()
-            .subject_id(Uuid::new_v4())
-            .subject_tenant_id(g.f.ctx.subject_tenant_id())
-            .subject_type("approval_unit:approve")
-            .build()
-            .unwrap()
-    };
     let (status, b, _) = g
-        .vote(&approver(), unit, "approve", json!({"generation":1}), "1")
+        .vote(
+            &approve_only(&g),
+            unit,
+            "approve",
+            json!({"generation":1}),
+            "1",
+        )
         .await;
     assert_eq!(status, 200, "{b}");
     assert_eq!(
@@ -862,10 +893,147 @@ async fn a_units_quorum_is_its_own_snapshot_and_an_approve_only_reviewer_may_vot
         "a lowered policy does not lower a submitted unit"
     );
     let (status, b, _) = g
-        .vote(&approver(), unit, "approve", json!({"generation":1}), "2")
+        .vote(
+            &approve_only(&g),
+            unit,
+            "approve",
+            json!({"generation":1}),
+            "2",
+        )
         .await;
     assert_eq!(status, 200, "{b}");
     assert_eq!(b["outcome"], "applied");
+}
+
+// D-416: a price submitter without products `read` is not refused either; the snapshot says the
+// descriptors are unavailable instead of naming them.
+#[tokio::test]
+async fn a_submitter_without_products_read_records_the_descriptors_unavailable() {
+    let script = Arc::new(Script::default());
+    script.set(11);
+    let g = gov_on(1, script.clone()).await;
+    script.readers([g.f.ctx.subject_id()]);
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let submitter = g.f.user();
+    let (status, receipt, _) = g.submit_as(&submitter, price, "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    assert_eq!(
+        g.card(&receipt["unit"]).await["snapshot"]["descriptors"],
+        "unavailable"
+    );
+    let (status, b, _) = g
+        .vote(
+            &approve_only(&g),
+            &receipt["unit"],
+            "approve",
+            json!({"generation":1}),
+            "1",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "applied");
+}
+
+// D-416 / D-402: a usage chain's dated metering feeds the pair guard, a rule, so the final vote
+// reads it as the voter and answers Products' own 403 (never 400); a reject applies no rule and
+// passes; a non-final vote reads only descriptors and passes.
+#[tokio::test]
+async fn an_approve_only_reviewer_is_refused_only_where_a_rule_reads_the_sku() {
+    let script = Arc::new(Script::default());
+    let g = gov_on(1, script.clone()).await;
+    script.readers([g.f.ctx.subject_id()]);
+    g.approved(1, "2031-01-01").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    assert_eq!(status, 201, "{receipt}");
+    let unit = &receipt["unit"];
+    let reviewer = approve_only(&g);
+    let reads = Script::count(&script.version_reads);
+    let (status, b, _) = g
+        .vote(&reviewer, unit, "approve", json!({"generation":1}), "1")
+        .await;
+    assert_eq!(status, 403, "{b}");
+    assert!(
+        code(&b).contains("SKU_READ_DENIED"),
+        "Products' own code: {b}"
+    );
+    assert!(
+        Script::count(&script.version_reads) > reads,
+        "the refused read is the dated metering of the pair guard"
+    );
+    assert_eq!(g.price(&price["id"]).await.state, "pending");
+    let (status, b, _) = g
+        .vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":1,"note":"not this one"}),
+            "2",
+        )
+        .await;
+    assert_eq!(status, 200, "a reject reads no SKU for a rule: {b}");
+    assert_eq!(g.price(&price["id"]).await.state, "rejected");
+
+    // Quorum 2: the first vote applies nothing, so no rule reads the SKU.
+    g.policy(None, 2).await;
+    let again = &g.draft("b", body("2031-04-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&g.f.ctx, again, "submit-2").await;
+    assert_eq!(status, 201, "{receipt}");
+    let (status, b, _) = g
+        .vote(
+            &approve_only(&g),
+            &receipt["unit"],
+            "approve",
+            json!({"generation":1}),
+            "3",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "pending");
+}
+
+// D-416: a registry outage takes only the descriptors. A recurring unit is submitted, approved and
+// rejected while Products cannot answer, and the snapshot says the descriptors are unavailable.
+#[tokio::test]
+async fn a_registry_outage_leaves_a_recurring_unit_to_its_reviewers() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let script = Arc::new(Script::default());
+    script.set(11);
+    let g = gov_on(1, script.clone()).await;
+    let first = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, one, _) = g.submit_as(&g.f.ctx, first, "s1").await;
+    assert_eq!(status, 201, "{one}");
+    script.skus_down.store(true, SeqCst);
+    let second = &g.draft("b", body("2031-06-01")).await[0];
+    let (status, two, _) = g.submit_as(&g.f.ctx, second, "s2").await;
+    assert_eq!(status, 201, "the submit is not refused: {two}");
+    assert_eq!(
+        g.card(&two["unit"]).await["snapshot"]["descriptors"],
+        "unavailable"
+    );
+    let (status, b, _) = g
+        .vote(
+            &g.f.user(),
+            &one["unit"],
+            "approve",
+            json!({"generation":1}),
+            "1",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "applied");
+    let (status, b, _) = g
+        .vote(
+            &g.f.user(),
+            &two["unit"],
+            "reject",
+            json!({"generation":1,"note":"later"}),
+            "2",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(g.price(&second["id"]).await.state, "rejected");
+    assert_eq!(g.price(&first["id"]).await.state, "approved");
 }
 
 #[tokio::test]

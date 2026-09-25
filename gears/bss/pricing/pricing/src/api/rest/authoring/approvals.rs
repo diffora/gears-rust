@@ -692,7 +692,8 @@ async fn refresh_reject(
         .iter()
         .map(|i| i.item_id)
         .collect();
-    let items = subject.collect(tx, &ids).await.map_err(approval_failure)?;
+    // A Products refusal keeps its own status and code, as on approve (D-402, DESIGN §3.3).
+    let items = subject.collect(tx, &ids).await.map_err(refusal(subject))?;
     let hash = bss_approval::hash::snapshot_hash(&items, unit.common_effective_date);
     if hash == unit.snapshot_hash {
         return Ok(None);
