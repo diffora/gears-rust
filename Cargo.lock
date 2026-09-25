@@ -2406,6 +2406,7 @@ dependencies = [
  "cf-gears-authz-resolver",
  "cf-gears-bss-ledger",
  "cf-gears-bss-pricing",
+ "cf-gears-bss-products",
  "cf-gears-bss-rate-provider",
  "cf-gears-bss-rate-provider-ecb-plugin",
  "cf-gears-bss-rate-provider-http-json-plugin",
@@ -2441,7 +2442,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "users-info",
+ "uuid",
 ]
 
 [[package]]
