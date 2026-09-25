@@ -31,6 +31,15 @@ INDEX idx_pricing_idempotency_expires
 INDEX ix_pricing_approval_unit_queue
   ON pricing_approval_unit
   DDL CREATE INDEX ix_pricing_approval_unit_queue ON pricing_approval_unit (tenant_id, state, kind, submitted_at)
+INDEX pricing_plan_code
+  ON pricing_plan
+  DDL CREATE UNIQUE INDEX pricing_plan_code ON pricing_plan (tenant_id, code)
+INDEX pricing_plan_revision_open
+  ON pricing_plan_revision
+  DDL CREATE UNIQUE INDEX pricing_plan_revision_open ON pricing_plan_revision (plan_id) WHERE state IN ('draft','pending')
+INDEX pricing_plan_revision_published
+  ON pricing_plan_revision
+  DDL CREATE UNIQUE INDEX pricing_plan_revision_published ON pricing_plan_revision (plan_id) WHERE state = 'published'
 INDEX pricing_price_approved_start
   ON pricing_price
   DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
@@ -187,6 +196,60 @@ TABLE pricing_idempotency
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   CONSTRAINT chk_pricing_idempotency_response_group CHECK ((state = 'claimed' AND response_status IS NULL AND response_body IS NULL) OR (state = 'answered' AND response_status IS NOT NULL AND response_body IS NOT NULL))
   CONSTRAINT chk_pricing_idempotency_state CHECK (state IN ('claimed', 'answered'))
+TABLE pricing_plan
+  COLUMN code TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN name TEXT NOT NULL DEFAULT - PK 0
+  COLUMN published_rev INTEGER NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TABLE pricing_plan_item
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN included_qty TEXT NULL DEFAULT - PK 0
+  COLUMN price_book_entry_id TEXT NULL DEFAULT - PK 0
+  COLUMN qty_min INTEGER NULL DEFAULT - PK 0
+  COLUMN reference_state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN reservation_id TEXT NULL DEFAULT - PK 0
+  COLUMN revision_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN sku_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN treatment TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+  CONSTRAINT chk_pricing_plan_item_entry CHECK (treatment = 'included' OR price_book_entry_id IS NOT NULL)
+  CONSTRAINT chk_pricing_plan_item_included_qty CHECK (included_qty GLOB '[0-9]*' AND included_qty NOT GLOB '*[^0-9.]*' AND included_qty NOT GLOB '*.*.*' AND included_qty NOT GLOB '*.')
+  CONSTRAINT chk_pricing_plan_item_qty_min CHECK (qty_min >= 0)
+  CONSTRAINT chk_pricing_plan_item_reference_state CHECK (reference_state IN ('unreserved','confirmation_pending','confirmed','lost'))
+  CONSTRAINT chk_pricing_plan_item_treatment CHECK (treatment IN ('paid','optional','included'))
+  CONSTRAINT pricing_plan_item_sku UNIQUE (revision_id, sku_id)
+  FK price_book_entry_id -> pricing_price_book_entry.id
+  FK revision_id -> pricing_plan_revision.id
+TABLE pricing_plan_revision
+  COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN available_from TEXT NULL DEFAULT - PK 0
+  COLUMN book_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN pending_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN plan_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN published_at TEXT NULL DEFAULT - PK 0
+  COLUMN rev_no INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','published','superseded'))
+  CONSTRAINT pricing_plan_revision_no UNIQUE (plan_id, rev_no)
+  FK approved_by_unit_id -> pricing_approval_unit.id
+  FK book_id -> pricing_price_book.id
+  FK pending_unit_id -> pricing_approval_unit.id
+  FK plan_id -> pricing_plan.id
 TABLE pricing_price
   COLUMN approved_at TEXT NULL DEFAULT - PK 0
   COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0

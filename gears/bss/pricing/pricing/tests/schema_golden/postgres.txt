@@ -68,6 +68,43 @@ COLUMN bss.pricing_idempotency response_body jsonb NULL DEFAULT -
 COLUMN bss.pricing_idempotency response_status integer NULL DEFAULT -
 COLUMN bss.pricing_idempotency state text NOT NULL DEFAULT -
 COLUMN bss.pricing_idempotency tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan code text NOT NULL DEFAULT -
+COLUMN bss.pricing_plan created_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_plan created_by uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan name text NOT NULL DEFAULT -
+COLUMN bss.pricing_plan published_rev integer NULL DEFAULT -
+COLUMN bss.pricing_plan tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan updated_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_plan version bigint NOT NULL DEFAULT 1
+COLUMN bss.pricing_plan_item created_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item created_by uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item included_qty text NULL DEFAULT -
+COLUMN bss.pricing_plan_item price_book_entry_id uuid NULL DEFAULT -
+COLUMN bss.pricing_plan_item qty_min integer NULL DEFAULT -
+COLUMN bss.pricing_plan_item reference_state text NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item reservation_id uuid NULL DEFAULT -
+COLUMN bss.pricing_plan_item revision_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item sku_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item treatment text NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item updated_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_item version bigint NOT NULL DEFAULT 1
+COLUMN bss.pricing_plan_revision approved_by_unit_id uuid NULL DEFAULT -
+COLUMN bss.pricing_plan_revision available_from date NULL DEFAULT -
+COLUMN bss.pricing_plan_revision book_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision created_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision created_by uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision pending_unit_id uuid NULL DEFAULT -
+COLUMN bss.pricing_plan_revision plan_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision published_at timestamp with time zone NULL DEFAULT -
+COLUMN bss.pricing_plan_revision rev_no integer NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision state text NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision updated_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_plan_revision version bigint NOT NULL DEFAULT 1
 COLUMN bss.pricing_price approved_at timestamp with time zone NULL DEFAULT -
 COLUMN bss.pricing_price approved_by_unit_id uuid NULL DEFAULT -
 COLUMN bss.pricing_price closed_explicitly boolean NOT NULL DEFAULT false
@@ -202,6 +239,23 @@ CONSTRAINT bss.pricing_dimension_key pricing_dimension_key_pkey PRIMARY KEY (ten
 CONSTRAINT bss.pricing_idempotency chk_pricing_idempotency_response_group CHECK ((((state = 'claimed'::text) AND (response_status IS NULL) AND (response_body IS NULL)) OR ((state = 'answered'::text) AND (response_status IS NOT NULL) AND (response_body IS NOT NULL))))
 CONSTRAINT bss.pricing_idempotency chk_pricing_idempotency_state CHECK ((state = ANY (ARRAY['claimed'::text, 'answered'::text])))
 CONSTRAINT bss.pricing_idempotency pricing_idempotency_pkey PRIMARY KEY (tenant_id, endpoint, client_key)
+CONSTRAINT bss.pricing_plan pricing_plan_pkey PRIMARY KEY (id)
+CONSTRAINT bss.pricing_plan_item chk_pricing_plan_item_entry CHECK (((treatment = 'included'::text) OR (price_book_entry_id IS NOT NULL)))
+CONSTRAINT bss.pricing_plan_item chk_pricing_plan_item_included_qty CHECK ((included_qty ~ '^[0-9]+(\.[0-9]+)?$'::text))
+CONSTRAINT bss.pricing_plan_item chk_pricing_plan_item_qty_min CHECK ((qty_min >= 0))
+CONSTRAINT bss.pricing_plan_item chk_pricing_plan_item_reference_state CHECK ((reference_state = ANY (ARRAY['unreserved'::text, 'confirmation_pending'::text, 'confirmed'::text, 'lost'::text])))
+CONSTRAINT bss.pricing_plan_item chk_pricing_plan_item_treatment CHECK ((treatment = ANY (ARRAY['paid'::text, 'optional'::text, 'included'::text])))
+CONSTRAINT bss.pricing_plan_item pricing_plan_item_pkey PRIMARY KEY (id)
+CONSTRAINT bss.pricing_plan_item pricing_plan_item_price_book_entry_id_fkey FOREIGN KEY (price_book_entry_id) REFERENCES bss.pricing_price_book_entry(id)
+CONSTRAINT bss.pricing_plan_item pricing_plan_item_revision_id_fkey FOREIGN KEY (revision_id) REFERENCES bss.pricing_plan_revision(id)
+CONSTRAINT bss.pricing_plan_item pricing_plan_item_sku UNIQUE (revision_id, sku_id)
+CONSTRAINT bss.pricing_plan_revision chk_pricing_plan_revision_state CHECK ((state = ANY (ARRAY['draft'::text, 'pending'::text, 'published'::text, 'superseded'::text])))
+CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_approved_by_unit_id_fkey FOREIGN KEY (approved_by_unit_id) REFERENCES bss.pricing_approval_unit(id)
+CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_book_id_fkey FOREIGN KEY (book_id) REFERENCES bss.pricing_price_book(id)
+CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_no UNIQUE (plan_id, rev_no)
+CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_pending_unit_id_fkey FOREIGN KEY (pending_unit_id) REFERENCES bss.pricing_approval_unit(id)
+CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_pkey PRIMARY KEY (id)
+CONSTRAINT bss.pricing_plan_revision pricing_plan_revision_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES bss.pricing_plan(id)
 CONSTRAINT bss.pricing_price pricing_price_approved_by_unit_id_fkey FOREIGN KEY (approved_by_unit_id) REFERENCES bss.pricing_approval_unit(id)
 CONSTRAINT bss.pricing_price pricing_price_check CHECK (((effective_to IS NULL) OR (effective_from < effective_to)))
 CONSTRAINT bss.pricing_price pricing_price_dim_value_check CHECK (((dim_value IS NULL) OR (dim_value <> ''::text)))
@@ -259,6 +313,14 @@ INDEX bss pricing_approval_unit_pkey CREATE UNIQUE INDEX pricing_approval_unit_p
 INDEX bss pricing_audit_pkey CREATE UNIQUE INDEX pricing_audit_pkey ON bss.pricing_audit USING btree (audit_id)
 INDEX bss pricing_dimension_key_pkey CREATE UNIQUE INDEX pricing_dimension_key_pkey ON bss.pricing_dimension_key USING btree (tenant_id, key)
 INDEX bss pricing_idempotency_pkey CREATE UNIQUE INDEX pricing_idempotency_pkey ON bss.pricing_idempotency USING btree (tenant_id, endpoint, client_key)
+INDEX bss pricing_plan_code CREATE UNIQUE INDEX pricing_plan_code ON bss.pricing_plan USING btree (tenant_id, code)
+INDEX bss pricing_plan_item_pkey CREATE UNIQUE INDEX pricing_plan_item_pkey ON bss.pricing_plan_item USING btree (id)
+INDEX bss pricing_plan_item_sku CREATE UNIQUE INDEX pricing_plan_item_sku ON bss.pricing_plan_item USING btree (revision_id, sku_id)
+INDEX bss pricing_plan_pkey CREATE UNIQUE INDEX pricing_plan_pkey ON bss.pricing_plan USING btree (id)
+INDEX bss pricing_plan_revision_no CREATE UNIQUE INDEX pricing_plan_revision_no ON bss.pricing_plan_revision USING btree (plan_id, rev_no)
+INDEX bss pricing_plan_revision_open CREATE UNIQUE INDEX pricing_plan_revision_open ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = ANY (ARRAY['draft'::text, 'pending'::text]))
+INDEX bss pricing_plan_revision_pkey CREATE UNIQUE INDEX pricing_plan_revision_pkey ON bss.pricing_plan_revision USING btree (id)
+INDEX bss pricing_plan_revision_published CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'published'::text)
 INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)
 INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text))
 INDEX bss pricing_price_book_entry_pkey CREATE UNIQUE INDEX pricing_price_book_entry_pkey ON bss.pricing_price_book_entry USING btree (id)

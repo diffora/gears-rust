@@ -1,0 +1,241 @@
+//! Scoped plan item persistence with conditional versions (D-407, D-413).
+use super::{driver_failure, map_unique, matched};
+use crate::domain::plan::{ReferenceState, RevisionState};
+use crate::infra::storage::{
+    RepoError,
+    entity::{plan_item as e, plan_revision},
+};
+use sea_orm::sea_query::{Expr, ExprTrait, Query, SelectStatement};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
+use uuid::Uuid;
+fn key(tenant: Uuid, id: Uuid) -> Condition {
+    Condition::all()
+        .add(e::Column::TenantId.eq(tenant))
+        .add(e::Column::Id.eq(id))
+}
+/// The tenant's unlocked draft revisions: an item changes only while its revision is one.
+fn unlocked_drafts(tenant: Uuid) -> SelectStatement {
+    Query::select()
+        .column(plan_revision::Column::Id)
+        .from(plan_revision::Entity)
+        .and_where(plan_revision::Column::TenantId.eq(tenant))
+        .and_where(plan_revision::Column::State.eq(RevisionState::Draft.as_str()))
+        .and_where(plan_revision::Column::PendingUnitId.is_null())
+        .to_owned()
+}
+async fn entry_in_tenant(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entry: Option<Uuid>,
+) -> Result<(), RepoError> {
+    if let Some(entry) = entry
+        && super::price_book_entry_repo::find(runner, scope, tenant, entry)
+            .await?
+            .is_none()
+    {
+        return Err(RepoError::Conflict {
+            code: "ENTRY_NOT_FOUND",
+        });
+    }
+    Ok(())
+}
+/// Insert an item into an unlocked draft revision of the tenant. The revision is re-read here,
+/// in the caller's transaction, so a racing submit or delete orders against this write.
+/// # Errors
+/// `REVISION_NOT_FOUND`, `REVISION_NOT_DRAFT`, `ENTRY_NOT_FOUND` or `ITEM_SKU_TAKEN`; database
+/// failures keep their type.
+pub async fn insert(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    m: e::Model,
+) -> Result<e::Model, RepoError> {
+    let revision = super::plan_revision_repo::find(runner, scope, m.tenant_id, m.revision_id)
+        .await?
+        .ok_or(RepoError::Conflict {
+            code: "REVISION_NOT_FOUND",
+        })?;
+    if revision.state != RevisionState::Draft.as_str() || revision.pending_unit_id.is_some() {
+        return Err(RepoError::Conflict {
+            code: "REVISION_NOT_DRAFT",
+        });
+    }
+    entry_in_tenant(runner, scope, m.tenant_id, m.price_book_entry_id).await?;
+    let active = e::ActiveModel {
+        id: Set(m.id),
+        tenant_id: Set(m.tenant_id),
+        revision_id: Set(m.revision_id),
+        sku_id: Set(m.sku_id),
+        price_book_entry_id: Set(m.price_book_entry_id),
+        treatment: Set(m.treatment),
+        included_qty: Set(m.included_qty),
+        qty_min: Set(m.qty_min),
+        reservation_id: Set(m.reservation_id),
+        reference_state: Set(m.reference_state),
+        version: Set(m.version),
+        created_by: Set(m.created_by),
+        created_at: Set(m.created_at),
+        updated_at: Set(m.updated_at),
+    };
+    e::Entity::insert(active.clone())
+        .secure()
+        .scope_with_model(scope, &active)
+        .map_err(|e| driver_failure("insert plan item scope".into(), e))?
+        .exec_with_returning(runner)
+        .await
+        .map_err(|e| map_unique("insert plan item".into(), e))
+}
+/// Read by tenant and identity within the authorized scope.
+/// # Errors
+/// Returns typed database failures.
+pub async fn find(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Option<e::Model>, RepoError> {
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(key(tenant, id))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure("find plan item".into(), e))
+}
+/// A revision's items in stable identity order.
+/// # Errors
+/// Returns typed database failures.
+pub async fn for_revision(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    revision_id: Uuid,
+) -> Result<Vec<e::Model>, RepoError> {
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::RevisionId.eq(revision_id)),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list plan items of a revision".into(), e))
+}
+/// Whether any plan item names an entry (`ENTRY_IN_USE`, D-408).
+/// # Errors
+/// Returns typed database failures.
+pub async fn names_entry(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entry_id: Uuid,
+) -> Result<bool, RepoError> {
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.eq(entry_id)),
+        )
+        .one(runner)
+        .await
+        .map(|item| item.is_some())
+        .map_err(|e| driver_failure("find plan item naming an entry".into(), e))
+}
+/// Change an item's treatment, quantities or entry at the version the caller read, only while
+/// its revision is an unlocked draft; the SKU never changes.
+/// # Errors
+/// `ENTRY_NOT_FOUND` for an entry outside the tenant; `STALE_REVISION` for a lost version or a
+/// revision that is no longer an unlocked draft.
+pub async fn update_draft(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    m: e::Model,
+) -> Result<(), RepoError> {
+    entry_in_tenant(runner, scope, m.tenant_id, m.price_book_entry_id).await?;
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::Treatment, Expr::value(m.treatment))
+        .col_expr(e::Column::IncludedQty, Expr::value(m.included_qty))
+        .col_expr(e::Column::QtyMin, Expr::value(m.qty_min))
+        .col_expr(
+            e::Column::PriceBookEntryId,
+            Expr::value(m.price_book_entry_id),
+        )
+        .col_expr(e::Column::UpdatedAt, Expr::value(m.updated_at))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(m.tenant_id, m.id)
+                .add(e::Column::Version.eq(m.version))
+                .add(e::Column::RevisionId.in_subquery(unlocked_drafts(m.tenant_id))),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| map_unique("update plan item".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
+/// Move the item's reference at the observed version, in any revision state: the reference
+/// machine is the one writer allowed to touch an item of a published or superseded revision
+/// (D-413).
+/// # Errors
+/// A concurrent change is `STALE_REVISION`; database failures keep their type.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "tenant identity, version and receipt are the conditional write operands"
+)]
+pub async fn set_reference(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+    state: ReferenceState,
+    reservation_id: Option<Uuid>,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::ReferenceState, Expr::value(state.as_str()))
+        .col_expr(e::Column::ReservationId, Expr::value(reservation_id))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(key(tenant, id).add(e::Column::Version.eq(version)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("update plan item reference".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
+/// Delete an item of an unlocked draft revision at its observed version; the caller writes its
+/// delete op in the same transaction.
+/// # Errors
+/// A lost version or a revision that is no longer an unlocked draft is `STALE_REVISION`.
+pub async fn delete_draft(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+) -> Result<(), RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    let result = e::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            key(tenant, id)
+                .add(e::Column::Version.eq(version))
+                .add(e::Column::RevisionId.in_subquery(unlocked_drafts(tenant))),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete draft plan item".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}

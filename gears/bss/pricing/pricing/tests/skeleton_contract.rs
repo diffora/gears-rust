@@ -9,8 +9,8 @@ fn runtime_chain_contains_coord_pricing_and_toolkit_delivery() {
     let chain = BssPricingGear::default().migrations();
     assert_eq!(
         chain.len(),
-        12,
-        "nine pricing migrations and two toolkit migrations"
+        15,
+        "coordination, twelve pricing migrations and two toolkit migrations"
     );
     assert_eq!(chain[0].name(), "m0001_create_coord_leases");
 }

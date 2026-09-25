@@ -71,17 +71,32 @@ async fn m20260926_000009_idempotency() {
     migration(9, &["pricing_idempotency"]).await;
 }
 
+#[tokio::test]
+async fn m20260926_000010_plan() {
+    migration(10, &["pricing_plan"]).await;
+}
+#[tokio::test]
+async fn m20260926_000011_plan_revision() {
+    migration(11, &["pricing_plan_revision"]).await;
+}
+#[tokio::test]
+async fn m20260926_000012_plan_item() {
+    migration(12, &["pricing_plan_item"]).await;
+}
+
 #[test]
-fn gear_chain_is_coord_then_nine_ordered_unique_migrations() {
+fn gear_chain_is_coord_then_twelve_ordered_unique_migrations() {
     let names: Vec<_> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 10);
+    assert_eq!(names.len(), 13);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
     assert_eq!(names, sorted);
     assert_eq!(names[1], "m20260926_000001_create_pricing_settings");
     assert_eq!(names[9], "m20260926_000009_create_pricing_idempotency");
+    assert_eq!(names[10], "m20260926_000010_create_pricing_plan");
+    assert_eq!(names[12], "m20260926_000012_create_pricing_plan_item");
 }

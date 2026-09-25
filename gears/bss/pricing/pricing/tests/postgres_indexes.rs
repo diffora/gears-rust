@@ -48,12 +48,35 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
         "(tenant_id, actor_ref, written_at)",
     ),
     ("idx_pricing_idempotency_expires", "(tenant_id, expires_at)"),
+    ("pricing_plan_code", "(tenant_id, code)"),
+    ("pricing_plan_revision_no", "(plan_id, rev_no)"),
+    (
+        "pricing_plan_revision_open",
+        "(plan_id) WHERE (state = ANY (ARRAY['draft'::text, 'pending'::text]))",
+    ),
+    (
+        "pricing_plan_revision_published",
+        "(plan_id) WHERE (state = 'published'::text)",
+    ),
+    ("pricing_plan_item_sku", "(revision_id, sku_id)"),
 ];
-/// The unique keys DESIGN §3.7 declares inline, by the columns they cover.
+/// The unique keys DESIGN §3.7 declares, inline or as a partial unique index, by the columns (and
+/// the predicate) they cover.
 const DESIGN_UNIQUE: &[(&str, &str)] = &[
     ("pricing_price_book", "(tenant_id, code)"),
     ("pricing_price_book", "(tenant_id, id)"),
     ("pricing_price", "(price_book_entry_id, version_no)"),
+    ("pricing_plan", "(tenant_id, code)"),
+    ("pricing_plan_revision", "(plan_id, rev_no)"),
+    (
+        "pricing_plan_revision",
+        "(plan_id) WHERE (state = ANY (ARRAY['draft'::text, 'pending'::text]))",
+    ),
+    (
+        "pricing_plan_revision",
+        "(plan_id) WHERE (state = 'published'::text)",
+    ),
+    ("pricing_plan_item", "(revision_id, sku_id)"),
 ];
 
 #[tokio::test]

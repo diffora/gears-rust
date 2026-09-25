@@ -20,8 +20,8 @@ mod schema_dump;
 
 use schema_dump::postgres_dump;
 
-/// Twelve pricing tables plus coordination and toolkit delivery tables.
-const PRICING_TABLES: usize = 12;
+/// Fifteen pricing tables plus coordination and toolkit delivery tables.
+const PRICING_TABLES: usize = 15;
 
 fn tables_in(dump: &str) -> Vec<String> {
     let mut names: Vec<String> = dump
@@ -90,6 +90,9 @@ async fn the_dump_reaches_every_kind_of_object() {
             "bss.pricing_audit".to_owned(),
             "bss.pricing_dimension_key".to_owned(),
             "bss.pricing_idempotency".to_owned(),
+            "bss.pricing_plan".to_owned(),
+            "bss.pricing_plan_item".to_owned(),
+            "bss.pricing_plan_revision".to_owned(),
             "bss.pricing_price".to_owned(),
             "bss.pricing_price_book".to_owned(),
             "bss.pricing_price_book_entry".to_owned(),
