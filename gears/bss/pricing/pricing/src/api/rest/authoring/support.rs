@@ -172,7 +172,7 @@ pub enum DoorError {
     #[error("the vote names another generation; the unit is at {current}")]
     Generation { current: i32 },
 }
-/// Refusals of the shared approval engine and the `price_rows` subject, with their codes.
+/// Refusals of the shared approval engine and the `prices` subject, with their codes.
 ///
 /// A pure-rule refusal is 400 with its code (D-403); a conflict is 409; separation of duties
 /// and the submitter-only withdraw are 403. Database errors stay typed for the retry loop.
@@ -185,9 +185,9 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             source,
         }),
         A::InvalidSubmit { code, field, .. } => match code {
-            "ROW_NOT_DRAFT" | "PRICE_REFERENCE_LOST" => conflict(code).into(),
+            "PRICE_NOT_DRAFT" | "ENTRY_REFERENCE_LOST" => conflict(code).into(),
             "REGISTRY_UNAVAILABLE" => unavailable().into(),
-            "ROW_NOT_FOUND" => missing_what("price_row").into(),
+            "PRICE_NOT_FOUND" => missing_what("price").into(),
             _ => invalid(&field, code).into(),
         },
         A::ApplyRefused { code, detail } => {
@@ -205,11 +205,12 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             .create()
             .into(),
         A::NoteRequired => invalid("note", "NOTE_REQUIRED").into(),
-        A::Empty => invalid("row_ids", "NO_DRAFT_ROWS").into(),
+        A::Empty => invalid("price_ids", "NO_DRAFT_PRICES").into(),
         A::GenerationMismatch { current, .. } => DoorError::Generation { current },
-        A::AlreadyDecided | A::DuplicateVote | A::Contended | A::Locked { .. } => {
-            conflict(error.code()).into()
-        }
+        // The shared engine names its lock conflict for every gear (`ROW_LOCKED_PENDING`);
+        // a pending unit holds a Price here, and the door says so.
+        A::Locked { .. } => conflict("PRICE_LOCKED_PENDING").into(),
+        A::AlreadyDecided | A::DuplicateVote | A::Contended => conflict(error.code()).into(),
         A::Store(detail) if detail.starts_with("DUPLICATE") => conflict("DUPLICATE_VOTE").into(),
         A::Store(detail) => {
             tracing::error!(detail, "pricing approval store failure");

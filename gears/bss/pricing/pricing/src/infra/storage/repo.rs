@@ -8,9 +8,9 @@ pub mod audit_repo;
 pub mod book_repo;
 pub mod dimension_repo;
 pub mod idempotency_repo;
+pub mod price_book_entry_repo;
 pub mod price_repo;
 pub mod reference_op_repo;
-pub mod row_repo;
 pub mod settings_repo;
 /// Preserve the driver's variant for serializable retries.
 #[must_use]
@@ -27,14 +27,14 @@ pub fn unique_code(message: &str) -> Option<&'static str> {
         || message.contains("pricing_price_book.tenant_id, pricing_price_book.code")
     {
         Some("BOOK_CODE_TAKEN")
-    } else if message.contains("pricing_price_key") {
-        Some("PRICE_KEY_TAKEN")
-    } else if message.contains("pricing_price_row_approved_start") {
+    } else if message.contains("pricing_price_book_entry_key") {
+        Some("ENTRY_KEY_TAKEN")
+    } else if message.contains("pricing_price_approved_start") {
         Some("WINDOW_OVERLAP")
-    } else if message.contains("pricing_price_row_price_id_version_no_key")
-        || message.contains("pricing_price_row.price_id, pricing_price_row.version_no")
+    } else if message.contains("pricing_price_price_book_entry_id_version_no_key")
+        || message.contains("pricing_price.price_book_entry_id, pricing_price.version_no")
     {
-        Some("ROW_VERSION_TAKEN")
+        Some("PRICE_VERSION_TAKEN")
     } else if message.contains("pricing_dimension_key_pkey")
         || message.contains("pricing_dimension_key.tenant_id, pricing_dimension_key.key")
     {

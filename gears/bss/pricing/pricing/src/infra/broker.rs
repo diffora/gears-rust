@@ -7,8 +7,8 @@
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-outbox-toolkit:p1
 use super::{
-    events::{ApprovalUnitDecided, EventSink, PriceRowsPublished, QUEUE, SOURCE, TOPIC},
-    reference_events::PriceReferenceLost,
+    events::{ApprovalUnitDecided, EventSink, PricesPublished, QUEUE, SOURCE, TOPIC},
+    reference_events::PriceBookEntryReferenceLost,
 };
 use anyhow::Context;
 use bss_products_sdk::PRICING_SYSTEM_ACTOR;
@@ -68,8 +68,8 @@ pub async fn bind_producer(
         .prepare_all()
         .await?;
     // Resolve every schema before a business transaction enqueues an event.
-    producer.prepare::<PriceReferenceLost>().await?;
-    producer.prepare::<PriceRowsPublished>().await?;
+    producer.prepare::<PriceBookEntryReferenceLost>().await?;
+    producer.prepare::<PricesPublished>().await?;
     producer.prepare::<ApprovalUnitDecided>().await?;
     // One queue name across both processors, so an arm switch strands no row.
     let queue = producer.outbox_queue(QUEUE, partitions)?;

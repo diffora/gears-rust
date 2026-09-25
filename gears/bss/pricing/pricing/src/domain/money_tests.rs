@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use super::*;
-use crate::domain::{price::Model, test_support::dec};
+use crate::domain::{price_book_entry::Model, test_support::dec};
 fn tiers() -> Vec<Tier> {
     vec![
         Tier {

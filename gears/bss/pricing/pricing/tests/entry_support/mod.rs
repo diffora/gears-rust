@@ -299,7 +299,7 @@ impl Script {
         self.resume.notified().await;
     }
 }
-#[toolkit_canonical_errors::resource_error(toolkit_gts::gts_id!("cf.bss.pricing.price.v1~"))]
+#[toolkit_canonical_errors::resource_error(toolkit_gts::gts_id!("cf.bss.pricing.price_book_entry.v1~"))]
 struct TestResource;
 pub fn refusal(code: &str) -> CanonicalError {
     TestResource::aborted(code).with_reason(code).create()
@@ -510,13 +510,13 @@ impl ReferenceRegistryV1 for Script {
     }
 }
 
-use bss_pricing::infra::storage::entity::{price, price_row};
+use bss_pricing::infra::storage::entity::{price, price_book_entry};
 use storage_support::at;
-pub fn row(p: &price::Model) -> price_row::Model {
-    price_row::Model {
+pub fn price(p: &price_book_entry::Model) -> price::Model {
+    price::Model {
         id: Uuid::new_v4(),
         tenant_id: p.tenant_id,
-        price_id: p.id,
+        price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
         model: "per_unit".into(),
@@ -528,8 +528,8 @@ pub fn row(p: &price::Model) -> price_row::Model {
         keep_for_bound: false,
         closed_explicitly: false,
         temporary_until: None,
-        paired_row_id: None,
-        return_of_row_id: None,
+        paired_price_id: None,
+        return_of_price_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,

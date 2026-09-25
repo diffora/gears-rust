@@ -2,8 +2,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::domain::{
     money::{PriceData, Tier, amount_for},
-    price::{ChargeKind, Model},
-    row::{Eligibility, Row, RowState, SkuMetering, chain_guard},
+    price::{Eligibility, Price, PriceState, SkuMetering, chain_guard},
+    price_book_entry::{ChargeKind, Model},
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -123,10 +123,10 @@ fn data(s: &Snapshot) -> PriceData {
         }
     }
 }
-fn row(s: &Snapshot, version: i32) -> Row {
-    Row {
+fn price(s: &Snapshot, version: i32) -> Price {
+    Price {
         id: Uuid::new_v4(),
-        price_id: Uuid::nil(),
+        price_book_entry_id: Uuid::nil(),
         version_no: version,
         dim_value: None,
         model: s.model_kind,
@@ -141,10 +141,10 @@ fn row(s: &Snapshot, version: i32) -> Row {
         .unwrap(),
         effective_to: None,
         temporary_until: None,
-        paired_row_id: None,
-        return_of_row_id: None,
+        paired_price_id: None,
+        return_of_price_id: None,
         closed_explicitly: false,
-        state: RowState::Approved,
+        state: PriceState::Approved,
     }
 }
 fn run(path: &str) {
@@ -181,9 +181,9 @@ fn run(path: &str) {
                 };
                 let result = chain_guard(
                     pred.charge_kind,
-                    &row(pred, 1),
+                    &price(pred, 1),
                     &metering(pred),
-                    &row(succ, 2),
+                    &price(succ, 2),
                     &metering(succ),
                 );
                 match a.expect.publish.as_deref().unwrap() {

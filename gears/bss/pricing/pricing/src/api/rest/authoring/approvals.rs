@@ -8,23 +8,22 @@
 use super::{
     dto::{
         PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut, PricingApprovalUnitDto,
-        PricingApprovalUnitList, PricingPriceDto, PricingPriceRowDto, PricingProposedRow,
+        PricingApprovalUnitList, PricingPriceBookEntryDto, PricingPriceDto, PricingProposedPrice,
         PricingPublishChanges, PricingPublishChangesRequest, PricingSubmitReceipt,
         PricingVoteReceipt, PricingVoteRequest,
     },
     support::{self, DoorError, approval_failure},
 };
 use crate::{
-    domain::row::{self, RowState},
+    domain::price::{self, PriceState},
     infra::{
-        events::{self, ApprovalUnitDecided, PriceRowsPublished, PublishedRow},
-        price_rows::{KIND_PRICE_ROWS, PriceRowsSubject, Release},
+        events::{self, ApprovalUnitDecided, PricesPublished, PublishedPrice},
+        prices::{KIND_PRICES, PricesSubject, Release},
         storage::{
-            RepoError,
-            entity::price_row,
+            RepoError, entity,
             repo::{
                 approval_repo::{self, PricingApprovalStore},
-                book_repo, price_repo, row_repo,
+                book_repo, price_book_entry_repo, price_repo,
             },
         },
     },
@@ -110,19 +109,19 @@ async fn load_unit(
         .map_err(approval_failure)?
         .ok_or_else(|| support::missing_what("approval_unit").into())
 }
-async fn rows_of(
+async fn prices_of(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
     unit: Uuid,
-) -> Result<Vec<PricingPriceRowDto>, DoorError> {
+) -> Result<Vec<PricingPriceDto>, DoorError> {
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let mut rows = Vec::new();
+    let mut prices = Vec::new();
     for item in store.items(tx, unit).await.map_err(approval_failure)? {
-        if let Some(m) = row_repo::find(tx, &scope, store.tenant_id, item.item_id).await? {
-            rows.push(m.into());
+        if let Some(m) = price_repo::find(tx, &scope, store.tenant_id, item.item_id).await? {
+            prices.push(m.into());
         }
     }
-    Ok(rows)
+    Ok(prices)
 }
 
 /// `ApprovalUnitDecided` for a unit that just reached its terminal state, in the deciding
@@ -157,7 +156,7 @@ async fn decided(
     events::enqueue(&cmd.outbox, tx, &event, now).await?;
     Ok(())
 }
-/// `PriceRowsPublished` for an applied unit, in the apply transaction: every row with the
+/// `PricesPublished` for an applied unit, in the apply transaction: every price with the
 /// window its chain was approved with.
 async fn published(
     tx: &DbTx<'_>,
@@ -168,28 +167,28 @@ async fn published(
 ) -> Result<(), DoorError> {
     let unit = load_unit(tx, store, id).await?;
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let mut rows = Vec::new();
+    let mut prices = Vec::new();
     for item in store.items(tx, unit.id).await.map_err(approval_failure)? {
-        let m = row_repo::find(tx, &scope, store.tenant_id, item.item_id)
+        let m = price_repo::find(tx, &scope, store.tenant_id, item.item_id)
             .await?
             .ok_or_else(|| {
-                RepoError::CorruptRow(format!("unit {} lost row {}", unit.id, item.item_id))
+                RepoError::CorruptRow(format!("unit {} lost price {}", unit.id, item.item_id))
             })?;
-        rows.push(PublishedRow {
-            row_id: m.id,
-            price_id: m.price_id,
+        prices.push(PublishedPrice {
+            price_id: m.id,
+            price_book_entry_id: m.price_book_entry_id,
             dim_value: m.dim_value,
             effective_from: m.effective_from.to_string(),
             effective_to: m.effective_to.map(|d| d.to_string()),
             eligibility: m.eligibility,
         });
     }
-    rows.sort_by_key(|r| r.row_id);
-    let event = PriceRowsPublished {
+    prices.sort_by_key(|r| r.price_id);
+    let event = PricesPublished {
         tenant_id: unit.tenant_id,
         book_id: unit.ref_id,
         unit_id: unit.id,
-        rows,
+        prices,
         actor_ref: cmd.ctx.subject_id(),
     };
     events::enqueue(&cmd.outbox, tx, &event, now).await?;
@@ -198,19 +197,19 @@ async fn published(
 
 /// An engine refusal as the door answers it: a Products refusal the subject met while judging
 /// keeps its own status and code; everything else maps through [`approval_failure`].
-fn refusal(subject: &PriceRowsSubject) -> impl Fn(bss_approval::ApprovalError) -> DoorError + '_ {
+fn refusal(subject: &PricesSubject) -> impl Fn(bss_approval::ApprovalError) -> DoorError + '_ {
     move |error| {
         subject
             .take_refusal()
             .map_or_else(|| approval_failure(error), DoorError::Api)
     }
 }
-/// Record one unit over the selected rows, applying it at once under quorum zero.
+/// Record one unit over the selected prices, applying it at once under quorum zero.
 async fn record(
     tx: &DbTx<'_>,
     cmd: &Command,
     endpoint: &str,
-    subject: &PriceRowsSubject,
+    subject: &PricesSubject,
     ids: &[Uuid],
 ) -> Result<Response, DoorError> {
     let store = cmd.store();
@@ -254,11 +253,11 @@ async fn record(
         published(tx, cmd, &store, unit.id, subject.now).await?;
         decided(tx, cmd, &store, unit.id, subject.now).await?;
     }
-    let rows = rows_of(tx, &store, unit.id).await?;
+    let prices = prices_of(tx, &store, unit.id).await?;
     let receipt = PricingSubmitReceipt {
         applied: submitted.applied,
         unit: unit_dto(tx, &store, unit).await?,
-        rows,
+        prices,
     };
     support::answer(
         tx,
@@ -272,37 +271,37 @@ async fn record(
     .await
 }
 
-/// `POST /rows/{id}/submit`: one row alone; a pair half is refused, publish the pair instead.
+/// `POST /prices/{id}/submit`: one price alone; a pair half is refused, publish the pair instead.
 /// # Errors
 /// Returns the canonical refusal.
-pub async fn submit_row(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
+pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
     support::unit_transaction(db, move |tx| {
         let cmd = cmd.clone();
         Box::pin(async move {
-            let endpoint = format!("/bss-pricing/v1/rows/{id}/submit");
+            let endpoint = format!("/bss-pricing/v1/prices/{id}/submit");
             if let Some(replay) =
                 support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
             {
                 return Ok(replay);
             }
-            let row = row_repo::find(tx, &cmd.scope, cmd.tenant(), id)
+            let price = price_repo::find(tx, &cmd.scope, cmd.tenant(), id)
                 .await?
-                .ok_or_else(|| support::missing_what("price_row"))?;
-            if row.paired_row_id.is_some() {
-                return Err(support::invalid("row_ids", "PAIR_SPLIT").into());
+                .ok_or_else(|| support::missing_what("price"))?;
+            if price.paired_price_id.is_some() {
+                return Err(support::invalid("price_ids", "PAIR_SPLIT").into());
             }
-            let price = price_repo::find(
+            let entry = price_book_entry_repo::find(
                 tx,
                 &AccessScope::for_tenant(cmd.tenant()),
                 cmd.tenant(),
-                row.price_id,
+                price.price_book_entry_id,
             )
             .await?
-            .ok_or_else(|| support::missing_what("price"))?;
-            let subject = PriceRowsSubject::new(
+            .ok_or_else(|| support::missing_what("price_book_entry"))?;
+            let subject = PricesSubject::new(
                 cmd.ctx.clone(),
                 cmd.hub.clone(),
-                price.book_id,
+                entry.book_id,
                 OffsetDateTime::now_utc(),
             );
             record(tx, &cmd, &endpoint, &subject, &[id]).await
@@ -311,46 +310,46 @@ pub async fn submit_row(db: &Db, cmd: Command, id: Uuid) -> Result<Response, Can
     .await
 }
 
-/// Every draft row of a book with its price, chain and predecessor, in proposal order.
+/// Every draft price of a book with its entry, chain and predecessor, in proposal order.
 async fn proposals(
     tx: &impl DBRunner,
     tenant: Uuid,
     book: Uuid,
-) -> Result<Vec<PricingProposedRow>, DoorError> {
+) -> Result<Vec<PricingProposedPrice>, DoorError> {
     let children = AccessScope::for_tenant(tenant);
-    let prices = price_repo::for_book(tx, &children, tenant, book).await?;
-    let mut stored: Vec<price_row::Model> = Vec::new();
-    for p in &prices {
-        stored.extend(row_repo::for_price(tx, &children, tenant, p.id).await?);
+    let entries = price_book_entry_repo::for_book(tx, &children, tenant, book).await?;
+    let mut stored: Vec<entity::price::Model> = Vec::new();
+    for p in &entries {
+        stored.extend(price_repo::for_entry(tx, &children, tenant, p.id).await?);
     }
-    let rows = stored
+    let prices = stored
         .iter()
-        .map(row_repo::to_domain)
+        .map(price_repo::to_domain)
         .collect::<Result<Vec<_>, RepoError>>()?;
-    let owners: Vec<(Uuid, Uuid)> = prices.iter().map(|p| (p.id, p.book_id)).collect();
+    let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
     let mut out = Vec::new();
-    for r in row::proposed_rows(book, &owners, &rows) {
+    for r in price::proposed_prices(book, &owners, &prices) {
         let Some(m) = stored.iter().find(|m| m.id == r.id) else {
             continue;
         };
         if m.pending_unit_id.is_some() {
             continue;
         }
-        let price = prices
+        let entry = entries
             .iter()
-            .find(|p| p.id == r.price_id)
+            .find(|p| p.id == r.price_book_entry_id)
             .cloned()
-            .ok_or_else(|| RepoError::CorruptRow(format!("price_row {} has no price", r.id)))?;
-        let before = row::in_force_before(&rows, r)
+            .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", r.id)))?;
+        let before = price::in_force_before(&prices, r)
             .and_then(|b| stored.iter().find(|m| m.id == b.id))
             .cloned()
-            .map(PricingPriceRowDto::from);
-        out.push(PricingProposedRow {
-            row: m.clone().into(),
-            price: PricingPriceDto::from(price),
+            .map(PricingPriceDto::from);
+        out.push(PricingProposedPrice {
+            price: m.clone().into(),
+            entry: PricingPriceBookEntryDto::from(entry),
             chain: r.dim_value.clone().unwrap_or_else(|| "default".into()),
             before,
-            pair_partner_id: r.paired_row_id,
+            pair_partner_id: r.paired_price_id,
             selected: true,
         });
     }
@@ -369,12 +368,12 @@ pub async fn publish_list(
     let model = book_repo::find(tx, scope, tenant, book)
         .await?
         .ok_or_else(support::missing)?;
-    let rows = proposals(tx, tenant, book).await?;
-    let prices: BTreeSet<Uuid> = rows.iter().map(|r| r.price.id).collect();
-    let impact = crate::infra::price_rows::impact_of(rows.len(), prices.len());
+    let prices = proposals(tx, tenant, book).await?;
+    let entries: BTreeSet<Uuid> = prices.iter().map(|r| r.entry.id).collect();
+    let impact = crate::infra::prices::impact_of(prices.len(), entries.len());
     let body = PricingPublishChanges {
         book: PriceBookDto::from(model),
-        rows,
+        prices,
         impact,
     };
     Ok(support::response(StatusCode::OK, &body, None)?)
@@ -404,40 +403,40 @@ pub async fn publish(
                 .await?
                 .ok_or_else(support::missing)?;
             let children = AccessScope::for_tenant(cmd.tenant());
-            let mut owned: Vec<price_row::Model> = Vec::new();
-            for p in price_repo::for_book(tx, &children, cmd.tenant(), book).await? {
-                owned.extend(row_repo::for_price(tx, &children, cmd.tenant(), p.id).await?);
+            let mut owned: Vec<entity::price::Model> = Vec::new();
+            for p in price_book_entry_repo::for_book(tx, &children, cmd.tenant(), book).await? {
+                owned.extend(price_repo::for_entry(tx, &children, cmd.tenant(), p.id).await?);
             }
-            let draft = |m: &price_row::Model| {
-                m.state == RowState::Draft.as_str() && m.pending_unit_id.is_none()
+            let draft = |m: &entity::price::Model| {
+                m.state == PriceState::Draft.as_str() && m.pending_unit_id.is_none()
             };
-            let selected: Vec<Uuid> = match input.row_ids {
+            let selected: Vec<Uuid> = match input.price_ids {
                 None => owned.iter().filter(|m| draft(m)).map(|m| m.id).collect(),
                 Some(ids) => {
                     for id in &ids {
                         let Some(m) = owned.iter().find(|m| m.id == *id) else {
-                            return Err(support::invalid("row_ids", "ROW_NOT_IN_BOOK").into());
+                            return Err(support::invalid("price_ids", "PRICE_NOT_IN_BOOK").into());
                         };
                         if !draft(m) {
-                            return Err(support::conflict("ROW_NOT_DRAFT").into());
+                            return Err(support::conflict("PRICE_NOT_DRAFT").into());
                         }
                     }
                     ids
                 }
             };
             if selected.is_empty() {
-                return Err(support::invalid("row_ids", "NO_DRAFT_ROWS").into());
+                return Err(support::invalid("price_ids", "NO_DRAFT_PRICES").into());
             }
             let chosen: BTreeSet<Uuid> = selected.iter().copied().collect();
             let mut added: Vec<Uuid> = owned
                 .iter()
                 .filter(|m| chosen.contains(&m.id))
-                .filter_map(|m| m.paired_row_id)
+                .filter_map(|m| m.paired_price_id)
                 .filter(|partner| !chosen.contains(partner))
                 .collect();
             added.sort_unstable();
             added.dedup();
-            let mut subject = PriceRowsSubject::new(
+            let mut subject = PricesSubject::new(
                 cmd.ctx.clone(),
                 cmd.hub.clone(),
                 book,
@@ -479,7 +478,7 @@ pub async fn list_units(
     for unit in approval_repo::list_units(tx, scope, tenant, state, kind, reference).await? {
         let touched = store.items(tx, unit.id).await.map_err(approval_failure)?;
         let mut dto = unit_dto(tx, &store, unit).await?;
-        dto.impact = Some(crate::infra::price_rows::impact(&touched));
+        dto.impact = Some(crate::infra::prices::impact(&touched));
         items.push(dto);
     }
     Ok(support::response(
@@ -504,13 +503,13 @@ pub async fn get_unit(
     let unit = load_unit(tx, &store, id).await?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
     let mut dto = unit_dto(tx, &store, unit).await?;
-    dto.impact = Some(crate::infra::price_rows::impact(&items));
+    dto.impact = Some(crate::infra::prices::impact(&items));
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }
 
 /// The subject a pending unit was submitted with: its book, shift and pulled-in partners.
-fn subject_of(cmd: &Command, unit: &Unit, action: Vote) -> PriceRowsSubject {
-    let mut subject = PriceRowsSubject::new(
+fn subject_of(cmd: &Command, unit: &Unit, action: Vote) -> PricesSubject {
+    let mut subject = PricesSubject::new(
         cmd.ctx.clone(),
         cmd.hub.clone(),
         unit.ref_id,
@@ -530,7 +529,7 @@ fn subject_of(cmd: &Command, unit: &Unit, action: Vote) -> PriceRowsSubject {
 async fn refresh_reject(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
-    subject: &PriceRowsSubject,
+    subject: &PricesSubject,
     unit: &Unit,
     seen: i32,
 ) -> Result<Option<i32>, DoorError> {
@@ -744,7 +743,7 @@ pub async fn get_policy(
         Some(tag),
     )?)
 }
-/// `PUT /approval-policy`: set the default (`*`) or the `price_rows` quorum under If-Match.
+/// `PUT /approval-policy`: set the default (`*`) or the `prices` quorum under If-Match.
 /// # Errors
 /// Returns `POLICY_KIND_INVALID`, `QUORUM_INVALID` or `STALE_REVISION`.
 pub async fn put_policy(
@@ -757,7 +756,7 @@ pub async fn put_policy(
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
     let kind = input.kind.unwrap_or_else(|| "*".into());
-    if !matches!(kind.as_str(), "*" | KIND_PRICE_ROWS) {
+    if !matches!(kind.as_str(), "*" | KIND_PRICES) {
         return Err(support::invalid("kind", "POLICY_KIND_INVALID").into());
     }
     if i32::try_from(input.quorum).is_err() {

@@ -8,7 +8,7 @@ fn unit(quorum: u32, submitted_by: Uuid) -> Unit {
     Unit {
         id: Uuid::new_v4(),
         tenant_id: Uuid::new_v4(),
-        kind: "price_rows".into(),
+        kind: "prices".into(),
         ref_type: "book".into(),
         ref_id: Uuid::new_v4(),
         state: UnitState::Pending,
@@ -110,7 +110,7 @@ fn the_policy_overrides_per_kind_and_falls_back_to_star() {
         overrides: [("promotion".to_owned(), 0u32)].into_iter().collect(),
     };
     assert_eq!(p.quorum_for("promotion"), 0);
-    assert_eq!(p.quorum_for("price_rows"), 1);
+    assert_eq!(p.quorum_for("prices"), 1);
 }
 #[test]
 fn every_error_has_a_stable_code() {

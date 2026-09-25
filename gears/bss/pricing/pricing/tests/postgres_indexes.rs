@@ -1,12 +1,12 @@
 //! Every index DESIGN §3.7 names exists on Postgres with the columns and predicate it states,
-//! and the approved-start index is unique per chain: per price and per dimension value, with
-//! the default chain its own chain, and only among approved rows.
+//! and the approved-start index is unique per chain: per entry and per dimension value, with
+//! the default chain its own chain, and only among approved prices.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod pg_support;
 use bss_pricing::infra::storage::{
     RepoError,
-    entity::{price, price_book},
-    repo::{book_repo, price_repo, row_repo},
+    entity::{price_book, price_book_entry},
+    repo::{book_repo, price_book_entry_repo, price_repo},
 };
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use toolkit_db::{DBProvider, DbError, secure::AccessScope};
@@ -23,16 +23,16 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
         "(tenant_id, state, kind, submitted_at)",
     ),
     (
-        "pricing_price_key",
+        "pricing_price_book_entry_key",
         "(book_id, sku_id, charge_kind, COALESCE(period, ''::text))",
     ),
     (
-        "pricing_price_row_approved_start",
-        "(price_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)",
+        "pricing_price_approved_start",
+        "(price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)",
     ),
     (
-        "pricing_price_row_chain",
-        "(price_id, dim_value, effective_from) WHERE (state = 'approved'::text)",
+        "pricing_price_chain",
+        "(price_book_entry_id, dim_value, effective_from) WHERE (state = 'approved'::text)",
     ),
     (
         "pricing_reference_op_due",
@@ -53,7 +53,7 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
 const DESIGN_UNIQUE: &[(&str, &str)] = &[
     ("pricing_price_book", "(tenant_id, code)"),
     ("pricing_price_book", "(tenant_id, id)"),
-    ("pricing_price_row", "(price_id, version_no)"),
+    ("pricing_price", "(price_book_entry_id, version_no)"),
 ];
 
 #[tokio::test]
@@ -61,7 +61,7 @@ const DESIGN_UNIQUE: &[(&str, &str)] = &[
 async fn postgres_every_index_design_names_exists_as_declared() {
     let pg = pg_support::Pg::applied().await;
     let raw = pg.raw().await;
-    let rows = raw
+    let prices = raw
         .query_all_raw(Statement::from_string(
             DbBackend::Postgres,
             "SELECT indexname AS n, indexdef AS d FROM pg_indexes WHERE schemaname = 'bss'"
@@ -69,7 +69,7 @@ async fn postgres_every_index_design_names_exists_as_declared() {
         ))
         .await
         .unwrap();
-    let indexes: Vec<(String, String)> = rows
+    let indexes: Vec<(String, String)> = prices
         .iter()
         .map(|r| {
             (
@@ -105,7 +105,7 @@ async fn postgres_every_index_design_names_exists_as_declared() {
 
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
-async fn postgres_one_approved_start_per_chain_and_only_among_approved_rows() {
+async fn postgres_one_approved_start_per_chain_and_only_among_approved_prices() {
     let pg = pg_support::Pg::applied().await;
     let provider = DBProvider::<DbError>::new(pg.db().await);
     let conn = provider.conn().unwrap();
@@ -130,13 +130,13 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_rows() {
     )
     .await
     .unwrap();
-    let mut prices = Vec::new();
+    let mut entries = Vec::new();
     for _ in 0..2 {
-        prices.push(
-            price_repo::insert(
+        entries.push(
+            price_book_entry_repo::insert(
                 &conn,
                 &scope,
-                price::Model {
+                price_book_entry::Model {
                     id: Uuid::new_v4(),
                     tenant_id: tenant,
                     book_id: book.id,
@@ -158,40 +158,40 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_rows() {
     }
     let start = time::Date::from_calendar_date(2031, time::Month::March, 1).unwrap();
     let mut version = 0;
-    let mut row = |price: &price::Model, dim: Option<&str>, state: &str| {
+    let mut price = |entry: &price_book_entry::Model, dim: Option<&str>, state: &str| {
         version += 1;
-        let mut r = row_template(price);
+        let mut r = price_template(entry);
         r.version_no = version;
         r.dim_value = dim.map(str::to_owned);
         r.state = state.into();
         r.effective_from = start;
         r
     };
-    let (a, b) = (&prices[0], &prices[1]);
-    row_repo::insert(&conn, &scope, row(a, None, "approved"))
+    let (a, b) = (&entries[0], &entries[1]);
+    price_repo::insert(&conn, &scope, price(a, None, "approved"))
         .await
         .unwrap();
     for (what, candidate) in [
         (
             "a value chain starts on the same day",
-            row(a, Some("eu"), "approved"),
+            price(a, Some("eu"), "approved"),
         ),
-        ("another price's default chain", row(b, None, "approved")),
-        ("a draft on the taken start", row(a, None, "draft")),
+        ("another entry's default chain", price(b, None, "approved")),
+        ("a draft on the taken start", price(a, None, "draft")),
         (
-            "a rejected row on the taken start",
-            row(a, None, "rejected"),
+            "a rejected price on the taken start",
+            price(a, None, "rejected"),
         ),
     ] {
-        row_repo::insert(&conn, &scope, candidate)
+        price_repo::insert(&conn, &scope, candidate)
             .await
             .unwrap_or_else(|e| panic!("{what}: {e:?}"));
     }
     for (what, candidate) in [
-        ("the default chain again", row(a, None, "approved")),
-        ("the value chain again", row(a, Some("eu"), "approved")),
+        ("the default chain again", price(a, None, "approved")),
+        ("the value chain again", price(a, Some("eu"), "approved")),
     ] {
-        let refused = row_repo::insert(&conn, &scope, candidate).await;
+        let refused = price_repo::insert(&conn, &scope, candidate).await;
         assert!(
             matches!(
                 refused,
@@ -204,12 +204,14 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_rows() {
     }
 }
 
-fn row_template(p: &price::Model) -> bss_pricing::infra::storage::entity::price_row::Model {
+fn price_template(
+    p: &price_book_entry::Model,
+) -> bss_pricing::infra::storage::entity::price::Model {
     let now = time::OffsetDateTime::now_utc();
-    bss_pricing::infra::storage::entity::price_row::Model {
+    bss_pricing::infra::storage::entity::price::Model {
         id: Uuid::new_v4(),
         tenant_id: p.tenant_id,
-        price_id: p.id,
+        price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
         model: "per_unit".into(),
@@ -221,8 +223,8 @@ fn row_template(p: &price::Model) -> bss_pricing::infra::storage::entity::price_
         keep_for_bound: false,
         closed_explicitly: false,
         temporary_until: None,
-        paired_row_id: None,
-        return_of_row_id: None,
+        paired_price_id: None,
+        return_of_price_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,

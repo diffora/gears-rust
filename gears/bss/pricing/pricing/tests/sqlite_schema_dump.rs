@@ -86,7 +86,7 @@ async fn the_dump_names_every_table_the_chain_creates() {
             "pricing_idempotency".to_owned(),
             "pricing_price".to_owned(),
             "pricing_price_book".to_owned(),
-            "pricing_price_row".to_owned(),
+            "pricing_price_book_entry".to_owned(),
             "pricing_reference_op".to_owned(),
             "pricing_settings".to_owned()
         ]

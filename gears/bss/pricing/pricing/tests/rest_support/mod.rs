@@ -174,24 +174,24 @@ impl Harness {
             .collect();
         let expected: std::collections::BTreeSet<_> = [
             ("POST", "/bss-pricing/v1/price-books"),
-            ("POST", "/bss-pricing/v1/price-books/{id}/prices"),
-            ("GET", "/bss-pricing/v1/prices/{id}"),
-            ("PATCH", "/bss-pricing/v1/prices/{id}"),
-            ("DELETE", "/bss-pricing/v1/prices/{id}"),
+            ("POST", "/bss-pricing/v1/price-books/{id}/entries"),
+            ("GET", "/bss-pricing/v1/price-book-entries/{id}"),
+            ("PATCH", "/bss-pricing/v1/price-book-entries/{id}"),
+            ("DELETE", "/bss-pricing/v1/price-book-entries/{id}"),
             ("GET", "/bss-pricing/v1/reference-ops"),
             ("GET", "/bss-pricing/v1/price-books"),
             ("GET", "/bss-pricing/v1/price-books/{id}"),
             ("PATCH", "/bss-pricing/v1/price-books/{id}"),
-            ("GET", "/bss-pricing/v1/price-books/{id}/prices"),
+            ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
             ("GET", "/bss-pricing/v1/price-books/{id}/export"),
             ("GET", "/bss-pricing/v1/settings"),
             ("PUT", "/bss-pricing/v1/settings"),
             ("GET", "/bss-pricing/v1/dimension-keys"),
             ("PUT", "/bss-pricing/v1/dimension-keys"),
-            ("POST", "/bss-pricing/v1/prices/{id}/rows"),
-            ("PATCH", "/bss-pricing/v1/rows/{id}"),
-            ("DELETE", "/bss-pricing/v1/rows/{id}"),
-            ("POST", "/bss-pricing/v1/rows/{id}/submit"),
+            ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+            ("PATCH", "/bss-pricing/v1/prices/{id}"),
+            ("DELETE", "/bss-pricing/v1/prices/{id}"),
+            ("POST", "/bss-pricing/v1/prices/{id}/submit"),
             ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
             ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
             ("GET", "/bss-pricing/v1/approval-units"),
@@ -215,27 +215,27 @@ impl Harness {
 // GET /price-books price_book:read false false
 // GET /price-books/{id} price_book:read false false
 // PATCH /price-books/{id} price_book:author true false
-// GET /price-books/{id}/prices price:read false false
+// GET /price-books/{id}/entries price_book_entry:read false false
 // GET /price-books/{id}/export price_book:read false false
 // GET /settings config:read false false
 // PUT /settings config:settings true false
 // GET /dimension-keys config:read false false
 // PUT /dimension-keys config:settings true false
 
-// POST /price-books/{id}/prices price:author false true
-// GET /prices/{id} price:read false false
-// PATCH /prices/{id} price:author true false
-// DELETE /prices/{id} price:author false false
+// POST /price-books/{id}/entries price_book_entry:author false true
+// GET /price-book-entries/{id} price_book_entry:read false false
+// PATCH /price-book-entries/{id} price_book_entry:author true false
+// DELETE /price-book-entries/{id} price_book_entry:author false false
 
 // GET /reference-ops config:settings false false
 
-// Run-4 rows: method | path | resource:action | If-Match | Idempotency-Key
-// POST /prices/{id}/rows price:author false true
-// PATCH /rows/{id} price:author true false
-// DELETE /rows/{id} price:author true false
+// Run-4 prices: method | path | resource:action | If-Match | Idempotency-Key
+// POST /price-book-entries/{id}/prices price:author false true
+// PATCH /prices/{id} price:author true false
+// DELETE /prices/{id} price:author true false
 
 // Run-4 approvals: method | path | resource:action | If-Match | Idempotency-Key
-// POST /rows/{id}/submit price:submit false true
+// POST /prices/{id}/submit price:submit false true
 // GET /price-books/{id}/publish-changes price_book:read false false
 // POST /price-books/{id}/publish-changes price_book:submit false true
 // GET /approval-units approval_unit:read false false

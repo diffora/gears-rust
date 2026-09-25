@@ -4,8 +4,8 @@
 use super::{
     reference_work::{self, Caller, Clock},
     storage::{
-        entity::price,
-        repo::{price_repo, reference_op_repo as ops},
+        entity::price_book_entry,
+        repo::{price_book_entry_repo, reference_op_repo as ops},
     },
 };
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
         AuthoringState,
         support::{self, DoorError},
     },
-    domain::price::{OpKind, ReferenceState, charge_kind_for},
+    domain::price_book_entry::{OpKind, ReferenceState, charge_kind_for},
 };
 use bss_products_sdk::{
     PRICING_SYSTEM_ACTOR,
@@ -35,7 +35,7 @@ pub fn system_actor(tenant: Uuid) -> Result<SecurityContext, CanonicalError> {
         .build()
         .map_err(|_| CanonicalError::internal("pricing recovery identity failed").create())
 }
-/// One gear-owned ticker. Its cursor bounds confirmed-price work across ticks.
+/// One gear-owned ticker. Its cursor bounds confirmed-entry work across ticks.
 pub struct Ticker {
     state: Arc<AuthoringState>,
     clock: Arc<dyn Clock>,
@@ -101,7 +101,7 @@ impl Ticker {
         Ok(())
     }
     async fn reconcile(&mut self) -> Result<(), CanonicalError> {
-        let batch = price_repo::reconcile_batch(
+        let batch = price_book_entry_repo::reconcile_batch(
             &self
                 .state
                 .db
@@ -118,20 +118,20 @@ impl Ticker {
         } else {
             None
         };
-        let mut tenants: BTreeMap<Uuid, Vec<price::Model>> = BTreeMap::new();
-        for price in batch {
-            tenants.entry(price.tenant_id).or_default().push(price);
+        let mut tenants: BTreeMap<Uuid, Vec<price_book_entry::Model>> = BTreeMap::new();
+        for entry in batch {
+            tenants.entry(entry.tenant_id).or_default().push(entry);
         }
         if tenants.is_empty() {
             self.cursor = None;
             return Ok(());
         }
         let registry = super::reference_registry::resolve(&self.state.hub)?;
-        for (tenant, prices) in tenants {
+        for (tenant, entries) in tenants {
             // One tenant's divergence (an unreachable or disagreeing registry, a storage
             // error) never halts reconciliation for the others; the cursor moves on.
             if let Err(error) = self
-                .reconcile_tenant(registry.as_ref(), tenant, prices)
+                .reconcile_tenant(registry.as_ref(), tenant, entries)
                 .await
             {
                 tracing::warn!(%tenant, error=%error, "pricing reconciliation skipped a tenant");
@@ -140,35 +140,35 @@ impl Ticker {
         self.cursor = next_cursor;
         Ok(())
     }
-    /// One tenant's slice of the batch: re-reserve every confirmed price whose receipt
-    /// Products reports released and every lost price whose SKU admits a reservation again.
+    /// One tenant's slice of the batch: re-reserve every confirmed entry whose receipt
+    /// Products reports released and every lost entry whose SKU admits a reservation again.
     async fn reconcile_tenant(
         &self,
         registry: &dyn bss_products_sdk::ReferenceRegistryV1,
         tenant: Uuid,
-        prices: Vec<price::Model>,
+        entries: Vec<price_book_entry::Model>,
     ) -> Result<(), CanonicalError> {
         let ctx = system_actor(tenant)?;
-        let (lost, confirmed): (Vec<_>, Vec<_>) = prices
+        let (lost, confirmed): (Vec<_>, Vec<_>) = entries
             .into_iter()
             .partition(|p| p.reference_state == ReferenceState::Lost.as_str());
         let mut due = Vec::new();
         if !confirmed.is_empty() {
             let ids: Vec<_> = confirmed.iter().map(|p| p.reservation_id).collect();
             let states = receipt_states(registry, &ctx, tenant, &ids).await?;
-            due.extend(confirmed.into_iter().filter(|price| {
+            due.extend(confirmed.into_iter().filter(|entry| {
                 states.iter().any(|(id, state)| {
-                    *id == price.reservation_id && *state == RegistryState::Released
+                    *id == entry.reservation_id && *state == RegistryState::Released
                 })
             }));
         }
-        for price in lost {
-            if admits(registry, &ctx, &price).await {
-                due.push(price);
+        for entry in lost {
+            if admits(registry, &ctx, &entry).await {
+                due.push(entry);
             }
         }
-        for price in due {
-            self.rereserve(&ctx, price).await?;
+        for entry in due {
+            self.rereserve(&ctx, entry).await?;
         }
         Ok(())
     }
@@ -176,9 +176,9 @@ impl Ticker {
     async fn rereserve(
         &self,
         ctx: &SecurityContext,
-        price: price::Model,
+        entry: price_book_entry::Model,
     ) -> Result<(), CanonicalError> {
-        let Some(id) = self.begin_rereserve(ctx, price).await? else {
+        let Some(id) = self.begin_rereserve(ctx, entry).await? else {
             return Ok(());
         };
         if let Err(error) =
@@ -188,20 +188,22 @@ impl Ticker {
         }
         Ok(())
     }
-    /// Start one re-reservation. A confirmed price is claimed by moving it to
-    /// `confirmation_pending` at its observed version; a lost price stays lost (it admits no
-    /// rows) until the new reservation is written, and one open op per price is the guard.
+    /// Start one re-reservation. A confirmed entry is claimed by moving it to
+    /// `confirmation_pending` at its observed version; a lost entry stays lost (it admits no
+    /// prices) until the new reservation is written, and one open op per entry is the guard.
     async fn begin_rereserve(
         &self,
         ctx: &SecurityContext,
-        observed: price::Model,
+        observed: price_book_entry::Model,
     ) -> Result<Option<Uuid>, CanonicalError> {
         let (ctx, now) = (ctx.clone(), self.clock.now());
         support::transaction(&self.state.db.db(), move |tx| {
             let (ctx, observed) = (ctx.clone(), observed.clone());
             Box::pin(async move {
                 let scope = AccessScope::for_tenant(ctx.subject_tenant_id());
-                let current = price_repo::find(tx, &scope, observed.tenant_id, observed.id).await?;
+                let current =
+                    price_book_entry_repo::find(tx, &scope, observed.tenant_id, observed.id)
+                        .await?;
                 if current.as_ref() != Some(&observed) {
                     return Ok(None);
                 }
@@ -213,7 +215,7 @@ impl Ticker {
                 )?;
                 let id = op.op_id;
                 if observed.reference_state == ReferenceState::Lost.as_str() {
-                    if ops::open_for_price(
+                    if ops::open_for_entry(
                         tx,
                         &scope,
                         observed.tenant_id,
@@ -225,9 +227,9 @@ impl Ticker {
                         return Ok(None);
                     }
                 } else {
-                    // Claim this price for reconciliation atomically; another ticker cannot
+                    // Claim this entry for reconciliation atomically; another ticker cannot
                     // mint competing recovery work and deletion cannot strand a new receipt.
-                    price_repo::set_reference(
+                    price_book_entry_repo::set_reference(
                         tx,
                         &scope,
                         observed.tenant_id,
@@ -248,7 +250,7 @@ impl Ticker {
 }
 /// Products' view of confirmed receipts. A batch answered 404 names a reservation Products
 /// does not know (for example after a restore): each id is then asked alone, and an unknown
-/// one counts as released, so its price is re-reserved like any other released receipt.
+/// one counts as released, so its entry is re-reserved like any other released receipt.
 async fn receipt_states(
     registry: &dyn bss_products_sdk::ReferenceRegistryV1,
     ctx: &SecurityContext,
@@ -269,24 +271,24 @@ async fn receipt_states(
     }
     Ok(states)
 }
-/// Whether a lost price's SKU admits its reservation again: published or deprecated, not
-/// fenced, and of the price's charge kind (a changed type cannot be healed by a reservation).
+/// Whether a lost entry's SKU admits its reservation again: published or deprecated, not
+/// fenced, and of the entry's charge kind (a changed type cannot be healed by a reservation).
 async fn admits(
     registry: &dyn bss_products_sdk::ReferenceRegistryV1,
     ctx: &SecurityContext,
-    price: &price::Model,
+    entry: &price_book_entry::Model,
 ) -> bool {
     match registry
-        .sku_for_write(ctx, price.tenant_id, price.sku_id)
+        .sku_for_write(ctx, entry.tenant_id, entry.sku_id)
         .await
     {
         Ok(sku) => {
             matches!(sku.lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
                 && !sku.type_change_pending
-                && charge_kind_for(sku.r#type).is_ok_and(|kind| kind.as_str() == price.charge_kind)
+                && charge_kind_for(sku.r#type).is_ok_and(|kind| kind.as_str() == entry.charge_kind)
         }
         Err(error) => {
-            tracing::warn!(price_id=%price.id, error=%error, "pricing lost-price check deferred");
+            tracing::warn!(price_book_entry_id=%entry.id, error=%error, "pricing lost-entry check deferred");
             false
         }
     }

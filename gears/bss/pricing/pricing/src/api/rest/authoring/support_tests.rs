@@ -84,7 +84,7 @@ fn the_classifier_follows_the_backend() {
 fn every_approval_unit_door_runs_a_unit_transaction() {
     let code = crate::source_scan::blank_comments_and_literals(include_str!("approvals.rs"));
     for door in [
-        "pub async fn submit_row(",
+        "pub async fn submit_price(",
         "pub async fn publish(",
         "pub async fn vote(",
     ] {

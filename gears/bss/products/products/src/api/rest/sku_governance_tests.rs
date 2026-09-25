@@ -2082,7 +2082,7 @@ async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
 }
 
 /// One pricing request through the real pricing router, as the cross-gear test sends it.
-async fn price_call(
+async fn pricing_call(
     app: &Router,
     ctx: &SecurityContext,
     method: Method,
@@ -2108,7 +2108,7 @@ async fn price_call(
     )
 }
 #[tokio::test]
-async fn real_pricing_price_blocks_retirement_until_delete_and_ticker_pass() {
+async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
     use toolkit::contracts::DatabaseCapability;
     let f = Fixture::new(0).await;
     f.publish().await;
@@ -2153,7 +2153,7 @@ async fn real_pricing_price_blocks_retirement_until_delete_and_ticker_pass() {
         &toolkit::api::OpenApiRegistryImpl::new(),
     )
     .layer(axum::Extension(flat_in_enforcer(f.tenant)));
-    let (status, book) = price_call(
+    let (status, book) = pricing_call(
         &pricing,
         &f.author,
         Method::POST,
@@ -2162,16 +2162,16 @@ async fn real_pricing_price_blocks_retirement_until_delete_and_ticker_pass() {
     )
     .await;
     assert_eq!(status, 201, "{book}");
-    let (status, price) = price_call(
+    let (status, entry) = pricing_call(
         &pricing,
         &f.author,
         Method::POST,
-        &format!("/price-books/{}/prices", book["id"].as_str().unwrap()),
+        &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
         json!({"sku_id":f.id}),
     )
     .await;
-    assert_eq!(status, 201, "{price}");
-    assert_eq!(price["reference_state"], "confirmed");
+    assert_eq!(status, 201, "{entry}");
+    assert_eq!(entry["reference_state"], "confirmed");
     let (status, references) = call(
         &f.app,
         &f.author,
@@ -2185,16 +2185,16 @@ async fn real_pricing_price_blocks_retirement_until_delete_and_ticker_pass() {
     assert!(
         references
             .to_string()
-            .contains(price["reservation_id"].as_str().unwrap())
+            .contains(entry["reservation_id"].as_str().unwrap())
     );
     let (status, refusal) = f.post("/retire", json!({})).await;
     assert_eq!(status, 409);
     assert_eq!(problem_code(&refusal), "SKU_REFERENCED");
-    let (status, _) = price_call(
+    let (status, _) = pricing_call(
         &pricing,
         &f.author,
         Method::DELETE,
-        &format!("/prices/{}", price["id"].as_str().unwrap()),
+        &format!("/price-book-entries/{}", entry["id"].as_str().unwrap()),
         json!({}),
     )
     .await;

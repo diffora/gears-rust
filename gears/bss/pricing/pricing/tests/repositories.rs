@@ -1,11 +1,11 @@
 //! Real scoped repository contracts, including two connections to one `SQLite` file.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::{
-    domain::price::OpState,
+    domain::price_book_entry::OpState,
     infra::storage::{
         RepoError,
-        entity::{price, price_book, price_row, reference_op},
-        repo::{book_repo, price_repo, reference_op_repo, row_repo},
+        entity::{price, price_book, price_book_entry, reference_op},
+        repo::{book_repo, price_book_entry_repo, price_repo, reference_op_repo},
     },
 };
 use std::sync::Arc;
@@ -29,8 +29,8 @@ fn book(tenant: Uuid) -> price_book::Model {
         updated_at: at(9),
     }
 }
-fn price(b: &price_book::Model) -> price::Model {
-    price::Model {
+fn entry(b: &price_book::Model) -> price_book_entry::Model {
+    price_book_entry::Model {
         id: Uuid::new_v4(),
         tenant_id: b.tenant_id,
         book_id: b.id,
@@ -46,11 +46,11 @@ fn price(b: &price_book::Model) -> price::Model {
         updated_at: at(9),
     }
 }
-fn row(p: &price::Model) -> price_row::Model {
-    price_row::Model {
+fn price(p: &price_book_entry::Model) -> price::Model {
+    price::Model {
         id: Uuid::new_v4(),
         tenant_id: p.tenant_id,
-        price_id: p.id,
+        price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
         model: "per_unit".into(),
@@ -62,8 +62,8 @@ fn row(p: &price::Model) -> price_row::Model {
         keep_for_bound: false,
         closed_explicitly: false,
         temporary_until: None,
-        paired_row_id: None,
-        return_of_row_id: None,
+        paired_price_id: None,
+        return_of_price_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,
@@ -79,8 +79,8 @@ fn op(tenant: Uuid, state: OpState, when: OffsetDateTime) -> reference_op::Model
     reference_op::Model {
         op_id: Uuid::new_v4(),
         tenant_id: tenant,
-        kind: "create_price".into(),
-        price_id: Uuid::new_v4(),
+        kind: "create_entry".into(),
+        price_book_entry_id: Uuid::new_v4(),
         sku_id: Uuid::new_v4(),
         reservation_id: None,
         idempotency_key: Some("key".into()),
@@ -133,18 +133,20 @@ async fn matrix_2_book_code_unique_names_are_not() {
     );
 }
 #[tokio::test]
-async fn matrix_4_price_key_coalesces_null_period() {
+async fn matrix_4_entry_key_coalesces_null_period() {
     let (db, scope, tenant, _) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
         .unwrap();
-    let p = price(&b);
-    price_repo::insert(&conn, &scope, p.clone()).await.unwrap();
-    let err = price_repo::insert(
+    let p = entry(&b);
+    price_book_entry_repo::insert(&conn, &scope, p.clone())
+        .await
+        .unwrap();
+    let err = price_book_entry_repo::insert(
         &conn,
         &scope,
-        price::Model {
+        price_book_entry::Model {
             id: Uuid::new_v4(),
             ..p
         },
@@ -154,7 +156,7 @@ async fn matrix_4_price_key_coalesces_null_period() {
     assert!(matches!(
         err,
         RepoError::Conflict {
-            code: "PRICE_KEY_TAKEN"
+            code: "ENTRY_KEY_TAKEN"
         }
     ));
 }
@@ -178,26 +180,28 @@ async fn tenant_scope_and_parent_ownership_are_enforced() {
             .await
             .is_err()
     );
-    let mut p = price(&b);
+    let mut p = entry(&b);
     p.tenant_id = other;
     assert!(matches!(
-        price_repo::insert(&conn, &foreign, p).await,
+        price_book_entry_repo::insert(&conn, &foreign, p).await,
         Err(RepoError::Conflict {
             code: "BOOK_NOT_FOUND"
         })
     ));
-    let p = price_repo::insert(&conn, &scope, price(&b)).await.unwrap();
-    let mut r = row(&p);
+    let p = price_book_entry_repo::insert(&conn, &scope, entry(&b))
+        .await
+        .unwrap();
+    let mut r = price(&p);
     r.tenant_id = other;
     assert!(matches!(
-        row_repo::insert(&conn, &foreign, r).await,
+        price_repo::insert(&conn, &foreign, r).await,
         Err(RepoError::Conflict {
-            code: "PRICE_NOT_FOUND"
+            code: "ENTRY_NOT_FOUND"
         })
     ));
 }
 #[tokio::test]
-async fn version_guard_and_row_roundtrip() {
+async fn version_guard_and_price_roundtrip() {
     let (db, scope, tenant, _) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
@@ -214,34 +218,39 @@ async fn version_guard_and_row_roundtrip() {
             code: "STALE_REVISION"
         })
     ));
-    let p = price_repo::insert(&conn, &scope, price(&b)).await.unwrap();
-    let r = row(&p);
-    assert_eq!(row_repo::insert(&conn, &scope, r.clone()).await.unwrap(), r);
+    let p = price_book_entry_repo::insert(&conn, &scope, entry(&b))
+        .await
+        .unwrap();
+    let r = price(&p);
     assert_eq!(
-        row_repo::find(&conn, &scope, tenant, r.id).await.unwrap(),
+        price_repo::insert(&conn, &scope, r.clone()).await.unwrap(),
+        r
+    );
+    assert_eq!(
+        price_repo::find(&conn, &scope, tenant, r.id).await.unwrap(),
         Some(r.clone())
     );
     assert_eq!(
-        row_repo::for_price(&conn, &scope, tenant, p.id)
+        price_repo::for_entry(&conn, &scope, tenant, p.id)
             .await
             .unwrap(),
         vec![r.clone()]
     );
     let mut changed = r.clone();
     changed.note = Some("edit".into());
-    row_repo::update_draft(&conn, &scope, changed.clone())
+    price_repo::update_draft(&conn, &scope, changed.clone())
         .await
         .unwrap();
     assert!(
-        row_repo::update_draft(&conn, &scope, changed)
+        price_repo::update_draft(&conn, &scope, changed)
             .await
             .is_err()
     );
-    row_repo::delete_draft(&conn, &scope, tenant, r.id, 2)
+    price_repo::delete_draft(&conn, &scope, tenant, r.id, 2)
         .await
         .unwrap();
     assert!(
-        row_repo::find(&conn, &scope, tenant, r.id)
+        price_repo::find(&conn, &scope, tenant, r.id)
             .await
             .unwrap()
             .is_none()
@@ -254,34 +263,36 @@ async fn approved_start_unique_per_chain_and_approved_money_cannot_edit() {
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
         .unwrap();
-    let p = price_repo::insert(&conn, &scope, price(&b)).await.unwrap();
-    let mut r = row(&p);
+    let p = price_book_entry_repo::insert(&conn, &scope, entry(&b))
+        .await
+        .unwrap();
+    let mut r = price(&p);
     r.state = "approved".into();
-    row_repo::insert(&conn, &scope, r.clone()).await.unwrap();
+    price_repo::insert(&conn, &scope, r.clone()).await.unwrap();
     let mut next = r.clone();
     next.id = Uuid::new_v4();
     next.version_no = 2;
     assert!(matches!(
-        row_repo::insert(&conn, &scope, next.clone()).await,
+        price_repo::insert(&conn, &scope, next.clone()).await,
         Err(RepoError::Conflict {
             code: "WINDOW_OVERLAP"
         })
     ));
     next.dim_value = Some("us".into());
-    row_repo::insert(&conn, &scope, next).await.unwrap();
+    price_repo::insert(&conn, &scope, next).await.unwrap();
     assert!(
-        row_repo::update_draft(&conn, &scope, r.clone())
+        price_repo::update_draft(&conn, &scope, r.clone())
             .await
             .is_err()
     );
     assert!(
-        row_repo::delete_draft(&conn, &scope, tenant, r.id, 1)
+        price_repo::delete_draft(&conn, &scope, tenant, r.id, 1)
             .await
             .is_err()
     );
 }
 #[tokio::test]
-async fn reference_op_due_is_scoped_ordered_bounded_and_survives_absent_price() {
+async fn reference_op_due_is_scoped_ordered_bounded_and_survives_absent_entry() {
     let (db, scope, tenant, _) = test_db().await;
     let conn = db.conn().unwrap();
     let a = op(tenant, OpState::Reserving, at(8));
@@ -447,7 +458,7 @@ async fn two_real_writers_one_sqlite_file_only_one_transition_wins() {
     );
 }
 #[tokio::test]
-async fn op_and_price_writes_roll_back_atomically() {
+async fn op_and_entry_writes_roll_back_atomically() {
     let (db, scope, tenant, _) = test_db().await;
     let m = op(tenant, OpState::Reserving, at(9));
     let id = m.op_id;
@@ -490,28 +501,28 @@ fn unique_messages_match_both_engines() {
             "BOOK_CODE_TAKEN",
         ),
         (
-            "duplicate key value violates unique constraint pricing_price_key",
-            "PRICE_KEY_TAKEN",
+            "duplicate key value violates unique constraint pricing_price_book_entry_key",
+            "ENTRY_KEY_TAKEN",
         ),
         (
-            "UNIQUE constraint failed: index 'pricing_price_key'",
-            "PRICE_KEY_TAKEN",
+            "UNIQUE constraint failed: index 'pricing_price_book_entry_key'",
+            "ENTRY_KEY_TAKEN",
         ),
         (
-            "duplicate key value violates unique constraint pricing_price_row_approved_start",
+            "duplicate key value violates unique constraint pricing_price_approved_start",
             "WINDOW_OVERLAP",
         ),
         (
-            "UNIQUE constraint failed: index 'pricing_price_row_approved_start'",
+            "UNIQUE constraint failed: index 'pricing_price_approved_start'",
             "WINDOW_OVERLAP",
         ),
         (
-            "duplicate key value violates unique constraint pricing_price_row_price_id_version_no_key",
-            "ROW_VERSION_TAKEN",
+            "duplicate key value violates unique constraint pricing_price_price_book_entry_id_version_no_key",
+            "PRICE_VERSION_TAKEN",
         ),
         (
-            "UNIQUE constraint failed: pricing_price_row.price_id, pricing_price_row.version_no",
-            "ROW_VERSION_TAKEN",
+            "UNIQUE constraint failed: pricing_price.price_book_entry_id, pricing_price.version_no",
+            "PRICE_VERSION_TAKEN",
         ),
     ] {
         assert_eq!(unique_code(message), Some(code));
@@ -598,7 +609,7 @@ async fn audit_and_idempotency_roll_back_with_mutation() {
     let txscope = scope.clone();
     let b = book(tenant);
     let id = b.id;
-    let result: Result<(), RepoError> = row_repo::transaction(&db.db(), move |tx| {
+    let result: Result<(), RepoError> = price_repo::transaction(&db.db(), move |tx| {
         let scope = txscope.clone();
         let b = b.clone();
         Box::pin(async move {
@@ -725,35 +736,37 @@ async fn idempotency_lookup_and_release_contract() {
     ));
 }
 #[tokio::test]
-async fn price_receipt_updates_and_deletion_are_version_guarded() {
+async fn entry_receipt_updates_and_deletion_are_version_guarded() {
     let (db, scope, tenant, _) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
         .unwrap();
-    let mut p = price(&b);
+    let mut p = entry(&b);
     p.reference_state = "confirmation_pending".into();
-    let p = price_repo::insert(&conn, &scope, p).await.unwrap();
-    price_repo::set_reference(
+    let p = price_book_entry_repo::insert(&conn, &scope, p)
+        .await
+        .unwrap();
+    price_book_entry_repo::set_reference(
         &conn,
         &scope,
         tenant,
         p.id,
         1,
-        bss_pricing::domain::price::ReferenceState::Confirmed,
+        bss_pricing::domain::price_book_entry::ReferenceState::Confirmed,
         p.reservation_id,
         at(10),
     )
     .await
     .unwrap();
     assert!(
-        price_repo::set_reference(
+        price_book_entry_repo::set_reference(
             &conn,
             &scope,
             tenant,
             p.id,
             1,
-            bss_pricing::domain::price::ReferenceState::Lost,
+            bss_pricing::domain::price_book_entry::ReferenceState::Lost,
             p.reservation_id,
             at(10)
         )
@@ -761,7 +774,7 @@ async fn price_receipt_updates_and_deletion_are_version_guarded() {
         .is_err()
     );
     assert_eq!(
-        price_repo::find(&conn, &scope, tenant, p.id)
+        price_book_entry_repo::find(&conn, &scope, tenant, p.id)
             .await
             .unwrap()
             .unwrap()
@@ -770,17 +783,17 @@ async fn price_receipt_updates_and_deletion_are_version_guarded() {
     );
     let txscope = scope.clone();
     let m = reference_op::Model {
-        kind: "delete_price".into(),
-        price_id: p.id,
+        kind: "delete_entry".into(),
+        price_book_entry_id: p.id,
         reservation_id: Some(p.reservation_id),
         ..op(tenant, OpState::Releasing, at(10))
     };
     let op_id = m.op_id;
-    row_repo::transaction(&db.db(), move |tx| {
+    price_repo::transaction(&db.db(), move |tx| {
         let scope = txscope.clone();
         let m = m.clone();
         Box::pin(async move {
-            price_repo::delete_empty(tx, &scope, tenant, p.id, 2).await?;
+            price_book_entry_repo::delete_empty(tx, &scope, tenant, p.id, 2).await?;
             reference_op_repo::insert(tx, &scope, m).await?;
             Ok(())
         })
@@ -788,7 +801,7 @@ async fn price_receipt_updates_and_deletion_are_version_guarded() {
     .await
     .unwrap();
     assert!(
-        price_repo::find(&conn, &scope, tenant, p.id)
+        price_book_entry_repo::find(&conn, &scope, tenant, p.id)
             .await
             .unwrap()
             .is_none()
@@ -801,7 +814,7 @@ async fn price_receipt_updates_and_deletion_are_version_guarded() {
     );
 }
 #[tokio::test]
-async fn row_pending_ownership_is_a_conditional_versioned_write() {
+async fn price_pending_ownership_is_a_conditional_versioned_write() {
     use bss_approval::{Store, Unit, UnitState};
     use bss_pricing::infra::storage::repo::approval_repo::PricingApprovalStore;
     let (db, scope, tenant, _) = test_db().await;
@@ -809,12 +822,14 @@ async fn row_pending_ownership_is_a_conditional_versioned_write() {
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
         .unwrap();
-    let p = price_repo::insert(&conn, &scope, price(&b)).await.unwrap();
-    let r = row_repo::insert(&conn, &scope, row(&p)).await.unwrap();
+    let p = price_book_entry_repo::insert(&conn, &scope, entry(&b))
+        .await
+        .unwrap();
+    let r = price_repo::insert(&conn, &scope, price(&p)).await.unwrap();
     let id = r.id;
     let unit = Uuid::new_v4();
     let txscope = scope.clone();
-    row_repo::transaction(&db.db(), move |tx| {
+    price_repo::transaction(&db.db(), move |tx| {
         let scope = txscope.clone();
         Box::pin(async move {
             let store = PricingApprovalStore {
@@ -827,7 +842,7 @@ async fn row_pending_ownership_is_a_conditional_versioned_write() {
                     &Unit {
                         id: unit,
                         tenant_id: tenant,
-                        kind: "price_rows".into(),
+                        kind: "prices".into(),
                         ref_type: "price_book".into(),
                         ref_id: b.id,
                         state: UnitState::Pending,
@@ -846,36 +861,40 @@ async fn row_pending_ownership_is_a_conditional_versioned_write() {
                 )
                 .await
                 .map_err(|e| RepoError::Db(e.to_string()))?;
-            assert!(row_repo::try_lock(tx, &scope, tenant, id, unit, 1).await?);
-            assert!(!row_repo::try_lock(tx, &scope, tenant, id, unit, 1).await?);
+            assert!(price_repo::try_lock(tx, &scope, tenant, id, unit, 1).await?);
+            assert!(!price_repo::try_lock(tx, &scope, tenant, id, unit, 1).await?);
             Ok(())
         })
     })
     .await
     .unwrap();
-    let locked = row_repo::find(&conn, &scope, tenant, id)
+    let locked = price_repo::find(&conn, &scope, tenant, id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(locked.state, "pending");
     assert_eq!(locked.version, 2);
-    assert!(row_repo::update_draft(&conn, &scope, locked).await.is_err());
     assert!(
-        row_repo::unlock(
+        price_repo::update_draft(&conn, &scope, locked)
+            .await
+            .is_err()
+    );
+    assert!(
+        price_repo::unlock(
             &conn,
             &scope,
             tenant,
             id,
             Uuid::new_v4(),
-            row_repo::Unlock::Draft
+            price_repo::Unlock::Draft
         )
         .await
         .is_err()
     );
-    row_repo::unlock(&conn, &scope, tenant, id, unit, row_repo::Unlock::Draft)
+    price_repo::unlock(&conn, &scope, tenant, id, unit, price_repo::Unlock::Draft)
         .await
         .unwrap();
-    let draft = row_repo::find(&conn, &scope, tenant, id)
+    let draft = price_repo::find(&conn, &scope, tenant, id)
         .await
         .unwrap()
         .unwrap();
@@ -891,21 +910,23 @@ async fn min_fee_round_trips_exactly_on_sqlite() {
     let conn = db.conn().unwrap();
     let b = book(tenant);
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
-    let p = price(&b);
-    price_repo::insert(&conn, &scope, p.clone()).await.unwrap();
+    let p = entry(&b);
+    price_book_entry_repo::insert(&conn, &scope, p.clone())
+        .await
+        .unwrap();
     for (n, text) in ["30.00", "0.10", "12345678901234567.89", "0"]
         .into_iter()
         .enumerate()
     {
-        let mut r = row(&p);
+        let mut r = price(&p);
         r.version_no = i32::try_from(n).unwrap() + 1;
         r.min_fee = Some(text.into());
-        row_repo::insert(&conn, &scope, r.clone()).await.unwrap();
-        let back = row_repo::find(&conn, &scope, tenant, r.id)
+        price_repo::insert(&conn, &scope, r.clone()).await.unwrap();
+        let back = price_repo::find(&conn, &scope, tenant, r.id)
             .await
             .unwrap()
             .unwrap();
-        let fee = row_repo::to_domain(&back).unwrap().min_fee.unwrap();
+        let fee = price_repo::to_domain(&back).unwrap().min_fee.unwrap();
         assert_eq!(
             fee.to_string(),
             text,
@@ -919,17 +940,19 @@ async fn min_fee_column_refuses_anything_but_an_unsigned_plain_decimal() {
     let conn = db.conn().unwrap();
     let b = book(tenant);
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
-    let p = price(&b);
-    price_repo::insert(&conn, &scope, p.clone()).await.unwrap();
+    let p = entry(&b);
+    price_book_entry_repo::insert(&conn, &scope, p.clone())
+        .await
+        .unwrap();
     for (n, text) in ["-1", "1.", "1.2.3", "1e5", "", " 3"]
         .into_iter()
         .enumerate()
     {
-        let mut r = row(&p);
+        let mut r = price(&p);
         r.version_no = i32::try_from(n).unwrap() + 1;
         r.min_fee = Some(text.into());
         assert!(
-            row_repo::insert(&conn, &scope, r).await.is_err(),
+            price_repo::insert(&conn, &scope, r).await.is_err(),
             "the column must refuse min_fee {text:?}"
         );
     }

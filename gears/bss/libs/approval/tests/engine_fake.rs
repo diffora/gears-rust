@@ -201,7 +201,7 @@ struct Rows {
 #[async_trait::async_trait]
 impl<'a> ApprovalSubject<DbTx<'a>> for Rows {
     fn kind(&self) -> &'static str {
-        "price_rows"
+        "prices"
     }
     fn ref_type(&self) -> &'static str {
         "book"
@@ -213,7 +213,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Rows {
             .map(|id| {
                 let (author, amount) = live[id];
                 ItemRef {
-                    item_type: "price_row".into(),
+                    item_type: "price".into(),
                     item_id: *id,
                     created_by: author,
                     before: None,

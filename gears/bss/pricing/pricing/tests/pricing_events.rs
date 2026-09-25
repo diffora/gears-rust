@@ -1,21 +1,21 @@
-//! `PriceRowsPublished` and `ApprovalUnitDecided` through the toolkit outbox (D-400): written
+//! `PricesPublished` and `ApprovalUnitDecided` through the toolkit outbox (D-400): written
 //! in the transaction that ends a unit, in the broker's producer-outbox envelope, and absent
 //! whenever that transaction does not commit.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-mod price_support;
+mod entry_support;
 use bss_pricing::infra::{
     events::{
-        APPROVAL_UNIT_SUBJECT_TYPE, ApprovalUnitDecided, PRICE_BOOK_SUBJECT_TYPE,
-        PriceRowsPublished, PublishedRow, SOURCE, TOPIC,
+        APPROVAL_UNIT_SUBJECT_TYPE, ApprovalUnitDecided, PRICE_BOOK_SUBJECT_TYPE, PricesPublished,
+        PublishedPrice, SOURCE, TOPIC,
     },
-    reference_events::PriceReferenceLost,
+    reference_events::PriceBookEntryReferenceLost,
     storage::{
-        entity::price_row,
-        repo::{price_repo, row_repo},
+        entity::price,
+        repo::{price_book_entry_repo, price_repo},
     },
 };
+use entry_support::{Fixture, Script};
 use event_broker_sdk::TypedEvent;
-use price_support::{Fixture, Script};
 use sea_orm::{ConnectionTrait, Database, DbBackend, EntityTrait, Statement};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,28 +23,28 @@ use toolkit_db::secure::{AccessScope, SecureUpdateExt};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-const PUBLISHED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.price_rows_published.v1~";
+const PUBLISHED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.prices_published.v1~";
 const DECIDED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.approval_unit_decided.v1~";
 
 struct Gov {
     f: Fixture,
     book: String,
-    price: Value,
+    entry: Value,
 }
 async fn gov(quorum: u32) -> Gov {
     let f = Fixture::new(Arc::new(Script::default())).await;
     let (book, _) = f.book().await;
     let book = book["id"].as_str().unwrap().to_owned();
-    let (status, price, _) = f
+    let (status, entry, _) = f
         .call(
             "POST",
-            &format!("/price-books/{book}/prices"),
+            &format!("/price-books/{book}/entries"),
             json!({"sku_id":Uuid::new_v4()}),
             None,
-            Some("price"),
+            Some("entry"),
         )
         .await;
-    assert_eq!(status, 201, "{price}");
+    assert_eq!(status, 201, "{entry}");
     let (_, _, tag) = f
         .call("GET", "/approval-policy", json!({}), None, None)
         .await;
@@ -58,21 +58,21 @@ async fn gov(quorum: u32) -> Gov {
         )
         .await;
     assert_eq!(put.0, 200, "{put:?}");
-    Gov { f, book, price }
+    Gov { f, book, entry }
 }
 fn body(from: &str, eligibility: &str) -> Value {
     json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":eligibility,"effective_from":from})
 }
 impl Gov {
-    fn price_id(&self) -> Uuid {
-        self.price["id"].as_str().unwrap().parse().unwrap()
+    fn price_book_entry_id(&self) -> Uuid {
+        self.entry["id"].as_str().unwrap().parse().unwrap()
     }
     async fn draft(&self, key: &str, body: Value) -> Value {
         let (status, b, _) = self
             .f
             .call(
                 "POST",
-                &format!("/prices/{}/rows", self.price_id()),
+                &format!("/price-book-entries/{}/prices", self.price_book_entry_id()),
                 body,
                 None,
                 Some(key),
@@ -81,13 +81,13 @@ impl Gov {
         assert_eq!(status, 201, "{b}");
         b["items"][0].clone()
     }
-    async fn submit(&self, who: &SecurityContext, row: &Value, key: &str) -> Value {
+    async fn submit(&self, who: &SecurityContext, price: &Value, key: &str) -> Value {
         let (status, receipt, _) = self
             .f
             .call_as(
                 who,
                 "POST",
-                &format!("/rows/{}/submit", row["id"].as_str().unwrap()),
+                &format!("/prices/{}/submit", price["id"].as_str().unwrap()),
                 json!({}),
                 None,
                 Some(key),
@@ -115,9 +115,9 @@ impl Gov {
             )
             .await
     }
-    async fn row(&self, id: &Value) -> price_row::Model {
+    async fn price(&self, id: &Value) -> price::Model {
         let tenant = self.f.ctx.subject_tenant_id();
-        row_repo::find(
+        price_repo::find(
             &self.f.db.conn().unwrap(),
             &AccessScope::for_tenant(tenant),
             tenant,
@@ -165,7 +165,7 @@ fn id(v: &Value) -> Uuid {
 
 #[test]
 fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
-    let (tenant, book, unit, row, price, actor) = (
+    let (tenant, book, unit, price, entry, actor) = (
         Uuid::new_v4(),
         Uuid::new_v4(),
         Uuid::new_v4(),
@@ -173,13 +173,13 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
         Uuid::new_v4(),
         Uuid::new_v4(),
     );
-    let published = PriceRowsPublished {
+    let published = PricesPublished {
         tenant_id: tenant,
         book_id: book,
         unit_id: unit,
-        rows: vec![PublishedRow {
-            row_id: row,
+        prices: vec![PublishedPrice {
             price_id: price,
+            price_book_entry_id: entry,
             dim_value: Some("eu".into()),
             effective_from: "2031-03-01".into(),
             effective_to: None,
@@ -187,25 +187,25 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
         }],
         actor_ref: actor,
     };
-    assert_eq!(PriceRowsPublished::TYPE_ID, PUBLISHED);
-    assert_eq!(PriceRowsPublished::SUBJECT_TYPE, PRICE_BOOK_SUBJECT_TYPE);
+    assert_eq!(PricesPublished::TYPE_ID, PUBLISHED);
+    assert_eq!(PricesPublished::SUBJECT_TYPE, PRICE_BOOK_SUBJECT_TYPE);
     assert_eq!(
         PRICE_BOOK_SUBJECT_TYPE,
         "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1"
     );
-    assert_eq!(PriceRowsPublished::SOURCE, "bss-pricing");
+    assert_eq!(PricesPublished::SOURCE, "bss-pricing");
     assert_eq!(published.subject(), book.to_string());
     assert_eq!(published.tenant_id(), Some(tenant));
     assert_eq!(
         serde_json::to_value(&published).unwrap(),
-        json!({"tenantId":tenant,"bookId":book,"unitId":unit,"rows":[{"rowId":row,"priceId":price,
+        json!({"tenantId":tenant,"bookId":book,"unitId":unit,"prices":[{"priceId":price,"priceBookEntryId":entry,
             "dimValue":"eu","effectiveFrom":"2031-03-01","effectiveTo":null,"eligibility":"new"}],
             "actorRef":actor})
     );
     let decided = ApprovalUnitDecided {
         tenant_id: tenant,
         unit_id: unit,
-        kind: "price_rows".into(),
+        kind: "prices".into(),
         state: "withdrawn".into(),
         generation: 3,
         actors: vec![actor],
@@ -224,14 +224,14 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
     assert_eq!(decided.tenant_id(), Some(tenant));
     assert_eq!(
         serde_json::to_value(&decided).unwrap(),
-        json!({"tenantId":tenant,"unitId":unit,"kind":"price_rows","state":"withdrawn",
+        json!({"tenantId":tenant,"unitId":unit,"kind":"prices","state":"withdrawn",
             "generation":3,"actors":[actor]})
     );
     assert_eq!(
-        PriceReferenceLost::TYPE_ID,
-        "gts.cf.core.events.event.v1~cf.bss.pricing.price_reference_lost.v1~"
+        PriceBookEntryReferenceLost::TYPE_ID,
+        "gts.cf.core.events.event.v1~cf.bss.pricing.price_book_entry_reference_lost.v1~"
     );
-    assert_eq!(PriceReferenceLost::SOURCE, SOURCE);
+    assert_eq!(PriceBookEntryReferenceLost::SOURCE, SOURCE);
     assert_eq!(
         TOPIC,
         "gts.cf.core.events.topic.v1~cf.bss.pricing.catalog.v1"
@@ -239,7 +239,7 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
 }
 
 #[tokio::test]
-async fn quorum_zero_publish_announces_the_normalised_rows_and_the_decision_in_its_transaction() {
+async fn quorum_zero_publish_announces_the_normalised_prices_and_the_decision_in_its_transaction() {
     let g = gov(0).await;
     let first = g.draft("a", body("2031-03-01", "all")).await;
     let second = g.draft("b", body("2031-06-01", "new")).await;
@@ -267,16 +267,16 @@ async fn quorum_zero_publish_announces_the_normalised_rows_and_the_decision_in_i
     assert_eq!(envelope["subject_type"], PRICE_BOOK_SUBJECT_TYPE);
     assert_eq!(envelope["tenant_id"], tenant.to_string());
     assert_eq!(envelope["producer_mode"], "stateless");
-    let mut rows = vec![
-        json!({"rowId":first["id"],"priceId":g.price["id"],"dimValue":null,
+    let mut prices = vec![
+        json!({"priceId":first["id"],"priceBookEntryId":g.entry["id"],"dimValue":null,
             "effectiveFrom":"2031-03-01","effectiveTo":"2031-06-01","eligibility":"all"}),
-        json!({"rowId":second["id"],"priceId":g.price["id"],"dimValue":null,
+        json!({"priceId":second["id"],"priceBookEntryId":g.entry["id"],"dimValue":null,
             "effectiveFrom":"2031-06-01","effectiveTo":null,"eligibility":"new"}),
     ];
-    rows.sort_by_key(|r| r["rowId"].as_str().unwrap().to_owned());
+    prices.sort_by_key(|r| r["priceId"].as_str().unwrap().to_owned());
     assert_eq!(
         envelope["data"],
-        json!({"tenantId":tenant,"bookId":g.book,"unitId":unit,"rows":rows,
+        json!({"tenantId":tenant,"bookId":g.book,"unitId":unit,"prices":prices,
             "actorRef":g.f.ctx.subject_id()}),
         "the event carries the window the chain was approved with"
     );
@@ -286,7 +286,7 @@ async fn quorum_zero_publish_announces_the_normalised_rows_and_the_decision_in_i
     assert_eq!(decided[0]["subject_type"], APPROVAL_UNIT_SUBJECT_TYPE);
     assert_eq!(
         decided[0]["data"],
-        json!({"tenantId":tenant,"unitId":unit,"kind":"price_rows","state":"approved",
+        json!({"tenantId":tenant,"unitId":unit,"kind":"prices","state":"approved",
             "generation":1,"actors":[g.f.ctx.subject_id()]})
     );
     let replay =
@@ -307,7 +307,7 @@ async fn quorum_zero_publish_announces_the_normalised_rows_and_the_decision_in_i
 }
 
 #[tokio::test]
-async fn every_terminal_decision_is_announced_and_only_an_apply_publishes_rows() {
+async fn every_terminal_decision_is_announced_and_only_an_apply_publishes_prices() {
     let g = gov(1).await;
     let submitter = g.f.user();
     let (one, two) = (g.f.user(), g.f.user());
@@ -369,7 +369,7 @@ async fn every_terminal_decision_is_announced_and_only_an_apply_publishes_rows()
     assert_eq!(
         g.of(PUBLISHED).await.len(),
         1,
-        "reject and withdraw publish no rows"
+        "reject and withdraw publish no prices"
     );
     let decided = g.of(DECIDED).await;
     let summary: Vec<(Value, Value, Value)> = decided
@@ -408,23 +408,23 @@ async fn every_terminal_decision_is_announced_and_only_an_apply_publishes_rows()
 async fn nothing_is_announced_by_a_vote_short_of_quorum_a_stale_refresh_or_a_refused_apply() {
     let g = gov(2).await;
     let (one, two) = (g.f.user(), g.f.user());
-    let row = g.draft("a", body("2031-03-01", "all")).await;
-    let unit = g.submit(&g.f.ctx, &row, "s").await;
+    let price = g.draft("a", body("2031-03-01", "all")).await;
+    let unit = g.submit(&g.f.ctx, &price, "s").await;
     let (status, b, _) = g
         .vote(&one, &unit, "approve", json!({"generation":1}), "1")
         .await;
     assert_eq!((status, b["outcome"].clone()), (200, json!("pending")));
     let tenant = g.f.ctx.subject_tenant_id();
-    price_row::Entity::update_many()
+    price::Entity::update_many()
         .secure()
         .scope_with(&AccessScope::for_tenant(tenant))
         .col_expr(
-            price_row::Column::PriceJson,
+            price::Column::PriceJson,
             sea_orm::sea_query::Expr::value(json!({"rate":"0.11"})),
         )
         .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
-            &price_row::Column::Id,
-            id(&row["id"]),
+            &price::Column::Id,
+            id(&price["id"]),
         )))
         .exec(&g.f.db.conn().unwrap())
         .await
@@ -439,15 +439,15 @@ async fn nothing_is_announced_by_a_vote_short_of_quorum_a_stale_refresh_or_a_ref
         "votes and refreshes end nothing"
     );
 
-    // The chain gains an approved row on the unit's start underneath it: the apply is refused
+    // The chain gains an approved price on the unit's start underneath it: the apply is refused
     // and its whole transaction, event writes included, rolls back.
     let conn = g.f.db.conn().unwrap();
     let scope = AccessScope::for_tenant(tenant);
-    let p = price_repo::find(&conn, &scope, tenant, g.price_id())
+    let p = price_book_entry_repo::find(&conn, &scope, tenant, g.price_book_entry_id())
         .await
         .unwrap()
         .unwrap();
-    let mut taken = price_support::row(&p);
+    let mut taken = entry_support::price(&p);
     taken.version_no = 9;
     taken.state = "approved".into();
     taken.effective_from = time::Date::parse(
@@ -455,7 +455,7 @@ async fn nothing_is_announced_by_a_vote_short_of_quorum_a_stale_refresh_or_a_ref
         &time::format_description::well_known::Iso8601::DATE,
     )
     .unwrap();
-    row_repo::insert(&conn, &scope, taken).await.unwrap();
+    price_repo::insert(&conn, &scope, taken).await.unwrap();
     let (status, b, _) = g
         .vote(&one, &unit, "approve", json!({"generation":2}), "1b")
         .await;
@@ -473,15 +473,15 @@ async fn nothing_is_announced_by_a_vote_short_of_quorum_a_stale_refresh_or_a_ref
         g.envelopes().await.is_empty(),
         "a refused apply leaves no event"
     );
-    assert_eq!(g.row(&row["id"]).await.state, "pending");
+    assert_eq!(g.price(&price["id"]).await.state, "pending");
 }
 
 #[tokio::test]
 async fn a_failed_outbox_write_rolls_back_the_decision_and_its_audit() {
     let g = gov(1).await;
     let reviewer = g.f.user();
-    let row = g.draft("a", body("2031-03-01", "all")).await;
-    let unit = g.submit(&g.f.ctx, &row, "s").await;
+    let price = g.draft("a", body("2031-03-01", "all")).await;
+    let unit = g.submit(&g.f.ctx, &price, "s").await;
     let audits = "SELECT COUNT(*) AS n FROM pricing_audit";
     let before = g.count(audits).await;
     g.raw(
@@ -495,7 +495,7 @@ async fn a_failed_outbox_write_rolls_back_the_decision_and_its_audit() {
     assert_eq!(status, 500, "{b}");
     assert_eq!(g.count(audits).await, before, "no audit without its event");
     assert_eq!(
-        g.row(&row["id"]).await.state,
+        g.price(&price["id"]).await.state,
         "pending",
         "no apply without its event"
     );
@@ -518,15 +518,15 @@ async fn a_failed_outbox_write_rolls_back_the_decision_and_its_audit() {
     assert_eq!(b["outcome"], "applied");
     assert_eq!(g.of(PUBLISHED).await.len(), 1);
     assert_eq!(g.of(DECIDED).await.len(), 1);
-    assert_eq!(g.row(&row["id"]).await.state, "approved");
+    assert_eq!(g.price(&price["id"]).await.state, "approved");
 }
 
 #[tokio::test]
 async fn an_apply_rolled_back_after_its_events_were_written_leaves_none() {
     let g = gov(1).await;
     let reviewer = g.f.user();
-    let row = g.draft("a", body("2031-03-01", "all")).await;
-    let unit = g.submit(&g.f.ctx, &row, "s").await;
+    let price = g.draft("a", body("2031-03-01", "all")).await;
+    let unit = g.submit(&g.f.ctx, &price, "s").await;
     // The terminal audit is written after both events: failing it rolls back an apply whose
     // events are already in the outbox.
     g.raw(
@@ -542,7 +542,7 @@ async fn an_apply_rolled_back_after_its_events_were_written_leaves_none() {
         g.envelopes().await.is_empty(),
         "the rollback erased both events"
     );
-    assert_eq!(g.row(&row["id"]).await.state, "pending");
+    assert_eq!(g.price(&price["id"]).await.state, "pending");
     g.raw("DROP TRIGGER audit_down").await;
     let (status, b, _) = g
         .vote(&reviewer, &unit, "approve", json!({"generation":1}), "v")

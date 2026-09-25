@@ -1,7 +1,7 @@
 //! Durable reference work; compare-and-swap never locks a row or drops failed work.
 use super::{driver_failure, matched};
 use crate::{
-    domain::price::OpState,
+    domain::price_book_entry::OpState,
     infra::storage::{RepoError, entity::reference_op as e},
 };
 use sea_orm::sea_query::Expr;
@@ -23,7 +23,7 @@ pub async fn insert(
         op_id: Set(m.op_id),
         tenant_id: Set(m.tenant_id),
         kind: Set(m.kind),
-        price_id: Set(m.price_id),
+        price_book_entry_id: Set(m.price_book_entry_id),
         sku_id: Set(m.sku_id),
         reservation_id: Set(m.reservation_id),
         idempotency_key: Set(m.idempotency_key),
@@ -163,14 +163,14 @@ pub async fn page(
         .map_err(|e| driver_failure("reference op page".into(), e))
 }
 
-/// Whether a price already has unfinished work of `kind`: one re-reservation per price.
+/// Whether an entry already has unfinished work of `kind`: one re-reservation per entry.
 /// # Errors
 /// Returns typed scoped storage failures.
-pub async fn open_for_price(
+pub async fn open_for_entry(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
-    price: Uuid,
+    entry: Uuid,
     kind: &str,
 ) -> Result<bool, RepoError> {
     Ok(e::Entity::find()
@@ -179,7 +179,7 @@ pub async fn open_for_price(
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
-                .add(e::Column::PriceId.eq(price))
+                .add(e::Column::PriceBookEntryId.eq(entry))
                 .add(e::Column::Kind.eq(kind))
                 .add(e::Column::State.ne(OpState::Done.as_str())),
         )

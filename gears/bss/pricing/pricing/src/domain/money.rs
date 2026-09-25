@@ -1,7 +1,7 @@
 //! Exact decimal amounts and half-open tier arithmetic.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-tier-bands-half-open:p1
-use super::{RuleError, price::Model};
+use super::{RuleError, price_book_entry::Model};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 

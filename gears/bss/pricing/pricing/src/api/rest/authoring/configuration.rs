@@ -6,10 +6,10 @@ use super::{
     support::{DoorError, audit, check_version, conflict, invalid, response, value},
 };
 use crate::{
-    domain::{dimension, price::validate_template},
+    domain::{dimension, price_book_entry::validate_template},
     infra::storage::{
         entity::{dimension_key, settings},
-        repo::{dimension_repo, price_repo, row_repo, settings_repo},
+        repo::{dimension_repo, price_book_entry_repo, price_repo, settings_repo},
     },
 };
 use axum::{http::StatusCode, response::Response};
@@ -161,20 +161,20 @@ pub async fn put_dimensions(
             return Err(invalid("items", e.code).into());
         }
     }
-    // Inspect all states. A rejected or pending row still carries its value.
+    // Inspect all states. A rejected or pending price still carries its value.
     let dependency_scope = AccessScope::for_tenant(tenant);
-    for p in price_repo::list(tx, &dependency_scope, tenant).await? {
+    for p in price_book_entry_repo::list(tx, &dependency_scope, tenant).await? {
         if let Some(key) = p.dimension_key.as_deref() {
             let next = body.items.iter().find(|i| i.key == key);
-            for row in row_repo::for_price(tx, &dependency_scope, tenant, p.id).await? {
-                if let Some(value) = row.dim_value
+            for price in price_repo::for_entry(tx, &dependency_scope, tenant, p.id).await? {
+                if let Some(value) = price.dim_value
                     && next.is_none_or(|i| !i.values.contains(&value))
                 {
                     return Err(conflict("DIM_VALUE_IN_USE").into());
                 }
             }
-            // A price names the key whatever its rows hold (the price's key is a foreign key
-            // to the registry): removing it is the same refusal PATCH /prices answers.
+            // An entry names the key whatever its prices hold (the entry's key is a foreign key
+            // to the registry): removing it is the same refusal PATCH /price-book-entries answers.
             if next.is_none() {
                 return Err(conflict("DIMENSION_KEY_IN_USE").into());
             }

@@ -1,15 +1,15 @@
-//! The `price_rows` approval subject driven by the shared engine on a real database.
+//! The `prices` approval subject driven by the shared engine on a real database.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-mod price_support;
+mod entry_support;
 use bss_approval::{ApprovalError, ApprovalSubject, Engine, Policy, SubmitRequest, Unit};
 use bss_pricing::infra::{
-    price_rows::{PriceRowsSubject, Release},
+    prices::{PricesSubject, Release},
     storage::{
-        entity::price_row,
-        repo::{approval_repo::PricingApprovalStore, price_repo, row_repo},
+        entity::price,
+        repo::{approval_repo::PricingApprovalStore, price_book_entry_repo, price_repo},
     },
 };
-use price_support::{Fixture, Script};
+use entry_support::{Fixture, Script};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use time::Date;
@@ -47,7 +47,7 @@ struct Setup {
     f: Fixture,
     script: Arc<Script>,
     book: Uuid,
-    price: Value,
+    entry: Value,
 }
 async fn setup(mode: usize) -> Setup {
     setup_with(mode, false).await
@@ -78,32 +78,32 @@ async fn setup_with(mode: usize, dimension: bool) -> Setup {
         (_, true) => json!({"sku_id":Uuid::new_v4(),"dimension_key":"region"}),
         _ => json!({"sku_id":Uuid::new_v4()}),
     };
-    let (status, price, _) = f
+    let (status, entry, _) = f
         .call(
             "POST",
-            &format!("/price-books/{book}/prices"),
+            &format!("/price-books/{book}/entries"),
             body,
             None,
-            Some("price"),
+            Some("entry"),
         )
         .await;
-    assert_eq!(status, 201, "{price}");
+    assert_eq!(status, 201, "{entry}");
     Setup {
         f,
         script,
         book,
-        price,
+        entry,
     }
 }
 impl Setup {
     fn tenant(&self) -> Uuid {
         self.f.ctx.subject_tenant_id()
     }
-    fn price_id(&self) -> Uuid {
-        self.price["id"].as_str().unwrap().parse().unwrap()
+    fn price_book_entry_id(&self) -> Uuid {
+        self.entry["id"].as_str().unwrap().parse().unwrap()
     }
-    fn subject(&self) -> PriceRowsSubject {
-        PriceRowsSubject::new(
+    fn subject(&self) -> PricesSubject {
+        PricesSubject::new(
             self.f.ctx.clone(),
             self.f.state.hub.clone(),
             self.book,
@@ -121,7 +121,7 @@ impl Setup {
             .f
             .call(
                 "POST",
-                &format!("/prices/{}/rows", self.price_id()),
+                &format!("/price-book-entries/{}/prices", self.price_book_entry_id()),
                 body,
                 None,
                 Some(key),
@@ -135,22 +135,23 @@ impl Setup {
             .map(|r| r["id"].as_str().unwrap().parse().unwrap())
             .collect()
     }
-    async fn approved(&self, version_no: i32, from: &str, model: &str, price: Value) -> Uuid {
+    async fn approved(&self, version_no: i32, from: &str, model: &str, entry: Value) -> Uuid {
         let conn = self.f.db.conn().unwrap();
         let scope = AccessScope::for_tenant(self.tenant());
-        let p = price_repo::find(&conn, &scope, self.tenant(), self.price_id())
-            .await
-            .unwrap()
-            .unwrap();
-        let mut r = price_support::row(&p);
+        let p =
+            price_book_entry_repo::find(&conn, &scope, self.tenant(), self.price_book_entry_id())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut r = entry_support::price(&p);
         r.version_no = version_no;
         r.state = "approved".into();
         r.model = model.into();
-        r.price_json = price;
+        r.price_json = entry;
         r.effective_from = day(from);
-        row_repo::insert(&conn, &scope, r).await.unwrap().id
+        price_repo::insert(&conn, &scope, r).await.unwrap().id
     }
-    /// An approved row of one chain with a stored window, as an earlier unit left it.
+    /// An approved price of one chain with a stored window, as an earlier unit left it.
     async fn approved_at(
         &self,
         version_no: i32,
@@ -160,37 +161,38 @@ impl Setup {
     ) -> Uuid {
         let conn = self.f.db.conn().unwrap();
         let scope = AccessScope::for_tenant(self.tenant());
-        let p = price_repo::find(&conn, &scope, self.tenant(), self.price_id())
-            .await
-            .unwrap()
-            .unwrap();
-        let mut r = price_support::row(&p);
+        let p =
+            price_book_entry_repo::find(&conn, &scope, self.tenant(), self.price_book_entry_id())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut r = entry_support::price(&p);
         r.version_no = version_no;
         r.state = "approved".into();
         r.price_json = json!({ "rate": rate });
         r.dim_value = dim.map(str::to_owned);
         r.effective_from = day(from);
         r.effective_to = to.map(day);
-        row_repo::insert(&conn, &scope, r).await.unwrap().id
+        price_repo::insert(&conn, &scope, r).await.unwrap().id
     }
-    /// The value a chain reads on a date once every approved row is applied (default fallback).
+    /// The value a chain reads on a date once every approved price is applied (default fallback).
     async fn reads(&self, on: &str, dim: Option<&str>) -> Option<Value> {
-        let rows: Vec<_> = row_repo::for_price(
+        let prices: Vec<_> = price_repo::for_entry(
             &self.f.db.conn().unwrap(),
             &AccessScope::for_tenant(self.tenant()),
             self.tenant(),
-            self.price_id(),
+            self.price_book_entry_id(),
         )
         .await
         .unwrap()
         .iter()
-        .map(|m| row_repo::to_domain(m).unwrap())
+        .map(|m| price_repo::to_domain(m).unwrap())
         .collect();
-        bss_pricing::domain::row::version_at(&rows, self.price_id(), day(on), dim)
+        bss_pricing::domain::price::version_at(&prices, self.price_book_entry_id(), day(on), dim)
             .map(|r| serde_json::to_value(&r.price).unwrap())
     }
-    async fn row(&self, id: Uuid) -> price_row::Model {
-        row_repo::find(
+    async fn price(&self, id: Uuid) -> price::Model {
+        price_repo::find(
             &self.f.db.conn().unwrap(),
             &AccessScope::for_tenant(self.tenant()),
             self.tenant(),
@@ -229,7 +231,7 @@ impl Setup {
     }
     async fn submit(
         &self,
-        subject: PriceRowsSubject,
+        subject: PricesSubject,
         ids: Vec<Uuid>,
         quorum: u32,
     ) -> Result<bss_approval::Submitted, TestErr> {
@@ -261,7 +263,7 @@ impl Setup {
         })
         .await
     }
-    async fn approve(&self, subject: PriceRowsSubject, unit: &Unit) -> Result<(), TestErr> {
+    async fn approve(&self, subject: PricesSubject, unit: &Unit) -> Result<(), TestErr> {
         let (id, generation) = (unit.id, unit.generation);
         let reviewer = Uuid::new_v4();
         self.tx(move |tx, store| {
@@ -312,7 +314,7 @@ async fn collect_is_business_content_with_the_pair_partner_and_the_chain_predece
     want.sort();
     assert_eq!(ids, want, "the partner is pulled in");
     for item in &items {
-        assert_eq!(item.item_type, "price_row");
+        assert_eq!(item.item_type, "price");
         assert_eq!(item.created_by, s.f.ctx.subject_id());
         for lock_or_version in ["state", "version", "pending_unit_id", "approved_by_unit_id"] {
             assert!(
@@ -323,9 +325,9 @@ async fn collect_is_business_content_with_the_pair_partner_and_the_chain_predece
     }
     let promo_item = items.iter().find(|i| i.item_id == promo_id).unwrap();
     assert_eq!(promo_item.after["price"], json!({"rate":"0.10"}));
-    assert_eq!(promo_item.after["paired_row_id"], pair[1].to_string());
+    assert_eq!(promo_item.after["paired_price_id"], pair[1].to_string());
     assert_eq!(
-        promo_item.before.as_ref().unwrap()["row_id"],
+        promo_item.before.as_ref().unwrap()["price_id"],
         back.to_string(),
         "before is the chain's predecessor on the new start"
     );
@@ -367,8 +369,8 @@ async fn validate_submit_reruns_the_rules_the_pair_rule_and_book_ownership() {
     let mut foreign = s.subject();
     foreign.book_id = Uuid::new_v4();
     let err = s.submit(foreign, pair, 1).await.unwrap_err();
-    assert_eq!(code(&err), "ROW_NOT_IN_BOOK");
-    assert_eq!(s.row(single[0]).await.state, "draft", "no unit, no lock");
+    assert_eq!(code(&err), "PRICE_NOT_IN_BOOK");
+    assert_eq!(s.price(single[0]).await.state, "draft", "no unit, no lock");
 }
 
 #[tokio::test]
@@ -420,15 +422,15 @@ async fn lock_is_a_conditional_write_and_a_second_unit_is_refused() {
     let s = setup(0).await;
     let ids = s.draft("one", body("2031-03-01")).await;
     let first = s.submit(s.subject(), ids.clone(), 1).await.unwrap();
-    let locked = s.row(ids[0]).await;
+    let locked = s.price(ids[0]).await;
     assert_eq!(locked.state, "pending");
     assert_eq!(locked.pending_unit_id, Some(first.unit.id));
     let err = s.submit(s.subject(), ids.clone(), 1).await.unwrap_err();
-    assert_eq!(code(&err), "ROW_NOT_DRAFT");
+    assert_eq!(code(&err), "PRICE_NOT_DRAFT");
     // A racing unit that validated before the first lock loses the conditional write.
     let subject = s.subject();
     let tenant = s.tenant();
-    let row = ids[0];
+    let price = ids[0];
     let err = s
         .tx(move |tx, store| {
             let subject = subject.clone();
@@ -437,8 +439,8 @@ async fn lock_is_a_conditional_write_and_a_second_unit_is_refused() {
                 unit.id = Uuid::new_v4();
                 bss_approval::Store::insert_unit(&store, tx, &unit, &[]).await?;
                 let items = vec![bss_approval::ItemRef {
-                    item_type: "price_row".into(),
-                    item_id: row,
+                    item_type: "price".into(),
+                    item_id: price,
                     created_by: Uuid::new_v4(),
                     before: None,
                     after: json!({}),
@@ -454,7 +456,7 @@ fn first_unit_like(tenant: Uuid) -> Unit {
     Unit {
         id: Uuid::new_v4(),
         tenant_id: tenant,
-        kind: "price_rows".into(),
+        kind: "prices".into(),
         ref_type: "price_book".into(),
         ref_id: Uuid::new_v4(),
         state: bss_approval::UnitState::Pending,
@@ -472,7 +474,7 @@ fn first_unit_like(tenant: Uuid) -> Unit {
 }
 
 #[tokio::test]
-async fn apply_normalizes_the_chain_and_marks_the_new_rows_predecessor_keep_for_bound() {
+async fn apply_normalizes_the_chain_and_marks_the_new_prices_predecessor_keep_for_bound() {
     let s = setup(0).await;
     let old = s
         .approved(1, "2031-01-01", "per_unit", json!({"rate":"0.20"}))
@@ -484,17 +486,17 @@ async fn apply_normalizes_the_chain_and_marks_the_new_rows_predecessor_keep_for_
     subject.common_effective_date = Some(day("2031-05-01"));
     let submitted = s.submit(subject, ids.clone(), 0).await.unwrap();
     assert!(submitted.applied, "quorum 0 applies at submit");
-    let row = s.row(ids[0]).await;
-    assert_eq!(row.state, "approved");
+    let price = s.price(ids[0]).await;
+    assert_eq!(price.state, "approved");
     assert_eq!(
-        row.effective_from,
+        price.effective_from,
         day("2031-05-01"),
         "the common date moved it"
     );
-    assert_eq!(row.approved_by_unit_id, Some(submitted.unit.id));
-    assert!(row.pending_unit_id.is_none());
-    assert!(row.approved_at.is_some());
-    let old = s.row(old).await;
+    assert_eq!(price.approved_by_unit_id, Some(submitted.unit.id));
+    assert!(price.pending_unit_id.is_none());
+    assert!(price.approved_at.is_some());
+    let old = s.price(old).await;
     assert_eq!(old.effective_to, Some(day("2031-05-01")));
     assert!(
         old.keep_for_bound,
@@ -514,7 +516,7 @@ async fn apply_shifts_a_pair_by_one_delta() {
     let mut subject = s.subject();
     subject.common_effective_date = Some(day("2031-04-01"));
     s.submit(subject, vec![pair[0]], 0).await.unwrap();
-    let (p, r) = (s.row(pair[0]).await, s.row(pair[1]).await);
+    let (p, r) = (s.price(pair[0]).await, s.price(pair[1]).await);
     assert_eq!(
         (p.effective_from, p.effective_to),
         (day("2031-04-01"), Some(day("2031-04-11")))
@@ -524,15 +526,15 @@ async fn apply_shifts_a_pair_by_one_delta() {
         (r.effective_from, r.effective_to),
         (day("2031-04-11"), None)
     );
-    assert_eq!(s.row(base).await.effective_to, Some(day("2031-04-01")));
+    assert_eq!(s.price(base).await.effective_to, Some(day("2031-04-01")));
     assert!(
-        !s.row(base).await.keep_for_bound,
+        !s.price(base).await.keep_for_bound,
         "eligibility all binds forward"
     );
 }
 
 #[tokio::test]
-async fn approving_a_later_default_row_keeps_a_closed_value_row() {
+async fn approving_a_later_default_price_keeps_a_closed_value_price() {
     let s = setup_with(0, true).await;
     s.approved(1, "2031-01-01", "per_unit", json!({"rate":"0.20"}))
         .await;
@@ -544,13 +546,13 @@ async fn approving_a_later_default_row_keeps_a_closed_value_row() {
     s.submit(s.subject(), closed.clone(), 0).await.unwrap();
     let later = s.draft("default", body("2031-03-05")).await;
     s.submit(s.subject(), later, 0).await.unwrap();
-    let eu = s.row(closed[0]).await;
+    let eu = s.price(closed[0]).await;
     assert_eq!(eu.state, "approved");
     assert!(eu.closed_explicitly);
     assert_eq!(
         eu.effective_to,
         Some(day("2031-03-11")),
-        "another chain's approval never reopens a closed value row"
+        "another chain's approval never reopens a closed value price"
     );
 }
 
@@ -579,7 +581,7 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
     assert!(format!("{err:?}").contains("WINDOW_OVERLAP"), "{err:?}");
     for id in [first[0], second[0]] {
         assert_eq!(
-            s.row(id).await.state,
+            s.price(id).await.state,
             "pending",
             "the whole unit rolled back"
         );
@@ -605,11 +607,11 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
         format!("{err:?}").contains("CHAIN_MODEL_CHANGED"),
         "{err:?}"
     );
-    assert_eq!(s.row(ids[0]).await.state, "pending");
+    assert_eq!(s.price(ids[0]).await.state, "pending");
 }
 
 #[tokio::test]
-async fn rejected_rows_stay_rejected_and_withdrawn_rows_return_to_draft() {
+async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
     let s = setup(0).await;
     let ids = s.draft("a", body("2031-03-01")).await;
     let unit = s.submit(s.subject(), ids.clone(), 1).await.unwrap().unit;
@@ -635,7 +637,7 @@ async fn rejected_rows_stay_rejected_and_withdrawn_rows_return_to_draft() {
     })
     .await
     .unwrap();
-    let rejected = s.row(ids[0]).await;
+    let rejected = s.price(ids[0]).await;
     assert_eq!(rejected.state, "rejected");
     assert!(rejected.pending_unit_id.is_none());
     let other = s.draft("b", body("2031-04-01")).await;
@@ -659,7 +661,7 @@ async fn rejected_rows_stay_rejected_and_withdrawn_rows_return_to_draft() {
     })
     .await
     .unwrap();
-    assert_eq!(s.row(other[0]).await.state, "draft");
+    assert_eq!(s.price(other[0]).await.state, "draft");
 }
 
 fn promo(from: &str, until: &str, rate: &str, dim: Option<&str>) -> Value {
@@ -684,8 +686,8 @@ async fn a_common_date_that_moves_a_return_past_an_approved_change_is_refused() 
         .draft("pair", promo("2031-02-01", "2031-03-01", "5", None))
         .await;
     assert_eq!(pair.len(), 2);
-    let back = s.row(pair[1]).await;
-    assert_eq!(back.return_of_row_id, Some(a), "the return copied A");
+    let back = s.price(pair[1]).await;
+    assert_eq!(back.return_of_price_id, Some(a), "the return copied A");
     let mut shifted = s.subject();
     shifted.common_effective_date = Some(day("2031-07-01"));
     let err = s.submit(shifted, pair.clone(), 1).await.unwrap_err();
@@ -694,7 +696,7 @@ async fn a_common_date_that_moves_a_return_past_an_approved_change_is_refused() 
         "PAIR_RETURN_STALE",
         "from 08-01 the return would restore A's 10 over B's approved 12"
     );
-    assert_eq!(s.row(pair[0]).await.state, "draft", "no unit, no lock");
+    assert_eq!(s.price(pair[0]).await.state, "draft", "no unit, no lock");
     assert!(
         s.submit(s.subject(), pair, 1).await.is_ok(),
         "unshifted, the return still restores A, which is in force on 03-01"
@@ -725,30 +727,30 @@ async fn a_change_approved_after_drafting_makes_the_return_stale_at_submit_and_a
     assert_eq!(code(&err), "APPLY_REFUSED");
     assert!(format!("{err:?}").contains("PAIR_RETURN_STALE"), "{err:?}");
     for id in &pending {
-        assert_eq!(s.row(*id).await.state, "pending", "the unit rolled back");
+        assert_eq!(s.price(*id).await.state, "pending", "the unit rolled back");
     }
     let err = s.submit(s.subject(), later, 1).await.unwrap_err();
     assert_eq!(code(&err), "PAIR_RETURN_STALE", "B is in force on 04-10");
 }
 
-// Scenario C: a single closed row whose chain gained a row in force at its end.
+// Scenario C: a single closed price whose chain gained a price in force at its end.
 #[tokio::test]
-async fn a_single_closed_row_whose_value_gained_a_chain_is_refused() {
+async fn a_single_closed_price_whose_value_gained_a_chain_is_refused() {
     let s = setup_with(0, true).await;
     s.approved_at(1, ("2031-01-01", None), None, "10").await;
     let closed = s
         .draft("us", promo("2031-02-01", "2031-03-01", "5", Some("us")))
         .await;
-    assert_eq!(closed.len(), 1, "no own row on 03-01: one closed row");
+    assert_eq!(closed.len(), 1, "no own price on 03-01: one closed price");
     s.approved_at(9, ("2031-01-15", None), Some("us"), "8")
         .await;
     let err = s.submit(s.subject(), closed, 1).await.unwrap_err();
     assert_eq!(
         code(&err),
         "PAIR_RETURN_STALE",
-        "closing at 03-01 would drop the value's own open row"
+        "closing at 03-01 would drop the value's own open price"
     );
-    // The same through a common date that moves the closed row into a later value row.
+    // The same through a common date that moves the closed price into a later value price.
     let s = setup_with(0, true).await;
     s.approved_at(1, ("2031-01-01", None), None, "10").await;
     s.approved_at(2, ("2031-04-01", None), Some("us"), "8")
@@ -764,16 +766,16 @@ async fn a_single_closed_row_whose_value_gained_a_chain_is_refused() {
     assert!(s.submit(s.subject(), closed, 1).await.is_ok());
 }
 
-// Chains HIGH-2: a temporary nested in a closed value row returns to it only until its end.
+// Chains HIGH-2: a temporary nested in a closed value price returns to it only until its end.
 #[tokio::test]
-async fn a_temporary_nested_in_a_closed_row_returns_to_the_default_after_the_outer_end() {
+async fn a_temporary_nested_in_a_closed_price_returns_to_the_default_after_the_outer_end() {
     for (shift, promo_from) in [(None, "2031-02-10"), (Some("2031-02-12"), "2031-02-12")] {
         let s = setup_with(0, true).await;
         s.approved_at(1, ("2031-01-01", None), None, "10").await;
         let outer = s
             .draft("outer", promo("2031-02-01", "2031-03-01", "5", Some("us")))
             .await;
-        assert_eq!(outer.len(), 1, "no own row on 03-01: one closed row");
+        assert_eq!(outer.len(), 1, "no own price on 03-01: one closed price");
         assert!(
             s.submit(s.subject(), outer.clone(), 0)
                 .await
@@ -783,19 +785,23 @@ async fn a_temporary_nested_in_a_closed_row_returns_to_the_default_after_the_out
         let inner = s
             .draft("inner", promo("2031-02-10", "2031-02-20", "3", Some("us")))
             .await;
-        assert_eq!(inner.len(), 2, "the outer row is in force on 02-20: a pair");
-        let back = s.row(inner[1]).await;
-        assert_eq!(back.return_of_row_id, Some(outer[0]));
+        assert_eq!(
+            inner.len(),
+            2,
+            "the outer price is in force on 02-20: a pair"
+        );
+        let back = s.price(inner[1]).await;
+        assert_eq!(back.return_of_price_id, Some(outer[0]));
         assert_eq!(
             (back.effective_to, back.closed_explicitly),
             (Some(day("2031-03-01")), true),
-            "the return keeps the closed row's end"
+            "the return keeps the closed price's end"
         );
         let mut subject = s.subject();
         subject.common_effective_date = shift.map(day);
         assert!(s.submit(subject, inner.clone(), 0).await.unwrap().applied);
-        let (promo_row, back) = (s.row(inner[0]).await, s.row(inner[1]).await);
-        assert_eq!(promo_row.effective_from, day(promo_from));
+        let (promo_price, back) = (s.price(inner[0]).await, s.price(inner[1]).await);
+        assert_eq!(promo_price.effective_from, day(promo_from));
         assert_eq!(back.effective_to, Some(day("2031-03-01")), "{shift:?}");
         assert!(back.closed_explicitly);
         assert_eq!(
@@ -811,9 +817,9 @@ async fn a_temporary_nested_in_a_closed_row_returns_to_the_default_after_the_out
     }
 }
 
-// Chains LOW-2: a temporary that ends on the next approved start is the promo row alone.
+// Chains LOW-2: a temporary that ends on the next approved start is the promo price alone.
 #[tokio::test]
-async fn a_temporary_ending_on_the_next_approved_start_is_one_row_ended_by_it() {
+async fn a_temporary_ending_on_the_next_approved_start_is_one_price_ended_by_it() {
     let s = setup(0).await;
     s.approved_at(1, ("2031-01-01", Some("2031-03-01")), None, "10")
         .await;
@@ -821,17 +827,17 @@ async fn a_temporary_ending_on_the_next_approved_start_is_one_row_ended_by_it() 
     let only = s
         .draft("promo", promo("2031-02-01", "2031-03-01", "5", None))
         .await;
-    assert_eq!(only.len(), 1, "B already ends the promo: no return row");
-    let stored = s.row(only[0]).await;
+    assert_eq!(only.len(), 1, "B already ends the promo: no return price");
+    let stored = s.price(only[0]).await;
     assert!(!stored.closed_explicitly);
-    assert!(stored.paired_row_id.is_none());
+    assert!(stored.paired_price_id.is_none());
     assert!(
         s.submit(s.subject(), only.clone(), 0)
             .await
             .unwrap()
             .applied
     );
-    let applied = s.row(only[0]).await;
+    let applied = s.price(only[0]).await;
     assert_eq!(
         (applied.effective_from, applied.effective_to),
         (day("2031-02-01"), Some(day("2031-03-01")))
@@ -843,25 +849,25 @@ async fn a_temporary_ending_on_the_next_approved_start_is_one_row_ended_by_it() 
     );
 }
 
-// Chains LOW-1: a row approved in front of a `new` row becomes its predecessor and binds renewals.
+// Chains LOW-1: a price approved in front of a `new` price becomes its predecessor and binds renewals.
 #[tokio::test]
-async fn a_row_approved_before_an_existing_new_row_is_marked_keep_for_bound() {
+async fn a_price_approved_before_an_existing_new_price_is_marked_keep_for_bound() {
     let s = setup(0).await;
     let p = s.approved_at(1, ("2031-01-01", None), None, "10").await;
     let mut signup = body("2031-05-01");
     signup["eligibility"] = json!("new");
     let n = s.draft("n", signup).await;
     assert!(s.submit(s.subject(), n, 0).await.unwrap().applied);
-    assert!(s.row(p).await.keep_for_bound, "P preceded N");
+    assert!(s.price(p).await.keep_for_bound, "P preceded N");
     let m = s.draft("m", body("2031-03-01")).await;
     assert!(s.submit(s.subject(), m.clone(), 0).await.unwrap().applied);
-    let m = s.row(m[0]).await;
+    let m = s.price(m[0]).await;
     assert_eq!(m.effective_to, Some(day("2031-05-01")), "M now precedes N");
     assert!(
         m.keep_for_bound,
         "renewals from P walk to M, which binds them"
     );
-    assert!(s.row(p).await.keep_for_bound, "never cleared");
+    assert!(s.price(p).await.keep_for_bound, "never cleared");
 }
 
 // Chains LOW-3 = surface F6: a Products refusal of the dated read keeps its status and code;
@@ -873,7 +879,7 @@ async fn a_products_refusal_of_the_dated_read_reaches_the_caller_with_its_code()
     s.approved(1, "2031-01-01", "per_unit", json!({"rate":"0.20"}))
         .await;
     let ids = s.draft("x", body("2031-03-01")).await;
-    let submit = format!("/rows/{}/submit", ids[0]);
+    let submit = format!("/prices/{}/submit", ids[0]);
     s.script.versions_refused.store(true, SeqCst);
     let (status, b, _) = s.f.call("POST", &submit, json!({}), None, Some("s1")).await;
     assert_eq!(status, 403, "{b}");
@@ -903,13 +909,13 @@ async fn a_products_refusal_of_the_dated_read_reaches_the_caller_with_its_code()
         .await;
     assert_eq!(status, 403, "{b}");
     assert!(b.to_string().contains("SKU_READ_DENIED"), "{b}");
-    assert_eq!(s.row(ids[0]).await.state, "pending");
+    assert_eq!(s.price(ids[0]).await.state, "pending");
 }
 
-// Known "empty metering": a row that starts before the SKU's first version is compared with
+// Known "empty metering": a price that starts before the SKU's first version is compared with
 // the earliest version's metering, never with nothing.
 #[tokio::test]
-async fn a_row_before_the_first_sku_version_is_guarded_by_the_earliest_version() {
+async fn a_price_before_the_first_sku_version_is_guarded_by_the_earliest_version() {
     let s = setup(0).await;
     s.script.versions.lock().unwrap().push((
         day("2031-06-01"),

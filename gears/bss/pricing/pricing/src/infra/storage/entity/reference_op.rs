@@ -9,7 +9,7 @@ pub struct Model {
     pub op_id: Uuid,
     pub tenant_id: Uuid,
     pub kind: String,
-    pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
     pub sku_id: Uuid,
     pub reservation_id: Option<Uuid>,
     pub idempotency_key: Option<String>,

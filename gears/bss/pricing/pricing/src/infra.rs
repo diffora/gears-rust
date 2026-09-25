@@ -3,7 +3,7 @@
 pub mod broker;
 pub mod error_mapping;
 pub mod events;
-pub mod price_rows;
+pub mod prices;
 pub mod storage;
 
 pub mod reference_registry;

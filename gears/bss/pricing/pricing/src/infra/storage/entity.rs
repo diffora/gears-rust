@@ -8,6 +8,6 @@ pub mod dimension_key;
 pub mod idempotency;
 pub mod price;
 pub mod price_book;
-pub mod price_row;
+pub mod price_book_entry;
 pub mod reference_op;
 pub mod settings;

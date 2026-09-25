@@ -1,15 +1,15 @@
-//! `price_rows` approvals on native Postgres: concurrent units on one chain and the
+//! `prices` approvals on native Postgres: concurrent units on one chain and the
 //! approved-start index behind the apply write.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+mod entry_support;
 mod pg_support;
-mod price_support;
 use bss_approval::{Store, Unit, UnitState};
 use bss_pricing::infra::storage::{
     RepoError,
-    entity::price_row,
-    repo::{approval_repo::PricingApprovalStore, price_repo, row_repo},
+    entity::price,
+    repo::{approval_repo::PricingApprovalStore, price_book_entry_repo, price_repo},
 };
-use price_support::{Script, app_for, request, state_on, user_of};
+use entry_support::{Script, app_for, request, state_on, user_of};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use time::Date;
@@ -23,15 +23,15 @@ fn body(from: &str) -> Value {
     json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
 }
 
-/// Two authoring processes on their own pools of one database, one book and one usage price
-/// whose default chain already has an approved row.
+/// Two authoring processes on their own pools of one database, one book and one usage entry
+/// whose default chain already has an approved price.
 struct Two {
     pg: pg_support::Pg,
     a: axum::Router,
     b: axum::Router,
     db: DBProvider<DbError>,
     tenant: Uuid,
-    price: Uuid,
+    entry: Uuid,
 }
 async fn two() -> Two {
     let pg = pg_support::Pg::applied().await;
@@ -55,17 +55,17 @@ async fn two() -> Two {
     )
     .await;
     assert_eq!(s, 201, "{book}");
-    let (s, price, _) = request(
+    let (s, entry, _) = request(
         &a,
         &author,
         "POST",
-        &format!("/price-books/{}/prices", book["id"].as_str().unwrap()),
+        &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
         json!({"sku_id":Uuid::new_v4()}),
         None,
-        Some("price"),
+        Some("entry"),
     )
     .await;
-    assert_eq!(s, 201, "{price}");
+    assert_eq!(s, 201, "{entry}");
     let (_, _, tag) = request(
         &a,
         &author,
@@ -87,24 +87,24 @@ async fn two() -> Two {
     )
     .await;
     assert_eq!(s, 200);
-    let price: Uuid = price["id"].as_str().unwrap().parse().unwrap();
+    let entry: Uuid = entry["id"].as_str().unwrap().parse().unwrap();
     let scope = AccessScope::for_tenant(tenant);
     let conn = db.conn().unwrap();
-    let p = price_repo::find(&conn, &scope, tenant, price)
+    let p = price_book_entry_repo::find(&conn, &scope, tenant, entry)
         .await
         .unwrap()
         .unwrap();
-    let mut base = price_support::row(&p);
+    let mut base = entry_support::price(&p);
     base.state = "approved".into();
     base.effective_from = day("2031-01-01");
-    row_repo::insert(&conn, &scope, base).await.unwrap();
+    price_repo::insert(&conn, &scope, base).await.unwrap();
     Two {
         pg,
         a,
         b,
         db,
         tenant,
-        price,
+        entry,
     }
 }
 impl Two {
@@ -115,7 +115,7 @@ impl Two {
             &self.a,
             &author,
             "POST",
-            &format!("/prices/{}/rows", self.price),
+            &format!("/price-book-entries/{}/prices", self.entry),
             body(from),
             None,
             Some(key),
@@ -127,7 +127,7 @@ impl Two {
             &author,
             "POST",
             &format!(
-                "/rows/{}/submit",
+                "/prices/{}/submit",
                 created["items"][0]["id"].as_str().unwrap()
             ),
             json!({}),
@@ -138,20 +138,20 @@ impl Two {
         assert_eq!(s, 201, "{receipt}");
         receipt["unit"]["id"].as_str().unwrap().to_owned()
     }
-    async fn approved_chain(&self) -> Vec<price_row::Model> {
-        let mut rows: Vec<_> = row_repo::for_price(
+    async fn approved_chain(&self) -> Vec<price::Model> {
+        let mut prices: Vec<_> = price_repo::for_entry(
             &self.db.conn().unwrap(),
             &AccessScope::for_tenant(self.tenant),
             self.tenant,
-            self.price,
+            self.entry,
         )
         .await
         .unwrap()
         .into_iter()
         .filter(|r| r.state == "approved" && r.dim_value.is_none())
         .collect();
-        rows.sort_by_key(|r| r.effective_from);
-        rows
+        prices.sort_by_key(|r| r.effective_from);
+        prices
     }
     async fn race(
         &self,
@@ -185,8 +185,8 @@ impl Two {
         )
     }
 }
-/// No two approved rows of the chain are in force on the same date.
-fn assert_no_overlap(chain: &[price_row::Model]) {
+/// No two approved prices of the chain are in force on the same date.
+fn assert_no_overlap(chain: &[price::Model]) {
     for pair in chain.windows(2) {
         assert!(pair[0].effective_from < pair[1].effective_from, "{chain:?}");
         assert!(
@@ -201,7 +201,7 @@ fn assert_no_overlap(chain: &[price_row::Model]) {
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_two_concurrent_approvals_on_one_chain_never_overlap() {
-    // Different starts: both may apply, each re-reading the other's committed row.
+    // Different starts: both may apply, each re-reading the other's committed price.
     let db = two().await;
     let (march, june) = (
         db.unit("m", "2031-03-01").await,
@@ -249,14 +249,14 @@ async fn postgres_the_approved_start_index_refuses_an_apply_onto_a_taken_start()
     let t = two().await;
     let conn = t.db.conn().unwrap();
     let scope = AccessScope::for_tenant(t.tenant);
-    let p = price_repo::find(&conn, &scope, t.tenant, t.price)
+    let p = price_book_entry_repo::find(&conn, &scope, t.tenant, t.entry)
         .await
         .unwrap()
         .unwrap();
     let unit = Unit {
         id: Uuid::new_v4(),
         tenant_id: t.tenant,
-        kind: "price_rows".into(),
+        kind: "prices".into(),
         ref_type: "price_book".into(),
         ref_id: p.book_id,
         state: UnitState::Pending,
@@ -271,31 +271,31 @@ async fn postgres_the_approved_start_index_refuses_an_apply_onto_a_taken_start()
         snapshot_hash: "h".into(),
         version: 1,
     };
-    let mut draft = price_support::row(&p);
+    let mut draft = entry_support::price(&p);
     draft.version_no = 2;
     draft.effective_from = day("2031-05-01");
-    let draft = row_repo::insert(&conn, &scope, draft).await.unwrap();
+    let draft = price_repo::insert(&conn, &scope, draft).await.unwrap();
     let store = PricingApprovalStore {
         scope: scope.clone(),
         tenant_id: t.tenant,
     };
     let tx_scope = scope.clone();
-    let result = row_repo::transaction(&t.db.db(), move |tx| {
+    let result = price_repo::transaction(&t.db.db(), move |tx| {
         let (store, unit, scope) = (store.clone(), unit.clone(), tx_scope.clone());
         Box::pin(async move {
             store
                 .insert_unit(tx, &unit, &[])
                 .await
                 .map_err(|e| RepoError::Db(e.to_string()))?;
-            assert!(row_repo::try_lock(tx, &scope, unit.tenant_id, draft.id, unit.id, 1).await?);
+            assert!(price_repo::try_lock(tx, &scope, unit.tenant_id, draft.id, unit.id, 1).await?);
             // The pure re-check is bypassed on purpose: only the index stands here.
-            row_repo::approve(
+            price_repo::approve(
                 tx,
                 &scope,
                 unit.tenant_id,
                 draft.id,
                 unit.id,
-                row_repo::Approval {
+                price_repo::Approval {
                     effective_from: day("2031-01-01"),
                     effective_to: None,
                     temporary_until: None,
@@ -316,7 +316,7 @@ async fn postgres_the_approved_start_index_refuses_an_apply_onto_a_taken_start()
         ),
         "{result:?}"
     );
-    let still = row_repo::find(&conn, &scope, t.tenant, draft.id)
+    let still = price_repo::find(&conn, &scope, t.tenant, draft.id)
         .await
         .unwrap()
         .unwrap();
@@ -343,9 +343,9 @@ async fn event_types(pg: &pg_support::Pg) -> Vec<String> {
 
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
-async fn postgres_an_apply_commits_its_rows_and_both_events_and_a_refused_one_leaves_none() {
+async fn postgres_an_apply_commits_its_prices_and_both_events_and_a_refused_one_leaves_none() {
     let t = two().await;
-    let published = "gts.cf.core.events.event.v1~cf.bss.pricing.price_rows_published.v1~";
+    let published = "gts.cf.core.events.event.v1~cf.bss.pricing.prices_published.v1~";
     let decided = "gts.cf.core.events.event.v1~cf.bss.pricing.approval_unit_decided.v1~";
     let march = t.unit("m", "2031-03-01").await;
     let (s, b, _) = request(
@@ -362,19 +362,19 @@ async fn postgres_an_apply_commits_its_rows_and_both_events_and_a_refused_one_le
     assert_eq!(event_types(&t.pg).await, vec![published, decided]);
     assert_eq!(t.approved_chain().await.len(), 2);
 
-    // A row approved on the unit's start underneath it: the apply is refused and rolls back.
+    // A price approved on the unit's start underneath it: the apply is refused and rolls back.
     let june = t.unit("j", "2031-06-01").await;
     let conn = t.db.conn().unwrap();
     let scope = AccessScope::for_tenant(t.tenant);
-    let p = price_repo::find(&conn, &scope, t.tenant, t.price)
+    let p = price_book_entry_repo::find(&conn, &scope, t.tenant, t.entry)
         .await
         .unwrap()
         .unwrap();
-    let mut taken = price_support::row(&p);
+    let mut taken = entry_support::price(&p);
     taken.version_no = 99;
     taken.state = "approved".into();
     taken.effective_from = day("2031-06-01");
-    row_repo::insert(&conn, &scope, taken).await.unwrap();
+    price_repo::insert(&conn, &scope, taken).await.unwrap();
     let (s, b, _) = request(
         &t.b,
         &user_of(t.tenant),

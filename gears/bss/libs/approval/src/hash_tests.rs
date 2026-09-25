@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 fn item(id: Uuid, after: serde_json::Value) -> ItemRef {
     ItemRef {
-        item_type: "price_row".into(),
+        item_type: "price".into(),
         item_id: id,
         created_by: Uuid::nil(),
         before: None,

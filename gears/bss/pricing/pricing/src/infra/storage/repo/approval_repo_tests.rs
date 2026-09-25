@@ -35,7 +35,7 @@ async fn in_tx<T: Send + 'static>(
 fn fixture(tenant: Uuid) -> (Unit, Vec<ItemRef>) {
     let items = (0..2)
         .map(|n| ItemRef {
-            item_type: "price_row".into(),
+            item_type: "price".into(),
             item_id: Uuid::new_v4(),
             created_by: Uuid::new_v4(),
             before: None,
@@ -45,8 +45,8 @@ fn fixture(tenant: Uuid) -> (Unit, Vec<ItemRef>) {
     let unit = Unit {
         id: Uuid::new_v4(),
         tenant_id: tenant,
-        kind: "price_rows".into(),
-        ref_type: "price_row".into(),
+        kind: "prices".into(),
+        ref_type: "price".into(),
         ref_id: items[0].item_id,
         state: UnitState::Pending,
         common_effective_date: Some(crate::test_support::at(9).date()),

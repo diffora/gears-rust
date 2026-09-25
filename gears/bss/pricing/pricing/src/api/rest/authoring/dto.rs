@@ -33,7 +33,7 @@ impl From<entity::price_book::Model> for PriceBookDto {
     }
 }
 #[toolkit_macros::api_dto(response)]
-pub struct PricingPriceDto {
+pub struct PricingPriceBookEntryDto {
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub book_id: Uuid,
@@ -50,8 +50,8 @@ pub struct PricingPriceDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl From<entity::price::Model> for PricingPriceDto {
-    fn from(m: entity::price::Model) -> Self {
+impl From<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
+    fn from(m: entity::price_book_entry::Model) -> Self {
         Self {
             id: m.id,
             tenant_id: m.tenant_id,
@@ -70,10 +70,10 @@ impl From<entity::price::Model> for PricingPriceDto {
     }
 }
 #[toolkit_macros::api_dto(response)]
-pub struct PricingPriceRowDto {
+pub struct PricingPriceDto {
     pub id: Uuid,
     pub tenant_id: Uuid,
-    pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
     pub version_no: i32,
     pub dim_value: Option<String>,
     pub model: String,
@@ -85,8 +85,8 @@ pub struct PricingPriceRowDto {
     pub keep_for_bound: bool,
     pub closed_explicitly: bool,
     pub temporary_until: Option<String>,
-    pub paired_row_id: Option<Uuid>,
-    pub return_of_row_id: Option<Uuid>,
+    pub paired_price_id: Option<Uuid>,
+    pub return_of_price_id: Option<Uuid>,
     pub state: String,
     /// Display state of matrix row 10: draft, pending, rejected, scheduled, active or superseded.
     pub status: String,
@@ -102,24 +102,27 @@ pub struct PricingPriceRowDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl From<entity::price_row::Model> for PricingPriceRowDto {
-    fn from(m: entity::price_row::Model) -> Self {
-        let status = m.state.parse::<crate::domain::row::RowState>().map_or_else(
-            |_| m.state.clone(),
-            |state| {
-                crate::domain::row::window_status(
-                    state,
-                    m.effective_from,
-                    m.effective_to,
-                    time::OffsetDateTime::now_utc().date(),
-                )
-                .to_owned()
-            },
-        );
+impl From<entity::price::Model> for PricingPriceDto {
+    fn from(m: entity::price::Model) -> Self {
+        let status = m
+            .state
+            .parse::<crate::domain::price::PriceState>()
+            .map_or_else(
+                |_| m.state.clone(),
+                |state| {
+                    crate::domain::price::window_status(
+                        state,
+                        m.effective_from,
+                        m.effective_to,
+                        time::OffsetDateTime::now_utc().date(),
+                    )
+                    .to_owned()
+                },
+            );
         Self {
             id: m.id,
             tenant_id: m.tenant_id,
-            price_id: m.price_id,
+            price_book_entry_id: m.price_book_entry_id,
             version_no: m.version_no,
             dim_value: m.dim_value,
             model: m.model,
@@ -131,8 +134,8 @@ impl From<entity::price_row::Model> for PricingPriceRowDto {
             keep_for_bound: m.keep_for_bound,
             closed_explicitly: m.closed_explicitly,
             temporary_until: m.temporary_until.map(|v| v.to_string()),
-            paired_row_id: m.paired_row_id,
-            return_of_row_id: m.return_of_row_id,
+            paired_price_id: m.paired_price_id,
+            return_of_price_id: m.return_of_price_id,
             state: m.state,
             status,
             pending_unit_id: m.pending_unit_id,
@@ -185,18 +188,18 @@ pub struct PriceBookList {
     pub items: Vec<PriceBookDto>,
 }
 #[toolkit_macros::api_dto(response)]
-pub struct PricingPriceList {
-    pub items: Vec<PricingPriceDto>,
+pub struct PricingPriceBookEntryList {
+    pub items: Vec<PricingPriceBookEntryDto>,
 }
 #[toolkit_macros::api_dto(response)]
-pub struct PricingExportPrice {
-    pub price: PricingPriceDto,
-    pub rows: Vec<PricingPriceRowDto>,
+pub struct PricingExportEntry {
+    pub entry: PricingPriceBookEntryDto,
+    pub prices: Vec<PricingPriceDto>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PriceBookExport {
     pub book: PriceBookDto,
-    pub prices: Vec<PricingExportPrice>,
+    pub entries: Vec<PricingExportEntry>,
 }
 #[toolkit_macros::api_dto(request, response)]
 #[derive(Clone)]
@@ -234,7 +237,7 @@ pub struct PricingSettingsDto {
 #[toolkit_macros::api_dto(request)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PricingPriceCreate {
+pub struct PricingPriceBookEntryCreate {
     pub sku_id: Uuid,
     pub period: Option<String>,
     pub dimension_key: Option<String>,
@@ -247,7 +250,7 @@ pub struct PricingPriceCreate {
     clippy::option_option,
     reason = "PATCH distinguishes omission and clearing"
 )]
-pub struct PricingPricePatch {
+pub struct PricingPriceBookEntryPatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub dimension_key: Option<Option<String>>,
     #[serde(default, deserialize_with = "nullable_date")]
@@ -259,7 +262,7 @@ pub struct PricingReferenceOpDto {
     pub op_id: Uuid,
     pub kind: String,
     pub state: String,
-    pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
     pub sku_id: Uuid,
     pub reservation_id: Option<Uuid>,
     pub attempts: i32,
@@ -273,7 +276,7 @@ impl From<entity::reference_op::Model> for PricingReferenceOpDto {
             op_id: op.op_id,
             kind: op.kind,
             state: op.state,
-            price_id: op.price_id,
+            price_book_entry_id: op.price_book_entry_id,
             sku_id: op.sku_id,
             reservation_id: op.reservation_id,
             attempts: op.attempts,
@@ -298,7 +301,7 @@ pub(super) struct PricingReferenceOpQuery {
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PricingPriceRowCreate {
+pub struct PricingPriceCreate {
     pub dim_value: Option<String>,
     pub model: String,
     pub price: serde_json::Value,
@@ -315,7 +318,7 @@ pub struct PricingPriceRowCreate {
     clippy::option_option,
     reason = "PATCH distinguishes omission, null clearing and a new value"
 )]
-pub struct PricingPriceRowPatch {
+pub struct PricingPricePatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub dim_value: Option<Option<String>>,
     pub model: Option<String>,
@@ -327,10 +330,10 @@ pub struct PricingPriceRowPatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub note: Option<Option<String>>,
 }
-/// The draft row, and its return partner when the request made a temporary pair.
+/// The draft price, and its return partner when the request made a temporary pair.
 #[toolkit_macros::api_dto(response)]
-pub struct PricingPriceRowCreated {
-    pub items: Vec<PricingPriceRowDto>,
+pub struct PricingPriceCreated {
+    pub items: Vec<PricingPriceDto>,
 }
 
 /// One reviewer decision; decisions of earlier generations are kept and marked stale.
@@ -417,36 +420,36 @@ pub struct PricingVoteReceipt {
     pub outcome: String,
     pub unit: PricingApprovalUnitDto,
 }
-/// The unit a submission recorded and its rows after the transaction.
+/// The unit a submission recorded and its prices after the transaction.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSubmitReceipt {
     pub applied: bool,
     pub unit: PricingApprovalUnitDto,
-    pub rows: Vec<PricingPriceRowDto>,
+    pub prices: Vec<PricingPriceDto>,
 }
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPublishChangesRequest {
-    pub row_ids: Option<Vec<Uuid>>,
+    pub price_ids: Option<Vec<Uuid>>,
     pub common_effective_date: Option<String>,
 }
-/// One draft row as the operator sees it before publishing: the price key, the chain,
+/// One draft price as the operator sees it before publishing: the entry key, the chain,
 /// the approved predecessor it follows, its pair partner and the default selection.
 #[toolkit_macros::api_dto(response)]
-pub struct PricingProposedRow {
-    pub row: PricingPriceRowDto,
+pub struct PricingProposedPrice {
     pub price: PricingPriceDto,
+    pub entry: PricingPriceBookEntryDto,
     pub chain: String,
-    pub before: Option<PricingPriceRowDto>,
+    pub before: Option<PricingPriceDto>,
     pub pair_partner_id: Option<Uuid>,
     pub selected: bool,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPublishChanges {
     pub book: PriceBookDto,
-    pub rows: Vec<PricingProposedRow>,
-    /// Rows and prices the listed drafts touch; plans and subscriptions from phase 3.
+    pub prices: Vec<PricingProposedPrice>,
+    /// Prices and entries the listed drafts touch; plans and subscriptions from phase 3.
     pub impact: serde_json::Value,
 }
 #[toolkit_macros::api_dto(request)]

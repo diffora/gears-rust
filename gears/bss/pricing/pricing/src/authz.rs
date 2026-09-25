@@ -9,10 +9,11 @@ use uuid::Uuid;
 pub mod labels {
     use toolkit_gts::gts_id;
     pub const PRICE_BOOK: &str = gts_id!("cf.bss.pricing.price_book.v1~");
+    pub const PRICE_BOOK_ENTRY: &str = gts_id!("cf.bss.pricing.price_book_entry.v1~");
     pub const PRICE: &str = gts_id!("cf.bss.pricing.price.v1~");
     pub const APPROVAL_UNIT: &str = gts_id!("cf.bss.pricing.approval_unit.v1~");
     pub const CONFIG: &str = gts_id!("cf.bss.pricing.config.v1~");
-    pub const ALL: &[&str] = &[PRICE_BOOK, PRICE, APPROVAL_UNIT, CONFIG];
+    pub const ALL: &[&str] = &[PRICE_BOOK, PRICE_BOOK_ENTRY, PRICE, APPROVAL_UNIT, CONFIG];
 }
 /// Independent authoring and governance actions.
 pub mod actions {
@@ -27,6 +28,8 @@ pub mod resource_types {
     use super::{ResourceType, SUPPORTED_PROPERTIES, labels};
     pub const PRICE_BOOK: ResourceType =
         ResourceType::from_static(labels::PRICE_BOOK, SUPPORTED_PROPERTIES);
+    pub const PRICE_BOOK_ENTRY: ResourceType =
+        ResourceType::from_static(labels::PRICE_BOOK_ENTRY, SUPPORTED_PROPERTIES);
     pub const PRICE: ResourceType = ResourceType::from_static(labels::PRICE, SUPPORTED_PROPERTIES);
     pub const APPROVAL_UNIT: ResourceType =
         ResourceType::from_static(labels::APPROVAL_UNIT, SUPPORTED_PROPERTIES);

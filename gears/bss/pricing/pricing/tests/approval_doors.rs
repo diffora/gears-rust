@@ -1,11 +1,11 @@
 //! Submission, publish changes and the approval doors, mirroring products' governance suite.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-mod price_support;
+mod entry_support;
 use bss_pricing::infra::storage::{
-    entity::price_row,
-    repo::{price_repo, row_repo},
+    entity::price,
+    repo::{price_book_entry_repo, price_repo},
 };
-use price_support::{Fixture, Script};
+use entry_support::{Fixture, Script};
 use sea_orm::EntityTrait;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -16,23 +16,23 @@ use uuid::Uuid;
 struct Gov {
     f: Fixture,
     book: String,
-    price: Value,
+    entry: Value,
 }
 async fn gov(quorum: u32) -> Gov {
     let f = Fixture::new(Arc::new(Script::default())).await;
     let (book, _) = f.book().await;
     let book = book["id"].as_str().unwrap().to_owned();
-    let (status, price, _) = f
+    let (status, entry, _) = f
         .call(
             "POST",
-            &format!("/price-books/{book}/prices"),
+            &format!("/price-books/{book}/entries"),
             json!({"sku_id":Uuid::new_v4()}),
             None,
-            Some("price"),
+            Some("entry"),
         )
         .await;
-    assert_eq!(status, 201, "{price}");
-    let g = Gov { f, book, price };
+    assert_eq!(status, 201, "{entry}");
+    let g = Gov { f, book, entry };
     g.policy(None, quorum).await;
     g
 }
@@ -53,8 +53,8 @@ impl Gov {
         assert_eq!(put.0, 200, "{put:?}");
         put
     }
-    fn price_id(&self) -> Uuid {
-        self.price["id"].as_str().unwrap().parse().unwrap()
+    fn price_book_entry_id(&self) -> Uuid {
+        self.entry["id"].as_str().unwrap().parse().unwrap()
     }
     async fn draft_as(&self, who: &SecurityContext, key: &str, body: Value) -> Vec<Value> {
         let (status, b, _) = self
@@ -62,7 +62,7 @@ impl Gov {
             .call_as(
                 who,
                 "POST",
-                &format!("/prices/{}/rows", self.price_id()),
+                &format!("/price-book-entries/{}/prices", self.price_book_entry_id()),
                 body,
                 None,
                 Some(key),
@@ -77,14 +77,14 @@ impl Gov {
     async fn submit_as(
         &self,
         who: &SecurityContext,
-        row: &Value,
+        price: &Value,
         key: &str,
     ) -> (u16, Value, String) {
         self.f
             .call_as(
                 who,
                 "POST",
-                &format!("/rows/{}/submit", row["id"].as_str().unwrap()),
+                &format!("/prices/{}/submit", price["id"].as_str().unwrap()),
                 json!({}),
                 None,
                 Some(key),
@@ -124,9 +124,9 @@ impl Gov {
         assert_eq!(status, 200, "{b}");
         b
     }
-    async fn row(&self, id: &Value) -> price_row::Model {
+    async fn price(&self, id: &Value) -> price::Model {
         let tenant = self.f.ctx.subject_tenant_id();
-        row_repo::find(
+        price_repo::find(
             &self.f.db.conn().unwrap(),
             &AccessScope::for_tenant(tenant),
             tenant,
@@ -140,17 +140,17 @@ impl Gov {
         let tenant = self.f.ctx.subject_tenant_id();
         let scope = AccessScope::for_tenant(tenant);
         let conn = self.f.db.conn().unwrap();
-        let p = price_repo::find(&conn, &scope, tenant, self.price_id())
+        let p = price_book_entry_repo::find(&conn, &scope, tenant, self.price_book_entry_id())
             .await
             .unwrap()
             .unwrap();
-        let mut r = price_support::row(&p);
+        let mut r = entry_support::price(&p);
         r.version_no = version_no;
         r.state = "approved".into();
         r.price_json = json!({"rate":"0.20"});
         r.effective_from =
             time::Date::parse(from, &time::format_description::well_known::Iso8601::DATE).unwrap();
-        row_repo::insert(&conn, &scope, r).await.unwrap().id
+        price_repo::insert(&conn, &scope, r).await.unwrap().id
     }
 }
 fn body(from: &str) -> Value {
@@ -163,24 +163,24 @@ fn code(b: &Value) -> String {
 #[tokio::test]
 async fn quorum_zero_applies_at_submit_and_records_the_unit() {
     let g = gov(0).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (status, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     assert_eq!(status, 201, "{receipt}");
     assert_eq!(receipt["applied"], true);
     assert_eq!(receipt["unit"]["state"], "approved");
-    assert_eq!(receipt["unit"]["kind"], "price_rows");
+    assert_eq!(receipt["unit"]["kind"], "prices");
     assert_eq!(receipt["unit"]["ref_id"], g.book);
     assert_eq!(receipt["unit"]["decisions"], json!([]));
     assert!(receipt["unit"]["decided_at"].is_string());
-    assert_eq!(receipt["rows"][0]["state"], "approved");
+    assert_eq!(receipt["prices"][0]["state"], "approved");
     assert_eq!(
-        receipt["rows"][0]["approved_by_unit_id"],
+        receipt["prices"][0]["approved_by_unit_id"],
         receipt["unit"]["id"]
     );
     for (query, count) in [
         ("?state=approved".to_owned(), 1),
         ("?state=pending".to_owned(), 0),
-        (format!("?kind=price_rows&book_id={}", g.book), 1),
+        (format!("?kind=prices&book_id={}", g.book), 1),
         (format!("?ref_id={}", Uuid::new_v4()), 0),
     ] {
         let (status, list, _) =
@@ -209,8 +209,8 @@ async fn quorum_one_neither_the_author_nor_the_submitter_may_approve() {
     let author = g.f.ctx.clone();
     let submitter = g.f.user();
     let reviewer = g.f.user();
-    let row = &g.draft_as(&author, "a", body("2031-03-01")).await[0];
-    let (status, receipt, _) = g.submit_as(&submitter, row, "submit").await;
+    let price = &g.draft_as(&author, "a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&submitter, price, "submit").await;
     assert_eq!(status, 201, "{receipt}");
     assert_eq!(receipt["applied"], false);
     let unit = &receipt["unit"];
@@ -224,14 +224,14 @@ async fn quorum_one_neither_the_author_nor_the_submitter_may_approve() {
     let locked =
         g.f.call(
             "PATCH",
-            &format!("/rows/{}", row["id"].as_str().unwrap()),
+            &format!("/prices/{}", price["id"].as_str().unwrap()),
             json!({"note":"x"}),
             Some("\"1\""),
             None,
         )
         .await;
     assert_eq!(locked.0, 409);
-    assert!(code(&locked.1).contains("ROW_NOT_DRAFT"), "{locked:?}");
+    assert!(code(&locked.1).contains("PRICE_NOT_DRAFT"), "{locked:?}");
     let (status, b, _) = g
         .vote(
             &reviewer,
@@ -244,7 +244,7 @@ async fn quorum_one_neither_the_author_nor_the_submitter_may_approve() {
     assert_eq!(status, 200, "{b}");
     assert_eq!(b["outcome"], "applied");
     assert_eq!(b["unit"]["state"], "approved");
-    let stored = g.row(&row["id"]).await;
+    let stored = g.price(&price["id"]).await;
     assert_eq!(stored.state, "approved");
     assert_eq!(
         stored.approved_by_unit_id.map(|u| u.to_string()),
@@ -260,8 +260,8 @@ async fn only_a_drafts_author_edits_or_deletes_it() {
     let (alice, bob) = (g.f.ctx.clone(), g.f.user());
     let mut ten = body("2031-03-01");
     ten["price"] = json!({"rate":"10"});
-    let row = &g.draft_as(&alice, "a", ten).await[0];
-    let path = format!("/rows/{}", row["id"].as_str().unwrap());
+    let price = &g.draft_as(&alice, "a", ten).await[0];
+    let path = format!("/prices/{}", price["id"].as_str().unwrap());
     let (status, b, _) =
         g.f.call_as(
             &bob,
@@ -274,7 +274,7 @@ async fn only_a_drafts_author_edits_or_deletes_it() {
         .await;
     assert_eq!(status, 403, "{b}");
     assert!(code(&b).contains("NOT_DRAFT_AUTHOR"), "{b}");
-    assert_eq!(g.row(&row["id"]).await.price_json, json!({"rate":"10"}));
+    assert_eq!(g.price(&price["id"]).await.price_json, json!({"rate":"10"}));
     let (status, b, _) =
         g.f.call_as(&bob, "DELETE", &path, json!({}), Some("\"1\""), None)
             .await;
@@ -284,7 +284,7 @@ async fn only_a_drafts_author_edits_or_deletes_it() {
     promo["temporary_until"] = json!("2031-04-10");
     g.approved(9, "2031-01-01").await;
     let pair = g.draft_as(&alice, "pair", promo).await;
-    let partner = format!("/rows/{}", pair[1]["id"].as_str().unwrap());
+    let partner = format!("/prices/{}", pair[1]["id"].as_str().unwrap());
     let (status, b, _) =
         g.f.call_as(&bob, "DELETE", &partner, json!({}), Some("\"2\""), None)
             .await;
@@ -300,7 +300,7 @@ async fn only_a_drafts_author_edits_or_deletes_it() {
         )
         .await;
     assert_eq!(status, 200, "the author still edits: {b}");
-    let (status, b, _) = g.submit_as(&alice, row, "submit").await;
+    let (status, b, _) = g.submit_as(&alice, price, "submit").await;
     assert_eq!(status, 201, "{b}");
     let (status, b, _) = g
         .vote(&bob, &b["unit"], "approve", json!({"generation":1}), "bob")
@@ -311,8 +311,8 @@ async fn only_a_drafts_author_edits_or_deletes_it() {
 #[tokio::test]
 async fn quorum_two_needs_two_reviewers_and_a_second_vote_by_one_is_refused() {
     let g = gov(2).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     let (one, two) = (g.f.user(), g.f.user());
     let (status, b, _) = g
@@ -344,8 +344,8 @@ async fn quorum_two_needs_two_reviewers_and_a_second_vote_by_one_is_refused() {
 #[tokio::test]
 async fn content_drift_refreshes_the_generation_and_earlier_votes_go_stale() {
     let g = gov(2).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     let (one, two) = (g.f.user(), g.f.user());
     assert_eq!(
@@ -354,18 +354,18 @@ async fn content_drift_refreshes_the_generation_and_earlier_votes_go_stale() {
             .0,
         200
     );
-    // The pending row's money changes underneath the unit.
+    // The pending price's money changes underneath the unit.
     let tenant = g.f.ctx.subject_tenant_id();
-    price_row::Entity::update_many()
+    price::Entity::update_many()
         .secure()
         .scope_with(&AccessScope::for_tenant(tenant))
         .col_expr(
-            price_row::Column::PriceJson,
+            price::Column::PriceJson,
             sea_orm::sea_query::Expr::value(json!({"rate":"0.11"})),
         )
         .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
-            &price_row::Column::Id,
-            row["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
+            &price::Column::Id,
+            price["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
         )))
         .exec(&g.f.db.conn().unwrap())
         .await
@@ -381,7 +381,7 @@ async fn content_drift_refreshes_the_generation_and_earlier_votes_go_stale() {
     assert_eq!(card["state"], "pending");
     assert_eq!(card["decisions"][0]["stale"], true);
     assert_eq!(
-        card["snapshot"]["rows"][0]["after"]["price"],
+        card["snapshot"]["prices"][0]["after"]["price"],
         json!({"rate":"0.11"})
     );
     let (status, b, _) = g
@@ -408,8 +408,8 @@ async fn content_drift_refreshes_the_generation_and_earlier_votes_go_stale() {
 #[tokio::test]
 async fn a_vote_must_name_the_generation_it_saw() {
     let g = gov(2).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     let reviewer = g.f.user();
     assert_eq!(
@@ -441,11 +441,11 @@ async fn a_vote_must_name_the_generation_it_saw() {
 }
 
 #[tokio::test]
-async fn reject_needs_a_note_keeps_rows_rejected_and_withdraw_is_the_submitters() {
+async fn reject_needs_a_note_keeps_prices_rejected_and_withdraw_is_the_submitters() {
     let g = gov(1).await;
     let reviewer = g.f.user();
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     let (status, b, _) = g
         .vote(
@@ -475,10 +475,10 @@ async fn reject_needs_a_note_keeps_rows_rejected_and_withdraw_is_the_submitters(
     assert_eq!(status, 200, "{b}");
     assert_eq!(b["outcome"], "rejected");
     assert_eq!(b["unit"]["decided_note"], "too cheap");
-    let rejected = g.row(&row["id"]).await;
+    let rejected = g.price(&price["id"]).await;
     assert_eq!(
         rejected.state, "rejected",
-        "a rejected row keeps its history"
+        "a rejected price keeps its history"
     );
     assert!(rejected.pending_unit_id.is_none());
     let other = &g.draft("b", body("2031-04-01")).await[0];
@@ -494,14 +494,14 @@ async fn reject_needs_a_note_keeps_rows_rejected_and_withdraw_is_the_submitters(
         .await;
     assert_eq!(status, 200, "{b}");
     assert_eq!(b["outcome"], "withdrawn");
-    assert_eq!(g.row(&other["id"]).await.state, "draft");
+    assert_eq!(g.price(&other["id"]).await.state, "draft");
 }
 
 #[tokio::test]
 async fn two_reviewers_approving_at_once_apply_exactly_once() {
     let g = gov(1).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = receipt["unit"]["id"].as_str().unwrap().to_owned();
     let second = g.f.second_app().await;
     let (one, two) = (g.f.user(), g.f.user());
@@ -515,7 +515,7 @@ async fn two_reviewers_approving_at_once_apply_exactly_once() {
             None,
             Some("one")
         ),
-        price_support::request(
+        entry_support::request(
             &second,
             &two,
             "POST",
@@ -535,7 +535,7 @@ async fn two_reviewers_approving_at_once_apply_exactly_once() {
         "{loser:?}"
     );
     assert_eq!(
-        g.row(&row["id"]).await.version,
+        g.price(&price["id"]).await.version,
         4,
         "locked, approved, unlocked: once"
     );
@@ -552,30 +552,31 @@ async fn publish_changes_lists_every_draft_and_pulls_a_pair_partner_in() {
     let path = format!("/price-books/{}/publish-changes", g.book);
     let (status, listing, _) = g.f.call("GET", &path, json!({}), None, None).await;
     assert_eq!(status, 200, "{listing}");
-    let rows = listing["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 3);
+    let prices = listing["prices"].as_array().unwrap();
+    assert_eq!(prices.len(), 3);
     assert_eq!(
-        rows.iter()
-            .map(|r| r["row"]["effective_from"].clone())
+        prices
+            .iter()
+            .map(|r| r["price"]["effective_from"].clone())
             .collect::<Vec<_>>(),
         vec![
             json!("2031-03-01"),
             json!("2031-03-11"),
             json!("2031-05-01")
         ],
-        "sorted by start, price and version"
+        "sorted by start, entry and version"
     );
-    for r in rows {
+    for r in prices {
         assert_eq!(r["selected"], true);
         assert_eq!(r["chain"], "default");
-        assert_eq!(r["price"]["sku_id"], g.price["sku_id"]);
+        assert_eq!(r["entry"]["sku_id"], g.entry["sku_id"]);
         assert_eq!(
             r["before"]["id"],
             back.to_string(),
             "the approved predecessor"
         );
     }
-    assert_eq!(rows[0]["pair_partner_id"], pair[1]["id"]);
+    assert_eq!(prices[0]["pair_partner_id"], pair[1]["id"]);
     let (status, b, _) = g.submit_as(&g.f.ctx, &pair[1], "half").await;
     assert_eq!(status, 400, "{b}");
     assert!(code(&b).contains("PAIR_SPLIT"), "{b}");
@@ -583,42 +584,42 @@ async fn publish_changes_lists_every_draft_and_pulls_a_pair_partner_in() {
         g.f.call(
             "POST",
             &path,
-            json!({"row_ids":[pair[0]["id"]]}),
+            json!({"price_ids":[pair[0]["id"]]}),
             None,
             Some("pub"),
         )
         .await;
     assert_eq!(status, 201, "{receipt}");
     let snapshot = &receipt["unit"]["snapshot"];
-    assert_eq!(snapshot["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(snapshot["prices"].as_array().unwrap().len(), 2);
     assert_eq!(snapshot["added_partner"], json!([pair[1]["id"]]));
     assert_eq!(
-        g.row(&single[0]["id"]).await.state,
+        g.price(&single[0]["id"]).await.state,
         "draft",
-        "unticked rows stay drafts"
+        "unticked prices stay drafts"
     );
     let (status, b, _) =
         g.f.call(
             "POST",
             &path,
-            json!({"row_ids":[Uuid::new_v4()]}),
+            json!({"price_ids":[Uuid::new_v4()]}),
             None,
             Some("foreign"),
         )
         .await;
     assert_eq!(status, 400, "{b}");
-    assert!(code(&b).contains("ROW_NOT_IN_BOOK"), "{b}");
+    assert!(code(&b).contains("PRICE_NOT_IN_BOOK"), "{b}");
     let (status, b, _) =
         g.f.call(
             "POST",
             &path,
-            json!({"row_ids":[pair[0]["id"]]}),
+            json!({"price_ids":[pair[0]["id"]]}),
             None,
             Some("again"),
         )
         .await;
     assert_eq!(status, 409, "{b}");
-    assert!(code(&b).contains("ROW_NOT_DRAFT"), "{b}");
+    assert!(code(&b).contains("PRICE_NOT_DRAFT"), "{b}");
 }
 
 #[tokio::test]
@@ -641,14 +642,14 @@ async fn publish_all_with_a_common_date_and_the_card_shows_live_impact() {
         .await;
     assert_eq!(
         status, 400,
-        "a single row and a promo both moved to one start overlap: {b}"
+        "a single price and a promo both moved to one start overlap: {b}"
     );
     assert!(code(&b).contains("WINDOW_OVERLAP"), "{b}");
     let (status, receipt, _) =
         g.f.call(
             "POST",
             &path,
-            json!({"row_ids":[pair[0]["id"]],"common_effective_date":"2031-04-01"}),
+            json!({"price_ids":[pair[0]["id"]],"common_effective_date":"2031-04-01"}),
             None,
             Some("pair"),
         )
@@ -659,13 +660,13 @@ async fn publish_all_with_a_common_date_and_the_card_shows_live_impact() {
     let card = g.card(unit).await;
     assert_eq!(
         card["impact"],
-        json!({"rows":2,"prices":1,"plans":"unavailable until phase 3","subscriptions":"unavailable until phase 3"})
+        json!({"prices":2,"entries":1,"plans":"unavailable until phase 3","subscriptions":"unavailable until phase 3"})
     );
     let (status, b, _) = g
         .vote(&g.f.user(), unit, "approve", json!({"generation":1}), "ok")
         .await;
     assert_eq!(status, 200, "{b}");
-    let (p, r) = (g.row(&pair[0]["id"]).await, g.row(&pair[1]["id"]).await);
+    let (p, r) = (g.price(&pair[0]["id"]).await, g.price(&pair[1]["id"]).await);
     assert_eq!(p.effective_from.to_string(), "2031-04-01");
     assert_eq!(
         p.temporary_until.map(|d| d.to_string()),
@@ -679,16 +680,16 @@ async fn publish_all_with_a_common_date_and_the_card_shows_live_impact() {
     let (status, rest, _) = g.f.call("POST", &path, json!({}), None, Some("rest")).await;
     assert_eq!(status, 201, "{rest}");
     assert_eq!(
-        rest["unit"]["snapshot"]["rows"].as_array().unwrap().len(),
+        rest["unit"]["snapshot"]["prices"].as_array().unwrap().len(),
         1
     );
     assert_eq!(
-        rest["unit"]["snapshot"]["rows"][0]["row_id"],
+        rest["unit"]["snapshot"]["prices"][0]["price_id"],
         first[0]["id"]
     );
     let (status, b, _) = g.f.call("POST", &path, json!({}), None, Some("none")).await;
     assert_eq!(status, 400, "{b}");
-    assert!(code(&b).contains("NO_DRAFT_ROWS"), "{b}");
+    assert!(code(&b).contains("NO_DRAFT_PRICES"), "{b}");
 }
 
 #[tokio::test]
@@ -698,12 +699,12 @@ async fn a_changed_usage_structure_is_refused_at_submit_with_400() {
     let mut graduated = body("2031-03-01");
     graduated["model"] = json!("graduated");
     graduated["price"] = json!({"tiers":[{"up_to":null,"rate":"1"}]});
-    let row = &g.draft("g", graduated).await[0];
-    let (status, b, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("g", graduated).await[0];
+    let (status, b, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     assert_eq!(status, 400, "D-403: {b}");
     assert!(code(&b).contains("CHAIN_MODEL_CHANGED"), "{b}");
     assert_eq!(
-        g.row(&row["id"]).await.state,
+        g.price(&price["id"]).await.state,
         "draft",
         "no unit was created"
     );
@@ -716,10 +717,10 @@ async fn a_changed_usage_structure_is_refused_at_submit_with_400() {
 #[tokio::test]
 async fn keyed_submissions_and_votes_replay_their_answer() {
     let g = gov(1).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let first = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let first = g.submit_as(&g.f.ctx, price, "submit").await;
     assert_eq!(first.0, 201);
-    assert_eq!(g.submit_as(&g.f.ctx, row, "submit").await, first);
+    assert_eq!(g.submit_as(&g.f.ctx, price, "submit").await, first);
     let reviewer = g.f.user();
     let unit = &first.1["unit"];
     let approve = g
@@ -746,7 +747,7 @@ async fn keyed_submissions_and_votes_replay_their_answer() {
     assert_eq!(
         g.f.call(
             "POST",
-            &format!("/rows/{}/submit", row["id"].as_str().unwrap()),
+            &format!("/prices/{}/submit", price["id"].as_str().unwrap()),
             json!({}),
             None,
             None
@@ -817,16 +818,13 @@ async fn the_approval_policy_is_read_and_written_under_if_match() {
         .call(
             "PUT",
             "/approval-policy",
-            json!({"kind":"price_rows","quorum":2}),
+            json!({"kind":"prices","quorum":2}),
             Some(&saved.2),
             None,
         )
         .await;
     assert_eq!(kind.0, 200, "{kind:?}");
-    assert_eq!(
-        kind.1,
-        json!({"default_quorum":0,"overrides":{"price_rows":2}})
-    );
+    assert_eq!(kind.1, json!({"default_quorum":0,"overrides":{"prices":2}}));
     assert_eq!(
         f.call("GET", "/approval-policy", json!({}), None, None)
             .await
@@ -838,8 +836,8 @@ async fn the_approval_policy_is_read_and_written_under_if_match() {
 #[tokio::test]
 async fn a_units_quorum_is_its_own_snapshot_and_an_approve_only_reviewer_may_vote() {
     let g = gov(2).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     assert_eq!(unit["quorum_required"], 2);
     g.policy(None, 0).await;
@@ -871,8 +869,8 @@ async fn a_units_quorum_is_its_own_snapshot_and_an_approve_only_reviewer_may_vot
 #[tokio::test]
 async fn a_stale_refresh_is_the_keys_committed_answer() {
     let g = gov(2).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (_, receipt, _) = g.submit_as(&g.f.ctx, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     let unit = &receipt["unit"];
     let (one, two) = (g.f.user(), g.f.user());
     assert_eq!(
@@ -882,16 +880,16 @@ async fn a_stale_refresh_is_the_keys_committed_answer() {
         200
     );
     let tenant = g.f.ctx.subject_tenant_id();
-    price_row::Entity::update_many()
+    price::Entity::update_many()
         .secure()
         .scope_with(&AccessScope::for_tenant(tenant))
         .col_expr(
-            price_row::Column::PriceJson,
+            price::Column::PriceJson,
             sea_orm::sea_query::Expr::value(json!({"rate":"0.11"})),
         )
         .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
-            &price_row::Column::Id,
-            row["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
+            &price::Column::Id,
+            price["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
         )))
         .exec(&g.f.db.conn().unwrap())
         .await
@@ -913,12 +911,12 @@ async fn a_stale_refresh_is_the_keys_committed_answer() {
 #[tokio::test]
 async fn simultaneous_claims_of_one_key_record_one_unit() {
     let g = gov(1).await;
-    let row = &g.draft("a", body("2031-03-01")).await[0];
+    let price = &g.draft("a", body("2031-03-01")).await[0];
     let second = g.f.second_app().await;
-    let path = format!("/rows/{}/submit", row["id"].as_str().unwrap());
+    let path = format!("/prices/{}/submit", price["id"].as_str().unwrap());
     let (a, b) = tokio::join!(
         g.f.call("POST", &path, json!({}), None, Some("same")),
-        price_support::request(
+        entry_support::request(
             &second,
             &g.f.ctx,
             "POST",
@@ -945,8 +943,8 @@ async fn every_act_is_audited_with_its_actor_subject_and_correlation() {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
     let g = gov(1).await;
     let (submitter, reviewer) = (g.f.user(), g.f.user());
-    let row = &g.draft("a", body("2031-03-01")).await[0];
-    let (status, receipt, _) = g.submit_as(&submitter, row, "submit").await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&submitter, price, "submit").await;
     assert_eq!(status, 201, "{receipt}");
     let unit = &receipt["unit"];
     assert_eq!(
@@ -955,7 +953,7 @@ async fn every_act_is_audited_with_its_actor_subject_and_correlation() {
             .0,
         200
     );
-    let rows = Database::connect(&g.f.dsn)
+    let prices = Database::connect(&g.f.dsn)
         .await
         .unwrap()
         .query_all_raw(Statement::from_sql_and_values(
@@ -966,7 +964,7 @@ async fn every_act_is_audited_with_its_actor_subject_and_correlation() {
         ))
         .await
         .unwrap();
-    let acts: Vec<(String, Uuid, bool)> = rows
+    let acts: Vec<(String, Uuid, bool)> = prices
         .iter()
         .map(|r| {
             (
@@ -992,8 +990,8 @@ async fn every_act_is_audited_with_its_actor_subject_and_correlation() {
 }
 
 #[tokio::test]
-async fn a_price_with_only_draft_or_rejected_rows_is_deleted_with_them() {
-    // Rejected rows carry no approved money; their review history stays in the unit snapshot.
+async fn an_entry_with_only_draft_or_rejected_prices_is_deleted_with_them() {
+    // Rejected prices carry no approved money; their review history stays in the unit snapshot.
     let g = gov(1).await;
     let reviewer = g.f.user();
     let rejected = &g.draft("a", body("2031-03-01")).await[0];
@@ -1010,20 +1008,20 @@ async fn a_price_with_only_draft_or_rejected_rows_is_deleted_with_them() {
         )
         .await;
     assert_eq!(status, 200, "{b}");
-    assert_eq!(g.row(&rejected["id"]).await.state, "rejected");
+    assert_eq!(g.price(&rejected["id"]).await.state, "rejected");
     let draft = &g.draft("b", body("2031-04-01")).await[0];
-    let path = format!("/prices/{}", g.price_id());
+    let path = format!("/price-book-entries/{}", g.price_book_entry_id());
     let deleted = g.f.call("DELETE", &path, json!({}), None, None).await;
     assert_eq!(deleted.0, 204, "{deleted:?}");
     assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 404);
     let tenant = g.f.ctx.subject_tenant_id();
-    for row in [rejected, draft] {
+    for price in [rejected, draft] {
         assert!(
-            row_repo::find(
+            price_repo::find(
                 &g.f.db.conn().unwrap(),
                 &AccessScope::for_tenant(tenant),
                 tenant,
-                row["id"].as_str().unwrap().parse().unwrap(),
+                price["id"].as_str().unwrap().parse().unwrap(),
             )
             .await
             .unwrap()
@@ -1033,23 +1031,23 @@ async fn a_price_with_only_draft_or_rejected_rows_is_deleted_with_them() {
     let card = g.card(&unit).await;
     assert_eq!(card["state"], "rejected");
     assert_eq!(
-        card["snapshot"]["rows"][0]["after"]["price"],
+        card["snapshot"]["prices"][0]["after"]["price"],
         json!({"rate":"0.10"}),
-        "the rejected proposal's history survives its row"
+        "the rejected proposal's history survives its price"
     );
 }
 
 #[tokio::test]
-async fn a_price_with_pending_or_approved_rows_refuses_deletion() {
+async fn an_entry_with_pending_or_approved_prices_refuses_deletion() {
     let g = gov(1).await;
     let pending = &g.draft("a", body("2031-03-01")).await[0];
     let (status, receipt, _) = g.submit_as(&g.f.ctx, pending, "submit").await;
     assert_eq!(status, 201, "{receipt}");
-    let path = format!("/prices/{}", g.price_id());
+    let path = format!("/price-book-entries/{}", g.price_book_entry_id());
     let refused = g.f.call("DELETE", &path, json!({}), None, None).await;
     assert_eq!(refused.0, 409, "{refused:?}");
     assert!(
-        code(&refused.1).contains("PRICE_ROWS_IN_USE"),
+        code(&refused.1).contains("ENTRY_PRICES_IN_USE"),
         "{refused:?}"
     );
     let (status, b, _) = g
@@ -1065,7 +1063,7 @@ async fn a_price_with_pending_or_approved_rows_refuses_deletion() {
     let refused = g.f.call("DELETE", &path, json!({}), None, None).await;
     assert_eq!(refused.0, 409, "{refused:?}");
     assert!(
-        code(&refused.1).contains("PRICE_ROWS_IN_USE"),
+        code(&refused.1).contains("ENTRY_PRICES_IN_USE"),
         "{refused:?}"
     );
     assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 200);
@@ -1092,7 +1090,7 @@ async fn a_common_date_past_an_approved_change_answers_400_pair_return_stale() {
         .await;
     assert_eq!(status, 400, "{b}");
     assert!(code(&b).contains("PAIR_RETURN_STALE"), "{b}");
-    assert_eq!(g.row(&pair[0]["id"]).await.state, "draft");
+    assert_eq!(g.price(&pair[0]["id"]).await.state, "draft");
     let (status, list, _) =
         g.f.call("GET", "/approval-units", json!({}), None, None)
             .await;
@@ -1116,7 +1114,7 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     assert_eq!(status, 200, "{listing}");
     assert_eq!(
         listing["impact"],
-        json!({"rows":3,"prices":1,"plans":unavailable,"subscriptions":unavailable})
+        json!({"prices":3,"entries":1,"plans":unavailable,"subscriptions":unavailable})
     );
     let (status, receipt, _) = g.f.call("POST", &path, json!({}), None, Some("all")).await;
     assert_eq!(status, 201, "{receipt}");
@@ -1127,7 +1125,7 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     let card = g.card(&receipt["unit"]).await;
     assert_eq!(
         list["items"][0]["impact"],
-        json!({"rows":3,"prices":1,"plans":unavailable,"subscriptions":unavailable})
+        json!({"prices":3,"entries":1,"plans":unavailable,"subscriptions":unavailable})
     );
     assert_eq!(list["items"][0]["impact"], card["impact"]);
 }

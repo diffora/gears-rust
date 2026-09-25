@@ -46,9 +46,9 @@ mod m20260926_000001_create_pricing_settings;
 mod m20260926_000002_create_pricing_approvals;
 mod m20260926_000003_create_pricing_dimension_key;
 mod m20260926_000004_create_pricing_price_book;
-mod m20260926_000005_create_pricing_price;
+mod m20260926_000005_create_pricing_price_book_entry;
 mod m20260926_000006_create_pricing_reference_op;
-mod m20260926_000007_create_pricing_price_row;
+mod m20260926_000007_create_pricing_price;
 mod m20260926_000008_create_pricing_audit;
 mod m20260926_000009_create_pricing_idempotency;
 
@@ -63,9 +63,9 @@ impl MigratorTrait for Migrator {
             Box::new(m20260926_000002_create_pricing_approvals::Migration),
             Box::new(m20260926_000003_create_pricing_dimension_key::Migration),
             Box::new(m20260926_000004_create_pricing_price_book::Migration),
-            Box::new(m20260926_000005_create_pricing_price::Migration),
+            Box::new(m20260926_000005_create_pricing_price_book_entry::Migration),
             Box::new(m20260926_000006_create_pricing_reference_op::Migration),
-            Box::new(m20260926_000007_create_pricing_price_row::Migration),
+            Box::new(m20260926_000007_create_pricing_price::Migration),
             Box::new(m20260926_000008_create_pricing_audit::Migration),
             Box::new(m20260926_000009_create_pricing_idempotency::Migration),
         ]

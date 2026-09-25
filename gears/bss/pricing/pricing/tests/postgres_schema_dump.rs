@@ -92,7 +92,7 @@ async fn the_dump_reaches_every_kind_of_object() {
             "bss.pricing_idempotency".to_owned(),
             "bss.pricing_price".to_owned(),
             "bss.pricing_price_book".to_owned(),
-            "bss.pricing_price_row".to_owned(),
+            "bss.pricing_price_book_entry".to_owned(),
             "bss.pricing_reference_op".to_owned(),
             "bss.pricing_settings".to_owned(),
             "public.bss_pricing_outbox_body".to_owned(),

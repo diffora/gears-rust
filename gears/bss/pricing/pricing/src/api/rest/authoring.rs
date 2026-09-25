@@ -1,10 +1,10 @@
-//! Books, prices, rows, approvals, dimension keys and settings REST doors.
+//! Books, entries, prices, approvals, dimension keys and settings REST doors.
 mod approvals;
 mod books;
 mod configuration;
 pub mod dto;
-mod prices;
-pub(crate) mod rows;
+mod price_book_entries;
+pub(crate) mod prices;
 pub(crate) mod support;
 use super::{correlation, preconditions};
 use crate::{
@@ -21,7 +21,7 @@ use axum::{
 };
 use dto::{
     PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookList, PriceBookPatch,
-    PricingDimensions, PricingPriceList, PricingSettingsDto, PricingSettingsPut,
+    PricingDimensions, PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
 };
 use std::sync::Arc;
 use support::{authz_failure, header, require_authenticated, response, transaction};
@@ -149,15 +149,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/prices")
-        .operation_id("bss_pricing.list_prices")
-        .summary("list_prices")
+    let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/entries")
+        .operation_id("bss_pricing.list_entries")
+        .summary("list_entries")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Price book id")
-        .handler(list_prices)
-        .json_response_with_schema::<PricingPriceList>(openapi, StatusCode::OK, "Response")
+        .handler(list_entries)
+        .json_response_with_schema::<PricingPriceBookEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/export")
@@ -215,51 +215,63 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/prices")
-        .operation_id("bss_pricing.create_price")
-        .summary("create_price")
+    let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/entries")
+        .operation_id("bss_pricing.create_entry")
+        .summary("create_entry")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price or book id")
-        .json_request::<dto::PricingPriceCreate>(openapi, "Request")
+        .path_param("id", "Price book id")
+        .json_request::<dto::PricingPriceBookEntryCreate>(openapi, "Request")
         .param(header("Idempotency-Key"))
-        .handler(create_price)
-        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::CREATED, "Response")
+        .handler(create_entry)
+        .json_response_with_schema::<dto::PricingPriceBookEntryDto>(
+            openapi,
+            StatusCode::CREATED,
+            "Response",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get("/bss-pricing/v1/prices/{id}")
-        .operation_id("bss_pricing.get_price")
-        .summary("get_price")
+    let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}")
+        .operation_id("bss_pricing.get_entry")
+        .summary("get_entry")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price or book id")
-        .handler(get_price)
-        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::OK, "Response")
+        .path_param("id", "Price book entry id")
+        .handler(get_entry)
+        .json_response_with_schema::<dto::PricingPriceBookEntryDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::patch("/bss-pricing/v1/prices/{id}")
-        .operation_id("bss_pricing.patch_price")
-        .summary("patch_price")
+    let router = OperationBuilder::patch("/bss-pricing/v1/price-book-entries/{id}")
+        .operation_id("bss_pricing.patch_entry")
+        .summary("patch_entry")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price or book id")
-        .json_request::<dto::PricingPricePatch>(openapi, "Request")
+        .path_param("id", "Price book entry id")
+        .json_request::<dto::PricingPriceBookEntryPatch>(openapi, "Request")
         .param(header("If-Match"))
-        .handler(patch_price)
-        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::OK, "Response")
+        .handler(patch_entry)
+        .json_response_with_schema::<dto::PricingPriceBookEntryDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::delete("/bss-pricing/v1/prices/{id}")
-        .operation_id("bss_pricing.delete_price")
-        .summary("delete_price")
+    let router = OperationBuilder::delete("/bss-pricing/v1/price-book-entries/{id}")
+        .operation_id("bss_pricing.delete_entry")
+        .summary("delete_entry")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price or book id")
-        .handler(delete_price)
+        .path_param("id", "Price book entry id")
+        .handler(delete_entry)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
         .register(router, openapi);
@@ -280,7 +292,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .standard_errors(openapi)
         .register(router, openapi);
-    approval_routes(row_routes(router, openapi), openapi)
+    approval_routes(price_routes(router, openapi), openapi)
         .layer(Extension(state))
         .layer(axum::middleware::from_fn(correlation::establish))
 }
@@ -290,15 +302,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
     reason = "one OperationBuilder chain per route keeps every door's contract in one place"
 )]
 fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
-    let router = OperationBuilder::post("/bss-pricing/v1/rows/{id}/submit")
-        .operation_id("bss_pricing.submit_row")
-        .summary("submit_row")
+    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/submit")
+        .operation_id("bss_pricing.submit_price")
+        .summary("submit_price")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price row id")
+        .path_param("id", "Price id")
         .param(header("Idempotency-Key"))
-        .handler(submit_row)
+        .handler(submit_price)
         .json_response_with_schema::<dto::PricingSubmitReceipt>(
             openapi,
             StatusCode::CREATED,
@@ -440,7 +452,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .standard_errors(openapi)
         .register(router, openapi)
 }
-async fn submit_row(
+async fn submit_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -472,7 +484,7 @@ async fn submit_row(
         key,
         digest,
     };
-    approvals::submit_row(&state.db.db(), cmd, id).await
+    approvals::submit_price(&state.db.db(), cmd, id).await
 }
 async fn list_publish_changes(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -771,52 +783,52 @@ async fn put_approval_policy(
     })
     .await
 }
-/// Draft row authoring: create, patch and delete.
-fn row_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
-    let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/rows")
-        .operation_id("bss_pricing.create_row")
-        .summary("create_row")
+/// Draft price authoring: create, patch and delete.
+fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-pricing/v1/price-book-entries/{id}/prices")
+        .operation_id("bss_pricing.create_price")
+        .summary("create_price")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price id")
-        .json_request::<dto::PricingPriceRowCreate>(openapi, "Request")
+        .path_param("id", "Price book entry id")
+        .json_request::<dto::PricingPriceCreate>(openapi, "Request")
         .param(header("Idempotency-Key"))
-        .handler(create_row)
-        .json_response_with_schema::<dto::PricingPriceRowCreated>(
+        .handler(create_price)
+        .json_response_with_schema::<dto::PricingPriceCreated>(
             openapi,
             StatusCode::CREATED,
             "Response",
         )
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::patch("/bss-pricing/v1/rows/{id}")
-        .operation_id("bss_pricing.patch_row")
-        .summary("patch_row")
+    let router = OperationBuilder::patch("/bss-pricing/v1/prices/{id}")
+        .operation_id("bss_pricing.patch_price")
+        .summary("patch_price")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price row id")
-        .json_request::<dto::PricingPriceRowPatch>(openapi, "Request")
+        .path_param("id", "Price id")
+        .json_request::<dto::PricingPricePatch>(openapi, "Request")
         .param(header("If-Match"))
-        .handler(patch_row)
-        .json_response_with_schema::<dto::PricingPriceRowDto>(openapi, StatusCode::OK, "Response")
+        .handler(patch_price)
+        .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
-    OperationBuilder::delete("/bss-pricing/v1/rows/{id}")
-        .operation_id("bss_pricing.delete_row")
-        .summary("delete_row")
+    OperationBuilder::delete("/bss-pricing/v1/prices/{id}")
+        .operation_id("bss_pricing.delete_price")
+        .summary("delete_price")
         .tag("Pricing")
         .authenticated()
         .no_license_required()
-        .path_param("id", "Price row id")
+        .path_param("id", "Price id")
         .param(header("If-Match"))
-        .handler(delete_row)
+        .handler(delete_price)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
         .register(router, openapi)
 }
-async fn create_row(
+async fn create_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -840,8 +852,8 @@ async fn create_row(
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
-    let input: dto::PricingPriceRowCreate = preconditions::parse_body(&body)?;
-    rows::create(
+    let input: dto::PricingPriceCreate = preconditions::parse_body(&body)?;
+    prices::create(
         &state.db.db(),
         scope,
         ctx,
@@ -853,7 +865,7 @@ async fn create_row(
     )
     .await
 }
-async fn patch_row(
+async fn patch_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -875,16 +887,16 @@ async fn patch_row(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
-    let input: dto::PricingPriceRowPatch = preconditions::parse_body(&body)?;
+    let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
         Box::pin(
-            async move { rows::patch(tx, &scope, &ctx, correlation, id, version, input).await },
+            async move { prices::patch(tx, &scope, &ctx, correlation, id, version, input).await },
         )
     })
     .await
 }
-async fn delete_row(
+async fn delete_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -907,7 +919,7 @@ async fn delete_row(
     let version = preconditions::if_match(&headers)?.get();
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { rows::delete(tx, &scope, &ctx, correlation, id, version).await })
+        Box::pin(async move { prices::delete(tx, &scope, &ctx, correlation, id, version).await })
     })
     .await
 }
@@ -1041,7 +1053,7 @@ async fn patch_book(
     })
     .await
 }
-async fn list_prices(
+async fn list_entries(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -1051,7 +1063,7 @@ async fn list_prices(
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRICE,
+        &resource_types::PRICE_BOOK_ENTRY,
         actions::READ,
         None,
         None,
@@ -1062,8 +1074,8 @@ async fn list_prices(
         let (scope, ctx) = (scope.clone(), ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
-            let body = PricingPriceList {
-                items: books::prices(tx, &scope, tenant, id)
+            let body = PricingPriceBookEntryList {
+                items: books::entries(tx, &scope, tenant, id)
                     .await?
                     .into_iter()
                     .map(Into::into)
@@ -1220,7 +1232,7 @@ async fn put_dimensions(
     .await
 }
 
-async fn create_price(
+async fn create_entry(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -1233,7 +1245,7 @@ async fn create_price(
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRICE,
+        &resource_types::PRICE_BOOK_ENTRY,
         actions::AUTHOR,
         Some(OwnerTenant(ctx.subject_tenant_id())),
         None,
@@ -1245,10 +1257,10 @@ async fn create_price(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input = preconditions::parse_body(&body)?;
-    prices::create(state, scope, ctx, id, correlation, key, digest, input).await
+    price_book_entries::create(state, scope, ctx, id, correlation, key, digest, input).await
 }
 
-async fn get_price(
+async fn get_entry(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -1258,7 +1270,7 @@ async fn get_price(
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRICE,
+        &resource_types::PRICE_BOOK_ENTRY,
         actions::READ,
         None,
         Some(ResourceRef(id)),
@@ -1268,13 +1280,13 @@ async fn get_price(
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
         Box::pin(async move {
-            let m = prices::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
+            let m = price_book_entries::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
             let version = preconditions::RowVersion::from_stored(m.version)
                 .map_err(CanonicalError::from)?
                 .get();
             Ok(response(
                 StatusCode::OK,
-                &dto::PricingPriceDto::from(m),
+                &dto::PricingPriceBookEntryDto::from(m),
                 Some(version),
             )?)
         })
@@ -1282,7 +1294,7 @@ async fn get_price(
     .await
 }
 
-async fn patch_price(
+async fn patch_entry(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -1295,7 +1307,7 @@ async fn patch_price(
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRICE,
+        &resource_types::PRICE_BOOK_ENTRY,
         actions::AUTHOR,
         Some(OwnerTenant(ctx.subject_tenant_id())),
         Some(ResourceRef(id)),
@@ -1304,17 +1316,17 @@ async fn patch_price(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
-    let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
+    let input: dto::PricingPriceBookEntryPatch = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
-        Box::pin(
-            async move { prices::patch(tx, &scope, &ctx, correlation, id, version, input).await },
-        )
+        Box::pin(async move {
+            price_book_entries::patch(tx, &scope, &ctx, correlation, id, version, input).await
+        })
     })
     .await
 }
 
-async fn delete_price(
+async fn delete_entry(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
@@ -1325,7 +1337,7 @@ async fn delete_price(
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRICE,
+        &resource_types::PRICE_BOOK_ENTRY,
         actions::AUTHOR,
         Some(OwnerTenant(ctx.subject_tenant_id())),
         Some(ResourceRef(id)),
@@ -1333,7 +1345,7 @@ async fn delete_price(
     .await
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
-    prices::delete(state, scope, ctx, correlation, id).await
+    price_book_entries::delete(state, scope, ctx, correlation, id).await
 }
 
 async fn list_reference_ops(

@@ -51,16 +51,16 @@ async fn m20260926_000004_price_book() {
     migration(4, &["pricing_price_book"]).await;
 }
 #[tokio::test]
-async fn m20260926_000005_price() {
-    migration(5, &["pricing_price"]).await;
+async fn m20260926_000005_price_book_entry() {
+    migration(5, &["pricing_price_book_entry"]).await;
 }
 #[tokio::test]
 async fn m20260926_000006_reference_op() {
     migration(6, &["pricing_reference_op"]).await;
 }
 #[tokio::test]
-async fn m20260926_000007_price_row() {
-    migration(7, &["pricing_price_row"]).await;
+async fn m20260926_000007_price() {
+    migration(7, &["pricing_price"]).await;
 }
 #[tokio::test]
 async fn m20260926_000008_audit() {

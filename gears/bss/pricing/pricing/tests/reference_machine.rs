@@ -1,7 +1,7 @@
 //! Exhaustive state/event contract for durable reference work.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use bss_pricing::domain::{
-    price::OpState,
+    price_book_entry::OpState,
     reference_op::{Effect, Event, Op, next},
 };
 use uuid::Uuid;

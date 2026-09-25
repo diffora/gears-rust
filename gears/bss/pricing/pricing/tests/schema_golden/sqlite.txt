@@ -31,15 +31,15 @@ INDEX idx_pricing_idempotency_expires
 INDEX ix_pricing_approval_unit_queue
   ON pricing_approval_unit
   DDL CREATE INDEX ix_pricing_approval_unit_queue ON pricing_approval_unit (tenant_id, state, kind, submitted_at)
-INDEX pricing_price_key
+INDEX pricing_price_approved_start
   ON pricing_price
-  DDL CREATE UNIQUE INDEX pricing_price_key ON pricing_price (book_id, sku_id, charge_kind, coalesce(period, ''))
-INDEX pricing_price_row_approved_start
-  ON pricing_price_row
-  DDL CREATE UNIQUE INDEX pricing_price_row_approved_start ON pricing_price_row (price_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
-INDEX pricing_price_row_chain
-  ON pricing_price_row
-  DDL CREATE INDEX pricing_price_row_chain ON pricing_price_row (price_id, dim_value, effective_from) WHERE state = 'approved'
+  DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
+INDEX pricing_price_book_entry_key
+  ON pricing_price_book_entry
+  DDL CREATE UNIQUE INDEX pricing_price_book_entry_key ON pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''))
+INDEX pricing_price_chain
+  ON pricing_price
+  DDL CREATE INDEX pricing_price_chain ON pricing_price (price_book_entry_id, dim_value, effective_from) WHERE state = 'approved'
 INDEX pricing_reference_op_due
   ON pricing_reference_op
   DDL CREATE INDEX pricing_reference_op_due ON pricing_reference_op (state, next_attempt_at) WHERE state <> 'done'
@@ -188,6 +188,48 @@ TABLE pricing_idempotency
   CONSTRAINT chk_pricing_idempotency_response_group CHECK ((state = 'claimed' AND response_status IS NULL AND response_body IS NULL) OR (state = 'answered' AND response_status IS NOT NULL AND response_body IS NOT NULL))
   CONSTRAINT chk_pricing_idempotency_state CHECK (state IN ('claimed', 'answered'))
 TABLE pricing_price
+  COLUMN approved_at TEXT NULL DEFAULT - PK 0
+  COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN closed_explicitly INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN dim_value TEXT NULL DEFAULT - PK 0
+  COLUMN effective_from TEXT NOT NULL DEFAULT - PK 0
+  COLUMN effective_to TEXT NULL DEFAULT - PK 0
+  COLUMN eligibility TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN keep_for_bound INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN min_fee TEXT NULL DEFAULT - PK 0
+  COLUMN model TEXT NOT NULL DEFAULT - PK 0
+  COLUMN note TEXT NULL DEFAULT - PK 0
+  COLUMN paired_price_id TEXT NULL DEFAULT - PK 0
+  COLUMN pending_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN price_book_entry_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN price_json TEXT NOT NULL DEFAULT - PK 0
+  COLUMN return_of_price_id TEXT NULL DEFAULT - PK 0
+  COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN temporary_until TEXT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+  COLUMN version_no INTEGER NOT NULL DEFAULT - PK 0
+  FK approved_by_unit_id -> pricing_approval_unit.id
+  FK paired_price_id -> pricing_price.id
+  FK pending_unit_id -> pricing_approval_unit.id
+  FK price_book_entry_id -> pricing_price_book_entry.id
+  FK return_of_price_id -> pricing_price.id
+TABLE pricing_price_book
+  COLUMN code TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN currency char(3) NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN name TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN valid_from TEXT NULL DEFAULT - PK 0
+  COLUMN valid_until TEXT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TABLE pricing_price_book_entry
   COLUMN book_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN charge_kind TEXT NOT NULL DEFAULT - PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
@@ -204,48 +246,6 @@ TABLE pricing_price
   FK book_id -> pricing_price_book.id
   FK dimension_key -> pricing_dimension_key.key
   FK tenant_id -> pricing_dimension_key.tenant_id
-TABLE pricing_price_book
-  COLUMN code TEXT NOT NULL DEFAULT - PK 0
-  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
-  COLUMN currency char(3) NOT NULL DEFAULT - PK 0
-  COLUMN id TEXT NULL DEFAULT - PK 1
-  COLUMN name TEXT NOT NULL DEFAULT - PK 0
-  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
-  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
-  COLUMN valid_from TEXT NULL DEFAULT - PK 0
-  COLUMN valid_until TEXT NULL DEFAULT - PK 0
-  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
-TABLE pricing_price_row
-  COLUMN approved_at TEXT NULL DEFAULT - PK 0
-  COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0
-  COLUMN closed_explicitly INTEGER NOT NULL DEFAULT 0 PK 0
-  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
-  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
-  COLUMN dim_value TEXT NULL DEFAULT - PK 0
-  COLUMN effective_from TEXT NOT NULL DEFAULT - PK 0
-  COLUMN effective_to TEXT NULL DEFAULT - PK 0
-  COLUMN eligibility TEXT NOT NULL DEFAULT - PK 0
-  COLUMN id TEXT NULL DEFAULT - PK 1
-  COLUMN keep_for_bound INTEGER NOT NULL DEFAULT 0 PK 0
-  COLUMN min_fee TEXT NULL DEFAULT - PK 0
-  COLUMN model TEXT NOT NULL DEFAULT - PK 0
-  COLUMN note TEXT NULL DEFAULT - PK 0
-  COLUMN paired_row_id TEXT NULL DEFAULT - PK 0
-  COLUMN pending_unit_id TEXT NULL DEFAULT - PK 0
-  COLUMN price_id TEXT NOT NULL DEFAULT - PK 0
-  COLUMN price_json TEXT NOT NULL DEFAULT - PK 0
-  COLUMN return_of_row_id TEXT NULL DEFAULT - PK 0
-  COLUMN state TEXT NOT NULL DEFAULT - PK 0
-  COLUMN temporary_until TEXT NULL DEFAULT - PK 0
-  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
-  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
-  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
-  COLUMN version_no INTEGER NOT NULL DEFAULT - PK 0
-  FK approved_by_unit_id -> pricing_approval_unit.id
-  FK paired_row_id -> pricing_price_row.id
-  FK pending_unit_id -> pricing_approval_unit.id
-  FK price_id -> pricing_price.id
-  FK return_of_row_id -> pricing_price_row.id
 TABLE pricing_reference_op
   COLUMN attempts INTEGER NOT NULL DEFAULT 0 PK 0
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
@@ -256,7 +256,7 @@ TABLE pricing_reference_op
   COLUMN next_attempt_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN op_id TEXT NULL DEFAULT - PK 1
   COLUMN outcome TEXT NULL DEFAULT - PK 0
-  COLUMN price_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN price_book_entry_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN reservation_id TEXT NULL DEFAULT - PK 0
   COLUMN sku_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN state TEXT NOT NULL DEFAULT - PK 0

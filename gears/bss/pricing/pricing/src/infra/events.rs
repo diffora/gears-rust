@@ -24,7 +24,7 @@ pub const QUEUE: &str = "bss_pricing_events";
 pub const TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.pricing.catalog.v1";
 /// The producer source of every pricing event.
 pub const SOURCE: &str = "bss-pricing";
-/// `PriceRowsPublished` is about a book.
+/// `PricesPublished` is about a book.
 pub const PRICE_BOOK_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1";
 /// `ApprovalUnitDecided` is about a unit.
@@ -58,12 +58,12 @@ impl toolkit_db::outbox::LeasedMessageHandler for PendingProducer {
     }
 }
 
-/// One row a `price_rows` unit approved, with the window the chain was approved with.
+/// One price a `prices` unit approved, with the window the chain was approved with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PublishedRow {
-    pub row_id: Uuid,
+pub struct PublishedPrice {
     pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
     /// The chain: the dimension value, `None` for the default chain. (A value may itself be
     /// spelled `default`, so the chain is not a string.)
     pub dim_value: Option<String>,
@@ -75,21 +75,20 @@ pub struct PublishedRow {
     pub eligibility: String,
 }
 
-/// A `price_rows` unit was applied: its rows are approved in the book.
+/// A `prices` unit was applied: its prices are approved in the book.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PriceRowsPublished {
+pub struct PricesPublished {
     pub tenant_id: Uuid,
     pub book_id: Uuid,
     pub unit_id: Uuid,
-    /// In ascending row id.
-    pub rows: Vec<PublishedRow>,
+    /// In ascending price id.
+    pub prices: Vec<PublishedPrice>,
     /// The principal whose act applied the unit.
     pub actor_ref: Uuid,
 }
-impl TypedEvent for PriceRowsPublished {
-    const TYPE_ID: &'static str =
-        "gts.cf.core.events.event.v1~cf.bss.pricing.price_rows_published.v1~";
+impl TypedEvent for PricesPublished {
+    const TYPE_ID: &'static str = "gts.cf.core.events.event.v1~cf.bss.pricing.prices_published.v1~";
     const SUBJECT_TYPE: &'static str = PRICE_BOOK_SUBJECT_TYPE;
     const SOURCE: &'static str = SOURCE;
     fn subject(&self) -> Cow<'_, str> {

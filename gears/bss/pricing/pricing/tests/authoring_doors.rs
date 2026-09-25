@@ -343,24 +343,24 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
     let id = b["id"].as_str().unwrap();
     for (method, path) in [
         ("POST", "/price-books".into()),
-        ("POST", format!("/price-books/{id}/prices")),
-        ("GET", format!("/prices/{id}")),
-        ("PATCH", format!("/prices/{id}")),
-        ("DELETE", format!("/prices/{id}")),
+        ("POST", format!("/price-books/{id}/entries")),
+        ("GET", format!("/price-book-entries/{id}")),
+        ("PATCH", format!("/price-book-entries/{id}")),
+        ("DELETE", format!("/price-book-entries/{id}")),
         ("GET", "/price-books".into()),
         ("GET", "/reference-ops".into()),
         ("GET", format!("/price-books/{id}")),
         ("PATCH", format!("/price-books/{id}")),
-        ("GET", format!("/price-books/{id}/prices")),
+        ("GET", format!("/price-books/{id}/entries")),
         ("GET", format!("/price-books/{id}/export")),
         ("GET", "/settings".into()),
         ("PUT", "/settings".into()),
         ("GET", "/dimension-keys".into()),
         ("PUT", "/dimension-keys".into()),
-        ("POST", format!("/prices/{id}/rows")),
-        ("PATCH", format!("/rows/{id}")),
-        ("DELETE", format!("/rows/{id}")),
-        ("POST", format!("/rows/{id}/submit")),
+        ("POST", format!("/price-book-entries/{id}/prices")),
+        ("PATCH", format!("/prices/{id}")),
+        ("DELETE", format!("/prices/{id}")),
+        ("POST", format!("/prices/{id}/submit")),
         ("GET", format!("/price-books/{id}/publish-changes")),
         ("POST", format!("/price-books/{id}/publish-changes")),
         ("GET", "/approval-units".into()),
@@ -382,8 +382,8 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
 }
 
 use bss_pricing::infra::storage::{
-    entity::{price, price_book, price_row},
-    repo::{book_repo, price_repo, row_repo},
+    entity::{price, price_book, price_book_entry},
+    repo::{book_repo, price_book_entry_repo, price_repo},
 };
 use storage_support::at;
 fn book(tenant: Uuid) -> price_book::Model {
@@ -400,8 +400,8 @@ fn book(tenant: Uuid) -> price_book::Model {
         updated_at: at(9),
     }
 }
-fn price(b: &price_book::Model) -> price::Model {
-    price::Model {
+fn entry(b: &price_book::Model) -> price_book_entry::Model {
+    price_book_entry::Model {
         id: Uuid::new_v4(),
         tenant_id: b.tenant_id,
         book_id: b.id,
@@ -417,11 +417,11 @@ fn price(b: &price_book::Model) -> price::Model {
         updated_at: at(9),
     }
 }
-fn row(p: &price::Model) -> price_row::Model {
-    price_row::Model {
+fn price(p: &price_book_entry::Model) -> price::Model {
+    price::Model {
         id: Uuid::new_v4(),
         tenant_id: p.tenant_id,
-        price_id: p.id,
+        price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
         model: "per_unit".into(),
@@ -433,8 +433,8 @@ fn row(p: &price::Model) -> price_row::Model {
         keep_for_bound: false,
         closed_explicitly: false,
         temporary_until: None,
-        paired_row_id: None,
-        return_of_row_id: None,
+        paired_price_id: None,
+        return_of_price_id: None,
         state: "draft".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,
@@ -470,34 +470,36 @@ async fn export_contains_all_states_in_order_and_used_dimension_cannot_be_remove
         .await
         .unwrap();
     for sku in [2, 1] {
-        let mut p = price(&b);
+        let mut p = entry(&b);
         p.sku_id = Uuid::from_u128(sku);
         p.dimension_key = Some("region".into());
-        let p = price_repo::insert(&conn, &scope, p).await.unwrap();
+        let p = price_book_entry_repo::insert(&conn, &scope, p)
+            .await
+            .unwrap();
         for (n, value, state) in [
             (3, "us", "approved"),
             (1, "eu", "draft"),
             (2, "ap", "rejected"),
             (4, "eu", "pending"),
         ] {
-            let mut r = row(&p);
+            let mut r = price(&p);
             r.version_no = n;
             r.dim_value = Some(value.into());
             r.state = state.into();
-            row_repo::insert(&conn, &scope, r).await.unwrap();
+            price_repo::insert(&conn, &scope, r).await.unwrap();
         }
     }
     let path = format!("/price-books/{}/export", b.id);
     let first = f.call("GET", &path, json!({}), None, None).await;
     assert_eq!(first.0, 200, "{first:?}");
     assert_eq!(first, f.call("GET", &path, json!({}), None, None).await);
-    assert_eq!(first.1["prices"].as_array().unwrap().len(), 2);
+    assert_eq!(first.1["entries"].as_array().unwrap().len(), 2);
     assert_eq!(
-        first.1["prices"][0]["price"]["sku_id"],
+        first.1["entries"][0]["entry"]["sku_id"],
         Uuid::from_u128(1).to_string()
     );
     assert_eq!(
-        first.1["prices"][0]["rows"]
+        first.1["entries"][0]["prices"]
             .as_array()
             .unwrap()
             .iter()
@@ -508,7 +510,7 @@ async fn export_contains_all_states_in_order_and_used_dimension_cannot_be_remove
     assert_eq!(
         f.call(
             "GET",
-            &format!("/price-books/{}/prices", b.id),
+            &format!("/price-books/{}/entries", b.id),
             json!({}),
             None,
             None
@@ -550,13 +552,28 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("POST", "/price-books".into(), "price_book", "author"),
         (
             "POST",
-            format!("/price-books/{id}/prices"),
-            "price",
+            format!("/price-books/{id}/entries"),
+            "price_book_entry",
             "author",
         ),
-        ("GET", format!("/prices/{id}"), "price", "read"),
-        ("PATCH", format!("/prices/{id}"), "price", "author"),
-        ("DELETE", format!("/prices/{id}"), "price", "author"),
+        (
+            "GET",
+            format!("/price-book-entries/{id}"),
+            "price_book_entry",
+            "read",
+        ),
+        (
+            "PATCH",
+            format!("/price-book-entries/{id}"),
+            "price_book_entry",
+            "author",
+        ),
+        (
+            "DELETE",
+            format!("/price-book-entries/{id}"),
+            "price_book_entry",
+            "author",
+        ),
         ("GET", "/price-books".into(), "price_book", "read"),
         ("GET", "/reference-ops".into(), "config", "settings"),
         ("GET", format!("/price-books/{id}"), "price_book", "read"),
@@ -566,7 +583,12 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "price_book",
             "author",
         ),
-        ("GET", format!("/price-books/{id}/prices"), "price", "read"),
+        (
+            "GET",
+            format!("/price-books/{id}/entries"),
+            "price_book_entry",
+            "read",
+        ),
         (
             "GET",
             format!("/price-books/{id}/export"),
@@ -577,10 +599,15 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("PUT", "/settings".into(), "config", "settings"),
         ("GET", "/dimension-keys".into(), "config", "read"),
         ("PUT", "/dimension-keys".into(), "config", "settings"),
-        ("POST", format!("/prices/{id}/rows"), "price", "author"),
-        ("PATCH", format!("/rows/{id}"), "price", "author"),
-        ("DELETE", format!("/rows/{id}"), "price", "author"),
-        ("POST", format!("/rows/{id}/submit"), "price", "submit"),
+        (
+            "POST",
+            format!("/price-book-entries/{id}/prices"),
+            "price",
+            "author",
+        ),
+        ("PATCH", format!("/prices/{id}"), "price", "author"),
+        ("DELETE", format!("/prices/{id}"), "price", "author"),
+        ("POST", format!("/prices/{id}/submit"), "price", "submit"),
         (
             "GET",
             format!("/price-books/{id}/publish-changes"),

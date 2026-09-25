@@ -4,17 +4,17 @@
 use crate::{
     api::rest::authoring::{
         AuthoringState,
-        dto::{PricingPriceCreate, PricingPriceDto},
+        dto::{PricingPriceBookEntryCreate, PricingPriceBookEntryDto},
         support::{self, DoorError},
     },
     domain::{
-        price::{OpKind, OpState, ReferenceState, charge_kind_for},
+        price_book_entry::{OpKind, OpState, ReferenceState, charge_kind_for},
         reference_op::{self, Effect, Event, Op},
     },
     infra::storage::{
         RepoError,
-        entity::{price, reference_op as entity},
-        repo::{idempotency_repo as idem, price_repo, reference_op_repo as ops},
+        entity::{price_book_entry, reference_op as entity},
+        repo::{idempotency_repo as idem, price_book_entry_repo, reference_op_repo as ops},
     },
 };
 use axum::{
@@ -36,12 +36,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Work {
     pub book_id: Uuid,
-    pub input: PricingPriceCreate,
+    pub input: PricingPriceBookEntryCreate,
     pub correlation: Uuid,
     pub refusal: Option<Receipt>,
     pub receipt: Option<Receipt>,
     /// [`CANCELLED`] once a create was given up before its reservation outcome was known:
-    /// no price was written, the Idempotency-Key claim was released in that same
+    /// no entry was written, the Idempotency-Key claim was released in that same
     /// transaction, and the cancellation releases whatever reservation exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
@@ -98,11 +98,12 @@ impl Receipt {
             etag: None,
         })
     }
-    pub fn price(model: price::Model) -> Result<Self, CanonicalError> {
+    pub fn entry(model: price_book_entry::Model) -> Result<Self, CanonicalError> {
         let etag = Some(format!("\"{}\"", model.version));
         Ok(Self {
             status: 201,
-            body: serde_json::to_string(&PricingPriceDto::from(model)).map_err(|_| corrupt())?,
+            body: serde_json::to_string(&PricingPriceBookEntryDto::from(model))
+                .map_err(|_| corrupt())?,
             etag,
         })
     }
@@ -122,7 +123,7 @@ impl Work {
     }
     #[must_use]
     pub fn endpoint(&self) -> String {
-        format!("/bss-pricing/v1/price-books/{}/prices", self.book_id)
+        format!("/bss-pricing/v1/price-books/{}/entries", self.book_id)
     }
     /// Whether this create was cancelled before its reservation outcome was known.
     #[must_use]
@@ -130,10 +131,10 @@ impl Work {
         self.outcome.as_deref() == Some(CANCELLED)
     }
 }
-/// Start a durable record inside Tx A or the price-delete transaction.
+/// Start a durable record inside Tx A or the entry-delete transaction.
 pub fn new_op(
     ctx: &SecurityContext,
-    price_id: Uuid,
+    price_book_entry_id: Uuid,
     work: &Work,
     kind: OpKind,
     reservation_id: Option<Uuid>,
@@ -144,7 +145,7 @@ pub fn new_op(
         op_id: Uuid::now_v7(),
         tenant_id: ctx.subject_tenant_id(),
         kind: kind.as_str().into(),
-        price_id,
+        price_book_entry_id,
         sku_id: work.input.sku_id,
         reservation_id,
         idempotency_key: key,
@@ -258,8 +259,8 @@ async fn advance(
     .await?;
     Ok((next.state, effects))
 }
-/// A re-reservation that ended without a live receipt leaves its price lost: the
-/// state, the durable `PriceReferenceLost` event and the audit record commit together.
+/// A re-reservation that ended without a live receipt leaves its entry lost: the
+/// state, the durable `PriceBookEntryReferenceLost` event and the audit record commit together.
 async fn mark_rereserve_lost(
     tx: &(impl DBRunner + Sync),
     outbox: &super::events::EventSink,
@@ -269,34 +270,36 @@ async fn mark_rereserve_lost(
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     let scope = AccessScope::for_tenant(op.tenant_id);
-    let Some(mut price) = price_repo::find(tx, &scope, op.tenant_id, op.price_id).await? else {
+    let Some(mut entry) =
+        price_book_entry_repo::find(tx, &scope, op.tenant_id, op.price_book_entry_id).await?
+    else {
         return Ok(());
     };
-    if price.reference_state == ReferenceState::Lost.as_str() {
-        // A lost price whose re-reservation is refused again stays lost, announced once.
+    if entry.reference_state == ReferenceState::Lost.as_str() {
+        // A lost entry whose re-reservation is refused again stays lost, announced once.
         return Ok(());
     }
-    price_repo::set_reference(
+    price_book_entry_repo::set_reference(
         tx,
         &scope,
         op.tenant_id,
-        op.price_id,
-        price.version,
+        op.price_book_entry_id,
+        entry.version,
         ReferenceState::Lost,
-        price.reservation_id,
+        entry.reservation_id,
         now,
     )
     .await?;
-    super::reference_events::lost(outbox, tx, &price, ctx.subject_id(), now).await?;
-    price.reference_state = "lost".into();
-    price.version += 1;
+    super::reference_events::lost(outbox, tx, &entry, ctx.subject_id(), now).await?;
+    entry.reference_state = "lost".into();
+    entry.version += 1;
     support::audit(
         tx,
         ctx,
         work.correlation,
-        "PriceReferenceLost",
-        price.id,
-        price.version,
+        "PriceBookEntryReferenceLost",
+        entry.id,
+        entry.version,
     )
     .await?;
     Ok(())
@@ -339,7 +342,7 @@ async fn answer_key(
 }
 /// Give up a create before its write (spec §13: a 503 writes nothing). In
 /// one transaction the op moves `reserving → cancelling`, is recorded [`CANCELLED`], and its
-/// Idempotency-Key claim is released, so a same-key retry runs afresh with a new price id.
+/// Idempotency-Key claim is released, so a same-key retry runs afresh with a new entry id.
 /// The cancellation then releases whatever reservation the unanswered call made.
 async fn abandon(
     state: &AuthoringState,
@@ -452,7 +455,7 @@ async fn step(
 ) -> Result<(), CanonicalError> {
     warn_past_threshold(op);
     let registry = super::reference_registry::resolve(&state.hub);
-    let (event, price, refusal) = observe(registry, ctx, op).await?;
+    let (event, entry, refusal) = observe(registry, ctx, op).await?;
     if caller == Caller::Door
         && event == Event::RegistryUnavailable
         && reserving_create(op, current)
@@ -467,7 +470,7 @@ async fn step(
     if let Some(refusal) = refusal {
         observed.refusal = Some(refusal);
     }
-    match commit_observation(state, ctx, op, observed, event, price, clock.clone()).await {
+    match commit_observation(state, ctx, op, observed, event, entry, clock.clone()).await {
         Ok(()) if retry => Err(unavailable()),
         Err(error) if refuses_the_write(&error) && current == OpState::Reserving => {
             cancel(state, op, work, error, clock).await
@@ -482,7 +485,7 @@ fn warn_past_threshold(op: &entity::Model) {
     }
 }
 /// The door got no definite answer before the write (the reserve, or the SKU re-read after a
-/// successful reserve): cancel the create and answer 503, so a 503 never becomes a price. A
+/// successful reserve): cancel the create and answer 503, so a 503 never becomes an entry. A
 /// lost race means another driver moved the op first; the loop re-reads it.
 async fn give_up(
     state: &AuthoringState,
@@ -501,15 +504,15 @@ fn refuses_the_write(error: &CanonicalError) -> bool {
     matches!(
         error_code(error).as_deref(),
         Some(
-            "PRICE_KEY_TAKEN"
+            "ENTRY_KEY_TAKEN"
                 | "DIM_NOT_DECLARED"
                 | "BOOK_NOT_FOUND"
                 | "CHARGE_KIND_SKU_TYPE"
-                | "PRICE_NOT_FOUND"
+                | "ENTRY_NOT_FOUND"
         )
     )
 }
-/// Commit one observation in one transaction: the price write it carries, the completion
+/// Commit one observation in one transaction: the entry write it carries, the completion
 /// work of a finishing op and the op's own compare-and-swap transition, or none of them.
 async fn commit_observation(
     state: &AuthoringState,
@@ -517,22 +520,22 @@ async fn commit_observation(
     op: &entity::Model,
     work: Work,
     event: Event,
-    price: Option<price::Model>,
+    entry: Option<price_book_entry::Model>,
     clock: Arc<dyn Clock>,
 ) -> Result<(), CanonicalError> {
     let (op, ctx, outbox) = (op.clone(), ctx.clone(), state.outbox.clone());
     support::transaction(&state.db.db(), move |tx| {
-        let (op, work, ctx, clock, event, price, outbox) = (
+        let (op, work, ctx, clock, event, entry, outbox) = (
             op.clone(),
             work.clone(),
             ctx.clone(),
             clock.clone(),
             event.clone(),
-            price.clone(),
+            entry.clone(),
             outbox.clone(),
         );
         Box::pin(
-            async move { commit(tx, &outbox, &ctx, &op, work, event, price, clock.as_ref()).await },
+            async move { commit(tx, &outbox, &ctx, &op, work, event, entry, clock.as_ref()).await },
         )
     })
     .await
@@ -548,7 +551,7 @@ async fn commit(
     op: &entity::Model,
     mut work: Work,
     event: Event,
-    price: Option<price::Model>,
+    entry: Option<price_book_entry::Model>,
     clock: &dyn Clock,
 ) -> Result<(), DoorError> {
     let scope = AccessScope::for_tenant(op.tenant_id);
@@ -572,8 +575,8 @@ async fn commit(
         event.clone(),
     )
     .map_err(|_| corrupt())?;
-    if let Some(price) = price {
-        write_price(tx, &scope, op, price, now).await?;
+    if let Some(entry) = entry {
+        write_entry(tx, &scope, op, entry, now).await?;
     }
     if planned.state == OpState::Done {
         if op.state == OpState::Written.as_str() {
@@ -586,41 +589,41 @@ async fn commit(
     advance(tx, op, &work, event, clock).await?;
     Ok(())
 }
-/// Tx B: a create inserts its price; a rereserve re-points its price at the new receipt.
-async fn write_price(
+/// Tx B: a create inserts its entry; a rereserve re-points its entry at the new receipt.
+async fn write_entry(
     tx: &(impl DBRunner + Sync),
     scope: &AccessScope,
     op: &entity::Model,
-    price: price::Model,
+    entry: price_book_entry::Model,
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     if op.kind != OpKind::Rereserve.as_str() {
-        price_repo::insert(tx, scope, price).await?;
+        price_book_entry_repo::insert(tx, scope, entry).await?;
         return Ok(());
     }
-    // A lost price may be deleted while its re-reservation is in flight: cancel, which
+    // A lost entry may be deleted while its re-reservation is in flight: cancel, which
     // releases the new reservation.
-    let current = price_repo::find(tx, scope, op.tenant_id, op.price_id)
+    let current = price_book_entry_repo::find(tx, scope, op.tenant_id, op.price_book_entry_id)
         .await?
-        .ok_or_else(|| support::conflict("PRICE_NOT_FOUND"))?;
-    if current.charge_kind != price.charge_kind {
+        .ok_or_else(|| support::conflict("ENTRY_NOT_FOUND"))?;
+    if current.charge_kind != entry.charge_kind {
         return Err(support::conflict("CHARGE_KIND_SKU_TYPE").into());
     }
-    price_repo::set_reference(
+    price_book_entry_repo::set_reference(
         tx,
         scope,
         op.tenant_id,
-        op.price_id,
+        op.price_book_entry_id,
         current.version,
         ReferenceState::ConfirmationPending,
-        price.reservation_id,
+        entry.reservation_id,
         now,
     )
     .await?;
     Ok(())
 }
-/// Tx C. A confirmed receipt confirms the price. A receipt released before its confirm keeps
-/// the price `confirmation_pending` and starts a `rereserve_price` op in this transaction;
+/// Tx C. A confirmed receipt confirms the entry. A receipt released before its confirm keeps
+/// the entry `confirmation_pending` and starts a `rereserve_entry` op in this transaction;
 /// that op alone decides between confirmed and lost (D-401), so a create is never answered
 /// `lost` for a reservation that can still be replaced.
 async fn finish_written(
@@ -632,68 +635,68 @@ async fn finish_written(
     now: OffsetDateTime,
 ) -> Result<Receipt, DoorError> {
     let scope = AccessScope::for_tenant(op.tenant_id);
-    let mut price = price_repo::find(tx, &scope, op.tenant_id, op.price_id)
+    let mut entry = price_book_entry_repo::find(tx, &scope, op.tenant_id, op.price_book_entry_id)
         .await?
         .ok_or_else(corrupt)?;
     if effects.contains(&Effect::Rereserve) {
         // Due at once: no door drives this op, so no in-flight grace applies.
-        ops::insert(tx, &scope, rereserve_op(ctx, &price, now, now)?).await?;
-        return Ok(Receipt::price(price)?);
+        ops::insert(tx, &scope, rereserve_op(ctx, &entry, now, now)?).await?;
+        return Ok(Receipt::entry(entry)?);
     }
-    price_repo::set_reference(
+    price_book_entry_repo::set_reference(
         tx,
         &scope,
         op.tenant_id,
-        op.price_id,
-        price.version,
+        op.price_book_entry_id,
+        entry.version,
         ReferenceState::Confirmed,
-        price.reservation_id,
+        entry.reservation_id,
         now,
     )
     .await?;
-    price.reference_state = ReferenceState::Confirmed.as_str().into();
-    price.version += 1;
-    price.updated_at = now;
+    entry.reference_state = ReferenceState::Confirmed.as_str().into();
+    entry.version += 1;
+    entry.updated_at = now;
     support::audit(
         tx,
         ctx,
         work.correlation,
-        "price.confirm",
-        price.id,
-        price.version,
+        "price_book_entry.confirm",
+        entry.id,
+        entry.version,
     )
     .await?;
-    Ok(Receipt::price(price)?)
+    Ok(Receipt::entry(entry)?)
 }
-/// A `rereserve_price` op for a live price, due at `due`.
+/// A `rereserve_entry` op for a live entry, due at `due`.
 /// # Errors
 /// Fails only if the durable work record cannot be encoded.
 pub fn rereserve_op(
     ctx: &SecurityContext,
-    price: &price::Model,
+    entry: &price_book_entry::Model,
     now: OffsetDateTime,
     due: OffsetDateTime,
 ) -> Result<entity::Model, CanonicalError> {
     let work = Work {
-        book_id: price.book_id,
-        input: PricingPriceCreate {
-            sku_id: price.sku_id,
-            period: price.period.clone(),
-            dimension_key: price.dimension_key.clone(),
-            invoice_line_override: price.invoice_line_override.clone(),
+        book_id: entry.book_id,
+        input: PricingPriceBookEntryCreate {
+            sku_id: entry.sku_id,
+            period: entry.period.clone(),
+            dimension_key: entry.dimension_key.clone(),
+            invoice_line_override: entry.invoice_line_override.clone(),
         },
         correlation: Uuid::now_v7(),
         refusal: None,
         receipt: None,
         outcome: None,
     };
-    let mut op = new_op(ctx, price.id, &work, OpKind::Rereserve, None, None, now)?;
-    op.tenant_id = price.tenant_id;
+    let mut op = new_op(ctx, entry.id, &work, OpKind::Rereserve, None, None, now)?;
+    op.tenant_id = entry.tenant_id;
     op.next_attempt_at = due;
     Ok(op)
 }
 /// Products refusals that mean the SKU admits no reservation: fenced, retiring or retired.
-/// Only these make a live price lost; every other refusal of a re-reservation is retried.
+/// Only these make a live entry lost; every other refusal of a re-reservation is retried.
 pub const LOSING_REFUSALS: [&str; 3] = ["SKU_FENCED", "SKU_RETIRING", "SKU_RETIRED"];
 fn unavailable() -> CanonicalError {
     CanonicalError::service_unavailable()
@@ -715,7 +718,7 @@ async fn cancel(
     error: CanonicalError,
     clock: Arc<dyn Clock>,
 ) -> Result<(), CanonicalError> {
-    let code = error_code(&error).unwrap_or_else(|| "PRICE_WRITE_REFUSED".into());
+    let code = error_code(&error).unwrap_or_else(|| "ENTRY_WRITE_REFUSED".into());
     // A key removed from the registry since the door checked it is still an input refusal.
     let error = if code == "DIM_NOT_DECLARED" {
         support::invalid("dimension_key", "DIM_NOT_DECLARED")
@@ -733,7 +736,7 @@ async fn cancel(
     })
     .await
 }
-type Observation = (Event, Option<price::Model>, Option<Receipt>);
+type Observation = (Event, Option<price_book_entry::Model>, Option<Receipt>);
 /// Products 409 codes a retry can clear: a lost race, not a refusal.
 const RETRYABLE_CONFLICTS: [&str; 2] = ["UNIT_CONTENDED", "CONTENDED"];
 /// A Products answer that settles the call: a client error, except rate limiting (429) and
@@ -782,7 +785,7 @@ async fn observe(
                     tenant,
                     op.sku_id,
                     ReferenceKind::PriceBookEntry,
-                    op.price_id,
+                    op.price_book_entry_id,
                 )
                 .await
             {
@@ -798,7 +801,7 @@ async fn observe(
                     if op.kind == OpKind::Rereserve.as_str()
                         && !LOSING_REFUSALS.contains(&code.as_str())
                     {
-                        // Only a SKU that admits no reservation loses a live price.
+                        // Only a SKU that admits no reservation loses a live entry.
                         return Ok(unavailable());
                     }
                     Ok((
@@ -837,7 +840,7 @@ async fn observe(
                         tenant,
                         op.sku_id,
                         ReferenceKind::PriceBookEntry,
-                        op.price_id,
+                        op.price_book_entry_id,
                     )
                     .await
                 {
@@ -896,17 +899,17 @@ async fn observe_sku(
     let work = Work::read(op)?;
     // The door checked the period before reserving; this re-read repeats it against the
     // type the reservation froze. Either way it is an input refusal: 400 (D-403).
-    if !crate::domain::price::period_valid(sku.r#type, work.input.period.as_deref()) {
+    if !crate::domain::price_book_entry::period_valid(sku.r#type, work.input.period.as_deref()) {
         return Ok((
             Event::SkuRefused {
-                code: "PRICE_PERIOD_INVALID".into(),
+                code: "ENTRY_PERIOD_INVALID".into(),
             },
             None,
-            Some(Receipt::error(support::invalid("period", "PRICE_PERIOD_INVALID")).await?),
+            Some(Receipt::error(support::invalid("period", "ENTRY_PERIOD_INVALID")).await?),
         ));
     }
-    let price = price::Model {
-        id: op.price_id,
+    let entry = price_book_entry::Model {
+        id: op.price_book_entry_id,
         tenant_id: tenant,
         book_id: work.book_id,
         sku_id: op.sku_id,
@@ -920,5 +923,5 @@ async fn observe_sku(
         created_at: op.created_at,
         updated_at: op.updated_at,
     };
-    Ok((Event::Written, Some(price), None))
+    Ok((Event::Written, Some(entry), None))
 }

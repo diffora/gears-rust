@@ -1,5 +1,5 @@
 //! The single pure transition table used by both request and recovery execution.
-use super::price::OpState;
+use super::price_book_entry::OpState;
 use uuid::Uuid;
 /// Durable protocol state; request metadata belongs to the persistence adapter.
 #[toolkit_macros::domain_model]
@@ -29,7 +29,7 @@ pub enum Event {
     ReleasedOnConfirm,
     Released,
     ReleaseFailed,
-    /// The door answered 503 before the price was written (spec §13: nothing is written),
+    /// The door answered 503 before the entry was written (spec §13: nothing is written),
     /// whether or not its reserve had already returned a receipt.
     ReservationUnknown,
 }
@@ -42,8 +42,8 @@ pub enum Effect {
     Release,
     Retry,
     Complete,
-    /// The reservation was released before its confirm: keep the price pending and
-    /// re-reserve it; only a SKU that refuses the reservation makes the price lost (D-401).
+    /// The reservation was released before its confirm: keep the entry pending and
+    /// re-reserve it; only a SKU that refuses the reservation makes the entry lost (D-401).
     Rereserve,
 }
 /// Illegal input is a typed failure, including all observations on terminal work.
@@ -69,7 +69,7 @@ pub fn next(mut op: Op, event: Event) -> Result<(Op, Vec<Effect>), IllegalTransi
             (Cancelling, Effect::Release)
         }
         (Reserving, Event::RegistryUnavailable) => (Reserving, Effect::Retry),
-        // The door gave up before the write, so no price may be written: cancel. Without a
+        // The door gave up before the write, so no entry may be written: cancel. Without a
         // receipt the cancellation finds and releases whatever reservation the lost call may
         // have made; with one it releases that receipt.
         (Reserving, Event::ReservationUnknown) => {

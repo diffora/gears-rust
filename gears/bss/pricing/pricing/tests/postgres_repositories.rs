@@ -3,15 +3,15 @@
 mod pg_support;
 use bss_pricing::infra::storage::{
     RepoError,
-    entity::{price, price_book, price_row},
-    repo::{book_repo, price_repo, row_repo},
+    entity::{price, price_book, price_book_entry},
+    repo::{book_repo, price_book_entry_repo, price_repo},
 };
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
-async fn postgres_unique_codes_and_row_decimal_roundtrip() {
+async fn postgres_unique_codes_and_price_decimal_roundtrip() {
     let pg = pg_support::Pg::applied().await;
     let provider = DBProvider::<DbError>::new(pg.db().await);
     let conn = provider.conn().unwrap();
@@ -45,7 +45,7 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
             code: "BOOK_CODE_TAKEN"
         })
     ));
-    let p = price::Model {
+    let p = price_book_entry::Model {
         id: Uuid::new_v4(),
         tenant_id: tenant,
         book_id: b.id,
@@ -60,25 +60,27 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         created_at: now,
         updated_at: now,
     };
-    price_repo::insert(&conn, &scope, p.clone()).await.unwrap();
+    price_book_entry_repo::insert(&conn, &scope, p.clone())
+        .await
+        .unwrap();
     assert!(matches!(
-        price_repo::insert(
+        price_book_entry_repo::insert(
             &conn,
             &scope,
-            price::Model {
+            price_book_entry::Model {
                 id: Uuid::new_v4(),
                 ..p.clone()
             }
         )
         .await,
         Err(RepoError::Conflict {
-            code: "PRICE_KEY_TAKEN"
+            code: "ENTRY_KEY_TAKEN"
         })
     ));
-    let r = price_row::Model {
+    let r = price::Model {
         id: Uuid::new_v4(),
         tenant_id: tenant,
-        price_id: p.id,
+        price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
         model: "per_unit".into(),
@@ -90,8 +92,8 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         keep_for_bound: false,
         closed_explicitly: false,
         temporary_until: None,
-        paired_row_id: None,
-        return_of_row_id: None,
+        paired_price_id: None,
+        return_of_price_id: None,
         state: "approved".into(),
         pending_unit_id: None,
         approved_by_unit_id: None,
@@ -102,14 +104,14 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         created_at: now,
         updated_at: now,
     };
-    let got = row_repo::insert(&conn, &scope, r.clone()).await.unwrap();
+    let got = price_repo::insert(&conn, &scope, r.clone()).await.unwrap();
     assert_eq!(got.price_json, r.price_json);
     assert_eq!(got.min_fee, r.min_fee);
     assert!(matches!(
-        row_repo::insert(
+        price_repo::insert(
             &conn,
             &scope,
-            price_row::Model {
+            price::Model {
                 id: Uuid::new_v4(),
                 version_no: 2,
                 ..r.clone()
@@ -121,10 +123,10 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         })
     ));
     assert!(matches!(
-        row_repo::insert(
+        price_repo::insert(
             &conn,
             &scope,
-            price_row::Model {
+            price::Model {
                 id: Uuid::new_v4(),
                 dim_value: Some("us".into()),
                 ..r
@@ -132,7 +134,7 @@ async fn postgres_unique_codes_and_row_decimal_roundtrip() {
         )
         .await,
         Err(RepoError::Conflict {
-            code: "ROW_VERSION_TAKEN"
+            code: "PRICE_VERSION_TAKEN"
         })
     ));
 }

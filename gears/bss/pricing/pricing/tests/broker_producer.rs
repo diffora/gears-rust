@@ -3,23 +3,23 @@
 //! interrupted dispatch is retried from the durable envelope, and a rolled-back transaction
 //! delivers nothing.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-mod price_support;
+mod entry_support;
 use bss_pricing::{
     api::rest::authoring::AuthoringState,
     infra::{
         events::{self, APPROVAL_UNIT_SUBJECT_TYPE, PRICE_BOOK_SUBJECT_TYPE, TOPIC},
-        reference_events::PriceReferenceLost,
+        reference_events::PriceBookEntryReferenceLost,
     },
 };
+use entry_support::{Script, app_for, request, test_db, user_of};
 use event_broker_sdk::{TypedEvent, api::EventBrokerApi, mock::MockBroker};
-use price_support::{Script, app_for, request, test_db, user_of};
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-const PUBLISHED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.price_rows_published.v1~";
+const PUBLISHED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.prices_published.v1~";
 const DECIDED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.approval_unit_decided.v1~";
-const PRICE_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.pricing.price.v1";
+const ENTRY_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book_entry.v1";
 
 /// Every event the broker stored on pricing's topic: its type and its data.
 async fn stored(mock: &MockBroker) -> Vec<(String, serde_json::Value)> {
@@ -35,17 +35,17 @@ async fn stored(mock: &MockBroker) -> Vec<(String, serde_json::Value)> {
     }
     all
 }
-fn lost(tenant: Uuid) -> PriceReferenceLost {
-    PriceReferenceLost {
+fn lost(tenant: Uuid) -> PriceBookEntryReferenceLost {
+    PriceBookEntryReferenceLost {
         tenant_id: tenant,
-        price_id: Uuid::new_v4(),
+        price_book_entry_id: Uuid::new_v4(),
         sku_id: Uuid::new_v4(),
         reservation_id: Uuid::new_v4(),
         actor_ref: Uuid::new_v4(),
     }
 }
 /// Enqueue one event on its own transaction; roll it back when `commit` is false.
-async fn enqueue(state: &AuthoringState, event: PriceReferenceLost, commit: bool) {
+async fn enqueue(state: &AuthoringState, event: PriceBookEntryReferenceLost, commit: bool) {
     let outbox = state.outbox.clone();
     let result = state
         .db
@@ -78,7 +78,7 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     control.register_topic(TOPIC, 8).await;
     let object = json!({"type":"object"});
     for (type_id, subject) in [
-        (PriceReferenceLost::TYPE_ID, PRICE_SUBJECT_TYPE),
+        (PriceBookEntryReferenceLost::TYPE_ID, ENTRY_SUBJECT_TYPE),
         (PUBLISHED, PRICE_BOOK_SUBJECT_TYPE),
         (DECIDED, APPROVAL_UNIT_SUBJECT_TYPE),
     ] {
@@ -133,29 +133,29 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     )
     .await;
     assert_eq!(book.0, 201, "{book:?}");
-    let price = call(
+    let entry = call(
         "POST",
-        format!("/price-books/{}/prices", book.1["id"].as_str().unwrap()),
+        format!("/price-books/{}/entries", book.1["id"].as_str().unwrap()),
         json!({"sku_id":Uuid::new_v4()}),
+        None,
+        Some("entry"),
+    )
+    .await;
+    assert_eq!(entry.0, 201, "{entry:?}");
+    let prices = call(
+        "POST",
+        format!("/price-book-entries/{}/prices", entry.1["id"].as_str().unwrap()),
+        json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
         None,
         Some("price"),
     )
     .await;
-    assert_eq!(price.0, 201, "{price:?}");
-    let rows = call(
-        "POST",
-        format!("/prices/{}/rows", price.1["id"].as_str().unwrap()),
-        json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
-        None,
-        Some("row"),
-    )
-    .await;
-    assert_eq!(rows.0, 201, "{rows:?}");
+    assert_eq!(prices.0, 201, "{prices:?}");
     let submitted = call(
         "POST",
         format!(
-            "/rows/{}/submit",
-            rows.1["items"][0]["id"].as_str().unwrap()
+            "/prices/{}/submit",
+            prices.1["items"][0]["id"].as_str().unwrap()
         ),
         json!({}),
         None,
@@ -185,18 +185,18 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     assert!(types.contains(&DECIDED), "{types:?}");
     let lost_events: Vec<_> = delivered
         .iter()
-        .filter(|(t, _)| t == PriceReferenceLost::TYPE_ID)
+        .filter(|(t, _)| t == PriceBookEntryReferenceLost::TYPE_ID)
         .collect();
     assert_eq!(lost_events.len(), 1, "{delivered:#?}");
     assert_eq!(
-        lost_events[0].1["priceId"],
-        committed.price_id.to_string(),
+        lost_events[0].1["priceBookEntryId"],
+        committed.price_book_entry_id.to_string(),
         "the committed event, retried after the refused dispatch"
     );
     assert!(
-        !delivered
-            .iter()
-            .any(|(_, data)| data["priceId"] == rolled_back.price_id.to_string()),
+        !delivered.iter().any(
+            |(_, data)| data["priceBookEntryId"] == rolled_back.price_book_entry_id.to_string()
+        ),
         "a rolled-back transaction delivers nothing"
     );
 }

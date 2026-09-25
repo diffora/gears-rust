@@ -3,14 +3,14 @@
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-currency-validity:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-export:p1
 use super::{
-    dto::{PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingExportPrice},
+    dto::{PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingExportEntry},
     support::{DoorError, audit, check_version, conflict, date, invalid, missing, response, value},
 };
 use crate::{
     domain::book,
     infra::storage::{
         entity::price_book,
-        repo::{book_repo, idempotency_repo as idem, price_repo, row_repo},
+        repo::{book_repo, idempotency_repo as idem, price_book_entry_repo, price_repo},
     },
 };
 use axum::{http::StatusCode, response::Response};
@@ -164,15 +164,15 @@ pub async fn patch(
         Some(version + 1),
     )?)
 }
-pub async fn prices(
+pub async fn entries(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
-) -> Result<Vec<crate::infra::storage::entity::price::Model>, DoorError> {
+) -> Result<Vec<crate::infra::storage::entity::price_book_entry::Model>, DoorError> {
     find(tx, &AccessScope::for_tenant(tenant), tenant, id).await?;
-    let mut prices = price_repo::for_book(tx, scope, tenant, id).await?;
-    prices.sort_by(|a, b| {
+    let mut entries = price_book_entry_repo::for_book(tx, scope, tenant, id).await?;
+    entries.sort_by(|a, b| {
         (
             a.sku_id,
             &a.charge_kind,
@@ -186,7 +186,7 @@ pub async fn prices(
                 b.id,
             ))
     });
-    Ok(prices)
+    Ok(entries)
 }
 pub async fn export(
     tx: &impl DBRunner,
@@ -198,9 +198,9 @@ pub async fn export(
     let mut result = Vec::new();
     // The authorized book is the export aggregate; subordinate IDs are not book IDs.
     let children = AccessScope::for_tenant(tenant);
-    for p in prices(tx, &children, tenant, id).await? {
-        let mut rows = row_repo::for_price(tx, &children, tenant, p.id).await?;
-        rows.sort_by(|a, b| {
+    for p in entries(tx, &children, tenant, id).await? {
+        let mut prices = price_repo::for_entry(tx, &children, tenant, p.id).await?;
+        prices.sort_by(|a, b| {
             (&a.dim_value, a.effective_from, a.version_no, a.id).cmp(&(
                 &b.dim_value,
                 b.effective_from,
@@ -208,13 +208,13 @@ pub async fn export(
                 b.id,
             ))
         });
-        result.push(PricingExportPrice {
-            price: p.into(),
-            rows: rows.into_iter().map(Into::into).collect(),
+        result.push(PricingExportEntry {
+            entry: p.into(),
+            prices: prices.into_iter().map(Into::into).collect(),
         });
     }
     Ok(PriceBookExport {
         book: book.into(),
-        prices: result,
+        entries: result,
     })
 }

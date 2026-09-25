@@ -1,7 +1,7 @@
-//! The `price_rows` approval subject (spec §6): draft rows of one book, optionally moved to a
+//! The `prices` approval subject (spec §6): draft prices of one book, optionally moved to a
 //! common effective date, approved together inside the caller's transaction.
 //!
-//! No row is locked by the database: ownership is the conditional `pending_unit_id` write,
+//! No price is locked by the database: ownership is the conditional `pending_unit_id` write,
 //! and `apply` re-reads every touched chain in the door's serializable transaction.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-chain-windows:p1
@@ -11,15 +11,15 @@
 use crate::{
     domain::{
         RuleError, book,
-        price::ChargeKind,
-        row::{self, Eligibility, Row, RowState, SkuMetering},
+        price::{self, Eligibility, Price, PriceState, SkuMetering},
+        price_book_entry::ChargeKind,
     },
     infra::{
         reference_registry, reference_work,
         storage::{
             RepoError,
-            entity::{price, price_row},
-            repo::{book_repo, dimension_repo, price_repo, row_repo},
+            entity::{self, price_book_entry},
+            repo::{book_repo, dimension_repo, price_book_entry_repo, price_repo},
         },
     },
 };
@@ -39,40 +39,40 @@ use toolkit_db::{
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-/// The approval kind of a batch of book rows.
-pub const KIND_PRICE_ROWS: &str = "price_rows";
-/// A `price_rows` unit references its book.
+/// The approval kind of a batch of book prices.
+pub const KIND_PRICES: &str = "prices";
+/// A `prices` unit references its book.
 pub const REF_TYPE: &str = "price_book";
-/// Every item of a `price_rows` unit is one row.
-pub const ITEM_TYPE: &str = "price_row";
+/// Every item of a `prices` unit is one price.
+pub const ITEM_TYPE: &str = "price";
 /// The honest answer for impact a later phase measures.
 pub const UNAVAILABLE: &str = "unavailable until phase 3";
 
-/// What the pure rules need to judge a row of one price.
-pub struct PriceContext {
+/// What the pure rules need to judge a price of one entry.
+pub struct PriceBookEntryContext {
     pub kind: ChargeKind,
     pub values: Option<Vec<String>>,
     pub digits: u32,
-    pub rows: Vec<price_row::Model>,
+    pub prices: Vec<entity::price::Model>,
 }
-impl PriceContext {
-    /// Read the book currency, the declared dimension values and every row of the price.
+impl PriceBookEntryContext {
+    /// Read the book currency, the declared dimension values and every price of the entry.
     /// # Errors
     /// Returns storage failures or a corrupt stored vocabulary.
     pub async fn load(
         tx: &impl DBRunner,
         tenant: Uuid,
-        price: &price::Model,
+        entry: &price_book_entry::Model,
     ) -> Result<Self, RepoError> {
         let children = AccessScope::for_tenant(tenant);
-        let kind = price
+        let kind = entry
             .charge_kind
             .parse()
-            .map_err(|_| RepoError::CorruptRow(format!("price {} charge_kind", price.id)))?;
-        let book = book_repo::find(tx, &children, tenant, price.book_id)
+            .map_err(|_| RepoError::CorruptRow(format!("entry {} charge_kind", entry.id)))?;
+        let book = book_repo::find(tx, &children, tenant, entry.book_id)
             .await?
-            .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no book", price.id)))?;
-        let values = match &price.dimension_key {
+            .ok_or_else(|| RepoError::CorruptRow(format!("entry {} has no book", entry.id)))?;
+        let values = match &entry.dimension_key {
             Some(key) => dimension_repo::find(tx, &children, tenant, key)
                 .await?
                 .map(|d| {
@@ -82,29 +82,29 @@ impl PriceContext {
                 .transpose()?,
             None => None,
         };
-        let rows = row_repo::for_price(tx, &children, tenant, price.id).await?;
+        let prices = price_repo::for_entry(tx, &children, tenant, entry.id).await?;
         Ok(Self {
             kind,
             values,
             digits: book::minor_digits(&book.currency),
-            rows,
+            prices,
         })
     }
-    /// Every row of the price in the pure model.
+    /// Every price of the entry in the pure model.
     /// # Errors
-    /// Returns a corrupt stored row.
-    pub fn domain_rows(&self) -> Result<Vec<Row>, RepoError> {
-        self.rows.iter().map(row_repo::to_domain).collect()
+    /// Returns a corrupt stored price.
+    pub fn domain_prices(&self) -> Result<Vec<Price>, RepoError> {
+        self.prices.iter().map(price_repo::to_domain).collect()
     }
-    /// The first pure refusal of a candidate against the price's approved rows.
+    /// The first pure refusal of a candidate against the entry's approved prices.
     #[must_use]
     pub fn first_refusal(
         &self,
-        candidate: &Row,
-        siblings: &[Row],
+        candidate: &Price,
+        siblings: &[Price],
         today: Date,
     ) -> Option<RuleError> {
-        row::validate(
+        price::validate(
             candidate,
             self.kind,
             self.values.as_deref(),
@@ -117,18 +117,18 @@ impl PriceContext {
     }
 }
 
-/// What rejecting or withdrawing leaves on the unit's rows.
+/// What rejecting or withdrawing leaves on the unit's prices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Release {
-    /// Withdraw: the rows are editable drafts again.
+    /// Withdraw: the prices are editable drafts again.
     Draft,
-    /// Reject: the rows keep their review history and stay rejected.
+    /// Reject: the prices keep their review history and stay rejected.
     Rejected,
 }
 
-/// The subject of one `price_rows` unit of one book.
+/// The subject of one `prices` unit of one book.
 #[derive(Clone)]
-pub struct PriceRowsSubject {
+pub struct PricesSubject {
     /// The caller; dated SKU reads are made on its behalf.
     pub ctx: SecurityContext,
     pub hub: Arc<toolkit::ClientHub>,
@@ -145,24 +145,24 @@ pub struct PriceRowsSubject {
     refused: Arc<Mutex<Option<CanonicalError>>>,
 }
 
-/// One price's part of a unit, judged against the price's current approved rows.
+/// One entry's part of a unit, judged against the entry's current approved prices.
 struct Judged {
-    stored: Vec<price_row::Model>,
-    /// The unit rows as they will be approved: shifted, not yet normalised.
-    proposed: Vec<Row>,
-    /// Every approved row of the price once the unit applies, normalised per chain.
-    chain: Vec<Row>,
+    stored: Vec<entity::price::Model>,
+    /// The unit prices as they will be approved: shifted, not yet normalised.
+    proposed: Vec<Price>,
+    /// Every approved price of the entry once the unit applies, normalised per chain.
+    chain: Vec<Price>,
 }
 
 fn invalid(code: &'static str, detail: impl Into<String>) -> ApprovalError {
     ApprovalError::InvalidSubmit {
         code,
-        field: row::field_of(code).into(),
+        field: price::field_of(code).into(),
         detail: detail.into(),
     }
 }
 fn rule(error: RuleError, id: Uuid) -> ApprovalError {
-    invalid(error.code, format!("price_row {id}"))
+    invalid(error.code, format!("price {id}"))
 }
 /// Keep contention typed for the transaction's retry; a unique arbiter refuses the apply.
 fn storage(error: RepoError) -> ApprovalError {
@@ -188,9 +188,9 @@ fn date(d: Date) -> String {
     d.to_string()
 }
 /// Proposed business content only: never state, lock, version or recomputed columns.
-fn after(r: &Row, note: Option<&str>) -> Value {
+fn after(r: &Price, note: Option<&str>) -> Value {
     json!({
-        "price_id": r.price_id,
+        "price_book_entry_id": r.price_book_entry_id,
         "version_no": r.version_no,
         "dim_value": r.dim_value,
         "model": r.model.as_str(),
@@ -201,14 +201,14 @@ fn after(r: &Row, note: Option<&str>) -> Value {
         "effective_to": r.effective_to.map(date),
         "temporary_until": r.temporary_until.map(date),
         "closed_explicitly": r.closed_explicitly,
-        "paired_row_id": r.paired_row_id,
-        "return_of_row_id": r.return_of_row_id,
+        "paired_price_id": r.paired_price_id,
+        "return_of_price_id": r.return_of_price_id,
         "note": note,
     })
 }
-fn before(r: &Row) -> Value {
+fn before(r: &Price) -> Value {
     json!({
-        "row_id": r.id,
+        "price_id": r.id,
         "version_no": r.version_no,
         "model": r.model.as_str(),
         "price": r.price,
@@ -218,35 +218,35 @@ fn before(r: &Row) -> Value {
         "effective_to": r.effective_to.map(date),
     })
 }
-/// Rows and prices a unit touches; plans and subscriptions arrive in phase 3.
+/// Prices and entries a unit touches; plans and subscriptions arrive in phase 3.
 #[must_use]
 pub fn impact(items: &[ItemRef]) -> Value {
-    let prices: BTreeSet<String> = items
+    let entries: BTreeSet<String> = items
         .iter()
-        .filter_map(|i| i.after["price_id"].as_str().map(str::to_owned))
+        .filter_map(|i| i.after["price_book_entry_id"].as_str().map(str::to_owned))
         .collect();
-    impact_of(items.len(), prices.len())
+    impact_of(items.len(), entries.len())
 }
 /// The impact object every read shows (D-392): the queue card and list, and the
 /// publish-changes listing. Phase 3 measures plans and subscriptions.
 #[must_use]
-pub fn impact_of(rows: usize, prices: usize) -> Value {
+pub fn impact_of(prices: usize, entries: usize) -> Value {
     json!({
-        "rows": rows,
         "prices": prices,
+        "entries": entries,
         "plans": UNAVAILABLE,
         "subscriptions": UNAVAILABLE,
     })
 }
-fn by_price(models: Vec<price_row::Model>) -> BTreeMap<Uuid, Vec<price_row::Model>> {
-    let mut groups: BTreeMap<Uuid, Vec<price_row::Model>> = BTreeMap::new();
+fn by_entry(models: Vec<entity::price::Model>) -> BTreeMap<Uuid, Vec<entity::price::Model>> {
+    let mut groups: BTreeMap<Uuid, Vec<entity::price::Model>> = BTreeMap::new();
     for m in models {
-        groups.entry(m.price_id).or_default().push(m);
+        groups.entry(m.price_book_entry_id).or_default().push(m);
     }
     groups
 }
 
-impl PriceRowsSubject {
+impl PricesSubject {
     /// A subject for the caller's tenant; no shift, no pulled-in partner, withdraw semantics.
     #[must_use]
     pub fn new(
@@ -315,17 +315,17 @@ impl PriceRowsSubject {
     fn scope(&self) -> AccessScope {
         AccessScope::for_tenant(self.tenant_id)
     }
-    async fn load(&self, tx: &DbTx<'_>, id: Uuid) -> Result<price_row::Model, ApprovalError> {
-        row_repo::find(tx, &self.scope(), self.tenant_id, id)
+    async fn load(&self, tx: &DbTx<'_>, id: Uuid) -> Result<entity::price::Model, ApprovalError> {
+        price_repo::find(tx, &self.scope(), self.tenant_id, id)
             .await
             .map_err(storage)?
-            .ok_or_else(|| invalid("ROW_NOT_FOUND", format!("price_row {id}")))
+            .ok_or_else(|| invalid("PRICE_NOT_FOUND", format!("price {id}")))
     }
     async fn load_all(
         &self,
         tx: &DbTx<'_>,
         ids: impl IntoIterator<Item = Uuid>,
-    ) -> Result<Vec<price_row::Model>, ApprovalError> {
+    ) -> Result<Vec<entity::price::Model>, ApprovalError> {
         let mut ids: Vec<Uuid> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
@@ -359,11 +359,11 @@ impl PriceRowsSubject {
     async fn guard(
         &self,
         sku: Uuid,
-        chain: &[Row],
+        chain: &[Price],
         unit: &BTreeSet<Uuid>,
     ) -> Result<(), ApprovalError> {
         for successor in chain {
-            let Some(predecessor) = row::in_force_before(chain, successor) else {
+            let Some(predecessor) = price::in_force_before(chain, successor) else {
                 continue;
             };
             if !unit.contains(&successor.id) && !unit.contains(&predecessor.id) {
@@ -371,45 +371,55 @@ impl PriceRowsSubject {
             }
             let was = self.metering(sku, predecessor.effective_from).await?;
             let is = self.metering(sku, successor.effective_from).await?;
-            row::chain_guard(ChargeKind::Usage, predecessor, &was, successor, &is)
+            price::chain_guard(ChargeKind::Usage, predecessor, &was, successor, &is)
                 .map_err(|e| rule(e, successor.id))?;
         }
         Ok(())
     }
-    /// Shift, validate against the CURRENT approved rows, normalise and guard one price's rows.
+    /// Shift, validate against the CURRENT approved prices, normalise and guard one entry's prices.
     async fn judge(
         &self,
         tx: &DbTx<'_>,
-        price_id: Uuid,
-        rows: &[price_row::Model],
+        price_book_entry_id: Uuid,
+        prices: &[entity::price::Model],
         shift: Option<Date>,
     ) -> Result<Judged, ApprovalError> {
-        let price = price_repo::find(tx, &self.scope(), self.tenant_id, price_id)
-            .await
-            .map_err(storage)?
-            .ok_or_else(|| invalid("ROW_NOT_FOUND", format!("price {price_id}")))?;
-        if price.book_id != self.book_id {
-            return Err(invalid("ROW_NOT_IN_BOOK", format!("price {price_id}")));
+        let entry =
+            price_book_entry_repo::find(tx, &self.scope(), self.tenant_id, price_book_entry_id)
+                .await
+                .map_err(storage)?
+                .ok_or_else(|| {
+                    invalid("PRICE_NOT_FOUND", format!("entry {price_book_entry_id}"))
+                })?;
+        if entry.book_id != self.book_id {
+            return Err(invalid(
+                "PRICE_NOT_IN_BOOK",
+                format!("entry {price_book_entry_id}"),
+            ));
         }
-        if price.reference_state == "lost" {
-            return Err(invalid("PRICE_REFERENCE_LOST", format!("price {price_id}")));
+        if entry.reference_state == "lost" {
+            return Err(invalid(
+                "ENTRY_REFERENCE_LOST",
+                format!("entry {price_book_entry_id}"),
+            ));
         }
-        let pc = PriceContext::load(tx, self.tenant_id, &price)
+        let pc = PriceBookEntryContext::load(tx, self.tenant_id, &entry)
             .await
             .map_err(storage)?;
-        let unit: BTreeSet<Uuid> = rows.iter().map(|m| m.id).collect();
-        let siblings: Vec<Row> = pc
-            .domain_rows()
+        let unit: BTreeSet<Uuid> = prices.iter().map(|m| m.id).collect();
+        let siblings: Vec<Price> = pc
+            .domain_prices()
             .map_err(storage)?
             .into_iter()
-            .filter(|r| r.state == RowState::Approved && !unit.contains(&r.id))
+            .filter(|r| r.state == PriceState::Approved && !unit.contains(&r.id))
             .collect();
-        let drafts = rows
+        let drafts = prices
             .iter()
-            .map(row_repo::to_domain)
+            .map(price_repo::to_domain)
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)?;
-        let proposed = row::shift_selection(&drafts, shift).map_err(|e| rule(e, price_id))?;
+        let proposed =
+            price::shift_selection(&drafts, shift).map_err(|e| rule(e, price_book_entry_id))?;
         let today = self.now.date();
         let mut starts = BTreeSet::new();
         for r in &proposed {
@@ -417,7 +427,7 @@ impl PriceRowsSubject {
                 return Err(rule(error, r.id));
             }
             if !starts.insert((r.dim_value.clone(), r.effective_from)) {
-                return Err(invalid("WINDOW_OVERLAP", format!("price_row {}", r.id)));
+                return Err(invalid("WINDOW_OVERLAP", format!("price {}", r.id)));
             }
         }
         // D-391: a return restores what the approved chain applies on the shifted end NOW; the
@@ -425,24 +435,21 @@ impl PriceRowsSubject {
         // The author re-drafts the pair.
         if let Some(stale) = proposed
             .iter()
-            .find(|r| !row::temporary_is_current(&siblings, r, &proposed))
+            .find(|r| !price::temporary_is_current(&siblings, r, &proposed))
         {
-            return Err(invalid(
-                "PAIR_RETURN_STALE",
-                format!("price_row {}", stale.id),
-            ));
+            return Err(invalid("PAIR_RETURN_STALE", format!("price {}", stale.id)));
         }
         let mut chain = siblings;
         chain.extend(proposed.iter().cloned().map(|mut r| {
-            r.state = RowState::Approved;
+            r.state = PriceState::Approved;
             r
         }));
-        row::normalize_windows(&mut chain);
+        price::normalize_windows(&mut chain);
         if pc.kind == ChargeKind::Usage {
-            self.guard(price.sku_id, &chain, &unit).await?;
+            self.guard(entry.sku_id, &chain, &unit).await?;
         }
         Ok(Judged {
-            stored: pc.rows,
+            stored: pc.prices,
             proposed,
             chain,
         })
@@ -450,50 +457,50 @@ impl PriceRowsSubject {
 }
 
 #[async_trait::async_trait]
-impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
+impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
     fn kind(&self) -> &'static str {
-        KIND_PRICE_ROWS
+        KIND_PRICES
     }
     fn ref_type(&self) -> &'static str {
         REF_TYPE
     }
-    /// The rows, their pair partners, and each row's chain predecessor on its new start.
+    /// The prices, their pair partners, and each price's chain predecessor on its new start.
     async fn collect(&self, tx: &DbTx<'a>, ids: &[Uuid]) -> Result<Vec<ItemRef>, ApprovalError> {
         let mut wanted: BTreeSet<Uuid> = ids.iter().copied().collect();
         for id in ids {
-            if let Some(partner) = self.load(tx, *id).await?.paired_row_id {
+            if let Some(partner) = self.load(tx, *id).await?.paired_price_id {
                 wanted.insert(partner);
             }
         }
         let mut items = Vec::new();
-        for (price_id, rows) in by_price(self.load_all(tx, wanted).await?) {
-            let unit: BTreeSet<Uuid> = rows.iter().map(|m| m.id).collect();
-            let mut chain: Vec<Row> =
-                row_repo::for_price(tx, &self.scope(), self.tenant_id, price_id)
+        for (price_book_entry_id, prices) in by_entry(self.load_all(tx, wanted).await?) {
+            let unit: BTreeSet<Uuid> = prices.iter().map(|m| m.id).collect();
+            let mut chain: Vec<Price> =
+                price_repo::for_entry(tx, &self.scope(), self.tenant_id, price_book_entry_id)
                     .await
                     .map_err(storage)?
                     .iter()
-                    .filter(|m| m.state == RowState::Approved.as_str() && !unit.contains(&m.id))
-                    .map(row_repo::to_domain)
+                    .filter(|m| m.state == PriceState::Approved.as_str() && !unit.contains(&m.id))
+                    .map(price_repo::to_domain)
                     .collect::<Result<_, _>>()
                     .map_err(storage)?;
-            let drafts = rows
+            let drafts = prices
                 .iter()
-                .map(row_repo::to_domain)
+                .map(price_repo::to_domain)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(storage)?;
-            let proposed = row::shift_selection(&drafts, self.common_effective_date)
-                .map_err(|e| rule(e, price_id))?;
+            let proposed = price::shift_selection(&drafts, self.common_effective_date)
+                .map_err(|e| rule(e, price_book_entry_id))?;
             chain.extend(proposed.iter().cloned().map(|mut r| {
-                r.state = RowState::Approved;
+                r.state = PriceState::Approved;
                 r
             }));
-            row::normalize_windows(&mut chain);
-            for (m, r) in rows.iter().zip(&proposed) {
+            price::normalize_windows(&mut chain);
+            for (m, r) in prices.iter().zip(&proposed) {
                 let predecessor = chain
                     .iter()
                     .find(|c| c.id == r.id)
-                    .and_then(|c| row::in_force_before(&chain, c));
+                    .and_then(|c| price::in_force_before(&chain, c));
                 items.push(ItemRef {
                     item_type: ITEM_TYPE.into(),
                     item_id: m.id,
@@ -510,20 +517,20 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
         let ids: BTreeSet<Uuid> = items.iter().map(|i| i.item_id).collect();
         let models = self.load_all(tx, ids.iter().copied()).await?;
         for m in &models {
-            if m.state != RowState::Draft.as_str() || m.pending_unit_id.is_some() {
-                return Err(invalid("ROW_NOT_DRAFT", format!("price_row {}", m.id)));
+            if m.state != PriceState::Draft.as_str() || m.pending_unit_id.is_some() {
+                return Err(invalid("PRICE_NOT_DRAFT", format!("price {}", m.id)));
             }
-            if m.paired_row_id.is_some_and(|p| !ids.contains(&p)) {
-                return Err(invalid("PAIR_SPLIT", format!("price_row {}", m.id)));
+            if m.paired_price_id.is_some_and(|p| !ids.contains(&p)) {
+                return Err(invalid("PAIR_SPLIT", format!("price {}", m.id)));
             }
         }
-        for (price_id, rows) in by_price(models) {
-            self.judge(tx, price_id, &rows, self.common_effective_date)
+        for (price_book_entry_id, prices) in by_entry(models) {
+            self.judge(tx, price_book_entry_id, &prices, self.common_effective_date)
                 .await?;
         }
         Ok(())
     }
-    /// Conditional ownership in ascending row id; a lost write refuses the whole submit.
+    /// Conditional ownership in ascending price id; a lost write refuses the whole submit.
     async fn lock(
         &self,
         tx: &DbTx<'a>,
@@ -531,7 +538,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
         items: &[ItemRef],
     ) -> Result<(), ApprovalError> {
         for m in self.load_all(tx, items.iter().map(|i| i.item_id)).await? {
-            if !row_repo::try_lock(tx, &self.scope(), self.tenant_id, m.id, unit_id, m.version)
+            if !price_repo::try_lock(tx, &self.scope(), self.tenant_id, m.id, unit_id, m.version)
                 .await
                 .map_err(storage)?
             {
@@ -547,9 +554,9 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
         json!({
             "book_id": self.book_id,
             "common_effective_date": common_effective_date.map(date),
-            "rows": items
+            "prices": items
                 .iter()
-                .map(|i| json!({"row_id": i.item_id, "before": i.before, "after": i.after}))
+                .map(|i| json!({"price_id": i.item_id, "before": i.before, "after": i.after}))
                 .collect::<Vec<_>>(),
             "added_partner": self.added_partner,
             "impact": impact(items),
@@ -573,19 +580,19 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
             .find(|m| m.pending_unit_id != Some(unit.id) || m.state != "pending")
         {
             return Err(ApprovalError::ApplyRefused {
-                code: "ROW_NOT_PENDING",
-                detail: format!("price_row {}", m.id),
+                code: "PRICE_NOT_PENDING",
+                detail: format!("price {}", m.id),
             });
         }
-        // Prices in ascending id: two batches over the same prices meet in one order.
-        for (price_id, rows) in by_price(models) {
+        // Entries in ascending id: two batches over the same entries meet in one order.
+        for (price_book_entry_id, prices) in by_entry(models) {
             let judged = self
-                .judge(tx, price_id, &rows, unit.common_effective_date)
+                .judge(tx, price_book_entry_id, &prices, unit.common_effective_date)
                 .await
                 .map_err(applied)?;
             let normalised = |id: Uuid| judged.chain.iter().find(|c| c.id == id);
-            // The current predecessor of EVERY `new` row of a touched chain binds renewals,
-            // whether the `new` row is in this unit or was approved earlier and a row of this
+            // The current predecessor of EVERY `new` price of a touched chain binds renewals,
+            // whether the `new` price is in this unit or was approved earlier and a price of this
             // unit now sits in front of it. A mark is never cleared.
             let touched: BTreeSet<Option<&str>> = judged
                 .proposed
@@ -596,18 +603,18 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
             for c in judged.chain.iter().filter(|c| {
                 c.eligibility == Eligibility::New && touched.contains(&c.dim_value.as_deref())
             }) {
-                if let Some(predecessor) = row::in_force_before(&judged.chain, c) {
+                if let Some(predecessor) = price::in_force_before(&judged.chain, c) {
                     keep.insert(predecessor.id);
                 }
             }
             for r in &judged.proposed {
-                row_repo::approve(
+                price_repo::approve(
                     tx,
                     &self.scope(),
                     self.tenant_id,
                     r.id,
                     unit.id,
-                    row_repo::Approval {
+                    price_repo::Approval {
                         effective_from: r.effective_from,
                         effective_to: normalised(r.id).and_then(|c| c.effective_to),
                         temporary_until: r.temporary_until,
@@ -621,7 +628,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
             for stored in judged
                 .stored
                 .iter()
-                .filter(|m| m.state == RowState::Approved.as_str())
+                .filter(|m| m.state == PriceState::Approved.as_str())
             {
                 let Some(chain) = normalised(stored.id) else {
                     continue;
@@ -630,7 +637,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
                 if chain.effective_to != stored.effective_to
                     || keep_for_bound != stored.keep_for_bound
                 {
-                    row_repo::set_window(
+                    price_repo::set_window(
                         tx,
                         &self.scope(),
                         self.tenant_id,
@@ -658,12 +665,12 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
         approved: bool,
     ) -> Result<(), ApprovalError> {
         let outcome = match (approved, self.release) {
-            (true, _) => row_repo::Unlock::Approved,
-            (false, Release::Draft) => row_repo::Unlock::Draft,
-            (false, Release::Rejected) => row_repo::Unlock::Rejected,
+            (true, _) => price_repo::Unlock::Approved,
+            (false, Release::Draft) => price_repo::Unlock::Draft,
+            (false, Release::Rejected) => price_repo::Unlock::Rejected,
         };
         for item in items {
-            row_repo::unlock(
+            price_repo::unlock(
                 tx,
                 &self.scope(),
                 self.tenant_id,
@@ -674,7 +681,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PriceRowsSubject {
             .await
             .map_err(|e| match e {
                 RepoError::Conflict { .. } => {
-                    ApprovalError::Store("price row lock is not owned by this unit".into())
+                    ApprovalError::Store("price lock is not owned by this unit".into())
                 }
                 other => storage(other),
             })?;
