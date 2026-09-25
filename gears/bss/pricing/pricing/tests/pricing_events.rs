@@ -552,6 +552,42 @@ async fn an_apply_rolled_back_after_its_events_were_written_leaves_none() {
     assert_eq!(g.of(DECIDED).await.len(), 1);
 }
 
+/// A lost entry reference (D-401) is announced about the entry, naming its SKU and the receipt
+/// it held.
+#[test]
+fn price_book_entry_reference_lost_is_a_typed_event_about_the_entry() {
+    let (tenant, entry, sku, reservation, actor) = (
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
+    let lost = PriceBookEntryReferenceLost {
+        tenant_id: tenant,
+        price_book_entry_id: entry,
+        sku_id: sku,
+        reservation_id: reservation,
+        actor_ref: actor,
+    };
+    assert_eq!(
+        PriceBookEntryReferenceLost::TYPE_ID,
+        "gts.cf.core.events.event.v1~cf.bss.pricing.price_book_entry_reference_lost.v1~"
+    );
+    assert_eq!(
+        PriceBookEntryReferenceLost::SUBJECT_TYPE,
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book_entry.v1"
+    );
+    assert_eq!(PriceBookEntryReferenceLost::SOURCE, SOURCE);
+    assert_eq!(lost.subject(), entry.to_string());
+    assert_eq!(lost.tenant_id(), Some(tenant));
+    assert_eq!(
+        serde_json::to_value(&lost).unwrap(),
+        json!({"tenantId":tenant,"priceBookEntryId":entry,"skuId":sku,
+            "reservationId":reservation,"actorRef":actor})
+    );
+}
+
 /// A lost plan-item reference (D-407) is announced about the item, naming its plan and revision.
 #[test]
 fn plan_reference_lost_is_a_typed_event_about_the_item() {

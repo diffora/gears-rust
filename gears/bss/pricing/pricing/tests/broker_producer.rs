@@ -205,3 +205,127 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
         "a rolled-back transaction delivers nothing"
     );
 }
+
+/// Every pricing event type, by the struct that implements `TypedEvent`: the census the bound
+/// producer is held to.
+const EVENT_TYPES: [(&str, &str, &str); 5] = [
+    (
+        "PriceBookEntryReferenceLost",
+        PriceBookEntryReferenceLost::TYPE_ID,
+        PriceBookEntryReferenceLost::SUBJECT_TYPE,
+    ),
+    (
+        "PlanReferenceLost",
+        PlanReferenceLost::TYPE_ID,
+        PlanReferenceLost::SUBJECT_TYPE,
+    ),
+    (
+        "PricesPublished",
+        events::PricesPublished::TYPE_ID,
+        events::PricesPublished::SUBJECT_TYPE,
+    ),
+    (
+        "PlanRevisionPublished",
+        events::PlanRevisionPublished::TYPE_ID,
+        events::PlanRevisionPublished::SUBJECT_TYPE,
+    ),
+    (
+        "ApprovalUnitDecided",
+        events::ApprovalUnitDecided::TYPE_ID,
+        events::ApprovalUnitDecided::SUBJECT_TYPE,
+    ),
+];
+
+/// The names of every `impl TypedEvent for <Name>` under `src/`, so a new event type fails the
+/// census until it is listed (and so prepared at bind).
+fn typed_events_in_src() -> std::collections::BTreeSet<String> {
+    fn walk(dir: &std::path::Path, out: &mut std::collections::BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (at, _) in text.match_indices("impl TypedEvent for ") {
+                    let rest = &text[at + "impl TypedEvent for ".len()..];
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    out.insert(name);
+                }
+            }
+        }
+    }
+    let mut out = std::collections::BTreeSet::new();
+    walk(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut out,
+    );
+    out
+}
+
+/// A pricing state over a fresh database with a broker that knows `types`.
+async fn bind_with(types: &[(&str, &str, &str)]) -> anyhow::Result<Arc<AuthoringState>> {
+    let mock = MockBroker::new();
+    let control = mock.handle();
+    control.register_topic(TOPIC, 8).await;
+    for (_, type_id, subject) in types {
+        control
+            .register_event_type(TOPIC, type_id, json!({"type":"object"}), &[subject])
+            .await;
+    }
+    let (db, _, _, _) = test_db().await;
+    let hub = Arc::new(toolkit::ClientHub::default());
+    hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
+        bss_products_sdk::PricingReferenceRegistry(Arc::new(Script::default())),
+    ));
+    hub.register::<dyn EventBrokerApi>(Arc::new(mock));
+    AuthoringState::new(db, hub).await.map(Arc::new)
+}
+
+/// The event census (run 3.5): every type pricing implements is a `TypedEvent` under
+/// `gts.cf.core.events.event.v1~cf.bss.pricing.<name>.v1~` from `bss-pricing`, and the bound
+/// producer prepares each one at bind — a broker that lacks any one of them fails the boot
+/// rather than failing the first business transaction that announces it.
+#[tokio::test]
+async fn the_bound_producer_prepares_every_pricing_event_type_at_bind() {
+    let listed: std::collections::BTreeSet<String> = EVENT_TYPES
+        .iter()
+        .map(|(n, _, _)| (*n).to_owned())
+        .collect();
+    assert_eq!(
+        typed_events_in_src(),
+        listed,
+        "the census lists every TypedEvent"
+    );
+    for (name, type_id, subject) in EVENT_TYPES {
+        let short = type_id
+            .strip_prefix("gts.cf.core.events.event.v1~cf.bss.pricing.")
+            .and_then(|rest| rest.strip_suffix(".v1~"))
+            .unwrap_or_else(|| panic!("{name}: {type_id} is not a pricing event type"));
+        assert!(
+            !short.is_empty() && short.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+            "{name}: {type_id}"
+        );
+        assert!(
+            subject.starts_with("gts.cf.core.events.subject.v1~cf.bss.pricing."),
+            "{name}: {subject}"
+        );
+    }
+    bind_with(&EVENT_TYPES)
+        .await
+        .expect("a broker that knows every pricing event type binds");
+    for (index, (name, type_id, _)) in EVENT_TYPES.iter().enumerate() {
+        let mut known = EVENT_TYPES.to_vec();
+        known.remove(index);
+        let error = bind_with(&known)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{name} is not prepared at bind: the boot succeeded"));
+        assert!(
+            format!("{error:#}").contains(type_id),
+            "{name}: the boot names the missing type: {error:#}"
+        );
+    }
+}

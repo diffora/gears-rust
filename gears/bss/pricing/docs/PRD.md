@@ -268,7 +268,7 @@ Tenant settings provide default billing timing, rounding, GL code, tax category 
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Persist PricesPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceBookEntryReferenceLost for a failed reference confirmation that proves release. Every terminal unit path emits ApprovalUnitDecided; submission audits without that event. Phase 3 adds PlanRevisionPublished; PlanRetired and SubscriptionMigrationRequested (D-410) and PromotionPublished (D-409) are deferred. No SkuChanged listener or local SKU cache is built in phase 2.
+Persist PricesPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceBookEntryReferenceLost for a failed reference confirmation that proves release. Every terminal unit path emits ApprovalUnitDecided; submission audits without that event. Phase 3 adds PlanRevisionPublished and PlanReferenceLost; PlanRetired and SubscriptionMigrationRequested (D-410) and PromotionPublished (D-409) are deferred. No SkuChanged listener or local SKU cache is built in phase 2.
 
 #### `fr-plans`
 

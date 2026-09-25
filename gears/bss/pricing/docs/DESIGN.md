@@ -210,7 +210,7 @@ Phase 2: ProductsClient reserve/re-read/write/confirm and durable cancellation/r
 
 **ID**: `cpt-cf-bss-pricing-component-events`
 
-Phase 2 core TypedEvent payloads and toolkit outbox dispatcher; phase 3 adds plan events (promotion events deferred, D-409; migration-request and retirement events deferred, D-410).
+Phase 2 core TypedEvent payloads and toolkit outbox dispatcher; phase 3 adds the plan events PlanRevisionPublished and PlanReferenceLost (promotion events deferred, D-409; migration-request and retirement events deferred, D-410).
 
 #### Plans
 

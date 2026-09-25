@@ -72,7 +72,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-a
 Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-typed-events`.
 
 1. [ ] - `p1` - Implement PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
-2. [ ] - `p1` - Add PlanRevisionPublished, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real; PromotionPublished (D-409), PlanRetired and SubscriptionMigrationRequested (D-410) are deferred. - `inst-read-contract-events-typed-events-2`
+2. [ ] - `p1` - Add PlanRevisionPublished, PlanReferenceLost, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real; PromotionPublished (D-409), PlanRetired and SubscriptionMigrationRequested (D-410) are deferred. - `inst-read-contract-events-typed-events-2`
 3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
 4. [ ] - `p1` - Deliver from the toolkit dispatcher after commit; test restart/retry and prevent domain publish on reject/withdraw/refresh. - `inst-read-contract-events-typed-events-4`
 
@@ -99,6 +99,18 @@ cross-gear read for transactional local ownership/version guards. Approved money
 ## 7. Events & Alarms
 
 Core payloads (camelCase on the wire): PricesPublished { book_id, unit_id, prices[] { price_id, price_book_entry_id, dim_value (null is the default chain), effective_from, effective_to, eligibility }, actor_ref }, ApprovalUnitDecided { unit_id, kind, state (approved, rejected or withdrawn), generation, actors[] }, PriceBookEntryReferenceLost { price_book_entry_id, sku_id, reservation_id, actor_ref }, and in phase 3 PlanRevisionPublished { plan_id, revision_id, rev_no, book_id, superseded_revision_id (null for a first publication), unit_id, actor_ref } about the plan; each also names its tenant_id. Later payloads name the published revision, retired plan, promotion id/version or migration request/target/subscriptions. The tenant is an envelope fact. The envelope carries no correlation id (trace_parent is unset); an event joins its audit rows through the subject ids it names (unit_id, price_book_entry_id), which the same transaction audits with the request's correlation id. No SkuChanged subscription is required by phase 2.
+
+Every event is a broker TypedEvent of source bss-pricing on the topic `gts.cf.core.events.topic.v1~cf.bss.pricing.catalog.v1`, and the bound producer prepares every type at bind (a broker that lacks one fails the boot). Type ids are `gts.cf.core.events.event.v1~cf.bss.pricing.<name>.v1~`; subject types are `gts.cf.core.events.subject.v1~cf.bss.pricing.<subject>.v1`.
+
+| Event | `<name>` | Subject | Trigger | Phase |
+| --- | --- | --- | --- | --- |
+| PricesPublished | `prices_published` | `price_book` (the book) | A `prices` unit is applied: quorum 0 at submit or publish-changes, or the approving vote. | 2 |
+| ApprovalUnitDecided | `approval_unit_decided` | `approval_unit` (the unit) | Every terminal transition of a unit of any kind: approved (applied), rejected or withdrawn. | 2 |
+| PriceBookEntryReferenceLost | `price_book_entry_reference_lost` | `price_book_entry` (the entry) | A rereserve of an entry whose reservation Products released ends refused (the SKU is fenced, retiring or retired). | 2 |
+| PlanRevisionPublished | `plan_revision_published` | `plan` (the plan) | A `plan_revision` unit is applied: the revision is published, its predecessor superseded and `published_rev` advanced. | 3 |
+| PlanReferenceLost | `plan_reference_lost` | `plan_item` (the item) | A plan item's attach (a copied item, D-413) or rereserve ends refused. | 3 |
+| PromotionPublished | — | — | Deferred with promotions (D-409). | — |
+| PlanRetired, SubscriptionMigrationRequested | — | — | Deferred with retirement and migration requests (D-410). | — |
 
 Audit and outbox inserts use the same mutation transaction; retry is lifecycle-managed and observes shutdown.
 
