@@ -464,6 +464,14 @@ gears:
       server: "sqlite_users"
       file: "bss_ledger.db"
 
+  bss-products:
+    # Linked by the bss-pricing feature: pricing reserves SKU references in
+    # products in-process. Config defaults suffice; the gear needs its own
+    # database for the SKU registry, approvals and the outbox.
+    database:
+      server: "sqlite_users"
+      file: "bss_products.db"
+
   bss-pricing:
     # The PriceBook skeleton reserves /bss-pricing/v1 with no operations.
     # Runtime migrations retain the shared coordination table; config defaults
