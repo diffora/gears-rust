@@ -15,11 +15,15 @@ use crate::{
         price_book_entry::ChargeKind,
     },
     infra::{
+        plan_revisions::{self, SUBSCRIPTIONS_UNAVAILABLE},
         reference_registry, reference_work,
         storage::{
             RepoError,
             entity::{self, price_book_entry},
-            repo::{book_repo, dimension_repo, price_book_entry_repo, price_repo},
+            repo::{
+                book_repo, dimension_repo, plan_item_repo, plan_repo, plan_revision_repo,
+                price_book_entry_repo, price_repo,
+            },
         },
     },
 };
@@ -45,8 +49,6 @@ pub const KIND_PRICES: &str = "prices";
 pub const REF_TYPE: &str = "price_book";
 /// Every item of a `prices` unit is one price.
 pub const ITEM_TYPE: &str = "price";
-/// The honest answer for impact a later phase measures.
-pub const UNAVAILABLE: &str = "unavailable until phase 3";
 
 /// What the pure rules need to judge a price of one entry.
 pub struct PriceBookEntryContext {
@@ -143,6 +145,16 @@ pub struct PricesSubject {
     /// A definite Products refusal met while judging, kept whole for the door: the approval
     /// error carries only static codes, and the caller must see Products' own status and code.
     refused: Arc<Mutex<Option<CanonicalError>>>,
+    /// What `collect` gathers for the synchronous `snapshot` (D-408): the plans reading the
+    /// unit's entries and each entry SKU's current descriptors, both outside `after`.
+    review: Arc<Mutex<Review>>,
+}
+
+/// The reviewer's information about a unit that is never fingerprinted content.
+#[derive(Default)]
+struct Review {
+    plans: Vec<Value>,
+    descriptors: Vec<Value>,
 }
 
 /// One entry's part of a unit, judged against the entry's current approved prices.
@@ -218,25 +230,77 @@ fn before(r: &Price) -> Value {
         "effective_to": r.effective_to.map(date),
     })
 }
-/// Prices and entries a unit touches; plans and subscriptions arrive in phase 3.
-#[must_use]
-pub fn impact(items: &[ItemRef]) -> Value {
-    let entries: BTreeSet<String> = items
+/// The entries a unit's prices belong to, from their proposed content.
+fn entries_of(items: &[ItemRef]) -> BTreeSet<Uuid> {
+    items
         .iter()
-        .filter_map(|i| i.after["price_book_entry_id"].as_str().map(str::to_owned))
-        .collect();
-    impact_of(items.len(), entries.len())
+        .filter_map(|i| i.after["price_book_entry_id"].as_str())
+        .filter_map(|id| id.parse().ok())
+        .collect()
 }
-/// The impact object every read shows (D-392): the queue card and list, and the
-/// publish-changes listing. Phase 3 measures plans and subscriptions.
+/// The impact object every read shows (D-392): the queue card and list, the publish-changes
+/// listing and the stored snapshot. Plans are the revisions whose items name one of the entries
+/// (`plans_reading`); subscriptions wait for the Subscriptions integration.
 #[must_use]
-pub fn impact_of(prices: usize, entries: usize) -> Value {
+pub fn impact_of(prices: usize, entries: usize, plans: &[Value]) -> Value {
     json!({
         "prices": prices,
         "entries": entries,
-        "plans": UNAVAILABLE,
-        "subscriptions": UNAVAILABLE,
+        "plans": plans,
+        "subscriptions": SUBSCRIPTIONS_UNAVAILABLE,
     })
+}
+/// Every plan revision, in any state, whose items name one of the entries, as
+/// `{ plan_id, code, revision_id, rev_no, state }`, by plan code and revision number (D-408).
+/// # Errors
+/// Storage failures; a revision or plan an item points at that is gone is a corrupt row.
+pub async fn plans_reading(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    entries: &BTreeSet<Uuid>,
+) -> Result<Vec<Value>, RepoError> {
+    let scope = AccessScope::for_tenant(tenant);
+    let ids: Vec<Uuid> = entries.iter().copied().collect();
+    let revisions: BTreeSet<Uuid> = plan_item_repo::naming_entries(tx, &scope, tenant, &ids)
+        .await?
+        .into_iter()
+        .map(|i| i.revision_id)
+        .collect();
+    let mut rows = Vec::with_capacity(revisions.len());
+    for id in revisions {
+        let r = plan_revision_repo::find(tx, &scope, tenant, id)
+            .await?
+            .ok_or_else(|| RepoError::CorruptRow(format!("plan item names lost revision {id}")))?;
+        let p = plan_repo::find(tx, &scope, tenant, r.plan_id)
+            .await?
+            .ok_or_else(|| RepoError::CorruptRow(format!("revision {id} has no plan")))?;
+        rows.push((p.code, r.rev_no, p.id, r.id, r.state));
+    }
+    rows.sort();
+    Ok(rows
+        .into_iter()
+        .map(|(code, rev_no, plan_id, revision_id, state)| {
+            json!({
+                "plan_id": plan_id,
+                "code": code,
+                "revision_id": revision_id,
+                "rev_no": rev_no,
+                "state": state,
+            })
+        })
+        .collect())
+}
+/// The live impact of a stored `prices` unit, recomputed on every read.
+/// # Errors
+/// Storage failures.
+pub async fn live_impact(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    items: &[ItemRef],
+) -> Result<Value, RepoError> {
+    let entries = entries_of(items);
+    let plans = plans_reading(tx, tenant, &entries).await?;
+    Ok(impact_of(items.len(), entries.len(), &plans))
 }
 fn by_entry(models: Vec<entity::price::Model>) -> BTreeMap<Uuid, Vec<entity::price::Model>> {
     let mut groups: BTreeMap<Uuid, Vec<entity::price::Model>> = BTreeMap::new();
@@ -266,6 +330,7 @@ impl PricesSubject {
             added_partner: Vec::new(),
             release: Release::Draft,
             refused: Arc::default(),
+            review: Arc::default(),
         }
     }
     /// The Products refusal that ended the last judgement, if any; the door answers it as is.
@@ -314,6 +379,36 @@ impl PricesSubject {
     }
     fn scope(&self) -> AccessScope {
         AccessScope::for_tenant(self.tenant_id)
+    }
+    /// The plans reading the unit's entries and each entry SKU's current descriptors, read fresh
+    /// for the reviewer (D-408) and kept for `snapshot`, never in `after`.
+    async fn review(&self, tx: &DbTx<'_>, entries: &BTreeSet<Uuid>) -> Result<(), ApprovalError> {
+        let plans = plans_reading(tx, self.tenant_id, entries)
+            .await
+            .map_err(storage)?;
+        let mut skus = BTreeSet::new();
+        for id in entries {
+            if let Some(entry) = price_book_entry_repo::find(tx, &self.scope(), self.tenant_id, *id)
+                .await
+                .map_err(storage)?
+            {
+                skus.insert(entry.sku_id);
+            }
+        }
+        let read = crate::api::rest::authoring::plans::fresh_skus(&self.hub, &self.ctx, skus)
+            .await
+            .map_err(|error| {
+                if error.status_code() == 503 {
+                    invalid("REGISTRY_UNAVAILABLE", "Products reference registry")
+                } else {
+                    self.registry_failure(error)
+                }
+            })?;
+        if let Ok(mut review) = self.review.lock() {
+            review.plans = plans;
+            review.descriptors = read.iter().map(plan_revisions::descriptors).collect();
+        }
+        Ok(())
     }
     async fn load(&self, tx: &DbTx<'_>, id: Uuid) -> Result<entity::price::Model, ApprovalError> {
         price_repo::find(tx, &self.scope(), self.tenant_id, id)
@@ -497,7 +592,9 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
             }
         }
         let mut items = Vec::new();
-        for (price_book_entry_id, prices) in by_entry(self.load_all(tx, wanted).await?) {
+        let grouped = by_entry(self.load_all(tx, wanted).await?);
+        self.review(tx, &grouped.keys().copied().collect()).await?;
+        for (price_book_entry_id, prices) in grouped {
             let unit: BTreeSet<Uuid> = prices.iter().map(|m| m.id).collect();
             let mut chain: Vec<Price> =
                 price_repo::for_entry(tx, &self.scope(), self.tenant_id, price_book_entry_id)
@@ -575,6 +672,10 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
         Ok(())
     }
     fn snapshot(&self, items: &[ItemRef], common_effective_date: Option<Date>) -> Value {
+        let (plans, descriptors) = self.review.lock().map_or_else(
+            |_| (Vec::new(), Vec::new()),
+            |r| (r.plans.clone(), r.descriptors.clone()),
+        );
         json!({
             "book_id": self.book_id,
             "common_effective_date": common_effective_date.map(date),
@@ -583,7 +684,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
                 .map(|i| json!({"price_id": i.item_id, "before": i.before, "after": i.after}))
                 .collect::<Vec<_>>(),
             "added_partner": self.added_partner,
-            "impact": impact(items),
+            "impact": impact_of(items.len(), entries_of(items).len(), &plans),
+            "descriptors": descriptors,
             "computed_at": self
                 .now
                 .format(&time::format_description::well_known::Rfc3339)

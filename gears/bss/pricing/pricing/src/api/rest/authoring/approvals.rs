@@ -496,7 +496,8 @@ pub async fn publish_list(
         .ok_or_else(support::missing)?;
     let prices = proposals(tx, tenant, book).await?;
     let entries: BTreeSet<Uuid> = prices.iter().map(|r| r.entry.id).collect();
-    let impact = crate::infra::prices::impact_of(prices.len(), entries.len());
+    let plans = crate::infra::prices::plans_reading(tx, tenant, &entries).await?;
+    let impact = crate::infra::prices::impact_of(prices.len(), entries.len(), &plans);
     let body = PricingPublishChanges {
         book: PriceBookDto::from(model),
         prices,
@@ -605,7 +606,7 @@ pub async fn list_units(
         let kind = Kind::of(&unit)?;
         let touched = store.items(tx, unit.id).await.map_err(approval_failure)?;
         let mut dto = unit_dto(tx, &store, unit).await?;
-        dto.impact = Some(kind.impact(&touched));
+        dto.impact = Some(kind.impact(tx, tenant, &touched).await?);
         items.push(dto);
     }
     Ok(support::response(
@@ -631,7 +632,7 @@ pub async fn get_unit(
     let kind = Kind::of(&unit)?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
     let mut dto = unit_dto(tx, &store, unit).await?;
-    dto.impact = Some(kind.impact(&items));
+    dto.impact = Some(kind.impact(tx, tenant, &items).await?);
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }
 

@@ -19,8 +19,8 @@ use crate::{
         storage::{
             entity,
             repo::{
-                book_repo, dimension_repo, idempotency_repo as idem, price_book_entry_repo,
-                price_repo, reference_op_repo,
+                book_repo, dimension_repo, idempotency_repo as idem, plan_item_repo,
+                price_book_entry_repo, price_repo, reference_op_repo,
             },
         },
     },
@@ -302,6 +302,13 @@ pub(super) async fn delete(
             // A pending create must complete before deletion, otherwise its confirm could lose its entry.
             if m.reference_state == "confirmation_pending" {
                 return Err(support::conflict("ENTRY_CONFIRMATION_PENDING").into());
+            }
+            // D-408: an entry a plan item names is in use, whatever its revision's state: a draft
+            // may still be submitted, and published and superseded revisions keep their items
+            // (D-414). Judged here, in the delete's transaction.
+            if plan_item_repo::names_entry(tx, &AccessScope::for_tenant(tenant), tenant, id).await?
+            {
+                return Err(support::conflict("ENTRY_IN_USE").into());
             }
             // Approved or pending money blocks deletion; drafts and rejected proposals go with
             // the entry (a rejected price's history stays in its unit's snapshot).

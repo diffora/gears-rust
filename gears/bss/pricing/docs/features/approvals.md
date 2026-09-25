@@ -49,7 +49,7 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 
 ### 1.2 Purpose
 
-Compose price batches and govern every pricing subject with shared quorum, author separation, generation refresh and atomic terminal outcomes. The unit doors dispatch on the unit's stored kind (`prices`, and `plan_revision` from phase 3): its subject, the domain event of its apply and the impact of its card.
+Compose price batches and govern every pricing subject with shared quorum, author separation, generation refresh and atomic terminal outcomes. The unit doors dispatch on the unit's stored kind (`prices`, and `plan_revision` from phase 3): its subject, the domain event of its apply and the impact of its card. A prices unit's impact names the plan revisions whose items name its entries (phase 3).
 
 Requirements: `cpt-cf-bss-pricing-fr-publish-changes`, `cpt-cf-bss-pricing-fr-approval-units`, `cpt-cf-bss-pricing-fr-events`.
 

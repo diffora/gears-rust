@@ -167,6 +167,32 @@ pub async fn names_entry(
         .map(|item| item.is_some())
         .map_err(|e| driver_failure("find plan item naming an entry".into(), e))
 }
+/// Every plan item, in any revision state, that names one of the entries: the plans a `prices`
+/// unit's impact names (D-408).
+/// # Errors
+/// Returns typed database failures.
+pub async fn naming_entries(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entries: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list plan items naming entries".into(), e))
+}
 /// Change an item's treatment, quantities or entry at the version the caller read, only while
 /// its revision is an unlocked draft; the SKU never changes.
 /// # Errors

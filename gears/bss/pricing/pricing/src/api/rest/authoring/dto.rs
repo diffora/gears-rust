@@ -721,7 +721,8 @@ pub struct PricingProposedPrice {
 pub struct PricingPublishChanges {
     pub book: PriceBookDto,
     pub prices: Vec<PricingProposedPrice>,
-    /// Prices and entries the listed drafts touch; plans and subscriptions from phase 3.
+    /// Prices and entries the listed drafts touch, the plan revisions naming those entries, and
+    /// subscriptions (unavailable until the Subscriptions integration).
     pub impact: serde_json::Value,
 }
 #[toolkit_macros::api_dto(request)]

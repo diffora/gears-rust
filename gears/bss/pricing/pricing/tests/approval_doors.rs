@@ -660,7 +660,7 @@ async fn publish_all_with_a_common_date_and_the_card_shows_live_impact() {
     let card = g.card(unit).await;
     assert_eq!(
         card["impact"],
-        json!({"prices":2,"entries":1,"plans":"unavailable until phase 3","subscriptions":"unavailable until phase 3"})
+        json!({"prices":2,"entries":1,"plans":[],"subscriptions":"unavailable until the Subscriptions integration"})
     );
     let (status, b, _) = g
         .vote(&g.f.user(), unit, "approve", json!({"generation":1}), "ok")
@@ -1111,12 +1111,14 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     promo["temporary_until"] = json!("2031-03-11");
     g.draft("pair", promo).await;
     let path = format!("/price-books/{}/publish-changes", g.book);
-    let unavailable = "unavailable until phase 3";
+    // Phase 3 measures the plans (none name this book's entries here); subscriptions wait for
+    // the Subscriptions integration.
+    let unavailable = "unavailable until the Subscriptions integration";
     let (status, listing, _) = g.f.call("GET", &path, json!({}), None, None).await;
     assert_eq!(status, 200, "{listing}");
     assert_eq!(
         listing["impact"],
-        json!({"prices":3,"entries":1,"plans":unavailable,"subscriptions":unavailable})
+        json!({"prices":3,"entries":1,"plans":[],"subscriptions":unavailable})
     );
     let (status, receipt, _) = g.f.call("POST", &path, json!({}), None, Some("all")).await;
     assert_eq!(status, 201, "{receipt}");
@@ -1127,7 +1129,7 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     let card = g.card(&receipt["unit"]).await;
     assert_eq!(
         list["items"][0]["impact"],
-        json!({"prices":3,"entries":1,"plans":unavailable,"subscriptions":unavailable})
+        json!({"prices":3,"entries":1,"plans":[],"subscriptions":unavailable})
     );
     assert_eq!(list["items"][0]["impact"], card["impact"]);
 }

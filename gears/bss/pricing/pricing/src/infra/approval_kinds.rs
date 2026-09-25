@@ -13,7 +13,7 @@ use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
 use serde_json::Value;
 use time::Date;
 use toolkit_canonical_errors::CanonicalError;
-use toolkit_db::DbTx;
+use toolkit_db::{DbTx, secure::DBRunner};
 use uuid::Uuid;
 
 /// A kind of approval unit pricing records.
@@ -51,12 +51,18 @@ impl Kind {
             ))
         })
     }
-    /// The impact every read of a unit of this kind shows, from its items.
-    #[must_use]
-    pub fn impact(self, items: &[ItemRef]) -> Value {
+    /// The live impact every read of a unit of this kind shows, recomputed from its items.
+    /// # Errors
+    /// Storage failures.
+    pub async fn impact(
+        self,
+        tx: &impl DBRunner,
+        tenant: Uuid,
+        items: &[ItemRef],
+    ) -> Result<Value, RepoError> {
         match self {
-            Self::Prices => super::prices::impact(items),
-            Self::PlanRevision => plan_revisions::impact(),
+            Self::Prices => super::prices::live_impact(tx, tenant, items).await,
+            Self::PlanRevision => Ok(plan_revisions::impact()),
         }
     }
 }

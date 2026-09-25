@@ -236,13 +236,16 @@ The mounted authoring base is `/bss-pricing/v1`. Every mutation passes authentic
 headers + Bytes, preconditions::parse_body and correlation::establish. OperationBuilder registers matching
 OpenAPI success/error schemas. POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
 stored snapshots and live impact: every GET /approval-units item, GET /approval-units/{id} and the GET
-publish-changes listing carry the same impact object, {prices, entries, plans, subscriptions}; in phase 2 plans and
-subscriptions read "unavailable until phase 3". Never label unavailable phase 3 impact as a measured zero.
+publish-changes listing carry the same impact object, {prices, entries, plans, subscriptions}: from phase 3, plans lists
+every plan revision, in any state, whose items name an entry of the unit or listing, as { plan_id, code, revision_id,
+rev_no, state }, and subscriptions reads "unavailable until the Subscriptions integration" (it read "unavailable until
+phase 3" in phase 2). Never label unavailable impact as a measured zero. The stored prices snapshot also carries each
+entry SKU's current descriptors, beside the fingerprinted after, never in it (D-408).
 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
 | Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404) |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
 | Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter. Every unit door dispatches on the unit's stored kind (phase 3): its subject, the domain event its apply writes and the impact its card shows; a stored kind pricing does not record is a corrupt row (500), never judged as `prices` |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys; PUT /approval-policy sets the default (`*`) or one kind's quorum, `prices` or `plan_revision` (phase 3); any other kind is 400 POLICY_KIND_INVALID |
