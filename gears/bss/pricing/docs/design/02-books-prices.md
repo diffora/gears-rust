@@ -26,7 +26,7 @@
 
 ## 1. Context
 
-**Delivery:** phase 2c. Every checkbox is an implementation obligation, not an assertion about the legacy code. 
+**Delivery:** phase 2c. Every checkbox is an implementation obligation, not an assertion about the legacy code.
 
 Author currency books and unique SKU prices, maintain dimensions/settings and export book facts; hand price creation/removal to the reservation service.
 

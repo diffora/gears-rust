@@ -25,7 +25,7 @@
 
 ## 1. Context
 
-**Delivery:** phase 3. Every checkbox is an implementation obligation, not an assertion about the legacy code. This complete phase 3 design remains unchecked during phase 2. 
+**Delivery:** phase 3. Every checkbox is an implementation obligation, not an assertion about the legacy code. This complete phase 3 design remains unchecked during phase 2.
 
 Version dated percentage promotions and approve explicit subscription migration requests; retain period-aware previews without executing consumer-owned movement.
 

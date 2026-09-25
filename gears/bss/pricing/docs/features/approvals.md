@@ -41,7 +41,7 @@
 
 ### 1.1 Overview
 
-**Delivery:** phase 2c for price_rows; 3 for the other subjects. Every checkbox is an implementation obligation, not an assertion about the legacy code. 
+**Delivery:** phase 2c for price_rows; 3 for the other subjects. Every checkbox is an implementation obligation, not an assertion about the legacy code.
 
 This feature implements [slice 05](../design/05-approvals.md) — `cpt-cf-bss-pricing-design-slice-05`.
 [DECOMPOSITION](../DECOMPOSITION.md) records integration order; [DESIGN §3](../DESIGN.md#3-technical-architecture)

@@ -41,7 +41,7 @@
 
 ### 1.1 Overview
 
-**Delivery:** phase 3. Every checkbox is an implementation obligation, not an assertion about the legacy code. This complete phase 3 design remains unchecked during phase 2. 
+**Delivery:** phase 3. Every checkbox is an implementation obligation, not an assertion about the legacy code. This complete phase 3 design remains unchecked during phase 2.
 
 This feature implements [slice 04](../design/04-plans.md) — `cpt-cf-bss-pricing-design-slice-04`.
 [DECOMPOSITION](../DECOMPOSITION.md) records integration order; [DESIGN §3](../DESIGN.md#3-technical-architecture)

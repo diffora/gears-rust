@@ -26,7 +26,7 @@
 
 ## 1. Context
 
-**Delivery:** phase 4 for reads/quote; 2c for core events; 3 for added events. Every checkbox is an implementation obligation, not an assertion about the legacy code. Core event payloads are built with phase 2 approvals; dependencies on plans/promotions apply only to their later reads and events. 
+**Delivery:** phase 4 for reads/quote; 2c for core events; 3 for added events. Every checkbox is an implementation obligation, not an assertion about the legacy code. Core event payloads are built with phase 2 approvals; dependencies on plans/promotions apply only to their later reads and events.
 
 Deliver reproducible resolution matrices, pinned-row reads and Studio quote, plus typed transactional events and consumer goldens.
 

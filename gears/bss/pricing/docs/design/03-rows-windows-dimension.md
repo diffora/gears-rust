@@ -26,7 +26,7 @@
 
 ## 1. Context
 
-**Delivery:** phase 2c. Every checkbox is an implementation obligation, not an assertion about the legacy code. 
+**Delivery:** phase 2c. Every checkbox is an implementation obligation, not an assertion about the legacy code.
 
 Implement immutable money chains, models, temporary pairs and row floors; protect every price reference with durable reservation recovery.
 

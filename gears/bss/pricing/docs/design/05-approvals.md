@@ -27,7 +27,7 @@
 
 ## 1. Context
 
-**Delivery:** phase 2c for price_rows; 3 for the other subjects. Every checkbox is an implementation obligation, not an assertion about the legacy code. 
+**Delivery:** phase 2c for price_rows; 3 for the other subjects. Every checkbox is an implementation obligation, not an assertion about the legacy code.
 
 Compose row batches and govern every pricing subject with shared quorum, author separation, generation refresh and atomic terminal outcomes.
 

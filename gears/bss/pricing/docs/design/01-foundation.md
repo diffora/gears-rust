@@ -26,7 +26,7 @@
 
 ## 1. Context
 
-**Delivery:** phase 2c. Every checkbox is an implementation obligation, not an assertion about the legacy code. 
+**Delivery:** phase 2c. Every checkbox is an implementation obligation, not an assertion about the legacy code.
 
 Provide the fresh schema, scoped repositories, conditional approval Store, canonical errors, replay, audit and live toolkit outbox infrastructure.
 
