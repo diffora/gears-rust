@@ -14,6 +14,8 @@ workspace = true
 test-support = []
 
 [dependencies]
+bss-approval = { workspace = true }
+event-broker-sdk = { workspace = true, features = ["db"] }
 account-management = { workspace = true }
 coord = { workspace = true }
 anyhow = { workspace = true }

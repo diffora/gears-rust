@@ -15,8 +15,8 @@ mod schema_dump;
 
 use schema_dump::{migrate_and_dump_sqlite, normalise_sql, tables_in};
 
-/// No pricing-owned tables exist in the skeleton; coord remains in the runtime chain.
-const PRICING_TABLES: usize = 0;
+/// Twelve pricing tables plus coordination and toolkit delivery tables.
+const PRICING_TABLES: usize = 12;
 
 async fn migrated_dump() -> String {
     let conn = Database::connect("sqlite::memory:")
@@ -65,7 +65,32 @@ async fn the_dump_names_every_table_the_chain_creates() {
         pricing.len()
     );
 
-    assert_eq!(tables, vec!["coord_leases".to_owned()]);
+    assert_eq!(
+        tables,
+        vec![
+            "bss_pricing_outbox_body".to_owned(),
+            "bss_pricing_outbox_dead_letters".to_owned(),
+            "bss_pricing_outbox_incoming".to_owned(),
+            "bss_pricing_outbox_outgoing".to_owned(),
+            "bss_pricing_outbox_partitions".to_owned(),
+            "bss_pricing_outbox_processor".to_owned(),
+            "bss_pricing_outbox_vacuum_counter".to_owned(),
+            "coord_leases".to_owned(),
+            "event_broker_producer_registrations".to_owned(),
+            "pricing_approval_decision".to_owned(),
+            "pricing_approval_policy".to_owned(),
+            "pricing_approval_unit".to_owned(),
+            "pricing_approval_unit_item".to_owned(),
+            "pricing_audit".to_owned(),
+            "pricing_dimension_key".to_owned(),
+            "pricing_idempotency".to_owned(),
+            "pricing_price".to_owned(),
+            "pricing_price_book".to_owned(),
+            "pricing_price_row".to_owned(),
+            "pricing_reference_op".to_owned(),
+            "pricing_settings".to_owned()
+        ]
+    );
 
     // Every stanza carries its DDL, so a table rendered with no definition would be a hole the
     // comparison could not see through.

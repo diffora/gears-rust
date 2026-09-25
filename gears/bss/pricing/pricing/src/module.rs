@@ -91,7 +91,13 @@ impl Gear for BssPricingGear {
 
 impl DatabaseCapability for BssPricingGear {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
-        crate::infra::storage::migrations::Migrator::migrations()
+        let mut migrations = crate::infra::storage::migrations::Migrator::migrations();
+        match toolkit_db::outbox::outbox_migrations_with_prefix("bss_pricing_outbox") {
+            Ok(outbox) => migrations.extend(outbox),
+            Err(error) => migrations.push(Box::new(InvalidOutboxMigration(error.to_string()))),
+        }
+        migrations.extend(event_broker_sdk::producer_registration_migrations());
+        migrations
     }
 }
 
@@ -113,5 +119,23 @@ impl RestApiCapability for BssPricingGear {
             inner
         };
         Ok(router.nest("/bss-pricing/v1", inner))
+    }
+}
+
+// The capability cannot return Result. Preserve a prefix error as a failing migration
+// rather than panicking or silently omitting delivery tables.
+struct InvalidOutboxMigration(String);
+impl sea_orm_migration::MigrationName for InvalidOutboxMigration {
+    fn name(&self) -> &'static str {
+        "invalid_pricing_outbox_prefix"
+    }
+}
+#[async_trait]
+impl MigrationTrait for InvalidOutboxMigration {
+    async fn up(&self, _: &sea_orm_migration::SchemaManager) -> Result<(), sea_orm::DbErr> {
+        Err(sea_orm::DbErr::Migration(self.0.clone()))
+    }
+    async fn down(&self, _: &sea_orm_migration::SchemaManager) -> Result<(), sea_orm::DbErr> {
+        Err(sea_orm::DbErr::Migration(self.0.clone()))
     }
 }

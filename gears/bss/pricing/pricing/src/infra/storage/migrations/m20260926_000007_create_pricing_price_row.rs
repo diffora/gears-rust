@@ -1,0 +1,64 @@
+//! Price row schema.
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+const PG_UP: &[&str] = &[
+    r"CREATE TABLE IF NOT EXISTS bss.pricing_price_row (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, price_id uuid NOT NULL REFERENCES bss.pricing_price(id),
+  version_no integer NOT NULL, dim_value text,
+  model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json jsonb NOT NULL,
+  min_fee numeric CHECK (min_fee >= 0), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
+  effective_from date NOT NULL, effective_to date, keep_for_bound boolean NOT NULL DEFAULT false,
+  closed_explicitly boolean NOT NULL DEFAULT false,
+  temporary_until date, paired_row_id uuid REFERENCES bss.pricing_price_row(id),
+  return_of_row_id uuid REFERENCES bss.pricing_price_row(id),
+  state text NOT NULL CHECK (state IN ('draft','pending','approved','rejected')),
+  pending_unit_id uuid REFERENCES bss.pricing_approval_unit(id),
+  approved_by_unit_id uuid REFERENCES bss.pricing_approval_unit(id), note text, created_by uuid NOT NULL,
+  approved_at timestamptz, version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  UNIQUE (price_id, version_no), CHECK (dim_value IS NULL OR dim_value <> ''),
+  CHECK (effective_to IS NULL OR effective_from < effective_to)
+)",
+    r"CREATE UNIQUE INDEX IF NOT EXISTS pricing_price_row_approved_start
+  ON bss.pricing_price_row (price_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'",
+    r"CREATE INDEX IF NOT EXISTS pricing_price_row_chain
+  ON bss.pricing_price_row (price_id, dim_value, effective_from) WHERE state = 'approved'",
+];
+const SQLITE_UP: &[&str] = &[
+    r"CREATE TABLE IF NOT EXISTS pricing_price_row (
+  id text PRIMARY KEY, tenant_id text NOT NULL, price_id text NOT NULL REFERENCES pricing_price(id),
+  version_no integer NOT NULL, dim_value text,
+  model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json text NOT NULL,
+  min_fee numeric CHECK (min_fee >= 0), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
+  effective_from text NOT NULL, effective_to text, keep_for_bound integer NOT NULL DEFAULT 0,
+  closed_explicitly integer NOT NULL DEFAULT 0,
+  temporary_until text, paired_row_id text REFERENCES pricing_price_row(id),
+  return_of_row_id text REFERENCES pricing_price_row(id),
+  state text NOT NULL CHECK (state IN ('draft','pending','approved','rejected')),
+  pending_unit_id text REFERENCES pricing_approval_unit(id),
+  approved_by_unit_id text REFERENCES pricing_approval_unit(id), note text, created_by text NOT NULL,
+  approved_at text, version integer NOT NULL DEFAULT 1,
+  created_at text NOT NULL, updated_at text NOT NULL,
+  UNIQUE (price_id, version_no), CHECK (dim_value IS NULL OR dim_value <> ''),
+  CHECK (effective_to IS NULL OR effective_from < effective_to)
+)",
+    r"CREATE UNIQUE INDEX IF NOT EXISTS pricing_price_row_approved_start
+  ON pricing_price_row (price_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'",
+    r"CREATE INDEX IF NOT EXISTS pricing_price_row_chain
+  ON pricing_price_row (price_id, dim_value, effective_from) WHERE state = 'approved'",
+];
+const PG_DOWN: &[&str] = &[r"DROP TABLE IF EXISTS bss.pricing_price_row"];
+const SQLITE_DOWN: &[&str] = &[r"DROP TABLE IF EXISTS pricing_price_row"];
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        super::exec_backend(self.name(), manager, PG_UP, SQLITE_UP).await
+    }
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        super::exec_backend(self.name(), manager, PG_DOWN, SQLITE_DOWN).await
+    }
+}

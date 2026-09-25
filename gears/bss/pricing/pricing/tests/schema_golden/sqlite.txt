@@ -1,5 +1,283 @@
+INDEX idx_bss_pricing_outbox_dl_status_deadline
+  ON bss_pricing_outbox_dead_letters
+  DDL CREATE INDEX idx_bss_pricing_outbox_dl_status_deadline ON bss_pricing_outbox_dead_letters (status, deadline)
+INDEX idx_bss_pricing_outbox_dl_status_failed
+  ON bss_pricing_outbox_dead_letters
+  DDL CREATE INDEX idx_bss_pricing_outbox_dl_status_failed ON bss_pricing_outbox_dead_letters (status, failed_at)
+INDEX idx_bss_pricing_outbox_incoming_body_id
+  ON bss_pricing_outbox_incoming
+  DDL CREATE INDEX idx_bss_pricing_outbox_incoming_body_id ON bss_pricing_outbox_incoming (body_id)
+INDEX idx_bss_pricing_outbox_incoming_partition
+  ON bss_pricing_outbox_incoming
+  DDL CREATE INDEX idx_bss_pricing_outbox_incoming_partition ON bss_pricing_outbox_incoming (partition_id, id)
+INDEX idx_bss_pricing_outbox_outgoing_body_id
+  ON bss_pricing_outbox_outgoing
+  DDL CREATE INDEX idx_bss_pricing_outbox_outgoing_body_id ON bss_pricing_outbox_outgoing (body_id)
+INDEX idx_bss_pricing_outbox_outgoing_partition_seq
+  ON bss_pricing_outbox_outgoing
+  DDL CREATE UNIQUE INDEX idx_bss_pricing_outbox_outgoing_partition_seq ON bss_pricing_outbox_outgoing (partition_id, seq)
+INDEX idx_pricing_audit_actor
+  ON pricing_audit
+  DDL CREATE INDEX idx_pricing_audit_actor ON pricing_audit (tenant_id, actor_ref, written_at)
+INDEX idx_pricing_audit_subject
+  ON pricing_audit
+  DDL CREATE INDEX idx_pricing_audit_subject ON pricing_audit (tenant_id, subject_kind, subject_id, written_at)
+INDEX idx_pricing_audit_tenant_time
+  ON pricing_audit
+  DDL CREATE INDEX idx_pricing_audit_tenant_time ON pricing_audit (tenant_id, written_at)
+INDEX idx_pricing_idempotency_expires
+  ON pricing_idempotency
+  DDL CREATE INDEX idx_pricing_idempotency_expires ON pricing_idempotency (tenant_id, expires_at)
+INDEX ix_pricing_approval_unit_queue
+  ON pricing_approval_unit
+  DDL CREATE INDEX ix_pricing_approval_unit_queue ON pricing_approval_unit (tenant_id, state, kind, submitted_at)
+INDEX pricing_price_key
+  ON pricing_price
+  DDL CREATE UNIQUE INDEX pricing_price_key ON pricing_price (book_id, sku_id, charge_kind, coalesce(period, ''))
+INDEX pricing_price_row_approved_start
+  ON pricing_price_row
+  DDL CREATE UNIQUE INDEX pricing_price_row_approved_start ON pricing_price_row (price_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
+INDEX pricing_price_row_chain
+  ON pricing_price_row
+  DDL CREATE INDEX pricing_price_row_chain ON pricing_price_row (price_id, dim_value, effective_from) WHERE state = 'approved'
+INDEX pricing_reference_op_due
+  ON pricing_reference_op
+  DDL CREATE INDEX pricing_reference_op_due ON pricing_reference_op (state, next_attempt_at) WHERE state <> 'done'
+TABLE bss_pricing_outbox_body
+  COLUMN created_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+  COLUMN id INTEGER NULL DEFAULT - PK 1
+  COLUMN payload BLOB NOT NULL DEFAULT - PK 0
+  COLUMN payload_type TEXT NOT NULL DEFAULT - PK 0
+TABLE bss_pricing_outbox_dead_letters
+  COLUMN attempts INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN completed_at TEXT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN deadline TEXT NULL DEFAULT - PK 0
+  COLUMN failed_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+  COLUMN id INTEGER NULL DEFAULT - PK 1
+  COLUMN last_error TEXT NULL DEFAULT - PK 0
+  COLUMN partition_id INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN payload BLOB NOT NULL DEFAULT - PK 0
+  COLUMN payload_type TEXT NOT NULL DEFAULT - PK 0
+  COLUMN seq INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN status TEXT NOT NULL DEFAULT 'pending' PK 0
+  FK partition_id -> bss_pricing_outbox_partitions.id
+TABLE bss_pricing_outbox_incoming
+  COLUMN body_id INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN id INTEGER NULL DEFAULT - PK 1
+  COLUMN partition_id INTEGER NOT NULL DEFAULT - PK 0
+  FK body_id -> bss_pricing_outbox_body.id
+  FK partition_id -> bss_pricing_outbox_partitions.id
+TABLE bss_pricing_outbox_outgoing
+  COLUMN body_id INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN id INTEGER NULL DEFAULT - PK 1
+  COLUMN partition_id INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN seq INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN sequenced_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+  FK body_id -> bss_pricing_outbox_body.id
+  FK partition_id -> bss_pricing_outbox_partitions.id
+TABLE bss_pricing_outbox_partitions
+  COLUMN id INTEGER NULL DEFAULT - PK 1
+  COLUMN partition INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN queue TEXT NOT NULL DEFAULT - PK 0
+  COLUMN sequence INTEGER NOT NULL DEFAULT 0 PK 0
+TABLE bss_pricing_outbox_processor
+  COLUMN attempts INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN last_error TEXT NULL DEFAULT - PK 0
+  COLUMN locked_by TEXT NULL DEFAULT - PK 0
+  COLUMN locked_until TEXT NULL DEFAULT - PK 0
+  COLUMN partition_id INTEGER NULL DEFAULT - PK 1
+  COLUMN processed_seq INTEGER NOT NULL DEFAULT 0 PK 0
+  FK partition_id -> bss_pricing_outbox_partitions.id
+TABLE bss_pricing_outbox_vacuum_counter
+  COLUMN counter INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN partition_id INTEGER NULL DEFAULT - PK 1
+  FK partition_id -> bss_pricing_outbox_partitions.id
 TABLE coord_leases
   COLUMN attempts INTEGER NOT NULL DEFAULT 0 PK 0
   COLUMN key TEXT NULL DEFAULT - PK 1
   COLUMN locked_by TEXT NULL DEFAULT - PK 0
   COLUMN locked_until TEXT NOT NULL DEFAULT '1970-01-01 00:00:00+00:00' PK 0
+TABLE event_broker_producer_registrations
+  COLUMN client_agent TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+  COLUMN generation INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN mode TEXT NOT NULL DEFAULT - PK 0
+  COLUMN producer_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN registration_key TEXT NULL DEFAULT - PK 1
+  COLUMN updated_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+TABLE pricing_approval_decision
+  COLUMN actor TEXT NOT NULL DEFAULT - PK 2
+  COLUMN at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN decision TEXT NOT NULL DEFAULT - PK 0
+  COLUMN generation INTEGER NOT NULL DEFAULT - PK 3
+  COLUMN note TEXT NULL DEFAULT - PK 0
+  COLUMN stale INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN unit_id TEXT NOT NULL DEFAULT - PK 1
+  FK unit_id -> pricing_approval_unit.id
+TABLE pricing_approval_policy
+  COLUMN kind TEXT NOT NULL DEFAULT - PK 2
+  COLUMN quorum INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+TABLE pricing_approval_unit
+  COLUMN common_effective_date TEXT NULL DEFAULT - PK 0
+  COLUMN decided_at TEXT NULL DEFAULT - PK 0
+  COLUMN decided_note TEXT NULL DEFAULT - PK 0
+  COLUMN generation INTEGER NOT NULL DEFAULT 1 PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN kind TEXT NOT NULL DEFAULT - PK 0
+  COLUMN quorum_required INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN ref_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN ref_type TEXT NOT NULL DEFAULT - PK 0
+  COLUMN snapshot TEXT NOT NULL DEFAULT - PK 0
+  COLUMN snapshot_hash TEXT NOT NULL DEFAULT - PK 0
+  COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN submitted_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN submitted_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TABLE pricing_approval_unit_item
+  COLUMN after_json TEXT NOT NULL DEFAULT - PK 0
+  COLUMN before_json TEXT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN item_id TEXT NOT NULL DEFAULT - PK 3
+  COLUMN item_type TEXT NOT NULL DEFAULT - PK 2
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN unit_id TEXT NOT NULL DEFAULT - PK 1
+  FK unit_id -> pricing_approval_unit.id
+TABLE pricing_audit
+  COLUMN action TEXT NOT NULL DEFAULT - PK 0
+  COLUMN actor_ref TEXT NOT NULL DEFAULT - PK 0
+  COLUMN attempted_key TEXT NULL DEFAULT - PK 0
+  COLUMN audit_id TEXT NOT NULL DEFAULT - PK 1
+  COLUMN ceremony_ref TEXT NULL DEFAULT - PK 0
+  COLUMN chain_id TEXT NULL DEFAULT - PK 0
+  COLUMN correlation_id TEXT NULL DEFAULT - PK 0
+  COLUMN error_code TEXT NULL DEFAULT - PK 0
+  COLUMN prev_hash BLOB NULL DEFAULT - PK 0
+  COLUMN reason TEXT NULL DEFAULT - PK 0
+  COLUMN row_hash BLOB NULL DEFAULT - PK 0
+  COLUMN seal_state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN seq bigint NULL DEFAULT - PK 0
+  COLUMN session_id TEXT NULL DEFAULT - PK 0
+  COLUMN subject_id TEXT NULL DEFAULT - PK 0
+  COLUMN subject_kind TEXT NOT NULL DEFAULT - PK 0
+  COLUMN subject_revision bigint NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN written_at TEXT NOT NULL DEFAULT - PK 0
+  CONSTRAINT chk_pricing_audit_seal_group CHECK ((seal_state = 'unsealed' AND chain_id IS NULL AND seq IS NULL AND prev_hash IS NULL AND row_hash IS NULL) OR (seal_state = 'sealed' AND chain_id IS NOT NULL AND seq IS NOT NULL AND row_hash IS NOT NULL))
+  CONSTRAINT chk_pricing_audit_seal_state CHECK (seal_state IN ('unsealed', 'sealed'))
+  CONSTRAINT chk_pricing_audit_seq CHECK (seq IS NULL OR seq >= 0)
+  CONSTRAINT chk_pricing_audit_subject_ref CHECK (subject_id IS NOT NULL OR attempted_key IS NOT NULL OR session_id IS NOT NULL)
+TABLE pricing_dimension_key
+  COLUMN key TEXT NOT NULL DEFAULT - PK 2
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  COLUMN values TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TABLE pricing_idempotency
+  COLUMN client_key TEXT NOT NULL DEFAULT - PK 3
+  COLUMN endpoint TEXT NOT NULL DEFAULT - PK 2
+  COLUMN entity_ref TEXT NULL DEFAULT - PK 0
+  COLUMN expires_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN payload_hash BLOB NOT NULL DEFAULT - PK 0
+  COLUMN response_body TEXT NULL DEFAULT - PK 0
+  COLUMN response_status INTEGER NULL DEFAULT - PK 0
+  COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  CONSTRAINT chk_pricing_idempotency_response_group CHECK ((state = 'claimed' AND response_status IS NULL AND response_body IS NULL) OR (state = 'answered' AND response_status IS NOT NULL AND response_body IS NOT NULL))
+  CONSTRAINT chk_pricing_idempotency_state CHECK (state IN ('claimed', 'answered'))
+TABLE pricing_price
+  COLUMN book_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN charge_kind TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN dimension_key TEXT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN invoice_line_override TEXT NULL DEFAULT - PK 0
+  COLUMN period TEXT NULL DEFAULT - PK 0
+  COLUMN reference_state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN reservation_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN sku_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+  FK book_id -> pricing_price_book.id
+  FK dimension_key -> pricing_dimension_key.key
+  FK tenant_id -> pricing_dimension_key.tenant_id
+TABLE pricing_price_book
+  COLUMN code TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN currency char(3) NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN name TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN valid_from TEXT NULL DEFAULT - PK 0
+  COLUMN valid_until TEXT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TABLE pricing_price_row
+  COLUMN approved_at TEXT NULL DEFAULT - PK 0
+  COLUMN approved_by_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN closed_explicitly INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN dim_value TEXT NULL DEFAULT - PK 0
+  COLUMN effective_from TEXT NOT NULL DEFAULT - PK 0
+  COLUMN effective_to TEXT NULL DEFAULT - PK 0
+  COLUMN eligibility TEXT NOT NULL DEFAULT - PK 0
+  COLUMN id TEXT NULL DEFAULT - PK 1
+  COLUMN keep_for_bound INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN min_fee numeric NULL DEFAULT - PK 0
+  COLUMN model TEXT NOT NULL DEFAULT - PK 0
+  COLUMN note TEXT NULL DEFAULT - PK 0
+  COLUMN paired_row_id TEXT NULL DEFAULT - PK 0
+  COLUMN pending_unit_id TEXT NULL DEFAULT - PK 0
+  COLUMN price_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN price_json TEXT NOT NULL DEFAULT - PK 0
+  COLUMN return_of_row_id TEXT NULL DEFAULT - PK 0
+  COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN temporary_until TEXT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+  COLUMN version_no INTEGER NOT NULL DEFAULT - PK 0
+  FK approved_by_unit_id -> pricing_approval_unit.id
+  FK paired_row_id -> pricing_price_row.id
+  FK pending_unit_id -> pricing_approval_unit.id
+  FK price_id -> pricing_price.id
+  FK return_of_row_id -> pricing_price_row.id
+TABLE pricing_reference_op
+  COLUMN attempts INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN created_by TEXT NOT NULL DEFAULT - PK 0
+  COLUMN idempotency_key TEXT NULL DEFAULT - PK 0
+  COLUMN kind TEXT NOT NULL DEFAULT - PK 0
+  COLUMN last_error TEXT NULL DEFAULT - PK 0
+  COLUMN next_attempt_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN op_id TEXT NULL DEFAULT - PK 1
+  COLUMN outcome TEXT NULL DEFAULT - PK 0
+  COLUMN price_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN reservation_id TEXT NULL DEFAULT - PK 0
+  COLUMN sku_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN state TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+TABLE pricing_settings
+  COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN default_gl TEXT NULL DEFAULT - PK 0
+  COLUMN default_rounding TEXT NOT NULL DEFAULT - PK 0
+  COLUMN default_tax_category TEXT NULL DEFAULT - PK 0
+  COLUMN default_timing TEXT NOT NULL DEFAULT - PK 0
+  COLUMN invoice_line_templates TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NULL DEFAULT - PK 1
+  COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
+TRIGGER trg_pricing_audit_no_delete
+  ON pricing_audit
+  DDL CREATE TRIGGER trg_pricing_audit_no_delete BEFORE DELETE ON pricing_audit FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_audit is append-only: DELETE is not permitted'); END
+TRIGGER trg_pricing_audit_no_update
+  ON pricing_audit
+  DDL CREATE TRIGGER trg_pricing_audit_no_update BEFORE UPDATE ON pricing_audit FOR EACH ROW WHEN NOT (OLD.seal_state IS 'unsealed' AND NEW.seal_state IS 'sealed' AND NEW.chain_id IS NOT NULL AND NEW.seq IS NOT NULL AND NEW.row_hash IS NOT NULL) BEGIN SELECT RAISE(ABORT, 'pricing_audit is append-only: UPDATE is not permitted'); END
+TRIGGER trg_pricing_audit_seal_unchanged
+  ON pricing_audit
+  DDL CREATE TRIGGER trg_pricing_audit_seal_unchanged BEFORE UPDATE ON pricing_audit FOR EACH ROW WHEN (OLD.seal_state IS 'unsealed' AND NEW.seal_state IS 'sealed' AND NEW.chain_id IS NOT NULL AND NEW.seq IS NOT NULL AND NEW.row_hash IS NOT NULL) AND NOT (NEW.audit_id IS OLD.audit_id AND NEW.tenant_id IS OLD.tenant_id AND NEW.actor_ref IS OLD.actor_ref AND NEW.action IS OLD.action AND NEW.subject_kind IS OLD.subject_kind AND NEW.subject_id IS OLD.subject_id AND NEW.subject_revision IS OLD.subject_revision AND NEW.error_code IS OLD.error_code AND NEW.attempted_key IS OLD.attempted_key AND NEW.reason IS OLD.reason AND NEW.correlation_id IS OLD.correlation_id AND NEW.written_at IS OLD.written_at AND NEW.session_id IS OLD.session_id AND NEW.ceremony_ref IS OLD.ceremony_ref) BEGIN SELECT RAISE(ABORT, 'pricing_audit is append-only: UPDATE is not permitted'); END

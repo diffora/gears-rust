@@ -20,8 +20,8 @@ mod schema_dump;
 
 use schema_dump::postgres_dump;
 
-/// No pricing-owned tables exist in the skeleton; coord remains in the runtime chain.
-const PRICING_TABLES: usize = 0;
+/// Twelve pricing tables plus coordination and toolkit delivery tables.
+const PRICING_TABLES: usize = 12;
 
 fn tables_in(dump: &str) -> Vec<String> {
     let mut names: Vec<String> = dump
@@ -79,18 +79,44 @@ async fn the_dump_reaches_every_kind_of_object() {
         pricing.len()
     );
 
-    assert_eq!(tables, vec!["bss.coord_leases".to_owned()]);
+    assert_eq!(
+        tables,
+        vec![
+            "bss.coord_leases".to_owned(),
+            "bss.pricing_approval_decision".to_owned(),
+            "bss.pricing_approval_policy".to_owned(),
+            "bss.pricing_approval_unit".to_owned(),
+            "bss.pricing_approval_unit_item".to_owned(),
+            "bss.pricing_audit".to_owned(),
+            "bss.pricing_dimension_key".to_owned(),
+            "bss.pricing_idempotency".to_owned(),
+            "bss.pricing_price".to_owned(),
+            "bss.pricing_price_book".to_owned(),
+            "bss.pricing_price_row".to_owned(),
+            "bss.pricing_reference_op".to_owned(),
+            "bss.pricing_settings".to_owned(),
+            "public.bss_pricing_outbox_body".to_owned(),
+            "public.bss_pricing_outbox_dead_letters".to_owned(),
+            "public.bss_pricing_outbox_incoming".to_owned(),
+            "public.bss_pricing_outbox_outgoing".to_owned(),
+            "public.bss_pricing_outbox_partitions".to_owned(),
+            "public.bss_pricing_outbox_processor".to_owned(),
+            "public.bss_pricing_outbox_vacuum_counter".to_owned(),
+            "public.event_broker_producer_registrations".to_owned()
+        ]
+    );
     for kind in ["COLUMN ", "CONSTRAINT ", "INDEX "] {
         assert!(
             dump.lines().any(|line| line.starts_with(kind)),
             "missing {kind}"
         );
     }
-    assert!(
-        !dump
-            .lines()
-            .any(|line| line.starts_with("TRIGGER ") || line.starts_with("FUNCTION "))
-    );
+    for kind in ["TRIGGER ", "FUNCTION "] {
+        assert!(
+            dump.lines().any(|line| line.starts_with(kind)),
+            "missing {kind}"
+        );
+    }
 
     // Objects belong in `bss`. A `public` object is not necessarily wrong -- the runner's own
     // history table lives there -- but it is excluded from this dump, so anything left in
@@ -107,9 +133,11 @@ async fn the_dump_reaches_every_kind_of_object() {
     let stray: Vec<&str> = dump
         .lines()
         .filter(|line| {
-            line.contains(" public.")
+            (line.contains(" public.")
                 || line.starts_with("INDEX public ")
-                || line.starts_with("FUNCTION public ")
+                || line.starts_with("FUNCTION public "))
+                && !line.contains("bss_pricing_outbox_")
+                && !line.contains("event_broker_producer_registrations")
         })
         .collect();
     assert!(
