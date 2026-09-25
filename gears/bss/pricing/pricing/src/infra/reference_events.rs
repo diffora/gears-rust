@@ -33,7 +33,7 @@ impl TypedEvent for PriceReferenceLost {
 /// # Errors
 /// Preserves typed database errors for serializable transaction retries.
 pub async fn lost(
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &events::EventSink,
     tx: &(impl DBRunner + Sync),
     price: &price::Model,
     actor: Uuid,

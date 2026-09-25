@@ -20,7 +20,7 @@ rust_decimal = { workspace = true }
 toolkit-macros = { workspace = true }
 bss-products-sdk = { workspace = true }
 bss-approval = { workspace = true }
-event-broker-sdk = { workspace = true, features = ["db"] }
+event-broker-sdk = { workspace = true, features = ["db", "outbox"] }
 account-management = { workspace = true }
 coord = { workspace = true }
 anyhow = { workspace = true }
@@ -51,7 +51,7 @@ toolkit-canonical-errors = { workspace = true }
 [dev-dependencies]
 # The events suite decodes the interim envelope with the broker SDK's own decoder
 # (`producer::ProducerOutboxEnvelope`), which the `outbox` feature exposes.
-event-broker-sdk = { workspace = true, features = ["db", "outbox"] }
+event-broker-sdk = { workspace = true, features = ["db", "outbox", "test-util"] }
 toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules = { workspace = true }

@@ -262,7 +262,7 @@ async fn advance(
 /// state, the durable `PriceReferenceLost` event and the audit record commit together.
 async fn mark_rereserve_lost(
     tx: &(impl DBRunner + Sync),
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &super::events::EventSink,
     ctx: &SecurityContext,
     work: &Work,
     op: &entity::Model,
@@ -538,7 +538,7 @@ async fn commit_observation(
 )]
 async fn commit(
     tx: &(impl DBRunner + Sync),
-    outbox: &toolkit_db::outbox::Outbox,
+    outbox: &super::events::EventSink,
     ctx: &SecurityContext,
     op: &entity::Model,
     mut work: Work,

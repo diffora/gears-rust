@@ -9,6 +9,15 @@ use tower::ServiceExt;
 use uuid::Uuid;
 #[path = "../storage_support/mod.rs"]
 mod storage_support;
+/// A migrated file-backed database: provider, tenant scope, tenant and DSN.
+pub async fn test_db() -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::secure::AccessScope,
+    Uuid,
+    String,
+) {
+    storage_support::test_db().await
+}
 struct Resolver {
     tenant: Uuid,
     allow: bool,

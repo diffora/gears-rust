@@ -2,10 +2,10 @@
 //! outbox on the caller's transaction, in the broker's producer-outbox envelope.
 //!
 //! The runner a writer passes is the transaction of the act the event reports, so a rollback
-//! erases the event with the act, and a failed outbox insert fails the act. No broker
-//! producer is bound in phase 2: the queue's processor is [`PendingProducer`], which holds
-//! every envelope, so nothing is reported delivered before a broker exists (Products'
-//! interim pattern).
+//! erases the event with the act, and a failed outbox insert fails the act. Where a broker is
+//! registered, the queue's processor is the broker SDK's producer ([`super::broker`]);
+//! otherwise it is [`PendingProducer`], which holds every envelope, so nothing is reported
+//! delivered before a broker exists (Products' interim pattern).
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-outbox-same-tx:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-events-typed-outbox:p1
@@ -33,7 +33,15 @@ pub const APPROVAL_UNIT_SUBJECT_TYPE: &str =
 const CONTENT_TYPE: &str =
     "application/vnd.constructorfabric.event-broker.producer-outbox+json;version=1";
 
-/// Holds every envelope until a broker producer is bound (a later phase).
+/// Where an event is enqueued: the broker SDK's producer outbox, or the holding queue.
+#[derive(Clone)]
+pub enum EventSink {
+    /// The bound `DbProducer`'s outbox: its envelope, its processor.
+    Broker(Box<event_broker_sdk::ProducerOutbox>),
+    /// The interim envelope on pricing's queue, held by [`PendingProducer`].
+    Interim(std::sync::Arc<toolkit_db::outbox::Outbox>),
+}
+/// Holds every envelope while no broker producer is bound.
 pub struct PendingProducer;
 #[async_trait::async_trait]
 impl toolkit_db::outbox::LeasedMessageHandler for PendingProducer {
@@ -122,12 +130,24 @@ impl TypedEvent for ApprovalUnitDecided {
 /// # Errors
 /// Serialization failures, and outbox failures with the driver error kept typed so a
 /// serializable transaction can retry.
-pub async fn enqueue<E: TypedEvent>(
-    outbox: &toolkit_db::outbox::Outbox,
+pub async fn enqueue<E: TypedEvent + Clone>(
+    sink: &EventSink,
     tx: &(impl DBRunner + Sync),
     event: &E,
     now: time::OffsetDateTime,
 ) -> Result<(), RepoError> {
+    let outbox = match sink {
+        EventSink::Interim(outbox) => outbox,
+        // The SDK's enqueue erases the outbox's database error into a string, so a
+        // contended insert here fails the act instead of retrying it (as in Products).
+        EventSink::Broker(producer) => {
+            return producer
+                .enqueue(tx, event.clone())
+                .await
+                .map(|_| ())
+                .map_err(|e| RepoError::Db(format!("{} event: {e}", E::TYPE_ID)));
+        }
+    };
     let serialize = |e: String| RepoError::Db(format!("{} event: {e}", E::TYPE_ID));
     let envelope = serde_json::json!({
         "version": 1,

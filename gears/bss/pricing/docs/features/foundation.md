@@ -178,7 +178,7 @@ Requirement: `cpt-cf-bss-pricing-nfr-audit`; PRD AC #22.
 
 ### Toolkit delivery integration
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-outbox-toolkit`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-outbox-toolkit`
 
 Toolkit migrations and a lifecycle-managed dispatcher carry broker TypedEvent envelopes using the Products pattern. The old gear-authored pricing_outbox without a relay is retired by D-400.
 

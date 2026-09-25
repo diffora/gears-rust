@@ -53,7 +53,7 @@ pub struct Command {
     pub ctx: SecurityContext,
     pub hub: Arc<toolkit::ClientHub>,
     /// The toolkit outbox the decision's events are enqueued on, inside its transaction.
-    pub outbox: Arc<toolkit_db::outbox::Outbox>,
+    pub outbox: crate::infra::events::EventSink,
     pub correlation: Uuid,
     pub key: String,
     pub digest: Vec<u8>,

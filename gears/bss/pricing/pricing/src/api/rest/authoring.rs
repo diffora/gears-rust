@@ -33,36 +33,70 @@ use uuid::Uuid;
 pub struct AuthoringState {
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
     pub hub: Arc<toolkit::ClientHub>,
-    pub outbox: Arc<toolkit_db::outbox::Outbox>,
-    pipeline: tokio::sync::Mutex<Option<toolkit_db::outbox::OutboxHandle>>,
+    /// Where every pricing event is enqueued, inside the transaction of its act.
+    pub outbox: crate::infra::events::EventSink,
+    pipeline: tokio::sync::Mutex<Option<Pipeline>>,
+}
+/// The running outbox processor: the broker SDK's producer, or the holding one.
+enum Pipeline {
+    Broker(Box<event_broker_sdk::ProducerOutboxHandle>),
+    Interim(toolkit_db::outbox::OutboxHandle),
 }
 impl AuthoringState {
-    /// Attach the durable event queue to the runtime database.
+    /// Attach the durable event queue to the runtime database. With an `EventBrokerApi` in
+    /// the hub its processor is the broker SDK's `DbProducer`; without one it holds every
+    /// envelope and reports nothing delivered.
     /// # Errors
-    /// Fails initialization if the toolkit queue cannot start.
+    /// Fails initialization if a present broker refuses the producer or the queue cannot start.
     pub async fn new(
         db: toolkit_db::DBProvider<toolkit_db::DbError>,
         hub: Arc<toolkit::ClientHub>,
-    ) -> Result<Self, toolkit_db::outbox::OutboxError> {
-        let pipeline = toolkit_db::outbox::Outbox::builder(db.db())
-            .table_prefix(crate::infra::events::OUTBOX_TABLE_PREFIX)?
-            .queue(
-                crate::infra::events::QUEUE,
-                toolkit_db::outbox::Partitions::of(1),
+    ) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let partitions = toolkit_db::outbox::Partitions::of(1);
+        let bound = crate::infra::broker::bind_producer(
+            &hub,
+            db.db(),
+            crate::infra::events::OUTBOX_TABLE_PREFIX,
+            partitions,
+        )
+        .await
+        .context("bss-pricing: the event-broker producer could not be bound")?;
+        let (outbox, pipeline) = if let Some((sink, handle)) = bound {
+            tracing::info!(
+                queue = crate::infra::events::QUEUE,
+                topic = crate::infra::events::TOPIC,
+                "bss-pricing: publishing through the event-broker SDK producer"
+            );
+            (sink, Pipeline::Broker(Box::new(handle)))
+        } else {
+            tracing::warn!(
+                "bss-pricing: no EventBrokerApi in the ClientHub; events accumulate \
+                 undelivered on the interim queue and no delivery is ever reported"
+            );
+            let handle = toolkit_db::outbox::Outbox::builder(db.db())
+                .table_prefix(crate::infra::events::OUTBOX_TABLE_PREFIX)?
+                .queue(crate::infra::events::QUEUE, partitions)
+                .leased(crate::infra::events::PendingProducer)
+                .start()
+                .await?;
+            (
+                crate::infra::events::EventSink::Interim(handle.outbox().clone()),
+                Pipeline::Interim(handle),
             )
-            .leased(crate::infra::events::PendingProducer)
-            .start()
-            .await?;
+        };
         Ok(Self {
             db,
             hub,
-            outbox: pipeline.outbox().clone(),
+            outbox,
             pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })
     }
     pub(crate) async fn stop(&self) {
-        if let Some(pipeline) = self.pipeline.lock().await.take() {
-            pipeline.stop().await;
+        match self.pipeline.lock().await.take() {
+            Some(Pipeline::Broker(handle)) => handle.stop().await,
+            Some(Pipeline::Interim(handle)) => handle.stop().await,
+            None => {}
         }
     }
 }
