@@ -176,7 +176,7 @@ The toolkit's canonical errors have no 422: InvalidArgument and FailedPreconditi
 
 **Status:** DECIDED 2026-09-25.
 
-A draft belongs to its author: only its creator edits or deletes it. PATCH or DELETE of a draft price by anyone but its created_by is 403 NOT_DRAFT_AUTHOR, and a temporary pair's partner follows its creator. Separation of duties (D-393) excludes the submitter and every item's created_by; because no one else can change a draft, every number in a unit is its item author's, and an editor can never approve money they wrote under another author's name. Products applies the same rule to SKU drafts. Another author proposes a different number with a draft of their own.
+A draft belongs to its author: only its creator edits or deletes it. PATCH or DELETE of a draft price by anyone but its created_by is 403 NOT_DRAFT_AUTHOR, and a temporary pair's partner follows its creator. The entry delete honours it: DELETE /price-book-entries/{id} is 403 NOT_DRAFT_AUTHOR, naming the first such price, while a draft price of the entry was created by someone other than the caller; rejected prices are history and do not block. Separation of duties (D-393) excludes the submitter and every item's created_by; because no one else can change a draft, every number in a unit is its item author's, and an editor can never approve money they wrote under another author's name. Products applies the same rule to SKU drafts. Another author proposes a different number with a draft of their own.
 
 **Source:** Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8).
 

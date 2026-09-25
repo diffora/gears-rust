@@ -235,7 +235,7 @@ subscriptions read "unavailable until phase 3". Never label unavailable phase 3 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
 | Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; PATCH /price-book-entries/{id} for invoice_line_override and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; PATCH /price-book-entries/{id} for invoice_line_override and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404) |
 | Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys |
@@ -263,7 +263,7 @@ billing_timing, rounding_policy, promotion_id and promotion_version. Resolve ret
 | Stale If-Match, or a conditional write that lost its version | 409 STALE_REVISION |
 | A price another pending unit owns, at submit; a contended unit | 409 PRICE_LOCKED_PENDING; 409 UNIT_CONTENDED |
 | Transaction still contended after its bounded retries | 409 CONTENDED (an entry create that fails so, or with a 500, after its reserve is cancelled before the answer: no entry, key free, receipt released); UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
-| Author approval; a draft price edited or deleted by anyone but its author | 403 SOD_VIOLATION; 403 NOT_DRAFT_AUTHOR (D-404) |
+| Author approval; a draft price edited or deleted by anyone but its author, or an entry delete that would take another author's draft | 403 SOD_VIOLATION; 403 NOT_DRAFT_AUTHOR (D-404) |
 | Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |

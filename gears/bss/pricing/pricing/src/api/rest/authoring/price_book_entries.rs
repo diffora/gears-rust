@@ -9,7 +9,10 @@ use super::{
     support::{self, DoorError},
 };
 use crate::{
-    domain::price_book_entry::{self, OpKind},
+    domain::{
+        price::PriceState,
+        price_book_entry::{self, OpKind},
+    },
     infra::{
         reference_work::{self, Caller, Receipt, WallClock, Work},
         storage::{
@@ -300,6 +303,17 @@ pub(super) async fn delete(
                     || price.pending_unit_id.is_some()
             }) {
                 return Err(support::conflict("ENTRY_PRICES_IN_USE").into());
+            }
+            // D-404: a draft belongs to its author, and deleting the entry would delete it. A
+            // rejected price is history (its unit's snapshot keeps it) and never blocks.
+            if let Some(foreign) = prices.iter().find(|price| {
+                price.state == PriceState::Draft.as_str() && price.created_by != ctx.subject_id()
+            }) {
+                return Err(support::forbidden_because(
+                    "NOT_DRAFT_AUTHOR",
+                    format!("price {} is a draft of another author", foreign.id),
+                )
+                .into());
             }
             let prices: Vec<_> = prices
                 .iter()

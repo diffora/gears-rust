@@ -61,6 +61,14 @@ pub fn forbidden(code: &str) -> CanonicalError {
         .with_reason(code)
         .create()
 }
+/// [`forbidden`] whose detail names what forbids the act (for example the other author's
+/// draft). The toolkit fixes a permission problem's detail text, so it is set on the rendered
+/// problem and read back.
+pub fn forbidden_because(code: &str, detail: impl Into<String>) -> CanonicalError {
+    let mut problem = toolkit::api::canonical_prelude::Problem::from(forbidden(code));
+    problem.detail = detail.into();
+    CanonicalError::try_from(problem).unwrap_or_else(|_| forbidden(code))
+}
 pub fn conflict(code: &str) -> CanonicalError {
     PricingResource::aborted(code).with_reason(code).create()
 }

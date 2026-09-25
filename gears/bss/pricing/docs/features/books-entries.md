@@ -139,7 +139,7 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-entry-metadata`
 
-invoice_line_override remains editable under If-Match. dimension_key changes only before any valued price exists; approved or pending prices prevent entry deletion with ENTRY_PRICES_IN_USE, while draft and rejected prices are deleted with the entry (spec §7.2, phase 2c.6).
+invoice_line_override remains editable under If-Match. dimension_key changes only before any valued price exists; approved or pending prices prevent entry deletion with ENTRY_PRICES_IN_USE and another author's draft with 403 NOT_DRAFT_AUTHOR (D-404), while the caller's draft and rejected prices are deleted with the entry (spec §7.2, phase 2c.6).
 
 Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
@@ -181,7 +181,7 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-dod-book-currency-validity` | AC #2; `cpt-cf-bss-pricing-fr-price-book` | Given a EUR book, when name/validity changes with its ETag then currency stays EUR; duplicate tenant code or inverted dates are refused. |
 | `cpt-cf-bss-pricing-dod-entry-key-unique` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given the same nonrecurring SKU twice, when concurrent creates use null period then only one entry persists; a bundle has no entry. |
-| `cpt-cf-bss-pricing-dod-entry-metadata` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given a valued price, when a dimension change is requested then it is refused DIMENSION_KEY_IN_USE; given an approved or pending price, entry deletion is refused ENTRY_PRICES_IN_USE, while draft and rejected prices are deleted with the entry; allowed metadata updates retain receipt identity. |
+| `cpt-cf-bss-pricing-dod-entry-metadata` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given a valued price, when a dimension change is requested then it is refused DIMENSION_KEY_IN_USE; given an approved or pending price, entry deletion is refused ENTRY_PRICES_IN_USE, and NOT_DRAFT_AUTHOR (D-404) while another author's draft exists; the caller's drafts and all rejected prices are deleted with the entry; allowed metadata updates retain receipt identity. |
 | `cpt-cf-bss-pricing-dod-dimension-registry` | AC #1; `cpt-cf-bss-pricing-fr-dimension-registry` | Given EU prices, when US is added then it is available; deleting EU or drafting UNKNOWN is refused without changing the registry. |
 | `cpt-cf-bss-pricing-dod-settings-defaults` | AC #13; `cpt-cf-bss-pricing-fr-settings` | Given default arrears and SKU advance, when inputs bind then advance wins; stale settings update fails with no partial changes. |
 | `cpt-cf-bss-pricing-dod-book-export` | AC #12; `cpt-cf-bss-pricing-fr-book-export` | Given two tenants, when one exports its book then only its facts appear; foreign-book access is denied and price/unit counts do not change. |

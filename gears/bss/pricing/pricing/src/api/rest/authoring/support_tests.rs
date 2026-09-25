@@ -5,6 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
 };
+use toolkit::api::canonical_prelude::Problem;
 
 async fn db() -> Db {
     toolkit_db::connect_db("sqlite::memory:", toolkit_db::ConnectOpts::default())
@@ -100,4 +101,16 @@ fn every_approval_unit_door_runs_a_unit_transaction() {
             "{door} must not run a plain transaction"
         );
     }
+}
+#[test]
+fn a_forbidden_answer_keeps_its_code_and_names_its_cause() {
+    let error = forbidden_because("NOT_DRAFT_AUTHOR", "price 42 is a draft of another author");
+    assert_eq!(error.status_code(), 403);
+    assert_eq!(error.detail(), "price 42 is a draft of another author");
+    let problem = toolkit::api::canonical_prelude::Problem::from(error);
+    assert_eq!(problem.context["reason"], "NOT_DRAFT_AUTHOR");
+    assert_eq!(
+        problem.context["resource_type"],
+        Problem::from(forbidden("NOT_DRAFT_AUTHOR")).context["resource_type"]
+    );
 }

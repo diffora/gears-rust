@@ -1129,3 +1129,52 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     );
     assert_eq!(list["items"][0]["impact"], card["impact"]);
 }
+
+// Behaviour LOW-3 (D-404): an entry delete cannot take another author's draft with it. Bob, who
+// may author entries, is refused 403 NOT_DRAFT_AUTHOR, and the answer names Alice's draft.
+// A rejected price is history and never blocks: Alice deletes the entry, Bob's rejected
+// proposal included.
+#[tokio::test]
+async fn an_entry_delete_honours_each_drafts_author() {
+    let g = gov(1).await;
+    let (alice, bob) = (g.f.ctx.clone(), g.f.user());
+    let bobs = &g.draft_as(&bob, "b", body("2031-02-01")).await[0];
+    let (status, receipt, _) = g.submit_as(&bob, bobs, "bs").await;
+    assert_eq!(status, 201, "{receipt}");
+    let (status, b, _) = g
+        .vote(
+            &alice,
+            &receipt["unit"],
+            "reject",
+            json!({"generation":1,"note":"no"}),
+            "rj",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(g.price(&bobs["id"]).await.state, "rejected");
+    let alices = &g.draft_as(&alice, "a", body("2031-03-01")).await[0];
+    let path = format!("/price-book-entries/{}", g.price_book_entry_id());
+    let (status, b, _) =
+        g.f.call_as(&bob, "DELETE", &path, json!({}), None, None)
+            .await;
+    assert_eq!(status, 403, "{b}");
+    assert!(code(&b).contains("NOT_DRAFT_AUTHOR"), "{b}");
+    assert!(
+        code(&b).contains(alices["id"].as_str().unwrap()),
+        "the answer names the draft: {b}"
+    );
+    assert_eq!(
+        g.price(&alices["id"]).await.state,
+        "draft",
+        "nothing deleted"
+    );
+    assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 200);
+    let (status, b, _) =
+        g.f.call_as(&alice, "DELETE", &path, json!({}), None, None)
+            .await;
+    assert_eq!(
+        status, 204,
+        "her own drafts and a rejected price go with it: {b}"
+    );
+    assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 404);
+}
