@@ -64,8 +64,8 @@ and a reference barrier that cannot race SKU retirement (spec §1, §2 decisions
 | Term | Meaning |
 | --- | --- |
 | Book | Tenant commercial schedule in one currency, optionally date-bounded. |
-| Entry | SKU × charge kind × period identity within a book. |
-| Price | Immutable approved money, model, eligibility and window on one entry chain. |
+| Entry | SKU × charge kind × period × model identity within a book; the model is fixed for the entry's life (D-427). |
+| Price | Immutable approved money in its entry's model, eligibility and window on one entry chain. |
 | Dimension | One registered key on an entry; a nullable price value selects a chain. |
 | Default chain | Prices whose dim_value is null; fallback for an uncovered value. |
 | Approval unit | Proposed content, snapshot, generation, quorum and decisions. |
@@ -180,7 +180,7 @@ A book has a tenant-unique code, name, immutable currency and optional valid_fro
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Inside a book there is one entry per (sku_id, charge_kind, period), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation.
+Inside a book there is one entry per (sku_id, charge_kind, period, model), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. The entry's model is required at its create and fixed for its life: usage takes per_unit, graduated, volume or package, and recurring and one_time take flat or per_unit; an unknown model is MODEL_INVALID and one the charge kind does not allow is MODEL_KIND_CHARGEKIND_MISMATCH, both 400 (D-427). Another model for the same SKU, charge kind and period is another entry of the book. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation.
 
 #### `fr-price`
 
@@ -188,7 +188,7 @@ Inside a book there is one entry per (sku_id, charge_kind, period), with null pe
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Draft prices carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. Usage supports per_unit, graduated, volume and package; recurring and one_time support flat and per_unit. Approved money is append-only and survives forever for pins. Draft-only PATCH/DELETE and pending ownership prevent changing reviewed content. Tier bands are half-open [from, to), including volume boundaries.
+Draft prices carry price_json in their entry's model, dates, optional dim_value and min_fee, eligibility all or new, note and author; a price carries no model of its own, and money whose shape does not match the entry's model is PRICE_MISSING (D-427). Approved money is append-only and survives forever for pins. Draft-only PATCH/DELETE and pending ownership prevent changing reviewed content. Tier bands are half-open [from, to), including volume boundaries.
 
 #### `fr-chain-windows`
 
@@ -204,7 +204,7 @@ Windows are half-open and close independently for each (price_book_entry_id, dim
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-On a usage chain, a successor preserves model kind, package size and the SKU unit. Submit refuses CHAIN_MODEL_CHANGED with 400 when any changes (D-403). Apply revalidates the same invariant under the chain transaction; a new dimension chain is checked against its own predecessors.
+On a usage chain, a successor preserves package size and the SKU unit; the model is the entry's and never changes on a chain (D-427). Submit refuses CHAIN_MODEL_CHANGED with 400 when any changes (D-403). Apply revalidates the same invariant under the chain transaction; a new dimension chain is checked against its own predecessors.
 
 #### `fr-min-fee`
 
@@ -300,7 +300,7 @@ An approved migration_request records target plan/revision, subscription ids, ne
 
 **Phase:** 4. **Source:** spec §2.2, §2.4, §5–§7, §12–§13; D-419, D-420, D-421, D-424, D-425.
 
-GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). New subscriptions bind the price in force, the value's own chain else the default. Renewal walks a pinned chain through all successors, stopping before the first new successor; a binding is always a price in force on the date, and a default-chain pin moves to the value's own later all price (D-420). Each binding carries ends_on, its own end (a temporary price's end or an explicit close, else null), and the consumer slices a period at ends_on, never at the stored effective_to (D-425). A chain that no price covers is explicit uncovered, never refused and never an invented price. Usage binds lazily per (item, dim_value); at a binding's ends_on inside a period the consumer resolves again with the pin on that date. Each item binds its SKU version from Products versions?as_of at the date, read as pricing's system actor, so a consumer needs only pricing's grants (D-424), and resolved invoice inputs with their source (entry, SKU or tenant): invoice-line template, GL code, tax category and billing timing, with rounding policy and currency scale (D-421).
+GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). New subscriptions bind the price in force, the value's own chain else the default. Renewal walks a pinned chain through all successors, stopping before the first new successor; a binding is always a price in force on the date, and a default-chain pin moves to the value's own later all price (D-420). Each binding carries ends_on, its own end (a temporary price's end or an explicit close, else null), and the consumer slices a period at ends_on, never at the stored effective_to (D-425). A chain that no price covers is explicit uncovered, never refused and never an invented price. Usage binds lazily per (item, dim_value); at a binding's ends_on inside a period the consumer resolves again with the pin on that date. Each item binds its SKU version from Products versions?as_of at the date, read as pricing's system actor, so a consumer needs only pricing's grants (D-424), and resolved invoice inputs with their source (entry, SKU or tenant): invoice-line template, GL code, tax category and billing timing, with rounding policy and currency scale (D-421). Each item carries its entry's model, null without an entry; a binding carries none (D-427).
 
 #### `fr-price-read`
 
@@ -308,7 +308,7 @@ GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts pl
 
 **Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; D-422.
 
-GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, book and currency: stored facts only, nothing computed from today. A draft, pending or rejected price, an unknown id and another tenant's id answer the same 404. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version (deferred with promotions, D-409) in its binding; later descriptor changes do not rewrite earlier pins.
+GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, model (D-427), book and currency: stored facts only, nothing computed from today. A draft, pending or rejected price, an unknown id and another tenant's id answer the same 404. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version (deferred with promotions, D-409) in its binding; later descriptor changes do not rewrite earlier pins.
 
 #### `fr-quote`
 
@@ -404,8 +404,8 @@ earlier pins retain the original GL. Pricing creates no refreeze prices or appro
 | --- | --- | --- |
 | AC #1 | `cpt-cf-bss-pricing-fr-dimension-registry` | Given a registered region with priced EU prices, when an operator adds US then it is available; removing EU is refused and a price for an unknown value is DIM_VALUE_UNKNOWN. |
 | AC #2 | `cpt-cf-bss-pricing-fr-price-book` | Given a EUR book, when USD commercial terms are needed then a separate book is created; duplicate book code in the same tenant and invalid validity bounds are refused. |
-| AC #3 | `cpt-cf-bss-pricing-fr-entry-key` | Given a published recurring SKU, when its monthly entry is created then charge_kind is recurring; a duplicate key is refused, a bundle cannot be priced, and changing the dimension key after a valued price exists is refused. |
-| AC #4 | `cpt-cf-bss-pricing-fr-price` | Given a volume ladder with a boundary at 1000, when quantity is 1000 then the band starting at 1000 applies; editing approved money or attaching flat to usage is refused. |
+| AC #3 | `cpt-cf-bss-pricing-fr-entry-key` | Given a published recurring SKU, when its monthly entry is created then charge_kind is recurring; a duplicate key, the model included, is refused while another model is another entry (D-427), a bundle cannot be priced, and changing the dimension key after a valued price exists is refused. |
+| AC #4 | `cpt-cf-bss-pricing-fr-price` | Given a volume ladder with a boundary at 1000, when quantity is 1000 then the band starting at 1000 applies; editing approved money or creating a usage entry with flat is refused. |
 | AC #5 | `cpt-cf-bss-pricing-fr-chain-windows` | Given EU and default chains, when a new EU price is approved then only the EU predecessor closes; after an explicit EU tail ends the default applies, and overlapping prices on the same chain are refused. |
 | AC #6 | `cpt-cf-bss-pricing-fr-pair-guard` | Given a package usage predecessor, when its successor changes only money then it is admissible; changing package size or SKU (unit, usage_type_ref) as of each price's start produces 400 CHAIN_MODEL_CHANGED. |
 | AC #7 | `cpt-cf-bss-pricing-fr-min-fee` | Given two regions rated at 10 each, when both bind one default price with min_fee 30 then their combined charge floors at 30; two separate prices each carrying 30 floor at 60, without applying the shared floor twice. |

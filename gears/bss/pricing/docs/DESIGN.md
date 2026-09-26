@@ -46,10 +46,10 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-fr-dimension-registry` | A tenant registry stores dimension keys and their allowed values, seeded with region: with nothing stored, GET /dimension-keys reads region with no values, and the first entry naming it stores the seed in its own transaction. A key has no values yet or at least two (DIM_VALUES_FEW). | Books & Entries, phase 2; §3 and slice 02. |
 | `cpt-cf-bss-pricing-fr-price-book` | A book has a tenant-unique code, name, immutable currency and optional valid_from/valid_until dates. | Books & Entries, phase 2; §3 and slice 02. |
-| `cpt-cf-bss-pricing-fr-entry-key` | Inside a book there is one entry per (sku_id, charge_kind, period), with null period normalized for uniqueness. | Books & Entries, phase 2; §3 and slice 02. |
-| `cpt-cf-bss-pricing-fr-price` | Draft prices carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-entry-key` | Inside a book there is one entry per (sku_id, charge_kind, period, model), with null period normalized for uniqueness; the model is the entry's, fixed for its life (D-427). | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-price` | Draft prices carry price_json in their entry's model, dates, optional dim_value and min_fee, eligibility all or new, note and author (D-427). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-chain-windows` | Windows are half-open and close independently for each (price_book_entry_id, dim_value), including the null default chain. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
-| `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves model kind, package size and SKU metering as of each price's start (D-402). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves package size and SKU metering as of each price's start (D-402); the model is the entry's (D-427). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-min-fee` | The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price; pricing stores and validates min_fee, and Rating applies the floor (D-415). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-temporary-pair` | A temporary change on an existing chain creates two prices in one approval unit. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
 | `cpt-cf-bss-pricing-fr-publish-changes` | Publish changes lists all draft prices of one book with full money, window, chain, predecessor and impact information, all pre-selected. | Approvals, phase 2; §3 and slice 05. |
@@ -62,7 +62,7 @@ The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU 
 | `cpt-cf-bss-pricing-fr-promotions` | A dated percentage promotion targets plans and recurring or recurring-plus-usage charges. | Promotions & Migrations; deferred by the owner (D-409); §3 and slice 06. |
 | `cpt-cf-bss-pricing-fr-migrations` | An approved migration_request records target plan/revision, subscription ids, next_renewal or explicit date, and the period-aware preview, then emits SubscriptionMigrationRequested. | Promotions & Migrations; deferred by the owner (D-410); §3 and slice 06. |
 | `cpt-cf-bss-pricing-fr-resolve` | GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). | Read Contract & Events, phase 4; §3 and slice 07. |
-| `cpt-cf-bss-pricing-fr-price-read` | GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, book and currency: stored facts only, nothing computed from today. | Read Contract & Events, phase 4; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-price-read` | GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, model (D-427), book and currency: stored facts only, nothing computed from today. | Read Contract & Events, phase 4; §3 and slice 07. |
 | `cpt-cf-bss-pricing-fr-quote` | GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. | Not built (D-415); §3 and slice 07. |
 | `cpt-cf-bss-pricing-nfr-authz` | Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. | Foundation, phase 2; §3 and slice 01. |
 | `cpt-cf-bss-pricing-nfr-audit` | Append tenant, actor, subject, correlation and before/after facts with each governed act. | Foundation, phase 2; §3 and slice 01. |
@@ -109,8 +109,10 @@ Drift refreshes the unit, making old decisions stale; reviewers must see and vot
 
 **ID**: `cpt-cf-bss-pricing-constraint-two-backends`
 
-SQLite and Postgres share invariants and scoped repository behavior. The migration chain starts at 000001;
-stand data is not migrated. Both schema goldens and real writer races are implementation gates.
+SQLite and Postgres share invariants and scoped repository behavior. The migration chain starts at 000001.
+The chain is deployed (D-427, which closes D-412): stand data is kept, and every schema change is a new forward
+migration after m20260926_000012, run in the toolkit runner's transaction on both dialects, with no PRAGMA. Both
+schema goldens and real writer races are implementation gates.
 
 **ID**: `cpt-cf-bss-pricing-constraint-no-row-locks`
 
@@ -129,10 +131,11 @@ responses; no approval-unit key exists. A retry cannot allocate an unrelated ent
 
 Glossary (the owner's rename, spec §2.3):
 
-- **PriceBookEntry** — a book's line (SKU × charge kind × period); its Prices are dated amounts per dimension-value chain.
-  It carries the dimension key, the invoice-line override and the Products reservation.
-- **Price** — one dated amount in the chain of one dimension value: model, money (`price_json`), min_fee,
-  eligibility, window and state.
+- **PriceBookEntry** — a book's line (SKU × charge kind × period × model); its Prices are dated amounts per
+  dimension-value chain. It carries its model (fixed for its life, D-427), the dimension key, the invoice-line override
+  and the Products reservation.
+- **Price** — one dated amount in the chain of one dimension value: money (`price_json`, in its entry's model),
+  min_fee, eligibility, window and state.
 - **Chain** — the prices of one entry and one dimension value; a concept, not an entity.
 
 Names before the rename, kept here on purpose so older records stay readable:
@@ -251,14 +254,14 @@ unit and rejects any unit.
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
 | Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
-| Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override? (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, period, model) in the book; the PATCH does not carry model); GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
+| Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); neither carries model: a price's money is in its entry's model, and a shape that does not match it is 400 PRICE_MISSING; every price read carries model read-only, copied from the entry (D-427); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter. Every unit door dispatches on the unit's stored kind (phase 3): its subject, the domain event its apply writes and the impact its card shows; a stored kind pricing does not record is a corrupt row (500), never judged as `prices` |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys; PUT /approval-policy sets the default (`*`) or one kind's quorum, `prices` or `plan_revision` (phase 3); any other kind is 400 POLICY_KIND_INVALID |
 | Reference work | 2 | GET /reference-ops?state&limit&cursor lists the tenant's durable reference ops in op-id order (config settings permission); limit 1 to 1000, default 100; the next page starts after next_cursor |
-| Plans | 3 | POST /plans with code, name, book_id (201: the plan and its draft rev 1 on that book); GET /plans; GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS); GET /plan-revisions/{id}; PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407): a new book_id remaps each item to the new book's entry of the same (SKU, charge kind, period), bumping the item's version, and an unmatched item keeps its entry (the checks then show ITEM_BOOK_FOREIGN); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414), and the last revision of a never-published plan takes the plan with it in the same transaction, freeing its code (D-417); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from fresh SKU reads (D-408); POST /plan-revisions/{id}/submit (plan submit, D-418, as POST /prices/{id}/submit is price submit; no body) makes an unlocked draft a plan_revision unit (201 { applied, unit, revision }; REVISION_NOT_DRAFT otherwise), judged by the checks of GET …/checks built by the same function from fresh SKU reads: a red check is 400 REVISION_CHECKS_RED with the red checks (code, label, detail, blocked_by) in the problem detail and no unit; its lock is the conditional pending_unit_id, a lost one 409 ROW_LOCKED_PENDING; quorum 0 publishes at once; POST /plans/{id}/clone with code, name (plan author, Idempotency-Key; 201 with the new plan, as POST /plans answers) makes a new plan whose draft rev 1 copies the source's published revision (book, availability, items) under D-413, without the source's decisions, approval identity or pins; a deprecated SKU is carried and the new plan's checks show ITEM_SKU_DEPRECATED (D-408). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
+| Plans | 3 | POST /plans with code, name, book_id (201: the plan and its draft rev 1 on that book); GET /plans; GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS); GET /plan-revisions/{id}; PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407): a new book_id remaps each item to the new book's entry of the same (SKU, charge kind, period, model) (D-427), bumping the item's version, and an unmatched item keeps its entry (the checks then show ITEM_BOOK_FOREIGN); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414), and the last revision of a never-published plan takes the plan with it in the same transaction, freeing its code (D-417); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from fresh SKU reads (D-408); POST /plan-revisions/{id}/submit (plan submit, D-418, as POST /prices/{id}/submit is price submit; no body) makes an unlocked draft a plan_revision unit (201 { applied, unit, revision }; REVISION_NOT_DRAFT otherwise), judged by the checks of GET …/checks built by the same function from fresh SKU reads: a red check is 400 REVISION_CHECKS_RED with the red checks (code, label, detail, blocked_by) in the problem detail and no unit; its lock is the conditional pending_unit_id, a lost one 409 ROW_LOCKED_PENDING; quorum 0 publishes at once; POST /plans/{id}/clone with code, name (plan author, Idempotency-Key; 201 with the new plan, as POST /plans answers) makes a new plan whose draft rev 1 copies the source's published revision (book, availability, items) under D-413, without the source's decisions, approval identity or pins; a deprecated SKU is carried and the new plan's checks show ITEM_SKU_DEPRECATED (D-408). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
 | Plan items | 3 | POST /plan-revisions/{id}/items with sku_id, price_book_entry_id?, treatment, included_qty?, qty_min? (a plan_item create op, D-407; at most 200 items per revision); PATCH /plan-items/{id} with treatment?, included_qty?, qty_min?, price_book_entry_id?, draft only and never a SKU change; DELETE /plan-items/{id} (a delete op); the revision's creator edits it and its items (D-404) |
-| Read contract | 4 | GET /resolve?plan_revision_id&date&item_id?&pins? (plan read, D-419): a published or superseded revision on one date, each item with its chain matrix (default and every value, `binding` or `uncovered`), its SKU version as of the date and its resolved invoice inputs with their source (D-420, D-421); no totals, no promotion (D-409, D-415); pins are price_id or price_id:dim_value, at most 1 000. GET /prices/{id} (price read, D-422): an approved price of the tenant, whatever its window, with its entry's SKU, charge kind, period, book and currency, stored facts only. Both are reads: no audit row, no idempotency key, no binding |
+| Read contract | 4 | GET /resolve?plan_revision_id&date&item_id?&pins? (plan read, D-419): a published or superseded revision on one date, each item with its entry's model (null without an entry, D-427) and its chain matrix (default and every value, `binding` or `uncovered`), its SKU version as of the date and its resolved invoice inputs with their source (D-420, D-421); no totals, no promotion (D-409, D-415); pins are price_id or price_id:dim_value, at most 1 000. GET /prices/{id} (price read, D-422): an approved price of the tenant, whatever its window, with its entry's SKU, charge kind, period, model, book and currency, stored facts only. Both are reads: no audit row, no idempotency key, no binding |
 | Promotions | deferred (D-409) | Deferred by the owner and not built in phase 3; the planned shape: POST /promotions with name, percent, from_date, to_date, plan_ids (at most 50), apply_to; GET /promotions; GET /promotions/{id} (the current approved version, the open version and the history); PATCH /promotions/{id} under If-Match on the promotion, editing the open draft version or creating it from the current approved one; POST /promotions/{id}/submit, /end-today, /cancel |
 | Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
 
@@ -276,7 +279,8 @@ deferred with promotions, D-409). Resolve returns inputs, not totals; slice 07 �
 | SKU fenced / retiring or retired / deprecated / draft for a new entry | 409 SKU_FENCED (Products' reserve refusal, passed through) / SKU_RETIRING / SKU_DEPRECATED / SKU_DRAFT |
 | Bundle SKU, or a SKU type that no longer matches the charge kind | 409 BUNDLE_SKU_NOT_PRICEABLE / CHARGE_KIND_SKU_TYPE |
 | Products refuses a SKU read a rule needs (a dated metering read, a plan check's read; for example no SKU read) | Products' own status and code, at submit, approve, reject and the checks door; only unavailability is 503 REGISTRY_UNAVAILABLE (D-402, D-416); a descriptor read refuses nothing and records "descriptors": "unavailable" (D-416) |
-| Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
+| Usage-chain package size or dated SKU metering changed | 400 CHAIN_MODEL_CHANGED (D-403); the model cannot change on a chain, it is the entry's (D-427) |
+| Entry create: a model that is not flat, per_unit, graduated, volume or package; a model the charge kind does not allow (at the door or in Tx B) | 400 MODEL_INVALID; 400 MODEL_KIND_CHARGEKIND_MISMATCH, with nothing reserved at the door, or a 400 receipt and the reservation released in Tx B (D-427) |
 | A temporary's return (or closed end) no longer matches the approved chain | 400 PAIR_RETURN_STALE at submit; APPLY_REFUSED at apply (D-391) |
 | A price that starts inside a temporary window; a temporary whose window contains another price's start | 400 PRICE_INSIDE_TEMPORARY; 400 TEMPORARY_SPANS_A_CHANGE, at the draft door and at submit; APPLY_REFUSED at apply (D-406) |
 | Invalid dimension or price window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
@@ -400,6 +404,8 @@ sequenceDiagram
 
 Concurrent replays resolve to the same logical object or a nonmutating conflict. Tx A durably names the
 reference before reserve: a crash between reserve and Tx B is recoverable by repeating the idempotent reserve.
+The re-read feeds Tx B's own judgement of the create input against the SKU type the reservation froze: the period
+and, from D-427, the model; a refusal there is a 400 receipt and takes the "Refusal after reserve" branch.
 An unknown commit outcome is reconciled before cancellation. Deletion removes the entry and inserts a
 delete op in releasing in one transaction, then release finishes the op. Every op not done is retried
 with bounded backoff and never dropped. The ticker also checks confirmed entries through states(): a released
@@ -525,15 +531,19 @@ CREATE TABLE bss.pricing_price_book_entry (
   reference_state text NOT NULL CHECK (reference_state IN ('confirmation_pending','confirmed','lost')),
   version bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  model text NOT NULL,  -- m20260926_000013 (D-427)
   FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key),
   CHECK ((charge_kind = 'recurring' AND period IS NOT NULL AND period IN ('month','year'))
-    OR (charge_kind IN ('usage','one_time') AND period IS NULL))
+    OR (charge_kind IN ('usage','one_time') AND period IS NULL)),
+  CONSTRAINT pricing_price_book_entry_model_check
+    CHECK (model IN ('flat','per_unit','graduated','volume','package'))
 );
-CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''));
+CREATE UNIQUE INDEX pricing_price_book_entry_key
+  ON bss.pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''), model);
 CREATE TABLE bss.pricing_price (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, price_book_entry_id uuid NOT NULL REFERENCES bss.pricing_price_book_entry(id),
   version_no integer NOT NULL, dim_value text,
-  model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json jsonb NOT NULL,
+  price_json jsonb NOT NULL,  -- in its entry's model; the price's own model column is dropped by 000013 (D-427)
   min_fee text CHECK (min_fee ~ '^[0-9]+(\.[0-9]+)?$'), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
   effective_from date NOT NULL, effective_to date, keep_for_bound boolean NOT NULL DEFAULT false,
   closed_explicitly boolean NOT NULL DEFAULT false,
@@ -582,6 +592,15 @@ any other refusal is retried, as for a rereserve, unless Products gave it to the
 Products authorizes to the tenant: that refusal is about the SKU and loses the item (D-413);
 a lost item emits PlanReferenceLost and is re-reserved once its SKU admits a reservation again.
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
+
+Phase 5 adds the forward migration m20260926_000013_model_on_the_entry (D-427), in the runner's transaction. It
+fails, naming the entries and changing nothing, when an entry's prices of any state carry two or more models. Otherwise
+it adds pricing_price_book_entry.model (SQLite: ADD COLUMN … NOT NULL DEFAULT 'flat' with its CHECK, the default
+staying in the schema; Postgres: a nullable column, then SET NOT NULL and the named CHECK), backfills each entry with
+the one model of all its prices or, with no price, its charge kind's default (flat for recurring and one_time,
+per_unit for usage), recreates pricing_price_book_entry_key with model last and drops pricing_price.model on both
+dialects (SQLite keeps every other index and CHECK of the table; the schema goldens show it). Its down is an explicit
+irreversible error. The DDL above is the shape after it.
 
 Phase 3 adds m20260926_000010 to m20260926_000012 (D-412). Every partial unique index is its own CREATE UNIQUE
 INDEX … WHERE statement on both dialects, never inline. included_qty is canonical decimal text, like min_fee. A
@@ -760,5 +779,5 @@ act with 500 instead of being retried by the transaction; Products has the same 
 | 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; deferred by the owner (D-409, D-410). |
 | 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2; quote not built, D-415). |
 
-All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-426.
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-427.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.

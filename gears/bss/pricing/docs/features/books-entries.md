@@ -63,7 +63,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 02](../design/02-books-entries.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-426; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-427; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -73,7 +73,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-flow-books-entries`
 
 1. [ ] - `p1` - Finance Manager creates a uniquely coded currency book and reads its ETag. - `inst-books-entries-flow-1`
-2. [ ] - `p1` - Select a published non-bundle SKU, recurring period if applicable and optional registered dimension key. - `inst-books-entries-flow-2`
+2. [ ] - `p1` - Select a published non-bundle SKU, the entry's model, recurring period if applicable and optional registered dimension key. - `inst-books-entries-flow-2`
 3. [ ] - `p1` - Resolve replay and pass the stable entry identity to the reserve-write-confirm protocol in slice 03. - `inst-books-entries-flow-3`
 4. [ ] - `p1` - After reservation, re-read SKU type/lifecycle, derive charge kind, enforce key uniqueness and persist through that protocol. - `inst-books-entries-flow-4`
 5. [ ] - `p1` - Return book/entry facts; later money is drafted as prices, not embedded in the key. - `inst-books-entries-flow-5`
@@ -85,8 +85,8 @@ Holding multiple permissions never bypasses separation of duties.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-books-entries-book-and-key`
 
 1. [ ] - `p1` - Validate currency and nonempty validity interval; scope code uniqueness to tenant. - `inst-books-entries-book-and-key-1`
-2. [ ] - `p1` - Derive charge_kind from the current SKU; recurring accepts month/year, usage and one_time require null period. - `inst-books-entries-book-and-key-2`
-3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
+2. [ ] - `p1` - Derive charge_kind from the current SKU; recurring accepts month/year, usage and one_time require null period; the model must be one the charge kind allows (D-386, D-427). - `inst-books-entries-book-and-key-2`
+3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period/model unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
 4. [ ] - `p1` - PATCH name/validity or permitted entry overrides conditionally; reject currency edits and dimension changes after valued prices exist. - `inst-books-entries-book-and-key-4`
 
 ### dimension-registry
@@ -113,7 +113,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-books-entries`
 
-A book is valid or invalid for a queried date according to its optional interval; no approval state is added. An entry progresses through reference confirmation in slice 03. Currency and key identity are fixed; editable metadata uses versions. Registry/settings changes are direct and versioned.
+A book is valid or invalid for a queried date according to its optional interval; no approval state is added. An entry progresses through reference confirmation in slice 03. Currency and key identity, the entry's model included (D-427), are fixed; editable metadata uses versions. Registry/settings changes are direct and versioned.
 
 ## 5. Definitions of Done
 
@@ -131,7 +131,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-entry-key-unique`
 
-The database enforces SKU × charge kind × normalized period uniqueness inside a book. Charge kind follows the re-read SKU; a bundle or invalid period is rejected (spec §5).
+The database enforces SKU × charge kind × normalized period × model uniqueness inside a book (D-427). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386).
 
 Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
@@ -180,7 +180,7 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 | DoD | PRD criterion | Given / When / Then |
 | --- | --- | --- |
 | `cpt-cf-bss-pricing-dod-book-currency-validity` | AC #2; `cpt-cf-bss-pricing-fr-price-book` | Given a EUR book, when name/validity changes with its ETag then currency stays EUR; duplicate tenant code or inverted dates are refused. |
-| `cpt-cf-bss-pricing-dod-entry-key-unique` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given the same nonrecurring SKU twice, when concurrent creates use null period then only one entry persists; a bundle has no entry. |
+| `cpt-cf-bss-pricing-dod-entry-key-unique` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given the same nonrecurring SKU twice with one model, when concurrent creates use null period then only one entry persists; the same SKU with another model is a second entry of the book (D-427); a bundle has no entry. |
 | `cpt-cf-bss-pricing-dod-entry-metadata` | AC #3; `cpt-cf-bss-pricing-fr-entry-key` | Given a valued price, when a dimension change is requested then it is refused DIMENSION_KEY_IN_USE; given an approved or pending price, entry deletion is refused ENTRY_PRICES_IN_USE, and NOT_DRAFT_AUTHOR (D-404) while another author's draft exists; the caller's drafts and all rejected prices are deleted with the entry; allowed metadata updates retain receipt identity. |
 | `cpt-cf-bss-pricing-dod-dimension-registry` | AC #1; `cpt-cf-bss-pricing-fr-dimension-registry` | Given EU prices, when US is added then it is available; deleting EU or drafting UNKNOWN is refused without changing the registry. |
 | `cpt-cf-bss-pricing-dod-settings-defaults` | AC #13; `cpt-cf-bss-pricing-fr-settings` | Given default arrears and SKU advance, when inputs bind then advance wins; stale settings update fails with no partial changes. |
