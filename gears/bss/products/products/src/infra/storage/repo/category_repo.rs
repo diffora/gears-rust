@@ -196,7 +196,7 @@ pub async fn retire_category_if_unused(
 /// Validate the category in the caller's serializable authoring transaction.
 /// # Errors
 /// Returns `CATEGORY_RETIRED` for an inactive category, or a missing-category refusal.
-pub(super) async fn require_active_category(
+pub(crate) async fn require_active_category(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
