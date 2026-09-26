@@ -244,8 +244,8 @@ moves no existing pin (D-394). Never label unavailable impact as a measured zero
 entry SKU's current descriptors, beside the fingerprinted after, never in it (D-408); their read is best-effort, and a
 registry that cannot answer or refuses the caller records "descriptors": "unavailable" and refuses nothing (D-416).
 Products read (D-416): the reads a rule needs are made as the caller, so the plan_revision submitter and its final
-approver, readers of GET /plan-revisions/{id}/checks, plan item authors, and the submitter and final approver of a prices
-unit on a usage chain (the dated metering read, D-402) need products read; an approve-only reviewer votes on every other
+approver, readers of GET /plan-revisions/{id}/checks, plan item authors, price-book entry authors (the period rule and
+the create re-read), and the submitter and final approver of a prices unit on a usage chain (the dated metering read, D-402) need products read; an approve-only reviewer votes on every other
 unit and rejects any unit.
 
 | Area | Phase | Operations below the authoring base |
@@ -289,7 +289,7 @@ Resolve returns inputs, not totals.
 | Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
 | Apply environment changed | APPLY_REFUSED, transaction rolls back |
 | Released receipt on confirm | 409 REFERENCE_RELEASED from Products, or 404 for a reservation Products does not know; the entry stays confirmation_pending and a rereserve op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
-| Phase 3: a red plan check at submit; an item refused at its door; an entry a plan item names, deleted | 400 REVISION_CHECKS_RED with the red checks, no unit; 400 ITEM_BOOK_FOREIGN, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_MISSING, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU, REVISION_ITEMS_TOO_MANY, TREATMENT_INVALID, INCLUDED_QTY_INVALID or QTY_MIN_INVALID, 409 ITEM_SKU_TAKEN; 409 ENTRY_IN_USE (D-408) |
+| Phase 3: a red plan check at submit; an item refused at its door; an entry a plan item names, deleted | 400 REVISION_CHECKS_RED with the red checks, no unit; 400 ITEM_BOOK_FOREIGN, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_MISSING, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU, REVISION_ITEMS_TOO_MANY, TREATMENT_INVALID, INCLUDED_QTY_INVALID or QTY_MIN_INVALID, 409 ITEM_SKU_TAKEN; 409 SKU_FENCED, SKU_RETIRING or SKU_DRAFT from the item's create op (Products' reserve refusal or the re-read); 409 ENTRY_IN_USE (D-408) |
 | Phase 3: an item delete, or a draft revision delete, while an item's confirm is outstanding | 409 ITEM_CONFIRMATION_PENDING; retry once the confirm completes |
 | Phase 3: a blank plan code; a plan code taken; a copy of a plan with no published revision; a clone of one | 400 PLAN_CODE_REQUIRED; 409 PLAN_CODE_TAKEN; 409 PLAN_UNPUBLISHED; 409 CLONE_SOURCE_UNPUBLISHED |
 | Deferred: migration, retirement and promotion refusals | MIGRATION_TARGET_UNPUBLISHED, MIGRATION_TARGET_CURRENT, MIGRATION_TARGET_RETIRING, MIGRATION_CURRENCY_MISMATCH, MIGRATION_SUBSCRIPTION_PENDING and RETIRE_MIGRATION_REQUIRED wait with migration requests and retirement (D-410); PROMOTION_VERSION_OPEN and PROMOTION_NOT_STARTED with promotions (D-409) |
@@ -561,7 +561,8 @@ lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryRefer
 use the same machine, with their own cursor: an item's write re-reads its revision (an unlocked draft) and its
 entry (of the revision's book, for the item's SKU), so SSI orders it against a submit, a book change or a
 delete (D-407); an attach of a copied item admits a deprecated SKU, a losing refusal makes the item lost and
-any other refusal is retried, as for a rereserve (D-413);
+any other refusal is retried, as for a rereserve, unless Products gave it to the ticker's system actor, which
+Products authorizes to the tenant: that refusal is about the SKU and loses the item (D-413);
 a lost item emits PlanReferenceLost and is re-reserved once its SKU admits a reservation again.
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
 

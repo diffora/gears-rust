@@ -29,7 +29,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_products_sdk::{
-    ReferenceRegistryV1,
+    PRICING_SYSTEM_ACTOR, ReferenceRegistryV1,
     models::{Lifecycle, ReferenceKind},
 };
 pub use plan_item::attach_op;
@@ -262,6 +262,15 @@ fn parse_ref_kind(op: &entity::Model) -> Result<RefKind, CanonicalError> {
 /// copied item (D-413). Ending without a live receipt makes that reference lost.
 fn replaces_a_receipt(op: &entity::Model) -> bool {
     op.kind == OpKind::Rereserve.as_str() || op.kind == OpKind::Attach.as_str()
+}
+/// Whether a definite refusal that is not a losing one is retried rather than ending the op
+/// (D-401, D-413). A rereserve always is (D-401). An attach is retried only while the refusal may
+/// be its caller's own (a door caller's grant): Products authorizes the ticker's system actor to
+/// the tenant, so a refusal given to it is about the SKU (Products no longer knows it, say) and
+/// would never change — the item is lost instead of an attach retried forever.
+fn retries_a_refusal(op: &entity::Model, ctx: &SecurityContext) -> bool {
+    op.kind == OpKind::Rereserve.as_str()
+        || (op.kind == OpKind::Attach.as_str() && ctx.subject_id() != PRICING_SYSTEM_ACTOR)
 }
 /// Apply exactly the observation used to perform the external call. A stale observer retries.
 async fn advance(
@@ -960,11 +969,11 @@ async fn observe(
                 )),
                 Err(error) if definite_refusal(&error) => {
                     let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
-                    if replaces_a_receipt(op) && !LOSING_REFUSALS.contains(&code.as_str()) {
+                    if retries_a_refusal(op, ctx) && !LOSING_REFUSALS.contains(&code.as_str()) {
                         // Only a SKU that admits no reservation loses a live entry or a copied
                         // item: an attach has the rereserve shape (D-413). Any other refusal (the
                         // door caller's own grant, say) is retried, and the ticker finishes it as
-                        // the system actor.
+                        // the system actor; a refusal given to the system actor ends an attach.
                         return Ok(unavailable());
                     }
                     Ok((
@@ -1046,8 +1055,9 @@ async fn observe_sku(
         // An op that replaces a receipt (an attach, a rereserve) holds a reference the SKU
         // already admitted: a refusal of the READ says nothing about the SKU (the caller's own
         // grant, say), so it is retried and the ticker finishes it as the system actor. Only a
-        // lifecycle answer below refuses it (D-413 "the rereserve shape").
-        Err(error) if definite_refusal(&error) && replaces_a_receipt(op) => {
+        // lifecycle answer below refuses it (D-413 "the rereserve shape"), or, for an attach, a
+        // refusal given to the system actor itself (`retries_a_refusal`).
+        Err(error) if definite_refusal(&error) && retries_a_refusal(op, ctx) => {
             return Ok((Event::RegistryUnavailable, None, None));
         }
         Err(error) if definite_refusal(&error) => {

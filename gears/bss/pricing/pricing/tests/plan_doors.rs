@@ -791,6 +791,44 @@ async fn a_copy_stops_driving_its_attach_ops_at_the_first_failure() {
     }
 }
 
+// Second review B-1 (D-413): Products authorizes the ticker's system actor to the tenant, so a
+// definite refusal given to it is about the SKU, never a caller's grant, and would never change. A
+// copied item whose SKU Products no longer knows (404) is retried after the door caller's refusal
+// (that one may be the caller's own), then lost at the ticker's first attempt with its
+// PlanReferenceLost and its receipt released — never an attach retried forever.
+#[tokio::test]
+async fn an_attach_refused_to_the_system_actor_loses_its_item_at_the_first_tick() {
+    let (f, catalog) = setup().await;
+    let (_, path) = published_with_three_items(&f, &catalog).await;
+    catalog.skus.lock().unwrap().clear();
+    let (s, copy, _) = f.call("POST", &path, json!({}), None, Some("copy")).await;
+    assert_eq!(s, 201, "the copy is committed: {copy}");
+    let rev2 = id_of(&copy["id"]);
+    for it in items(&f, rev2).await {
+        assert_eq!(it.reference_state, "unreserved", "the door retries: {it:?}");
+    }
+    assert!(
+        plan_support::entry_support::outbox_events(&f.dsn, LOST)
+            .await
+            .is_empty()
+    );
+    ticker_tick(&f).await;
+    let copied = items(&f, rev2).await;
+    assert_eq!(copied.len(), 3);
+    for it in &copied {
+        assert_eq!(it.reference_state, "lost", "{it:?}");
+        let ops = ops_for(&f, it.id).await;
+        assert!(ops.iter().all(|op| op.state == "done"), "{ops:?}");
+    }
+    assert_eq!(
+        plan_support::entry_support::outbox_events(&f.dsn, LOST)
+            .await
+            .len(),
+        3,
+        "one PlanReferenceLost per item"
+    );
+}
+
 #[tokio::test]
 async fn plan_doors_need_the_plan_permissions_and_hide_other_tenants() {
     let (f, _) = setup().await;
