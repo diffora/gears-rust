@@ -180,6 +180,92 @@ async fn every_precondition_reading_route_declares_the_header_it_reads() {
     }
 }
 
+/// The reads that answer an `ETag` (the version or content tag a following write sends back as
+/// If-Match); `read_contract::exactly_the_reads_that_declare_an_etag_answer_one` measures it.
+fn etag_routes() -> Routes {
+    [
+        ("GET", "/bss-pricing/v1/price-books/{id}"),
+        ("GET", "/bss-pricing/v1/settings"),
+        ("GET", "/bss-pricing/v1/dimension-keys"),
+        ("GET", "/bss-pricing/v1/price-book-entries/{id}"),
+        ("GET", "/bss-pricing/v1/approval-policy"),
+        ("GET", "/bss-pricing/v1/plans/{id}"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
+    ]
+    .into_iter()
+    .map(|(m, p)| (m.to_owned(), p.to_owned()))
+    .collect()
+}
+
+/// Every operation describes itself (plan review M3): a human summary that is not its operation
+/// id's suffix, and a description of what it does and its main refusals.
+#[tokio::test]
+async fn every_operation_has_a_human_summary_and_a_description() {
+    let harness = rest_support::Harness::new().await.unwrap();
+    let (_, openapi) = harness.router(axum::Router::new()).unwrap();
+    let mut described = 0;
+    for entry in &openapi.operation_specs {
+        let op = entry.value();
+        let id = op.operation_id.as_deref().unwrap_or_default();
+        let suffix = id.strip_prefix("bss_pricing.").unwrap_or(id);
+        let summary = op.summary.as_deref().unwrap_or_default().trim();
+        assert!(
+            summary.chars().next().is_some_and(char::is_uppercase),
+            "{id}: a summary is a human phrase: {summary:?}"
+        );
+        assert_ne!(summary, suffix, "{id}: the summary is its operation id");
+        assert_ne!(
+            summary.to_lowercase().replace(' ', "_"),
+            suffix,
+            "{id}: the summary spells its operation id"
+        );
+        let description = op.description.as_deref().unwrap_or_default().trim();
+        assert!(
+            description.split_whitespace().count() >= 8,
+            "{id}: a description says what the operation does: {description:?}"
+        );
+        assert_ne!(description, summary, "{id}");
+        described += 1;
+    }
+    assert_eq!(described, 44);
+}
+
+/// Every read that answers an `ETag` declares the header on its 200 response, and nothing else
+/// declares one.
+#[tokio::test]
+async fn every_read_that_sets_an_etag_declares_it() {
+    let harness = rest_support::Harness::new().await.unwrap();
+    let (_, openapi) = harness.router(axum::Router::new()).unwrap();
+    let declared: Routes = openapi
+        .operation_specs
+        .iter()
+        .filter(|e| {
+            e.value().responses.iter().any(|r| {
+                r.headers
+                    .iter()
+                    .any(|h| h.name.eq_ignore_ascii_case("etag"))
+                    && r.status == 200
+            })
+        })
+        .map(|e| {
+            let (method, path) = e.key().split_once(':').unwrap();
+            (method.to_owned(), path.to_owned())
+        })
+        .collect();
+    assert_eq!(declared, etag_routes());
+    let anywhere = openapi
+        .operation_specs
+        .iter()
+        .flat_map(|e| e.value().responses.clone())
+        .filter(|r| {
+            r.headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("etag"))
+        })
+        .count();
+    assert_eq!(anywhere, 7, "only the 200 of those reads declares it");
+}
+
 #[test]
 fn no_handler_takes_axums_json_extractor() {
     assert_eq!(

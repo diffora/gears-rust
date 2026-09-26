@@ -58,12 +58,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.resolve")
         .summary("Resolve a plan revision on a date")
         .description(
-            "Returns, per item of a published or superseded plan revision, the chain matrix \
-             (the default chain and every dimension value) with the price bound on the date, \
-             the SKU version in force and the resolved invoice inputs; pins renew a \
-             subscription's bindings. No totals. Refusals: 400 DATE_INVALID, PIN_FOREIGN, \
-             PIN_DUPLICATE, PINS_TOO_MANY; 404 for an unknown revision or item; 409 \
-             REVISION_NOT_PUBLISHED; 503 when Products cannot answer.",
+            "Returns, per item of a published or superseded plan revision, the chain matrix (the \
+             default chain and every dimension value) with the price bound on the date, the SKU \
+             version in force and the resolved invoice inputs; pins renew a subscription's \
+             bindings. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, \
+             PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 \
+             REVISION_NOT_PUBLISHED; Products' own refusal of a SKU read; 503 when Products cannot \
+             answer.",
         )
         .tag("Pricing")
         .authenticated()
@@ -89,10 +90,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_price")
         .summary("Read a pinned price")
         .description(
-            "Returns an approved price of the tenant with its original money whatever its \
-             window (closed, followed by a later price, kept for bound subscriptions), with its \
-             entry's SKU, charge kind, period, book and currency: stored facts only. A draft, \
-             pending, rejected, unknown or foreign price is one and the same 404.",
+            "Returns an approved price of the tenant with its original money whatever its window \
+             (closed, followed by a later price, kept for bound subscriptions), with its entry's \
+             SKU, charge kind, period, book and currency: stored facts only. A draft, pending, \
+             rejected, unknown or foreign price is one and the same 404.",
         )
         .tag("Pricing")
         .authenticated()

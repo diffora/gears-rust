@@ -1177,3 +1177,50 @@ async fn the_pinned_price_read_needs_price_read() {
         "the pinned read asks Products nothing"
     );
 }
+
+// ------------------------------------------------------------------ Task 4.3.3: ETag, measured
+
+/// `module_test` pins which operations declare an `ETag`; this measures it: every GET of the two
+/// production routers is called on a live fixture, and exactly those that declare the header on
+/// their 200 answer one.
+#[tokio::test]
+async fn exactly_the_reads_that_declare_an_etag_answer_one() {
+    let w = world().await;
+    let unit = plan_support::unit_of_kind(&w.f, "prices").await;
+    let registry = toolkit::api::OpenApiRegistryImpl::new();
+    let _mounted = bss_pricing::api::rest::authoring::router(w.f.state.clone(), &registry).merge(
+        bss_pricing::api::rest::read_contract::router(w.f.state.clone(), &registry),
+    );
+    let mut measured = 0;
+    for entry in &registry.operation_specs {
+        let (method, template) = entry.key().split_once(':').unwrap();
+        if method != "GET" {
+            continue;
+        }
+        let declares = entry.value().responses.iter().any(|r| {
+            r.status == 200
+                && r.headers
+                    .iter()
+                    .any(|h| h.name.eq_ignore_ascii_case("etag"))
+        });
+        let path = template.trim_start_matches("/bss-pricing/v1");
+        let id = match path.split('/').nth(1).unwrap() {
+            "price-books" => w.book.to_string(),
+            "price-book-entries" => w.entry.to_string(),
+            "approval-units" => unit.to_string(),
+            "plans" => w.plan.to_string(),
+            "plan-revisions" => w.revision.to_string(),
+            "prices" => w.price.to_string(),
+            _ => String::new(),
+        };
+        let mut path = path.replace("{id}", &id);
+        if path == "/resolve" {
+            path = format!("/resolve?plan_revision_id={}&date=2026-10-05", w.revision);
+        }
+        let (s, b, tag) = w.f.call("GET", &path, json!({}), None, None).await;
+        assert_eq!(s, 200, "{path}: {b}");
+        assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
+        measured += 1;
+    }
+    assert_eq!(measured, 18, "every GET operation is measured");
+}

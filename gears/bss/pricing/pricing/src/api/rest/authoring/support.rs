@@ -485,6 +485,17 @@ pub async fn audit(
     .await?;
     Ok(())
 }
+/// The `ETag` a read answers: the version, or the content tag, a following write sends back as
+/// If-Match. Declared on each read that sets one.
+#[must_use]
+pub fn etag() -> toolkit::api::operation_builder::ResponseHeaderSpec {
+    use toolkit::api::operation_builder::{ResponseHeaderSpec, ResponseHeaderType};
+    ResponseHeaderSpec::new(
+        "ETag",
+        "The version to send back as If-Match",
+        ResponseHeaderType::String,
+    )
+}
 pub fn header(name: &str) -> toolkit::api::operation_builder::ParamSpec {
     use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
     ParamSpec {

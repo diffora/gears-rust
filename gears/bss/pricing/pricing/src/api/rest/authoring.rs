@@ -27,7 +27,7 @@ use dto::{
     PricingDimensions, PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
 };
 use std::sync::Arc;
-use support::{authz_failure, header, require_authenticated, response, transaction};
+use support::{authz_failure, etag, header, require_authenticated, response, transaction};
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
@@ -104,11 +104,21 @@ impl AuthoringState {
     }
 }
 /// Mount the complete authoring surface and establish one audit correlation per request.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one OperationBuilder chain per route keeps every door's contract in one place"
+)]
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = Router::new();
     let router = OperationBuilder::post("/bss-pricing/v1/price-books")
         .operation_id("bss_pricing.create_book")
-        .summary("create_book")
+        .summary("Create a price book")
+        .description(
+            "Creates a price book of the tenant with a code, a name, one currency and an optional \
+             validity window; the Idempotency-Key replays the first answer. Refusals: 400 \
+             BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID or \
+             BOOK_VALIDITY_INVALID; 409 BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -120,7 +130,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books")
         .operation_id("bss_pricing.list_books")
-        .summary("list_books")
+        .summary("List the price books")
+        .description(
+            "Lists the tenant's price books. Only a caller without price_book read is refused \
+             (403).",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -130,18 +144,28 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.get_book")
-        .summary("get_book")
+        .summary("Read a price book")
+        .description(
+            "Returns one price book of the tenant, its version as the ETag a following PATCH sends \
+             back as If-Match. Refusals: 404 for a book the tenant does not hold.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Price book id")
         .handler(get_book)
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.patch_book")
-        .summary("patch_book")
+        .summary("Rename or re-date a price book")
+        .description(
+            "Changes a book's name or validity window at the version the caller read (If-Match). \
+             Refusals: 400 BOOK_NAME_REQUIRED or BOOK_VALIDITY_INVALID; 404 for an unknown book; \
+             409 STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -154,7 +178,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/entries")
         .operation_id("bss_pricing.list_entries")
-        .summary("list_entries")
+        .summary("List a book's entries")
+        .description(
+            "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
+             and period. Refusals: 404 for a book the tenant does not hold.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -165,7 +193,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/export")
         .operation_id("bss_pricing.export_book")
-        .summary("export_book")
+        .summary("Export a price book")
+        .description(
+            "Returns a book with every entry and all its prices, of every state, in chain order. \
+             Refusals: 404 for a book the tenant does not hold.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -176,17 +208,28 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/settings")
         .operation_id("bss_pricing.get_settings")
-        .summary("get_settings")
+        .summary("Read the tenant settings")
+        .description(
+            "Returns the tenant's billing defaults (timing, rounding, GL code, tax category) and \
+             invoice-line templates by SKU type, its version as the ETag; the defaults apply until \
+             the settings are first written.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .handler(get_settings)
         .json_response_with_schema::<PricingSettingsDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::put("/bss-pricing/v1/settings")
         .operation_id("bss_pricing.put_settings")
-        .summary("put_settings")
+        .summary("Write the tenant settings")
+        .description(
+            "Replaces the tenant settings at the version the caller read (If-Match). Refusals: 400 \
+             TIMING_INVALID, ROUNDING_REQUIRED, SKU_TYPE_INVALID or an invalid line template \
+             (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -198,17 +241,28 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/dimension-keys")
         .operation_id("bss_pricing.get_dimensions")
-        .summary("get_dimensions")
+        .summary("Read the dimension registry")
+        .description(
+            "Returns the tenant's dimension keys with their values, and a content ETag a following \
+             PUT sends back as If-Match. Only a caller without config read is refused (403).",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .handler(get_dimensions)
         .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::put("/bss-pricing/v1/dimension-keys")
         .operation_id("bss_pricing.put_dimensions")
-        .summary("put_dimensions")
+        .summary("Write the dimension registry")
+        .description(
+            "Replaces the tenant's dimension keys and values at the content the caller read \
+             (If-Match). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID or \
+             DIM_KEY_DUPLICATE; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry \
+             names or a value a price uses; 409 STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -220,7 +274,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/entries")
         .operation_id("bss_pricing.create_entry")
-        .summary("create_entry")
+        .summary("Add a SKU to a price book")
+        .description(
+            "Adds an entry for a SKU to a book, reserving the SKU reference in Products before the \
+             write and confirming it after; the Idempotency-Key replays the receipt. Refusals: 400 \
+             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN, SKU_DRAFT, \
+             SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or \
+             CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -237,7 +298,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.get_entry")
-        .summary("get_entry")
+        .summary("Read a price book entry")
+        .description(
+            "Returns one price book entry of the tenant, its version as the ETag a following PATCH \
+             sends back as If-Match. Refusals: 404 ENTRY_NOT_FOUND.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -248,11 +313,18 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.patch_entry")
-        .summary("patch_entry")
+        .summary("Change a price book entry")
+        .description(
+            "Changes an entry's invoice-line override or its dimension key at the version the \
+             caller read (If-Match). Refusals: 400 DIM_NOT_DECLARED or an invalid line template; \
+             404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, or \
+             STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -269,7 +341,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::delete("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.delete_entry")
-        .summary("delete_entry")
+        .summary("Delete a price book entry")
+        .description(
+            "Deletes an entry with its draft and rejected prices and releases its SKU reference in \
+             Products. Refusals: 403 NOT_DRAFT_AUTHOR for another author's draft; 409 \
+             ENTRY_PRICES_IN_USE (approved or pending prices), ENTRY_IN_USE (a plan item names it) \
+             or ENTRY_CONFIRMATION_PENDING.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -281,6 +359,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
     let router = OperationBuilder::get("/bss-pricing/v1/reference-ops")
         .operation_id("bss_pricing.list_reference_ops")
         .summary("List durable reference work")
+        .description(
+            "Lists the tenant's durable Products reference operations (reserve, confirm and \
+             release work) in op-id order, filtered by state, at most limit (default 100) after \
+             the cursor. Refusals: 400 REFERENCE_OP_STATE_INVALID, LIMIT_INVALID or QUERY_INVALID.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -308,7 +391,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
 fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post("/bss-pricing/v1/prices/{id}/submit")
         .operation_id("bss_pricing.submit_price")
-        .summary("submit_price")
+        .summary("Submit a draft price")
+        .description(
+            "Puts a draft price, with its pair partner, into a prices approval unit; at quorum 0 \
+             the unit applies at once. Refusals: 400 for a rule the price breaks at submit (for \
+             example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 \
+             PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -324,7 +413,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/submit")
         .operation_id("bss_pricing.submit_plan_revision")
-        .summary("submit_plan_revision")
+        .summary("Submit a plan revision")
+        .description(
+            "Puts an unlocked draft revision whose checks are all green into a plan_revision \
+             approval unit (plan submit); at quorum 0 it publishes at once. Refusals: 400 \
+             REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or \
+             ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -340,7 +435,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/publish-changes")
         .operation_id("bss_pricing.list_publish_changes")
-        .summary("list_publish_changes")
+        .summary("Preview a book's publish changes")
+        .description(
+            "Lists the book's draft prices as they would be published, each with its entry, chain, \
+             approved predecessor and pair partner, and the live impact on entries and plans. \
+             Refusals: 404 for a book the tenant does not hold.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -355,7 +455,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/publish-changes")
         .operation_id("bss_pricing.publish_changes")
-        .summary("publish_changes")
+        .summary("Publish a book's draft prices")
+        .description(
+            "Submits the book's draft prices, all of them or the listed price_ids, optionally on a \
+             common effective date, as one prices approval unit; at quorum 0 it applies at once. \
+             Refusals: 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
+             PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -372,7 +478,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/approval-units")
         .operation_id("bss_pricing.list_approval_units")
-        .summary("list_approval_units")
+        .summary("List the approval units")
+        .description(
+            "Lists the tenant's approval units, filtered by state, kind and referenced aggregate, \
+             each with its stored snapshot and live impact. Refusals: 400 UNIT_STATE_INVALID or \
+             QUERY_INVALID.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -390,7 +501,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/approval-units/{id}")
         .operation_id("bss_pricing.get_approval_unit")
-        .summary("get_approval_unit")
+        .summary("Read an approval unit")
+        .description(
+            "Returns one approval unit with its stored snapshot, its decisions and the live \
+             impact. Refusals: 404 for a unit the tenant does not hold.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -405,7 +520,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/approval-units/{id}/approve")
         .operation_id("bss_pricing.approve_unit")
-        .summary("approve_unit")
+        .summary("Approve an approval unit")
+        .description(
+            "Records an approving vote on the generation the reviewer saw; the vote that reaches \
+             the quorum applies the unit. Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 \
+             SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, \
+             UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -418,7 +539,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/approval-units/{id}/reject")
         .operation_id("bss_pricing.reject_unit")
-        .summary("reject_unit")
+        .summary("Reject an approval unit")
+        .description(
+            "Rejects a pending unit on the generation the reviewer saw, with a note, and returns \
+             its content to draft. Refusals: 400 NOTE_REQUIRED, GENERATION_MISMATCH or UNIT_STALE; \
+             409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -431,7 +557,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/approval-units/{id}/withdraw")
         .operation_id("bss_pricing.withdraw_unit")
-        .summary("withdraw_unit")
+        .summary("Withdraw an approval unit")
+        .description(
+            "The submitter withdraws a pending unit and its content returns to draft. Refusals: \
+             403 NOT_SUBMITTER for anyone else; 409 UNIT_ALREADY_DECIDED.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -443,7 +573,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/approval-policy")
         .operation_id("bss_pricing.get_approval_policy")
-        .summary("get_approval_policy")
+        .summary("Read the approval policy")
+        .description(
+            "Returns the tenant's default quorum and the per-kind overrides, with a content ETag a \
+             following PUT sends back as If-Match. Only a caller without config read is refused \
+             (403).",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -453,11 +588,17 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
     OperationBuilder::put("/bss-pricing/v1/approval-policy")
         .operation_id("bss_pricing.put_approval_policy")
-        .summary("put_approval_policy")
+        .summary("Set an approval quorum")
+        .description(
+            "Sets the default quorum, or one kind's (prices, plan_revision), at the policy the \
+             caller read (If-Match). Refusals: 400 POLICY_KIND_INVALID or QUORUM_INVALID; 409 \
+             STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -842,7 +983,13 @@ async fn put_approval_policy(
 fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post("/bss-pricing/v1/price-book-entries/{id}/prices")
         .operation_id("bss_pricing.create_price")
-        .summary("create_price")
+        .summary("Create a draft price")
+        .description(
+            "Adds a draft price to an entry's chain, and a temporary price's return partner with \
+             it; the Idempotency-Key replays the answer. Refusals: 400 for a rule the price breaks \
+             (for example MODEL_INVALID, AMOUNT_INVALID, WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN \
+             or PRICE_INSIDE_TEMPORARY); 409 ENTRY_REFERENCE_LOST.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -859,7 +1006,12 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/prices/{id}")
         .operation_id("bss_pricing.patch_price")
-        .summary("patch_price")
+        .summary("Change a draft price")
+        .description(
+            "Changes an unlocked draft price of its author at the version the author read \
+             (If-Match). Refusals: 400 for a rule the change breaks, or TEMPORARY_PRICE_FIXED; 403 \
+             NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT or STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
@@ -872,7 +1024,11 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .register(router, openapi);
     OperationBuilder::delete("/bss-pricing/v1/prices/{id}")
         .operation_id("bss_pricing.delete_price")
-        .summary("delete_price")
+        .summary("Delete a draft price")
+        .description(
+            "Deletes an unlocked draft price of its author at the version the author read \
+             (If-Match). Refusals: 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT or STALE_REVISION.",
+        )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
