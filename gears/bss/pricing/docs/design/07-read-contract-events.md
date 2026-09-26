@@ -61,7 +61,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk`.
 
 ### period-slices-and-quote
 
-Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-and-quote`. Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic.
+Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-and-quote`. Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic.
 
 1. [ ] - `p1` - Split the period at every price boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
 2. [ ] - `p1` - Prorate recurring slices by calendar days; rate usage by reading timestamp with tier counters per slice. - `inst-read-contract-events-period-slices-and-quote-2`

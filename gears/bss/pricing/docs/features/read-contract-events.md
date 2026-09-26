@@ -95,7 +95,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-and-quote`
 
-Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic.
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic.
 
 1. [ ] - `p1` - Split the period at every price boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
 2. [ ] - `p1` - Prorate recurring slices by calendar days; rate usage by reading timestamp with tier counters per slice. - `inst-read-contract-events-period-slices-and-quote-2`
@@ -159,7 +159,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-period-slices`
 
-Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
 
 Recurring slices prorate by calendar days and usage follows timestamp-selected prices, with counters per slice. Temporary boundaries inside a period produce multiple slices and price-level floor aggregation (spec §7.1).
 
@@ -169,7 +169,7 @@ Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quote-totals`
 
-Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
 
 Quote adds quantities and optional-item choices to selection, included quantities, price floors and promotions. It is read-only and separate from resolve, with exact tier-edge and rounding goldens (spec §7.1).
 
