@@ -181,15 +181,37 @@ def _revision(api, revision: str) -> dict:
     return r.json()
 
 
+def _resolve(api, revision: str, date: str, pins: str | None = None) -> dict:
+    params = {"plan_revision_id": revision, "date": date}
+    if pins is not None:
+        params["pins"] = pins
+    r = api.get(f"{PRICING}/resolve", params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _binding(resolved: dict) -> dict:
+    """The default chain's binding of the one item."""
+    [item] = resolved["items"]
+    chain = item["chains"][0]
+    assert chain["dim_value"] is None, resolved
+    assert chain["uncovered"] is False, resolved
+    return chain["binding"]
+
+
 @pytest.mark.timeout(120)
 def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, reviewer):
     """Spec §8's worked example across the two gears, then the revision's life.
 
     A price waits in a ``prices`` unit (quorum 1): a plan on the EUR book naming its entry is
     red, ``ITEM_UNCOVERED`` naming that unit; the reviewer approves it and the checks turn green;
-    the revision publishes at once (``plan_revision`` quorum 0); a copy is rev 2, its item
-    attached, and publishing it supersedes rev 1; a clone is a new draft on the same book; the
-    entry a plan names cannot be deleted. The pricing policy is restored at the end.
+    the revision publishes at once (``plan_revision`` quorum 0) and the consumer read contract
+    serves it: ``GET /resolve`` binds the approved price, with the SKU version products holds on
+    the date (read through the real in-process registry), and ``GET /prices/{id}`` serves that
+    price; a copy is rev 2, its item attached, and publishing it supersedes rev 1, which still
+    resolves, and a renewal pinned to the price binds it again; a clone is a new draft on the
+    same book; the entry a plan names cannot be deleted. The pricing policy is restored at the
+    end.
     """
     run = uuid.uuid4().hex[:8]
     before, _ = _policy(api)
@@ -310,6 +332,47 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.status_code == 200, r.text
         assert r.json()["published_rev"] == 1, r.text
 
+        # The read contract: a signup on the sale date binds the approved price.
+        resolved = _resolve(api, rev1, start)
+        assert resolved["state"] == "published", resolved
+        assert (resolved["plan_id"], resolved["rev_no"], resolved["book_id"]) == (plan, 1, book)
+        assert (resolved["currency"], resolved["currency_minor_digits"]) == ("EUR", 2), resolved
+        [item] = resolved["items"]
+        assert (item["sku_id"], item["price_book_entry_id"]) == (sku, entry), item
+        assert (item["charge_kind"], item["period"], item["treatment"]) == (
+            "recurring",
+            "month",
+            "paid",
+        ), item
+        version = item["sku_version"]
+        assert version is not None, "products answered the dated read: " + str(item)
+        assert version["published_version"] >= 1, item
+        assert version["effective_from"] <= start, item
+        binding = _binding(resolved)
+        assert binding["price_id"] == price, binding
+        assert binding["dim_used"] is None, binding
+        assert binding["pinned_from"] is None, binding
+        assert (binding["model"], binding["price"]) == ("flat", {"amount": "30.00"}), binding
+        assert (binding["eligibility"], binding["effective_from"]) == ("all", start), binding
+
+        # The pinned price read serves that price, as stored.
+        r = api.get(f"{PRICING}/prices/{price}")
+        assert r.status_code == 200, r.text
+        pinned = r.json()
+        assert pinned["price_id"] == price, pinned
+        assert (pinned["sku_id"], pinned["price_book_entry_id"], pinned["book_id"]) == (
+            sku,
+            entry,
+            book,
+        ), pinned
+        assert (pinned["charge_kind"], pinned["period"], pinned["currency"]) == (
+            "recurring",
+            "month",
+            "EUR",
+        ), pinned
+        assert (pinned["price"], pinned["effective_from"]) == ({"amount": "30.00"}, start), pinned
+        assert "status" not in pinned and "version" not in pinned, pinned
+
         # A copy is rev 2 whose item attaches; publishing it supersedes rev 1.
         r = api.post(f"{PRICING}/plans/{plan}/revisions", json={}, headers=_key())
         assert r.status_code == 201, r.text
@@ -325,6 +388,13 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert _revision(api, rev1)["state"] == "superseded"
         r = api.get(f"{PRICING}/plans/{plan}")
         assert r.json()["published_rev"] == 2, r.text
+
+        # The superseded rev 1 still resolves, and a renewal pinned to the price binds it again.
+        superseded = _resolve(api, rev1, start)
+        assert superseded["state"] == "superseded", superseded
+        assert _binding(superseded)["price_id"] == price, superseded
+        renewal = _binding(_resolve(api, rev2, start, pins=price))
+        assert (renewal["price_id"], renewal["pinned_from"]) == (price, price), renewal
 
         # A clone is a new plan whose draft rev 1 reads the same book.
         r = api.post(
