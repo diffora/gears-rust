@@ -241,19 +241,104 @@ async fn translated_dimension_key_change_rejected_and_approved_delete_refused() 
         .await;
     assert_eq!(refusal.0, 409);
     assert!(refusal.1.to_string().contains("DIMENSION_KEY_IN_USE"));
-    assert_eq!(
-        f.call(
+    // D-426: the entry now carries approved money, so its invoice line is locked.
+    let locked = f
+        .call(
             "PATCH",
             &path,
             json!({"invoice_line_override":"{sku}"}),
             Some(&changed.2),
-            None
+            None,
         )
-        .await
-        .0,
-        200
+        .await;
+    assert_eq!(locked.0, 409, "{locked:?}");
+    assert!(
+        locked.1.to_string().contains("INVOICE_LINE_LOCKED"),
+        "{locked:?}"
     );
     assert_eq!(f.call("DELETE", &path, json!({}), None, None).await.0, 409);
+}
+
+// D-426 (owner 2026-09-26): an entry's `invoice_line_override` reaches consumers through resolve
+// (D-421: the entry wins over the SKU's template), so once the entry carries money — an approved or
+// a pending price — a change of it is refused 409 `INVOICE_LINE_LOCKED`; a draft price does not lock
+// it, and sending the same value is no change.
+#[tokio::test]
+async fn an_entry_invoice_line_locks_once_the_entry_carries_money() {
+    use bss_pricing::infra::storage::repo::{price_book_entry_repo, price_repo};
+    for state in ["draft", "pending", "approved"] {
+        let (f, _, path, input) = setup(0).await;
+        let first = f.call("POST", &path, input, None, Some("one")).await;
+        assert_eq!(first.0, 201, "{first:?}");
+        let id: Uuid = first.1["id"].as_str().unwrap().parse().unwrap();
+        let path = format!("/price-book-entries/{id}");
+        let set = f
+            .call(
+                "PATCH",
+                &path,
+                json!({"invoice_line_override":"{sku} {unit}"}),
+                Some(&first.2),
+                None,
+            )
+            .await;
+        assert_eq!(set.0, 200, "{state}: no price yet: {set:?}");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(f.ctx.subject_tenant_id());
+        let conn = f.db.conn().unwrap();
+        let p = price_book_entry_repo::find(&conn, &scope, f.ctx.subject_tenant_id(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut price = entry_support::price(&p);
+        price.state = state.into();
+        price_repo::insert(&conn, &scope, price).await.unwrap();
+        let same = f
+            .call(
+                "PATCH",
+                &path,
+                json!({"invoice_line_override":"{sku} {unit}"}),
+                Some(&set.2),
+                None,
+            )
+            .await;
+        assert_eq!(
+            same.0, 200,
+            "{state}: the same value is no change: {same:?}"
+        );
+        let other = f
+            .call(
+                "PATCH",
+                &path,
+                json!({"invoice_line_override":"{sku}"}),
+                Some(&same.2),
+                None,
+            )
+            .await;
+        if state == "draft" {
+            assert_eq!(
+                other.0, 200,
+                "a draft price does not lock the line: {other:?}"
+            );
+        } else {
+            assert_eq!(other.0, 409, "{state}: {other:?}");
+            assert!(
+                other.1.to_string().contains("INVOICE_LINE_LOCKED"),
+                "{state}: {other:?}"
+            );
+            let cleared = f
+                .call(
+                    "PATCH",
+                    &path,
+                    json!({"invoice_line_override":null}),
+                    Some(&same.2),
+                    None,
+                )
+                .await;
+            assert_eq!(
+                cleared.0, 409,
+                "{state}: clearing is a change too: {cleared:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

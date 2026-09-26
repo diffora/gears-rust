@@ -29,7 +29,7 @@ prices/reference recovery, prices approvals and core events. Phase 3 adds plans 
 phase 4 adds resolution, pinned reads and consumer goldens; quote is not built (D-415). [DESIGN](DESIGN.md) defines the architecture.
 
 The spec is `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, especially §2.2, §5–§8, §12–§13.
-[DECISIONS](DECISIONS.md) D-384–D-425 records the living rules and explicit no-listener/outbox decisions.
+[DECISIONS](DECISIONS.md) D-384–D-426 records the living rules and explicit no-listener/outbox decisions.
 
 ## 2. Entries
 

@@ -322,8 +322,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Changes an entry's invoice-line override or its dimension key at the version the \
              caller read (If-Match). Refusals: 400 DIM_NOT_DECLARED or an invalid line template; \
-             404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, or \
-             STALE_REVISION.",
+             404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, \
+             INVOICE_LINE_LOCKED for an override change once the entry has an approved or \
+             pending price (D-426), or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()

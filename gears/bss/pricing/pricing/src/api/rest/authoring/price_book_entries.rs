@@ -252,20 +252,27 @@ pub(super) async fn patch(
     let tenant = ctx.subject_tenant_id();
     let mut m = find(tx, scope, tenant, id).await?;
     support::check_version(version, m.version)?;
+    // The entry is the authorized aggregate; its prices are read tenant-scoped, never through a
+    // scope narrowed to the entry's id.
+    let prices = price_repo::for_entry(tx, &AccessScope::for_tenant(tenant), tenant, id).await?;
     if let Some(dimension) = input.dimension_key {
         check_dimension(tx, scope, tenant, dimension.as_deref()).await?;
-        if dimension != m.dimension_key
-            && price_repo::for_entry(tx, scope, tenant, id)
-                .await?
-                .iter()
-                .any(|r| r.dim_value.is_some())
-        {
+        if dimension != m.dimension_key && prices.iter().any(|r| r.dim_value.is_some()) {
             return Err(support::conflict("DIMENSION_KEY_IN_USE").into());
         }
         m.dimension_key = dimension;
     }
     if let Some(template) = input.invoice_line_override {
         validate_template(template.as_deref())?;
+        // D-426: the override reaches consumers through resolve (D-421), so once the entry carries
+        // money — an approved or a pending price — its invoice line no longer changes; another line
+        // is another entry.
+        let carries_money = prices.iter().any(|r| {
+            r.state == PriceState::Approved.as_str() || r.state == PriceState::Pending.as_str()
+        });
+        if template != m.invoice_line_override && carries_money {
+            return Err(support::conflict("INVOICE_LINE_LOCKED").into());
+        }
         m.invoice_line_override = template;
     }
     m.updated_at = time::OffsetDateTime::now_utc();

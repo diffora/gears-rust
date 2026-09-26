@@ -62,6 +62,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
 | D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421 |
 | D-425 | H | The binding says where it ends for its holder | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (contract C-1, docs M2); amends D-420 |
+| D-426 | H | An entry's invoice line is locked once the entry carries money | DECIDED 2026-09-26 · Owner, 2026-09-26 (option 1 of three); amends D-421 |
 
 ## Entries
 
@@ -382,4 +383,14 @@ Rating and Subscriptions call GET /bss-pricing/v1/resolve as system subjects (bs
 
 Each binding of GET /bss-pricing/v1/resolve carries ends_on: the binding's own end as D-420 rule 3 defines it. That is temporary_until for a temporary price, the stored end of an explicitly closed price, and null when the price has no end of its own. A consumer slices a period at ends_on, never at effective_to. effective_to stays in the binding as the stored window, for information only: the start of a successor sets it, and the start of a new successor that the pin did not take is not an end for a pinned subscription. Rule 3 reads the same own end, so a pinned temporary price binds until its temporary_until even when a pair nested inside it has cut its stored window (phase 4 review C-1).
 
+A return to a TEMPORARY price (a pair nested in an outer pair) ends where that temporary price ends — its temporary_until, stored as an explicit close — so its binding carries that ends_on too (phase 4 second review M1, fix run 9).
+
 **Source:** Phase 4 review, fix run 8 (contract C-1, docs M2; the orchestrator's decision). Amends D-420. Narrows spec §7.1's "Slices" bullet (a period is split at every row boundary of the bound chain): a successor's start inside a period is not a slice point for its holder; the binding's ends_on is (phase 4 second review L2).
+
+#### D-426 [H] An entry's invoice line is locked once the entry carries money
+
+**Status:** DECIDED 2026-09-26.
+
+A PriceBookEntry stays outside approval: it is structure, and money reaches a customer only through an approved price (the prices kind) and a published plan revision (the plan_revision kind). The one entry field that reaches consumers directly is invoice_line_override: resolve returns it as the invoice line with source entry, ahead of the SKU version's template (D-421), while the same template on the SKU changes only through Products' sku_change approval. So once an entry has an approved or a pending price, PATCH /bss-pricing/v1/price-book-entries/{id} refuses a change of invoice_line_override (a new value or null) with 409 INVOICE_LINE_LOCKED; sending the stored value is no change. A draft or rejected price does not lock it. Another invoice line needs another entry. The prices of the entry are read tenant-scoped in the PATCH transaction.
+
+**Source:** Owner, 2026-09-26 — asked why PriceBookEntry is not under approval, chose option 1 of three (lock the override once the entry carries money; the others: route override changes through a prices unit with an effective date, or accept the gap). Amends D-421.
