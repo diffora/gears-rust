@@ -17,7 +17,8 @@ use bss_pricing::infra::storage::{
 use bss_products_sdk::{
     ReferenceRegistryV1,
     models::{
-        Lifecycle, ReferenceKind, ReferenceState, ReservationReceipt, Sku, SkuType, SkuVersion,
+        Lifecycle, ReferenceKind, ReferenceState, ReservationReceipt, Sku, SkuContent, SkuType,
+        SkuVersion,
     },
 };
 #[allow(
@@ -69,8 +70,65 @@ pub struct Catalog {
     pub referencers: Mutex<Option<std::collections::BTreeSet<Uuid>>>,
     /// Every registry call, answered or not.
     pub calls: AtomicUsize,
+    /// Opt-in: the dated SKU versions Products holds. When set, `sku_version_as_of` answers the
+    /// version in force on the date (the last one whose `effective_from` is on or before it) for
+    /// a SKU the catalog declares, `None` when none is in force yet, and Products' 404 for a SKU
+    /// it does not declare. Unset (the default) answers `None` for every SKU.
+    pub versions: Mutex<Option<BTreeMap<Uuid, Vec<SkuVersion>>>>,
 }
 impl Catalog {
+    /// Arm the dated reads (see `versions`) and add one published version of a declared SKU.
+    pub fn version(
+        &self,
+        sku: Uuid,
+        published_version: i64,
+        effective_from: &str,
+        content: SkuContent,
+    ) {
+        let effective_from = time::Date::parse(
+            effective_from,
+            &time::format_description::well_known::Iso8601::DATE,
+        )
+        .unwrap();
+        let mut versions = self.versions.lock().unwrap();
+        let chain = versions
+            .get_or_insert_with(BTreeMap::new)
+            .entry(sku)
+            .or_default();
+        chain.push(SkuVersion {
+            sku_id: sku,
+            published_version,
+            effective_from,
+            content,
+            created_at: time::OffsetDateTime::now_utc(),
+        });
+        chain.sort_by_key(|v| v.effective_from);
+    }
+    /// Arm the dated reads with no version yet: every undeclared SKU is then Products' 404.
+    pub fn dated(&self) {
+        self.versions
+            .lock()
+            .unwrap()
+            .get_or_insert_with(BTreeMap::new);
+    }
+    /// The content of a declared SKU as a published version carries it, descriptors unset.
+    pub fn content(&self, sku: Uuid) -> SkuContent {
+        let entry = self.skus.lock().unwrap()[&sku].clone();
+        SkuContent {
+            code: entry.name.clone(),
+            name: entry.name,
+            r#type: entry.r#type,
+            category_id: Uuid::nil(),
+            description: String::new(),
+            sellable: true,
+            gl_code: entry.gl_code,
+            tax_category: None,
+            invoice_line_template: None,
+            billing_timing: None,
+            usage_type_ref: entry.meter,
+            unit: None,
+        }
+    }
     /// Only these principals may read SKUs from now on (products `read`).
     pub fn readers(&self, principals: impl IntoIterator<Item = Uuid>) {
         *self.readers.lock().unwrap() = Some(principals.into_iter().collect());
@@ -281,15 +339,30 @@ impl ReferenceRegistryV1 for Catalog {
         &self,
         ctx: &SecurityContext,
         _: Uuid,
-        _: Uuid,
-        _: time::Date,
+        id: Uuid,
+        date: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.read_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());
         }
-        Ok(None)
+        let versions = self.versions.lock().unwrap();
+        let Some(versions) = versions.as_ref() else {
+            return Ok(None);
+        };
+        if !self.skus.lock().unwrap().contains_key(&id) {
+            return Err(SkuResource::not_found("SKU not found")
+                .with_resource("sku")
+                .create());
+        }
+        Ok(versions.get(&id).and_then(|chain| {
+            chain
+                .iter()
+                .rev()
+                .find(|v| v.effective_from <= date)
+                .cloned()
+        }))
     }
 }
 

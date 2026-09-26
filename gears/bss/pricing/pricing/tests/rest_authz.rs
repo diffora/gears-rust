@@ -48,6 +48,7 @@ fn census() -> census::Routes {
         ("GET", "/bss-pricing/v1/plan-revisions/{id}/checks"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
         ("POST", "/bss-pricing/v1/plans/{id}/clone"),
+        ("GET", "/bss-pricing/v1/resolve"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -70,7 +71,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 42);
+    assert_eq!(registered.len(), 43);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 6);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -86,9 +87,9 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
         assert_eq!(
             census::production_count(needle),
             if needle == "require_authenticated(" {
-                43
+                44
             } else {
-                42
+                43
             }
         );
     }
@@ -100,7 +101,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 42);
+    assert_eq!(census::source_routes().len(), 43);
 }
 
 #[test]
@@ -123,10 +124,11 @@ fn every_mounted_router_is_merged_into_both_censuses() {
                 .collect::<Vec<_>>()
         })
         .collect();
+    // `module.rs` mounts two: the authoring router and the consumer read contract's.
     assert_eq!(
         routers,
-        vec!["router".to_owned()],
-        "every authoring router is mounted"
+        vec!["router".to_owned(), "router".to_owned()],
+        "every router is mounted"
     );
     assert_eq!(census::source_routes(), census());
 }
@@ -186,3 +188,6 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit plan:submit false true
 // POST /plans/{id}/clone plan:author false true
+
+// Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
+// GET /resolve plan:read false false

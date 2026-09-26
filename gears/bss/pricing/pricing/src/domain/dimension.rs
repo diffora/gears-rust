@@ -17,6 +17,13 @@ fn value_code(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
+/// Whether `text` is spelled as a dimension value may be (lowercase letters, digits, `_`, `-`),
+/// whether or not a registry holds it today: a resolve pin names a value that may have been
+/// removed since (D-419).
+#[must_use]
+pub fn is_value(text: &str) -> bool {
+    value_code(text)
+}
 /// The key every tenant's registry is seeded with (spec decision 4): declared, not yet valued.
 pub const SEED_KEY: &str = "region";
 /// Validate a registry entry. Removal of a used value is a door-level rule. A key may be

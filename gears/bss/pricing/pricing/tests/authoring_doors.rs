@@ -70,14 +70,16 @@ impl Fixture {
             .await
             .unwrap(),
         );
-        let make = |allow| {
-            bss_pricing::api::rest::authoring::router(
-                state.clone(),
-                &toolkit::api::OpenApiRegistryImpl::new(),
+        // The gear mounts two routers (`module.rs`): authoring and the consumer reads.
+        let production = |registry: &toolkit::api::OpenApiRegistryImpl| {
+            bss_pricing::api::rest::authoring::router(state.clone(), registry).merge(
+                bss_pricing::api::rest::read_contract::router(state.clone(), registry),
             )
-            .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
-                Arc::new(Resolver { tenant, allow }),
-            )))
+        };
+        let make = |allow| {
+            production(&toolkit::api::OpenApiRegistryImpl::new()).layer(axum::Extension(
+                authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Resolver { tenant, allow })),
+            ))
         };
         let ctx = SecurityContext::builder()
             .subject_id(Uuid::new_v4())
@@ -86,7 +88,7 @@ impl Fixture {
             .build()
             .unwrap();
         let registry = toolkit::api::OpenApiRegistryImpl::new();
-        let _counted = bss_pricing::api::rest::authoring::router(state.clone(), &registry);
+        let _counted = production(&registry);
         let registered = registry
             .operation_specs
             .iter()
@@ -397,6 +399,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("GET", format!("/plan-revisions/{id}/checks")),
         ("POST", format!("/plan-revisions/{id}/submit")),
         ("POST", format!("/plans/{id}/clone")),
+        ("GET", "/resolve".into()),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -703,6 +706,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "submit",
         ),
         ("POST", format!("/plans/{id}/clone"), "plan", "author"),
+        ("GET", "/resolve".into(), "plan", "read"),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -714,7 +718,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 42);
+    assert_eq!(table.len(), 43);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

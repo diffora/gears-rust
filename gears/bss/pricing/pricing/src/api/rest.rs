@@ -6,3 +6,4 @@ pub mod error;
 pub mod preconditions;
 
 pub mod authoring;
+pub mod read_contract;

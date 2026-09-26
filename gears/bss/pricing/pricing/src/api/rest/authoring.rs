@@ -1,7 +1,7 @@
 //! Books, entries, prices, approvals, plans, dimension keys and settings REST doors.
 mod approvals;
 mod books;
-mod configuration;
+pub(crate) mod configuration;
 pub mod dto;
 pub mod plan_items;
 mod plan_routes;

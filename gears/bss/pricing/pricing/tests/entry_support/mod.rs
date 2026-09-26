@@ -82,13 +82,19 @@ pub fn app_for(
     state: Arc<bss_pricing::api::rest::authoring::AuthoringState>,
     tenant: Uuid,
 ) -> Router {
-    bss_pricing::api::rest::authoring::router(state, &toolkit::api::OpenApiRegistryImpl::new())
-        .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
-            Arc::new(Resolver {
-                tenant,
-                allow: true,
-            }),
-        )))
+    production(state).layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
+        Arc::new(Resolver {
+            tenant,
+            allow: true,
+        }),
+    )))
+}
+/// The gear's two routers as `module.rs` mounts them: authoring and the consumer reads.
+pub fn production(state: Arc<bss_pricing::api::rest::authoring::AuthoringState>) -> Router {
+    let openapi = toolkit::api::OpenApiRegistryImpl::new();
+    bss_pricing::api::rest::authoring::router(state.clone(), &openapi).merge(
+        bss_pricing::api::rest::read_contract::router(state, &openapi),
+    )
 }
 /// A user principal of a tenant.
 pub fn user_of(tenant: Uuid) -> SecurityContext {
@@ -120,13 +126,9 @@ impl Fixture {
                 .unwrap(),
         );
         let make = |allow| {
-            bss_pricing::api::rest::authoring::router(
-                state.clone(),
-                &toolkit::api::OpenApiRegistryImpl::new(),
-            )
-            .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
-                Arc::new(Resolver { tenant, allow }),
-            )))
+            production(state.clone()).layer(axum::Extension(
+                authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Resolver { tenant, allow })),
+            ))
         };
         let ctx = SecurityContext::builder()
             .subject_id(Uuid::new_v4())
@@ -174,13 +176,12 @@ impl Fixture {
             .await
             .unwrap(),
         );
-        bss_pricing::api::rest::authoring::router(state, &toolkit::api::OpenApiRegistryImpl::new())
-            .layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
-                Arc::new(Resolver {
-                    tenant: self.ctx.subject_tenant_id(),
-                    allow: true,
-                }),
-            )))
+        production(state).layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
+            Arc::new(Resolver {
+                tenant: self.ctx.subject_tenant_id(),
+                allow: true,
+            }),
+        )))
     }
     /// Call as another principal of the same tenant.
     pub async fn call_as(

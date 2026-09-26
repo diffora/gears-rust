@@ -151,6 +151,10 @@ impl RestApiCapability for BssPricingGear {
                     runtime.state.clone(),
                     openapi,
                 ))
+                .merge(crate::api::rest::read_contract::router(
+                    runtime.state.clone(),
+                    openapi,
+                ))
                 .layer(axum::Extension((*runtime.enforcer).clone()))
                 .layer(axum::middleware::from_fn(
                     toolkit::api::canonical_error_middleware,
@@ -235,3 +239,6 @@ impl MigrationTrait for InvalidOutboxMigration {
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit plan:submit false true
 // POST /plans/{id}/clone plan:author false true
+
+// Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
+// GET /resolve plan:read false false
