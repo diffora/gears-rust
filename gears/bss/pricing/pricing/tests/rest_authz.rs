@@ -85,14 +85,10 @@ async fn the_census_covers_every_route_the_routers_register() {
 fn the_authentication_and_authz_parsers_have_positive_controls() {
     for needle in ["require_authenticated(", "authz::access_scope("] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        assert_eq!(
-            census::production_count(needle),
-            if needle == "require_authenticated(" {
-                45
-            } else {
-                44
-            }
-        );
+        // One per route (44), and one more each: `require_authenticated(` is also its own
+        // definition; `authz::access_scope(` is also the SKU usage port, which authorizes the
+        // Products caller it serves (D-428).
+        assert_eq!(census::production_count(needle), 44 + 1, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(

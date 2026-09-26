@@ -2,7 +2,7 @@
 use super::{driver_failure, map_unique, matched};
 use crate::infra::storage::{RepoError, entity::price as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -160,6 +160,46 @@ pub async fn for_entry(
         .all(runner)
         .await
         .map_err(|e| driver_failure("list parent rows".into(), e))
+}
+/// How many prices of one entry are in one state: a row of [`count_by_entry_and_state`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct EntryStateCount {
+    pub price_book_entry_id: Uuid,
+    pub state: String,
+    pub count: i64,
+}
+/// The prices of the entries, counted by entry and state in ONE grouped statement, whatever the
+/// number of entries (D-428). An entry without prices has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn count_by_entry_and_state(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entries: &[Uuid],
+) -> Result<Vec<EntryStateCount>, RepoError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::PriceBookEntryId)
+                .column(e::Column::State)
+                .column_as(Expr::col(e::Column::Id).count(), "count")
+                .group_by(e::Column::PriceBookEntryId)
+                .group_by(e::Column::State)
+                .into_model::<EntryStateCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count prices by entry and state".into(), e))
 }
 /// Remove a draft only at its current version and outside an approval unit.
 /// # Errors

@@ -46,18 +46,26 @@ async fn create_replay_current_kind_unique_key_and_delete() {
     assert_eq!(dup.0, 409, "{dup:?}");
     assert!(dup.1.to_string().contains("ENTRY_KEY_TAKEN"));
     let id = first.1["id"].as_str().unwrap();
-    assert_eq!(
-        f.call(
+    // The read answers the entry the create answered, and its usage (D-428): nothing uses it yet.
+    let mut read = f
+        .call(
             "GET",
             &format!("/price-book-entries/{id}"),
             json!({}),
             None,
-            None
+            None,
         )
         .await
-        .1,
-        first.1
+        .1;
+    assert_eq!(
+        read.as_object_mut().unwrap().remove("usage"),
+        Some(json!({
+            "prices": {"approved": 0, "pending": 0, "draft": 0},
+            "plans": 0,
+            "plans_superseded_only": 0,
+        }))
     );
+    assert_eq!(read, first.1);
     assert_eq!(
         f.call(
             "DELETE",

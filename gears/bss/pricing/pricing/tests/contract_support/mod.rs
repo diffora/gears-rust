@@ -46,7 +46,7 @@
 //! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional),
 //! backup (included, 100 units, no entry), requests, requests-volume and requests-package (paid; each
 //! entry has one model, D-427: graduated, volume, package); revision 3 is a draft. Plan `trial` revision 1 is
-//! pending. Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
+//! pending and holds egress (paid): an entry a pending revision names (D-428). Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
 //! and one version each of storage, egress, backup, requests, requests-volume, requests-package and
 //! promo from 2026-01-01. Plan `promo`
 //! revision 1 (published 2026-09-02) holds promo (paid), whose chain is two nested pairs built by the
@@ -101,6 +101,7 @@ macro_rules! with_goldens {
             price_closed,
             price_keep_for_bound,
             price_not_found,
+            price_book_entry_usage,
         }
     };
 }
@@ -151,6 +152,14 @@ impl Names {
         );
         self.by_id.insert(id, format!("<{name}>"));
         id
+    }
+    /// Name an id the fixture did not mint but sets itself (the tenant): shown as `<name>`.
+    pub fn adopt(&mut self, name: &str, id: Uuid) {
+        assert!(
+            self.by_name.insert(name.to_owned(), id).is_none(),
+            "{name} is named twice"
+        );
+        self.by_id.insert(id, format!("<{name}>"));
     }
     pub fn id(&self, name: &str) -> Uuid {
         *self
@@ -366,6 +375,7 @@ impl Writer<'_> {
     ) {
         let (period, key, line) = shape;
         let id = self.names.mint(name);
+        let reservation = self.names.mint(&format!("reservation:{name}"));
         price_book_entry_repo::insert(
             &self.f.db.conn().unwrap(),
             &self.scope,
@@ -379,7 +389,7 @@ impl Writer<'_> {
                 model: model.into(),
                 dimension_key: key.map(str::to_owned),
                 invoice_line_override: line.map(str::to_owned),
-                reservation_id: Uuid::from_u128(id.as_u128() ^ 1),
+                reservation_id: reservation,
                 reference_state: "confirmed".into(),
                 version: 1,
                 created_at: created(),
@@ -1274,6 +1284,15 @@ async fn plans(w: &mut Writer<'_>) {
     w.plan("plan:trial", "trial").await;
     w.revision("revision:trial-1", "plan:trial", 1, at(2026, 9, 11))
         .await;
+    w.item(
+        "item:trial-1/egress",
+        "revision:trial-1",
+        "sku:egress",
+        Some("entry:egress"),
+        "paid",
+        (None, None),
+    )
+    .await;
     w.lock("revision:trial-1", "unit:revision-trial-1").await;
     // Ids no row holds, so a golden can name what a refusal was asked about.
     w.names.mint("revision:unknown");
@@ -1495,6 +1514,8 @@ pub async fn world(f: Fixture, catalog: &Catalog) -> World {
     let mut names = Names::default();
     products(&mut names, catalog);
     let tenant = f.ctx.subject_tenant_id();
+    // The entry reads carry their tenant (D-428's golden): the fixture's own, named.
+    names.adopt("tenant", tenant);
     let mut w = Writer {
         f: &f,
         names: &mut names,
@@ -1827,6 +1848,36 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
                 ask_as_other_tenant(
                     "this tenant's price read by another tenant",
                     "/prices/{price:10}",
+                ),
+            ],
+        ),
+        "price_book_entry_usage" => (
+            "D-428: the two entry reads answer the entry's fields and its usage - its prices by state (a rejected price \
+             is not counted), the distinct plans whose draft, pending or published revisions name it (one plan counts \
+             once however many of its revisions name the entry) and the distinct plans that name it only through \
+             superseded revisions; the list carries it on every entry, an entry nothing uses reads zeros; another \
+             tenant reads nothing",
+            vec![
+                ask(
+                    "an entry with approved, pending, draft and rejected prices, named by a superseded and a \
+                     published revision of one plan",
+                    "/price-book-entries/{entry:pro}",
+                ),
+                ask(
+                    "an entry named by a published revision of one plan and the pending revision of another",
+                    "/price-book-entries/{entry:egress}",
+                ),
+                ask(
+                    "an entry no revision names",
+                    "/price-book-entries/{entry:archive}",
+                ),
+                ask(
+                    "the book's entries, each with its usage",
+                    "/price-books/{book:eur}/entries",
+                ),
+                ask_as_other_tenant(
+                    "this tenant's entry read by another tenant",
+                    "/price-book-entries/{entry:pro}",
                 ),
             ],
         ),

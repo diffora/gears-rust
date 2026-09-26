@@ -156,6 +156,32 @@ pub async fn for_book(
         .await
         .map_err(|e| driver_failure("list price book entries of a book".into(), e))
 }
+/// The tenant's entries of the SKUs, in every book and every reference state, in ONE statement
+/// (D-428).
+/// # Errors
+/// Returns typed database failures.
+pub async fn for_skus(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    skus: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if skus.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::SkuId.is_in(skus.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list price book entries of SKUs".into(), e))
+}
 /// Change the reference receipt/state at the observed version.
 /// # Errors
 /// Returns a version conflict or a typed database failure.

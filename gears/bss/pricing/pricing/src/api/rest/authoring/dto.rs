@@ -73,6 +73,53 @@ impl From<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
         }
     }
 }
+/// An entry's prices by state; a rejected price is not counted (D-428).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEntryPriceCounts {
+    pub approved: u64,
+    pub pending: u64,
+    pub draft: u64,
+}
+/// An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,
+/// pending or published revision whose items name it; `plans_superseded_only`, the distinct plans
+/// that name it only through superseded revisions (they still keep it `ENTRY_IN_USE`).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEntryUsage {
+    pub prices: PricingEntryPriceCounts,
+    pub plans: u64,
+    pub plans_superseded_only: u64,
+}
+impl From<crate::infra::usage::EntryUsage> for PricingEntryUsage {
+    fn from(u: crate::infra::usage::EntryUsage) -> Self {
+        Self {
+            prices: PricingEntryPriceCounts {
+                approved: u.prices.approved,
+                pending: u.prices.pending,
+                draft: u.prices.draft,
+            },
+            plans: u.plans,
+            plans_superseded_only: u.plans_superseded_only,
+        }
+    }
+}
+/// What the two entry reads answer (D-428): the entry's fields and its `usage`. Every other answer
+/// that carries an entry (POST, PATCH, the stored receipt, the export, publish-changes) keeps
+/// [`PricingPriceBookEntryDto`].
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPriceBookEntryReadDto {
+    #[serde(flatten)]
+    pub entry: PricingPriceBookEntryDto,
+    pub usage: PricingEntryUsage,
+}
+impl PricingPriceBookEntryReadDto {
+    #[must_use]
+    pub fn of(m: entity::price_book_entry::Model, usage: crate::infra::usage::EntryUsage) -> Self {
+        Self {
+            entry: m.into(),
+            usage: usage.into(),
+        }
+    }
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceDto {
     pub id: Uuid,
@@ -196,7 +243,7 @@ pub struct PriceBookList {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryList {
-    pub items: Vec<PricingPriceBookEntryDto>,
+    pub items: Vec<PricingPriceBookEntryReadDto>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingExportEntry {

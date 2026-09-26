@@ -7,6 +7,7 @@ pub mod events;
 pub mod plan_revisions;
 pub mod prices;
 pub mod storage;
+pub mod usage;
 
 pub mod reference_registry;
 
