@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 
-use super::{clamp_listing_top, reject_non_odata_params};
+use super::{
+    bind_cursor_to_children_mode, clamp_listing_top, parse_recursive_flag, reject_non_odata_params,
+};
 use crate::domain::error::DomainError;
 use toolkit_odata::ODataQuery;
 
@@ -125,4 +127,54 @@ fn reject_non_odata_params_rejects_when_mixed_with_odata_keys() {
     q.insert("status".to_owned(), "approved".to_owned());
     let err = reject_non_odata_params(&q).expect_err("mixed query must reject on the plain key");
     assert!(matches!(err, DomainError::Validation { .. }));
+}
+
+#[test]
+fn parse_recursive_flag_absent_is_false() {
+    let q: HashMap<String, String> = HashMap::new();
+    assert!(!parse_recursive_flag(&q).expect("absent"));
+}
+
+#[test]
+fn parse_recursive_flag_accepts_exact_literals() {
+    let mut q = HashMap::new();
+    q.insert("recursive".to_owned(), "true".to_owned());
+    assert!(parse_recursive_flag(&q).expect("true"));
+    q.insert("recursive".to_owned(), "false".to_owned());
+    assert!(!parse_recursive_flag(&q).expect("false"));
+}
+
+#[test]
+fn parse_recursive_flag_rejects_anything_else_as_validation() {
+    for bad in ["True", "1", "yes", "", "TRUE"] {
+        let mut q = HashMap::new();
+        q.insert("recursive".to_owned(), bad.to_owned());
+        let err = parse_recursive_flag(&q).expect_err(bad);
+        assert_eq!(err.code(), "validation", "value {bad:?} must be a 400");
+    }
+}
+
+#[test]
+fn parse_recursive_flag_ignores_other_keys() {
+    let mut q = HashMap::new();
+    q.insert("limit".to_owned(), "10".to_owned());
+    q.insert("$filter".to_owned(), "name eq 'x'".to_owned());
+    assert!(!parse_recursive_flag(&q).expect("other keys are not this parser's business"));
+}
+
+#[test]
+fn bind_cursor_to_children_mode_separates_the_two_modes() {
+    // No `$filter`: the extractor leaves `filter_hash` unset.
+    let direct = bind_cursor_to_children_mode(ODataQuery::new(), false);
+    let recursive = bind_cursor_to_children_mode(ODataQuery::new(), true);
+    assert_eq!(direct.filter_hash.as_deref(), Some("children"));
+    assert_eq!(recursive.filter_hash.as_deref(), Some("recursive:"));
+
+    // With `$filter`: direct keeps the extractor's hash verbatim.
+    let filtered = ODataQuery::new().with_filter_hash("abc123".to_owned());
+    let direct = bind_cursor_to_children_mode(filtered.clone(), false);
+    let recursive = bind_cursor_to_children_mode(filtered, true);
+    assert_eq!(direct.filter_hash.as_deref(), Some("abc123"));
+    assert_eq!(recursive.filter_hash.as_deref(), Some("recursive:abc123"));
+    assert_ne!(direct.filter_hash, recursive.filter_hash);
 }
