@@ -7,9 +7,9 @@ mod pg_support;
 
 use bss_pricing::module::BssPricingGear;
 use guard_support::{
-    ENTRY_SHAPED_PRICE_PG, GUARD, LEGACY_CHAIN_TABLES, PLAN_MIGRATIONS, PRE_RENAME_FINDINGS,
-    PRE_RENAME_NAMES, PRICE_ROW_PG, REFERENCE_OP_BEFORE_D412_PG, REFERENCE_OP_BEFORE_RENAME_PG,
-    RENAMED, refusal,
+    ENTRY_SHAPED_PRICE_PG, GUARD, LEGACY_CHAIN_TABLES, LEGACY_PLAN_PG, PLAN_MIGRATIONS,
+    PRE_RENAME_FINDINGS, PRE_RENAME_NAMES, PRICE_ROW_PG, REFERENCE_OP_BEFORE_D412_PG,
+    REFERENCE_OP_BEFORE_RENAME_PG, RENAMED, refusal,
 };
 use pg_support::Pg;
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
@@ -229,6 +229,40 @@ async fn a_pre_rename_database_meets_the_guard_before_the_renamed_migrations() {
         "pricing_plan_revision",
         "pricing_plan_item",
     ] {
+        assert!(
+            !tables.iter().any(|t| t == absent),
+            "{absent} was created: a pending migration ran before the guard"
+        );
+    }
+}
+
+/// (b, phase 4 review F2) The legacy chain's `pricing_plan` (no `code`) with the phase 3
+/// migrations pending: the guard's refusal, not `m20260926_000010`'s raw index error.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn a_legacy_plan_without_code_is_stale() {
+    let pg = Pg::applied().await;
+    exec(
+        &pg,
+        &[
+            "DROP TABLE bss.pricing_plan_item CASCADE",
+            "DROP TABLE bss.pricing_plan_revision CASCADE",
+            "DROP TABLE bss.pricing_plan CASCADE",
+        ],
+    )
+    .await;
+    exec(&pg, LEGACY_PLAN_PG).await;
+    forget(&pg, &[GUARD]).await;
+    forget(&pg, &PLAN_MIGRATIONS).await;
+
+    let text = refused(migrate(&pg).await);
+
+    assert!(
+        text.contains(&refusal("stale", "pricing_plan without column code")),
+        "{text}"
+    );
+    let tables = pricing_tables(&pg).await;
+    for absent in ["pricing_plan_revision", "pricing_plan_item"] {
         assert!(
             !tables.iter().any(|t| t == absent),
             "{absent} was created: a pending migration ran before the guard"

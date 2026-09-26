@@ -118,7 +118,8 @@ The fresh migration allocation is:
 
 Before `000001` runs the guard `m0000_products_refuse_a_legacy_or_stale_schema` ([P-D-195](../DECISIONS.md)).
 Its name sorts it before every other migration of the gear, and it creates nothing. It refuses a database
-that holds a legacy `products_*` table, which is the legacy chain's tables minus today's, or a
+that holds a legacy `products_*` table, which is the legacy chain's tables minus today's, a legacy
+`products_category` or `products_sku` without `code` (names both chains create), or a
 `products_sku_reference` whose `ref_kind` CHECK does not admit `price_book_entry`. The stand is not migrated:
 it starts from empty products tables.
 

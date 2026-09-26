@@ -5,7 +5,10 @@
 //! - `pricing_reference_op` before D-412 (`06860f1fb^`, `m20260926_000006`): no `ref_kind`;
 //! - the pre-rename chain (`fbff5dbd6^`): `pricing_price` was the entry (`m20260926_000005`),
 //!   `pricing_price_row` the dated amount (`m20260926_000007`), and the reference op named its
-//!   reference `price_id` (`m20260926_000006`).
+//!   reference `price_id` (`m20260926_000006`);
+//! - the legacy chain's `pricing_plan` (`bss/products-backup`, `m20260821_000021`), a table name
+//!   today's chain creates too: a revision row keyed `(plan_id, revision)`, no `code` column. Its
+//!   `CREATE TABLE` only: the guard reads columns, so the indexes and triggers are left out.
 
 #![allow(dead_code, reason = "each test binary uses part of the module")]
 
@@ -225,3 +228,81 @@ pub const PRICE_ROW_PG: &[&str] = &[
 /// The pre-rename findings, in the order the guard reports them.
 pub const PRE_RENAME_FINDINGS: &str = "table pricing_price_row; pricing_price without column \
      price_book_entry_id; pricing_reference_op without column ref_kind";
+
+/// The legacy chain's `pricing_plan` (`m20260821_000021`): no `code` column.
+pub const LEGACY_PLAN_SQLITE: &[&str] = &[r"CREATE TABLE pricing_plan (
+            tenant_id                    text    NOT NULL,
+            plan_id                      text    NOT NULL,
+            revision                     bigint  NOT NULL,
+            allowed_change_targets       text,
+            available_from               text,
+            available_to                 text,
+            cloned_from                  text,
+            comparability_rank           integer,
+            custom_interval_n            int,
+            custom_interval_unit         text,
+            entitlement_grants           text,
+            frequency                    text,
+            descriptor_ext               text    NOT NULL DEFAULT '{}',
+            lifecycle_state              text    NOT NULL,
+            plan_name                    text    NOT NULL,
+            plan_tier                    text,
+            plan_tier_override           boolean NOT NULL DEFAULT 0,
+            purchase_max_qty             bigint,
+            purchase_min_qty             bigint,
+            sku_id                       text    NOT NULL,
+            usage_counter_on_plan_change text,
+            created_at_utc               text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00'),
+            created_by                   text    NOT NULL,
+            row_version                  bigint  NOT NULL DEFAULT 0,
+            PRIMARY KEY (plan_id, revision),
+            CONSTRAINT chk_pricing_plan_availability CHECK (available_from IS NULL OR available_to IS NULL OR available_to > available_from),
+            CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (custom_interval_n IS NULL OR custom_interval_n > 0),
+            CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK ((frequency IS NOT NULL AND frequency = 'custom_every_n') = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL)),
+            CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (custom_interval_unit IS NULL OR custom_interval_unit IN ('days','months')),
+            CONSTRAINT chk_pricing_plan_frequency CHECK (frequency IS NULL OR frequency IN ('monthly','quarterly','semiannual','annual','custom_every_n')),
+            CONSTRAINT chk_pricing_plan_lifecycle_state CHECK (lifecycle_state IN ('draft','abandoned','published','superseded','retired')),
+            CONSTRAINT chk_pricing_plan_purchase_max_qty CHECK (purchase_max_qty IS NULL OR purchase_max_qty >= 0),
+            CONSTRAINT chk_pricing_plan_purchase_min_qty CHECK (purchase_min_qty IS NULL OR purchase_min_qty >= 0),
+            CONSTRAINT chk_pricing_plan_purchase_qty CHECK (purchase_min_qty IS NULL OR purchase_max_qty IS NULL OR purchase_min_qty <= purchase_max_qty),
+            CONSTRAINT chk_pricing_plan_revision CHECK (revision >= 0),
+            CONSTRAINT chk_pricing_plan_row_version CHECK (row_version >= 0)
+        )"];
+pub const LEGACY_PLAN_PG: &[&str] = &[r"CREATE TABLE bss.pricing_plan (
+            tenant_id                    uuid        NOT NULL,
+            plan_id                      uuid        NOT NULL,
+            revision                     bigint      NOT NULL,
+            allowed_change_targets       jsonb,
+            available_from               timestamptz,
+            available_to                 timestamptz,
+            cloned_from                  uuid,
+            comparability_rank           integer,
+            custom_interval_n            integer,
+            custom_interval_unit         text,
+            entitlement_grants           jsonb,
+            frequency                    text,
+            descriptor_ext               jsonb       NOT NULL DEFAULT '{}'::jsonb,
+            lifecycle_state              text        NOT NULL,
+            plan_name                    text        NOT NULL,
+            plan_tier                    text,
+            plan_tier_override           boolean     NOT NULL DEFAULT false,
+            purchase_max_qty             bigint,
+            purchase_min_qty             bigint,
+            sku_id                       uuid        NOT NULL,
+            usage_counter_on_plan_change text,
+            created_at_utc               timestamptz NOT NULL DEFAULT now(),
+            created_by                   uuid        NOT NULL,
+            row_version                  bigint      NOT NULL DEFAULT 0,
+            CONSTRAINT chk_pricing_plan_availability CHECK (available_from IS NULL OR available_to IS NULL OR available_to > available_from),
+            CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (custom_interval_n IS NULL OR custom_interval_n > 0),
+            CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK ((frequency IS NOT NULL AND frequency = 'custom_every_n') = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL)),
+            CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (custom_interval_unit IS NULL OR custom_interval_unit IN ('days','months')),
+            CONSTRAINT chk_pricing_plan_frequency CHECK (frequency IS NULL OR frequency IN ('monthly','quarterly','semiannual','annual','custom_every_n')),
+            CONSTRAINT chk_pricing_plan_lifecycle_state CHECK (lifecycle_state IN ('draft','abandoned','published','superseded','retired')),
+            CONSTRAINT chk_pricing_plan_purchase_max_qty CHECK (purchase_max_qty IS NULL OR purchase_max_qty >= 0),
+            CONSTRAINT chk_pricing_plan_purchase_min_qty CHECK (purchase_min_qty IS NULL OR purchase_min_qty >= 0),
+            CONSTRAINT chk_pricing_plan_purchase_qty CHECK (purchase_min_qty IS NULL OR purchase_max_qty IS NULL OR purchase_min_qty <= purchase_max_qty),
+            CONSTRAINT chk_pricing_plan_revision CHECK (revision >= 0),
+            CONSTRAINT chk_pricing_plan_row_version CHECK (row_version >= 0),
+            CONSTRAINT pricing_plan_pkey PRIMARY KEY (plan_id, revision)
+        )"];

@@ -4,13 +4,17 @@
 //! The toolkit runner sorts a gear's migrations by name and runs the pending ones, so this one —
 //! `m0000_…` — runs before the coordination, broker and outbox migrations (`m0001_…`, `m001_…`)
 //! and before `m20260925_000001`. It is pending on every database that predates phase 4 and runs
-//! there once. It creates nothing and reads the catalog only: `sqlite_master` on `SQLite`;
-//! `information_schema` and `pg_constraint` on Postgres, tables in schema `bss`.
+//! there once. It creates nothing and reads the catalog only: `sqlite_master` and `table_info` on
+//! `SQLite`; `information_schema` and `pg_constraint` on Postgres, tables in schema `bss`.
 //!
 //! What it refuses:
 //! - a table of [`LEGACY_TABLES`]: the legacy chain's tables that today's chain does not create
 //!   (`products_sku`, `products_category`, `products_audit_log`, `products_idempotency` and
 //!   `bss_approval::ddl`'s `products_approval_decision` exist in both and are not evidence);
+//! - the legacy shape of a table name both chains create: `products_category` or `products_sku`
+//!   without `code`. A clean-up that dropped only the tables a refusal named leaves them, and
+//!   `m20260925_000001`/`000002`'s `CREATE TABLE IF NOT EXISTS` would keep them and fail on their
+//!   `code` indexes (phase 4 review F2);
 //! - `products_sku_reference` whose `ref_kind` CHECK does not admit `price_book_entry`: the phase 2
 //!   rename edited `m20260925_000006` in place, and `CREATE TABLE IF NOT EXISTS` kept the old CHECK.
 //!
@@ -84,13 +88,24 @@ impl MigrationTrait for Migration {
         if !legacy.is_empty() {
             return Err(refusal("legacy", &tables_found(&legacy)));
         }
+        let mut stale = Vec::new();
+        for (table, column) in [("products_category", "code"), ("products_sku", "code")] {
+            if tables.iter().any(|t| t == table)
+                && !columns(manager, table).await?.iter().any(|c| c == column)
+            {
+                stale.push(format!("{table} without column {column}"));
+            }
+        }
         if tables.iter().any(|t| t == REFERENCE_TABLE)
             && !admits_price_book_entry(&ref_kind_checks(manager).await?)
         {
-            return Err(refusal(
-                "stale",
-                "products_sku_reference whose ref_kind CHECK does not admit price_book_entry",
-            ));
+            stale.push(
+                "products_sku_reference whose ref_kind CHECK does not admit price_book_entry"
+                    .to_owned(),
+            );
+        }
+        if !stale.is_empty() {
+            return Err(refusal("stale", &stale.join("; ")));
         }
         Ok(())
     }
@@ -140,6 +155,20 @@ async fn tables(manager: &SchemaManager<'_>) -> Result<Vec<String>, DbErr> {
     let mut names = strings(manager, backend, sql.to_owned()).await?;
     names.sort_unstable();
     Ok(names)
+}
+
+/// The columns of one of the gear's tables.
+async fn columns(manager: &SchemaManager<'_>, table: &str) -> Result<Vec<String>, DbErr> {
+    let backend = manager.get_database_backend();
+    let sql = match backend {
+        DatabaseBackend::Sqlite => format!("SELECT name AS v FROM pragma_table_info('{table}')"),
+        DatabaseBackend::Postgres => format!(
+            "SELECT column_name::text AS v FROM information_schema.columns WHERE table_schema = \
+             'bss' AND table_name = '{table}'"
+        ),
+        _ => return Err(unsupported(backend)),
+    };
+    strings(manager, backend, sql).await
 }
 
 /// The text of every CHECK on the reference table that names `ref_kind`: parsed out of the

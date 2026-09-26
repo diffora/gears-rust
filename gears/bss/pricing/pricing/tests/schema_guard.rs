@@ -11,8 +11,8 @@ mod guard_support;
 use bss_pricing::infra::storage::migrations::m0000_pricing_refuse_a_legacy_or_stale_schema as guard;
 use bss_pricing::module::BssPricingGear;
 use guard_support::{
-    ENTRY_SHAPED_PRICE_SQLITE, GUARD, LEGACY_CHAIN_TABLES, PLAN_MIGRATIONS, PRE_RENAME_FINDINGS,
-    PRE_RENAME_NAMES, PRICE_ROW_SQLITE, REFERENCE_OP_BEFORE_D412_SQLITE,
+    ENTRY_SHAPED_PRICE_SQLITE, GUARD, LEGACY_CHAIN_TABLES, LEGACY_PLAN_SQLITE, PLAN_MIGRATIONS,
+    PRE_RENAME_FINDINGS, PRE_RENAME_NAMES, PRICE_ROW_SQLITE, REFERENCE_OP_BEFORE_D412_SQLITE,
     REFERENCE_OP_BEFORE_RENAME_SQLITE, RENAMED, refusal,
 };
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
@@ -294,6 +294,39 @@ async fn a_pre_rename_database_meets_the_guard_before_the_renamed_migrations() {
         "pricing_plan_revision",
         "pricing_plan_item",
     ] {
+        assert!(
+            !tables.iter().any(|t| t == absent),
+            "{absent} was created: a pending migration ran before the guard"
+        );
+    }
+}
+
+/// (b, phase 4 review F2) The legacy chain's `pricing_plan` — a name today's chain creates too, so
+/// no legacy census holds it — left behind by a clean-up that dropped only what the refusal named,
+/// with the phase 3 migrations pending: `m20260926_000010`'s `CREATE TABLE IF NOT EXISTS` would
+/// keep it and its index on `code` fail with a raw SQL error. The guard refuses it first.
+#[tokio::test]
+async fn a_legacy_plan_without_code_is_stale() {
+    let db = Lite::new();
+    db.migrate().await.unwrap();
+    db.exec(&[
+        "DROP TABLE pricing_plan_item",
+        "DROP TABLE pricing_plan_revision",
+        "DROP TABLE pricing_plan",
+    ])
+    .await;
+    db.exec(LEGACY_PLAN_SQLITE).await;
+    db.forget(&[GUARD]).await;
+    db.forget(&PLAN_MIGRATIONS).await;
+
+    let text = refused(db.migrate().await);
+
+    assert!(
+        text.contains(&refusal("stale", "pricing_plan without column code")),
+        "{text}"
+    );
+    let tables = db.pricing_tables().await;
+    for absent in ["pricing_plan_revision", "pricing_plan_item"] {
         assert!(
             !tables.iter().any(|t| t == absent),
             "{absent} was created: a pending migration ran before the guard"

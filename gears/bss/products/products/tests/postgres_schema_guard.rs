@@ -7,7 +7,8 @@ mod pg_support;
 
 use bss_products::gear::BssProductsGear;
 use guard_support::{
-    GUARD, LEGACY_CHAIN_TABLES, SKU_REFERENCE_BEFORE_RENAME_PG, STALE_REFERENCE, refusal,
+    GUARD, LEGACY_CATEGORY_PG, LEGACY_CHAIN_TABLES, LEGACY_SKU_PG, SKU_REFERENCE_BEFORE_RENAME_PG,
+    STALE_REFERENCE, refusal,
 };
 use pg_support::Pg;
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
@@ -133,6 +134,49 @@ async fn a_reference_table_whose_check_refuses_price_book_entry_is_stale() {
     let text = refused(migrate(&pg).await);
 
     assert!(text.contains(&refusal("stale", STALE_REFERENCE)), "{text}");
+}
+
+/// (b, phase 4 review F2) The legacy chain's `products_category` (no `code`) with its migration
+/// pending: the guard's refusal, not `m20260925_000001`'s raw index error.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn a_legacy_category_without_code_is_stale() {
+    let pg = Pg::applied().await;
+    exec(&pg, &["DROP TABLE bss.products_category CASCADE"]).await;
+    exec(&pg, LEGACY_CATEGORY_PG).await;
+    forget(&pg, &[GUARD, "m20260925_000001_create_products_category"]).await;
+
+    let text = refused(migrate(&pg).await);
+
+    assert!(
+        text.contains(&refusal("stale", "products_category without column code")),
+        "{text}"
+    );
+}
+
+/// (b, phase 4 review F2) The legacy chain's `products_sku` (`sku_code`, no `code`) with its
+/// migration pending: the guard's refusal, not `m20260925_000002`'s.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn a_legacy_sku_without_code_is_stale() {
+    let pg = Pg::applied().await;
+    exec(
+        &pg,
+        &[
+            "DROP TABLE bss.products_sku_version CASCADE",
+            "DROP TABLE bss.products_sku CASCADE",
+        ],
+    )
+    .await;
+    exec(&pg, LEGACY_SKU_PG).await;
+    forget(&pg, &[GUARD, "m20260925_000002_create_products_sku"]).await;
+
+    let text = refused(migrate(&pg).await);
+
+    assert!(
+        text.contains(&refusal("stale", "products_sku without column code")),
+        "{text}"
+    );
 }
 
 /// (c) A fresh database passes, the guard first.

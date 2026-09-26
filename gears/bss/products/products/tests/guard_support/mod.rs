@@ -1,6 +1,10 @@
-//! What the schema-guard suites of both tiers share (P-D-195): the refusal they expect, and the
+//! What the schema-guard suites of both tiers share (P-D-195): the refusal they expect, the
 //! `products_sku_reference` shape the phase 2 rename replaced in place (`64e694a9f^`,
-//! `m20260925_000006`), copied verbatim so a test can rebuild it.
+//! `m20260925_000006`), copied verbatim so a test can rebuild it, and the legacy chain's shapes of
+//! the two tables whose names today's chain creates too, `products_sku` (`m20260829_000003`) and
+//! `products_category` (`m20260901_000018`), neither with a `code` column: their `CREATE TABLE`
+//! only (the guard reads columns), the SKU's foreign key to the legacy `products_product` left out
+//! because today's chain does not create that table.
 
 #![allow(dead_code, reason = "each test binary uses part of the module")]
 
@@ -77,3 +81,111 @@ pub const SKU_REFERENCE_BEFORE_RENAME_PG: &[&str] = &[
     "CREATE UNIQUE INDEX uq_products_sku_reference_live ON bss.products_sku_reference USING btree (tenant_id, owner_gear, ref_kind, ref_id) WHERE state <> 'released'",
     "CREATE INDEX ix_products_sku_reference_live ON bss.products_sku_reference USING btree (sku_id, state) WHERE state <> 'released'",
 ];
+
+/// The legacy chain's `products_sku` (`m20260829_000003`): `sku_code`, no `code`.
+pub const LEGACY_SKU_SQLITE: &[&str] = &[r"CREATE TABLE products_sku (
+            tenant_id           text    NOT NULL,
+            sku_id              text    NOT NULL,
+            product_id          text    NOT NULL,
+            sku_code            text    NOT NULL,
+            lifecycle_state     text    NOT NULL,
+            internal_revision   bigint  NOT NULL,
+            published_version   bigint  NOT NULL,
+            composition_pending boolean NOT NULL DEFAULT 0,
+            region_scope        text    NOT NULL DEFAULT '',
+            brand_scope         text    NOT NULL DEFAULT '',
+            created_by          text    NOT NULL,
+            created_at          text    NOT NULL,
+            cloned_from         text,
+            cloned_from_version integer,
+            deprecation_provenance text,
+            replaced_by_sku_id  text,
+            metering_unit       text,
+            usage_type_ref      text,
+            sku_type            text,
+            sellable            integer NOT NULL DEFAULT 1,
+            plan_tier           text,
+            correction_ref      text,
+            updated_at          text    NOT NULL,
+            PRIMARY KEY (sku_id),
+            CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
+            CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
+            CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
+            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL),
+            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL)),
+            CONSTRAINT chk_products_sku_type CHECK (sku_type IS NULL OR sku_type IN ('offer', 'component', 'bundle'))
+        )"];
+pub const LEGACY_SKU_PG: &[&str] = &[r"CREATE TABLE bss.products_sku (
+            tenant_id           uuid        NOT NULL,
+            sku_id              uuid        NOT NULL,
+            product_id          uuid        NOT NULL,
+            sku_code            text        NOT NULL,
+            lifecycle_state     text        NOT NULL,
+            internal_revision   bigint      NOT NULL,
+            published_version   bigint      NOT NULL,
+            composition_pending boolean     NOT NULL DEFAULT false,
+            region_scope        text        NOT NULL DEFAULT '',
+            brand_scope         text        NOT NULL DEFAULT '',
+            created_by          text        NOT NULL,
+            created_at          timestamptz NOT NULL,
+            cloned_from         uuid,
+            cloned_from_version bigint,
+            deprecation_provenance text,
+            replaced_by_sku_id  uuid,
+            metering_unit       text,
+            usage_type_ref      text,
+            sku_type            text,
+            sellable            boolean     NOT NULL DEFAULT true,
+            plan_tier           text,
+            correction_ref      uuid,
+            updated_at          timestamptz NOT NULL,
+            CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
+            CONSTRAINT chk_products_sku_lifecycle_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),
+            CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
+            CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
+            CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL),
+            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL)),
+            CONSTRAINT chk_products_sku_type CHECK (sku_type IS NULL OR sku_type IN ('offer', 'component', 'bundle'))
+        )"];
+
+/// The legacy chain's `products_category` (`m20260901_000018`): `category_id` and `name`, no `code`.
+pub const LEGACY_CATEGORY_SQLITE: &[&str] = &[r"CREATE TABLE products_category (
+            tenant_id       text    NOT NULL,
+            category_id     text    NOT NULL,
+            parent_id       text,
+            name            text    NOT NULL,
+            name_normalized text    NOT NULL,
+            state           text    NOT NULL,
+            mutation_seq    integer NOT NULL DEFAULT 0,
+            is_default      integer NOT NULL DEFAULT 0,
+            created_at      text    NOT NULL,
+            updated_at      text    NOT NULL,
+            PRIMARY KEY (tenant_id, category_id),
+            CONSTRAINT chk_products_category_name CHECK (name <> ''),
+            CONSTRAINT chk_products_category_name_normalized CHECK (name_normalized <> ''),
+            CONSTRAINT chk_products_category_state CHECK (state IN ('active', 'retired')),
+            CONSTRAINT chk_products_category_mutation_seq CHECK (mutation_seq >= 0),
+            CONSTRAINT chk_products_category_not_own_parent CHECK (parent_id IS NULL OR parent_id <> category_id),
+            CONSTRAINT fk_products_category_parent FOREIGN KEY (tenant_id, parent_id)
+                REFERENCES products_category (tenant_id, category_id)
+        )"];
+pub const LEGACY_CATEGORY_PG: &[&str] = &[r"CREATE TABLE bss.products_category (
+            tenant_id       uuid        NOT NULL,
+            category_id     uuid        NOT NULL,
+            parent_id       uuid,
+            name            text        NOT NULL,
+            name_normalized text        NOT NULL,
+            state           text        NOT NULL,
+            mutation_seq    bigint      NOT NULL DEFAULT 0,
+            is_default      boolean     NOT NULL DEFAULT false,
+            created_at      timestamptz NOT NULL,
+            updated_at      timestamptz NOT NULL,
+            CONSTRAINT products_category_pkey PRIMARY KEY (tenant_id, category_id),
+            CONSTRAINT chk_products_category_name CHECK (name <> ''),
+            CONSTRAINT chk_products_category_name_normalized CHECK (name_normalized <> ''),
+            CONSTRAINT chk_products_category_state CHECK (state IN ('active', 'retired')),
+            CONSTRAINT chk_products_category_mutation_seq CHECK (mutation_seq >= 0),
+            CONSTRAINT chk_products_category_not_own_parent CHECK (parent_id IS NULL OR parent_id <> category_id),
+            CONSTRAINT fk_products_category_parent FOREIGN KEY (tenant_id, parent_id)
+                REFERENCES bss.products_category (tenant_id, category_id)
+        )"];

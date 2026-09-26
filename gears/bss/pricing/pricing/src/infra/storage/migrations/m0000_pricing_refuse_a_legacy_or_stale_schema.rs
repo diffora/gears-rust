@@ -13,7 +13,11 @@
 //! - a shape today's chain replaced in place (D-412) or by renaming: `pricing_price_row`,
 //!   `pricing_price` without `price_book_entry_id` (the pre-rename entry), `pricing_reference_op`
 //!   without `ref_kind` (before D-412). Sorting first is what makes a pre-rename database meet
-//!   this refusal rather than `m20260926_000007`'s "no such column".
+//!   this refusal rather than `m20260926_000007`'s "no such column";
+//! - the legacy shape of a table name both chains create: `pricing_plan` without `code` (the
+//!   legacy revision row). A clean-up that dropped only the tables a refusal named leaves it, and
+//!   `m20260926_000010`'s `CREATE TABLE IF NOT EXISTS` would keep it and fail on its `code` index
+//!   (phase 4 review F2).
 //!
 //! A fresh database passes, and so does one migrated by today's chain.
 
@@ -100,6 +104,7 @@ impl MigrationTrait for Migration {
         for (table, column) in [
             ("pricing_price", "price_book_entry_id"),
             ("pricing_reference_op", "ref_kind"),
+            ("pricing_plan", "code"),
         ] {
             if tables.iter().any(|t| t == table)
                 && !columns(manager, table).await?.iter().any(|c| c == column)

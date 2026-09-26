@@ -212,7 +212,7 @@ The chain starts with one guard migration, `m0000_products_refuse_a_legacy_or_st
 first under the toolkit runner's name sort: before the coordination, broker and outbox migrations
 (`m0001_…`, `m001_…`) and before `m20260925_000001`. It is pending on every database that predates
 phase 4, so it runs there once, before anything of the gear is created, and it creates nothing. It reads
-the catalog only (`sqlite_master` on SQLite; `information_schema` and `pg_constraint` on Postgres, tables
+the catalog only (`sqlite_master` and `table_info` on SQLite; `information_schema` and `pg_constraint` on Postgres, tables
 in schema `bss`) and refuses, so that boot fails naming the gear, when it finds:
 
 - a legacy table: one of the 35 `products_*` tables that the legacy chain creates (`bss/products-backup`,
@@ -223,6 +223,10 @@ in schema `bss`) and refuses, so that boot fails naming the gear, when it finds:
 - a stale shape: `products_sku_reference` whose `ref_kind` CHECK does not admit `price_book_entry`. The
   phase 2 rename edited `m20260925_000006` in place, from `price` to `price_book_entry`, and
   `CREATE TABLE IF NOT EXISTS` keeps the old CHECK on a database migrated before it.
+- the legacy shape of a table that both chains create: `products_category` or `products_sku` without the
+  column `code`. A clean-up that drops only the tables a refusal names leaves them, and
+  `m20260925_000001`/`000002`'s `CREATE TABLE IF NOT EXISTS` would keep them and then fail on their `code`
+  indexes with a raw SQL error (pricing phase 4 review F2, fix run 8).
 
 The refusal reads `bss-products: this database holds a <legacy|stale> bss-products schema (<what was
 found>); PriceBook does not migrate it — start from an empty data root / empty bss-products tables`. A

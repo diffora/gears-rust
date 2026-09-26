@@ -11,7 +11,8 @@ mod guard_support;
 use bss_products::gear::BssProductsGear;
 use bss_products::infra::storage::migrations::m0000_products_refuse_a_legacy_or_stale_schema as guard;
 use guard_support::{
-    GUARD, LEGACY_CHAIN_TABLES, SKU_REFERENCE_BEFORE_RENAME_SQLITE, STALE_REFERENCE, refusal,
+    GUARD, LEGACY_CATEGORY_SQLITE, LEGACY_CHAIN_TABLES, LEGACY_SKU_SQLITE,
+    SKU_REFERENCE_BEFORE_RENAME_SQLITE, STALE_REFERENCE, refusal,
 };
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use toolkit::contracts::DatabaseCapability;
@@ -201,6 +202,49 @@ async fn a_reference_table_whose_check_refuses_price_book_entry_is_stale() {
 
     assert!(text.contains(&refusal("stale", STALE_REFERENCE)), "{text}");
 }
+
+/// (b, phase 4 review F2) The legacy chain's `products_category` — a name today's chain creates
+/// too — left behind by a clean-up that dropped only what the refusal named, with its migration
+/// pending: `m20260925_000001`'s `CREATE TABLE IF NOT EXISTS` would keep it and its index on `code`
+/// fail with a raw SQL error. The guard refuses it first.
+#[tokio::test]
+async fn a_legacy_category_without_code_is_stale() {
+    let db = Lite::new();
+    db.migrate().await.unwrap();
+    db.exec(&["DROP TABLE products_category"]).await;
+    db.exec(LEGACY_CATEGORY_SQLITE).await;
+    db.forget(&[GUARD, CATEGORY_MIGRATION]).await;
+
+    let text = refused(db.migrate().await);
+
+    assert!(
+        text.contains(&refusal("stale", "products_category without column code")),
+        "{text}"
+    );
+}
+
+/// (b, phase 4 review F2) The legacy chain's `products_sku` (`sku_code`, no `code`), with its
+/// migration pending: the guard's refusal, not `m20260925_000002`'s.
+#[tokio::test]
+async fn a_legacy_sku_without_code_is_stale() {
+    let db = Lite::new();
+    db.migrate().await.unwrap();
+    db.exec(&["DROP TABLE products_sku_version", "DROP TABLE products_sku"])
+        .await;
+    db.exec(LEGACY_SKU_SQLITE).await;
+    db.forget(&[GUARD, SKU_MIGRATION]).await;
+
+    let text = refused(db.migrate().await);
+
+    assert!(
+        text.contains(&refusal("stale", "products_sku without column code")),
+        "{text}"
+    );
+}
+
+/// The migrations that create the two tables both chains name.
+const CATEGORY_MIGRATION: &str = "m20260925_000001_create_products_category";
+const SKU_MIGRATION: &str = "m20260925_000002_create_products_sku";
 
 /// (c) A fresh database passes, the guard first.
 #[tokio::test]

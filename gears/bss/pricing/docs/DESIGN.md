@@ -469,7 +469,8 @@ The chain starts with the schema guard m0000_pricing_refuse_a_legacy_or_stale_sc
 before every other migration of the gear, including the coordination, broker and outbox ones, and it creates
 nothing. It reads the catalog only and refuses to migrate a database that holds a legacy pricing_* table (the
 pre-PriceBook chain's tables minus today's, a constant in the guard) or a stale shape: pricing_reference_op
-without ref_kind, pricing_price_row, or pricing_price without price_book_entry_id. Boot then fails with
+without ref_kind, pricing_price_row, pricing_price without price_book_entry_id, or the legacy pricing_plan
+(without code), which both chains name. Boot then fails with
 "bss-pricing: this database holds a legacy|stale bss-pricing schema (…); PriceBook does not migrate it — start
 from an empty data root / empty bss-pricing tables". Fresh databases and databases migrated by today's chain pass.
 
