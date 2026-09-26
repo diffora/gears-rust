@@ -37,16 +37,17 @@ def _usage_type_or_skip(api) -> None:
         )
 
 
+# D-427: the model is the entry's; a price carries only its money, in that model.
 VARIANTS = {
     "usage": {
         "sku": {"type": "usage", "usage_type_ref": USAGE_TYPE, "unit": "GB"},
-        "entry": {},
-        "price": {"model": "per_unit", "price": {"rate": "0.10"}},
+        "entry": {"model": "per_unit"},
+        "price": {"price": {"rate": "0.10"}},
     },
     "recurring": {
         "sku": {"type": "recurring"},
-        "entry": {"period": "month"},
-        "price": {"model": "flat", "price": {"amount": "30.00"}},
+        "entry": {"period": "month", "model": "flat"},
+        "price": {"price": {"amount": "30.00"}},
     },
 }
 
@@ -253,7 +254,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         book = r.json()["id"]
         r = api.post(
             f"{PRICING}/price-books/{book}/entries",
-            json={"sku_id": sku, "period": "month"},
+            json={"sku_id": sku, "period": "month", "model": "flat"},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -266,7 +267,6 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         r = api.post(
             f"{PRICING}/price-book-entries/{entry}/prices",
             json={
-                "model": "flat",
                 "price": {"amount": "30.00"},
                 "eligibility": "all",
                 "effective_from": start,
@@ -352,7 +352,8 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert binding["price_id"] == price, binding
         assert binding["dim_used"] is None, binding
         assert binding["pinned_from"] is None, binding
-        assert (binding["model"], binding["price"]) == ("flat", {"amount": "30.00"}), binding
+        # D-427: the model is the item's (its entry's); the binding carries the money.
+        assert (item["model"], binding["price"]) == ("flat", {"amount": "30.00"}), binding
         assert (binding["eligibility"], binding["effective_from"]) == ("all", start), binding
 
         # The pinned price read serves that price, as stored.

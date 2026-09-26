@@ -4,6 +4,10 @@ use toolkit_db_macros::Scopable;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "pricing_price_book_entry")]
 #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "SeaORM requires Model; the schema names the entry's pricing discriminator model (D-427)"
+)]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
@@ -12,6 +16,9 @@ pub struct Model {
     pub sku_id: Uuid,
     pub charge_kind: String,
     pub period: Option<String>,
+    /// The entry's pricing model (D-427): fixed for its life, part of its key; every price of
+    /// the entry is money in it. `flat`, `per_unit`, `graduated`, `volume` or `package`.
+    pub model: String,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
     pub reservation_id: Uuid,

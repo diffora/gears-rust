@@ -123,7 +123,7 @@ async fn draft(f: &Fixture, entry: &str, from: &str, key: &str) -> Value {
         .call(
             "POST",
             &format!("/price-book-entries/{entry}/prices"),
-            json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
             None,
             Some(key),
         )
@@ -144,7 +144,7 @@ async fn a_prices_unit_is_recorded_and_applied_through_an_in_process_registry() 
         .call(
             "POST",
             &format!("/price-books/{book}/entries"),
-            json!({"sku_id":sku}),
+            json!({"sku_id":sku,"model":"per_unit"}),
             None,
             Some("entry"),
         )
@@ -277,7 +277,7 @@ async fn a_revision_resolves_through_an_in_process_registry() {
     let mut content = catalog.content(sku);
     content.gl_code = Some("4000".into());
     catalog.version(sku, 1, "2020-01-01", content);
-    let priced = entry(&f, eur, sku, "recurring", Some("month")).await;
+    let priced = plan_support::entry_in(&f, eur, sku, "recurring", Some("month"), "flat").await;
     let conn = f.db.conn().unwrap();
     let stored = price_book_entry_repo::find(&conn, &scope(&f), f.ctx.subject_tenant_id(), priced)
         .await
@@ -285,7 +285,7 @@ async fn a_revision_resolves_through_an_in_process_registry() {
         .unwrap();
     let mut approved = plan_support::entry_support::price(&stored);
     approved.state = "approved".into();
-    approved.model = "flat".into();
+    // D-427: the recurring entry is `flat`, so its price's money is a flat amount.
     approved.price_json = json!({"amount":"30.00"});
     approved.min_fee = None;
     approved.effective_from = time::Date::parse(

@@ -40,6 +40,9 @@ pub struct PricingResolveItemDto {
     /// `recurring`, `usage` or `one_time`; null without an entry.
     pub charge_kind: Option<String>,
     pub period: Option<String>,
+    /// The entry's model (D-427): `flat`, `per_unit`, `graduated`, `volume` or `package`, the
+    /// model of every binding's money; null without an entry.
+    pub model: Option<String>,
     /// The SKU version in force on the date; null when Products has no version on that date or
     /// does not know the SKU.
     pub sku_version: Option<PricingResolveSkuVersionDto>,
@@ -95,9 +98,7 @@ pub struct PricingResolveBindingDto {
     pub dim_used: Option<String>,
     /// The pin the renewal walk started from; null for a signup.
     pub pinned_from: Option<Uuid>,
-    /// `flat`, `per_unit`, `graduated`, `volume` or `package`.
-    pub model: String,
-    /// The price's money as stored, amounts as exact decimal text.
+    /// The price's money as stored, in the item's model (D-427), amounts as exact decimal text.
     pub price: serde_json::Value,
     /// Exact decimal text.
     pub min_fee: Option<String>,
@@ -132,7 +133,7 @@ pub struct PricingPinnedPriceDto {
     pub version_no: i32,
     /// The value's chain; null for the default chain.
     pub dim_value: Option<String>,
-    /// `flat`, `per_unit`, `graduated`, `volume` or `package`.
+    /// Its entry's model (D-427): `flat`, `per_unit`, `graduated`, `volume` or `package`.
     pub model: String,
     /// The price's money as stored, amounts as exact decimal text.
     pub price: serde_json::Value,

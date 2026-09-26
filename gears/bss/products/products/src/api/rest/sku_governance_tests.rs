@@ -2167,7 +2167,8 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
         &f.author,
         Method::POST,
         &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
-        json!({"sku_id":f.id}),
+        // Pricing D-427: an entry is created in a model; `per_unit` is one every charge kind allows.
+        json!({"sku_id":f.id,"model":"per_unit"}),
     )
     .await;
     assert_eq!(status, 201, "{entry}");

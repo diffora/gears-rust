@@ -262,7 +262,7 @@ async fn pinned_price(
         currency: book.currency,
         version_no: row.version_no,
         dim_value: row.dim_value,
-        model: row.model,
+        model: entry.model,
         price: row.price_json,
         min_fee: row.min_fee,
         eligibility: row.eligibility,
@@ -434,9 +434,10 @@ async fn read_stored(
             .ok_or_else(|| corrupt(format!("entry {entry_id} of revision {id}")))?;
         let of_entry = price_repo::for_entry(tx, &children, tenant, e.id).await?;
         keep_for_bound.extend(of_entry.iter().filter(|p| p.keep_for_bound).map(|p| p.id));
+        let model = price_book_entry_repo::model_of(&e)?;
         let domain = of_entry
             .iter()
-            .map(price_repo::to_domain)
+            .map(|p| price_repo::to_domain(p, model))
             .collect::<Result<Vec<_>, _>>()?;
         prices.extend(of_entry.into_iter().map(|p| (p.id, p)));
         let values = e
@@ -455,6 +456,7 @@ async fn read_stored(
                 id: e.id,
                 charge_kind,
                 period: e.period,
+                model,
                 invoice_line_override: e.invoice_line_override,
                 values,
                 prices: domain,
@@ -579,7 +581,6 @@ fn render(
                         price_id: row.id,
                         dim_used: b.dim_used().map(str::to_owned),
                         pinned_from: b.pinned_from,
-                        model: row.model.clone(),
                         price: row.price_json.clone(),
                         min_fee: row.min_fee.clone(),
                         eligibility: row.eligibility.clone(),
@@ -606,6 +607,7 @@ fn render(
             price_book_entry_id: r.price_book_entry_id,
             charge_kind: r.charge_kind.map(|k| k.as_str().to_owned()),
             period: r.period,
+            model: r.model.map(|m| m.as_str().to_owned()),
             sku_version: version.map(|v| PricingResolveSkuVersionDto {
                 published_version: v.published_version,
                 effective_from: v.effective_from.to_string(),

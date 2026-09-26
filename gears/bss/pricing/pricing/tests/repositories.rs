@@ -40,6 +40,7 @@ fn entry(b: &price_book::Model) -> price_book_entry::Model {
         sku_id: Uuid::new_v4(),
         charge_kind: "usage".into(),
         period: None,
+        model: "per_unit".into(),
         dimension_key: None,
         invoice_line_override: None,
         reservation_id: Uuid::new_v4(),
@@ -56,7 +57,6 @@ fn price(p: &price_book_entry::Model) -> price::Model {
         price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
-        model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.1"}),
         min_fee: Some("12.34".into()),
         eligibility: "all".into(),
@@ -1008,7 +1008,10 @@ async fn min_fee_round_trips_exactly_on_sqlite() {
             .await
             .unwrap()
             .unwrap();
-        let fee = price_repo::to_domain(&back).unwrap().min_fee.unwrap();
+        let fee = price_repo::to_domain(&back, price_book_entry_repo::model_of(&p).unwrap())
+            .unwrap()
+            .min_fee
+            .unwrap();
         assert_eq!(
             fee.to_string(),
             text,

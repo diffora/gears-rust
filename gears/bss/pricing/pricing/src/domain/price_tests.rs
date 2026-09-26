@@ -416,7 +416,8 @@ fn matrix_24_dated_metering_guard() {
     assert!(chain_guard(ChargeKind::Usage, &a, &old, &b, &new).is_err());
     b.model = Model::Volume;
     assert!(chain_guard(ChargeKind::Recurring, &a, &old, &b, &new).is_ok());
-    assert!(chain_guard(ChargeKind::Usage, &a, &old, &b, &old).is_err());
+    // D-427: the model is the entry's, never compared by the guard; the same metering passes.
+    assert!(chain_guard(ChargeKind::Usage, &a, &old, &b, &old).is_ok());
 }
 #[test]
 fn a_closed_price_is_still_closed_by_a_successor_that_starts_inside_it() {
@@ -620,9 +621,12 @@ fn the_predecessor_is_the_same_chain_price_in_force_the_day_before() {
 }
 #[test]
 fn every_refusal_code_names_its_input_field() {
+    // D-427: a price request carries no `model`, so no price refusal names it; the entry create
+    // names `model` itself.
     for (code, field) in [
-        ("MODEL_KIND_CHARGEKIND_MISMATCH", "model"),
-        ("CHAIN_MODEL_CHANGED", "model"),
+        ("MODEL_KIND_CHARGEKIND_MISMATCH", "price"),
+        ("MODEL_INVALID", "price"),
+        ("CHAIN_MODEL_CHANGED", "price"),
         ("WINDOW_OVERLAP", "effective_from"),
         ("WINDOW_END_INVALID", "temporary_until"),
         ("DIM_VALUE_UNKNOWN", "dim_value"),
@@ -727,4 +731,90 @@ fn d406_no_price_starts_inside_a_temporary_window_and_no_temporary_spans_a_start
     }
     assert_eq!(field_of("PRICE_INSIDE_TEMPORARY"), "effective_from");
     assert_eq!(field_of("TEMPORARY_SPANS_A_CHANGE"), "temporary_until");
+}
+/// D-427: every price of a chain has its entry's model, so the pair guard compares package size
+/// and dated metering only. Two prices whose models differ (a shape no entry can hold any more)
+/// pass the guard when their metering matches; package size and metering still refuse.
+#[test]
+fn d427_the_pair_guard_no_longer_compares_a_model() {
+    let a = price(1, "2026-01-01", None, PriceState::Approved);
+    let mut b = price(2, "2026-06-01", None, PriceState::Draft);
+    b.model = Model::Graduated;
+    b.price = Some(PriceData::Tiers {
+        tiers: vec![crate::domain::money::Tier {
+            up_to: None,
+            rate: dec("1"),
+        }],
+    });
+    let metering = SkuMetering {
+        unit: Some("GB".into()),
+        usage_type_ref: Some("storage".into()),
+    };
+    assert!(
+        chain_guard(ChargeKind::Usage, &a, &metering, &b, &metering).is_ok(),
+        "the model is the entry's; the guard does not compare it"
+    );
+    let package = |v: i32, from: &str, size: &str| {
+        let mut p = price(v, from, None, PriceState::Approved);
+        p.model = Model::Package;
+        p.price = Some(PriceData::Package {
+            package_size: dec(size),
+            package_price: dec("5"),
+        });
+        p
+    };
+    assert_eq!(
+        chain_guard(
+            ChargeKind::Usage,
+            &package(1, "2026-01-01", "1000"),
+            &metering,
+            &package(2, "2026-06-01", "500"),
+            &metering
+        )
+        .unwrap_err()
+        .code,
+        "CHAIN_MODEL_CHANGED",
+        "the package size is still guarded"
+    );
+}
+/// D-427: a return copies the restored price's money and min fee, never a model: its model is
+/// its entry's, the one its promo half already carries.
+#[test]
+fn d427_a_return_copies_money_not_a_model() {
+    let mut back = price(1, "2026-01-01", None, PriceState::Approved);
+    back.model = Model::Volume;
+    back.price = Some(PriceData::Tiers {
+        tiers: vec![crate::domain::money::Tier {
+            up_to: None,
+            rate: dec("2"),
+        }],
+    });
+    let mut promo = price(2, "2026-10-01", None, PriceState::Draft);
+    promo.model = Model::Graduated;
+    promo.price = Some(PriceData::Tiers {
+        tiers: vec![crate::domain::money::Tier {
+            up_to: None,
+            rate: dec("1"),
+        }],
+    });
+    let pair = temporary(
+        &[back.clone()],
+        promo,
+        date("2026-10-11"),
+        Uuid::from_u128(3),
+    )
+    .unwrap();
+    assert_eq!(pair.len(), 2);
+    assert_eq!(
+        pair[1].price, back.price,
+        "the money is the restored price's"
+    );
+    assert_eq!(pair[1].model, Model::Graduated, "the model is not copied");
+    // Whatever the builder did, the currency check reads money and min fee only.
+    let mut unit = pair;
+    unit[1].model = Model::Graduated;
+    assert!(
+        temporary_is_current(&[back], &unit[0], &unit),
+        "the model is not compared either"
+    );
 }

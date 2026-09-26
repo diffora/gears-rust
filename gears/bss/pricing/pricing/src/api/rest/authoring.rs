@@ -276,11 +276,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.create_entry")
         .summary("Add a SKU to a price book")
         .description(
-            "Adds an entry for a SKU to a book, reserving the SKU reference in Products before the \
-             write and confirming it after; the Idempotency-Key replays the receipt. Refusals: 400 \
-             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN, SKU_DRAFT, \
-             SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or \
-             CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+            "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), \
+             reserving the SKU reference in Products before the write and confirming it after; the \
+             Idempotency-Key replays the receipt. Refusals: 400 MODEL_INVALID, \
+             MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), \
+             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, \
+             period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, \
+             SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 \
+             REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()
@@ -987,9 +990,11 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a draft price")
         .description(
             "Adds a draft price to an entry's chain, and a temporary price's return partner with \
-             it; the Idempotency-Key replays the answer. Refusals: 400 for a rule the price breaks \
-             (for example MODEL_INVALID, AMOUNT_INVALID, WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN \
-             or PRICE_INSIDE_TEMPORARY); 409 ENTRY_REFERENCE_LOST.",
+             it; the Idempotency-Key replays the answer. The money is in the entry's model and the \
+             price carries no model of its own (D-427). Refusals: 400 for a rule the price breaks \
+             (for example PRICE_MISSING for money of another model's shape, AMOUNT_INVALID, \
+             WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY); 409 \
+             ENTRY_REFERENCE_LOST.",
         )
         .tag("Pricing")
         .authenticated()

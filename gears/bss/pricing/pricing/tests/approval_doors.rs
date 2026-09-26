@@ -28,10 +28,11 @@ async fn gov_on(quorum: u32, script: Arc<Script>) -> Gov {
     let f = Fixture::new(script).await;
     let (book, _) = f.book().await;
     let book = book["id"].as_str().unwrap().to_owned();
+    // D-427: the entry carries the model; `per_unit` is one every charge kind allows.
     let entry = if recurring {
-        json!({"sku_id":Uuid::new_v4(),"period":"month"})
+        json!({"sku_id":Uuid::new_v4(),"period":"month","model":"per_unit"})
     } else {
-        json!({"sku_id":Uuid::new_v4()})
+        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"})
     };
     let (status, entry, _) = f
         .call(
@@ -165,7 +166,7 @@ impl Gov {
     }
 }
 fn body(from: &str) -> Value {
-    json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
+    json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
 }
 fn code(b: &Value) -> String {
     b.to_string()
@@ -705,12 +706,19 @@ async fn publish_all_with_a_common_date_and_the_card_shows_live_impact() {
 
 #[tokio::test]
 async fn a_changed_usage_structure_is_refused_at_submit_with_400() {
-    let g = gov(1).await;
+    // D-427: the model cannot change on a chain (it is the entry's), so the structure that changes
+    // here is the SKU's metering as of each start (D-402): GB before the successor, TB on it.
+    let script = Arc::new(Script::default());
+    let g = gov_on(1, script.clone()).await;
+    let day = |text: &str| {
+        time::Date::parse(text, &time::format_description::well_known::Iso8601::DATE).unwrap()
+    };
+    script.versions.lock().unwrap().extend([
+        (day("2030-01-01"), Some("GB".into()), Some("storage".into())),
+        (day("2031-02-01"), Some("TB".into()), Some("storage".into())),
+    ]);
     g.approved(1, "2031-01-01").await;
-    let mut graduated = body("2031-03-01");
-    graduated["model"] = json!("graduated");
-    graduated["price"] = json!({"tiers":[{"up_to":null,"rate":"1"}]});
-    let price = &g.draft("g", graduated).await[0];
+    let price = &g.draft("g", body("2031-03-01")).await[0];
     let (status, b, _) = g.submit_as(&g.f.ctx, price, "submit").await;
     assert_eq!(status, 400, "D-403: {b}");
     assert!(code(&b).contains("CHAIN_MODEL_CHANGED"), "{b}");

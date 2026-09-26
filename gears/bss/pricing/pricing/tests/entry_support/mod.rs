@@ -509,6 +509,10 @@ impl ReferenceRegistryV1 for Script {
                 SkuType::Bundle
             } else if mode == 11 {
                 SkuType::Recurring
+            } else if mode == 21 && Self::count(&self.reserve_calls) == 0 {
+                // D-427: the door's read sees a one-time SKU; the re-read after the reserve sees
+                // the type the reservation froze, usage, which does not allow `flat`.
+                SkuType::OneTime
             } else {
                 SkuType::Usage
             },
@@ -585,6 +589,7 @@ impl ReferenceRegistryV1 for Script {
 
 use bss_pricing::infra::storage::entity::{price, price_book_entry};
 use storage_support::at;
+/// A draft of a `per_unit` entry: the money is in the entry's model (D-427).
 pub fn price(p: &price_book_entry::Model) -> price::Model {
     price::Model {
         id: Uuid::new_v4(),
@@ -592,7 +597,6 @@ pub fn price(p: &price_book_entry::Model) -> price::Model {
         price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
-        model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.1"}),
         min_fee: Some("12.34".into()),
         eligibility: "all".into(),
@@ -796,7 +800,8 @@ impl Target {
     #[must_use]
     pub fn input_for(&self, sku: Uuid) -> Value {
         match self.kind {
-            Kind::Entry => json!({"sku_id":sku}),
+            // `per_unit` is a model every charge kind allows (D-386, D-427).
+            Kind::Entry => json!({"sku_id":sku,"model":"per_unit"}),
             Kind::Item => json!({"sku_id":sku,"treatment":"included"}),
         }
     }

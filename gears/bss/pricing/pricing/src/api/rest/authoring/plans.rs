@@ -566,8 +566,8 @@ pub(super) async fn get_revision(
 }
 /// `PATCH /plan-revisions/{id}`: the book and the sale date of an unlocked draft of the caller,
 /// at the version the caller read. A book change remaps every item whose entry has a twin in the
-/// new book (the same SKU, charge kind and period); an unmatched item keeps its old entry, which
-/// the checks then show foreign (`ITEM_BOOK_FOREIGN`).
+/// new book (the same SKU, charge kind, period and model, D-427); an unmatched item keeps its old
+/// entry, which the checks then show foreign (`ITEM_BOOK_FOREIGN`).
 /// # Errors
 /// 404; 409 `REVISION_NOT_DRAFT`; 403 `NOT_DRAFT_AUTHOR`; 409 `STALE_REVISION`; 400
 /// `DATE_INVALID`; 404 for a book the tenant does not hold.
@@ -621,8 +621,9 @@ pub(super) async fn patch_revision(
         Some(version + 1),
     )?)
 }
-/// Point every item at the new book's entry of the same (SKU, charge kind, period), where there
-/// is one; the rest keep their entry.
+/// Point every item at the new book's entry of the same (SKU, charge kind, period, model), where
+/// there is one; the rest keep their entry. The model is part of an entry's key (D-427): a twin of
+/// another model is another entry, never a match.
 async fn remap(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -642,7 +643,10 @@ async fn remap(
             continue;
         };
         let Some(twin) = twins.iter().find(|e| {
-            e.sku_id == old.sku_id && e.charge_kind == old.charge_kind && e.period == old.period
+            e.sku_id == old.sku_id
+                && e.charge_kind == old.charge_kind
+                && e.period == old.period
+                && e.model == old.model
         }) else {
             continue;
         };
@@ -913,9 +917,10 @@ async fn entry_of(
             })
         })
         .collect();
+    let model = price_book_entry_repo::model_of(&e)?;
     let prices = stored
         .iter()
-        .map(price_repo::to_domain)
+        .map(|m| price_repo::to_domain(m, model))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(plan::Entry {
         id: e.id,

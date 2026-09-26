@@ -45,7 +45,7 @@ INDEX pricing_price_approved_start
   DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
 INDEX pricing_price_book_entry_key
   ON pricing_price_book_entry
-  DDL CREATE UNIQUE INDEX pricing_price_book_entry_key ON pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''))
+  DDL CREATE UNIQUE INDEX pricing_price_book_entry_key ON pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''), model)
 INDEX pricing_price_chain
   ON pricing_price
   DDL CREATE INDEX pricing_price_chain ON pricing_price (price_book_entry_id, dim_value, effective_from) WHERE state = 'approved'
@@ -263,7 +263,6 @@ TABLE pricing_price
   COLUMN id TEXT NULL DEFAULT - PK 1
   COLUMN keep_for_bound INTEGER NOT NULL DEFAULT 0 PK 0
   COLUMN min_fee TEXT NULL DEFAULT - PK 0
-  COLUMN model TEXT NOT NULL DEFAULT - PK 0
   COLUMN note TEXT NULL DEFAULT - PK 0
   COLUMN paired_price_id TEXT NULL DEFAULT - PK 0
   COLUMN pending_unit_id TEXT NULL DEFAULT - PK 0
@@ -299,6 +298,7 @@ TABLE pricing_price_book_entry
   COLUMN dimension_key TEXT NULL DEFAULT - PK 0
   COLUMN id TEXT NULL DEFAULT - PK 1
   COLUMN invoice_line_override TEXT NULL DEFAULT - PK 0
+  COLUMN model TEXT NOT NULL DEFAULT 'flat' PK 0
   COLUMN period TEXT NULL DEFAULT - PK 0
   COLUMN reference_state TEXT NOT NULL DEFAULT - PK 0
   COLUMN reservation_id TEXT NOT NULL DEFAULT - PK 0

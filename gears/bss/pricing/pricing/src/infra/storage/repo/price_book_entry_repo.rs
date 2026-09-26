@@ -42,6 +42,7 @@ pub async fn insert(
         sku_id: Set(m.sku_id),
         charge_kind: Set(m.charge_kind),
         period: Set(m.period),
+        model: Set(m.model),
         dimension_key: Set(m.dimension_key),
         invoice_line_override: Set(m.invoice_line_override),
         reservation_id: Set(m.reservation_id),
@@ -57,6 +58,15 @@ pub async fn insert(
         .exec_with_returning(runner)
         .await
         .map_err(|e| map_unique("insert price book entry".into(), e))
+}
+/// The entry's model in the pure model (D-427): every price of the entry is decoded and judged
+/// with it. Unknown vocabulary is a corrupt row.
+/// # Errors
+/// `CorruptRow` for a stored model the domain does not know.
+pub fn model_of(m: &e::Model) -> Result<crate::domain::price_book_entry::Model, RepoError> {
+    m.model
+        .parse()
+        .map_err(|_| RepoError::CorruptRow(format!("entry {} model", m.id)))
 }
 /// Read by tenant and identity within the authorized scope.
 /// # Errors

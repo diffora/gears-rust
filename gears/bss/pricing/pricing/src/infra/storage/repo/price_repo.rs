@@ -37,7 +37,6 @@ pub async fn insert(
         price_book_entry_id: Set(m.price_book_entry_id),
         version_no: Set(m.version_no),
         dim_value: Set(m.dim_value),
-        model: Set(m.model),
         price_json: Set(m.price_json),
         min_fee: Set(m.min_fee),
         eligibility: Set(m.eligibility),
@@ -116,7 +115,6 @@ pub async fn update_draft(
         .secure()
         .scope_with(scope)
         .col_expr(e::Column::DimValue, Expr::value(m.dim_value))
-        .col_expr(e::Column::Model, Expr::value(m.model))
         .col_expr(e::Column::PriceJson, Expr::value(m.price_json))
         .col_expr(e::Column::MinFee, Expr::value(m.min_fee))
         .col_expr(e::Column::Eligibility, Expr::value(m.eligibility))
@@ -188,13 +186,17 @@ pub async fn delete_draft(
         .map_err(|e| driver_failure("delete draft".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
-/// Decode a stored price into the pure model; unknown vocabulary is a corrupt row.
+/// Decode a stored price into the pure model, in its ENTRY's model (D-427: a price has no model
+/// of its own; the caller passes `price_book_entry_repo::model_of` of the price's entry). Unknown
+/// vocabulary, or money whose shape is not the entry's model, is a corrupt row.
 /// # Errors
 /// Returns `CorruptRow` for a stored enum or price shape the model does not know.
-pub fn to_domain(m: &e::Model) -> Result<crate::domain::price::Price, RepoError> {
-    use crate::domain::{money, price, price_book_entry::Model};
+pub fn to_domain(
+    m: &e::Model,
+    model: crate::domain::price_book_entry::Model,
+) -> Result<crate::domain::price::Price, RepoError> {
+    use crate::domain::{money, price};
     let corrupt = |what: &str| RepoError::CorruptRow(format!("price {} {what}", m.id));
-    let model: Model = m.model.parse().map_err(|_| corrupt("model"))?;
     Ok(price::Price {
         id: m.id,
         price_book_entry_id: m.price_book_entry_id,

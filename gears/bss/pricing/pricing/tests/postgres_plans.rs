@@ -136,6 +136,7 @@ async fn seed() -> Seed {
             sku_id: Uuid::new_v4(),
             charge_kind: "usage".into(),
             period: None,
+            model: "per_unit".into(),
             dimension_key: None,
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),

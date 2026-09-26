@@ -85,7 +85,7 @@ async fn prices_unit(f: &Fixture, entry: Uuid, key: &str, from: &str) -> Unit {
         .call(
             "POST",
             &format!("/price-book-entries/{entry}/prices"),
-            json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
             None,
             Some(&format!("draft-{key}")),
         )
@@ -190,7 +190,7 @@ async fn a_prices_unit_names_the_plan_revisions_reading_its_entries_on_every_rea
         .call(
             "POST",
             &format!("/price-book-entries/{e}/prices"),
-            json!({"model":"per_unit","price":{"rate":"0.11"},"eligibility":"all","effective_from":"2031-06-01"}),
+            json!({"price":{"rate":"0.11"},"eligibility":"all","effective_from":"2031-06-01"}),
             None,
             Some("listed"),
         )

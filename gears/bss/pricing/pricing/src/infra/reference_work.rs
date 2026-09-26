@@ -15,7 +15,9 @@ use crate::{
         support::{self, DoorError},
     },
     domain::{
-        price_book_entry::{OpState, ReferenceState, charge_kind_for},
+        price_book_entry::{
+            Model, OpState, ReferenceState, charge_kind_for, default_model, model_allowed,
+        },
         reference_op::{self, Effect, Event, Op, OpKind, RefKind},
     },
     infra::storage::{
@@ -53,15 +55,50 @@ pub struct Work {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
 }
+/// An entry's persisted create input (D-401): what its create writes, rebuilt from the entry by
+/// every later op of it (a rereserve, a delete). Its JSON is the door's request body field for
+/// field. `model` (D-427) is absent from an op stored before `m20260926_000013`: such an op
+/// resolves to the model that migration gives an entry without prices, its charge kind's default
+/// (`default_model`). A rereserve or a delete never writes the model, so its entry keeps its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntryInput {
+    pub sku_id: Uuid,
+    pub period: Option<String>,
+    pub dimension_key: Option<String>,
+    pub invoice_line_override: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+impl From<PricingPriceBookEntryCreate> for EntryInput {
+    fn from(input: PricingPriceBookEntryCreate) -> Self {
+        Self {
+            sku_id: input.sku_id,
+            period: input.period,
+            dimension_key: input.dimension_key,
+            invoice_line_override: input.invoice_line_override,
+            model: Some(input.model),
+        }
+    }
+}
+impl EntryInput {
+    /// The input of an entry that exists, for the ops that follow its create.
+    #[must_use]
+    pub fn of(entry: &price_book_entry::Model) -> Self {
+        Self {
+            sku_id: entry.sku_id,
+            period: entry.period.clone(),
+            dimension_key: entry.dimension_key.clone(),
+            invoice_line_override: entry.invoice_line_override.clone(),
+            model: Some(entry.model.clone()),
+        }
+    }
+}
 /// The work input of each kind: what its create writes, and where its Idempotency-Key lives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Target {
     /// An entry of `book_id`; every op of an entry carries its create input.
-    PriceBookEntry {
-        book_id: Uuid,
-        input: PricingPriceBookEntryCreate,
-    },
+    PriceBookEntry { book_id: Uuid, input: EntryInput },
     /// An item of `revision_id`. Only a create carries its input; an attach, a rereserve and a
     /// delete find the item by the op's `ref_id`.
     PlanItem {
@@ -822,12 +859,7 @@ pub fn rereserve_op(
     let work = Work {
         target: Target::PriceBookEntry {
             book_id: entry.book_id,
-            input: PricingPriceBookEntryCreate {
-                sku_id: entry.sku_id,
-                period: entry.period.clone(),
-                dimension_key: entry.dimension_key.clone(),
-                invoice_line_override: entry.invoice_line_override.clone(),
-            },
+            input: EntryInput::of(entry),
         },
         correlation: Uuid::now_v7(),
         refusal: None,
@@ -1107,6 +1139,22 @@ fn sku_refusal_answer(kind: RefKind, code: &'static str) -> CanonicalError {
         _ => support::conflict(code),
     }
 }
+/// Tx B's judgement of the input's model (D-427) against the charge kind of the SKU type the
+/// reservation froze: the model to write, or the code of its 400 refusal. An op stored before
+/// `m20260926_000013` has none and resolves to the charge kind's default.
+fn model_to_write(
+    input: &EntryInput,
+    kind: crate::domain::price_book_entry::ChargeKind,
+) -> Result<Model, &'static str> {
+    match input.model.as_deref() {
+        None => Ok(default_model(kind)),
+        Some(text) => match text.parse::<Model>() {
+            Ok(model) if model_allowed(kind, model) => Ok(model),
+            Ok(_) => Err("MODEL_KIND_CHARGEKIND_MISMATCH"),
+            Err(_) => Err("MODEL_INVALID"),
+        },
+    }
+}
 /// The entry Tx B writes once its SKU admits it: the create's new entry, or the rereserved
 /// entry with its new receipt.
 async fn entry_written(
@@ -1127,16 +1175,27 @@ async fn entry_written(
             Some(Receipt::error(support::invalid("period", "ENTRY_PERIOD_INVALID")).await?),
         ));
     }
+    // The door judged the model against a fresh read; this re-read judges it again against the
+    // type the reservation froze (D-427). A refusal is an input refusal: 400 (D-403).
+    let kind = charge_kind_for(sku.r#type).map_err(|_| corrupt())?;
+    let model = match model_to_write(&input, kind) {
+        Ok(model) => model,
+        Err(code) => {
+            return Ok((
+                Event::SkuRefused { code: code.into() },
+                None,
+                Some(Receipt::error(support::invalid("model", code)).await?),
+            ));
+        }
+    };
     let entry = price_book_entry::Model {
         id: op.ref_id,
         tenant_id: op.tenant_id,
         book_id,
         sku_id: op.sku_id,
-        charge_kind: charge_kind_for(sku.r#type)
-            .map_err(|_| corrupt())?
-            .as_str()
-            .into(),
+        charge_kind: kind.as_str().into(),
         period: input.period,
+        model: model.as_str().into(),
         dimension_key: input.dimension_key,
         invoice_line_override: input.invoice_line_override,
         reservation_id: op.reservation_id.ok_or_else(corrupt)?,

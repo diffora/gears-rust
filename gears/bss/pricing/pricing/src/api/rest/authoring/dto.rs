@@ -40,6 +40,9 @@ pub struct PricingPriceBookEntryDto {
     pub sku_id: Uuid,
     pub charge_kind: String,
     pub period: Option<String>,
+    /// The entry's model (D-427), fixed for its life and part of its key: `flat`, `per_unit`,
+    /// `graduated`, `volume` or `package`.
+    pub model: String,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
     pub reservation_id: Uuid,
@@ -59,6 +62,7 @@ impl From<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
             sku_id: m.sku_id,
             charge_kind: m.charge_kind,
             period: m.period,
+            model: m.model,
             dimension_key: m.dimension_key,
             invoice_line_override: m.invoice_line_override,
             reservation_id: m.reservation_id,
@@ -76,6 +80,7 @@ pub struct PricingPriceDto {
     pub price_book_entry_id: Uuid,
     pub version_no: i32,
     pub dim_value: Option<String>,
+    /// The entry's model, read-only (D-427): a price has no model of its own.
     pub model: String,
     pub price_json: serde_json::Value,
     pub min_fee: Option<String>,
@@ -102,8 +107,10 @@ pub struct PricingPriceDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl From<entity::price::Model> for PricingPriceDto {
-    fn from(m: entity::price::Model) -> Self {
+impl PricingPriceDto {
+    /// A stored price with its entry's model (D-427).
+    #[must_use]
+    pub fn of(m: entity::price::Model, model: &str) -> Self {
         let status = m
             .state
             .parse::<crate::domain::price::PriceState>()
@@ -125,7 +132,7 @@ impl From<entity::price::Model> for PricingPriceDto {
             price_book_entry_id: m.price_book_entry_id,
             version_no: m.version_no,
             dim_value: m.dim_value,
-            model: m.model,
+            model: model.to_owned(),
             price_json: m.price_json,
             min_fee: m.min_fee,
             eligibility: m.eligibility,
@@ -239,6 +246,9 @@ pub struct PricingSettingsDto {
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
     pub sku_id: Uuid,
+    /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
+    /// `volume` or `package`, one the SKU's charge kind allows.
+    pub model: String,
     pub period: Option<String>,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
@@ -567,7 +577,7 @@ pub(super) struct PricingReferenceOpQuery {
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceCreate {
     pub dim_value: Option<String>,
-    pub model: String,
+    /// Money in the entry's model (D-427); a price carries no model of its own.
     pub price: serde_json::Value,
     pub min_fee: Option<String>,
     pub eligibility: String,
@@ -585,7 +595,6 @@ pub struct PricingPriceCreate {
 pub struct PricingPricePatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub dim_value: Option<Option<String>>,
-    pub model: Option<String>,
     pub price: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "nullable_date")]
     pub min_fee: Option<Option<String>>,

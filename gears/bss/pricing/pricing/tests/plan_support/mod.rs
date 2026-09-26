@@ -443,13 +443,25 @@ pub async fn book(f: &Fixture, code: &str) -> Uuid {
     assert_eq!(s, 201, "{b}");
     id_of(&b["id"])
 }
-/// An entry of `book` for `sku`, written directly: it costs the catalog no reservation.
+/// An entry of `book` for `sku`, written directly: it costs the catalog no reservation. Its model
+/// is `per_unit` (D-427), one every charge kind allows and the money `entry_support::price` writes.
 pub async fn entry(
     f: &Fixture,
     book: Uuid,
     sku: Uuid,
     charge_kind: &str,
     period: Option<&str>,
+) -> Uuid {
+    entry_in(f, book, sku, charge_kind, period, "per_unit").await
+}
+/// An entry as `entry` writes it, in `model` (D-427).
+pub async fn entry_in(
+    f: &Fixture,
+    book: Uuid,
+    sku: Uuid,
+    charge_kind: &str,
+    period: Option<&str>,
+    model: &str,
 ) -> Uuid {
     let now = time::OffsetDateTime::now_utc();
     price_book_entry_repo::insert(
@@ -462,6 +474,7 @@ pub async fn entry(
             sku_id: sku,
             charge_kind: charge_kind.into(),
             period: period.map(str::to_owned),
+            model: model.into(),
             dimension_key: None,
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),

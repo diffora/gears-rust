@@ -20,7 +20,7 @@ fn day(s: &str) -> Date {
     Date::parse(s, &time::format_description::well_known::Iso8601::DATE).unwrap()
 }
 fn body(from: &str) -> Value {
-    json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
+    json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
 }
 
 /// Two authoring processes on their own pools of one database, one book and one usage entry
@@ -60,7 +60,7 @@ async fn two() -> Two {
         &author,
         "POST",
         &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
-        json!({"sku_id":Uuid::new_v4()}),
+        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
         None,
         Some("entry"),
     )

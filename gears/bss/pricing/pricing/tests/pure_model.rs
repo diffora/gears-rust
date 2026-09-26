@@ -37,7 +37,6 @@ fn enum_check_values_match_migration_text() {
         }};
     }
     pin!(ChargeKind, entry, "charge_kind");
-    pin!(Model, price, "model");
     pin!(Eligibility, price, "eligibility");
     pin!(PriceState, price, "state");
     pin!(ReferenceState, entry, "reference_state");
@@ -89,4 +88,13 @@ fn reference_op_kind_and_ref_kind_match_migration_text() {
         RefKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
         ["price_book_entry", "plan_item"]
     );
+}
+/// D-427: the model moved from the price to the entry. Its CHECK is spelled once per dialect in
+/// `m20260926_000013` (the price's own column, and with it 000007's CHECK, is dropped there), with
+/// the enum's exact vocabulary.
+#[test]
+fn the_entry_model_check_matches_the_enum_on_000013() {
+    let model =
+        include_str!("../src/infra/storage/migrations/m20260926_000013_model_on_the_entry.rs");
+    pin_both_dialects!(Model, model, "model");
 }
