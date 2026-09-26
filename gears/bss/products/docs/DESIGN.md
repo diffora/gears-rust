@@ -60,7 +60,7 @@ Every PRD FR and NFR appears once in this allocation. Section references identif
 | `cpt-cf-bss-products-fr-sku-lifecycle` | One approval shape governs lifecycle | §3.1 lifecycle; §3.2 Approvals; §3.6 fenced retirement |
 | `cpt-cf-bss-products-fr-sku-versions` | Durable history determines dated truth | §3.3 dated read; §3.7 version table and ordering |
 | `cpt-cf-bss-products-fr-sku-retire-fenced` | Retirement excludes new references and survives interruption | §3.1 fence state and recovery; §3.6 fenced retirement |
-| `cpt-cf-bss-products-fr-category-flat` | One flat category per SKU | §3.1 Category; §3.3 category doors; §3.7 category foreign key |
+| `cpt-cf-bss-products-fr-category-flat` | At most one flat category per SKU | §3.1 Category; §3.3 category doors; §3.7 nullable category foreign key |
 | `cpt-cf-bss-products-fr-approval-units` | Quorum, SoD and reviewed generations | §2.2 approval shape; §3.2 Approvals; §3.6 stale refresh; §3.7 four approval tables |
 | `cpt-cf-bss-products-fr-events` | State, audit and events commit atomically | §3.2 Events; §3.4 outbox; §3.6 terminal transactions |
 | `cpt-cf-bss-products-fr-read-model` | Scoped search, card, versions and reference summary | §3.2 Read model; §3.3 reads; §3.7 read indexes |
@@ -132,7 +132,9 @@ SQLite and Postgres implement the same schema invariants, approvals, versions an
 Postgres reserve/fence transactions use serializable isolation; SQLite serializes writers. Retry a
 Postgres serialization failure once and SQLite lock-upgrade failures through the same bounded retry
 loop. Verify both storage tiers at phase gates; migrations start a new chain without stand-data migration
-(spec §2 decisions 1 and 10, §2.2, §6, §10).
+(spec §2 decisions 1 and 10, §2.2, §6, §10). The chain is deployed, so a later schema change is a new
+forward migration. It runs inside the toolkit runner's transaction, so a SQLite rebuild of a parent table
+rebuilds its children too and uses no PRAGMA (P-D-196).
 
 #### One approval shape
 
@@ -159,10 +161,10 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 
 | Type | Fields and invariants |
 | --- | --- |
-| `Sku` | Tenant, id, code, name, type, category, description, sellable, lifecycle, revision (the concurrency version), published_version, descriptors, billing_timing, usage_type_ref, unit, pending_unit_id and approved_by_unit_id. Code and name are separately unique per tenant. Creator attribution supplies approval-item `created_by`. |
+| `Sku` | Tenant, id, code, name, type, optional category (null when absent, no default fallback; P-D-196), description, sellable, lifecycle, revision (the concurrency version), published_version, descriptors, billing_timing, usage_type_ref, unit, pending_unit_id and approved_by_unit_id. Code and name are separately unique per tenant. Creator attribution supplies approval-item `created_by`. |
 | `SkuType` | `recurring`, `usage`, `one_time`, `bundle`. A priced SKU's type determines charge kind. Published/deprecated type changes are fenced against live references. Drafts cannot be reserved and change type without fencing. |
 | `Lifecycle` | `draft`, `published`, `deprecated`, `retiring`, `retired`. Publish takes draft to published; change governs published/deprecated content and the published ↔ deprecated edges. Retiring is a transient fence, retired is terminal. |
-| `Category` | Tenant, id, code, name, is_default, sort_order, active/retired status and concurrency version. One category per SKU, no parent. Any SKU reference blocks category retirement. |
+| `Category` | Tenant, id, code, name, is_default, sort_order, active/retired status and concurrency version. At most one category per SKU, no parent. Any SKU reference blocks category retirement; a SKU without a category blocks none. |
 | `SkuVersion` | Tenant, sku_id, published_version, effective_from, snapshot. Immutable history appended by publication and every applied change. |
 | `ApprovalUnit` | Shared crate type: kind, subject reference, state, quorum, generation, snapshot/hash, date, submitter, decision metadata and concurrency version. |
 | `Decision` | Shared crate type: unit, actor, generation, approve/reject, note, timestamp and stale flag. One vote per actor per generation. |
@@ -250,7 +252,7 @@ classDiagram
         UUID ref_id
         String state
     }
-    Category "1" <-- "0..*" Sku : category
+    Category "0..1" <-- "0..*" Sku : category
     Sku --> SkuType : type
     Sku --> Lifecycle : lifecycle
     Sku "1" *-- "0..*" SkuVersion : versions
@@ -299,8 +301,8 @@ registration and standardized errors.
 
 | Surface | Routes | Contract |
 | --- | --- | --- |
-| SKU authoring | `POST /skus`; `PATCH /skus/{id}` | Create independent draft; patch drafts only; reject edits while pending. |
-| SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters, bounded limit and exclusive code cursor (tenant-unique codes); SKU card. |
+| SKU authoring | `POST /skus`; `PATCH /skus/{id}` | Create independent draft, `category_id` optional; patch drafts only (`category_id: null` clears it); reject edits while pending. |
+| SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters (a category filter never matches a SKU without a category), bounded limit and exclusive code cursor (tenant-unique codes); SKU card. |
 | Dated versions | `GET /skus/{id}/versions?as_of=<date>` | Greatest effective_from not after date, then greatest published_version; 404 before first version. Without as_of, list history. |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
@@ -635,7 +637,7 @@ CREATE TABLE bss.products_sku (
     code text NOT NULL,
     name text NOT NULL,
     type text NOT NULL CHECK (type IN ('recurring', 'usage', 'one_time', 'bundle')),
-    category_id uuid NOT NULL,
+    category_id uuid, -- null: no category (P-D-196)
     description text,
     sellable boolean NOT NULL,
     lifecycle text NOT NULL CHECK (lifecycle IN ('draft', 'published', 'deprecated', 'retiring', 'retired')),
@@ -885,4 +887,4 @@ defined here.
 The decision allocation is P-D-184 → metering; P-D-185–187 → SKU/category model; P-D-188–189 →
 type and retirement barriers; P-D-190 → approval policy and subjects; P-D-191 → dated versions;
 P-D-192 → generations and conditional writes; P-D-193 → audit/replay; P-D-194 → the reference
-registry and Pricing protocol. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+registry and Pricing protocol; P-D-196 → the optional category. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

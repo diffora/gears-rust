@@ -28,6 +28,7 @@
 | P-D-193 | M | Audit rows and the single idempotency store are kept on the new chain | DECIDED 2026-09-24 · spec §3 items 23, 27, §2.2 |
 | P-D-194 | H | Products owns reference reservations; pricing reserves before writing and confirms with durable retries; live references and fences exclude each other | DECIDED 2026-09-24 · spec §2 decision 17, §4, §13 |
 | P-D-195 | H | The chain refuses a legacy or stale products schema at boot | DECIDED 2026-09-26 · pricing D-423; phase 4 plan rev 2 (Run 4.1) |
+| P-D-196 | M | A SKU's category is optional; an omitted category stays null, with no default fallback | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
 
 ## Entries
 
@@ -60,7 +61,8 @@ plan, never a price book entry or plan item; Products stores no bundle compositi
 One category per SKU, with `code`, `name`, `is_default`, `sort_order` and `status` (`active | retired`);
 category code is unique per tenant. Creation and edits, including rename, are direct operations without
 approval. Retirement is refused while any SKU points at the category (`CATEGORY_IN_USE`). A `parent_id`
-column is a possible future addition, not part of this model.
+column is a possible future addition, not part of this model. P-D-196 amends this entry: the category of a
+SKU is optional, so a SKU has at most one category.
 
 **Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat); spec §2 decision 12, §4;
 ADR-0001 consequences.
@@ -235,3 +237,37 @@ once and finds nothing. The pricing gear carries the same guard over its own tab
 
 **Traceability:** [PRD `nfr-two-backends`](PRD.md#nfr-two-backends); pricing D-423; phase 4 plan rev 2,
 Run 4.1; plan review H1, M1 and L6.
+
+#### P-D-196 [M] A SKU's category is optional
+
+Amends P-D-186: a SKU has at most one category. `category_id` is optional on `POST /skus`; an omitted or
+null `category_id` is stored as null, and there is no fallback to the tenant's `is_default` category. The
+draft `PATCH` clears it with an explicit `null` and leaves it unchanged when the field is omitted. A
+`sku_change` sets or clears it: the unit item's `before` and `after`, the applied `sku_version` snapshot
+and `SkuChanged.changed` show it. A set category is still resolved in tenant scope and must be active (a
+missing one is 404, a retired one 409 `CATEGORY_RETIRED`). In `products-sdk`, `Sku.category_id` and
+`SkuContent.category_id` are `Option<Uuid>`, and the wire carries `null`. No event payload carries the
+category itself.
+
+Browse by a category (`GET /skus?category=`) matches only the SKUs in that category, so a SKU without a
+category never matches it; an unfiltered list includes it. The retirement of a category and its in-use
+check count only the SKUs that point at it; a SKU without a category never blocks a retirement.
+
+The chain is deployed, so the change is the forward migration `m20260925_000007_sku_category_optional`:
+
+- Postgres: `ALTER TABLE bss.products_sku ALTER COLUMN category_id DROP NOT NULL`.
+- SQLite cannot drop a NOT NULL in place. The toolkit runner runs each `up()` in a transaction, where
+  `PRAGMA foreign_keys=OFF` has no effect, so the migration rebuilds the family and uses no PRAGMA: a new
+  `products_sku` (only `category_id` is nullable), new `products_sku_version` and `products_sku_reference`
+  against it, all rows copied, the old children dropped first, then the old parent, then the renames. Then
+  every index (with the partial unique `uq_products_sku_reference_live`) and the two append-only triggers
+  are recreated with their original text.
+- `down()` is an explicit irreversible error.
+
+Products has no schema golden. The proof is a structural comparison on both dialects, through the real
+runner, from a database migrated by the chain before this migration, with SKUs, versions and references
+seeded: only `category_id`'s NOT NULL changes, and every row survives. Owed: a `category=none` browse
+filter.
+
+**Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat), [`fr-sku-define`](PRD.md#fr-sku-define);
+DESIGN §3.1, §3.7; slice 01 §5, slice 02; phase 5 plan rev 2 (Run 5.1); plan review H1, M8, L9 and L13.

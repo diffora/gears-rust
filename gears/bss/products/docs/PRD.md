@@ -66,9 +66,9 @@ reference. The prototype model and the explicit dispositions in spec §3 define 
 
 | Term | Meaning |
 | --- | --- |
-| SKU | The tenant's named and coded commercial definition, with its own type, category and lifecycle. |
+| SKU | The tenant's named and coded commercial definition, with its own type, optional category and lifecycle. |
 | Type | `recurring`, `usage`, `one_time` or `bundle`; determines charge kind where the SKU can be priced. |
-| Category | One flat grouping per SKU, with code, name, default flag, sort order and active/retired status. |
+| Category | An optional flat grouping, at most one per SKU, with code, name, default flag, sort order and active/retired status. |
 | Descriptors | `gl_code`, `tax_category` and `invoice_line_template`, bound by pricing from a dated SKU version. |
 | Metering | A usage SKU's `usage_type_ref` and `unit`; the reference resolves through the usage-type catalog port. |
 | Lifecycle | `draft`, `published`, `deprecated`, `retiring`, `retired`; `retiring` is the transient retirement fence. |
@@ -155,11 +155,13 @@ adaptation, and Studio API wiring, are separate programmes (spec §3 D, §4, §1
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-sku-define`
 
 The registry shall create and edit a SKU as an independent tenant-scoped definition with code, name, type,
-category, description, sellable flag, descriptors, billing timing and type-appropriate metering.
+an optional category, description, sellable flag, descriptors, billing timing and type-appropriate metering.
 
 **Rules**
 
 - Code and name are each unique per tenant; collisions return 409 `SKU_CODE_TAKEN` and `SKU_NAME_TAKEN`.
+- The category is optional (P-D-196): an omitted `category_id` is null, with no fallback to the default
+  category; a draft `PATCH` with `category_id: null` and a `sku_change` can clear it.
 - SKU and category records carry tenant identity, creation/update timestamps and a concurrency `version`;
   a SKU also carries `revision` and `published_version`.
 - Direct `PATCH` edits drafts only; published or deprecated content changes use `sku_change`.
@@ -301,13 +303,14 @@ racing with approval and apply.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-category-flat`
 
-The registry shall maintain a flat category list with one category per SKU.
+The registry shall maintain a flat category list with at most one category per SKU.
 
 **Rules**
 
 - Categories carry `id`, tenant-unique `code`, `name`, `is_default`, `sort_order` and `active | retired` status.
 - Category creation and edits are direct operations and require no approval unit.
-- Retirement fails with `CATEGORY_IN_USE` while any SKU points at the category.
+- Retirement fails with `CATEGORY_IN_USE` while any SKU points at the category. A SKU without a category
+  does not block a retirement (P-D-196).
 - Category patches participate in optimistic concurrency (`STALE_REVISION` for a stale revision).
 
 **Rationale**: spec §2 decision 12, §4 (category schema and retire rule), §7.2, §14.
@@ -372,7 +375,8 @@ and durable version reads.
 
 **Rules**
 
-- List and search support code, name, category, type and lifecycle.
+- List and search support code, name, category, type and lifecycle. A category filter matches only the SKUs
+  in that category; an unfiltered list includes the SKUs without a category (P-D-196).
 - `GET /skus/{id}/references` reads the local registry, returning reference rows and counts grouped by owner
   and kind; reserved references count alongside confirmed ones.
 - The card makes unresolved reservations visible so an operator can inspect and release abandoned attempts.
@@ -658,7 +662,7 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 - **Given** a flat category referenced by a SKU.
 - **When** an administrator requests category retirement.
 - **Then** retirement fails with `CATEGORY_IN_USE`; an unreferenced category can retire directly without an
-  approval unit.
+  approval unit, also when the tenant has SKUs without a category.
 
 **AC #14. Separation of duties — `fr-approval-units`, `nfr-authz`**
 
