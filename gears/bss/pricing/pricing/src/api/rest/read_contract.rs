@@ -8,6 +8,9 @@
 //! tenant's revision is 404 there, before any Products read. The pure model then judges the pins
 //! (`domain::resolve::matrix`), and only then, outside the transaction, is each SKU version read
 //! as of the date through the detached registry, as the caller (D-421).
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-binding-sku-version:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-price-read-forever:p1
 pub mod dto;
 use super::authoring::{
     AuthoringState, configuration,
@@ -162,6 +165,7 @@ async fn pinned_price(
     tenant: Uuid,
     id: Uuid,
 ) -> Result<PricingPinnedPriceDto, DoorError> {
+    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-5
     let row = price_repo::find(tx, scope, tenant, id)
         .await?
         .filter(|p| p.state == PriceState::Approved.as_str())
@@ -197,6 +201,7 @@ async fn pinned_price(
         approved_by_unit_id: row.approved_by_unit_id,
         approved_at: row.approved_at,
     })
+    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-5
 }
 
 /// A parsed `GET /resolve` query.
@@ -212,6 +217,7 @@ impl ResolveRequest {
     /// `DATE_INVALID` for a missing or malformed date; 400 `PIN_FOREIGN` for a pin that does not
     /// parse.
     fn parse(uri: &axum::http::Uri) -> Result<Self, CanonicalError> {
+        // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-1
         let axum::extract::Query(query) =
             axum::extract::Query::<PricingResolveQuery>::try_from_uri(uri)
                 .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
@@ -228,6 +234,7 @@ impl ResolveRequest {
             None | Some("") => Vec::new(),
             Some(text) => text.split(',').map(pin).collect::<Result<_, _>>()?,
         };
+        // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-1
         Ok(Self {
             revision,
             date,
@@ -285,6 +292,7 @@ async fn resolution(
             .into_iter()
             .filter(|r| item.is_none_or(|id| r.item_id == id))
             .collect();
+    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-4
     let versions = versions_as_of(
         &state.hub,
         ctx,
@@ -293,6 +301,7 @@ async fn resolution(
     )
     .await?;
     let body = render(&stored, request.date, resolved, &versions)?;
+    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-4
     support::response(StatusCode::OK, &body, None)
 }
 
@@ -307,6 +316,7 @@ async fn read_stored(
     id: Uuid,
     item: Option<Uuid>,
 ) -> Result<Stored, DoorError> {
+    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-2
     let children = AccessScope::for_tenant(tenant);
     let revision = plan_revision_repo::find(tx, scope, tenant, id)
         .await?
@@ -416,6 +426,7 @@ async fn read_stored(
         },
         rounding: settings.default_rounding,
     })
+    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-2
 }
 
 /// D-421: each SKU version as of `date`, one read per distinct SKU, through the detached

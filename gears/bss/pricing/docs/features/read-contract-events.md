@@ -73,23 +73,23 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-flow-read-contract-events`
 
-1. [ ] - `p1` - Rating or Subscriptions sends the revision id, period start and optional current pins. - `inst-read-contract-events-flow-1`
-2. [ ] - `p1` - Load immutable revision structure and the full chain matrix, scoped to the tenant. - `inst-read-contract-events-flow-2`
-3. [ ] - `p1` - For existing pins walk eligible all successors, stopping before the first new price; for signup select in-force prices. - `inst-read-contract-events-flow-3`
-4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit with their source (entry, SKU or tenant, D-421) and return the whole dimension matrix. - `inst-read-contract-events-flow-4`
-5. [ ] - `p1` - A later replay reads the pinned price by id (GET /bss-pricing/v1/prices/{id}, D-422): the approved money is served forever, whatever its window; binding usage lazily per value and keeping the complete inputs are the consumer's part. - `inst-read-contract-events-flow-5`
+1. [x] - `p1` - Rating or Subscriptions sends the revision id, period start and optional current pins. - `inst-read-contract-events-flow-1`
+2. [x] - `p1` - Load immutable revision structure and the full chain matrix, scoped to the tenant. - `inst-read-contract-events-flow-2`
+3. [x] - `p1` - For existing pins walk eligible all successors, stopping before the first new price; for signup select in-force prices. - `inst-read-contract-events-flow-3`
+4. [x] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit with their source (entry, SKU or tenant, D-421) and return the whole dimension matrix. - `inst-read-contract-events-flow-4`
+5. [x] - `p1` - A later replay reads the pinned price by id (GET /bss-pricing/v1/prices/{id}, D-422): the approved money is served forever, whatever its window; binding usage lazily per value and keeping the complete inputs are the consumer's part. - `inst-read-contract-events-flow-5`
 6. [ ] - `p1` - Return the active promotion (id, version) with the matrix: deferred with promotions (D-409), this step stays unticked until they return. - `inst-read-contract-events-flow-6`
 
 ## 3. Processes / Business Logic (CDSL)
 
 ### renewal-walk
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk`
 
-1. [ ] - `p1` - Validate the supplied pin belongs to the tenant, revision item and entry chain. - `inst-read-contract-events-renewal-walk-1`
-2. [ ] - `p1` - From the pinned price walk successors with eligibility all, bounded by the relevant date; stop before the first new successor. - `inst-read-contract-events-renewal-walk-2`
-3. [ ] - `p1` - Without a pin choose the in-force price per value, falling back to default where the value has no active price. - `inst-read-contract-events-renewal-walk-3`
-4. [ ] - `p1` - Return uncovered rather than inventing a price when neither chain covers; preserve historical keep_for_bound prices. - `inst-read-contract-events-renewal-walk-4`
+1. [x] - `p1` - Validate the supplied pin belongs to the tenant, revision item and entry chain. - `inst-read-contract-events-renewal-walk-1`
+2. [x] - `p1` - From the pinned price walk successors with eligibility all, bounded by the relevant date; stop before the first new successor. - `inst-read-contract-events-renewal-walk-2`
+3. [x] - `p1` - Without a pin choose the in-force price per value, falling back to default where the value has no active price. - `inst-read-contract-events-renewal-walk-3`
+4. [x] - `p1` - Return uncovered rather than inventing a price when neither chain covers; preserve historical keep_for_bound prices. - `inst-read-contract-events-renewal-walk-4`
 
 ### period-slices-and-quote
 
@@ -106,9 +106,9 @@ Not built (D-415): the owner dropped quote and the Studio wiring; consumers read
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-read-contract-events-typed-events`
 
-1. [ ] - `p1` - Implement PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
-2. [ ] - `p1` - Add PlanRevisionPublished, PlanReferenceLost, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real; PromotionPublished (D-409), PlanRetired and SubscriptionMigrationRequested (D-410) are deferred. - `inst-read-contract-events-typed-events-2`
-3. [ ] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
+1. [x] - `p1` - Implement PricesPublished, ApprovalUnitDecided and PriceBookEntryReferenceLost through broker TypedEvent in phase 2. - `inst-read-contract-events-typed-events-1`
+2. [x] - `p1` - Add PlanRevisionPublished, PlanReferenceLost, PlanRetired, PromotionPublished and SubscriptionMigrationRequested as their phase 3 acts become real; PromotionPublished (D-409), PlanRetired and SubscriptionMigrationRequested (D-410) are deferred. - `inst-read-contract-events-typed-events-2`
+3. [x] - `p1` - Append event and audit through the same mutation transaction; encode the tenant and stable subject identities in the durable envelope, the correlation id staying on the audit rows of the same transaction. - `inst-read-contract-events-typed-events-3`
 4. [ ] - `p1` - Deliver from the toolkit dispatcher after commit; test restart/retry and prevent domain publish on reject/withdraw/refresh. - `inst-read-contract-events-typed-events-4`
 
 ## 4. States (CDSL)
@@ -125,7 +125,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 ### Full chain resolution matrix
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-resolve-matrix`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-resolve-matrix`
 
 Resolve returns every item's default/value inputs and active promotion version (deferred with promotions, D-409) without totals. Usage consumers bind lazily by value rather than choosing one value for the plan (spec §7.1).
 
@@ -133,7 +133,7 @@ Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
 ### Renewal walk and eligibility
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-renewal-all-new`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-renewal-all-new`
 
 Existing pins advance through all successors and stop before the first new price. Signup chooses the in-force price and keep_for_bound preserves the predecessor needed by renewals (spec §7.1, §12).
 
@@ -141,7 +141,7 @@ Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
 ### Descriptors from the dated SKU version
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-binding-sku-version`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-binding-sku-version`
 
 Binding reads versions?as_of at period start, not the latest mutable SKU. Preserve version, unit/meter, descriptors, timing, rounding and currency scale in replay inputs (spec §2.2, §7.1).
 
@@ -149,7 +149,7 @@ Requirement: `cpt-cf-bss-pricing-fr-resolve`; PRD AC #18.
 
 ### Durable pinned-price read
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-read-forever`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-price-read-forever`
 
 The public price-id read serves original approved money after closure, supersession or keep_for_bound. Tenant scope remains enforced and no retention deletes a pinned fact (spec §7.1).
 
@@ -185,7 +185,7 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 ### Frozen consumer golden responses
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-consumer-golden-contracts`
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-consumer-golden-contracts`
 
 Golden responses cover resolve matrix, renewal eligibility, descriptor dates and forever-readable prices; promotion versions are deferred with promotions (D-409) and are not part of this DoD until they return. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
 

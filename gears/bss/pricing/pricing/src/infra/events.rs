@@ -60,6 +60,7 @@ impl toolkit_db::outbox::LeasedMessageHandler for PendingProducer {
     }
 }
 
+// @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 /// One price a `prices` unit approved, with the window the chain was approved with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,7 +101,9 @@ impl TypedEvent for PricesPublished {
         Some(self.tenant_id)
     }
 }
+// @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 
+// @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-2
 /// A `plan_revision` unit was applied: the revision is the plan's published one, the revision
 /// published before it (if any) is superseded, and the plan's `published_rev` is its number.
 /// Existing subscription pins do not move (D-394).
@@ -131,7 +134,9 @@ impl TypedEvent for PlanRevisionPublished {
         Some(self.tenant_id)
     }
 }
+// @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-2
 
+// @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 /// A unit reached a terminal state: approved (applied), rejected or withdrawn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -157,6 +162,7 @@ impl TypedEvent for ApprovalUnitDecided {
         Some(self.tenant_id)
     }
 }
+// @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 
 /// Enqueue one event on the caller's transaction in the broker's producer-outbox envelope.
 /// # Errors
@@ -168,6 +174,7 @@ pub async fn enqueue<E: TypedEvent + Clone>(
     event: &E,
     now: time::OffsetDateTime,
 ) -> Result<(), RepoError> {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-3
     let outbox = match sink {
         EventSink::Interim(outbox) => outbox,
         // The SDK's enqueue erases the outbox's database error into a string, so a
@@ -215,5 +222,6 @@ pub async fn enqueue<E: TypedEvent + Clone>(
             },
             other => RepoError::Db(other.to_string()),
         })?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-3
     Ok(())
 }

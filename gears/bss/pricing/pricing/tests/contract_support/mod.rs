@@ -3,6 +3,8 @@
 //! and alone re-records (`UPDATE_CONTRACT_GOLDEN=1`), `tests/postgres_contract.rs` runs it on
 //! Postgres and only compares. The goldens live in `tests/contract/`, one file per contract.
 //!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-consumer-golden-contracts:p1
+//!
 //! The fixture is a calendar at FIXED past dates written through the REPOSITORIES: every door
 //! refuses a start before today (`WINDOW_START_IN_PAST`), so a door-built fixture cannot hold a
 //! fixed calendar. Nothing here reads `now()`. Every response is read through the two consumer

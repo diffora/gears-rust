@@ -7,6 +7,9 @@
 //! price ids and the tenant settings in one transaction, and each SKU version as of the date
 //! outside it; this module decides. Nothing here computes a total or picks a promotion (D-409,
 //! D-415): a chain no price covers is `uncovered`, never an invented price and never a refusal.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-resolve-matrix:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-renewal-all-new:p1
 use super::{
     RuleError,
     plan::Treatment,
@@ -184,6 +187,7 @@ fn owners(ctx: &ResolveContext, price_id: Uuid) -> Vec<(Uuid, &Price)> {
 /// (item, value) takes at most one pin (`PIN_DUPLICATE`). A value pin's value is not checked
 /// against today's registry: a removed value still resolves for the subscription that holds it.
 fn judge_pins<'a>(ctx: &'a ResolveContext, pins: &[Pin]) -> Result<Pinned<'a>, RuleError> {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-1
     let mut judged = Vec::with_capacity(pins.len());
     for pin in pins {
         let owners = owners(ctx, pin.price_id);
@@ -206,6 +210,7 @@ fn judge_pins<'a>(ctx: &'a ResolveContext, pins: &[Pin]) -> Result<Pinned<'a>, R
             }
         }
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-1
     Ok(pinned)
 }
 
@@ -221,6 +226,7 @@ fn resolve_item(ctx: &ResolveContext, item: &Item, date: Date, pinned: &Pinned) 
         values
             .into_iter()
             .map(|dim| {
+                // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-4
                 let pin = pinned.get(&(item.id, dim.clone())).copied();
                 let binding =
                     bind(entry, dim.as_deref(), pin, date).map(|(p, pinned_from)| Binding {
@@ -228,6 +234,7 @@ fn resolve_item(ctx: &ResolveContext, item: &Item, date: Date, pinned: &Pinned) 
                         pinned_from,
                         keep_for_bound: ctx.keep_for_bound.contains(&p.id),
                     });
+                // @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-4
                 Chain {
                     dim_value: dim,
                     binding,
@@ -255,11 +262,15 @@ fn bind<'a>(
     pin: Option<&'a Price>,
     date: Date,
 ) -> Option<(&'a Price, Option<Uuid>)> {
+    // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-3
     match pin {
         // Rule 1: a signup binds the price in force, the value's own chain else the default.
+        // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-3
         None => price::version_at(&entry.prices, entry.id, date, dim).map(|p| (p, None)),
+        // @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-3
         Some(pinned) => renewal(entry, dim, pinned, date).map(|p| (p, Some(pinned.id))),
     }
+    // @cpt-end:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-3
 }
 
 /// Rules 2–4 for a pinned (item, value).
@@ -292,6 +303,7 @@ fn renewal<'a>(
 /// Rule 2: from the pinned price, take each approved successor of its chain that starts by
 /// `date` with eligibility `all`; stop before the first `new` one (spec §7.1, D-397).
 fn walk<'a>(prices: &'a [Price], pinned: &'a Price, date: Date) -> &'a Price {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-2
     let chain = price::approved_prices(
         prices,
         pinned.price_book_entry_id,
@@ -304,6 +316,7 @@ fn walk<'a>(prices: &'a [Price], pinned: &'a Price, date: Date) -> &'a Price {
         }
         reached = next;
     }
+    // @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-renewal-walk:p1:inst-read-contract-events-renewal-walk-2
     reached
 }
 

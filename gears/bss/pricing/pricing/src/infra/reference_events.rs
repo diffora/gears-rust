@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use toolkit_db::secure::DBRunner;
 use uuid::Uuid;
+// @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PriceBookEntryReferenceLost {
@@ -34,6 +35,7 @@ impl TypedEvent for PriceBookEntryReferenceLost {
         Some(self.tenant_id)
     }
 }
+// @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 /// Enqueue on the same runner as the entry/op transition, so rollback erases the event.
 /// # Errors
 /// Preserves typed database errors for serializable transaction retries.
@@ -54,6 +56,7 @@ pub async fn lost(
     events::enqueue(outbox, tx, &event, now).await
 }
 
+// @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-2
 /// A plan item's reference is lost: its attach or rereserve ended without a live receipt, so
 /// the checks show `ITEM_REFERENCE_LOST` until reconciliation re-reserves it. It is about the
 /// item and names its plan and revision.
@@ -81,6 +84,7 @@ impl TypedEvent for PlanReferenceLost {
         Some(self.tenant_id)
     }
 }
+// @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-2
 /// Enqueue on the same runner as the item/op transition, so rollback erases the event.
 /// # Errors
 /// Preserves typed database errors for serializable transaction retries.
