@@ -101,5 +101,8 @@ use usage_collector as _;
 #[cfg(feature = "timescaledb-usage-collector")]
 use timescaledb_usage_collector_plugin as _;
 
+#[cfg(feature = "bss-products")]
+use bss_products as _;
+
 #[cfg(feature = "bss-pricing")]
 use bss_pricing as _;

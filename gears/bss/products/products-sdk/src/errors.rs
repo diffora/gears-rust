@@ -15,7 +15,6 @@
 //! classification on this port would be a second place for a rejection to be
 //! categorised.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-sdk-surface:p1
 
 /// One registered refusal code. The wire spelling is [`ErrorCode::as_str`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

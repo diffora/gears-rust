@@ -9,7 +9,7 @@
 //! cross-tenant membership assertion) is proven without a resolver
 //! deployment.
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -30,65 +30,71 @@ use crate::test_support::flat_in_enforcer;
 fn labels_all_carries_every_declared_label_in_order() {
     assert_eq!(
         labels::ALL,
-        [
-            labels::PRODUCT,
-            labels::SKU,
-            labels::CATALOG_VERSION,
-            labels::BULK,
-            labels::REFERENCE_SIGNAL,
-            labels::REFERENCE_PRODUCER,
-            labels::APPROVAL,
-            labels::MATERIALITY_POLICY,
-            labels::BREAKGLASS,
-            labels::AUDIT,
-            labels::BULK_LIFECYCLE,
-            labels::ERASURE,
-            labels::COMPLIANCE,
-            labels::PII_ALLOWLIST,
-            labels::RECOGNIZED_SET,
-            labels::PLAN_TIER,
-            labels::CATEGORY,
-            labels::ATTRIBUTE_DEFINITION,
-            labels::METADATA,
-            labels::SCHEDULED_TRANSITION,
-            labels::FREEZE_PARTICIPANT,
-        ]
+        [labels::SKU, labels::CATEGORY, labels::APPROVAL_UNIT]
     );
 }
-
 #[test]
 fn resource_types_carry_their_labels() {
-    assert_eq!(resource_types::PRODUCT.name(), labels::PRODUCT);
     assert_eq!(resource_types::SKU.name(), labels::SKU);
-    assert_eq!(
-        resource_types::CATALOG_VERSION.name(),
-        labels::CATALOG_VERSION
-    );
-    assert_eq!(resource_types::BULK.name(), labels::BULK);
-    assert_eq!(resource_types::APPROVAL.name(), labels::APPROVAL);
-    assert_eq!(
-        resource_types::MATERIALITY_POLICY.name(),
-        labels::MATERIALITY_POLICY
-    );
-    assert_eq!(resource_types::BREAKGLASS.name(), labels::BREAKGLASS);
-    assert_eq!(resource_types::AUDIT.name(), labels::AUDIT);
-    assert_eq!(
-        resource_types::BULK_LIFECYCLE.name(),
-        labels::BULK_LIFECYCLE
-    );
-    assert_eq!(resource_types::ERASURE.name(), labels::ERASURE);
-    assert_eq!(resource_types::COMPLIANCE.name(), labels::COMPLIANCE);
-    assert_eq!(resource_types::PII_ALLOWLIST.name(), labels::PII_ALLOWLIST);
-    assert_eq!(
-        resource_types::REFERENCE_SIGNAL.name(),
-        labels::REFERENCE_SIGNAL
-    );
-    assert_eq!(
-        resource_types::REFERENCE_PRODUCER.name(),
-        labels::REFERENCE_PRODUCER
-    );
+    assert_eq!(resource_types::CATEGORY.name(), labels::CATEGORY);
+    assert_eq!(resource_types::APPROVAL_UNIT.name(), labels::APPROVAL_UNIT);
 }
-
+#[test]
+fn sixteen_permissions_cover_exactly_the_declared_pairs_and_inventory() {
+    let all = crate::gts::permissions::all();
+    assert_eq!(all.len(), 16);
+    let actual = all
+        .iter()
+        .map(|p| (p.resource_type.as_str(), p.action.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut expected = std::collections::BTreeSet::new();
+    for label in labels::ALL {
+        for action in [
+            actions::READ,
+            actions::AUTHOR,
+            actions::SUBMIT,
+            actions::APPROVE,
+            actions::SETTINGS,
+        ] {
+            expected.insert((*label, action));
+        }
+    }
+    expected.insert((labels::SKU, actions::REFERENCE));
+    assert_eq!(actual, expected);
+    let prefix = gts_id!("cf.toolkit.authz.permission.v1~");
+    let inventory = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
+        .into_iter()
+        .filter(|e| {
+            e.instance_id
+                .starts_with(&format!("{prefix}cf.bss.products."))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(inventory.len(), 16);
+    for p in all {
+        let id = p.id.to_string();
+        let entry = inventory.iter().find(|e| e.instance_id == id).unwrap();
+        assert_eq!(entry.type_id, prefix);
+        assert_eq!((entry.payload_fn)(), serde_json::to_value(p).unwrap());
+    }
+}
+#[test]
+fn action_names_are_pairwise_distinct() {
+    assert_eq!(
+        actions::ALL,
+        &[
+            "read",
+            "author",
+            "submit",
+            "approve",
+            "settings",
+            "reference"
+        ]
+    );
+    let distinct = actions::ALL
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(distinct.len(), 6);
+}
 /// Stronger than a suffix match: every authz label must parse as a
 /// structurally valid GTS id AND be a concrete TYPE id (type ids end `~`).
 #[test]
@@ -133,18 +139,6 @@ fn authz_label_type_schemas_covers_every_label_exactly_once() {
     }
 }
 
-/// The three action names are distinct — a copy-paste that left two consts
-/// holding the same string would let two permissions in the catalog collide
-/// on `(resource_type, action)` without either the catalog's id-distinctness
-/// test or its resource-type drift test noticing, since neither reads the
-/// action names against each other.
-#[test]
-fn action_names_are_pairwise_distinct() {
-    let names = [actions::READ, actions::WRITE, actions::PUBLISH];
-    let distinct: std::collections::BTreeSet<&str> = names.iter().copied().collect();
-    assert_eq!(distinct.len(), names.len(), "two action consts collide");
-}
-
 fn ctx_for(tenant: Uuid) -> SecurityContext {
     SecurityContext::builder()
         .subject_id(Uuid::now_v7())
@@ -171,8 +165,8 @@ async fn write_gate_denies_target_outside_authorized_scope() {
     let denied = access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRODUCT,
-        actions::WRITE,
+        &resource_types::SKU,
+        actions::AUTHOR,
         Some(tenant_b),
         None,
         true,
@@ -188,8 +182,8 @@ async fn write_gate_denies_target_outside_authorized_scope() {
     let allowed = access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRODUCT,
-        actions::WRITE,
+        &resource_types::SKU,
+        actions::AUTHOR,
         Some(tenant_a),
         None,
         true,
@@ -207,7 +201,7 @@ async fn write_gate_denies_target_outside_authorized_scope() {
 /// filter. Pins that `access_scope` treats every action name uniformly and
 /// that the write-membership assertion is not `product`-specific.
 #[tokio::test]
-async fn publish_gate_on_sku_matches_write_semantics() {
+async fn submit_gate_on_sku_matches_author_semantics() {
     let tenant_a = Uuid::now_v7();
     let tenant_b = Uuid::now_v7();
     let enforcer = flat_in_enforcer(tenant_a);
@@ -217,7 +211,7 @@ async fn publish_gate_on_sku_matches_write_semantics() {
         &enforcer,
         &ctx,
         &resource_types::SKU,
-        actions::PUBLISH,
+        actions::SUBMIT,
         Some(tenant_b),
         None,
         true,
@@ -232,7 +226,7 @@ async fn publish_gate_on_sku_matches_write_semantics() {
         &enforcer,
         &ctx,
         &resource_types::SKU,
-        actions::PUBLISH,
+        actions::SUBMIT,
         Some(tenant_a),
         None,
         true,
@@ -288,7 +282,7 @@ async fn pdp_evaluation_failure_maps_to_unavailable() {
     let res = access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRODUCT,
+        &resource_types::SKU,
         actions::READ,
         None,
         None,
@@ -309,7 +303,7 @@ async fn pdp_decision_false_maps_to_denied() {
     let res = access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRODUCT,
+        &resource_types::SKU,
         actions::READ,
         None,
         None,
@@ -332,7 +326,7 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
     let scope = access_scope(
         &enforcer,
         &ctx,
-        &resource_types::PRODUCT,
+        &resource_types::SKU,
         actions::READ,
         None,
         None,
@@ -344,122 +338,4 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
         scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant),
         "the read scope must carry the tenant filter"
     );
-}
-
-/// `dod-rbac-catalog`'s census: the catalog carries **this slice's own rows**
-/// and, deliberately, not the rows another slice owns.
-///
-/// `design/05-governance.md` §3.2 is twenty-four rows, each naming its owning
-/// slice. The `DoD` obliges governance to *"extend rather than replace"* what
-/// `01-foundation` shipped, so the shape of correctness here is a pair of
-/// claims — every row owned by a **built** slice is declared, and every row
-/// owned by an **unbuilt** one is absent. Asserting only the first would let
-/// a future pass quietly declare `category × write` on 02's behalf, and the
-/// grant would then exist with no door and no owner.
-///
-/// `10`'s three grants are ticked here (`dod-retention-authz`): that `DoD`
-/// obliges the labels, the descriptors, the instances and these four roster
-/// sites, and names its own routeless grant as cited rather than decided.
-///
-/// @cpt-dod:cpt-cf-bss-products-dod-retention-authz:p1
-///
-/// No marker for `dod-rbac-catalog`: it waited on seven live §7 rows (1, 2, 3, 7,
-/// 12, 18 and 24), **all struck by P-D-119, P-D-120, P-D-133 and P-D-134** as
-/// of 2026-09-04, so the tick is now a question about that `DoD`'s own
-/// clauses rather than about a live row. One row IS declared
-/// though its door does not ship — `bulk_lifecycle × execute`, because
-/// **P-D-69** arm 7 assigns *"all four of this feature's grant instances"* to
-/// this catalog, the roster being *"one closed set under a two-way
-/// set-equality assertion, and a closed set takes one writer"*.
-#[test]
-#[allow(clippy::single_element_loop)]
-fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
-    // The rows owned by slices whose doors ship (01, 06, 07, 09) plus 05's own.
-    let declared = [
-        labels::PRODUCT,
-        labels::SKU,
-        labels::CATALOG_VERSION,
-        labels::BULK,
-        labels::REFERENCE_SIGNAL,
-        labels::REFERENCE_PRODUCER,
-        labels::APPROVAL,
-        labels::MATERIALITY_POLICY,
-        labels::BREAKGLASS,
-        labels::AUDIT,
-        labels::BULK_LIFECYCLE,
-        labels::ERASURE,
-        labels::COMPLIANCE,
-        labels::PII_ALLOWLIST,
-        // 03's pair, arrived with the P-D-90 membership doors — the rows
-        // rotate off the withheld list below the day their door lands, this
-        // census's own maintenance rule.
-        labels::RECOGNIZED_SET,
-        labels::PLAN_TIER,
-        // 02's three, arrived with the P-D-106 doors -- rotated off the
-        // withheld list below in the same commit as the four routes, which is
-        // this census's own maintenance rule and what P-D-90's pair did.
-        labels::CATEGORY,
-        labels::ATTRIBUTE_DEFINITION,
-        labels::METADATA,
-        // 04's pair, arrived with the P-D-134 scheduled-transition doors —
-        // rotated off the withheld list below in the same commit as the two
-        // routes. `× write` is not minted: retire doors write the rows under
-        // `sku × write` / `product × write`.
-        labels::SCHEDULED_TRANSITION,
-        // 06's, arrived with the P-D-148 participant door -- the last row the
-        // withheld list below held, so that list is now empty and retired.
-        labels::FREEZE_PARTICIPANT,
-    ];
-    for label in declared {
-        assert!(
-            labels::ALL.contains(&label),
-            "{label} is owned by a slice whose rows this catalog carries"
-        );
-    }
-    assert_eq!(
-        labels::ALL.len(),
-        declared.len(),
-        "a label appeared that this census does not account for: adding one is a change to the \
-         authorization surface and must be deliberate"
-    );
-
-    // The deliberate absences, each with the slice that owes it. These are
-    // not oversights: §3.2 assigns them, and a grant declared here with no
-    // owning door is a grant nobody can review. The loop stays a loop so a
-    // second owed row does not change the shape.
-    // No withheld row remains: 06's `freeze_participant` -- the last -- arrived
-    // with P-D-148's participant door. The census above is the whole roster;
-    // a slice that mints a label its door does not spend re-opens this list.
-}
-
-/// Governance's actions are distinct grants, not aliases of `write`.
-///
-/// `submit` and `decide` are separate because C2's self-approval refusal
-/// depends on it: an author who may open a ceremony must not thereby be able
-/// to close it. `elevate` is separate because its holder is outside the
-/// tenant entirely, and `export` because taking audit content out of the gear
-/// is not the same act as reading it in place.
-#[test]
-fn the_governance_actions_are_not_aliases() {
-    use crate::authz::actions;
-
-    let governance = [
-        actions::SUBMIT,
-        actions::DECIDE,
-        actions::ELEVATE,
-        actions::EXPORT,
-        actions::CANCEL,
-    ];
-    for action in governance {
-        assert_ne!(
-            action,
-            actions::WRITE,
-            "{action} must not collapse to write"
-        );
-        assert_ne!(action, actions::READ, "{action} must not collapse to read");
-    }
-    let mut seen = std::collections::BTreeSet::new();
-    for action in governance {
-        assert!(seen.insert(action), "{action} is declared twice");
-    }
 }

@@ -1,17 +1,14 @@
-//! The low-level half: storage, and the adapters between it and the domain.
+//! Retained foundation for the SKU registry.
 
-pub mod activation_runner;
 pub mod broker;
-pub mod bulk_worker;
 pub mod catalog_provider;
 pub mod catalog_rest_client;
-pub mod create;
 pub mod error_mapping;
 pub mod events;
 pub mod idempotency;
-pub mod increment;
-pub mod projector;
-pub mod retention;
+pub(crate) mod sdk_client;
+pub mod serde_date;
 pub mod storage;
-pub mod taxonomy;
 pub mod usage_types;
+
+pub mod reference_registry;

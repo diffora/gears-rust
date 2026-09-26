@@ -20,7 +20,6 @@
 //! copies are the pin. Bumping a version is a **breaking** change for the
 //! major and additive for the minor, on the ordinary semver reading.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-event-versioning:p1
 
 /// `(payload type token, versioned schema reference)`, one row per event
 /// the registry emits. **Forty** at this revision.

@@ -103,8 +103,8 @@ price id** in `pricingSnapshotRef`, never by `activatedAt` alone. Eligibility cl
 ## More Information
 
 Cross-gear seam analysis (seams K1-K5 and K6 (K6 resolved 2026-08-25, T-D-35)), rationale, and the ownership matrix are in
-[`../SEAMS.md`](../SEAMS.md). Pricing-side ADRs: `cpt-cf-bss-pricing-adr-canonical-scope-key`,
-`cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`.
+[`../SEAMS.md`](../SEAMS.md). Pricing-side ADRs: Canonical scope key (superseded by the PriceBook model, see T-D-37 in rating DECISIONS),
+Grandfathering cohort axis (superseded by the PriceBook model, see T-D-37 in rating DECISIONS).
 
 ## Traceability
 

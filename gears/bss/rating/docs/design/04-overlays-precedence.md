@@ -82,7 +82,7 @@ authoring lives in Contracts; this slice only evaluates ([`../PRD.md`](../PRD.md
 | ADR ID | Decision Summary |
 |--------|------------------|
 | `cpt-cf-bss-rating-adr-scope-key-adoption` | The `priceOverlay` axis of the ten-axis key carries the base row; overlay lists are step-4 stack material — the split this slice implements (SEAMS K1/O1–O3). |
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | Key definition SoR; `priceOverlay` is column 4. |
+| Canonical scope key (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | Key definition SoR; `priceOverlay` is column 4. |
 
 ### 1.3 Architecture Layers
 

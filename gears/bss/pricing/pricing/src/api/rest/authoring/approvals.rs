@@ -1,0 +1,928 @@
+//! Submission, publish changes, the approval queue, generation-bound votes and the policy.
+//!
+//! @cpt-dod:cpt-cf-bss-pricing-dod-publish-changes-selection:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-stale-refresh-generation:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-generation-and-duplicate-vote:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-unit-contended:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-terminal-audit-event:p1
+use super::{
+    dto::{
+        PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut, PricingApprovalUnitDto,
+        PricingApprovalUnitList, PricingPlanRevisionDto, PricingPlanRevisionSubmitReceipt,
+        PricingPriceBookEntryDto, PricingPriceDto, PricingProposedPrice, PricingPublishChanges,
+        PricingPublishChangesRequest, PricingSubmitReceipt, PricingVoteReceipt, PricingVoteRequest,
+    },
+    plans,
+    support::{self, DoorError, approval_failure},
+};
+use crate::{
+    domain::price::{self, PriceState},
+    infra::{
+        approval_kinds::{Kind, Subject},
+        events::{
+            self, ApprovalUnitDecided, PlanRevisionPublished, PricesPublished, PublishedPrice,
+        },
+        plan_revisions::PlanRevisionSubject,
+        prices::{PricesSubject, Release},
+        storage::{
+            RepoError, entity,
+            repo::{
+                approval_repo::{self, PricingApprovalStore},
+                book_repo, plan_item_repo, plan_revision_repo, price_book_entry_repo, price_repo,
+            },
+        },
+    },
+};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
+use bss_approval::{
+    ApprovalSubject, ApproveOutcome, Engine, Store, SubmitRequest, Unit, UnitState,
+};
+use std::{collections::BTreeSet, sync::Arc};
+use time::OffsetDateTime;
+use toolkit_canonical_errors::CanonicalError;
+use toolkit_db::{
+    Db, DbTx,
+    secure::{AccessScope, DBRunner},
+};
+use toolkit_security::SecurityContext;
+use uuid::Uuid;
+
+/// Everything one keyed approval command carries into its transaction.
+#[derive(Clone)]
+pub struct Command {
+    pub scope: AccessScope,
+    pub ctx: SecurityContext,
+    pub hub: Arc<toolkit::ClientHub>,
+    /// The toolkit outbox the decision's events are enqueued on, inside its transaction.
+    pub outbox: crate::infra::events::EventSink,
+    pub correlation: Uuid,
+    pub key: String,
+    pub digest: Vec<u8>,
+}
+impl Command {
+    fn tenant(&self) -> Uuid {
+        self.ctx.subject_tenant_id()
+    }
+    fn store(&self) -> PricingApprovalStore {
+        PricingApprovalStore {
+            scope: AccessScope::for_tenant(self.tenant()),
+            tenant_id: self.tenant(),
+        }
+    }
+}
+/// The three decisions a unit can take from a person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vote {
+    Approve,
+    Reject,
+    Withdraw,
+}
+impl Vote {
+    const fn path(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+            Self::Withdraw => "withdraw",
+        }
+    }
+}
+
+async fn unit_dto(
+    tx: &DbTx<'_>,
+    store: &PricingApprovalStore,
+    unit: Unit,
+) -> Result<PricingApprovalUnitDto, DoorError> {
+    let decisions = store
+        .decisions(tx, unit.id)
+        .await
+        .map_err(approval_failure)?;
+    let mut dto = PricingApprovalUnitDto::from(unit);
+    dto.decisions = decisions.into_iter().map(Into::into).collect();
+    Ok(dto)
+}
+async fn load_unit(
+    tx: &DbTx<'_>,
+    store: &PricingApprovalStore,
+    id: Uuid,
+) -> Result<Unit, DoorError> {
+    store
+        .unit(tx, id)
+        .await
+        .map_err(approval_failure)?
+        .ok_or_else(|| support::missing_what("approval_unit").into())
+}
+async fn prices_of(
+    tx: &DbTx<'_>,
+    store: &PricingApprovalStore,
+    unit: Uuid,
+) -> Result<Vec<PricingPriceDto>, DoorError> {
+    let scope = AccessScope::for_tenant(store.tenant_id);
+    let mut prices = Vec::new();
+    for item in store.items(tx, unit).await.map_err(approval_failure)? {
+        if let Some(m) = price_repo::find(tx, &scope, store.tenant_id, item.item_id).await? {
+            prices.push(m.into());
+        }
+    }
+    Ok(prices)
+}
+
+/// `ApprovalUnitDecided` for a unit that just reached its terminal state, in the deciding
+/// transaction: the current-generation voters and the acting principal.
+async fn decided(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let unit = load_unit(tx, store, id).await?;
+    let mut actors: Vec<Uuid> = store
+        .decisions(tx, unit.id)
+        .await
+        .map_err(approval_failure)?
+        .into_iter()
+        .filter(|d| !d.stale)
+        .map(|d| d.actor)
+        .collect();
+    actors.push(cmd.ctx.subject_id());
+    actors.sort_unstable();
+    actors.dedup();
+    let event = ApprovalUnitDecided {
+        tenant_id: unit.tenant_id,
+        unit_id: unit.id,
+        kind: unit.kind.clone(),
+        state: unit.state.as_str().into(),
+        generation: unit.generation,
+        actors,
+    };
+    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    Ok(())
+}
+/// The domain event of an applied unit, by its kind, in the apply transaction.
+async fn published(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    subject: &Subject,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    match subject {
+        Subject::Prices(_) => prices_published(tx, cmd, store, id, now).await,
+        Subject::PlanRevision(s) => plan_revision_published(tx, cmd, store, s, id, now).await,
+    }
+}
+/// `PlanRevisionPublished` for an applied `plan_revision` unit: the revision now published, the
+/// one its apply superseded, and the book it reads.
+async fn plan_revision_published(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    subject: &PlanRevisionSubject,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let unit = load_unit(tx, store, id).await?;
+    let scope = AccessScope::for_tenant(store.tenant_id);
+    let r = plan_revision_repo::find(tx, &scope, store.tenant_id, unit.ref_id)
+        .await?
+        .ok_or_else(|| {
+            RepoError::CorruptRow(format!("unit {} lost revision {}", unit.id, unit.ref_id))
+        })?;
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
+    let event = PlanRevisionPublished {
+        tenant_id: unit.tenant_id,
+        plan_id: r.plan_id,
+        revision_id: r.id,
+        rev_no: r.rev_no,
+        book_id: r.book_id,
+        superseded_revision_id: subject.superseded(),
+        unit_id: unit.id,
+        actor_ref: cmd.ctx.subject_id(),
+    };
+    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
+    Ok(())
+}
+/// `PricesPublished` for an applied `prices` unit: every price with the window its chain was
+/// approved with.
+async fn prices_published(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    store: &PricingApprovalStore,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<(), DoorError> {
+    let unit = load_unit(tx, store, id).await?;
+    let scope = AccessScope::for_tenant(store.tenant_id);
+    let mut prices = Vec::new();
+    for item in store.items(tx, unit.id).await.map_err(approval_failure)? {
+        let m = price_repo::find(tx, &scope, store.tenant_id, item.item_id)
+            .await?
+            .ok_or_else(|| {
+                RepoError::CorruptRow(format!("unit {} lost price {}", unit.id, item.item_id))
+            })?;
+        prices.push(PublishedPrice {
+            price_id: m.id,
+            price_book_entry_id: m.price_book_entry_id,
+            dim_value: m.dim_value,
+            effective_from: m.effective_from.to_string(),
+            effective_to: m.effective_to.map(|d| d.to_string()),
+            eligibility: m.eligibility,
+        });
+    }
+    prices.sort_by_key(|r| r.price_id);
+    let event = PricesPublished {
+        tenant_id: unit.tenant_id,
+        book_id: unit.ref_id,
+        unit_id: unit.id,
+        prices,
+        actor_ref: cmd.ctx.subject_id(),
+    };
+    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    Ok(())
+}
+
+/// An engine refusal as the door answers it: a Products refusal the subject met while judging
+/// keeps its own status and code; everything else maps through [`approval_failure`].
+fn refusal(subject: &Subject) -> impl Fn(bss_approval::ApprovalError) -> DoorError + '_ {
+    move |error| {
+        subject
+            .take_refusal()
+            .map_or_else(|| approval_failure(error), DoorError::Api)
+    }
+}
+/// What one submission names besides its items: the aggregate the unit references, the shared
+/// start and the submission time.
+struct Submission {
+    ref_id: Uuid,
+    common_effective_date: Option<time::Date>,
+    now: OffsetDateTime,
+}
+/// Record one unit over the items through the kind's subject, applying it at once under quorum
+/// zero with its domain event and `ApprovalUnitDecided`. The caller answers the key.
+async fn record(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    subject: &Subject,
+    submission: Submission,
+    ids: &[Uuid],
+) -> Result<bss_approval::Submitted, DoorError> {
+    let store = cmd.store();
+    let policy = approval_repo::read_policy(tx, &store.scope, cmd.tenant()).await?;
+    let submitted = Engine::submit(
+        &store,
+        subject,
+        tx,
+        SubmitRequest {
+            tenant_id: cmd.tenant(),
+            ref_id: submission.ref_id,
+            item_ids: ids,
+            actor: cmd.ctx.subject_id(),
+            policy: &policy,
+            common_effective_date: submission.common_effective_date,
+            now: submission.now,
+        },
+    )
+    .await
+    .map_err(refusal(subject))?;
+    let unit = &submitted.unit;
+    support::audit(
+        tx,
+        &cmd.ctx,
+        cmd.correlation,
+        "approval.submitted",
+        unit.id,
+        unit.version,
+    )
+    .await?;
+    if submitted.applied {
+        support::audit(
+            tx,
+            &cmd.ctx,
+            cmd.correlation,
+            "approval.approved",
+            unit.id,
+            unit.version,
+        )
+        .await?;
+        published(tx, cmd, &store, subject, unit.id, submission.now).await?;
+        decided(tx, cmd, &store, unit.id, submission.now).await?;
+    }
+    Ok(submitted)
+}
+/// Record a `prices` unit and answer the key with the unit and its prices.
+async fn record_prices(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    endpoint: &str,
+    subject: PricesSubject,
+    ids: &[Uuid],
+) -> Result<Response, DoorError> {
+    let submission = Submission {
+        ref_id: subject.book_id,
+        common_effective_date: subject.common_effective_date,
+        now: subject.now,
+    };
+    let submitted = record(tx, cmd, &Subject::Prices(subject), submission, ids).await?;
+    let store = cmd.store();
+    let prices = prices_of(tx, &store, submitted.unit.id).await?;
+    let receipt = PricingSubmitReceipt {
+        applied: submitted.applied,
+        unit: unit_dto(tx, &store, submitted.unit).await?,
+        prices,
+    };
+    support::answer(
+        tx,
+        cmd.tenant(),
+        endpoint,
+        &cmd.key,
+        StatusCode::CREATED,
+        &receipt,
+        None,
+    )
+    .await
+}
+
+/// `POST /prices/{id}/submit`: one price alone; a pair half is refused, publish the pair instead.
+/// # Errors
+/// Returns the canonical refusal.
+pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
+    support::unit_transaction(db, move |tx| {
+        let cmd = cmd.clone();
+        Box::pin(async move {
+            let endpoint = format!("/bss-pricing/v1/prices/{id}/submit");
+            if let Some(replay) =
+                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+            {
+                return Ok(replay);
+            }
+            let price = price_repo::find(tx, &cmd.scope, cmd.tenant(), id)
+                .await?
+                .ok_or_else(|| support::missing_what("price"))?;
+            if price.paired_price_id.is_some() {
+                return Err(support::invalid("price_ids", "PAIR_SPLIT").into());
+            }
+            let entry = price_book_entry_repo::find(
+                tx,
+                &AccessScope::for_tenant(cmd.tenant()),
+                cmd.tenant(),
+                price.price_book_entry_id,
+            )
+            .await?
+            .ok_or_else(support::missing_entry)?;
+            let subject = PricesSubject::new(
+                cmd.ctx.clone(),
+                cmd.hub.clone(),
+                entry.book_id,
+                OffsetDateTime::now_utc(),
+            );
+            record_prices(tx, &cmd, &endpoint, subject, &[id]).await
+        })
+    })
+    .await
+}
+
+/// `POST /plan-revisions/{id}/submit`: one unlocked draft revision whose checks are all green
+/// becomes a `plan_revision` unit; quorum zero publishes it in the same transaction.
+/// # Errors
+/// 404 for a revision the tenant does not hold; 409 `REVISION_NOT_DRAFT`; 400
+/// `REVISION_CHECKS_RED` with the red checks and no unit; 409 `ROW_LOCKED_PENDING` for a lost
+/// lock; 503 when the registry cannot answer.
+pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
+    support::unit_transaction(db, move |tx| {
+        let cmd = cmd.clone();
+        Box::pin(async move {
+            let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/submit");
+            if let Some(replay) =
+                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+            {
+                return Ok(replay);
+            }
+            let r = plans::find_revision(tx, &cmd.scope, cmd.tenant(), id).await?;
+            if !plans::open_draft(&r) {
+                return Err(support::conflict("REVISION_NOT_DRAFT").into());
+            }
+            let now = OffsetDateTime::now_utc();
+            // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
+            let subject = PlanRevisionSubject::new(cmd.ctx.clone(), cmd.hub.clone(), id, now);
+            let submission = Submission {
+                ref_id: id,
+                common_effective_date: None,
+                now,
+            };
+            let submitted =
+                record(tx, &cmd, &Subject::PlanRevision(subject), submission, &[id]).await?;
+            // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
+            let children = AccessScope::for_tenant(cmd.tenant());
+            let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
+            let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
+            let receipt = PricingPlanRevisionSubmitReceipt {
+                applied: submitted.applied,
+                unit: unit_dto(tx, &cmd.store(), submitted.unit).await?,
+                revision: PricingPlanRevisionDto::of(r, items),
+            };
+            support::answer(
+                tx,
+                cmd.tenant(),
+                &endpoint,
+                &cmd.key,
+                StatusCode::CREATED,
+                &receipt,
+                None,
+            )
+            .await
+        })
+    })
+    .await
+}
+
+/// Every draft price of a book with its entry, chain and predecessor, in proposal order.
+async fn proposals(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<Vec<PricingProposedPrice>, DoorError> {
+    let children = AccessScope::for_tenant(tenant);
+    let entries = price_book_entry_repo::for_book(tx, &children, tenant, book).await?;
+    let mut stored: Vec<entity::price::Model> = Vec::new();
+    for p in &entries {
+        stored.extend(price_repo::for_entry(tx, &children, tenant, p.id).await?);
+    }
+    let prices = stored
+        .iter()
+        .map(price_repo::to_domain)
+        .collect::<Result<Vec<_>, RepoError>>()?;
+    let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
+    let mut out = Vec::new();
+    for r in price::proposed_prices(book, &owners, &prices) {
+        let Some(m) = stored.iter().find(|m| m.id == r.id) else {
+            continue;
+        };
+        if m.pending_unit_id.is_some() {
+            continue;
+        }
+        let entry = entries
+            .iter()
+            .find(|p| p.id == r.price_book_entry_id)
+            .cloned()
+            .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", r.id)))?;
+        let before = price::in_force_before(&prices, r)
+            .and_then(|b| stored.iter().find(|m| m.id == b.id))
+            .cloned()
+            .map(PricingPriceDto::from);
+        out.push(PricingProposedPrice {
+            price: m.clone().into(),
+            entry: PricingPriceBookEntryDto::from(entry),
+            chain: r.dim_value.clone().unwrap_or_else(|| "default".into()),
+            before,
+            pair_partner_id: r.paired_price_id,
+            selected: true,
+        });
+    }
+    Ok(out)
+}
+
+/// `GET /price-books/{id}/publish-changes`.
+/// # Errors
+/// Returns a missing book or storage failure.
+pub async fn publish_list(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<Response, DoorError> {
+    let model = book_repo::find(tx, scope, tenant, book)
+        .await?
+        .ok_or_else(support::missing)?;
+    let prices = proposals(tx, tenant, book).await?;
+    let entries: BTreeSet<Uuid> = prices.iter().map(|r| r.entry.id).collect();
+    let plans = crate::infra::prices::plans_reading(tx, tenant, &entries).await?;
+    let impact = crate::infra::prices::impact_of(prices.len(), entries.len(), &plans);
+    let body = PricingPublishChanges {
+        book: PriceBookDto::from(model),
+        prices,
+        impact,
+    };
+    Ok(support::response(StatusCode::OK, &body, None)?)
+}
+
+/// `POST /price-books/{id}/publish-changes`: the ticked drafts (all when omitted), their pair
+/// partners pulled in and recorded as `added_partner`, and an optional common start.
+/// # Errors
+/// Returns the canonical refusal.
+pub async fn publish(
+    db: &Db,
+    cmd: Command,
+    book: Uuid,
+    input: PricingPublishChangesRequest,
+) -> Result<Response, CanonicalError> {
+    let date = support::date(input.common_effective_date.clone(), "common_effective_date")?;
+    support::unit_transaction(db, move |tx| {
+        let (cmd, input) = (cmd.clone(), input.clone());
+        Box::pin(async move {
+            let endpoint = format!("/bss-pricing/v1/price-books/{book}/publish-changes");
+            if let Some(replay) =
+                support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+            {
+                return Ok(replay);
+            }
+            book_repo::find(tx, &cmd.scope, cmd.tenant(), book)
+                .await?
+                .ok_or_else(support::missing)?;
+            let children = AccessScope::for_tenant(cmd.tenant());
+            let mut owned: Vec<entity::price::Model> = Vec::new();
+            for p in price_book_entry_repo::for_book(tx, &children, cmd.tenant(), book).await? {
+                owned.extend(price_repo::for_entry(tx, &children, cmd.tenant(), p.id).await?);
+            }
+            let draft = |m: &entity::price::Model| {
+                m.state == PriceState::Draft.as_str() && m.pending_unit_id.is_none()
+            };
+            let selected: Vec<Uuid> = match input.price_ids {
+                None => owned.iter().filter(|m| draft(m)).map(|m| m.id).collect(),
+                Some(ids) => {
+                    for id in &ids {
+                        let Some(m) = owned.iter().find(|m| m.id == *id) else {
+                            return Err(support::invalid("price_ids", "PRICE_NOT_IN_BOOK").into());
+                        };
+                        if !draft(m) {
+                            return Err(support::conflict("PRICE_NOT_DRAFT").into());
+                        }
+                    }
+                    ids
+                }
+            };
+            if selected.is_empty() {
+                return Err(support::invalid("price_ids", "NO_DRAFT_PRICES").into());
+            }
+            let chosen: BTreeSet<Uuid> = selected.iter().copied().collect();
+            let mut added: Vec<Uuid> = owned
+                .iter()
+                .filter(|m| chosen.contains(&m.id))
+                .filter_map(|m| m.paired_price_id)
+                .filter(|partner| !chosen.contains(partner))
+                .collect();
+            added.sort_unstable();
+            added.dedup();
+            let mut subject = PricesSubject::new(
+                cmd.ctx.clone(),
+                cmd.hub.clone(),
+                book,
+                OffsetDateTime::now_utc(),
+            );
+            subject.common_effective_date = date;
+            subject.added_partner = added;
+            record_prices(tx, &cmd, &endpoint, subject, &selected).await
+        })
+    })
+    .await
+}
+
+/// A known unit state filter.
+/// # Errors
+/// Unknown states are refused with `UNIT_STATE_INVALID`.
+pub fn state_filter(state: Option<&str>) -> Result<Option<UnitState>, CanonicalError> {
+    state
+        .map(|s| UnitState::parse(s).ok_or_else(|| support::invalid("state", "UNIT_STATE_INVALID")))
+        .transpose()
+}
+/// `GET /approval-units` in submission order, with every generation's decisions and the
+/// same live impact as the card.
+/// # Errors
+/// Returns storage failures.
+pub async fn list_units(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant: Uuid,
+    state: Option<UnitState>,
+    kind: Option<&str>,
+    reference: Option<Uuid>,
+) -> Result<Response, DoorError> {
+    let store = PricingApprovalStore {
+        scope: scope.clone(),
+        tenant_id: tenant,
+    };
+    let mut items = Vec::new();
+    for unit in approval_repo::list_units(tx, scope, tenant, state, kind, reference).await? {
+        let kind = Kind::of(&unit)?;
+        let touched = store.items(tx, unit.id).await.map_err(approval_failure)?;
+        let mut dto = unit_dto(tx, &store, unit).await?;
+        dto.impact = Some(kind.impact(tx, tenant, &touched).await?);
+        items.push(dto);
+    }
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingApprovalUnitList { items },
+        None,
+    )?)
+}
+/// `GET /approval-units/{id}`: the stored snapshot, the decisions and the live impact.
+/// # Errors
+/// Returns a missing unit or storage failure.
+pub async fn get_unit(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Response, DoorError> {
+    let store = PricingApprovalStore {
+        scope: scope.clone(),
+        tenant_id: tenant,
+    };
+    let unit = load_unit(tx, &store, id).await?;
+    let kind = Kind::of(&unit)?;
+    let items = store.items(tx, id).await.map_err(approval_failure)?;
+    let mut dto = unit_dto(tx, &store, unit).await?;
+    dto.impact = Some(kind.impact(tx, tenant, &items).await?);
+    Ok(support::response(StatusCode::OK, &dto, None)?)
+}
+
+/// The subject a pending unit is judged by, chosen by its stored kind: for `prices`, its book,
+/// shift and pulled-in partners.
+/// # Errors
+/// An unknown stored kind is a corrupt row (500), never judged as `prices`.
+fn subject_of(
+    cmd: &Command,
+    unit: &Unit,
+    action: Vote,
+    now: OffsetDateTime,
+) -> Result<Subject, DoorError> {
+    match Kind::of(unit)? {
+        Kind::Prices => {
+            let mut subject =
+                PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), unit.ref_id, now);
+            subject.common_effective_date = unit.common_effective_date;
+            subject.added_partner =
+                serde_json::from_value(unit.snapshot["added_partner"].clone()).unwrap_or_default();
+            subject.release = if action == Vote::Reject {
+                Release::Rejected
+            } else {
+                Release::Draft
+            };
+            Ok(Subject::Prices(subject))
+        }
+        Kind::PlanRevision => Ok(Subject::PlanRevision(PlanRevisionSubject::new(
+            cmd.ctx.clone(),
+            cmd.hub.clone(),
+            unit.ref_id,
+            now,
+        ))),
+    }
+}
+/// Rejects obey the same content-generation barrier without applying.
+async fn refresh_reject(
+    tx: &DbTx<'_>,
+    store: &PricingApprovalStore,
+    subject: &Subject,
+    unit: &Unit,
+    seen: i32,
+) -> Result<Option<i32>, DoorError> {
+    if unit.generation != seen {
+        return Err(DoorError::Generation {
+            current: unit.generation,
+        });
+    }
+    let ids: Vec<Uuid> = store
+        .items(tx, unit.id)
+        .await
+        .map_err(approval_failure)?
+        .iter()
+        .map(|i| i.item_id)
+        .collect();
+    // A Products refusal keeps its own status and code, as on approve (D-402, DESIGN §3.3).
+    let items = subject.collect(tx, &ids).await.map_err(refusal(subject))?;
+    let hash = bss_approval::hash::snapshot_hash(&items, unit.common_effective_date);
+    if hash == unit.snapshot_hash {
+        return Ok(None);
+    }
+    if !store
+        .bump_version(tx, unit.id, unit.version)
+        .await
+        .map_err(approval_failure)?
+    {
+        return Err(approval_failure(bss_approval::ApprovalError::Contended));
+    }
+    let generation = unit.generation.saturating_add(1);
+    store
+        .refresh(
+            tx,
+            unit.id,
+            &items,
+            &subject.snapshot(&items, unit.common_effective_date),
+            &hash,
+            generation,
+        )
+        .await
+        .map_err(approval_failure)?;
+    Ok(Some(generation))
+}
+/// `POST /approval-units/{id}/approve|reject|withdraw`.
+/// Content drift commits the refreshed unit and answers `UNIT_STALE` with the new generation.
+/// # Errors
+/// Returns the canonical refusal; a generation mismatch carries the current generation.
+pub async fn vote(
+    db: &Db,
+    cmd: Command,
+    id: Uuid,
+    action: Vote,
+    body: Option<PricingVoteRequest>,
+) -> Result<Response, CanonicalError> {
+    let result = support::unit_transaction_door(db, move |tx| {
+        let (cmd, body) = (cmd.clone(), body.clone());
+        Box::pin(async move { vote_in(tx, &cmd, id, action, body).await })
+    })
+    .await;
+    match result {
+        Err(DoorError::Generation { current }) => {
+            let problem = support::generation_problem("GENERATION_MISMATCH", current);
+            Ok((StatusCode::BAD_REQUEST, axum::Json(problem)).into_response())
+        }
+        other => other.map_err(Into::into),
+    }
+}
+async fn vote_in(
+    tx: &DbTx<'_>,
+    cmd: &Command,
+    id: Uuid,
+    action: Vote,
+    body: Option<PricingVoteRequest>,
+) -> Result<Response, DoorError> {
+    let endpoint = format!("/bss-pricing/v1/approval-units/{id}/{}", action.path());
+    let store = PricingApprovalStore {
+        scope: cmd.scope.clone(),
+        tenant_id: cmd.tenant(),
+    };
+    let unit = load_unit(tx, &store, id).await?;
+    if let Some(replay) = support::claim(tx, cmd.tenant(), &endpoint, &cmd.key, &cmd.digest).await?
+    {
+        return Ok(replay);
+    }
+    if unit.state != UnitState::Pending {
+        return Err(support::conflict("UNIT_ALREADY_DECIDED").into());
+    }
+    let now = OffsetDateTime::now_utc();
+    let subject = subject_of(cmd, &unit, action, now)?;
+    let actor = cmd.ctx.subject_id();
+    let seen = || {
+        body.as_ref()
+            .map(|b| b.generation)
+            .ok_or_else(|| DoorError::from(support::invalid("generation", "GENERATION_REQUIRED")))
+    };
+    let note = body.as_ref().and_then(|b| b.note.clone());
+    let outcome = match action {
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-1
+        Vote::Approve => Engine::approve(
+            &store,
+            &subject,
+            tx,
+            id,
+            actor,
+            seen()?,
+            note.as_deref(),
+            now,
+        )
+        .await
+        .map_err(refusal(&subject))?,
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-1
+        Vote::Reject => {
+            let note = note
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| support::invalid("note", "NOTE_REQUIRED"))?;
+            if let Some(generation) = refresh_reject(tx, &store, &subject, &unit, seen()?).await? {
+                ApproveOutcome::Refreshed { generation }
+            } else {
+                Engine::reject(&store, &subject, tx, id, actor, seen()?, note, now)
+                    .await
+                    .map_err(approval_failure)?;
+                ApproveOutcome::Applied
+            }
+        }
+        Vote::Withdraw => {
+            Engine::withdraw(&store, &subject, tx, id, actor, now)
+                .await
+                .map_err(approval_failure)?;
+            ApproveOutcome::Applied
+        }
+    };
+    let (label, audit, have, need) = match outcome {
+        ApproveOutcome::Refreshed { generation } => {
+            support::audit(
+                tx,
+                &cmd.ctx,
+                cmd.correlation,
+                "approval.refreshed",
+                id,
+                unit.version,
+            )
+            .await?;
+            let problem = support::generation_problem("UNIT_STALE", generation);
+            return support::answer(
+                tx,
+                cmd.tenant(),
+                &endpoint,
+                &cmd.key,
+                StatusCode::BAD_REQUEST,
+                &problem,
+                None,
+            )
+            .await;
+        }
+        ApproveOutcome::Pending { have, need } => {
+            ("pending", "approval.vote", Some(have), Some(need))
+        }
+        ApproveOutcome::Applied => {
+            if action == Vote::Approve {
+                published(tx, cmd, &store, &subject, id, now).await?;
+            }
+            decided(tx, cmd, &store, id, now).await?;
+            match action {
+                Vote::Approve => ("applied", "approval.approved", None, None),
+                Vote::Reject => ("rejected", "approval.rejected", None, None),
+                Vote::Withdraw => ("withdrawn", "approval.withdrawn", None, None),
+            }
+        }
+    };
+    let unit = load_unit(tx, &store, id).await?;
+    support::audit(tx, &cmd.ctx, cmd.correlation, audit, id, unit.version).await?;
+    let receipt = PricingVoteReceipt {
+        have,
+        need,
+        outcome: label.into(),
+        unit: unit_dto(tx, &store, unit).await?,
+    };
+    support::answer(
+        tx,
+        cmd.tenant(),
+        &endpoint,
+        &cmd.key,
+        StatusCode::OK,
+        &receipt,
+        None,
+    )
+    .await
+}
+
+/// A strong decimal validator over the whole policy, like the dimension registry's.
+fn policy_tag(policy: &bss_approval::Policy) -> Result<u64, CanonicalError> {
+    let hash = crate::api::rest::preconditions::request_digest(&(
+        policy.default_quorum,
+        &policy.overrides,
+    ))
+    .map_err(CanonicalError::from)?;
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hash[..8]);
+    Ok(u64::from_be_bytes(bytes))
+}
+/// `GET /approval-policy`: the tenant default (fail-safe one) and kind overrides.
+/// # Errors
+/// Returns storage failures.
+pub async fn get_policy(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+) -> Result<Response, DoorError> {
+    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    let tag = policy_tag(&policy)?;
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingApprovalPolicyDto::from(policy),
+        Some(tag),
+    )?)
+}
+/// `PUT /approval-policy`: set the default (`*`) or one kind's quorum (`prices`,
+/// `plan_revision`) under If-Match.
+/// # Errors
+/// Returns `POLICY_KIND_INVALID`, `QUORUM_INVALID` or `STALE_REVISION`.
+pub async fn put_policy(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    version: u64,
+    input: PricingApprovalPolicyPut,
+) -> Result<Response, DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    let kind = input.kind.unwrap_or_else(|| "*".into());
+    if kind != "*" && Kind::parse(&kind).is_none() {
+        return Err(support::invalid("kind", "POLICY_KIND_INVALID").into());
+    }
+    if i32::try_from(input.quorum).is_err() {
+        return Err(support::invalid("quorum", "QUORUM_INVALID").into());
+    }
+    if policy_tag(&approval_repo::read_policy(tx, scope, tenant).await?)? != version {
+        return Err(support::conflict("STALE_REVISION").into());
+    }
+    approval_repo::write_policy(tx, scope, tenant, &kind, input.quorum).await?;
+    support::audit(tx, ctx, correlation, "approval_policy.write", tenant, 0).await?;
+    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    let tag = policy_tag(&policy)?;
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingApprovalPolicyDto::from(policy),
+        Some(tag),
+    )?)
+}

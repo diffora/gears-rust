@@ -83,9 +83,9 @@ price ids with their `cohort` in the `pricingSnapshotRef` pre-stamp
 | ADR ID | Decision Summary |
 |--------|------------------|
 | `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing canonical key (ten axes since D-196) verbatim for selection + non-overlap; no Rating-local key (SEAMS K1–K5; K6 resolved T-D-35). |
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | The key definition — eight additive axes at adoption, **ten since pricing D-196** (usage pair `(skuId, dimensionKey)`; absorbed by this slice's `SelectionKey` per T-D-35 — SEAMS K6 resolved); the pricing gear is its SoR. |
-| `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` (adopted) | `cohort` = the cutover instant; N generations coexist; the generation is selected by the pinned price id's cohort. |
-| `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | `PriceWindow*` events (all four, incl. `Cancelled`) are read-only resolution inputs; pricing owns the window store and state machine. |
+| Canonical scope key (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | The key definition — eight additive axes at adoption, **ten since pricing D-196** (usage pair `(skuId, dimensionKey)`; absorbed by this slice's `SelectionKey` per T-D-35 — SEAMS K6 resolved); the pricing gear is its SoR. |
+| Grandfathering cohort axis (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | `cohort` = the cutover instant; N generations coexist; the generation is selected by the pinned price id's cohort. |
+| PriceWindow consolidation (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | `PriceWindow*` events (all four, incl. `Cancelled`) are read-only resolution inputs; pricing owns the window store and state machine. |
 
 ### 1.3 Architecture Layers
 

@@ -87,9 +87,9 @@ plus its snapshot ref *is* the output, and Rating owns its persistence
 | ADR ID | Decision Summary |
 |--------|------------------|
 | `cpt-cf-bss-rating-adr-scope-key-adoption` | Adopt the pricing canonical scope key (ten axes since D-196) verbatim (selection + non-overlap); cohort generation selected by the pinned price id; no Rating-local key (SEAMS K1–K5; K6 resolved T-D-35). |
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | The key definition itself — the manifest key extended additively; the pricing gear is its SoR. |
-| `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` (adopted) | `cohort` = the cutover instant; Rating resolves the generation by the cohort of the subscription's pinned price id. |
-| `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | `PriceWindow*` events are produced by the pricing gear; Rating consumes all four (incl. `Cancelled`) as read-only resolution inputs. |
+| Canonical scope key (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | The key definition itself — the manifest key extended additively; the pricing gear is its SoR. |
+| Grandfathering cohort axis (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | `cohort` = the cutover instant; Rating resolves the generation by the cohort of the subscription's pinned price id. |
+| PriceWindow consolidation (superseded by the PriceBook model, see T-D-37 in rating DECISIONS) (adopted) | `PriceWindow*` events are produced by the pricing gear; Rating consumes all four (incl. `Cancelled`) as read-only resolution inputs. |
 
 ### 1.3 Architecture Layers
 

@@ -1,176 +1,178 @@
-//! Pricing's `ProductCatalogClientV1`, served from this gear's browse
-//! projection.
-//!
-//! The local arm: same serving rows the browse door reads
-//! ([`repo::browse_read_entities_page`], [`repo::find_read_entity`]), mapped
-//! onto [`CatalogSku`]. A product row is skipped, not coerced. Tax categories
-//! are not projected here, so [`BrowseCatalogProvider::list_tax_categories`]
-//! answers an empty dictionary rather than fabricating codes.
-
+//! Authorized pricing catalog reads over the SKU heads.
+//! @cpt-dod:cpt-cf-bss-products-dod-browse-published-only:p1
+use crate::{
+    api::rest::authz_error_to_canonical,
+    authz::{access_scope, actions, resource_types},
+    domain::{error::DomainError, validation::ValidationReport},
+    infra::storage::{entity::sku, repo},
+};
 use async_trait::async_trait;
+use authz_resolver_sdk::PolicyEnforcer;
 use bss_pricing_sdk::product_catalog::{
     CatalogSku, CatalogSkuPage, CatalogTaxCategory, ProductCatalogClientV1, catalog_unreachable,
 };
-use bss_products_sdk::models::LifecycleState;
-use toolkit_canonical_errors::CanonicalError;
-use toolkit_db::odata::sea_orm_filter::LimitCfg;
-use toolkit_db::secure::AccessScope;
-use toolkit_db::{DBProvider, DbError};
-use toolkit_odata::{CursorV1, ODataQuery, parse_filter_string};
+use bss_products_sdk::models::{Lifecycle, Sku};
+use sea_orm::{ColumnTrait, Condition};
+use std::{collections::BTreeSet, sync::Arc};
+use toolkit_canonical_errors::{CanonicalError, resource_error};
+#[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
+struct SkuResource;
+use toolkit_db::odata::sea_orm_filter::{FieldToColumn, filter_node_to_condition};
+use toolkit_db::{Db, secure::AccessScope};
+use toolkit_odata::filter::{FieldKind, FilterField, parse_odata_filter};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::read_model::{ReadSurface, VisibilityFilter, serves};
-use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::read_entity;
-use crate::infra::storage::repo::{self, BrowseQuery};
-
-/// Same page bounds the browse door serves (`api::rest::odata::LISTING_LIMIT_CFG`).
-const BROWSE_LIMIT_CFG: LimitCfg = LimitCfg {
-    default: 50,
-    max: 200,
-};
-
-/// Why a serving row cannot become a [`CatalogSku`].
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum MappingError {
-    /// `entity_kind` is not `sku`. Callers skip the row; they do not map it.
-    #[error("entity_kind is not sku")]
-    NotASku,
-    /// `entity_code` is `None`. Must not become an empty `sku_code`.
-    #[error("sku_code is missing")]
-    MissingSkuCode,
-    /// `sku_type` is `None`. Pricing's field is required and a rule keys on it.
-    #[error("sku_type is missing")]
-    MissingSkuType,
-    /// `sellable` is `None`. Pricing's field is required and a rule keys on it.
-    #[error("sellable is missing")]
-    MissingSellable,
-}
-
-/// Map one browse-projection row onto pricing's registry SKU.
-///
-/// `name` is copied from the row's `name`. For a SKU the projector fills that
-/// column from `sku_code`; this function does not invent a display label.
-///
-/// `status` is `"published"` for every SKU that is *in the serving set*
-/// (design §4.2). Deprecation is the `deprecated` flag, not a copy of
-/// `lifecycle_state`. Callers must not pass a draft / discarded / retired row.
-///
-/// # Errors
-///
-/// [`MappingError::NotASku`] when `entity_kind` is not `sku` (a product row is
-/// skipped, not mapped). [`MappingError::MissingSkuCode`],
-/// [`MappingError::MissingSkuType`], or [`MappingError::MissingSellable`] when
-/// a required SKU column is `None`.
-pub(crate) fn catalog_sku_of(row: &read_entity::Model) -> Result<CatalogSku, MappingError> {
-    if row.entity_kind != "sku" {
-        return Err(MappingError::NotASku);
-    }
-    let sku_code = row
-        .entity_code
-        .clone()
-        .ok_or(MappingError::MissingSkuCode)?;
-    let sku_type = row.sku_type.clone().ok_or(MappingError::MissingSkuType)?;
-    let sellable = row.sellable.ok_or(MappingError::MissingSellable)?;
-    Ok(CatalogSku {
-        sku_id: row.entity_id,
-        sku_code,
-        name: row.name.clone(),
-        metering_unit: row.metering_unit.clone(),
-        status: "published".to_owned(),
-        plan_tier: row.plan_tier_label.clone(),
-        sku_type,
-        sellable,
-        usage_type_ref: row.usage_type_ref.clone(),
-        deprecated: row.deprecated,
-    })
-}
-
-/// In-process [`ProductCatalogClientV1`] over the browse projection.
+/// In-process catalog transport with the same PDP as the REST door.
 #[derive(Clone)]
 pub struct BrowseCatalogProvider {
-    db: DBProvider<DbError>,
+    db: Db,
+    enforcer: Arc<PolicyEnforcer>,
 }
-
 impl BrowseCatalogProvider {
-    /// Wrap the gear's database. Cheap to clone (`DBProvider` is `Arc`).
+    /// Bind reads to this database and the caller's authorization policy.
     #[must_use]
-    pub fn new(db: DBProvider<DbError>) -> Self {
-        Self { db }
+    pub fn new(db: Db, enforcer: Arc<PolicyEnforcer>) -> Self {
+        Self { db, enforcer }
+    }
+
+    pub(crate) async fn scope(&self, ctx: &SecurityContext) -> Result<AccessScope, CanonicalError> {
+        access_scope(
+            &self.enforcer,
+            ctx,
+            &resource_types::SKU,
+            actions::READ,
+            None,
+            None,
+            true,
+        )
+        .await
+        .map_err(|e| {
+            authz_error_to_canonical(e, |reason| {
+                SkuResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            })
+        })
+    }
+
+    /// Browse the served lifecycle set with a validated `OData` predicate.
+    pub(crate) async fn browse(
+        &self,
+        ctx: &SecurityContext,
+        filter: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<CatalogSkuPage, CanonicalError> {
+        let scope = self.scope(ctx).await?;
+        let limit = limit.min(200);
+        if limit == 0 {
+            return Err(invalid("limit", "limit must be at least one"));
+        }
+        let mut condition =
+            Condition::all().add(sku::Column::Lifecycle.is_in(["published", "deprecated"]));
+        if let Some(filter) = filter.filter(|s| !s.is_empty()) {
+            if filter.len() > 32_768 {
+                return Err(invalid("$filter", "filter is too long"));
+            }
+            let parsed = parse_odata_filter::<CatalogField>(filter)
+                .map_err(|e| invalid("$filter", e.to_string()))?;
+            condition = condition.add(
+                filter_node_to_condition::<CatalogField, CatalogMapping>(&parsed)
+                    .map_err(|e| invalid("$filter", e))?,
+            );
+        }
+        let query = repo::SkuQuery {
+            catalog_filter: Some(condition),
+            text: None,
+            r#type: None,
+            category_id: None,
+            lifecycle: None,
+            limit: u64::from(limit),
+            after_code: cursor.filter(|s| !s.is_empty()).map(str::to_owned),
+        };
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| catalog_unreachable(e.to_string()))?;
+        let mut rows = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &query)
+            .await
+            .map_err(|e| catalog_unreachable(e.to_string()))?;
+        let more = rows.len() > limit as usize;
+        rows.truncate(limit as usize);
+        let next_cursor = if more {
+            rows.last().map(|s| s.code.clone())
+        } else {
+            None
+        };
+        Ok(CatalogSkuPage {
+            items: rows.into_iter().map(catalog_sku_of).collect(),
+            next_cursor,
+        })
     }
 }
 
-fn tenant_scope(ctx: &SecurityContext) -> (Uuid, AccessScope) {
-    let tenant_id = ctx.subject_tenant_id();
-    (tenant_id, AccessScope::for_tenant(tenant_id))
+pub(crate) fn invalid(field: &str, detail: impl Into<String>) -> CanonicalError {
+    let mut report = ValidationReport::new();
+    report.violate("VALIDATION", field, detail);
+    DomainError::Validation(report).into()
 }
 
-/// [`ReadSurface::DefaultBrowse`]'s served set: published and deprecated.
-/// Draft, discarded, retired, and an unparseable state are absent — the same
-/// filter `search_skus` applies at query build.
-fn served_on_default_browse(row: &read_entity::Model) -> bool {
-    LifecycleState::parse(&row.lifecycle_state)
-        .is_some_and(|state| serves(state, ReadSurface::DefaultBrowse))
-}
-
-fn mapped_sku(row: &read_entity::Model) -> Result<Option<CatalogSku>, CanonicalError> {
-    if !served_on_default_browse(row) {
-        return Ok(None);
+fn catalog_sku_of(s: Sku) -> CatalogSku {
+    CatalogSku {
+        sku_id: s.id,
+        sku_code: s.code,
+        name: s.name,
+        metering_unit: s.unit,
+        status: s.lifecycle.as_str().to_owned(),
+        plan_tier: None,
+        sku_type: s.r#type.as_str().to_owned(),
+        sellable: s.sellable,
+        usage_type_ref: s.usage_type_ref,
+        deprecated: s.lifecycle == Lifecycle::Deprecated,
     }
-    match catalog_sku_of(row) {
-        Ok(sku) => Ok(Some(sku)),
-        Err(MappingError::NotASku) => Ok(None),
-        Err(err) => {
-            Err(CanonicalError::internal(format!("products catalog mapping: {err}")).create())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CatalogField {
+    Id,
+    Code,
+    Name,
+}
+impl FilterField for CatalogField {
+    const FIELDS: &'static [Self] = &[Self::Id, Self::Code, Self::Name];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Id => "entity_id",
+            Self::Code => "sku_code",
+            Self::Name => "name",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Id => FieldKind::Uuid,
+            Self::Code | Self::Name => FieldKind::String,
+        }
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "entity_id" | "sku_id" => Some(Self::Id),
+            "entity_code" | "sku_code" => Some(Self::Code),
+            "name" => Some(Self::Name),
+            _ => None,
         }
     }
 }
-
-fn catalog_repo_error(err: RepoError) -> CanonicalError {
-    match err {
-        RepoError::CorruptRow(detail) => {
-            CanonicalError::internal(format!("products catalog: {detail}")).create()
+struct CatalogMapping;
+impl FieldToColumn<CatalogField> for CatalogMapping {
+    type Column = sku::Column;
+    fn map_field(field: CatalogField) -> Self::Column {
+        match field {
+            CatalogField::Id => sku::Column::Id,
+            CatalogField::Code => sku::Column::Code,
+            CatalogField::Name => sku::Column::Name,
         }
-        other => catalog_unreachable(other.to_string()),
     }
-}
-
-fn catalog_odata_error(err: toolkit_odata::Error) -> CanonicalError {
-    match err {
-        toolkit_odata::Error::Db(detail) => catalog_unreachable(detail),
-        other => CanonicalError::internal(format!("products catalog search: {other}")).create(),
-    }
-}
-
-/// Browse's own `OData` paging: `q` as `startswith` on `name`; `limit`/`cursor`
-/// as `$top` / `$skiptoken`.
-///
-/// # Errors
-///
-/// [`CanonicalError`] when the prefix cannot be parsed as a `$filter` or the
-/// continuation token is not a `CursorV1` this walk minted.
-fn search_odata(
-    q: Option<&str>,
-    limit: u32,
-    cursor: Option<&str>,
-) -> Result<ODataQuery, CanonicalError> {
-    let mut odata = ODataQuery::new().with_limit(u64::from(limit));
-    if let Some(prefix) = q.filter(|s| !s.is_empty()) {
-        let escaped = prefix.replace('\'', "''");
-        let parsed =
-            parse_filter_string(&format!("startswith(name,'{escaped}')")).map_err(|e| {
-                CanonicalError::internal(format!("products catalog search filter: {e}")).create()
-            })?;
-        odata = odata.with_filter(parsed.into_expr());
-    }
-    if let Some(token) = cursor.filter(|s| !s.is_empty()) {
-        let decoded = CursorV1::decode(token).map_err(|e| {
-            CanonicalError::internal(format!("products catalog search cursor: {e}")).create()
-        })?;
-        odata = odata.with_cursor(decoded);
-    }
-    Ok(odata)
 }
 
 #[async_trait]
@@ -180,29 +182,28 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         ctx: &SecurityContext,
         ids: &[Uuid],
     ) -> Result<Vec<CatalogSku>, CanonicalError> {
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let (tenant_id, scope) = tenant_scope(ctx);
+        let scope = self.scope(ctx).await?;
         let conn = self
             .db
             .conn()
             .map_err(|e| catalog_unreachable(e.to_string()))?;
-        let mut out = Vec::new();
-        for id in ids {
-            let Some(row) = repo::find_read_entity(&conn, &scope, tenant_id, "sku", *id)
-                .await
-                .map_err(catalog_repo_error)?
-            else {
+        let mut rows = Vec::new();
+        let mut seen = BTreeSet::new();
+        for &id in ids {
+            if !seen.insert(id) {
                 continue;
-            };
-            if let Some(sku) = mapped_sku(&row)? {
-                out.push(sku);
+            }
+            if let Some(s) = repo::find_sku(&conn, &scope, ctx.subject_tenant_id(), id)
+                .await
+                .map_err(|e| catalog_unreachable(e.to_string()))?
+                && matches!(s.lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
+            {
+                rows.push(s);
             }
         }
-        Ok(out)
+        rows.sort_by(|a, b| a.code.cmp(&b.code));
+        Ok(rows.into_iter().map(catalog_sku_of).collect())
     }
-
     async fn search_skus(
         &self,
         ctx: &SecurityContext,
@@ -210,57 +211,51 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
-        let (tenant_id, scope) = tenant_scope(ctx);
+        let filter = q
+            .filter(|s| !s.is_empty())
+            .map(|q| format!("startswith(name,'{}')", q.replace('\'', "''")));
+        self.browse(ctx, filter.as_deref(), limit, cursor).await
+    }
+    async fn list_tax_categories(
+        &self,
+        ctx: &SecurityContext,
+    ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
+        let scope = self.scope(ctx).await?;
         let conn = self
             .db
             .conn()
             .map_err(|e| catalog_unreachable(e.to_string()))?;
-        let (_, generation) = repo::load_read_checkpoint(&conn, &scope, tenant_id)
-            .await
-            .map_err(catalog_repo_error)?
-            .unwrap_or((0, 0));
-        let query = BrowseQuery {
-            visibility: Some(repo::visibility_condition(VisibilityFilter::for_surface(
-                ReadSurface::DefaultBrowse,
-            ))),
-            entity_kind: Some("sku".to_owned()),
-            brand_claim: None,
-            region_claim: None,
-            generation,
+        let mut query = repo::SkuQuery {
+            catalog_filter: None,
+            text: None,
+            r#type: None,
+            category_id: None,
+            lifecycle: Some(Lifecycle::Published),
+            limit: 200,
+            after_code: None,
         };
-        let odata = search_odata(q, limit, cursor)?;
-        let page = repo::browse_read_entities_page(
-            &conn,
-            &scope,
-            tenant_id,
-            &query,
-            &odata,
-            BROWSE_LIMIT_CFG,
-        )
-        .await
-        .map_err(catalog_odata_error)?;
-        let mut items = Vec::with_capacity(page.items.len());
-        for row in page.items {
-            if let Some(sku) = mapped_sku(&row)? {
-                items.push(sku);
+        let mut codes = BTreeSet::new();
+        loop {
+            let mut rows = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &query)
+                .await
+                .map_err(|e| catalog_unreachable(e.to_string()))?;
+            let more = rows.len() > 200;
+            rows.truncate(200);
+            query.after_code = rows.last().map(|s| s.code.clone());
+            codes.extend(rows.into_iter().filter_map(|s| s.tax_category));
+            if !more {
+                break;
             }
         }
-        Ok(CatalogSkuPage {
-            items,
-            next_cursor: page.page_info.next_cursor,
-        })
-    }
-
-    async fn list_tax_categories(
-        &self,
-        _ctx: &SecurityContext,
-    ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
-        // P-D-169 withdrew the tax-category dictionary from this registry.
-        // An empty answer is "none published", not a fabricated code list.
-        Ok(Vec::new())
+        Ok(codes
+            .into_iter()
+            .map(|code| CatalogTaxCategory {
+                display_name: code.clone(),
+                code,
+            })
+            .collect())
     }
 }
-
 #[cfg(test)]
 #[path = "catalog_provider_tests.rs"]
 mod catalog_provider_tests;

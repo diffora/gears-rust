@@ -162,7 +162,6 @@ pub enum UsageTypeCatalogSource {
 
 /// The gear's boot configuration.
 ///
-/// @cpt-cf-bss-products-fr-idempotent-authoring
 ///
 /// Every field has a default, so a boot that configures the gear at all gets a
 /// working one; `deny_unknown_fields` is what turns a typo in the operator's
@@ -201,6 +200,10 @@ pub enum UsageTypeCatalogSource {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct ProductsConfig {
+    /// Age of an abandoned SKU fence before recovery.
+    pub fence_ttl_minutes: u32,
+    /// Authenticated service subject ids bound to owner gear names. Empty denies owner operations.
+    pub reference_principals: std::collections::BTreeMap<uuid::Uuid, String>,
     /// How long an idempotency key is retained, in hours, **as the operator
     /// wrote it**.
     ///
@@ -227,7 +230,6 @@ pub struct ProductsConfig {
     /// floor contribution changes nothing until an operator configures
     /// more.
     ///
-    /// @cpt-dod:cpt-cf-bss-products-dod-freeze-timeout:p1
     pub freeze_timeout_hours: u32,
 
     /// The maximum rows one bulk batch may carry (`inst-bm-limits`), the
@@ -307,7 +309,6 @@ pub struct ProductsConfig {
     /// gate, not an incident tool — the emergency surface is `05`'s read
     /// elevation.
     ///
-    /// @cpt-dod:cpt-cf-bss-products-dod-reference-config:p1
     pub breakglass_correction_enabled: bool,
 
     /// Whether a boot without a reachable event-broker is a **failure**.
@@ -536,6 +537,8 @@ pub struct ProductsConfig {
 impl Default for ProductsConfig {
     fn default() -> Self {
         Self {
+            fence_ttl_minutes: 30,
+            reference_principals: std::collections::BTreeMap::new(),
             idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,

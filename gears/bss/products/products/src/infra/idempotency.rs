@@ -1,3 +1,4 @@
+//! @cpt-dod:cpt-cf-bss-products-dod-idempotency-key-store:p1
 //! The idempotency phase — the claim input, the claim/answer walk and the
 //! verdicts the create and composite doors branch on (`design/01` §3.2,
 //! P-D-42). Infra-owned so the batch worker's shared create path
@@ -7,6 +8,11 @@
 //! Reading the `Idempotency-Key` header and rendering a replayed response
 //! stay in `api::rest` — they are wire concerns; this module owns the
 //! store-facing walk.
+
+#![allow(
+    dead_code,
+    reason = "Restored claim/answer flow is consumed by the doors in Tasks 7-10"
+)]
 
 use axum::http::StatusCode;
 use serde_json::Value as JsonValue;
@@ -159,18 +165,13 @@ pub(crate) enum ClaimVerdict {
 /// Take the claim for `input` **on the caller's own runner** and read the
 /// outcome as a [`ClaimVerdict`].
 ///
-/// # `runner` MUST be the guarded mutation's transaction
+/// # `PriceBook` replay boundary (P-D-193)
 ///
-/// `repo::claim_idempotency_key`'s own doc states the obligation and why it
-/// is stricter than `repo::resolve_actor_ref`'s: the claim `INSERT` **is**
-/// the gate (P-D-42), and joining the mutation's transaction is what makes a
-/// rollback free the key with no release step. A claim taken on a runner of
-/// its own would survive a mutation that rolled back and lock the key
-/// against an act that never happened — the one property this whole
-/// mechanism exists to provide. Both doors therefore call this from inside
-/// their `insert_*_with_event` closure, before the entity insert.
+/// Every claim, mutation and answer runs in one transaction. A read-only
+/// lookup may serve an existing answer before external catalog resolution.
+/// Dropping a request never leaves a separately committed claim.
 ///
-/// The payload comparison is made **here** and not in the repository: that
+////// The payload comparison is made **here** and not in the repository: that
 /// layer was never handed the incoming request to compare against the stored
 /// digest (`IdempotencyClaim::Answered`'s own doc), and the comparison is
 /// what separates a replay from `IDEMPOTENCY_CONFLICT`
@@ -220,7 +221,31 @@ pub(crate) async fn claim_idempotency(
     )
     .await?;
 
-    Ok(match claim {
+    Ok(verdict(claim, input))
+}
+
+/// Read-only replay before any external resolution; claim acquisition is still
+/// required inside the eventual mutation transaction.
+pub(crate) async fn lookup_idempotency(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    input: &IdempotencyClaimInput,
+) -> Result<ClaimVerdict, RepoError> {
+    Ok(repo::lookup_idempotency_key(
+        runner,
+        scope,
+        tenant_id,
+        &input.endpoint,
+        &input.client_key,
+        input.now,
+    )
+    .await?
+    .map_or(ClaimVerdict::Proceed, |claim| verdict(claim, input)))
+}
+
+fn verdict(claim: IdempotencyClaim, input: &IdempotencyClaimInput) -> ClaimVerdict {
+    match claim {
         IdempotencyClaim::Claimed => ClaimVerdict::Proceed,
         IdempotencyClaim::Answered {
             payload_hash,
@@ -251,7 +276,7 @@ pub(crate) async fn claim_idempotency(
                 input.client_key, input.endpoint
             )))
         }
-    })
+    }
 }
 
 /// [`ClaimVerdict`] for a **composite** door (P-D-79): identical in every

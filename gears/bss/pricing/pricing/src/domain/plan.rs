@@ -1,247 +1,672 @@
-//! The plan aggregate as the domain reasons about it: **one revision of it**,
-//! and the fields an open draft may still move.
+//! Plans: revisions bound to one book and their items, and the checks that decide whether a
+//! revision may be submitted (D-394, D-407, D-408, D-413).
 //!
-//! A plan is not a row. It is a chain of revisions keyed `(plan_id, revision)`
-//! (`design/01-foundation.md` §3.7 and §4.3, D-56) of which at most one is the
-//! **current** one — `published` *or* `retired`, widened by D-128 — and at most
-//! one is an open `draft`. The type below is named for the revision rather than
-//! for the plan on purpose: a `Plan` type would invite exactly the read D-56
-//! removed, "the plan's billing cycle", as though one answer existed
-//! independently of which revision is being asked about. Every value here
-//! answers *for its revision*.
+//! A port of the prototype's `validatePlan`, `itemCoverage`, `planFrom` and `planBilling`
+//! (`ui-prototype/pricebook/src/js/50-rules.js`). Everything here is plain data: the door reads each
+//! item's SKU fresh through `sku_for_write` (D-408) and every entry with its prices, and hands the
+//! lot in. The sold-as bundle and grants (D-411) and retirement (D-410) are deferred by the owner,
+//! so neither `BUNDLE_SKU` nor `PLAN_RETIRING` is a check yet.
 //!
-//! Content freezes at `published` (§4.3): a shape change opens a **new**
-//! revision row in `draft`, which publishes through the standard §4.2 path and
-//! flips its predecessor `superseded` in the same commit (D-90). That is why
-//! [`PlanShapePatch`] is the mutable surface of an *open draft* and not of a
-//! plan — there is no edit of a published revision for it to describe.
-//!
-//! A draft that is not wanted is **abandoned**, never deleted: the row survives
-//! as a terminal tombstone so the `revision` number it consumed stays consumed
-//! (D-145). What that costs is a gap in the numbering; what it buys is that
-//! `(plan_id, revision)` never names two different rows.
-//!
-//! The child shape tables — phases, add-on rules, descriptor set — version with
-//! the revision and are copied on a new one (D-83); they are Slice-2 storage and
-//! are not modelled here yet.
-
-use toolkit_macros::domain_model;
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-item-rules:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-coverage:p1
+//! @cpt-dod:cpt-cf-bss-pricing-dod-plan-blocked-by:p1
+use super::{
+    book::{self, Book},
+    price::{self, Price},
+    price_book_entry::{ChargeKind, ReferenceState as EntryReferenceState, validate_entry_kind},
+};
+use bss_products_sdk::models::{Lifecycle, Sku, SkuType};
+use rust_decimal::Decimal;
+use std::collections::BTreeSet;
+use time::Date;
 use uuid::Uuid;
 
-use crate::domain::concurrency::RowVersion;
-use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
-use crate::domain::lifecycle::LifecycleState;
-use crate::domain::plan_shape::Frequency;
-use crate::domain::scope_key::PlanId;
-use time::OffsetDateTime;
+string_enum!(RevisionState {Draft=>"draft", Pending=>"pending", Published=>"published", Superseded=>"superseded"});
+string_enum!(Treatment {Paid=>"paid", Optional=>"optional", Included=>"included"});
+// A copied item starts `unreserved` and attaches after its write (D-413).
+string_enum!(ReferenceState {Unreserved=>"unreserved", ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost"});
 
-/// One revision of a plan: the unit `pricing_plan` stores, the unit the
-/// projector sources a plan subject from, and the unit an `ETag` denotes.
-#[domain_model]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PlanRevision {
-    /// The plan this revision belongs to.
-    ///
-    /// Stable across the whole chain: the plan's identity, the canonical
-    /// scope-key axis and the `pricing_price` attachment all stay on `plan_id`
-    /// when a new revision opens (§4.3), so a reprice never has to chase a
-    /// moved parent.
-    pub plan_id: PlanId,
-    /// The revision number, minted `max(revision) + 1` from `0` within the plan.
-    ///
-    /// Together with [`PlanRevision::plan_id`] it is this row's identity, and it
-    /// is an **identity rather than a counter** (D-145): a number minted for a
-    /// plan is never minted again, so the sequence may have **gaps** where a
-    /// draft was discarded — rev 1 published, rev 2 abandoned, rev 3 published.
-    /// A reader that treats the numbers as consecutive is reading a display
-    /// convention that was never promised; what is promised is that
-    /// `(plan_id, revision)` denotes one row for the life of the plan, which is
-    /// what makes it safe as the durable name the grant table, the child copies
-    /// and the audit trail all dereference.
-    ///
-    /// It is **not** how "the current revision" is decided — that is the partial
-    /// `UNIQUE` index over `published`/`retired` (D-128), storage-defined
-    /// precisely so it is never a max-scan convention that two readers could
-    /// implement differently.
-    pub revision: u64,
-    /// The required catalog SKU this plan realizes (D-372).
+/// The approval kind of a plan revision (spec §6); its quorum is the APPROVAL row's.
+pub const KIND_PLAN_REVISION: &str = "plan_revision";
+/// The most items one revision holds (`REVISION_ITEMS_TOO_MANY`).
+pub const MAX_ITEMS: usize = 200;
+
+/// The plan's identity.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+}
+/// The revision under check. `available_from` null means "at publish": the sale date is today.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revision {
+    pub id: Uuid,
+    pub rev_no: i32,
+    pub book_id: Uuid,
+    pub state: RevisionState,
+    pub available_from: Option<Date>,
+}
+/// An item's Products reference: its state and the receipt a reserve answered, if any.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub state: ReferenceState,
+    pub reservation_id: Option<Uuid>,
+}
+/// One plan item. A null entry is an included item with no charge.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub id: Uuid,
     pub sku_id: Uuid,
-    /// The plan's tier.
-    ///
-    /// A `String` on purpose, and it stays one now that Slice 2 has landed
-    /// beside it: the `PlanTier` taxonomy is supplied by the **product/SKU
-    /// registry** (§1.3), not enumerated by this gear. An enum minted here
-    /// would fix a value set somebody else owns, and the first tier the
-    /// registry published that it disagreed with would be a migration rather
-    /// than a fix. Slice 2 requires a tier (`PLANTIER_MISSING`) and checks it
-    /// against the parent SKU's; neither of those is a claim about which tiers
-    /// exist.
-    pub plan_tier: Option<String>,
-    /// The plan's human label (D-318), or `None` when it has never been named.
-    ///
-    /// Free text an operator chose. Distinct from [`PlanRevision::plan_tier`],
-    /// which is a **classification** the catalog reasons about — a tier is
-    /// compared, overridden and inherited from the SKU, and a name is none of
-    /// those things. Every surface showed the tier only because there was
-    /// nothing else to show.
-    ///
-    /// **Total since D-382.** Every door that creates a plan requires a name,
-    /// so there is no revision without one and no fallback-to-tier state for a
-    /// reader to handle.
-    pub plan_name: String,
-    /// The recurring frequency, with a custom interval riding the variant.
-    ///
-    /// One field, three columns. `frequency`, `custom_interval_n` and
-    /// `custom_interval_unit` can express a `monthly` row carrying an interval
-    /// and a custom row carrying none; [`Frequency`] can express neither, so the
-    /// repository boundary is the only place either can appear and it refuses
-    /// both as corrupt rows.
-    pub frequency: Option<Frequency>,
-    /// Minimum purchasable quantity (one-time plans).
-    pub purchase_min_qty: Option<u64>,
-    /// Maximum purchasable quantity (one-time plans).
-    pub purchase_max_qty: Option<u64>,
-    /// Tenant-authored billing extensions, checked against D-152 required keys.
-    pub descriptor_ext: std::collections::BTreeMap<String, String>,
-    /// Start of the plan's availability window, UTC.
-    pub available_from: Option<OffsetDateTime>,
-    /// End of the plan's availability window, UTC.
-    pub available_to: Option<OffsetDateTime>,
-    /// The entitlement grant set this revision publishes (Slice 6, §6, D-41).
-    ///
-    /// Revision-scoped like every other plan column (D-83).
-    pub entitlement_grants: EntitlementGrants,
-    /// The plan-change contract this revision publishes (Slice 6, §6).
-    ///
-    /// Revision-scoped like every other plan column (D-83): an edge list is
-    /// authored content, a change to it is a plan mutation, and Slice 5's
-    /// materiality applies to it (`inst-pc-governed`).
-    pub change_contract: PlanChangeContract,
-    /// Where this revision stands.
-    ///
-    /// `draft` is the only state whose content may still change
-    /// ([`LifecycleState::is_content_mutable`]), and `published`/`retired` are
-    /// the two the plan may be *current* in
-    /// ([`LifecycleState::is_current_revision`]). Both questions are answered by
-    /// the state machine rather than re-spelled at each call site.
-    pub lifecycle_state: LifecycleState,
-    /// Pseudonymous principal id of the authoring actor.
-    ///
-    /// Carried on the revision itself so the Slice-12 history surface can read
-    /// actor identity under `plan x read`, without the Auditor-only
-    /// `pricing_audit_log`.
-    pub created_by: Uuid,
-    /// When this revision row was created, UTC.
-    pub created_at_utc: OffsetDateTime,
-    /// The plan this one was cloned from (`inst-cl-copy`, D-19), or `None` for
-    /// an authored plan.
-    ///
-    /// **Provenance, not authored content.** It sits with `created_by` rather
-    /// than with the shape: a clone is an *ordinary* draft (`inst-cl-draft`),
-    /// taking the full pipeline and an approval on its first publish exactly as
-    /// any other first publish does, so no rule reads this and the content pin
-    /// does not frame it. It carries forward to later revisions of the same plan,
-    /// because lineage is the plan's and not one revision's.
-    pub cloned_from: Option<PlanId>,
-    /// The optimistic-concurrency version this revision is at.
-    ///
-    /// It moves only on the draft plane: an edit advances it, and so does the
-    /// abandon that ends the draft's life — the last tag the row will ever
-    /// carry. A published revision's content is frozen, and a tag that moved
-    /// under frozen content would tell a caller its cached copy is stale when it
-    /// is not.
-    pub row_version: RowVersion,
+    pub price_book_entry_id: Option<Uuid>,
+    pub treatment: Treatment,
+    pub included_qty: Option<Decimal>,
+    pub qty_min: Option<i32>,
+    pub reference: Reference,
+}
+/// A pending price and the approval unit that holds it: a candidate for `blocked_by`.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingPrice {
+    pub price_id: Uuid,
+    pub unit_id: Uuid,
+}
+/// An entry an item names, with its approved and pending prices and its reference state.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub id: Uuid,
+    pub book_id: Uuid,
+    pub sku_id: Uuid,
+    pub charge_kind: ChargeKind,
+    pub period: Option<String>,
+    pub dimension_key: Option<String>,
+    pub reference_state: EntryReferenceState,
+    pub prices: Vec<Price>,
+    pub pending: Vec<PendingPrice>,
+}
+/// A book the check reads: the revision's own, and any other book an item's entry lives in.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanBook {
+    pub id: Uuid,
+    pub book: Book,
+}
+/// The tenant's descriptor defaults, shown for information only (D-408).
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Defaults {
+    pub gl: Option<String>,
+    pub rounding: String,
+    pub tax_category: Option<String>,
+}
+/// Everything the checks read, as plain data.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanContext {
+    pub plan: Plan,
+    pub revision: Revision,
+    pub items: Vec<Item>,
+    /// Each item's SKU, read fresh (D-408); a SKU missing here is unavailable.
+    pub skus: Vec<Sku>,
+    pub entries: Vec<Entry>,
+    pub books: Vec<PlanBook>,
+    /// Each registered dimension key with its values.
+    pub dimension_values: Vec<(String, Vec<String>)>,
+    /// The item SKUs of this plan's published revision: a deprecated SKU may be carried over from
+    /// there, never added (D-408). Empty for a clone, which is a new plan.
+    pub published_sku_ids: Vec<Uuid>,
+    pub quorum: u32,
+    pub defaults: Defaults,
+}
+/// One check row. An `info` row is always ok and never blocks.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    pub code: &'static str,
+    pub ok: bool,
+    pub label: String,
+    pub detail: String,
+    pub info: bool,
+    /// The approval units whose pending prices would cover what is uncovered; computed, never
+    /// stored (spec §6).
+    pub blocked_by: Vec<Uuid>,
+}
+/// Whether one item is priced on the sale date, in the plan's book.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemCoverage {
+    pub ok: bool,
+    pub detail: String,
+    pub version_no: Option<i32>,
+    pub blocked_by: Vec<Uuid>,
 }
 
-/// The fields an **open draft** revision may still change.
-///
-/// Every field carries one meaning: `Some(v)` sets the column to `v`, and
-/// `None` means **leave it alone**. An entirely absent patch is still a valid
-/// request — it asserts the caller's `ETag` and advances it, which is how a
-/// no-op edit stays distinguishable from a lost one.
-///
-/// It is deliberately **not** `Option<Option<T>>`. The double option is the
-/// usual way to make "set this nullable column back to NULL" expressible, and
-/// until the REST layer landed no surface could express it at all: the request
-/// shape that distinguishes an omitted JSON member from an explicit `null` is a
-/// transport shape. **The surface exists now** (`api::rest::plans`,
-/// `PATCH /bss-pricing/v1/plans/{planId}`) **and the limitation does not move
-/// with it**, because paying it is a change to *this type* and to
-/// `plan_repo::patched_columns` rather than to the surface: every field would
-/// gain a third state that every repository method, every rule and every test
-/// has to reason about, and `serde`'s `Option<Option<T>>` needs
-/// `#[serde(default, deserialize_with =...)]` per member to distinguish absent
-/// from null at all. So this is a **known limitation, stated rather than
-/// designed around**, and it is now owed by whichever wave next changes the
-/// draft patch shape — not by a surface group. Slice 2 widens what it costs
-/// rather than quietly inheriting it: a `sku_id`, `plan_tier`,
-/// `frequency`, `purchase_min_qty`, `purchase_max_qty`, `descriptor_ext`,
-/// `available_from` or `available_to` that has been set cannot be cleared
-/// through a patch — only replaced, or discarded by abandoning the draft
-/// revision, which keeps the revision number it consumed (D-145).
-///
-/// One of the Slice-2 fields falls outside that sentence, and for a reason of
-/// its own rather than by exception. It was two until **D-383** removed
-/// `plan_tier_override`, the other `Option` over a `NOT NULL` column:
-///
-/// * [`PlanShapePatch::frequency`] moves **three** columns as one value.
-///   Setting a fixed frequency clears `custom_interval_n` and
-///   `custom_interval_unit` with it, because the interval is part of the
-///   variant and not an independently patchable column: a patch that moved only
-///   the token would leave a `monthly` row wearing a custom interval, which is
-///   the pairing both [`Frequency`] and `chk_pricing_plan_custom_interval_pairing`
-///   exist to make unreachable.
-#[domain_model]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PlanShapePatch {
-    /// Bind the plan to a different catalog SKU.
-    pub sku_id: Option<Uuid>,
-    /// Move the plan's tier.
-    pub plan_tier: Option<String>,
-    /// Move the plan's human label (D-318).
-    ///
-    /// Like every other member here, `None` means "leave it alone" and not
-    /// "clear it" — a plan is unnamed back by sending the empty string, which
-    /// the write stage refuses, so **there is no way to un-name a named plan
-    /// through this patch**. Deliberate: the two-spellings hazard is worse than
-    /// the missing verb, and a plan that has been shown to an operator under a
-    /// name is not improved by losing it.
-    pub plan_name: Option<String>,
-    /// Move the recurring frequency, interval and all; see the type doc.
-    pub frequency: Option<Frequency>,
-    /// Move the minimum purchasable quantity.
-    pub purchase_min_qty: Option<u64>,
-    /// Move the maximum purchasable quantity.
-    pub purchase_max_qty: Option<u64>,
-    /// Replace the tenant billing extensions; an empty map clears them.
-    pub descriptor_ext: Option<std::collections::BTreeMap<String, String>>,
-    /// Move the start of the availability window, UTC.
-    pub available_from: Option<OffsetDateTime>,
-    /// Move the end of the availability window, UTC.
-    pub available_to: Option<OffsetDateTime>,
-    /// Replace the entitlement grant set wholesale (Slice 6, §6, D-41).
-    ///
-    /// Wholesale for [`PlanShapePatch::change_contract`]'s reason: the
-    /// plan-level set, the `PlanTier` reference and the per-phase map are one
-    /// authored fact, and a per-member encoding could express a per-phase entry
-    /// with no plan-level set to fall back to.
-    pub entitlement_grants: Option<EntitlementGrants>,
-    /// Replace the plan-change contract wholesale (Slice 6, §6).
-    ///
-    /// **Wholesale, not per member**, and this is the one field of the patch
-    /// that is not independent of its neighbours — the reason `PriceContent` is
-    /// not a patch at all. K4 ties `comparability_rank` to whether
-    /// `allowed_change_targets` names anyone, so a per-member encoding could
-    /// express "drop the rank, keep the edges", which is a state no publish
-    /// accepts and which the caller cannot have meant. Submitting the contract
-    /// it wants makes every intermediate state unrepresentable.
-    ///
-    /// The double `Option` a "clear this" would need is the same G3 non-goal
-    /// this type's own doc records: to leave self-service change, send a
-    /// contract whose `allowed_change_targets` is `None`.
-    pub change_contract: Option<PlanChangeContract>,
+/// The sale date: `available_from`, or today for "at publish" (the prototype's `planFrom`).
+#[must_use]
+pub fn sale_date(revision: &Revision, today: Date) -> Date {
+    revision.available_from.unwrap_or(today)
+}
+/// The revision's book, if the context carries it.
+#[must_use]
+pub fn book(ctx: &PlanContext) -> Option<&PlanBook> {
+    book_by_id(ctx, ctx.revision.book_id)
+}
+/// The currency the plan sells in: its book's.
+#[must_use]
+pub fn currency(ctx: &PlanContext) -> Option<&str> {
+    book(ctx).map(|b| b.book.currency.as_str())
+}
+/// The recurring periods the plan's items bill in (the prototype's `planBilling`).
+#[must_use]
+pub fn billing(ctx: &PlanContext) -> Vec<String> {
+    ctx.items
+        .iter()
+        .filter_map(|it| entry(ctx, it.price_book_entry_id))
+        .filter(|e| e.charge_kind == ChargeKind::Recurring)
+        .map(|e| e.period.clone().unwrap_or_else(|| "-".to_owned()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+/// Whether every check is ok.
+#[must_use]
+pub fn ready(checks: &[Check]) -> bool {
+    checks.iter().all(|c| c.ok)
 }
 
+fn book_by_id(ctx: &PlanContext, id: Uuid) -> Option<&PlanBook> {
+    ctx.books.iter().find(|b| b.id == id)
+}
+fn sku_of(ctx: &PlanContext, id: Uuid) -> Option<&Sku> {
+    ctx.skus.iter().find(|s| s.id == id)
+}
+fn entry(ctx: &PlanContext, id: Option<Uuid>) -> Option<&Entry> {
+    id.and_then(|id| ctx.entries.iter().find(|e| e.id == id))
+}
+fn name_of(ctx: &PlanContext, item: &Item) -> String {
+    sku_of(ctx, item.sku_id).map_or_else(|| item.sku_id.to_string(), |s| s.name.clone())
+}
+fn values_of<'a>(ctx: &'a PlanContext, e: &Entry) -> &'a [String] {
+    e.dimension_key
+        .as_ref()
+        .and_then(|key| ctx.dimension_values.iter().find(|(k, _)| k == key))
+        .map_or(&[], |(_, values)| values.as_slice())
+}
+/// Every approval unit holding a pending price of the entry: the default chain can cover a value,
+/// so a pending default price blocks it as much as the value's own.
+fn pending_units(e: &Entry) -> Vec<Uuid> {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
+    e.pending
+        .iter()
+        .map(|p| p.unit_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
+}
+fn uncovered(detail: String, blocked_by: Vec<Uuid>) -> ItemCoverage {
+    ItemCoverage {
+        ok: false,
+        detail,
+        version_no: None,
+        blocked_by,
+    }
+}
+
+/// Coverage of one item on the sale date: per dimension value, through its own chain or the
+/// default, with an open tail (the prototype's `itemCoverage`).
+#[must_use]
+pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverage {
+    let Some(e) = entry(ctx, item.price_book_entry_id) else {
+        return if item.treatment == Treatment::Included {
+            ItemCoverage {
+                ok: true,
+                detail: "no charge".into(),
+                version_no: None,
+                blocked_by: vec![],
+            }
+        } else {
+            uncovered("no price".into(), vec![])
+        };
+    };
+    let Some(b) = book(ctx) else {
+        return uncovered("attach a price book".into(), vec![]);
+    };
+    if e.book_id != b.id {
+        let other = book_by_id(ctx, e.book_id).map_or("another book", |o| o.book.name.as_str());
+        return uncovered(format!("priced in {other}, not {}", b.book.name), vec![]);
+    }
+    let date = sale_date(&ctx.revision, today);
+    let values = values_of(ctx, e);
+    let key = e.dimension_key.as_deref().unwrap_or_default();
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
+    let cov = price::coverage_on(&e.prices, e.id, date, values);
+    if !cov.missing.is_empty() {
+        let detail = if values.is_empty() {
+            format!("no approved price on {date}")
+        } else {
+            format!(
+                "{key} {}: no price on {date} and no default price",
+                cov.missing.join(", ")
+            )
+        };
+        return uncovered(detail, pending_units(e));
+    }
+    if !cov.closing.is_empty() {
+        let detail = if values.is_empty() {
+            let end = price::approved_prices(&e.prices, e.id, None)
+                .last()
+                .and_then(|p| p.effective_to)
+                .map_or_else(|| "?".to_owned(), |d| d.to_string());
+            format!("last window closes {end}")
+        } else {
+            format!(
+                "{key} {}: last window closes and no default carries on",
+                cov.closing.join(", ")
+            )
+        };
+        return uncovered(detail, pending_units(e));
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
+    let version_no = cov.version.map(|p| p.version_no);
+    let dims = if values.is_empty() {
+        String::new()
+    } else {
+        format!(" \u{b7} {} \u{d7} {key}", values.len())
+    };
+    ItemCoverage {
+        ok: true,
+        detail: format!(
+            "{} \u{2713} v{}{dims}",
+            b.book.currency,
+            version_no.unwrap_or_default()
+        ),
+        version_no,
+        blocked_by: vec![],
+    }
+}
+
+/// What the item walk found, one list per check.
+#[derive(Default)]
+struct Tally {
+    no_entry: Vec<String>,
+    mismatch: Vec<String>,
+    entry_lost: Vec<String>,
+    bundle: Vec<String>,
+    kind_clash: Vec<String>,
+    foreign: Vec<String>,
+    uncovered: Vec<String>,
+    blocked: BTreeSet<Uuid>,
+    periods: BTreeSet<String>,
+    meters: Vec<(String, String)>,
+    meter_dup: Vec<String>,
+    included_qty: Vec<String>,
+    deprecated: Vec<String>,
+    unavailable: Vec<String>,
+    pending: Vec<String>,
+    lost: Vec<String>,
+}
+
+/// Lifecycle and reference, for every item: a fresh SKU read and a receipt (D-408, D-413).
+fn tally_sku_and_reference(ctx: &PlanContext, item: &Item, name: &str, t: &mut Tally) {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+    match sku_of(ctx, item.sku_id).map(|s| s.lifecycle) {
+        None => t.unavailable.push(format!("{name} - not found")),
+        Some(Lifecycle::Draft | Lifecycle::Retiring | Lifecycle::Retired) => {
+            t.unavailable.push(name.to_owned());
+        }
+        Some(Lifecycle::Deprecated) if !ctx.published_sku_ids.contains(&item.sku_id) => {
+            t.deprecated.push(name.to_owned());
+        }
+        Some(Lifecycle::Published | Lifecycle::Deprecated) => {}
+    }
+    match item.reference.state {
+        ReferenceState::Confirmed => {}
+        ReferenceState::ConfirmationPending if item.reference.reservation_id.is_some() => {}
+        ReferenceState::Lost => t.lost.push(name.to_owned()),
+        ReferenceState::Unreserved | ReferenceState::ConfirmationPending => {
+            t.pending.push(name.to_owned());
+        }
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+}
+/// Structure (the prototype's walk up to its entry): charge kind, meter and included quantity.
+fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mut Tally) {
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+    if let Some(e) = e
+        && validate_entry_kind(e.charge_kind, sku.r#type).is_err()
+    {
+        t.kind_clash.push(format!(
+            "{name} - entry is {}, SKU is {}",
+            e.charge_kind.as_str(),
+            sku.r#type.as_str()
+        ));
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
+    if let Some(meter) = &sku.usage_type_ref
+        && (e.is_some() || item.treatment == Treatment::Included)
+    {
+        if let Some((_, first)) = t.meters.iter().find(|(m, _)| m == meter) {
+            t.meter_dup.push(format!("{name} <-> {first}"));
+        } else {
+            t.meters.push((meter.clone(), name.to_owned()));
+        }
+    }
+    let usage = sku.r#type == SkuType::Usage;
+    let needs_quantity = item.treatment == Treatment::Included && usage;
+    if needs_quantity && item.included_qty.is_none_or(|q| q < Decimal::ZERO) {
+        t.included_qty
+            .push(format!("{name}: set the included quantity"));
+    }
+    if item.included_qty.is_some() && !usage {
+        t.included_qty
+            .push(format!("{name}: an included quantity is for usage only"));
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
+}
+/// Pricing: the entry, its book and its coverage on the sale date.
+fn tally_pricing(
+    ctx: &PlanContext,
+    e: &Entry,
+    item: &Item,
+    name: &str,
+    t: &mut Tally,
+    today: Date,
+) {
+    if e.sku_id != item.sku_id {
+        t.mismatch
+            .push(format!("{name} - the entry prices another SKU"));
+    }
+    if e.reference_state == EntryReferenceState::Lost {
+        t.entry_lost.push(name.to_owned());
+    }
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
+    if e.book_id != ctx.revision.book_id {
+        let describe = |id: Uuid| {
+            book_by_id(ctx, id).map_or_else(
+                || "? (?)".to_owned(),
+                |b| format!("{} ({})", b.book.name, b.book.currency),
+            )
+        };
+        t.foreign.push(format!(
+            "{name} - priced in {}, the plan reads {}",
+            describe(e.book_id),
+            describe(ctx.revision.book_id)
+        ));
+        return;
+    }
+    if e.charge_kind == ChargeKind::Recurring {
+        t.periods
+            .insert(e.period.clone().unwrap_or_else(|| "-".to_owned()));
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
+    let cov = item_coverage(ctx, item, today);
+    if !cov.ok {
+        t.uncovered.push(format!("{name} - {}", cov.detail));
+        t.blocked.extend(cov.blocked_by);
+    }
+}
+fn tally(ctx: &PlanContext, today: Date) -> Tally {
+    let mut t = Tally::default();
+    for item in &ctx.items {
+        let name = name_of(ctx, item);
+        tally_sku_and_reference(ctx, item, &name, &mut t);
+        let e = entry(ctx, item.price_book_entry_id);
+        if let Some(sku) = sku_of(ctx, item.sku_id) {
+            // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+            if sku.r#type == SkuType::Bundle {
+                t.bundle.push(name);
+                continue;
+            }
+            // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+            tally_structure(sku, e, item, &name, &mut t);
+        }
+        if item.treatment == Treatment::Included && item.price_book_entry_id.is_none() {
+            continue;
+        }
+        match e {
+            Some(e) => tally_pricing(ctx, e, item, &name, &mut t, today),
+            None => t.no_entry.push(name),
+        }
+    }
+    t
+}
+
+fn row(code: &'static str, ok: bool, label: impl Into<String>, detail: impl Into<String>) -> Check {
+    Check {
+        code,
+        ok,
+        label: label.into(),
+        detail: detail.into(),
+        info: false,
+        blocked_by: vec![],
+    }
+}
+fn listed(found: &[String], otherwise: &str) -> String {
+    if found.is_empty() {
+        otherwise.to_owned()
+    } else {
+        found.join("; ")
+    }
+}
+fn plan_rows(ctx: &PlanContext, sale: Date) -> Vec<Check> {
+    let name = ctx.plan.name.trim();
+    let mut rows = vec![row(
+        "PLAN_NAME",
+        !name.is_empty(),
+        "Plan has a name",
+        if name.is_empty() {
+            "name is required"
+        } else {
+            name
+        },
+    )];
+    let b = book(ctx);
+    rows.push(row(
+        "PLAN_BOOK",
+        b.is_some(),
+        "Exactly one price book attached",
+        b.map_or_else(
+            || {
+                "a plan reads one book and sells in its currency; another currency is another plan"
+                    .to_owned()
+            },
+            |b| format!("{} -> sells in {}", b.book.name, b.book.currency),
+        ),
+    ));
+    if let Some(b) = b
+        && (b.book.valid_from.is_some() || b.book.valid_until.is_some())
+    {
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
+        let valid = book::valid_on(&b.book, sale);
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-3
+        let window = format!(
+            "{} -> {}",
+            b.book
+                .valid_from
+                .map_or_else(|| "...".to_owned(), |d| d.to_string()),
+            b.book
+                .valid_until
+                .map_or_else(|| "open".to_owned(), |d| d.to_string())
+        );
+        let detail = if valid {
+            format!("{} valid {window}", b.book.name)
+        } else {
+            format!("{} is NOT valid on {sale} - {window}", b.book.name)
+        };
+        rows.push(row(
+            "PLAN_BOOK_VALIDITY",
+            valid,
+            "The book is valid on the sale date",
+            detail,
+        ));
+    }
+    rows.push(row(
+        "PLAN_ITEMS",
+        !ctx.items.is_empty(),
+        "At least one item",
+        format!("{} item(s)", ctx.items.len()),
+    ));
+    rows
+}
+fn entry_rows(ctx: &PlanContext, t: &Tally, sale: Date) -> Vec<Check> {
+    let currency = currency(ctx).unwrap_or("no book");
+    let mut uncovered = row(
+        "ITEM_UNCOVERED",
+        t.uncovered.is_empty(),
+        format!("Every item has an approved, open-ended price from {sale}"),
+        listed(&t.uncovered, &format!("covered in {currency}")),
+    );
+    uncovered.blocked_by = t.blocked.iter().copied().collect();
+    vec![
+        row(
+            "ITEM_ENTRY_MISSING",
+            t.no_entry.is_empty(),
+            "Every paid / optional item points at a price",
+            listed(&t.no_entry, "all items priced"),
+        ),
+        row(
+            "ITEM_ENTRY_SKU_MISMATCH",
+            t.mismatch.is_empty(),
+            "Every item's entry prices that item's SKU",
+            listed(&t.mismatch, "ok"),
+        ),
+        row(
+            "ITEM_ENTRY_LOST",
+            t.entry_lost.is_empty(),
+            "No item's entry has lost its Products reference",
+            listed(&t.entry_lost, "ok"),
+        ),
+        row(
+            "ITEM_BUNDLE_SKU",
+            t.bundle.is_empty(),
+            "No bundle SKU sits inside the plan as an item",
+            listed(&t.bundle, "ok"),
+        ),
+        row(
+            "CHARGE_KIND_SKU_TYPE",
+            t.kind_clash.is_empty(),
+            "Every item charges the way its SKU is typed",
+            listed(&t.kind_clash, "ok"),
+        ),
+        row(
+            "ITEM_BOOK_FOREIGN",
+            t.foreign.is_empty(),
+            "Every item is priced in the plan's book",
+            listed(&t.foreign, "all from the plan's book"),
+        ),
+        uncovered,
+    ]
+}
+fn structure_rows(t: &Tally) -> Vec<Check> {
+    let periods: Vec<_> = t.periods.iter().cloned().collect();
+    let frequency = match periods.as_slice() {
+        [] => "no recurring items".to_owned(),
+        [one] => format!("billed every {one}"),
+        many => format!("found {} - one period per plan", many.join(" and ")),
+    };
+    vec![
+        row(
+            "FREQUENCY_MIXED",
+            periods.len() <= 1,
+            "All recurring items share one billing period",
+            frequency,
+        ),
+        row(
+            "METER_DUPLICATE",
+            t.meter_dup.is_empty(),
+            "No two items meter the same usage type",
+            listed(&t.meter_dup, "meters unambiguous"),
+        ),
+        row(
+            "INCLUDED_QTY",
+            t.included_qty.is_empty(),
+            "Included usage names a quantity",
+            listed(&t.included_qty, "ok"),
+        ),
+    ]
+}
+fn sku_rows(t: &Tally) -> Vec<Check> {
+    vec![
+        row(
+            "ITEM_SKU_DEPRECATED",
+            t.deprecated.is_empty(),
+            "No deprecated SKU enters the plan",
+            listed(
+                &t.deprecated,
+                "a deprecated SKU only stays when carried over within the same plan",
+            ),
+        ),
+        row(
+            "ITEM_SKU_UNAVAILABLE",
+            t.unavailable.is_empty(),
+            "Every item SKU is published or deprecated",
+            listed(&t.unavailable, "ok"),
+        ),
+        row(
+            "ITEM_REFERENCE_PENDING",
+            t.pending.is_empty(),
+            "Every item reference holds a Products receipt",
+            listed(&t.pending, "ok"),
+        ),
+        row(
+            "ITEM_REFERENCE_LOST",
+            t.lost.is_empty(),
+            "No item reference is lost",
+            listed(&t.lost, "ok"),
+        ),
+    ]
+}
+fn info_rows(ctx: &PlanContext) -> Vec<Check> {
+    let d = &ctx.defaults;
+    let descriptors = format!(
+        "invoice line: entry override -> SKU -> tenant default; GL: SKU -> {}; rounding {}; tax {}",
+        d.gl.as_deref().unwrap_or("none"),
+        d.rounding,
+        d.tax_category.as_deref().unwrap_or("none")
+    );
+    let approval = if ctx.quorum == 0 {
+        "publishes directly - no second person".to_owned()
+    } else {
+        format!("needs {} independent approver(s)", ctx.quorum)
+    };
+    [
+        row(
+            "DESCRIPTORS",
+            true,
+            "Invoice line, GL code, tax, rounding resolved",
+            descriptors,
+        ),
+        row(
+            "APPROVAL",
+            true,
+            format!("Approval quorum {}", ctx.quorum),
+            approval,
+        ),
+    ]
+    .into_iter()
+    .map(|c| Check { info: true, ..c })
+    .collect()
+}
+
+/// Every check of a revision on its sale date (the prototype's `validatePlan`), in a fixed order.
+#[must_use]
+pub fn checks(ctx: &PlanContext, today: Date) -> Vec<Check> {
+    let sale = sale_date(&ctx.revision, today);
+    let t = tally(ctx, today);
+    let mut out = plan_rows(ctx, sale);
+    out.extend(entry_rows(ctx, &t, sale));
+    out.extend(structure_rows(&t));
+    out.extend(sku_rows(&t));
+    out.extend(info_rows(ctx));
+    out
+}
 #[cfg(test)]
 #[path = "plan_tests.rs"]
-mod plan_tests;
+mod tests;

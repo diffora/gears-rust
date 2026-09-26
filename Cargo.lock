@@ -1857,6 +1857,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-approval"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-db",
+ "parking_lot",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "cf-gears-bss-coord"
 version = "0.0.0"
 dependencies = [
@@ -1874,27 +1892,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "cf-gears-bss-fixtures"
-version = "0.0.0"
-dependencies = [
- "chrono",
- "serde",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
-name = "cf-gears-bss-fixtures-conformance"
-version = "0.0.0"
-dependencies = [
- "cf-gears-bss-fixtures",
- "chrono",
- "serde",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
 ]
 
 [[package]]
@@ -1973,16 +1970,13 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "axum",
- "base64 0.22.1",
  "cf-gears-account-management",
- "cf-gears-account-management-sdk",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-approval",
  "cf-gears-bss-coord",
- "cf-gears-bss-fixtures",
- "cf-gears-bss-fixtures-conformance",
- "cf-gears-bss-pricing",
- "cf-gears-bss-pricing-sdk",
+ "cf-gears-bss-products-sdk",
+ "cf-gears-event-broker-sdk",
  "cf-gears-test-containers",
  "cf-gears-toolkit",
  "cf-gears-toolkit-canonical-errors",
@@ -1990,15 +1984,10 @@ dependencies = [
  "cf-gears-toolkit-db-macros",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-macros",
- "cf-gears-toolkit-odata",
  "cf-gears-toolkit-security",
  "cf-gears-types-registry",
  "cf-gears-types-registry-sdk",
- "futures-util",
- "gts",
- "opentelemetry",
- "opentelemetry_sdk",
- "parking_lot",
+ "rust_decimal",
  "sea-orm",
  "sea-orm-migration",
  "serde",
@@ -2008,9 +1997,9 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tower",
  "tracing",
- "tracing-subscriber",
  "utoipa",
  "uuid",
 ]
@@ -2022,11 +2011,8 @@ dependencies = [
  "async-trait",
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-contract",
- "cf-gears-toolkit-odata",
- "cf-gears-toolkit-odata-macros",
  "cf-gears-toolkit-security",
  "thiserror 2.0.18",
- "time",
  "uuid",
 ]
 
@@ -2041,6 +2027,7 @@ dependencies = [
  "axum",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-approval",
  "cf-gears-bss-coord",
  "cf-gears-bss-pricing",
  "cf-gears-bss-pricing-sdk",
@@ -2061,10 +2048,8 @@ dependencies = [
  "cf-gears-types-registry-sdk",
  "cf-gears-usage-collector",
  "cf-gears-usage-collector-sdk",
- "futures-core",
  "gts",
  "opentelemetry",
- "opentelemetry_sdk",
  "sea-orm",
  "sea-orm-migration",
  "secrecy",
@@ -2075,11 +2060,9 @@ dependencies = [
  "time",
  "tokio",
  "tokio-util",
- "toml 0.8.23",
  "tower",
  "tracing",
  "tracing-opentelemetry",
- "tracing-subscriber",
  "unicode-normalization",
  "utoipa",
  "uuid",
@@ -2093,9 +2076,8 @@ dependencies = [
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-security",
- "regex",
+ "serde",
  "time",
- "toml 0.8.23",
  "uuid",
 ]
 
@@ -2412,6 +2394,7 @@ dependencies = [
  "cf-gears-authz-resolver",
  "cf-gears-bss-ledger",
  "cf-gears-bss-pricing",
+ "cf-gears-bss-products",
  "cf-gears-bss-rate-provider",
  "cf-gears-bss-rate-provider-ecb-plugin",
  "cf-gears-bss-rate-provider-http-json-plugin",
@@ -2443,11 +2426,14 @@ dependencies = [
  "cf-gears-usage-collector",
  "clap",
  "mimalloc",
+ "sea-orm",
  "serde-saphyr 0.0.22",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "users-info",
+ "uuid",
 ]
 
 [[package]]

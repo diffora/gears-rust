@@ -307,12 +307,7 @@ export PATH := $(HOME)/.local/bin:$(PATH)
 #
 # Use `make clippy-deep` for the full 182-run matrix (nightly / pre-release).
 CLIPPY_FLAGS := -- -D warnings -D clippy::perf
-# `bss-fixtures` is on the list because it is the one crate whose *production*
-# surface is the narrow one: pricing's `FixtureGate` inherits it with
-# `default-features = false`, while `default = ["corpus"]` means every ordinary
-# build compiles the wide one. A feature-combination pass is the only thing that
-# lints the surface a gear actually takes.
-CLIPPY_HACK_CRATES := -p cf-gears-toolkit -p cf-gears-toolkit-db -p cf-gears-toolkit-http -p cf-gears-bss-fixtures
+CLIPPY_HACK_CRATES := -p cf-gears-toolkit -p cf-gears-toolkit-db -p cf-gears-toolkit-http
 # `_any-backend` is toolkit-db's internal "some backend is on" marker (see its
 # [features] block); enabling it *alone* asserts a driver exists while none does,
 # which the outbox benchmarks reject with a compile_error!. Not a configuration
@@ -671,7 +666,7 @@ OPENAPI_BUILD_FEATURE_ARGS := $(if $(GEAR),$(GEAR_OPENAPI_FEATURE_ARGS),$(OPENAP
 
 # -------- Tests --------
 
-.PHONY: test test-no-macros test-macros test-sqlite test-pg test-pgq test-mysql test-db test-users-info-pg test-usage-collector-pg test-types-registry-db test-cluster-pg test-cluster-redis test-rg-pg test-pricing-pg test-coord-pg test-products-pg test-fixtures-narrow test-fips
+.PHONY: test test-no-macros test-macros test-sqlite test-pg test-pgq test-mysql test-db test-users-info-pg test-usage-collector-pg test-types-registry-db test-cluster-pg test-cluster-redis test-rg-pg test-pricing-pg test-coord-pg test-products-pg test-fips
 
 # Run all tests, or a single gear when GEAR=<gear> is set.
 # When GEAR= is set, cargo gears ls packages finds matching crates + their
@@ -837,19 +832,6 @@ test-coord-pg: install-tools
 ## found, not the first.
 test-products-pg: install-tools
 	cargo nextest run -p cf-gears-bss-products --run-ignored ignored-only -E 'binary(/^postgres_/)' --no-fail-fast
-
-## Compile and run `bss-fixtures` on the surface a **gear** actually takes.
-##
-## Pricing's `FixtureGate` inherits this crate with `default-features = false`
-## (`Cargo.toml`'s workspace entry) — `ModelKind` + `Registry` + `gate_open_for`
-## and nothing else. `default = ["corpus"]`, so every other build in the
-## workspace, `make test-no-macros` included, compiles the wide surface: the
-## test written to guard the narrow one (`tests/production_surface.rs`, whose
-## module doc names this invocation) ran only in the configuration it does not
-## guard, where its assertions hold trivially. The narrow build's only other
-## consumer is the example server's release build, which never runs a test.
-test-fixtures-narrow: install-tools
-	cargo nextest run -p cf-gears-bss-fixtures --no-default-features --test production_surface
 
 ## Run the Redis cluster plugin's conformance (Layer 2) and Layer 3 integration
 ## suites (Docker required; each spins up its own redis container via

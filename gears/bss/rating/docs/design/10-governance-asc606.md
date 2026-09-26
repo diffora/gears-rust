@@ -46,7 +46,7 @@ runs inside the *pricing gear's* publish pipeline, not in rating-core: per the r
 ([`../SEAMS.md`](../SEAMS.md), T-D-06) there is exactly **one** catalog-publish approval engine
 — pricing Slice 5's `MaterialityEvaluator` + `ApprovalWorkflow` with its own `approval_policy`
 resource and FinanceReviewer approver
-([`../../../pricing/docs/design/05-governance.md`](../../../pricing/docs/design/05-governance.md)).
+(`../../../pricing/docs/design/05-governance.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37)).
 Rating contributes its **four publish-time checks as registered fail-closed validators** in
 that pipeline (§4.2) and runs **no second workflow**: no Rating approval state machine, no
 approver role, no approval store. The ledger's `dual_control_policy` stays a separate bounded
@@ -188,7 +188,7 @@ The **validator registration contract** (Rating → pricing publish pipeline): e
 rule declares its id, subject (the submitted publish unit), verdict shape
 (`pass | fail(code, findings)`), and audit payload. Execution points and failure semantics are
 the pipeline's, restated normatively in §4.2
-([`../../../pricing/docs/design/01-foundation.md`](../../../pricing/docs/design/01-foundation.md)).
+(`../../../pricing/docs/design/01-foundation.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37)).
 
 - [ ] `p2` - **ID**: `cpt-cf-bss-rating-interface-asc606-envelope-gov`
 
@@ -215,9 +215,9 @@ formalizes the cross-gear surface.
 
 | Dependency | What arrives frozen | Contract |
 |------------|--------------------|----------|
-| Pricing Slice 5 (governance) | The single approval engine: `MaterialityEvaluator`, `ApprovalWorkflow`, `approval_policy` (FinanceReviewer); the hash-chained audit trail (D-14) | [`../../../pricing/docs/design/05-governance.md`](../../../pricing/docs/design/05-governance.md); SEAMS G1 |
-| Pricing Foundation (publish path) | The aggregate fail-closed validation pipeline — the registration surface; submit pre-check + commit re-run | [`../../../pricing/docs/design/01-foundation.md`](../../../pricing/docs/design/01-foundation.md) |
-| Pricing Slice 8 (bundles) | `sum_of_parts` component `planId` sets; `effective_share_bp` + `platform_cut_bp` normalized at publish per `(bundle, vendor SKU)` onto the typed `residual_absorber_party` (D-07 as re-typed by pricing D-55) | [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md); SEAMS B1 |
+| Pricing Slice 5 (governance) | The single approval engine: `MaterialityEvaluator`, `ApprovalWorkflow`, `approval_policy` (FinanceReviewer); the hash-chained audit trail (D-14) | `../../../pricing/docs/design/05-governance.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37); SEAMS G1 |
+| Pricing Foundation (publish path) | The aggregate fail-closed validation pipeline — the registration surface; submit pre-check + commit re-run | `../../../pricing/docs/design/01-foundation.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37) |
+| Pricing Slice 8 (bundles) | `sum_of_parts` component `planId` sets; `effective_share_bp` + `platform_cut_bp` normalized at publish per `(bundle, vendor SKU)` onto the typed `residual_absorber_party` (D-07 as re-typed by pricing D-55) | `../../../pricing/docs/design/08-bundles.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37); SEAMS B1 |
 | Contracts | Contract-overlay governance (step 5 overrides) stays there; validator 4 checks the published Plan/SKU dimension set | SEAMS G1; [`../PRD.md`](../PRD.md) §17.1 step 5 |
 | Finance / Billing | Consume ASC refs and `glCode`; own recognition schedules and journal entries | [`../PRD.md`](../PRD.md) §5.2, §7.2 |
 
@@ -334,7 +334,7 @@ policy. Explicitly not a launch blocker.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-revshare-passthrough-gov`
 
-- For a `sum_of_parts` bundle, the **eval-time summing is Rating's**: each referenced component `planId` resolves through the ordinary per-line pipeline, and the bundle-level amount is the sum of the components' **recurring** amounts — **each component's usage charges rate per its own rows and itemize per `invoiceItemization`, never entering the bundle sum** (pricing `inst-bb-sum`, 2026-07-30 review fix L-8, adopted 2026-08-01 — review #4: the unqualified "sum of component resolved amounts" double-counted usage, once inside the sum and once as the component's own usage line; pricing `inst-bc-frequency` correspondingly narrows the frequency-match guarantee to recurring components); the catalog persists only the reference set (seam B1; [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md)).
+- For a `sum_of_parts` bundle, the **eval-time summing is Rating's**: each referenced component `planId` resolves through the ordinary per-line pipeline, and the bundle-level amount is the sum of the components' **recurring** amounts — **each component's usage charges rate per its own rows and itemize per `invoiceItemization`, never entering the bundle sum** (pricing `inst-bb-sum`, 2026-07-30 review fix L-8, adopted 2026-08-01 — review #4: the unqualified "sum of component resolved amounts" double-counted usage, once inside the sum and once as the component's own usage line; pricing `inst-bc-frequency` correspondingly narrows the frequency-match guarantee to recurring components); the catalog persists only the reference set (seam B1; `../../../pricing/docs/design/08-bundles.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37)).
 - **Partial failure fails the bundle**: if any referenced component fails to resolve **a recurring line the sum requires** (no eligible window on its full key at `t`, unsellable market), the whole `sum_of_parts` bundle line **fails closed** — a partial sum is a misprice, never emitted. A **usage-only component** contributes nothing to the recurring sum and is *not* thereby unresolvable (#4): its usage lines rate independently. Component currency/frequency coverage is a pricing publish-time guarantee (pricing design 08) relied on here; a runtime miss is a defensive fail-closed.
 - **Open — bundle-level coupon attachment**: whether a coupon can target the bundle total (vs the component lines it decomposes into) is unpinned; until settled with Promotions/pricing, coupons attach to component lines per their ordinary `applyScope` (slice 06) and no bundle-total scope exists.
 - **Rev-share arrives normalized**: pricing publish normalizes the residual per **`(bundle, vendor SKU)` group onto the typed `residual_absorber_party`** (pricing D-55, superseding D-07's bundle-level "absorber (default platform)" — review #24; this slice's §3.1 `EffectiveRevShare` was already per `(bundle, vendor SKU)`) so `SUM(effective_share_bp) + platform_cut_bp = 10000` exactly per group; typed authored values stay pricing-side audit material.
@@ -395,5 +395,5 @@ per slice); the tenant-binding rule every §3.7 already states ("partitioned by 
 - **PRD**: §6.12 (both FRs), §7.1 `nfr-audit-segregation`, §9.2 pricing read-model contract (validator registration + B1 pass-through clauses), §5.1 (bundle summing in-scope row), §5.2/§7.2 (recognition exclusions), §14 (evidence consumed, never recomputed), §15 (anti-drift cap open), AC 11, NFR AC 2, §17.1 steps 3–5 (the rules the validators enforce).
 - **Seams**: G1 (RESOLVED → single engine; governance topology note), B1 (bundle summing + effective-share pass-through), ASC (null at MVP) — [`../SEAMS.md`](../SEAMS.md).
 - **Decisions**: T-D-06 (single engine; ledger separate), T-D-08 (effective rev-share pass-through leg) — [`../DECISIONS.md`](../DECISIONS.md).
-- **Pricing design set**: [`../../../pricing/docs/design/05-governance.md`](../../../pricing/docs/design/05-governance.md) (the engine), [`../../../pricing/docs/design/01-foundation.md`](../../../pricing/docs/design/01-foundation.md) (the validation pipeline), [`../../../pricing/docs/design/08-bundles.md`](../../../pricing/docs/design/08-bundles.md) (D-07 normalization).
+- **Pricing design set**: `../../../pricing/docs/design/05-governance.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37) (the engine), `../../../pricing/docs/design/01-foundation.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37) (the validation pipeline), `../../../pricing/docs/design/08-bundles.md` (former pricing design, removed; superseded by the PriceBook model — see T-D-37) (D-07 normalization).
 - **Slices**: [`01-foundation.md`](./01-foundation.md) (emission envelope; catalog-guarantee posture), [`03-metering-models.md`](./03-metering-models.md)/[`04-overlays-precedence.md`](./04-overlays-precedence.md) (the evaluation semantics the validators protect), [`11-consumer-contracts.md`](./11-consumer-contracts.md) (cross-gear contract surface).

@@ -1,24 +1,9 @@
-Created:  2026-08-24 by Virtuozzo International GmbH
-Updated:  2026-08-24 by Virtuozzo International GmbH
+<!-- CONFLUENCE_TITLE: [BSS]: Pricing — PriceBook Design -->
+<!-- Related: ./PRD.md, ./DECISIONS.md, ./design/ | Owners: BSS Pricing team -->
 
-<!-- CONFLUENCE_TITLE: [BSS]: Plan & Price Modeling — Technical Design (canonical index) -->
-<!-- Related: ./PRD.md, ./ADR/, ./design/ | Owners: BSS Product Catalog team -->
+# DESIGN — Pricing: PriceBook
 
-# Technical Design — Plan & Price Modeling
-
-> **2026-09-10 implementation amendment:** [UI read contracts](./design/ui-read-contracts.md)
-> covers unified pending arrays, approval-read-gated taxonomy previews and
-> reference counts, atomic taxonomy
-> approval and the read-only Product Catalog category dictionary. It explicitly
-> separates implemented behavior from the pending tax-source migration.
-> D-365 adds live approval participant names through the public AM SDK, original
-> caller authorization, request-local deduplication, and bounded lookup time.
-> Typed AM/Keycloak ID-set batches are implemented; large-tenant scan performance,
-> live IAM verification and non-user identity mapping remain open. D-366 disables
-> 304 on enriched plan/taxonomy GETs, retaining their write tokens and adding no-store.
-> D-367 adds SQL-paginated plan sorting/filtering after authoring selection, stable
-> `created_at` plus `revision_created_at`, and scoped `/approvals/counts`.
-> Shared OData libraries are unchanged; model/currency filters use scalar query keys.
+- [ ] `p1` - **DESIGN implementation status**
 
 <!-- toc -->
 
@@ -37,502 +22,743 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
   - [3.5 External Dependencies](#35-external-dependencies)
   - [3.6 Interactions & Sequences](#36-interactions--sequences)
   - [3.7 Database schemas & tables](#37-database-schemas--tables)
-  - [3.8 Deployment Topology](#38-deployment-topology)
 - [4. Additional context](#4-additional-context)
 - [5. Traceability](#5-traceability)
 
 <!-- /toc -->
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-design-main`
-
-> **Canonical design entry point and index.** This document is Plan & Price Modeling's
-> top-level technical design and the anchor for spec traceability. The design is authored
-> as a **set of slice documents** under [`design/`](./design/) — a shared **Catalog
-> Foundation** (the Plan/Price entity model, the canonical scope key, the publish engine,
-> the fail-closed validation framework, the frozen read model + `pricingSnapshotRef`
-> contract, and the event fan-out) plus per-capability slice designs. This page is the
-> single index over that set — architecture overview, the phased slice map, dependency
-> order, the cross-cutting normative statements, the ADR index, and the traceability
-> surface — and delegates slice-level specifics (schemas, sequences, validation-rule
-> internals) to the slice documents so they stay the single source of truth for their
-> detail.
-
 ## 1. Architecture Overview
 
 ### 1.1 Architectural Vision
 
-Plan & Price Modeling is the BSS Product Catalog's authoring surface and **System of
-Record** for `Plan`, `Price`, bundle/add-on composition, and billing descriptors. It never
-computes a charge, evaluates an overlay, or performs FX — it defines **what** the pricing
-primitives MUST contain so that **Tariffs** can evaluate, **Subscriptions** can sell, and
-**Rating** can charge deterministically and reproducibly from a frozen snapshot ([`PRD.md`](./PRD.md) §1.1).
+Products owns the SKU registry and reference barrier; Pricing owns per-currency books and immutable approved
+money chains. A shared approval engine governs proposed business content through gear-local transactions.
+Plans arrive in phase 3; the owner defers promotions (D-409), migration requests and retirement (D-410) and the
+sold-as bundle and grants (D-411). Consumer resolution arrives in phase 4, and quote is not built (D-415).
+This is the target design, not a claim that the legacy pricing implementation has already been replaced.
 
-The design mirrors the sibling Billing Ledger's shape: a shared **Catalog Foundation**
-([`design/01-foundation.md`](./design/01-foundation.md)) that owns the `Plan`/`Price` entity
-model, the **canonical scope key**, the draft→publish state machine, the aggregate
-**fail-closed validation pipeline** framework, append-only published-row history +
-versioning/supersession, the **read-model projection** + `pricingSnapshotRef` stamping, and
-the frozen event fan-out + `CatalogVersion`-increment request. Each business capability is a
-**slice handler** that authors draft entity state, registers its validation rules and its
-projected read-model fields, and **publishes *through* the Foundation** under the invariants
-defined there. The Foundation owns no capability policy (it does not know what a billing
-cycle is); slices own no publish mechanics (they never emit an event or stamp a snapshot
-themselves). This keeps the correctness-critical publish/immutability/determinism core small
-and auditable while letting each pricing capability evolve independently.
-
-Where the ledger's contract is *post through the engine* (build balanced lines → commit),
-the catalog's contract is **publish through the engine**: author draft → run the fail-closed
-validation pipeline → freeze a complete read model + `pricingSnapshotRef` → emit the frozen
-event set → request a `CatalogVersion`. Consumers resolve **only** committed versions, never
-draft state, and never substitute a default for an absent field (absence must have failed
-publish).
-
-Requirements (WHAT/WHY) live in [`PRD.md`](./PRD.md); the "why this way" rationale for the
-canonical scope key and the snapshot-versioning strategy is captured as ADRs in
-[`ADR/`](./ADR/).
+Authority is the PriceBook spec §2, §2.2 and §13, then [DECISIONS](DECISIONS.md), then code, then prose.
+The plan's D-399 deviation removes the phase 2 SkuChanged listener; current SKU facts come from ProductsClient.
 
 ### 1.2 Architecture Drivers
 
-Requirements from [`PRD.md`](./PRD.md) that significantly influence the architecture.
+| Requirement | Driver | Satisfied by |
+| --- | --- | --- |
+| `cpt-cf-bss-pricing-fr-dimension-registry` | A tenant registry stores dimension keys and their allowed values, seeded with region: with nothing stored, GET /dimension-keys reads region with no values, and the first entry naming it stores the seed in its own transaction. A key has no values yet or at least two (DIM_VALUES_FEW). | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-price-book` | A book has a tenant-unique code, name, immutable currency and optional valid_from/valid_until dates. | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-entry-key` | Inside a book there is one entry per (sku_id, charge_kind, period), with null period normalized for uniqueness. | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-price` | Draft prices carry model, price_json, dates, optional dim_value and min_fee, eligibility all or new, note and author. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-chain-windows` | Windows are half-open and close independently for each (price_book_entry_id, dim_value), including the null default chain. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-pair-guard` | On a usage chain, a successor preserves model kind, package size and SKU metering as of each price's start (D-402). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-min-fee` | The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price; pricing stores and validates min_fee, and Rating applies the floor (D-415). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-temporary-pair` | A temporary change on an existing chain creates two prices in one approval unit. | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-publish-changes` | Publish changes lists all draft prices of one book with full money, window, chain, predecessor and impact information, all pre-selected. | Approvals, phase 2; §3 and slice 05. |
+| `cpt-cf-bss-pricing-fr-approval-units` | Use bss-approval for prices now and plan_revision in phase 3; the promotion (D-409) and migration (D-410) kinds are deferred. | Approvals, phase 2; §3 and slice 05. |
+| `cpt-cf-bss-pricing-fr-reference-protocol` | Before reserve, claim the key and persist a create op; reserve with Products, re-read the SKU, commit the entry with reference_state = confirmation_pending and op written, then confirm and atomically finish the op and answer the key (D-401). | Prices, Windows & Dimension, phase 2; §3 and slice 03. |
+| `cpt-cf-bss-pricing-fr-book-export` | Provide one read-only JSON export of a tenant-scoped book with its entries and prices. | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-settings` | Tenant settings provide default billing timing, rounding, GL code, tax category and invoice-line templates by SKU type. | Books & Entries, phase 2; §3 and slice 02. |
+| `cpt-cf-bss-pricing-fr-events` | Persist PricesPublished and ApprovalUnitDecided with state and audit in the toolkit outbox, using broker TypedEvent envelopes; include PriceBookEntryReferenceLost for a failed reference confirmation that proves release. | Read Contract & Events, phase 2; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-plans` | A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Grants and the sold-as bundle SKU are deferred (D-411). | Plans, phase 3; §3 and slice 04. |
+| `cpt-cf-bss-pricing-fr-promotions` | A dated percentage promotion targets plans and recurring or recurring-plus-usage charges. | Promotions & Migrations; deferred by the owner (D-409); §3 and slice 06. |
+| `cpt-cf-bss-pricing-fr-migrations` | An approved migration_request records target plan/revision, subscription ids, next_renewal or explicit date, and the period-aware preview, then emits SubscriptionMigrationRequested. | Promotions & Migrations; deferred by the owner (D-410); §3 and slice 06. |
+| `cpt-cf-bss-pricing-fr-resolve` | GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). | Read Contract & Events, phase 4; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-price-read` | GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, book and currency: stored facts only, nothing computed from today. | Read Contract & Events, phase 4; §3 and slice 07. |
+| `cpt-cf-bss-pricing-fr-quote` | GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. | Not built (D-415); §3 and slice 07. |
+| `cpt-cf-bss-pricing-nfr-authz` | Every door authenticates and enforces deny-by-default pricing:read, author, submit, approve or settings through PolicyEnforcer. | Foundation, phase 2; §3 and slice 01. |
+| `cpt-cf-bss-pricing-nfr-audit` | Append tenant, actor, subject, correlation and before/after facts with each governed act. | Foundation, phase 2; §3 and slice 01. |
+| `cpt-cf-bss-pricing-nfr-tenant-isolation` | Every repository uses SecureORM and PDP-derived AccessScope; child prices are reached through scoped parents. | Foundation, phase 2; §3 and slice 01. |
+| `cpt-cf-bss-pricing-nfr-two-backends` | The fresh migration chain, constraints and transactional rules work on SQLite and Postgres. | Foundation, phase 2; §3 and slice 01. |
+| `cpt-cf-bss-pricing-nfr-idempotency-concurrency` | All pricing POSTs require Idempotency-Key; PATCH/PUT require If-Match. | Foundation, phase 2; §3 and slice 01. |
 
-#### Functional Drivers
-
-| Requirement | Design Response |
-|-------------|-----------------|
-| `cpt-cf-bss-pricing-fr-publish-validation-failclosed` | The Foundation runs a single **aggregate fail-closed validation pipeline** at publish; slices register rules into it, and any invalid condition (§17.4) blocks `PlanPublished` and read-model warm — absence of a required field fails publish, never defaults downstream ([`design/01-foundation.md`](./design/01-foundation.md)). |
-| `cpt-cf-bss-pricing-fr-published-rows-append-only` | Published `Price` rows are append-only history: `BEFORE UPDATE/DELETE` triggers with a column whitelist; only never-published `draft` rows are deletable. **The `REVOKE UPDATE, DELETE` half is not issued and is not owed by this gear** (corrected 2026-08-20): the platform models a **single** DB role — `toolkit-db`'s connection config carries one user and migrations run on the same handle as runtime queries — so the migration role *is* the app role and the table owner, and a REVOKE would be re-GRANTable at will. Worse, if it took effect it would refuse the gear's own sanctioned in-place transitions, which the trigger's whitelist explicitly permits: the `published → superseded` flip and monotonic `grandfather_until` tightening. The trigger, not the REVOKE, is what enforces append-only here; the migrations already decline to issue one and say why. Change is a new immutable row via versioning/supersession. |
-| `cpt-cf-bss-pricing-fr-plan-versioning` / `cpt-cf-bss-pricing-fr-supersession` | Versioning creates a new immutable `Price` revision; supersession is versioning scoped to **one canonical scope key**, opening/closing a `PriceWindow` rather than overlapping it (§17.5). |
-| `cpt-cf-bss-pricing-fr-pricing-snapshot` | Publish stamps the catalog-side identifiers sufficient for the manifest `pricingSnapshotRef` (resolved price ids + evaluation-policy version + the **pending** version ref, finalized to the committed `CatalogVersion` on `CatalogVersionPublished`, immutable thereafter); posted periods never re-query mutable rows. The catalog-side view MUST NOT diverge from the Tariffs composition SoR. |
-| `cpt-cf-bss-pricing-fr-consumer-readmodel-resolution` | The read model is **monotonic per `CatalogVersion`**; consumers resolve `{skuId, planId, priceId}` + model kind + tier bands + evaluation-policy fields exactly as published, no draft read, no default substitution; a rating run pins one version. |
-| `cpt-cf-bss-pricing-fr-catalogversion-increment` | On every `PlanPublished` the Foundation requests addressability; the registry (sole incrementer) MAY batch approved publishes; `PlanPublished` carries a **pending** ref and the snapshot pins the committed version on `CatalogVersionPublished` (§17.5). |
-| `cpt-cf-bss-pricing-fr-publish-fanout-atomicity` | Post-commit read-model warming retries to the 5s SLO or emits `PlanPublishDegraded`; no state exposes a rateable-but-incomplete plan. |
-| `cpt-cf-bss-pricing-fr-event-contract` | A **frozen event-name set** emitted with correlation/idempotency keys, ordered per `(tenantId, aggregateId)`, at-least-once, dedupable. |
-| `cpt-cf-bss-pricing-fr-approval-two-person` / `cpt-cf-bss-pricing-fr-approval-threshold-policy` | A material change requires submitter + ≥1 independent approver (two distinct principals); fail-safe materiality (two-person rule unless an explicit threshold is configured and the change is below it and not a first publish). |
-| `cpt-cf-bss-pricing-fr-model-kind` / `cpt-cf-bss-pricing-fr-tier-validation` | Explicit `modelKind` (no rating-time default) + `[fromQty, toQty)` tier bands validated ascending/non-overlapping/contiguous with an **always-open** top band (a closed top fails publish — capping is owned by entitlement quotas, D-17). |
-| `cpt-cf-bss-pricing-fr-price-amount-validation` | Amount ≥ 0, valid ISO 4217, precision = the currency's ISO 4217 **minor unit** (no flat 2-decimal cap), no implicit FX (fail closed when a `(currency, region)` row is absent). |
-| `cpt-cf-bss-pricing-fr-concurrent-edit` / `cpt-cf-bss-pricing-fr-mutation-idempotency` | Optimistic concurrency (ETag/version) rejects stale submits and bulk-vs-interactive collisions; client idempotency keys make create/update replays return the original. |
-
-#### NFR Allocation
-
-Non-functional requirements are specified in [`PRD.md`](./PRD.md) §7. All load-bearing
-targets are **ratified as of 2026-07-28** ([`PRD.md`](./PRD.md) §14/§15), with one deliberate
-exception — the audit retention-maximum vs minimum question stays open with Legal; per-row
-statuses below.
-
-| NFR theme | Allocated to | Design Response | Status |
-|-----------|--------------|-----------------|--------|
-| Publish → read-model propagation (p95 ≤ 5s) | Foundation publish engine + event fan-out | Batched `CatalogVersion` commit + retry-to-SLO warm or `PlanPublishDegraded`; pin never lags newest completed by > 5s | Committed target; batching-delay SLO ratified (D-47: p95 ≤ 60s, max 5 min) ([`PRD.md`](./PRD.md) §15) |
-| Read / preview latency (p95 < 100ms per tenant partition) | Read-model projection store | Single indexed read of the projected, version-pinned read model; no evaluation on the read path | Committed target |
-| Read-model availability / DR RPO/RTO | Read-model store + deployment topology | Fail-closed on read-model outage (never stale); 99.9% per tenant partition, RPO 5m / RTO 30m | Committed — ratified 2026-07-28 |
-| Determinism / reproducibility | Foundation snapshot + immutability | Append-only published rows, monotonic version, complete frozen `pricingSnapshotRef` | Committed |
-| Audit retention (≥ 7 years, jurisdiction-configurable) | Governance/audit slice + Foundation audit store | Append-only, tamper-evident audit of every mutation + approval trail | Committed; retention-maximum vs minimum **open with Legal** ([`PRD.md`](./PRD.md) §15) |
-| Mass-repricing worst-case throughput; plan/tier size caps; idempotency-key TTL | Foundation + operator-efficiency slice | Idempotent, deduplicated bulk events; per-row commit; >= 50 rows/s, caps 100/500 + 366d/24m, TTL 24h | Committed — ratified 2026-07-28 (repricing figure perf-test-verified vs worst case) |
-| Data residency (`nfr-data-residency` — zero rows replicated outside a residency jurisdiction) | Deployment topology (§3.8) + Foundation storage | Residency-bound tenants are pinned to an **in-jurisdiction deployment cell**: all gear-owned stores (`pricing_*` tables incl. audit, the read-model projection, outbox, backups and DR replicas) live on that cell's `toolkit-db`; the gear performs no cross-cell replication of its own, so the boundary is enforced by cell pinning + platform storage-class configuration, verified at deployment (a residency-bound tenant on a non-compliant cell fails config validation, fail-closed). DR for residency-bound tenants uses in-jurisdiction replicas only (AC #103 RPO/RTO met within the boundary) | Committed rule; cell/storage-class inventory is platform-owned |
-
-#### Key ADRs
-
-| ADR ID | Decision Summary |
-|--------|------------------|
-| `cpt-cf-bss-pricing-adr-canonical-scope-key` | The single scope key for row-uniqueness, supersession, `PriceWindow` non-overlap, and coverage is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` + on `chargeKind = usage`: `(skuId, dimensionKey)` (the pair conditional, D-196) — the manifest's `(plan, currency, region, priceOverlay)` key extended **additively**, so a hybrid plan's components and a grandfathered row + its successor are **distinct keys** that can hold concurrent active windows without violating non-overlap. |
-| `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` | Multi-generation grandfathering: the additive `cohort` axis (the cutover instant; `none` on non-grandfathered rows) makes every cutover a **new** coexisting generation; within the grandfathered class Tariffs selects the row by the cohort of the subscription's pinned price id (`pricingSnapshotRef`). |
-| `cpt-cf-bss-pricing-adr-pricewindow-consolidation` | The `PriceWindow` machinery (store, state machine, UTC activation job, `PriceWindow*` event production — frozen manifest names) is **owned by this gear** (Slice 7); the legacy effective-dating UC is absorbed as scenario source, and the cutover's multi-window unit is one local ACID transaction. |
-| `cpt-cf-bss-pricing-adr-draft-windows` | A plan revision owns explicit draft-window intentions (Working → approval → Committed). Publish creates **no** implicit coverage (**supersedes D-332**). Approval pins the proposed schedule; publication materializes approved operations into the live four-state machine. CatalogVersion, activation and sellability gates are unchanged. |
-
-Additional ADRs are planned as the dependent slices land (snapshot/versioning strategy,
-grandfathered-row immutability, customer-group ownership, derived-meter formula-as-data,
-`CatalogVersion` increment/batching, `brand`-as-`PriceOverlay`) — see [§5 Traceability](#5-traceability)
-and [`design/README.md`](./design/README.md).
+| Architectural decision | Effect |
+| --- | --- |
+| `cpt-cf-bss-pricing-adr-book-per-currency` | Books own currency and entry identity; plans select a book. |
+| `cpt-cf-bss-pricing-adr-price-chains-per-dimension-value` | Windows normalize per value with default fallback. |
+| `cpt-cf-bss-pricing-adr-one-approval-unit-shape` | One engine, independent subjects, generation-aware review. |
+| `cpt-cf-bss-pricing-adr-reference-reservation` | Synchronous reserve, local commit and durable confirm/release recovery. |
 
 ### 1.3 Architecture Layers
 
-```text
-Capability slices  plan-definition · price-structure · currency-tax · pricewindow-linkage ·
-(authoring policy) consumer-contracts · bundles · price-overlays · advanced-primitives ·
-                   governance · lifecycle · operator-efficiency
-       │  author draft state; register validation rules + read-model fields; publish through
-       ▼           the Foundation API — own no publish/immutability/snapshot mechanics
-Catalog            Plan/Price entity model · canonical scope key · draft→publish state machine ·
-Foundation         fail-closed validation pipeline · append-only history + versioning/supersession ·
-(shared engine)    read-model projection + pricingSnapshotRef · event fan-out + CatalogVersion request
-       │           — owns no capability policy
-       ▼
-Persistence        toolkit-db backend (append-only published-row history; projected read model;
-                   audit store; event outbox; ISO 4217 minor-unit money as integer minor units)
-```
-
-| Layer | Responsibility | Technology |
-|-------|----------------|------------|
-| Presentation | REST authoring/publish/preview + read-model surfaces behind the inbound gateway; RFC 9457 problems; OAuth 2.0; ETag optimistic concurrency | Rust, REST/OpenAPI, inbound API gateway |
-| Application | Capability slices author draft state and register rules/read-model fields; each is a bounded feature | Rust modules in the `pricing` gear |
-| Domain | The Foundation publish engine, canonical scope key, validation pipeline, versioning/immutability, snapshot contract | Rust; GTS + Rust domain structs |
-| Infrastructure | Append-only published-row history, projected read model, audit store, event outbox | PostgreSQL, SecureORM |
-
-#### Design set (ordered by implementation phase)
-
-The numeric prefix = **implementation order** (dependency-ordered phasing), **not** the PRD
-§6 subsection number. As in the ledger, the two axes deliberately do not line up: a slice is
-scoped by PRD decomposition but built when its dependencies exist. The full slice map,
-dependency graph, and phase rationale live in [`design/README.md`](./design/README.md).
-
-| Doc | PRD §6 | Phase | What it is |
-|-----|--------|-------|------------|
-| [`design/01-foundation.md`](./design/01-foundation.md) | 6.2/6.7 core, §17.4/17.5 | 0/1 | **Foundation**: `Plan`/`Price` model, canonical scope key, draft→publish state machine, fail-closed validation pipeline, append-only history + versioning/supersession, read-model projection + `pricingSnapshotRef`, event fan-out + `CatalogVersion` request, tenant isolation, ISO 4217 money, idempotency/ETag. Carries the catalog-wide normative statements. |
-| [`design/02-plan-definition.md`](./design/02-plan-definition.md) | 6.1, 6.3 | 1 | Billing cycles, custom frequency, per-seat quantity provenance (`quantitySource` persisted/validated in Slice 3), one-time-setup row, mandatory `PlanTier`, meter injectivity, add-on rules, phases + `convertsToPhaseId`, billing descriptors. |
-| [`design/03-price-structure.md`](./design/03-price-structure.md) | 6.2 | 1 | Explicit `modelKind`, graduated/volume tier-band validation, `package` (block) pricing, evaluation-policy placement, joint golden-fixture conformance gate. |
-| [`design/04-currency-tax.md`](./design/04-currency-tax.md) | 6.4 | 1/2 | Region/brand taxonomy validation, `taxInclusive`/`taxCategory` display basis + tax-display policy, single-currency-per-invoice binding. |
-| [`design/05-governance.md`](./design/05-governance.md) | 6.7, 6.12 | 1/2 | Two-person rule + segregation of duties, per-currency threshold policy, RBAC deny-by-default, tenant/brand/region isolation, audit completeness/retention. (Historical-import governance was this slice's sixth subject and is **struck** — D-330, 2026-08-16.) |
-| [`design/06-consumer-contracts.md`](./design/06-consumer-contracts.md) | 6.9 | 2 | Proration input contract, `billingTiming`, entitlement grant set, plan-change contract, rating compatibility, canonical `prorationBasis` enum. |
-| [`design/07-pricewindow-linkage.md`](./design/07-pricewindow-linkage.md) | 6.5 | 2 | `PriceWindow` ownership (store, state machine, activation job, `PriceWindow*` events — D-03), publish-time window coverage + future-gap checks, sellability gate, `priceEligibility`/`cohort`/`grandfatherUntil` + most-specific-wins resolution. |
-| [`design/08-bundles.md`](./design/08-bundles.md) | 6.3 (bundle) | 2/3 | Bundle price basis, currency coverage, rev-share reconciliation, `invoiceItemization`. |
-| [`design/09-price-overlays.md`](./design/09-price-overlays.md) | 6.6 | 3 | `PriceOverlay` as an **adjustment-line container** (D-42: per-`(planId?, targetSku?)` lines, most-specific wins; per-currency amounts D-08; magnitudes range-bounded D-67) + `customerGroup` segment pricing (BSS-owned taxonomy, effective-dated audited membership). Every overlay mutation is **always material** (D-50) and its own publish unit (D-06). |
-| [`design/10-advanced-primitives.md`](./design/10-advanced-primitives.md) | 6.10 | 3 | Reserved capacity (p1; `capacity`-only on level rows — D-53), prepaid credit grant (p2; grants are a table — D-52), publish-compiled `includedAllowance` (p1 — D-45: $0 band + marker / carry grant; forbidden on `volume`, kind-rewriting on untiered rows — D-59), derived (composite) meter formula-as-data (p2), `discountRef` hook, typed `minQtyThreshold`, trailing-tier qualification (D-40; the locked rate is a **Rating-owned per-period pin**, never in `pricingSnapshotRef`, and publish is fixture-gated — D-60). |
-| [`design/11-lifecycle.md`](./design/11-lifecycle.md) | 6.8 | 3/4 | Retirement, scheduled migration + `PlanLink`, idempotency/cancellation, contract-lock protection, legacy `migrated-origin` snapshot synthesis. |
-| [`design/12-operator-efficiency.md`](./design/12-operator-efficiency.md) | 6.11 | 4 | Clone, bulk import (all-or-nothing validate / per-row commit), mass repricing, price history + export. |
-
-#### Dependency order
-
-```text
-01-foundation (scope key, publish engine, validation pipeline, read model + snapshot, events, immutability)
-    │
-    ├─→ 02-plan-definition ─┬─→ 03-price-structure   (Phase 1; a rateable plan needs both)
-    │                       │
-    ├─→ 04-currency-tax     │                          (Phase 1/2)
-    ├─→ 05-governance       │  (gates every publish)   (Phase 1/2)
-    │                       ▼
-    ├─→ 06-consumer-contracts (Phase 2; projects read-model fields onto 02/03 rows)
-    ├─→ 07-pricewindow-linkage (Phase 2; needs scope key + price rows)
-    ├─→ 08-bundles             (Phase 2/3; references component planIds → needs 02–04)
-    ├─→ 09-price-overlays         (Phase 3; overlays on published base rows)
-    ├─→ 10-advanced-primitives (Phase 3; reserved p1 may pull earlier)
-    ├─→ 11-lifecycle           (Phase 3/4; needs windows + grandfathering + snapshot synthesis)
-    └─→ 12-operator-efficiency (Phase 4; clone/bulk/mass over the full authored surface)
-```
-
-- `02-plan-definition` + `03-price-structure` are co-required: the minimum rateable plan needs both a shape and a model kind/tier structure.
-- `04-currency-tax` and `05-governance` gate the first *sellable* publish (currency/tax display + the approval gate).
-- `06-consumer-contracts` and `07-pricewindow-linkage` form the downstream-determinism surface: the read-model fields consumers depend on and the coverage/sellability gate.
-- `08-bundles` references published component `planId`s, so it follows 02–04.
-- `09-price-overlays`, `10-advanced-primitives` layer overlays/primitives on published base rows.
-- `11-lifecycle` needs windows (07) + grandfathering + `migrated-origin` snapshot synthesis.
-- `12-operator-efficiency` operates over the whole authored surface, so it is last.
+REST doors → pure domain rules and ApprovalSubjects → SecureORM repositories and shared approval Store.
+Ports isolate ProductsClient, the broker and clock. Infrastructure wires configuration, authz, scoped transactions,
+toolkit outbox dispatch and durable reference retry. Pure book/entry/price/money rules port the prototype with
+half-open band boundaries corrected by D-387. There is no domain filesystem dependency or SKU cache.
 
 ## 2. Principles & Constraints
 
-The catalog-wide normative statements are authored in the Foundation design (§4); they are
-surfaced here as design principles/constraints with stable ids.
-
 ### 2.1 Design Principles
 
-#### Foundation owns publish; slices own capability policy
+**ID**: `cpt-cf-bss-pricing-principle-book-money-independent`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-principle-foundation-owns-publish`
+Book money and revision structure are independent facts. A rejected revision does not undo approved prices.
+Bindings preserve the money price and dated SKU descriptors needed to replay an invoice.
 
-No slice emits an event, stamps a snapshot, or defines the scope key; the Foundation defines
-no capability semantics (billing cycle, model kind, bundle). Slices author draft state,
-register validation rules and read-model fields, and publish through the Foundation API.
+**ID**: `cpt-cf-bss-pricing-principle-reserve-before-write`
 
-#### Publish through the engine
+Reserve before a durable reference; release only after durable cancellation or removal. A timeout is not proof
+of rollback. Products keeps an unresolved reservation live and refuses retirement while it exists. A copied plan
+item is the one exception: it is written unreserved and attaches after the write, because the source revision's
+live reference already protects the SKU (D-413).
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-principle-publish-through-engine`
+**ID**: `cpt-cf-bss-pricing-principle-business-content-fingerprint`
 
-Every state change reaches production one way: author draft → fail-closed validation pipeline
-→ freeze read model + `pricingSnapshotRef` → emit the frozen event set → request a
-`CatalogVersion`. There is no side door that mutates published state.
-
-#### Fail closed
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-principle-fail-closed`
-
-Any invalid or ambiguous condition blocks publish and read-model warm; the absence of a
-required field is a publish failure, never a downstream default. Consumers never read draft
-state and never substitute defaults.
-
-#### Published state is append-only
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-principle-published-append-only`
-
-Published `Price` rows are immutable history; change is a new immutable row via
-versioning/supersession + `PriceWindow`. Only never-published `draft` rows are deletable.
-Grandfathered rows are immutable in price — the only permitted mutation is tightening
-`grandfatherUntil`.
-
-#### Determinism via frozen snapshot
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-principle-frozen-snapshot`
-
-Consumers resolve a complete, frozen read model via `pricingSnapshotRef`, monotonic per
-committed `CatalogVersion`; posted invoice periods never re-query mutable catalog rows. The
-catalog-side snapshot view MUST NOT diverge from the Tariffs composition SoR.
-
-#### No charge computation
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-principle-no-charge-computation`
-
-The catalog persists and publishes structure only; it computes no monetary charge, evaluates
-no overlay, and performs no FX. All mathematical formulas belong to Tariffs.
+Hash proposed item business content and common date, excluding locks, versions and operational metadata.
+Drift refreshes the unit, making old decisions stale; reviewers must see and vote on the new generation.
 
 ### 2.2 Constraints
 
-#### Canonical scope key
+**ID**: `cpt-cf-bss-pricing-constraint-two-backends`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-constraint-canonical-scope-key`
+SQLite and Postgres share invariants and scoped repository behavior. The migration chain starts at 000001;
+stand data is not migrated. Both schema goldens and real writer races are implementation gates.
 
-The single scope key for row-uniqueness, supersession, `PriceWindow` non-overlap, and window
-coverage is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` + on `chargeKind = usage`: `(skuId, dimensionKey)` — the pair an axis of the key **conditionally** (D-196).
-Rows authored here always carry `priceOverlay = base`; defaults `phase =` the plan's terminal `phase_id` (id-typed axis; implicit terminal phase auto-created for non-phased plans — D-19),
-`priceEligibility = all_subscriptions`, `cohort = none` (`cohort` ≠ `none` only on
-`existing_grandfathered` generations — each cutover creates a new one). Normative:
-[`design/01-foundation.md` §4](./design/01-foundation.md) · ADRs `cpt-cf-bss-pricing-adr-canonical-scope-key`, `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`.
+**ID**: `cpt-cf-bss-pricing-constraint-no-row-locks`
 
-#### Money is ISO 4217 minor units
+SecureORM has no FOR UPDATE. Conditional versions and pending ownership serialize subjects; Postgres uses
+serializable transactions for chain changes. Retry serialization once, with SQLite lock-upgrade errors using the
+same bounded transaction retry path. Clone attempt inputs and re-read guards inside each attempt.
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-constraint-iso4217-minor-units`
+**ID**: `cpt-cf-bss-pricing-constraint-one-replay-store`
 
-Amount precision follows the currency's ISO 4217 minor unit (0 for JPY/KRW, 2 default, 3 for
-BHD/KWD/OMR); a flat 2-decimal cap MUST NOT be assumed. Amounts are `≥ 0` (negatives
-rejected; typed credit rows are Future). No implicit FX — a missing `(currency, region)` row
-fails closed.
-
-#### UTC time
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-constraint-utc-time`
-
-All effective dating, `PriceWindow` boundaries, `grandfatherUntil`, `availableFrom`/`availableTo`,
-and anchor math are UTC.
-
-#### Tenant isolation; region decoupled from authz region
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-constraint-tenant-isolation`
-
-Plans, prices, and price overlays are tenant-scoped; SecureORM binds every query to the caller's
-tenant. The pricing `region` axis is a **commercial territory** and is decoupled from the IdP
-authorization-region claim; `region`/`brand` values MUST be members of the tenant's
-configured taxonomies, validated before publish.
-
-#### AuthZ: PEP gate + resource/action catalog
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-constraint-authz-catalog`
-
-Every API surface enforces through the shared PEP `access_scope` gate with a
-`(resource_type, action)` pair from the single normative catalog — GTS labels
-`gts.cf.bss.pricing.<noun>.v1~` (plan, bundle, price_overlay, customer_group, approval,
-approval_policy, config, audit — `historical_import` struck with the import flow, D-330), all
-outside `gts.cf.resources.*` so only
-explicit catalog roles cover them; actions sit on real objects, never authz tiers.
-Normative: [`design/05-governance.md`](./design/05-governance.md) §AuthZ Resource and Action
-Catalog · gate constraint in [`design/01-foundation.md`](./design/01-foundation.md) §2.2.
+Require Idempotency-Key for POST and If-Match for PATCH/PUT. A 24-hour scoped replay store owns claims and
+responses; no approval-unit key exists. A retry cannot allocate an unrelated entry/ref_id before consulting replay.
 
 ## 3. Technical Architecture
 
-The technical architecture is specified per slice in the [`design/`](./design/) set, with the
-shared substrate in [`design/01-foundation.md`](./design/01-foundation.md). This section
-summarises the cross-slice shape and declares the component/sequence ids; the phased slice
-map and dependency order are in §1.3 and [`design/README.md`](./design/README.md).
-
 ### 3.1 Domain Model
 
-Core entities live in the Foundation: `Plan` (binds a published SKU to a billing cycle,
-mandatory `PlanTier`, optional phases, composition rules) and `Price` (a price row on the
-canonical scope key with amount/currency, `modelKind`, tier bands, evaluation-policy fields,
-and lifecycle metadata). Published rows are append-only, with immutable history rows preserved
-on every versioning/supersession. A projected **read model** materialises the complete,
-frozen per-`CatalogVersion` view consumers resolve via `pricingSnapshotRef`. Full field-level
-definitions and the naming discipline are normative in
-[`design/01-foundation.md`](./design/01-foundation.md) §4.
+Glossary (the owner's rename, spec §2.3):
+
+- **PriceBookEntry** — a book's line (SKU × charge kind × period); its Prices are dated amounts per dimension-value chain.
+  It carries the dimension key, the invoice-line override and the Products reservation.
+- **Price** — one dated amount in the chain of one dimension value: model, money (`price_json`), min_fee,
+  eligibility, window and state.
+- **Chain** — the prices of one entry and one dimension value; a concept, not an entity.
+
+Names before the rename, kept here on purpose so older records stay readable:
+
+| Earlier name | Name now |
+| --- | --- |
+| `price`, table `pricing_price`, `/price-books/{id}/prices`, `/prices/{id}` | `price_book_entry`, table `pricing_price_book_entry`, `/price-books/{id}/entries`, `/price-book-entries/{id}` |
+| `price_row`, table `pricing_price_row`, `/prices/{id}/rows`, `/rows/{id}`, `GET /pricing/v1/price-rows/{id}` | `price`, table `pricing_price`, `/price-book-entries/{id}/prices`, `/prices/{id}`, `GET /pricing/v1/prices/{id}` |
+| `price_id` (on prices and reference ops), `row_id`, `row_ids` | `price_book_entry_id`, `price_id`, `price_ids` |
+| approval kind `price_rows`; events `PriceRowsPublished`, `PriceReferenceLost`; reference kind `price` | `prices`; `PricesPublished`, `PriceBookEntryReferenceLost`; `price_book_entry` |
+| op kinds `create_price`, `delete_price`, `rereserve_price` | `create`, `delete`, `rereserve` on `(ref_kind, ref_id)`, plus `attach` for a copied item (D-412, D-413) |
+| line codes `PRICE_KEY_TAKEN`, `PRICE_REFERENCE_LOST`, `PRICE_PERIOD_INVALID`, `PRICE_ROWS_IN_USE`, `PRICE_NOT_FOUND`, `PRICE_CONFIRMATION_PENDING`, `PRICE_WRITE_REFUSED` | `ENTRY_KEY_TAKEN`, `ENTRY_REFERENCE_LOST`, `ENTRY_PERIOD_INVALID`, `ENTRY_PRICES_IN_USE`, `ENTRY_NOT_FOUND`, `ENTRY_CONFIRMATION_PENDING`, `ENTRY_WRITE_REFUSED` |
+| amount codes `ROW_NOT_DRAFT`, `ROW_NOT_IN_BOOK`, `ROW_LOCKED_PENDING`, `ROW_VERSION_TAKEN`, `ROW_NOT_PENDING`, `ROW_NOT_FOUND`, `NO_DRAFT_ROWS`, `TEMPORARY_ROW_FIXED`; phase 3 `ROW_SKU_DEPRECATED` | `PRICE_NOT_DRAFT`, `PRICE_NOT_IN_BOOK`, `PRICE_LOCKED_PENDING`, `PRICE_VERSION_TAKEN`, `PRICE_NOT_PENDING`, `PRICE_NOT_FOUND`, `NO_DRAFT_PRICES`, `TEMPORARY_PRICE_FIXED`; phase 3 `ITEM_SKU_DEPRECATED` |
+
+The shared approval engine still names its own lock conflict `ROW_LOCKED_PENDING` (Products answers it for SKUs);
+the pricing doors answer `PRICE_LOCKED_PENDING` for a price and `ROW_LOCKED_PENDING` for a plan revision (phase 3).
+
+PriceBook contains PriceBookEntry; PriceBookEntry contains Price chains keyed by nullable dim_value. SKU type determines
+charge_kind; period is recurring-only. A price carries a pricing model and inputs, min_fee, eligibility, dates,
+state and approval attribution. It contains no frozen descriptors. Plan, PlanRevision and PlanItem are
+phase 3 types; Promotion (D-409) and MigrationRequest (D-410) are deferred by the owner; phase 4 assembles Resolution
+outputs (Quote is not built, D-415). A plan projects its published revision number; a revision binds one book and
+its items (D-407).
+
+```mermaid
+classDiagram
+  PriceBook "1" --> "many" PriceBookEntry
+  PriceBookEntry "1" --> "many" Price
+  DimensionKey "0..1" <-- "many" PriceBookEntry
+  ApprovalUnit "1" --> "many" ApprovalItem
+  ApprovalUnit "1" --> "many" ApprovalDecision
+  ApprovalItem --> Price
+  PriceBookEntry --> ReferenceReceipt
+  Plan "1" --> "many" PlanRevision
+  PlanRevision --> PriceBook
+  PlanRevision "1" --> "many" PlanItem
+  PlanItem --> PriceBookEntry
+```
+
+Approved prices are immutable money facts. Conditional normalization may close predecessor windows and set
+keep_for_bound when the successor is new; it cannot rewrite money or remove historical pins. Value chains can
+end explicitly. Tier arithmetic uses decimal/money types without binary float rounding and [from, to) bands.
+Every decimal of a price (amount, rate, package size and package price, tier up_to and rate) travels as a JSON string;
+a JSON number is refused 400 AMOUNT_INVALID, because reading it would round it through f64.
+Min-fee accounting groups by price/subscription/period across values and slices before promotions; Rating applies it
+(D-415).
 
 ### 3.2 Component Model
 
-Components are handlers over the shared Foundation, not independently deployable services.
-Each carries a stable `cpt-cf-bss-pricing-component-{slug}` ID; phasing and dependency
-order are in §1.3 and the linked slice doc is normative for its internals.
+#### Books
 
-#### Catalog Foundation
+**ID**: `cpt-cf-bss-pricing-component-books`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-foundation`
+Phase 2: dimension registry, settings, book validity, entry identity and read-only export.
 
-Shared publish engine: `Plan`/`Price` model, canonical scope key, draft→publish state machine,
-fail-closed validation pipeline, append-only history + versioning/supersession, read-model
-projection + `pricingSnapshotRef`, event fan-out + `CatalogVersion` request ([`design/01-foundation.md`](./design/01-foundation.md)).
+#### Prices
 
-#### Plan-definition handler
+**ID**: `cpt-cf-bss-pricing-component-prices`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-plan-definition`
+Phase 2: price models, chain normalization, pair guard, minimum fees and temporary pairs.
 
-Billing cycles, custom frequency, per-seat quantity provenance (`quantitySource` in Slice 3),
-one-time-setup row, mandatory `PlanTier`, meter injectivity, add-on rules, phases, billing
-descriptors ([`design/02-plan-definition.md`](./design/02-plan-definition.md)).
+#### Approvals
 
-#### Price-structure handler
+**ID**: `cpt-cf-bss-pricing-component-approvals`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-price-structure`
+Phase 2 prices subject and unit doors; phase 3 plan_revision subject (the promotion and migration subjects are deferred, D-409, D-410). Shared Store and engine, generation refresh, SoD and atomic terminal acts.
 
-Explicit `modelKind`, graduated/volume tier-band validation, `package` pricing, conformance
-fixtures ([`design/03-price-structure.md`](./design/03-price-structure.md)).
+#### Reservations client
 
-#### Currency-tax handler
+**ID**: `cpt-cf-bss-pricing-component-reservations-client`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-currency-tax`
+Phase 2: ProductsClient reserve/re-read/write/confirm and durable cancellation/release. Persist reference loss. Phase 3 extends the protocol to plan_item; sold_as is deferred (D-411).
 
-Per-`(currency, region)` rows, region/brand taxonomies, tax-display basis + `not_sellable_ga`
-gate, single-currency-per-invoice binding, base-price preview ([`design/04-currency-tax.md`](./design/04-currency-tax.md)).
+#### Events
 
-#### Governance handler
+**ID**: `cpt-cf-bss-pricing-component-events`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-governance`
+Phase 2 core TypedEvent payloads and toolkit outbox dispatcher; phase 3 adds the plan events PlanRevisionPublished and PlanReferenceLost (promotion events deferred, D-409; migration-request and retirement events deferred, D-410).
 
-Two-person rule, per-currency threshold policy, RBAC deny-by-default + the AuthZ
-resource/action catalog, isolation, audit/retention
-([`design/05-governance.md`](./design/05-governance.md)).
+#### Plans
 
-#### Consumer-contracts handler
+**ID**: `cpt-cf-bss-pricing-component-plans`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-consumer-contracts`
+Phase 3: revision composition, sale-date checks, blocked_by and clone; retirement prerequisites are deferred (D-410).
 
-Proration input contract, `billingTiming`, entitlement grant set, plan-change contract, rating
-compatibility ([`design/06-consumer-contracts.md`](./design/06-consumer-contracts.md)).
+#### Promotions and migrations
 
-#### PriceWindow-linkage handler
+**ID**: `cpt-cf-bss-pricing-component-promotions`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-pricewindow-linkage`
+Deferred by the owner: approved migration requests without executing subscription moves (D-410) and nonoverlapping versioned promotions (D-409).
 
-`PriceWindow` ownership (store/state machine/activation job — D-03), publish-time window coverage + future-gap, sellability gate, grandfathering resolution ([`design/07-pricewindow-linkage.md`](./design/07-pricewindow-linkage.md)).
+#### Read contract
 
-#### Bundles handler
+**ID**: `cpt-cf-bss-pricing-component-read-contract`
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-component-bundles`
-
-Bundle price basis, component currency/frequency coverage, rev-share reconciliation,
-itemization ([`design/08-bundles.md`](./design/08-bundles.md)).
-
-#### Price-overlays handler
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-price-overlays`
-
-`PriceOverlay` authoring/validation + the customer-group taxonomy, effective-dated
-audited membership, resolved-group freezing ([`design/09-price-overlays.md`](./design/09-price-overlays.md)).
-
-#### Advanced-primitives handler
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-advanced-primitives`
-
-Reserved capacity (same-row attributes), prepaid grant (GA-gated), derived meter
-formula-as-data, `discountRef` hook, typed `minQtyThreshold`
-([`design/10-advanced-primitives.md`](./design/10-advanced-primitives.md)).
-
-#### Lifecycle handler
-
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-component-lifecycle`
-
-Retirement, scheduled migration + `PlanLink`, contract-lock protection, `migrated-origin`
-snapshot synthesis ([`design/11-lifecycle.md`](./design/11-lifecycle.md)).
-
-#### Operator-efficiency handler
-
-- [ ] `p2` - **ID**: `cpt-cf-bss-pricing-component-operator-efficiency`
-
-Clone, two-phase bulk import, journaled mass repricing, history + export
-([`design/12-operator-efficiency.md`](./design/12-operator-efficiency.md)).
+Phase 4: resolve matrix, renewal walk, period bindings and durable pin reads; the Studio quote is not built (D-415); versioned Products reads at binding time.
 
 ### 3.3 API Contracts
 
-The two primary contracts — the **authoring + publish** surface
-(`cpt-cf-bss-pricing-interface-authoring-publish`) and the **published read model**
-(`cpt-cf-bss-pricing-interface-catalog-read-model`) — are owned by the Foundation and
-specified in [`design/01-foundation.md`](./design/01-foundation.md) §3.3. The base-price
-**preview** (`cpt-cf-bss-pricing-interface-price-preview`) and the external integration
-contracts (Tariffs read-model, Subscriptions publish, Registry `CatalogVersion`, Billing
-descriptors, PriceWindow linkage — [`PRD.md`](./PRD.md) §9.2) are refined in the slices that
-own their payloads. Concrete schemas, proto, and error taxonomies are owned by the slice
-designs, not the PRD.
+The mounted authoring base is `/bss-pricing/v1`. Every mutation passes authenticated PolicyEnforcer scope,
+headers + Bytes, preconditions::parse_body and correlation::establish. OperationBuilder registers matching
+OpenAPI success/error schemas. POST requires Idempotency-Key; PATCH/PUT require If-Match. Queue reads return
+stored snapshots and live impact: a prices unit's GET /approval-units item and GET /approval-units/{id}, and the GET
+publish-changes listing, carry the same impact object, {prices, entries, plans, subscriptions}: from phase 3, plans lists
+every plan revision, in any state, whose items name an entry of the unit or listing, as { plan_id, code, revision_id,
+rev_no, state }, and subscriptions reads "unavailable until the Subscriptions integration" (it read "unavailable until
+phase 3" in phase 2). A plan_revision unit's impact is {subscriptions} alone, with the same text: publishing a revision
+moves no existing pin (D-394). Never label unavailable impact as a measured zero. The stored prices snapshot also carries each
+entry SKU's current descriptors, beside the fingerprinted after, never in it (D-408); their read is best-effort, and a
+registry that cannot answer or refuses the caller records "descriptors": "unavailable" and refuses nothing (D-416).
+Products read (D-416): the reads a rule needs are made as the caller, so the plan_revision submitter and its final
+approver, readers of GET /plan-revisions/{id}/checks, plan item authors, price-book entry authors (the period rule and
+the create re-read), and the submitter and final approver of a prices unit on a usage chain (the dated metering read, D-402) need products read; an approve-only reviewer votes on every other
+unit and rejects any unit.
+
+| Area | Phase | Operations below the authoring base |
+| --- | --- | --- |
+| Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, period?, dimension_key?; GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
+| Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
+| Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter. Every unit door dispatches on the unit's stored kind (phase 3): its subject, the domain event its apply writes and the impact its card shows; a stored kind pricing does not record is a corrupt row (500), never judged as `prices` |
+| Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys; PUT /approval-policy sets the default (`*`) or one kind's quorum, `prices` or `plan_revision` (phase 3); any other kind is 400 POLICY_KIND_INVALID |
+| Reference work | 2 | GET /reference-ops?state&limit&cursor lists the tenant's durable reference ops in op-id order (config settings permission); limit 1 to 1000, default 100; the next page starts after next_cursor |
+| Plans | 3 | POST /plans with code, name, book_id (201: the plan and its draft rev 1 on that book); GET /plans; GET/PATCH /plans/{id} (name); POST /plans/{id}/revisions copies the published revision (book, availability, items) into a new draft under D-413, refused while a draft or pending revision exists (REVISION_DRAFT_EXISTS); GET /plan-revisions/{id}; PATCH /plan-revisions/{id} with book_id?, available_from?, draft only (REVISION_NOT_DRAFT), with no item list (D-407): a new book_id remaps each item to the new book's entry of the same (SKU, charge kind, period), bumping the item's version, and an unmatched item keeps its entry (the checks then show ITEM_BOOK_FOREIGN); DELETE /plan-revisions/{id} draft only, with a delete op for every item reference (D-414), and the last revision of a never-published plan takes the plan with it in the same transaction, freeing its code (D-417); GET /plan-revisions/{id}/checks answers { checks, ready, sale_date } from fresh SKU reads (D-408); POST /plan-revisions/{id}/submit (plan submit, D-418, as POST /prices/{id}/submit is price submit; no body) makes an unlocked draft a plan_revision unit (201 { applied, unit, revision }; REVISION_NOT_DRAFT otherwise), judged by the checks of GET …/checks built by the same function from fresh SKU reads: a red check is 400 REVISION_CHECKS_RED with the red checks (code, label, detail, blocked_by) in the problem detail and no unit; its lock is the conditional pending_unit_id, a lost one 409 ROW_LOCKED_PENDING; quorum 0 publishes at once; POST /plans/{id}/clone with code, name (plan author, Idempotency-Key; 201 with the new plan, as POST /plans answers) makes a new plan whose draft rev 1 copies the source's published revision (book, availability, items) under D-413, without the source's decisions, approval identity or pins; a deprecated SKU is carried and the new plan's checks show ITEM_SKU_DEPRECATED (D-408). Deferred by the owner: grants and bundle_sku_id in the revision PATCH (D-411); POST /plans/{id}/retire with migration_request_id, and PLAN_RETIRING on a retiring plan (D-410) |
+| Plan items | 3 | POST /plan-revisions/{id}/items with sku_id, price_book_entry_id?, treatment, included_qty?, qty_min? (a plan_item create op, D-407; at most 200 items per revision); PATCH /plan-items/{id} with treatment?, included_qty?, qty_min?, price_book_entry_id?, draft only and never a SKU change; DELETE /plan-items/{id} (a delete op); the revision's creator edits it and its items (D-404) |
+| Read contract | 4 | GET /resolve?plan_revision_id&date&item_id?&pins? (plan read, D-419): a published or superseded revision on one date, each item with its chain matrix (default and every value, `binding` or `uncovered`), its SKU version as of the date and its resolved invoice inputs with their source (D-420, D-421); no totals, no promotion (D-409, D-415); pins are price_id or price_id:dim_value, at most 1 000. GET /prices/{id} (price read, D-422): an approved price of the tenant, whatever its window, with its entry's SKU, charge kind, period, book and currency, stored facts only. Both are reads: no audit row, no idempotency key, no binding |
+| Promotions | deferred (D-409) | Deferred by the owner and not built in phase 3; the planned shape: POST /promotions with name, percent, from_date, to_date, plan_ids (at most 50), apply_to; GET /promotions; GET /promotions/{id} (the current approved version, the open version and the history); PATCH /promotions/{id} under If-Match on the promotion, editing the open draft version or creating it from the current approved one; POST /promotions/{id}/submit, /end-today, /cancel |
+| Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
+
+The consumer surface named by spec §7.1, `GET /pricing/v1/resolve` and `GET /pricing/v1/prices/{id}`, is
+`GET /bss-pricing/v1/resolve` and `GET /bss-pricing/v1/prices/{id}` below the gear's base (D-419, D-422; the Read contract
+row above); phase 4 mounts them with golden contracts. `GET /pricing/v1/quote`, planned for the Studio, is not built,
+and the Studio is not wired to the API (D-415).
+Fields/query parameters are snake_case, including plan_revision_id, item_id, pins, price_id, dim_value, dim_used,
+pinned_from, uncovered, sku_version, billing_timing, rounding_policy, promotion_id and promotion_version (the last two
+deferred with promotions, D-409). Resolve returns inputs, not totals; slice 07 §6 gives the response field by field.
+
+| Condition | Response |
+| --- | --- |
+| Products unavailable before reservation/write | 503 REGISTRY_UNAVAILABLE; no entry |
+| SKU fenced / retiring or retired / deprecated / draft for a new entry | 409 SKU_FENCED (Products' reserve refusal, passed through) / SKU_RETIRING / SKU_DEPRECATED / SKU_DRAFT |
+| Bundle SKU, or a SKU type that no longer matches the charge kind | 409 BUNDLE_SKU_NOT_PRICEABLE / CHARGE_KIND_SKU_TYPE |
+| Products refuses a SKU read a rule needs (a dated metering read, a plan check's read; for example no SKU read) | Products' own status and code, at submit, approve, reject and the checks door; only unavailability is 503 REGISTRY_UNAVAILABLE (D-402, D-416); a descriptor read refuses nothing and records "descriptors": "unavailable" (D-416) |
+| Usage-chain structure changed | 400 CHAIN_MODEL_CHANGED (D-403) |
+| A temporary's return (or closed end) no longer matches the approved chain | 400 PAIR_RETURN_STALE at submit; APPLY_REFUSED at apply (D-391) |
+| A price that starts inside a temporary window; a temporary whose window contains another price's start | 400 PRICE_INSIDE_TEMPORARY; 400 TEMPORARY_SPANS_A_CHANGE, at the draft door and at submit; APPLY_REFUSED at apply (D-406) |
+| Invalid dimension or price window | DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_UNKNOWN, DIM_NOT_DECLARED, WINDOW_START_IN_PAST or WINDOW_OVERLAP; validation rejection |
+| Money sent as a JSON number; NUL in body text | 400 AMOUNT_INVALID; 400 VALIDATION |
+| Removing a registry key an entry names / a value a price uses | 409 DIMENSION_KEY_IN_USE / DIM_VALUE_IN_USE |
+| Changing an entry's invoice_line_override once it has an approved or pending price | 409 INVOICE_LINE_LOCKED (D-426) |
+| Edit or delete of a price that is not an unlocked draft (a pending price included) | 409 PRICE_NOT_DRAFT |
+| Stale If-Match, or a conditional write that lost its version | 409 STALE_REVISION |
+| A price another pending unit owns, at submit; a plan revision whose lock is lost at submit; a contended unit | 409 PRICE_LOCKED_PENDING; 409 ROW_LOCKED_PENDING (phase 3); 409 UNIT_CONTENDED |
+| Transaction still contended after its bounded retries | 409 CONTENDED (an entry create that fails so, or with a 500, after its reserve is cancelled before the answer: no entry, key free, receipt released); UNIT_CONTENDED at an approval-unit door (submit, publish-changes, approve, reject, withdraw) |
+| Author approval; a draft price edited or deleted by anyone but its author, or an entry delete that would take another author's draft | 403 SOD_VIOLATION; 403 NOT_DRAFT_AUTHOR (D-404) |
+| Generation changed or content drift | 400 GENERATION_MISMATCH or committed UNIT_STALE with current generation |
+| Duplicate vote / terminal unit / wrong withdrawer | 409 DUPLICATE_VOTE / UNIT_ALREADY_DECIDED; 403 NOT_SUBMITTER |
+| Apply environment changed | APPLY_REFUSED, transaction rolls back |
+| Released receipt on confirm | 409 REFERENCE_RELEASED from Products, or 404 for a reservation Products does not know; the entry stays confirmation_pending and a rereserve op re-reserves it; lost only when the SKU is fenced, retiring or retired (D-401) |
+| Phase 3: a red plan check at submit; an item refused at its door; an entry a plan item names, deleted | 400 REVISION_CHECKS_RED with the red checks, no unit; 400 ITEM_BOOK_FOREIGN, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_MISSING, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU, REVISION_ITEMS_TOO_MANY, TREATMENT_INVALID, INCLUDED_QTY_INVALID or QTY_MIN_INVALID, 409 ITEM_SKU_TAKEN; 409 SKU_FENCED, SKU_RETIRING or SKU_DRAFT from the item's create op (Products' reserve refusal or the re-read); 409 ENTRY_IN_USE (D-408) |
+| Phase 3: an item delete, or a draft revision delete, while an item's confirm is outstanding | 409 ITEM_CONFIRMATION_PENDING; retry once the confirm completes |
+| Phase 3: a blank plan code; a plan code taken; a copy of a plan with no published revision; a clone of one | 400 PLAN_CODE_REQUIRED; 409 PLAN_CODE_TAKEN; 409 PLAN_UNPUBLISHED; 409 CLONE_SOURCE_UNPUBLISHED |
+| Phase 4: a resolve of a draft or pending revision; a date that is not YYYY-MM-DD; a pin that names no approved default or own-chain price of an entry this revision's items name (a :dim_value pin on a value-chain price included); two pins for one (item, value); more than 1 000 pins | 409 REVISION_NOT_PUBLISHED; 400 DATE_INVALID; 400 PIN_FOREIGN for the whole request (a :dim_value is not checked against today's registry); 400 PIN_DUPLICATE; 400 PINS_TOO_MANY (D-419) |
+| Phase 4: an unknown or another tenant's revision; an item_id the revision does not have; a price that is not an approved price of the tenant; a price id that is not an id | 404, before any Products read; 404; 404 with one body for a draft, pending, rejected, unknown or foreign price (D-422); 400 ID_INVALID |
+| Phase 4: which resource a read-contract refusal names | every GET /resolve refusal (query, grant, revision, item, state, pins) names resource type cf.bss.pricing.plan.v1~; every GET /prices/{id} refusal (id, grant, price) names cf.bss.pricing.price.v1~ (phase 4 review F1). The authoring doors still name cf.bss.pricing.price_book.v1~ for every refusal; one resource type per label there is owed |
+| Phase 4: a resolve whose SKU version read Products cannot answer, refuses, or answers 404 | 503 REGISTRY_UNAVAILABLE; Products' own status and code; sku_version null, like no version on the date, never a pass-through 404 (D-421) |
+| Phase 4: a chain that no price covers on the date | not an error: uncovered: true and no binding (D-420, PRD AC #18) |
+| Deferred: migration, retirement and promotion refusals | MIGRATION_TARGET_UNPUBLISHED, MIGRATION_TARGET_CURRENT, MIGRATION_TARGET_RETIRING, MIGRATION_CURRENCY_MISMATCH, MIGRATION_SUBSCRIPTION_PENDING and RETIRE_MIGRATION_REQUIRED wait with migration requests and retirement (D-410); PROMOTION_VERSION_OPEN and PROMOTION_NOT_STARTED with promotions (D-409) |
+
+Canonical toolkit RFC-9457 Problem carries code, field and message, retaining typed DbErr for retry classification.
+Malformed body/precondition failures occur before domain work. A body string (value or key) that contains a NUL
+character is 400 VALIDATION at parse_body, before any database work, so SQLite and Postgres answer alike. All four existing route censuses must agree with
+mounted operations, permissions and preconditions; no Json<T> extractor replaces the retained pricing door shape.
 
 ### 3.4 Internal Dependencies
 
-- **`toolkit-db`** — transactional persistence for the append-only published-row history, the projected read model, the audit store, and the event outbox.
-- **Coordination lease library** — singleton coordination for background work (read-model warming re-drive, window activation/expiration, mass-repricing runs, scheduled-migration dispatch).
+bss-approval supplies the engine, policy selection, Store contract, generation-aware decisions and prefixed DDL.
+Repositories accept &impl DBRunner so state, items, replay, audit and outbox share the caller's transaction.
+Toolkit database retries use per-attempt cloned inputs. Broker TypedEvent defines the durable event envelope;
+outbox_migrations_with_prefix("bss_pricing_outbox") belongs in DatabaseCapability, with a live dispatcher.
 
 ### 3.5 External Dependencies
 
-The catalog integrates with the BSS actors and systems defined in [`PRD.md`](./PRD.md) §3.2 /
-§13. These are integration boundaries, not components owned here:
-
-- **Catalog registry (Product & SKU)** — SoR for `Product`/`SKU`/`Category`/`Attribute`/`CatalogVersion`, the `bundle` SKU type, `meteringUnit` declaration, and the `PlanTier` taxonomy; the **sole** `CatalogVersion` incrementer. The catalog consumes published SKUs and freezes content into the version.
-- ~~PriceWindow (effective-dating use case)~~ — **consolidated into this gear** (D-03; PRD §15 answered): Slice 7 owns the window store, state machine, UTC activation job, and `PriceWindow*` event emission; the legacy UC document remains scenario source material.
-- **Tariffs / PLAL** — consumes the read model and evaluates formulas/overlays/FX; composes the `pricingSnapshotRef` (composition SoR).
-- **Subscriptions** — owns the plan-change boundary/mode + runtime, plan-change classification, trial runtime, entitlement enforcement, `PlanLink` migration, sellability checks (proration math = rating gear).
-- **Rating** — consumes events + warmed read models; owns Usage → `RatedCharge` orchestration.
-- **Billing / Payments** — consumes descriptors via `CatalogVersion`, derives deferral from `billingTiming`, owns refunds/credits and PSP/ERP posting.
-- **Tax Engine** — scheme determination + `region` → jurisdiction mapping; **confirmed post-MVP**. MVP is tax-exclusive; `taxInclusive=true` plans are authorable but GA-gated.
-- **Contracts** — contract locks + negotiated RI-style reservation rates.
-- **Promotions** — coupon/discount authoring + evaluation (**PRD does not yet exist**); `discountRef` resolves to a registered external instrument.
-- **Marketplace** — consumes bundle rev-share for fee accrual.
+Products registers LocalReferenceRegistry::for_owner("pricing") during init under the
+PricingReferenceRegistry ClientHub key. Pricing lazily resolves ReferenceRegistryV1 at each use; absence
+returns 503 REGISTRY_UNAVAILABLE and does not prevent boot. Ownership is bound by Products, never by
+request input. This is an explicit same-binary, same-deployment trust boundary. Calls use the caller's
+subject for audit and record the bound owner. PRICING_SYSTEM_ACTOR with subject type bss-pricing.system
+uses only the operation tenant's scope and is audited as system; other system subjects are refused.
+A future out-of-process transport uses the REST reference_principals mapping and pricing's configured
+service_principal_id credentials with the same semantics; that transport is not implemented here.
+The fresh sku_for_write read accepts every lifecycle; sku_version_as_of resolves the version in force
+at each price start for the D-402 pair guard.
+Reserve is idempotent on the live logical reference, not on a released receipt. The same tenant and SKU must be
+bound to the receipt and object. Products versions?as_of provides descriptor history in phase 4. There is no
+SkuChanged listener/local SKU read model in phase 2 (D-399). Subscriptions migration execution and Rating
+adaptation are independent programmes; approval here cannot claim a subscription moved.
 
 ### 3.6 Interactions & Sequences
 
-Per-flow sequences are specified in the corresponding slice documents; the load-bearing ones:
+#### Publish changes
 
-#### Author → validate → publish → CatalogVersion
+**ID**: `cpt-cf-bss-pricing-seq-publish-changes`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-seq-author-publish`
+```mermaid
+sequenceDiagram
+  actor Author
+  actor Reviewer
+  participant Pricing
+  participant DB
+  Author->>Pricing: Select draft prices and common_effective_date
+  Pricing->>DB: Replay check; transaction claim, collect, validate, unit, items, conditional ownership
+  Pricing->>DB: Submission audit; quorum zero applies in same transaction
+  Pricing-->>Author: Unit snapshot and generation
+  Reviewer->>Pricing: Approve with generation and new client key
+  Pricing->>DB: Conditional unit version; check SoD; recollect fingerprint
+  alt Content drift
+    Pricing->>DB: Refresh items/snapshot/hash; bump generation; stale earlier votes; commit receipt
+    Pricing-->>Reviewer: UNIT_STALE with new generation
+  else Quorum reached
+    Pricing->>DB: Revalidate chains; normalize windows; approve; audit and toolkit outbox; commit
+    Pricing-->>Reviewer: Approved
+  else More votes needed
+    Pricing->>DB: Commit current-generation vote
+    Pricing-->>Reviewer: Pending
+  end
+```
 
-Draft authoring → fail-closed validation pipeline → approval (two-person rule for material
-changes) → `PlanPublished` (pending version ref) → registry batches → `CatalogVersionPublished`
-→ read-model warm to SLO (or `PlanPublishDegraded`); `pricingSnapshotRef` pins the committed
-version ([`design/01-foundation.md`](./design/01-foundation.md)).
+A generation mismatch counts no vote. Apply failures roll back. Unit writes use version predicates and entry
+chains are acquired in ascending id before prices, preventing inverse ordering across batches. Rejection and
+withdrawal clear only owned pending locks and emit the terminal event without PricesPublished.
 
-#### Consumer read-model resolution
+#### Reserve, write, confirm
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-seq-readmodel-resolution`
+**ID**: `cpt-cf-bss-pricing-seq-reserve-write-confirm`
 
-A consumer pins one committed `CatalogVersion` and resolves the complete frozen read model
-via `pricingSnapshotRef` — no draft read, no default substitution, monotonic per version
-([`design/01-foundation.md`](./design/01-foundation.md)).
+```mermaid
+sequenceDiagram
+  participant Caller
+  participant Pricing
+  participant Products
+  participant DB
+  participant Retry
+  Caller->>Pricing: Create entry, Idempotency-Key
+  Pricing->>DB: Replay first; Tx A claim key, mint price_book_entry_id, create op reserving
+  Pricing->>Products: Reserve SKU reference (price_book_entry, price_book_entry_id), idempotently
+  Products-->>Pricing: reservation_id or fence/unavailable error
+  Pricing->>Products: Re-read SKU type and lifecycle
+  alt Write permitted
+    Pricing->>DB: Tx B entry + reservation_id + reference_state confirmation_pending; op written
+    Pricing->>Products: Confirm receipt
+    alt Confirmation success
+      Pricing->>DB: Tx C entry confirmed, op done, key answered
+    else Timeout or transient failure
+      Retry->>Products: Resume written op with bounded backoff; never release on timeout
+    else REFERENCE_RELEASED or 404 unknown reservation
+      Pricing->>DB: Entry stays confirmation_pending, rereserve op, op done, key answered
+    end
+  else Refusal after reserve
+    Pricing->>DB: Op cancelling, persist outcome
+    Retry->>Products: Release after cancellation is durable
+    Retry->>DB: Op done, key answered
+  end
+```
 
-#### Grandfathering cutover
+Concurrent replays resolve to the same logical object or a nonmutating conflict. Tx A durably names the
+reference before reserve: a crash between reserve and Tx B is recoverable by repeating the idempotent reserve.
+An unknown commit outcome is reconciled before cancellation. Deletion removes the entry and inserts a
+delete op in releasing in one transaction, then release finishes the op. Every op not done is retried
+with bounded backoff and never dropped. The ticker also checks confirmed entries through states(): a released
+receipt on a live entry starts a rereserve op when the SKU is not fenced, else the entry becomes lost,
+new prices fail ENTRY_REFERENCE_LOST and PriceBookEntryReferenceLost is emitted. A receipt released before its confirm
+starts the same op; lost entries are re-reserved once their SKU admits a reservation again. No timeout
+releases a reservation.
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-seq-grandfathering-cutover`
+#### Temporary pair
 
-One atomic approval unit shortens the current `all_subscriptions` window `effectiveTo` to the
-cutover and schedules (a) an immutable `existing_grandfathered` copy — a **new `cohort`
-generation**; prior generations stay untouched and concurrently live — and (b) the successor —
-so no coverage gap opens and each grandfathered price stays live-resolvable yet immutable
-([`design/07-pricewindow-linkage.md`](./design/07-pricewindow-linkage.md); §17.5).
+**ID**: `cpt-cf-bss-pricing-seq-temporary-pair`
+
+```mermaid
+sequenceDiagram
+  actor Author
+  participant Prices
+  participant Approvals
+  participant DB
+  Author->>Prices: Draft temporary_until for one chain
+  Prices->>DB: Read existing chain and versionAt at end
+  alt Existing chain
+    Prices->>DB: Persist promo plus return with same dim_value and pair links
+  else Previously unowned value
+    Prices->>DB: Persist one closed price; no return copy of default
+  end
+  Author->>Approvals: Submit atomic set; optional common date
+  Approvals->>DB: Shift both dates preserving duration; validate; conditional lock
+  Approvals->>DB: On apply re-read chains; normalize per value; audit/outbox; commit
+```
+
+#### Blocked revision (phase 3)
+
+**ID**: `cpt-cf-bss-pricing-seq-blocked-revision`
+
+```mermaid
+sequenceDiagram
+  actor Manager
+  participant Plans
+  participant Prices
+  participant Approvals
+  Manager->>Plans: Check draft revision for sale date
+  Plans->>Prices: Coverage for every item and dimension value
+  Prices-->>Plans: Uncovered values and pending_unit_id candidates
+  Plans-->>Manager: ITEM_UNCOVERED with computed blocked_by
+  Manager->>Approvals: Publish covering prices unit
+  Approvals->>Prices: Approve money independently
+  Manager->>Plans: Recheck and submit revision
+  Plans->>Approvals: Separate plan_revision unit only when checks pass
+```
+
+blocked_by is never a stored dependency graph or automatic submission trigger. Plan and price approval outcomes
+remain independent. Rejecting the revision leaves the approved money visible to existing revisions on the book.
 
 ### 3.7 Database schemas & tables
 
-The canonical schema — `pricing_plan`, `pricing_price` (history = superseded rows retained in-table, keyed by `supersedes_price_id`), the scope-key unique
-index, the projected `pricing_read_model`, the `pricing_catalog_version_ref` (pending/committed), the event
-outbox, tenant policy objects, and the append-only audit store — is owned by the Foundation
-and specified normatively in [`design/01-foundation.md`](./design/01-foundation.md) §4.
-Slice-specific tables (phases, add-on rules, bundles, price overlays, customer-group membership,
-migration schedules) are introduced by their respective slice documents. Money columns are
-stored as integer minor units at the currency's ISO 4217 scale. ~~One store sits deliberately **outside** this set: governed backdated reference rows live in
-`pricing_historical_price` (D-76).~~ **Struck by D-330** (2026-08-16): historical import is out of
-scope, so there is no second price plane, and every invariant stated about published
-`pricing_price` rows holds without an exception class because there is nothing to except
-([`design/05-governance.md`](./design/05-governance.md) §6).
+This is the target Postgres schema shape in bss; SQLite omits bss., maps uuid/date/timestamptz/jsonb to text and
+bytea to blob, preserving checks and indexes. Mutable tenant entities carry concurrency versions and timestamps.
+Tenant-scoped parent checks accompany entity-id foreign keys. Approval children are accessed through scoped units.
+The actual migrations are authored in phase 2c with schema goldens on both backends, not in Part 2a.
 
-### 3.8 Deployment Topology
+The four approval tables are exactly `bss_approval::ddl::up` with prefix `pricing_` (spec §6 with §2.2
+corrections: no unit idempotency_key or unique key index); the schema goldens pin that shape on both backends.
+The shared DDL supports all Pricing subject kinds; only prices is executable in phase 2. The plan, revision
+and item tables are phase 3's; they follow the reference-op prose below and slice 04 describes them. The promotion
+(D-409) and migration-request (D-410) tables are deferred by the owner.
 
-The catalog runs as a stateless authoring/publish + read-model service over a shared
-`toolkit-db` backend; background work (read-model warm re-drive, mass repricing, scheduled
-migration) is coordinated as a singleton via the coordination lease library. The read path is
-served from the projected read model for the p95 < 100ms target and fails closed (never stale)
-on read-model outage. Deployment specifics are platform-standard for a BSS gear, with one
-gear-stated constraint: for residency-bound tenants every gear-owned store (tables, read
-model, outbox, audit, backups, DR replicas) is pinned to an in-jurisdiction deployment cell —
-zero cross-boundary replication (`nfr-data-residency`; NFR-allocation row above).
+The chain starts with the schema guard m0000_pricing_refuse_a_legacy_or_stale_schema (D-423). Its name sorts it
+before every other migration of the gear, including the coordination, broker and outbox ones, and it creates
+nothing. It reads the catalog only and refuses to migrate a database that holds a legacy pricing_* table (the
+pre-PriceBook chain's tables minus today's, a constant in the guard) or a stale shape: pricing_reference_op
+without ref_kind, pricing_price_row, pricing_price without price_book_entry_id, or the legacy pricing_plan
+(without code), which both chains name. Boot then fails with
+"bss-pricing: this database holds a legacy|stale bss-pricing schema (…); PriceBook does not migrate it — start
+from an empty data root / empty bss-pricing tables". Fresh databases and databases migrated by today's chain pass.
+
+```sql
+CREATE TABLE bss.pricing_settings (
+  tenant_id uuid PRIMARY KEY, default_timing text NOT NULL CHECK (default_timing IN ('advance','arrears')),
+  default_rounding text NOT NULL, default_gl text, default_tax_category text,
+  invoice_line_templates jsonb NOT NULL, version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+);
+CREATE TABLE bss.pricing_dimension_key (
+  tenant_id uuid NOT NULL, key text NOT NULL, "values" jsonb NOT NULL,
+  version bigint NOT NULL DEFAULT 1, PRIMARY KEY (tenant_id, key)
+);
+CREATE TABLE bss.pricing_price_book (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, code text NOT NULL, name text NOT NULL,
+  currency char(3) NOT NULL, valid_from date, valid_until date, version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  UNIQUE (tenant_id, code), UNIQUE (tenant_id, id),
+  CHECK (valid_from IS NULL OR valid_until IS NULL OR valid_from < valid_until)
+);
+CREATE TABLE bss.pricing_approval_policy (
+  tenant_id uuid NOT NULL, kind text NOT NULL, quorum integer NOT NULL CHECK (quorum >= 0),
+  PRIMARY KEY (tenant_id, kind)
+);
+CREATE TABLE bss.pricing_approval_unit (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, kind text NOT NULL, ref_type text NOT NULL, ref_id uuid NOT NULL,
+  state text NOT NULL CHECK (state IN ('pending','approved','rejected','withdrawn')),
+  common_effective_date date, quorum_required integer NOT NULL,
+  generation integer NOT NULL DEFAULT 1, submitted_by uuid NOT NULL, submitted_at timestamptz NOT NULL,
+  decided_at timestamptz, decided_note text, snapshot jsonb NOT NULL, snapshot_hash text NOT NULL,
+  version bigint NOT NULL DEFAULT 1
+);
+CREATE INDEX ix_pricing_approval_unit_queue ON bss.pricing_approval_unit USING btree
+  (tenant_id, state, kind, submitted_at);
+CREATE TABLE bss.pricing_approval_unit_item (
+  unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), tenant_id uuid NOT NULL, item_type text NOT NULL,
+  item_id uuid NOT NULL, created_by uuid NOT NULL, before_json jsonb, after_json jsonb NOT NULL,
+  PRIMARY KEY (unit_id, item_type, item_id)
+);
+CREATE TABLE bss.pricing_approval_decision (
+  unit_id uuid NOT NULL REFERENCES bss.pricing_approval_unit(id), tenant_id uuid NOT NULL, actor uuid NOT NULL,
+  generation integer NOT NULL, decision text NOT NULL CHECK (decision IN ('approve','reject')), note text,
+  at timestamptz NOT NULL, stale boolean NOT NULL DEFAULT false, PRIMARY KEY (unit_id, actor, generation)
+);
+CREATE TABLE bss.pricing_price_book_entry (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, book_id uuid NOT NULL REFERENCES bss.pricing_price_book(id),
+  sku_id uuid NOT NULL, charge_kind text NOT NULL CHECK (charge_kind IN ('recurring','usage','one_time')),
+  period text, dimension_key text, invoice_line_override text,
+  reservation_id uuid NOT NULL,
+  reference_state text NOT NULL CHECK (reference_state IN ('confirmation_pending','confirmed','lost')),
+  version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key),
+  CHECK ((charge_kind = 'recurring' AND period IS NOT NULL AND period IN ('month','year'))
+    OR (charge_kind IN ('usage','one_time') AND period IS NULL))
+);
+CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''));
+CREATE TABLE bss.pricing_price (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, price_book_entry_id uuid NOT NULL REFERENCES bss.pricing_price_book_entry(id),
+  version_no integer NOT NULL, dim_value text,
+  model text NOT NULL CHECK (model IN ('flat','per_unit','graduated','volume','package')), price_json jsonb NOT NULL,
+  min_fee text CHECK (min_fee ~ '^[0-9]+(\.[0-9]+)?$'), eligibility text NOT NULL CHECK (eligibility IN ('all','new')),
+  effective_from date NOT NULL, effective_to date, keep_for_bound boolean NOT NULL DEFAULT false,
+  closed_explicitly boolean NOT NULL DEFAULT false,
+  temporary_until date, paired_price_id uuid REFERENCES bss.pricing_price(id),
+  return_of_price_id uuid REFERENCES bss.pricing_price(id),
+  state text NOT NULL CHECK (state IN ('draft','pending','approved','rejected')),
+  pending_unit_id uuid REFERENCES bss.pricing_approval_unit(id),
+  approved_by_unit_id uuid REFERENCES bss.pricing_approval_unit(id), note text, created_by uuid NOT NULL,
+  approved_at timestamptz, version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  UNIQUE (price_book_entry_id, version_no), CHECK (dim_value IS NULL OR dim_value <> ''),
+  CHECK (effective_to IS NULL OR effective_from < effective_to)
+);
+CREATE UNIQUE INDEX pricing_price_approved_start
+  ON bss.pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved';
+CREATE INDEX pricing_price_chain
+  ON bss.pricing_price (price_book_entry_id, dim_value, effective_from) WHERE state = 'approved';
+CREATE TABLE bss.pricing_reference_op (
+  op_id uuid PRIMARY KEY, tenant_id uuid NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('create','delete','rereserve','attach')),
+  ref_kind text NOT NULL CHECK (ref_kind IN ('price_book_entry','plan_item')),
+  ref_id uuid NOT NULL, sku_id uuid NOT NULL, reservation_id uuid,
+  idempotency_key text,
+  state text NOT NULL CHECK (state IN ('reserving','written','cancelling','releasing','done')),
+  outcome text, attempts integer NOT NULL DEFAULT 0, next_attempt_at timestamptz NOT NULL,
+  last_error text, created_by uuid NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+);
+CREATE INDEX pricing_reference_op_due ON bss.pricing_reference_op (state, next_attempt_at) WHERE state <> 'done';
+```
+
+Policy kind is '*' or a registered pricing kind; a missing default fails safe to quorum 1. Subject validation
+owns kind legality, quorum snapshots and item typing. The pending-unit column plus version predicate admits
+one unit per element. Same-start uniqueness is enforced by the index; general non-overlap is enforced by the
+serializable approve transaction re-reading each chain, with entries and prices ordered by id. Approved money
+cannot be edited/deleted; only controlled window normalization and keep_for_bound changes are allowed.
+The reference op is durable before reserve and has no FK to its reference: it survives cancellation and removal.
+An op names its reference as (ref_kind, ref_id), a price book entry or a plan item (D-407); phase 3 edited
+m20260926_000006 in place for this (D-412).
+The ticker resumes every op not done with bounded backoff and never drops one. It reconciles confirmed entries
+through states(): released receipts are re-reserved when the SKU is not fenced, otherwise the entry becomes
+lost, refuses new prices with ENTRY_REFERENCE_LOST and emits PriceBookEntryReferenceLost (D-401). Plan items
+use the same machine, with their own cursor: an item's write re-reads its revision (an unlocked draft) and its
+entry (of the revision's book, for the item's SKU), so SSI orders it against a submit, a book change or a
+delete (D-407); an attach of a copied item admits a deprecated SKU, a losing refusal makes the item lost and
+any other refusal is retried, as for a rereserve, unless Products gave it to the ticker's system actor, which
+Products authorizes to the tenant: that refusal is about the SKU and loses the item (D-413);
+a lost item emits PlanReferenceLost and is re-reserved once its SKU admits a reservation again.
+Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
+
+Phase 3 adds m20260926_000010 to m20260926_000012 (D-412). Every partial unique index is its own CREATE UNIQUE
+INDEX … WHERE statement on both dialects, never inline. included_qty is canonical decimal text, like min_fee. A
+plan item's reference starts unreserved when it is copied (D-413), and reservation_id is null until a reserve
+answers; the reference columns of an item in a published or superseded revision change only through the
+reference machine.
+
+```sql
+CREATE TABLE bss.pricing_plan (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, code text NOT NULL, name text NOT NULL, published_rev integer,
+  version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX pricing_plan_code ON bss.pricing_plan (tenant_id, code);
+CREATE TABLE bss.pricing_plan_revision (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, plan_id uuid NOT NULL REFERENCES bss.pricing_plan(id),
+  rev_no integer NOT NULL, book_id uuid NOT NULL REFERENCES bss.pricing_price_book(id), state text NOT NULL,
+  available_from date, pending_unit_id uuid REFERENCES bss.pricing_approval_unit(id),
+  approved_by_unit_id uuid REFERENCES bss.pricing_approval_unit(id), published_at timestamptz,
+  version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CONSTRAINT pricing_plan_revision_no UNIQUE (plan_id, rev_no),
+  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','published','superseded'))
+);
+CREATE UNIQUE INDEX pricing_plan_revision_open ON bss.pricing_plan_revision (plan_id)
+  WHERE state IN ('draft','pending');
+CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision (plan_id)
+  WHERE state = 'published';
+CREATE TABLE bss.pricing_plan_item (
+  id uuid PRIMARY KEY, tenant_id uuid NOT NULL, revision_id uuid NOT NULL REFERENCES bss.pricing_plan_revision(id),
+  sku_id uuid NOT NULL, price_book_entry_id uuid REFERENCES bss.pricing_price_book_entry(id),
+  treatment text NOT NULL, included_qty text, qty_min integer, reservation_id uuid, reference_state text NOT NULL,
+  version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+  CONSTRAINT pricing_plan_item_sku UNIQUE (revision_id, sku_id),
+  CONSTRAINT chk_pricing_plan_item_treatment CHECK (treatment IN ('paid','optional','included')),
+  CONSTRAINT chk_pricing_plan_item_entry CHECK (treatment = 'included' OR price_book_entry_id IS NOT NULL),
+  CONSTRAINT chk_pricing_plan_item_included_qty CHECK (included_qty ~ '^[0-9]+(\.[0-9]+)?$'),
+  CONSTRAINT chk_pricing_plan_item_qty_min CHECK (qty_min >= 0),
+  CONSTRAINT chk_pricing_plan_item_reference_state
+    CHECK (reference_state IN ('unreserved','confirmation_pending','confirmed','lost'))
+);
+```
+
+Unique conflicts map to stable codes: PLAN_CODE_TAKEN, REVISION_NO_TAKEN, REVISION_DRAFT_EXISTS (the open-revision
+index), REVISION_PUBLISHED_EXISTS and ITEM_SKU_TAKEN. SQLite names only the columns of a partial index, so the two
+single-column revision indexes are told apart by the state the write sets. Deferred by the owner and not in the
+chain: the promotion tables (D-409), the migration-request table and the plan's retiring state (D-410), and the
+plan's bundle SKU with its unique index, the revision's grants and its sold-as columns (D-411); slices 04 and 06
+keep their planned shape.
+
+Audit and idempotency use the Products document's retained shapes, renamed pricing_. The audit trigger permits
+only the reserved one-way seal transition without changing record facts. The following is schema, not a new
+pricing-owned outbox: the actual event schema comes from toolkit migrations under bss_pricing_outbox (D-400).
+
+```sql
+CREATE TABLE bss.pricing_audit (
+            audit_id          uuid        NOT NULL,
+            tenant_id         uuid        NOT NULL,
+            actor_ref         uuid        NOT NULL,
+            action            text        NOT NULL,
+            subject_kind      text        NOT NULL,
+            subject_id        uuid,
+            subject_revision  bigint,
+            error_code        text,
+            attempted_key     text,
+            reason            text,
+            correlation_id    text,
+            written_at        timestamptz NOT NULL,
+            session_id        uuid,
+            ceremony_ref      uuid,
+            seal_state        text        NOT NULL,
+            chain_id          uuid,
+            seq               bigint,
+            prev_hash         bytea,
+            row_hash          bytea,
+            CONSTRAINT pricing_audit_pkey PRIMARY KEY (audit_id),
+            CONSTRAINT chk_pricing_audit_seal_state CHECK (seal_state IN ('unsealed', 'sealed')),
+            CONSTRAINT chk_pricing_audit_seal_group CHECK (
+                (seal_state = 'unsealed' AND chain_id IS NULL AND seq IS NULL AND prev_hash IS NULL AND row_hash IS NULL)
+                OR
+                (seal_state = 'sealed' AND chain_id IS NOT NULL AND seq IS NOT NULL AND row_hash IS NOT NULL)
+            ),
+            CONSTRAINT chk_pricing_audit_seq CHECK (seq IS NULL OR seq >= 0),
+            CONSTRAINT chk_pricing_audit_subject_ref CHECK (subject_id IS NOT NULL OR attempted_key IS NOT NULL OR session_id IS NOT NULL)
+        );
+
+CREATE INDEX idx_pricing_audit_tenant_time ON bss.pricing_audit USING btree (tenant_id, written_at);
+
+CREATE INDEX idx_pricing_audit_subject ON bss.pricing_audit USING btree (tenant_id, subject_kind, subject_id, written_at);
+
+CREATE INDEX idx_pricing_audit_actor ON bss.pricing_audit USING btree (tenant_id, actor_ref, written_at);
+
+CREATE OR REPLACE FUNCTION bss.pricing_audit_append_only() RETURNS trigger AS $$
+        BEGIN
+          IF TG_OP = 'DELETE' THEN
+            RAISE EXCEPTION 'pricing_audit is append-only: DELETE is not permitted';
+          END IF;
+
+          IF OLD.seal_state = 'unsealed'
+             AND NEW.seal_state = 'sealed'
+             AND NEW.chain_id IS NOT NULL
+             AND NEW.seq IS NOT NULL
+             AND NEW.row_hash IS NOT NULL
+             AND NEW.audit_id IS NOT DISTINCT FROM OLD.audit_id
+             AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id
+             AND NEW.actor_ref IS NOT DISTINCT FROM OLD.actor_ref
+             AND NEW.action IS NOT DISTINCT FROM OLD.action
+             AND NEW.subject_kind IS NOT DISTINCT FROM OLD.subject_kind
+             AND NEW.subject_id IS NOT DISTINCT FROM OLD.subject_id
+             AND NEW.subject_revision IS NOT DISTINCT FROM OLD.subject_revision
+             AND NEW.error_code IS NOT DISTINCT FROM OLD.error_code
+             AND NEW.attempted_key IS NOT DISTINCT FROM OLD.attempted_key
+             AND NEW.reason IS NOT DISTINCT FROM OLD.reason
+             AND NEW.correlation_id IS NOT DISTINCT FROM OLD.correlation_id
+             AND NEW.written_at IS NOT DISTINCT FROM OLD.written_at
+             AND NEW.session_id IS NOT DISTINCT FROM OLD.session_id
+             AND NEW.ceremony_ref IS NOT DISTINCT FROM OLD.ceremony_ref
+          THEN
+            RETURN NEW;
+          END IF;
+
+          RAISE EXCEPTION 'pricing_audit is append-only: % is not permitted', TG_OP;
+        END;
+     $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_pricing_audit_append_only BEFORE DELETE OR UPDATE ON bss.pricing_audit FOR EACH ROW EXECUTE FUNCTION bss.pricing_audit_append_only();
+```
+
+```sql
+CREATE TABLE bss.pricing_idempotency (
+            tenant_id       uuid        NOT NULL,
+            endpoint        text        NOT NULL,
+            client_key      text        NOT NULL,
+            state           text        NOT NULL,
+            payload_hash    bytea       NOT NULL,
+            response_status integer,
+            response_body   jsonb,
+            expires_at      timestamptz NOT NULL,
+            entity_ref      uuid,
+            CONSTRAINT pricing_idempotency_pkey PRIMARY KEY (tenant_id, endpoint, client_key),
+            CONSTRAINT chk_pricing_idempotency_state CHECK (state IN ('claimed', 'answered')),
+            CONSTRAINT chk_pricing_idempotency_response_group CHECK (
+                (state = 'claimed' AND response_status IS NULL AND response_body IS NULL)
+                OR
+                (state = 'answered' AND response_status IS NOT NULL AND response_body IS NOT NULL)
+            )
+        );
+
+CREATE INDEX idx_pricing_idempotency_expires ON bss.pricing_idempotency USING btree (tenant_id, expires_at);
+```
+
+The replay store retains responses for 24 hours and rejects payload mismatches. An unknown transaction outcome
+is reconciled by replay/entity_ref before compensation. Audit inserts and terminal events use the same transaction;
+no separate connection can make a failed act look successful. Implement append-only audit guards on SQLite too.
 
 ## 4. Additional context
 
-- **Design decisions register** (D-72) — the decision register is [`DECISIONS.md`](./DECISIONS.md). **This bullet used to enumerate every entry through D-178 in one ~15 KB sentence and claimed to span the register; it was truncated to a pointer on 2026-08-20, 173 entries behind.** The register is the authority for its own contents and this document should not mirror them: a count in prose is a claim about the artifact beneath it, and the same sentence had already gone stale once and been "corrected 2026-08-03" before going stale again. Read the register itself, newest last; sections of this document cite individual entries where they bind.
-- **Telemetry** — publish throughput, validation-catch rate, publish→read-model propagation lag, degraded-publish count, and approval outcomes are surfaced per the governance/observability slice ([`design/05-governance.md`](./design/05-governance.md)).
-- **NFR values ratified (2026-07-28)** — read-model availability / DR RPO-RTO (99.9% / 5m / 30m), mass-repricing throughput (>= 50 rows/s, perf-test-verified vs tenant worst case), plan/tier size caps (100/500 soft + 366d/24m interval caps), and idempotency-key TTL (24h) are committed launch defaults ([`PRD.md`](./PRD.md) §14/§15); the former Design-lock blocker is closed.
-- **Conformance fixtures before code** — the jointly-owned golden fixtures (tier-boundary, package, per_unit, **flat**, proration, reserved, supersession-continuity, **level-aggregation** — granule fold, late-sample re-fold, `maxHold` gap; D-44) MUST be stood up and version-controlled **before** implementation; publish of any `modelKind` — or non-`sum` `aggregationFunction` row — lacking a joint fixture is blocked ([`PRD.md`](./PRD.md) §13, AC #60/#61). *`flat` added to the enumeration 2026-08-01 (cleanup, no D-number): the normative rule already read "any `modelKind`", but the family list omitted `flat` — the one catalog kind no family gated — so a literal reading of `inst-fx-gate` made every `flat` row unpublishable. The corpus now gates all five kinds and asserts that completeness structurally ([`gears/bss/fixtures`](../../fixtures/README.md)), so the next kind added cannot reopen the hole.*
-- **Cross-team items closed 2026-07-28** ([`PRD.md`](./PRD.md) §15): the `CatalogVersion` increment-trigger taxonomy + batching SLO and the SKU retirement/unpublish joint contract (D-47, registry vendored); the Billing/ERP descriptor v1 field set and the drawdown placement (D-48 — Billing countersigns at its gear PRD); the cross-boundary cancel+new sign-off (D-49 — GTM constraint entry owed). Remaining deliberate opens: Legal retention max-vs-min, F-34 GA gate, F-36/F-37 Future.
-- **Deferred to Future scope** — typed credit/discount (negative-amount) rows, `currencyFallbackPolicy` (FX fallback), `includedAllowance` **extensions** (per-seat scaling; level-meter allowance — the core `includedAllowance {quantity, rolloverPolicy}` is **in launch since D-45, 2026-07-16**, publish-compiled to $0-band / D-43 grant), `aggregationFunction = last | unique` (the `{sum, peak, time_weighted}` set is **in launch since D-44, 2026-07-16** — level-based billing), two-dimensional (seats × usage) single-line pricing, structural freemium flag, per-row `refundable`/`creditPolicy`, self-service term/auto-renew metadata, per-group different-tier structures, and committed-usage / drawdown flags on plan (Contracts + Tariffs, Cross-PRD). **Plan-level minimum fee / cap per period left this list on 2026-08-15 (D-319)**: the deferred part was only ever the catalog authoring field, and it is now `pricing_plan_period_floor_cap` — a revision-scoped bound per sold `(currency, region)`, frozen in the snapshot and published on the read model, with the reserved rating-side `PeriodFloorCapObligation` boundary unchanged. What stays deferred there is an authored *comparison basis*, which rating §15 has not resolved. The consolidated registry is [`PRD.md`](./PRD.md) §17.8.
+The old 22-file set remains on bss/products-backup and in history. Seven slices map one-to-one to FEATUREs.
+Part 2a writes all phases' contracts; phase 2b removes the legacy implementation; phase 2c builds only the core.
+The prototype is the pure-model reference except where the spec corrects it, especially half-open tier bands.
+
+Known limits (accepted by the owner). In broker mode (an EventBrokerApi is registered) the event-broker SDK's
+ProducerOutbox::enqueue turns the outbox's database error into a string, so a contended outbox insert fails the
+act with 500 instead of being retried by the transaction; Products has the same limit, and the SDK stays unchanged.
 
 ## 5. Traceability
 
-- **PRD**: [`PRD.md`](./PRD.md)
-- **ADRs**: [`ADR/`](./ADR/) — `cpt-cf-bss-pricing-adr-canonical-scope-key`, `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis`, `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (further ADRs planned as dependent slices land: snapshot/versioning strategy, grandfathered-row immutability, customer-group ownership, derived-meter formula-as-data, `CatalogVersion` increment/batching, `brand`-as-`PriceOverlay`)
-- **Design set**: [`design/`](./design/) — Foundation + per-capability slice designs; the phased map and dependency order are in §1.3 and [`design/README.md`](./design/README.md).
+| Slice | Feature | Requirements / delivery |
+| --- | --- | --- |
+| 01 Foundation | foundation | `cpt-cf-bss-pricing-nfr-authz`, `cpt-cf-bss-pricing-nfr-audit`, `cpt-cf-bss-pricing-nfr-tenant-isolation`, `cpt-cf-bss-pricing-nfr-two-backends`, `cpt-cf-bss-pricing-nfr-idempotency-concurrency`; phase 2. |
+| 02 Books & Entries | books-entries | `cpt-cf-bss-pricing-fr-dimension-registry`, `cpt-cf-bss-pricing-fr-price-book`, `cpt-cf-bss-pricing-fr-entry-key`, `cpt-cf-bss-pricing-fr-book-export`, `cpt-cf-bss-pricing-fr-settings`; phase 2. |
+| 03 Prices, Windows & Dimension | prices-windows-dimension | `cpt-cf-bss-pricing-fr-price`, `cpt-cf-bss-pricing-fr-chain-windows`, `cpt-cf-bss-pricing-fr-pair-guard`, `cpt-cf-bss-pricing-fr-min-fee`, `cpt-cf-bss-pricing-fr-temporary-pair`, `cpt-cf-bss-pricing-fr-reference-protocol`; phase 2. |
+| 04 Plans | plans | `cpt-cf-bss-pricing-fr-plans`; phase 3. |
+| 05 Approvals | approvals | `cpt-cf-bss-pricing-fr-publish-changes`, `cpt-cf-bss-pricing-fr-approval-units`; phase 2. |
+| 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; deferred by the owner (D-409, D-410). |
+| 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2; quote not built, D-415). |
+
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-426.
+Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.

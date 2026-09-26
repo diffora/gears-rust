@@ -12,7 +12,6 @@
 //! transition, is enforced by the table's trigger, not by this entity: this
 //! entity carries no write rule for it at all.
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-audit-table:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
@@ -25,8 +24,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub audit_id: Uuid,
     pub tenant_id: Uuid,
-    /// The pseudonymous ref of whoever (or whatever refused act) this row
-    /// attributes to. Never a direct operator identity.
+    /// The acting principal from `SecurityContext::subject_id()`; no actor table.
     pub actor_ref: Uuid,
     /// The audit action token (`design/01-foundation.md` §4.4). No
     /// vocabulary `CHECK` yet — an owed debt the migration's own doc names.

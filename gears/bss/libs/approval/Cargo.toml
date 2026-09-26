@@ -1,0 +1,28 @@
+[package]
+name = "cf-gears-bss-approval"
+edition.workspace = true
+license.workspace = true
+description = "One approval-unit shape for the BSS gears: model, generation-aware quorum and SoD rules, content fingerprint, DDL template, Store and ApprovalSubject over toolkit-db runners, and the Engine that drives them"
+
+[lib]
+name = "bss_approval"
+
+[dependencies]
+async-trait = { workspace = true }                     # the two traits are async
+serde = { workspace = true }                           # ItemRef and Unit payloads
+serde_json = { workspace = true }                      # canonical JSON for the fingerprint
+sha2 = { workspace = true }                            # fingerprint digest
+thiserror = { workspace = true }                       # ApprovalError
+time = { workspace = true }                            # OffsetDateTime, Date
+uuid = { workspace = true }
+toolkit-db = { workspace = true, features = ["sqlite"] }   # DBRunner, DbTx: the traits are generic over the gear's runner
+sea-orm = { workspace = true, features = ["sqlx-sqlite"] } # DbErr, DbBackend, Statement for the DDL helper
+sea-orm-migration = { workspace = true }               # SchemaManager for apply_up / apply_down
+
+[dev-dependencies]
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+time = { workspace = true, features = ["macros"] }     # datetime!() in tests
+
+[lints]
+workspace = true

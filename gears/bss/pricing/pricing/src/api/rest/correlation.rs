@@ -98,7 +98,7 @@
 //! any handler runs, and reaches the writers through the [`AuditStamp`] that
 //! [`crate::api::rest::auth_context::audit_stamp`] builds.
 //!
-//! [`AuditStamp`]: crate::domain::audit::AuditStamp
+//! [`AuditStamp`]: crate::api::rest::auth_context::AuditStamp
 //!
 //! [`require_correlation`] therefore refuses to mint. A route reachable without
 //! this layer is a **wiring defect** — every router that mounts a mutating
@@ -119,7 +119,7 @@ use axum::response::Response;
 use toolkit::api::canonical_prelude::CanonicalError;
 use uuid::Uuid;
 
-use crate::domain::error::DomainError;
+use crate::infra::error_mapping::DomainError;
 
 /// The request-scoped correlation, as the request extensions carry it.
 ///
