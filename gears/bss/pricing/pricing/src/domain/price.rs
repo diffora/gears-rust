@@ -287,11 +287,15 @@ pub fn temporary(
             .checked_add(1)
             .ok_or_else(|| RuleError::new("VERSION_EXHAUSTED"))?;
         returned.effective_from = until;
-        // Back to a price that itself ends explicitly (a closed value price): only until that end,
-        // after which the value falls back to the default again.
-        returned.effective_to = back.effective_to.filter(|_| back.closed_explicitly);
+        // Back to a price that itself ends (a temporary price — a pair nested in an outer pair —
+        // or a closed value price): only until that price's own end, as an explicit end the
+        // stored chain carries, after which the chain's next price (the outer return), else the
+        // default, is in force again (D-425, phase 4 second review M1).
+        returned.effective_to = back
+            .temporary_until
+            .or(back.effective_to.filter(|_| back.closed_explicitly));
         returned.temporary_until = None;
-        returned.closed_explicitly = back.closed_explicitly;
+        returned.closed_explicitly = returned.effective_to.is_some();
         returned.model = back.model;
         returned.price.clone_from(&back.price);
         returned.min_fee = back.min_fee;

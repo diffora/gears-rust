@@ -34,6 +34,11 @@
 //! | `price:requests-volume` | requests, eu | volume: 0.009 up to 1000, then 0.007 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:requests-package` | requests, us | package: 5.00 per 1000 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:archive` | archive (an entry no revision names) | per unit 0.01 | 2026-01-01 → open | all | `unit:prices-1` |
+//! | `price:promo-base` | promo, default | flat 10.00 | 2026-01-01 → 2026-10-01 | all | `unit:prices-1` |
+//! | `price:promo-outer` | promo, default | flat 8.00 | 2026-10-01 → 2026-10-15 as stored (the inner start cuts it), temporary until 2026-12-01 | all | `unit:prices-2` |
+//! | `price:promo-outer-return` | promo, default | flat 10.00, the base's money | 2026-12-01 → open | all | `unit:prices-2` |
+//! | `price:promo-inner` | promo, default | flat 5.00 | 2026-10-15 → 2026-11-01, temporary | all | `unit:prices-3` |
+//! | `price:promo-inner-return` | promo, default | flat 8.00, the outer promo's money | 2026-11-01 → 2026-12-01, closed explicitly at the outer end | all | `unit:prices-3` |
 //! | `price:pro-draft`, `-pending`, `-rejected` | pro, default | flat 18.00 / 19.00 / 20.00 | 2027 | all | — (`unit:prices-4` holds the pending one) |
 //!
 //! Plan `pro` on book `eur`: revision 1 (published 2026-05-20, superseded 2026-08-20) holds pro
@@ -41,12 +46,20 @@
 //! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional),
 //! backup (included, 100 units, no entry) and requests (paid); revision 3 is a draft. Plan `trial` revision 1 is
 //! pending. Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
-//! and one version each of storage, egress, backup and requests from 2026-01-01. Another tenant holds one
-//! approved price, `price:other-tenant`.
+//! and one version each of storage, egress, backup, requests and promo from 2026-01-01. Plan `promo`
+//! revision 1 (published 2026-09-02) holds promo (paid), whose chain is two nested pairs built by the
+//! domain's own pair builder (`price::temporary`, then `normalize_windows`), each drafted as the door
+//! drafts a pair and approved as its applied unit approves it. Another tenant holds one approved
+//! price, `price:other-tenant`.
 #![allow(dead_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 use crate::plan_support::{Catalog, Fixture, entry_support::user_of};
 use bss_approval::{Store, Unit, UnitState};
+use bss_pricing::domain::{
+    money::PriceData,
+    price::{self as chains, Eligibility, Price as DomainPrice, PriceState},
+    price_book_entry::Model,
+};
 use bss_pricing::infra::storage::{
     RepoError,
     entity::{
@@ -75,6 +88,7 @@ macro_rules! with_goldens {
             $args resolve_signup,
             resolve_renewal_walk,
             resolve_ended_chain,
+            resolve_nested_pairs,
             resolve_default_pin_moves,
             resolve_matrix_uncovered,
             resolve_sku_version_by_date,
@@ -407,6 +421,104 @@ impl Writer<'_> {
         )
         .await
         .unwrap();
+    }
+    /// A price the domain built, as the door stores it, in `state`; an approved row names the unit
+    /// that applied it and when.
+    fn row_of(&self, p: &DomainPrice, state: &str, unit: Option<UnitAt>) -> price::Model {
+        let approved = unit.filter(|_| state == "approved");
+        price::Model {
+            id: p.id,
+            tenant_id: self.tenant,
+            price_book_entry_id: p.price_book_entry_id,
+            version_no: p.version_no,
+            dim_value: p.dim_value.clone(),
+            model: p.model.as_str().into(),
+            price_json: serde_json::to_value(p.price.as_ref().unwrap()).unwrap(),
+            min_fee: p.min_fee.map(|fee| fee.to_string()),
+            eligibility: p.eligibility.as_str().into(),
+            effective_from: p.effective_from,
+            effective_to: p.effective_to,
+            keep_for_bound: false,
+            closed_explicitly: p.closed_explicitly,
+            temporary_until: p.temporary_until,
+            paired_price_id: None,
+            return_of_price_id: p.return_of_price_id,
+            state: state.into(),
+            pending_unit_id: None,
+            approved_by_unit_id: approved.map(|(unit, _)| self.names.id(unit)),
+            note: Some("fixture".into()),
+            created_by: Uuid::nil(),
+            approved_at: approved.map(|(_, when)| at(when.0, when.1, when.2)),
+            version: 2,
+            created_at: created(),
+            updated_at: created(),
+        }
+    }
+    /// A pair the domain built (`[promo, return]`), stored as the door drafts it — the promo, its
+    /// return naming it, then the link — and approved as its applied unit approves it, each half
+    /// in the window it has once its chain is normalised.
+    async fn pair(&mut self, pair: &[DomainPrice], unit: UnitAt) {
+        let conn = self.f.db.conn().unwrap();
+        let (unit_id, when) = (self.names.id(unit.0), unit.1);
+        let [promo, returned] = pair else {
+            panic!("a pair is a promo and its return")
+        };
+        price_repo::insert(&conn, &self.scope, self.row_of(promo, "draft", None))
+            .await
+            .unwrap();
+        price_repo::insert(
+            &conn,
+            &self.scope,
+            price::Model {
+                paired_price_id: returned.paired_price_id,
+                ..self.row_of(returned, "draft", None)
+            },
+        )
+        .await
+        .unwrap();
+        price_repo::link_pair(&conn, &self.scope, self.tenant, promo.id, returned.id)
+            .await
+            .unwrap();
+        for p in pair {
+            let version = price_repo::find(&conn, &self.scope, self.tenant, p.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .version;
+            assert!(
+                price_repo::try_lock(&conn, &self.scope, self.tenant, p.id, unit_id, version)
+                    .await
+                    .unwrap()
+            );
+            let window = price_repo::Approval {
+                effective_from: p.effective_from,
+                effective_to: p.effective_to,
+                temporary_until: p.temporary_until,
+                keep_for_bound: false,
+            };
+            let decided = at(when.0, when.1, when.2);
+            price_repo::approve(
+                &conn,
+                &self.scope,
+                self.tenant,
+                p.id,
+                unit_id,
+                window,
+                decided,
+            )
+            .await
+            .unwrap();
+            price_repo::unlock(
+                &conn,
+                &self.scope,
+                self.tenant,
+                p.id,
+                unit_id,
+                price_repo::Unlock::Approved,
+            )
+            .await
+            .unwrap();
+        }
     }
     async fn plan(&mut self, name: &str, code: &str) -> Uuid {
         let id = self.names.mint(name);
@@ -1166,6 +1278,111 @@ async fn revision_2_items(w: &mut Writer<'_>) {
     )
     .await;
 }
+/// Plan promo (phase 4 second review M1): one item whose chain holds a pair nested in another
+/// pair, built by the domain's own pair builder and normalised as apply normalises it (D-391,
+/// D-406): 10.00; the outer `all` promo 8.00 from 2026-10-01 until 2026-12-01 and its return
+/// 10.00; nested in it, the inner `all` promo 5.00 from 2026-10-15 until 2026-11-01 and its return,
+/// the outer promo's 8.00 until the outer promo's end (D-425).
+async fn nested_pairs(w: &mut Writer<'_>, catalog: &Catalog) {
+    let sku = w.names.mint("sku:promo");
+    catalog.put(sku, SkuType::Recurring, Lifecycle::Published, None);
+    version(
+        catalog,
+        sku,
+        1,
+        "2026-01-01",
+        content("promo", SkuType::Recurring, None, None, None, None, None),
+    );
+    w.entry(
+        "entry:promo",
+        "book:eur",
+        "sku:promo",
+        "recurring",
+        (Some("month"), None, None),
+    )
+    .await;
+    let entry = w.names.id("entry:promo");
+    let flat_price = |id: Uuid, version_no: i32, amount: &str, from: &str| DomainPrice {
+        id,
+        price_book_entry_id: entry,
+        version_no,
+        dim_value: None,
+        model: Model::Flat,
+        price: Some(PriceData::Flat {
+            amount: amount.parse().unwrap(),
+        }),
+        min_fee: None,
+        eligibility: Eligibility::All,
+        effective_from: date(from),
+        effective_to: None,
+        temporary_until: None,
+        paired_price_id: None,
+        return_of_price_id: None,
+        closed_explicitly: false,
+        state: PriceState::Approved,
+    };
+    let mut chain = vec![flat_price(
+        w.names.mint("price:promo-base"),
+        1,
+        "10.00",
+        "2026-01-01",
+    )];
+    let outer = flat_price(w.names.mint("price:promo-outer"), 2, "8.00", "2026-10-01");
+    let outer = chains::temporary(
+        &chain,
+        outer,
+        date("2026-12-01"),
+        w.names.mint("price:promo-outer-return"),
+    )
+    .unwrap();
+    chain.extend(outer);
+    chains::normalize_windows(&mut chain);
+    let inner = flat_price(w.names.mint("price:promo-inner"), 4, "5.00", "2026-10-15");
+    let inner = chains::temporary(
+        &chain,
+        inner,
+        date("2026-11-01"),
+        w.names.mint("price:promo-inner-return"),
+    )
+    .unwrap();
+    chain.extend(inner);
+    chains::normalize_windows(&mut chain);
+    price_repo::insert(
+        &w.f.db.conn().unwrap(),
+        &w.scope,
+        w.row_of(&chain[0], "approved", Some(U1)),
+    )
+    .await
+    .unwrap();
+    w.pair(&chain[1..3], U2).await;
+    w.pair(&chain[3..5], U3).await;
+    w.unit(
+        "unit:revision-promo-1",
+        "plan_revision",
+        UnitState::Approved,
+        (2026, 9, 2),
+    )
+    .await;
+    w.plan("plan:promo", "promo").await;
+    w.revision("revision:promo-1", "plan:promo", 1, at(2026, 8, 25))
+        .await;
+    w.item(
+        "item:promo-1/promo",
+        "revision:promo-1",
+        "sku:promo",
+        Some("entry:promo"),
+        "paid",
+        (None, None),
+    )
+    .await;
+    w.publish(
+        "plan:promo",
+        "revision:promo-1",
+        "unit:revision-promo-1",
+        at(2026, 9, 2),
+    )
+    .await;
+}
 /// Another tenant: one approved price of its own.
 async fn other_tenant(f: &Fixture, names: &mut Names) -> Uuid {
     let other = names.mint("tenant:other");
@@ -1214,6 +1431,7 @@ pub async fn world(f: Fixture, catalog: &Catalog) -> World {
     pro_prices(&mut w).await;
     usage_prices(&mut w).await;
     plans(&mut w).await;
+    nested_pairs(&mut w, catalog).await;
     let other = other_tenant(&f, &mut names).await;
     World {
         f,
@@ -1306,6 +1524,23 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
                     &r2(
                         "&date=2026-10-05&item_id={item:pro-2/egress}&pins={price:egress-apac-temp}",
                     ),
+                ),
+            ],
+        ),
+        "resolve_nested_pairs" => (
+            "D-425, D-391 (phase 4 second review M1): a pair nested in an outer pair, both built by the domain's pair \
+             builder - the inner return restores the outer promo's money only until the outer promo's own end: a renewal \
+             pinned to the outer promo inside the inner return binds that return with ends_on at the outer end (its stored \
+             effective_to is the same explicit end), and resolved again with its pin on that ends_on it binds the outer \
+             return, open",
+            vec![
+                ask(
+                    "renewal pinned to the outer promo on 2026-11-05",
+                    "/resolve?plan_revision_id={revision:promo-1}&date=2026-11-05&pins={price:promo-outer}",
+                ),
+                ask(
+                    "resolved again on its ends_on 2026-12-01, pinned to the inner return",
+                    "/resolve?plan_revision_id={revision:promo-1}&date=2026-12-01&pins={price:promo-inner-return}",
                 ),
             ],
         ),

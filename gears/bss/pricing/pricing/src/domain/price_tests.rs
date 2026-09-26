@@ -482,6 +482,96 @@ fn a_temporary_price_returns_only_to_a_price_in_force_on_its_end() {
         "a chain that has not started yet is not copied backwards"
     );
 }
+/// Phase 4 second review M1: a return to a TEMPORARY price ends where that price ends. An inner
+/// `all` pair nested in an outer `all` pair returns to the outer promo's money only until the
+/// outer promo's own end (its `temporary_until`), as an explicit end the stored chain carries:
+/// after it the outer return is in force, and a binding of the inner return says so (D-425).
+#[test]
+fn a_return_to_a_temporary_price_ends_where_that_price_ends() {
+    let flat = |v: i32, from: &str, amount: &str| {
+        let mut p = price(v, from, None, PriceState::Approved);
+        p.model = Model::Flat;
+        p.price = Some(PriceData::Flat {
+            amount: dec(amount),
+        });
+        p
+    };
+    let approved = |pair: Vec<Price>| {
+        pair.into_iter()
+            .map(|mut p| {
+                p.state = PriceState::Approved;
+                p
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut chain = vec![flat(1, "2026-01-01", "10.00")];
+    let outer = temporary(
+        &chain,
+        flat(30, "2026-10-01", "8.00"),
+        date("2026-12-01"),
+        Uuid::from_u128(31),
+    )
+    .unwrap();
+    chain.extend(approved(outer));
+    normalize_windows(&mut chain);
+    let inner = temporary(
+        &chain,
+        flat(40, "2026-10-15", "5.00"),
+        date("2026-11-01"),
+        Uuid::from_u128(41),
+    )
+    .unwrap();
+    assert_eq!(
+        inner.len(),
+        2,
+        "a pair: the chain has a price in force on 11-01"
+    );
+    let returned = &inner[1];
+    assert_eq!(returned.effective_from, date("2026-11-01"));
+    assert_eq!(
+        returned.price,
+        Some(PriceData::Flat {
+            amount: dec("8.00")
+        }),
+        "the outer promo's money"
+    );
+    assert_eq!(returned.return_of_price_id, Some(Uuid::from_u128(30)));
+    assert_eq!(returned.temporary_until, None);
+    assert_eq!(
+        returned.effective_to,
+        Some(date("2026-12-01")),
+        "the outer promo's own end"
+    );
+    assert!(
+        returned.closed_explicitly,
+        "an explicit end the stored chain carries"
+    );
+    // D-391 and D-406 hold: the pair restores the price in force on its end, and no price of
+    // the pair crosses a temporary window.
+    assert!(temporary_is_current(&chain, &inner[0], &inner));
+    let mut around = chain.clone();
+    around.extend(inner.iter().cloned());
+    for p in &inner {
+        assert!(window_crossing(p, &around).is_none(), "{}", p.version_no);
+    }
+    // Approved and normalised: the inner return keeps its end, where the outer return starts.
+    chain.extend(approved(inner));
+    normalize_windows(&mut chain);
+    let stored = chain.iter().find(|p| p.id == Uuid::from_u128(41)).unwrap();
+    assert_eq!(
+        (stored.effective_to, stored.closed_explicitly),
+        (Some(date("2026-12-01")), true)
+    );
+    for (day, v) in [("2026-10-20", 40), ("2026-11-15", 41), ("2026-12-01", 31)] {
+        assert_eq!(
+            version_at(&chain, Uuid::from_u128(100), date(day), None)
+                .unwrap()
+                .version_no,
+            v,
+            "{day}"
+        );
+    }
+}
 #[test]
 fn decision_7_a_common_date_moves_singles_to_it_and_a_pair_by_one_delta() {
     let back = price(1, "2026-01-01", None, PriceState::Approved);

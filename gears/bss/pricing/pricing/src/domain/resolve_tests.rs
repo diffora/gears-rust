@@ -458,6 +458,77 @@ fn rule_3_a_pinned_outer_promo_binds_to_its_own_end_through_a_nested_new_pair() 
     assert_eq!(bound(&resolve(&c, "2026-10-20", &[]), None), 40);
 }
 
+/// The review's chain for M1: an outer `all` pair (8.00 from 10-01 until 12-01, its return 10.00)
+/// and, nested in it, an inner pair built by `inner` (`all` or `new`: 5.00 from 10-15 until
+/// 11-01, its return the outer promo's 8.00) — both built by the domain's own pair builder.
+fn nested_pairs(inner: fn(u128, &str, &str, Option<&str>) -> Price) -> ResolveContext {
+    let mut chain = with_temporary(
+        vec![all(10, "10.00", "2026-01-01", None)],
+        all(30, "8.00", "2026-10-01", None),
+        "2026-12-01",
+        31,
+    );
+    price::normalize_windows(&mut chain);
+    let chain = with_temporary(
+        chain,
+        inner(40, "5.00", "2026-10-15", None),
+        "2026-11-01",
+        41,
+    );
+    one(entry(chain, &[]))
+}
+
+/// Phase 4 second review M1: a nested pair's return restores the outer promo's money only until
+/// the outer promo's own end. A pin on the outer promo renewed on 11-05 walks the inner `all`
+/// pair to its return, which ends on 12-01 (`ends_on`), so the consumer slices there; after it,
+/// the pin binds the outer return — and so does the inner return's pin resolved again on its end.
+#[test]
+fn a_pin_on_an_outer_promo_binds_the_nested_return_until_the_outer_end() {
+    let c = nested_pairs(all);
+    let renewed = resolve(&c, "2026-11-05", &[pin(30)]);
+    assert_eq!(bound(&renewed, None), 41, "the walk takes the inner pair");
+    assert_eq!(amount(&renewed, None), "8.00");
+    assert_eq!(binding(&renewed, None).pinned_from, Some(id(30)));
+    assert_eq!(
+        binding(&renewed, None).ends_on(),
+        Some(date("2026-12-01")),
+        "the outer promo's end, never an open end"
+    );
+    let after = resolve(&c, "2026-12-05", &[pin(30)]);
+    assert_eq!(bound(&after, None), 31, "the outer return");
+    assert_eq!(amount(&after, None), "10.00");
+    assert_eq!(binding(&after, None).ends_on(), None);
+    let again = resolve(&c, "2026-12-01", &[pin(41)]);
+    assert_eq!(
+        (bound(&again, None), amount(&again, None)),
+        (31, "10.00".to_owned()),
+        "resolved again with its pin on its ends_on"
+    );
+}
+
+/// Phase 4 second review M1, the same chain with an inner `new` pair: a signup on 11-05 binds the
+/// inner return (a `new` return, as its promo) until the outer promo's end, and so does the inner
+/// promo's holder resolved again at its own end (rule 3 falls to rule 1); after it, the outer
+/// return.
+#[test]
+fn a_signup_on_a_nested_new_pairs_return_ends_where_the_outer_promo_ends() {
+    let c = nested_pairs(new);
+    let signup = resolve(&c, "2026-11-05", &[]);
+    assert_eq!(bound(&signup, None), 41);
+    assert_eq!(amount(&signup, None), "8.00");
+    assert_eq!(binding(&signup, None).ends_on(), Some(date("2026-12-01")));
+    let holder = resolve(&c, "2026-11-01", &[pin(40)]);
+    assert_eq!(
+        (bound(&holder, None), binding(&holder, None).ends_on()),
+        (41, Some(date("2026-12-01")))
+    );
+    let later = resolve(&c, "2026-12-05", &[]);
+    assert_eq!(
+        (bound(&later, None), amount(&later, None)),
+        (31, "10.00".to_owned())
+    );
+}
+
 /// D-425: the binding says where it ends for its holder — a temporary price's `temporary_until`,
 /// an explicitly closed price's end — and names no end for a price whose stored window only a
 /// successor's start closes.
