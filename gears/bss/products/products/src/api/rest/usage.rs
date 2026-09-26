@@ -4,12 +4,13 @@
 //! refusal (the caller holds no pricing `price_book_entry:read`), any error, and a call that does
 //! not finish all leave `usage: null`. The port is called once per read, on a task of its own,
 //! after the read's own work and outside any transaction of this gear, so a port that opens its
-//! own connection or breaks cannot disturb the read; a call still running after [`PORT_BOUND`] is
-//! aborted. The usage never takes part in a fence, a retirement or a type change (P-D-188,
-//! P-D-194).
+//! own connection or breaks cannot disturb the read; a call still running when the read stops
+//! waiting for it (past [`PORT_BOUND`], or because the read itself was dropped) is aborted. The
+//! usage never takes part in a fence, a retirement or a type change (P-D-188, P-D-194).
 use super::{ApiState, dto::SkuUsageDto};
 use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageV1};
 use std::{collections::BTreeMap, time::Duration};
+use tokio_util::task::AbortOnDropHandle;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -31,9 +32,11 @@ pub async fn of(
         return BTreeMap::new();
     };
     let (caller, tenant, asked) = (ctx.clone(), ctx.subject_tenant_id(), ids.to_vec());
-    let mut call = tokio::spawn(async move { port.usage(&caller, tenant, &asked).await });
-    let Ok(answer) = tokio::time::timeout(PORT_BOUND, &mut call).await else {
-        call.abort();
+    // Dropping the handle aborts the call, so a read its client abandons takes the call with it.
+    let call = AbortOnDropHandle::new(tokio::spawn(async move {
+        port.usage(&caller, tenant, &asked).await
+    }));
+    let Ok(answer) = tokio::time::timeout(PORT_BOUND, call).await else {
         tracing::warn!(
             bound = ?PORT_BOUND,
             "bss-products: the SKU usage port did not answer in time; usage is null"

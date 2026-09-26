@@ -1082,3 +1082,34 @@ async fn a_usage_port_that_never_answers_leaves_usage_null_once_its_bound_elapse
     }
     panic!("a call past its bound is aborted, not left running");
 }
+
+/// P-D-197: a SKU read dropped before the bound (its client went away) takes the port call with
+/// it; a call that outlives its read would hold pricing's connection with nobody to abort it.
+#[tokio::test]
+async fn a_sku_read_dropped_before_the_bound_aborts_its_port_call() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let tenant = Uuid::new_v4();
+    let (app, state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let port = UsagePort::new(PortAnswer::Hangs);
+    state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let uri = format!("/bss-products/v1/skus/{a}");
+    let mut read = Box::pin(get(&app, tenant, &uri));
+    let asked = async {
+        while port.calls().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    tokio::select! {
+        _ = &mut read => panic!("the read answered before its port call hung"),
+        () = asked => {}
+    }
+    drop(read);
+    for _ in 0..100 {
+        if port.abandoned.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a port call whose read was dropped is aborted, not left running");
+}
