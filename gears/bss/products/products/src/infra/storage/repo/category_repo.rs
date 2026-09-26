@@ -150,7 +150,8 @@ async fn category_written(
         .map(HeadWrite::Written)
         .ok_or_else(|| RepoError::CorruptRow("written category disappeared".into()))
 }
-/// Retire only an active, unused category; callers use a serializable transaction.
+/// Retire only an active, unused category; callers use a serializable transaction. A SKU without a
+/// category (P-D-196) never matches `category_id = <id>`, so it never keeps one in use.
 /// # Errors
 /// Returns scoped storage failures. Missing categories return `None`.
 pub async fn retire_category_if_unused(

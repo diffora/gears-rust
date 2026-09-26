@@ -700,3 +700,126 @@ async fn only_the_drafts_author_may_patch_it() {
     let r = patch(&app, tenant, &url, json!({"name":"Renamed"}), Some(&tag)).await;
     assert_eq!(r.status(), StatusCode::OK, "the author still edits");
 }
+
+/// P-D-196: an omitted `category_id` stays null, even when the tenant has a default category
+/// (no fallback to `is_default`), and so does an explicit null.
+#[tokio::test]
+async fn a_sku_without_a_category_is_created_with_null_and_no_default_fallback() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, doors).await;
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/categories",
+        json!({"code":"default","name":"Default","is_default":true}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    for (code, body) in [
+        (
+            "OMITTED",
+            json!({"code":"OMITTED","name":"Omitted","type":"recurring"}),
+        ),
+        (
+            "NULL",
+            json!({"code":"NULL","name":"Null","type":"recurring","category_id":null}),
+        ),
+    ] {
+        let r = post(&app, tenant, "/bss-products/v1/skus", body).await;
+        assert_eq!(r.status(), StatusCode::CREATED, "{code}");
+        let s = body_json(r).await;
+        assert_eq!(s["category_id"], Value::Null, "{code}: {s}");
+        let url = format!("/bss-products/v1/skus/{}", s["id"].as_str().unwrap());
+        let card = body_json(get(&app, tenant, &url).await).await;
+        assert_eq!(card["sku"]["category_id"], Value::Null, "{code}");
+        assert_eq!(
+            raw_i64(
+                &dsn,
+                &format!(
+                    "SELECT COUNT(*) AS v FROM products_sku WHERE code = '{code}' AND category_id IS NULL"
+                )
+            )
+            .await,
+            1,
+            "{code}"
+        );
+    }
+}
+
+/// P-D-196, plan review L13: the draft PATCH clears the category with an explicit null
+/// (`double_option`); an omitted field keeps it, and a category can be set again.
+#[tokio::test]
+async fn the_draft_patch_clears_the_category_with_null_and_an_omitted_field_keeps_it() {
+    let tenant = Uuid::new_v4();
+    let (app, _dsn) = rest_app(tenant, doors).await;
+    let cat = category(&app, tenant).await;
+    let r = post(&app, tenant, "/bss-products/v1/skus", new(cat, "A", "A")).await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    let url = format!(
+        "/bss-products/v1/skus/{}",
+        body_json(r).await["id"].as_str().unwrap()
+    );
+    let r = patch(&app, tenant, &url, json!({"name":"Renamed"}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        body_json(r).await["category_id"],
+        json!(cat),
+        "omitted keeps it"
+    );
+    let r = patch(&app, tenant, &url, json!({"category_id":null}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        body_json(r).await["category_id"],
+        Value::Null,
+        "null clears it"
+    );
+    assert_eq!(
+        body_json(get(&app, tenant, &url).await).await["sku"]["category_id"],
+        Value::Null
+    );
+    let r = patch(&app, tenant, &url, json!({"category_id":cat}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(body_json(r).await["category_id"], json!(cat), "set again");
+}
+
+/// P-D-196: browse by a category matches only that category's SKUs, so a SKU without a category
+/// never matches it; the unfiltered list includes it.
+#[tokio::test]
+async fn browse_by_a_category_excludes_skus_without_one_and_the_unfiltered_list_includes_them() {
+    let tenant = Uuid::new_v4();
+    let (app, _dsn) = rest_app(tenant, doors).await;
+    let cat = category(&app, tenant).await;
+    let r = post(&app, tenant, "/bss-products/v1/skus", new(cat, "A", "A")).await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/skus",
+        json!({"code":"B","name":"B","type":"usage"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let codes = |list: Value| -> Vec<String> {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let by_category = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus?category={cat}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(codes(by_category), ["A"]);
+    let all = body_json(get(&app, tenant, "/bss-products/v1/skus").await).await;
+    assert_eq!(codes(all), ["A", "B"]);
+}

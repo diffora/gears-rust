@@ -83,7 +83,7 @@ fn new_sku(category_id: Uuid, code: &str) -> NewSku {
         code: code.into(),
         name: code.into(),
         r#type: SkuType::Recurring,
-        category_id,
+        category_id: Some(category_id),
         description: String::new(),
         sellable: true,
         gl_code: None,

@@ -701,7 +701,7 @@ fn content(
         code: code.to_owned(),
         name: code.to_owned(),
         r#type,
-        category_id: Uuid::nil(),
+        category_id: Some(Uuid::nil()),
         description: String::new(),
         sellable: true,
         gl_code: gl_code.map(str::to_owned),

@@ -2213,3 +2213,57 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
     assert_eq!(f.vote(&unit, "approve", 1).await.0, 200);
     assert_eq!(f.card().await["lifecycle"], "retired");
 }
+
+/// P-D-196: a SKU without a category publishes, and a `sku_change` sets and then clears the
+/// category: the unit's item diff, the applied version and `SkuChanged.changed` show it.
+#[tokio::test]
+async fn a_sku_without_a_category_publishes_and_a_change_sets_and_clears_it() {
+    let f = Fixture::new(0).await;
+    let cat = f.card().await["category_id"].clone();
+    assert!(cat.is_string(), "the fixture's draft has a category");
+    let r = request_as(
+        &f.app,
+        &f.author,
+        Method::PATCH,
+        &format!("/bss-products/v1/skus/{}", f.id),
+        Some(json!({"category_id":null})),
+        Some("\"1\""),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(f.card().await["category_id"], Value::Null);
+    f.publish().await;
+    let today = time::OffsetDateTime::now_utc().date();
+    let in_force = || async {
+        let (status, body) = call(
+            &f.app,
+            &f.author,
+            Method::GET,
+            &format!("/skus/{}/versions?as_of={today}", f.id),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        body
+    };
+    let v = in_force().await;
+    assert_eq!(v["published_version"], 1);
+    assert_eq!(v["content"]["category_id"], Value::Null);
+    for (version, before, after) in [(2, Value::Null, cat.clone()), (3, cat.clone(), Value::Null)] {
+        let (status, u) = f.post("/changes", json!({"category_id":after})).await;
+        assert_eq!(status, 200, "{u}");
+        assert_eq!(u["applied"], true);
+        let item = &u["unit"]["snapshot"]["skus"][0];
+        assert_eq!(item["before"]["content"]["category_id"], before, "{item}");
+        assert_eq!(item["after"]["content"]["category_id"], after, "{item}");
+        assert_eq!(f.card().await["category_id"], after);
+        let v = in_force().await;
+        assert_eq!(v["published_version"], version);
+        assert_eq!(v["content"]["category_id"], after);
+        assert_eq!(
+            enqueued_event_envelope(&f.dsn, SkuChanged::TYPE_ID).await["changed"],
+            json!(["category_id"])
+        );
+    }
+}

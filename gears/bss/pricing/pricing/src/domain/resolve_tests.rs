@@ -874,7 +874,7 @@ fn sku_version(
             code: "WP-PRO".to_owned(),
             name: "WordPress Pro".to_owned(),
             r#type: SkuType::Recurring,
-            category_id: id(7),
+            category_id: Some(id(7)),
             description: String::new(),
             sellable: true,
             gl_code: gl.map(str::to_owned),

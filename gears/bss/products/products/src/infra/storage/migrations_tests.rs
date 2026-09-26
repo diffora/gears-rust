@@ -33,7 +33,7 @@ fn vec_order_matches_name_order() {
 }
 
 #[test]
-fn the_chain_is_the_guard_coord_then_the_six_pricebook_migrations() {
+fn the_chain_is_the_guard_coord_then_the_seven_pricebook_migrations() {
     let names: Vec<String> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
@@ -48,7 +48,8 @@ fn the_chain_is_the_guard_coord_then_the_six_pricebook_migrations() {
             "m20260925_000003_create_products_approvals",
             "m20260925_000004_create_products_audit_log",
             "m20260925_000005_create_products_idempotency",
-            "m20260925_000006_create_products_sku_reference"
+            "m20260925_000006_create_products_sku_reference",
+            "m20260925_000007_sku_category_optional"
         ]
     );
 }
@@ -87,4 +88,41 @@ async fn the_guard_creates_nothing() {
     assert!(objects.is_empty(), "the guard created a schema object");
     guard.down(&manager).await.unwrap();
     guard.down(&manager).await.unwrap();
+}
+
+/// The one migration that does not revert (P-D-196, plan review L9): every other migration of
+/// the chain reverses, newest first, and `m20260925_000007_sku_category_optional` refuses by name.
+#[tokio::test]
+async fn every_migration_reverses_except_the_named_irreversible_000007() {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    use sea_orm_migration::SchemaManager;
+    const IRREVERSIBLE: &str = "m20260925_000007_sku_category_optional";
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = SchemaManager::new(&db);
+    let chain = Migrator::migrations();
+    for m in &chain {
+        m.up(&manager).await.unwrap();
+    }
+    let mut refused = Vec::new();
+    for m in chain.iter().rev() {
+        match m.down(&manager).await {
+            Ok(()) => {}
+            Err(e) => {
+                assert!(e.to_string().contains("irreversible"), "{}: {e}", m.name());
+                refused.push(m.name().to_owned());
+            }
+        }
+    }
+    assert_eq!(refused, [IRREVERSIBLE]);
+    let left = db
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'products\\_%' ESCAPE '\\'".to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        left.is_empty(),
+        "every reversible migration removed its tables"
+    );
 }

@@ -405,7 +405,7 @@ async fn two_real_writers_apply_once_and_lock_errors_remain_typed_for_retry() {
             code: "a".into(),
             name: "a".into(),
             r#type: SkuType::OneTime,
-            category_id: cat.id,
+            category_id: Some(cat.id),
             description: String::new(),
             sellable: true,
             gl_code: None,

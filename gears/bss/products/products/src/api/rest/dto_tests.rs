@@ -27,3 +27,27 @@ fn nullable_patch_values_and_invalid_enums_keep_their_fields() {
         );
     }
 }
+
+/// P-D-196: `category_id` is optional on create (omitted is null, never a default) and three-state
+/// on the draft PATCH: omitted keeps it, null clears it, a value sets it.
+#[test]
+fn the_category_is_optional_on_create_and_three_state_on_patch() {
+    use crate::domain::sku::NewSku;
+    use uuid::Uuid;
+    for body in [
+        json!({"code":"A","name":"A","type":"recurring"}),
+        json!({"code":"A","name":"A","type":"recurring","category_id":null}),
+    ] {
+        let create: SkuRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(NewSku::try_from(create).unwrap().category_id, None);
+    }
+    let id = Uuid::new_v4();
+    for (body, want) in [
+        (json!({}), None),
+        (json!({"category_id":null}), Some(None)),
+        (json!({"category_id":id}), Some(Some(id))),
+    ] {
+        let patch: SkuPatchRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(SkuPatch::try_from(patch).unwrap().category_id, want);
+    }
+}

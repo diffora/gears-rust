@@ -512,7 +512,7 @@ impl ReferenceRegistryV1 for Script {
             } else {
                 SkuType::Usage
             },
-            category_id: Uuid::new_v4(),
+            category_id: Some(Uuid::new_v4()),
             description: String::new(),
             sellable: true,
             lifecycle: if mode == 9 {

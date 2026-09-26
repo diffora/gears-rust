@@ -8,7 +8,7 @@ fn content(t: SkuType) -> SkuContent {
         code: "STORAGE".into(),
         name: "Storage".into(),
         r#type: t,
-        category_id: Uuid::new_v4(),
+        category_id: Some(Uuid::new_v4()),
         description: String::new(),
         sellable: true,
         gl_code: None,
@@ -26,7 +26,7 @@ fn blank_code_or_name_is_a_violation() {
         code: " ".into(),
         name: String::new(),
         r#type: SkuType::Recurring,
-        category_id: Uuid::new_v4(),
+        category_id: Some(Uuid::new_v4()),
         description: String::new(),
         sellable: true,
         gl_code: None,
@@ -181,7 +181,7 @@ fn code_limit_counts_characters_and_blank_meter_fields_fail() {
         code: "\u{e9}".repeat(64),
         name: "ok".into(),
         r#type: SkuType::Usage,
-        category_id: Uuid::new_v4(),
+        category_id: Some(Uuid::new_v4()),
         description: String::new(),
         sellable: true,
         gl_code: None,
@@ -198,4 +198,33 @@ fn code_limit_counts_characters_and_blank_meter_fields_fail() {
     let r = validate_publish(&c, Some(&resolved_answer()));
     assert!(has(&r, "usage_type_ref", "USAGE_NEEDS_METER"));
     assert!(has(&r, "unit", "USAGE_NEEDS_METER"));
+}
+
+/// P-D-196: a patch's explicit null clears the category and an omitted one keeps it; clearing and
+/// setting it again are both a changed `category_id`.
+#[test]
+fn a_patch_clears_or_sets_the_category_and_the_diff_names_it() {
+    let c = content(SkuType::Recurring);
+    assert!(c.category_id.is_some());
+    let kept = apply_patch(&c, &SkuPatch::default());
+    assert_eq!(kept.category_id, c.category_id);
+    let cleared = apply_patch(
+        &c,
+        &SkuPatch {
+            category_id: Some(None),
+            ..SkuPatch::default()
+        },
+    );
+    assert_eq!(cleared.category_id, None);
+    assert_eq!(changed_fields(&c, &cleared), ["category_id"]);
+    let set = Uuid::new_v4();
+    let again = apply_patch(
+        &cleared,
+        &SkuPatch {
+            category_id: Some(Some(set)),
+            ..SkuPatch::default()
+        },
+    );
+    assert_eq!(again.category_id, Some(set));
+    assert_eq!(changed_fields(&cleared, &again), ["category_id"]);
 }

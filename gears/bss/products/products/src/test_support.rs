@@ -677,7 +677,7 @@ pub async fn seed_rest_sku(
             code: code.to_owned(),
             name: code.to_owned(),
             r#type: bss_products_sdk::models::SkuType::Usage,
-            category_id,
+            category_id: Some(category_id),
             description: String::new(),
             sellable: true,
             gl_code: None,

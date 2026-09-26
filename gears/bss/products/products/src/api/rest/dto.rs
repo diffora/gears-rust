@@ -43,7 +43,8 @@ pub struct SkuDto {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// `null`: the SKU has no category (P-D-196).
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub lifecycle: String,
@@ -102,7 +103,8 @@ pub struct SkuContentDto {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// `null`: the SKU has no category (P-D-196).
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub gl_code: Option<String>,
@@ -240,7 +242,9 @@ pub struct SkuRequest {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// Optional (P-D-196): omitted or `null` stays null, with no fallback to the default category.
+    #[serde(default)]
+    pub category_id: Option<Uuid>,
     #[serde(default)]
     pub description: String,
     #[serde(default = "default_sellable")]
@@ -282,7 +286,9 @@ impl TryFrom<SkuRequest> for NewSku {
 #[allow(clippy::option_option)] // None = omitted; Some(None) = clear; Some(Some(_)) = set.
 pub struct SkuPatchRequest {
     pub name: Option<String>,
-    pub category_id: Option<Uuid>,
+    /// Omitted keeps the category, `null` clears it (P-D-196), a value sets it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub category_id: Option<Option<Uuid>>,
     pub description: Option<String>,
     pub sellable: Option<bool>,
     #[serde(default, deserialize_with = "double_option")]

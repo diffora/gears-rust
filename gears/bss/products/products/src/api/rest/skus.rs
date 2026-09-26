@@ -277,15 +277,17 @@ fn response(status: StatusCode, s: Sku) -> Response {
     )
         .into_response()
 }
-/// Translate only known repository business refusals, retaining all driver errors.
-fn write_error(e: RepoError, category_id: Uuid) -> TxError {
+/// Translate only known repository business refusals, retaining all driver errors. A SKU without
+/// a category (P-D-196) resolves none, so only a named category can be missing.
+fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
     match e {
-        RepoError::Db(code) if code == "CATEGORY_NOT_FOUND" => {
-            TxError::Refused(DomainError::NotFound {
+        RepoError::Db(code) if code == "CATEGORY_NOT_FOUND" => match category_id {
+            Some(id) => TxError::Refused(DomainError::NotFound {
                 what: "category",
-                id: category_id,
-            })
-        }
+                id,
+            }),
+            None => TxError::Repo(RepoError::Db(code)),
+        },
         RepoError::Db(code)
             if matches!(
                 code.as_str(),
