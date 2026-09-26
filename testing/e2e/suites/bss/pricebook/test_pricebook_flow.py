@@ -560,6 +560,8 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
     """P-D-196, D-427 and D-428 / P-D-197 over HTTP, on one SKU.
 
     A SKU created without a category is 201 with ``category_id: null``, publishes and is priced.
+    The entry door wants a model its charge kind allows, the entry PATCH does not take one, and
+    a price carries none (money that does not fit its entry's model is ``PRICE_MISSING``).
     Its one SKU x charge kind x period takes two entries of different models in one EUR book
     (201 both; the same model again is 409 ``ENTRY_KEY_TAKEN``), and a third in a USD book. A
     plan publishes rev 1 with the flat entry, and its copy rev 2 re-points the item to the
@@ -592,11 +594,43 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         assert r.json()["applied"] is True, r.text
         published = r.json()["sku"]
         assert (published["lifecycle"], published["category_id"]) == ("published", None), r.text
+        # A category filter never matches a SKU without one, and such a SKU never keeps a
+        # category in use; browse serves it.
+        r = api.post(
+            f"{PRODUCTS}/categories",
+            json={"code": f"e2e-nocat-{run}", "name": f"E2E no category {run}"},
+        )
+        assert r.status_code == 201, r.text
+        unused = r.json()["id"]
+        r = api.get(f"{PRODUCTS}/skus", params={"q": code, "category": unused})
+        assert r.status_code == 200, r.text
+        assert r.json()["items"] == [], r.text
+        r = api.post(f"{PRODUCTS}/categories/{unused}/retire", json={})
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "retired", r.text
+        r = api.get(f"{PRODUCTS}/browse", params={"kind": "sku", "$filter": f"entity_id eq {sku}"})
+        assert r.status_code == 200, r.text
+        assert [row["entity_id"] for row in r.json()["rows"]] == [sku], r.text
 
         _set_quorum(api, "prices", 0)
         _set_quorum(api, "plan_revision", 0)
         eur = _book(api, "EUR", run)
         usd = _book(api, "USD", run)
+
+        # The entry create requires a model its charge kind allows (D-427).
+        r = api.post(
+            f"{PRICING}/price-books/{eur}/entries",
+            json={"sku_id": sku, "period": "month"},
+            headers=_key(),
+        )
+        assert r.status_code == 400, r.text
+        for model, refusal in (
+            ("stair", "MODEL_INVALID"),
+            ("graduated", "MODEL_KIND_CHARGEKIND_MISMATCH"),
+        ):
+            r = _monthly_entry(api, eur, sku, model)
+            assert r.status_code == 400, r.text
+            assert refusal in r.text, r.text
 
         # Two models of one SKU x kind x period are two entries of one book (D-427).
         made = [_monthly_entry(api, eur, sku, model) for model in ("flat", "per_unit")]
@@ -613,12 +647,36 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         again = _monthly_entry(api, eur, sku, "flat")
         assert again.status_code == 409, again.text
         assert "ENTRY_KEY_TAKEN" in again.text, again.text
+        # The model is fixed for the entry's life: the PATCH does not carry it.
+        r = api.get(f"{PRICING}/price-book-entries/{flat['id']}")
+        assert r.status_code == 200, r.text
+        r = api.patch(
+            f"{PRICING}/price-book-entries/{flat['id']}",
+            json={"model": "per_unit"},
+            headers={"If-Match": r.headers["etag"]},
+        )
+        assert r.status_code == 400, r.text
+        r = api.get(f"{PRICING}/price-book-entries/{flat['id']}")
+        assert (r.json()["model"], r.json()["version"]) == ("flat", flat["version"]), r.text
         r = _monthly_entry(api, usd, sku, "flat")
         assert r.status_code == 201, r.text
         dollar = r.json()
 
-        # Each entry's price in its model; the EUR pair approved, the USD price left a draft.
+        # A price carries no model, and its money must fit its entry's.
         start = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+        for body, refusal in (
+            ({"model": "flat", "price": {"amount": "30.00"}}, None),
+            ({"price": {"rate": "2.50"}}, "PRICE_MISSING"),
+        ):
+            r = api.post(
+                f"{PRICING}/price-book-entries/{flat['id']}/prices",
+                json={**body, "eligibility": "all", "effective_from": start},
+                headers=_key(),
+            )
+            assert r.status_code == 400, r.text
+            assert refusal is None or refusal in r.text, r.text
+
+        # Each entry's price in its model; the EUR pair approved, the USD price left a draft.
         _draft_price(api, flat, {"amount": "30.00"}, start)
         _draft_price(api, per_unit, {"rate": "2.50"}, start)
         _draft_price(api, dollar, {"amount": "33.00"}, start)
