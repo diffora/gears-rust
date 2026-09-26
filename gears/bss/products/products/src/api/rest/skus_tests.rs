@@ -823,3 +823,210 @@ async fn browse_by_a_category_excludes_skus_without_one_and_the_unfiltered_list_
     let all = body_json(get(&app, tenant, "/bss-products/v1/skus").await).await;
     assert_eq!(codes(all), ["A", "B"]);
 }
+
+// ------------------------------------------------------------------ P-D-197: pricing's usage
+
+/// What the scripted port does when it is asked.
+#[derive(Clone, Copy)]
+enum PortAnswer {
+    /// The counts the test set, for the ids it knows.
+    Counts,
+    /// 403: the caller holds no pricing `price_book_entry:read`.
+    Refuses,
+    /// 503: pricing cannot answer.
+    Fails,
+    /// The call never finishes as an answer.
+    Panics,
+}
+/// Pricing's port as a counting double: every call's tenant and ids, in call order.
+struct UsagePort {
+    answer: PortAnswer,
+    counts:
+        std::sync::Mutex<std::collections::BTreeMap<Uuid, bss_products_sdk::sku_usage::SkuUsage>>,
+    calls: std::sync::Mutex<Vec<(Uuid, Vec<Uuid>)>>,
+}
+impl UsagePort {
+    fn new(answer: PortAnswer) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            counts: std::sync::Mutex::default(),
+            calls: std::sync::Mutex::default(),
+        })
+    }
+    fn set(&self, usage: bss_products_sdk::sku_usage::SkuUsage) {
+        self.counts.lock().unwrap().insert(usage.sku_id, usage);
+    }
+    fn calls(&self) -> Vec<(Uuid, Vec<Uuid>)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+#[async_trait::async_trait]
+impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
+    async fn usage(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        tenant: Uuid,
+        sku_ids: &[Uuid],
+    ) -> Result<
+        Vec<bss_products_sdk::sku_usage::SkuUsage>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.calls.lock().unwrap().push((tenant, sku_ids.to_vec()));
+        match self.answer {
+            PortAnswer::Counts => {
+                let counts = self.counts.lock().unwrap();
+                Ok(sku_ids
+                    .iter()
+                    .filter_map(|id| counts.get(id).cloned())
+                    .collect())
+            }
+            PortAnswer::Refuses => Err(bss_products_sdk::sku_usage::sku_usage_denied()),
+            PortAnswer::Fails => Err(bss_products_sdk::sku_usage::sku_usage_unavailable(
+                "pricing is down",
+            )),
+            PortAnswer::Panics => panic!("the SKU usage port broke"),
+        }
+    }
+}
+/// A router and its state over a fresh database, with no usage port registered.
+async fn usage_app(tenant: Uuid) -> (Router, Arc<ApiState>) {
+    let (db, _, _, _) = crate::test_support::test_db().await;
+    crate::test_support::rest_app_on_db(
+        tenant,
+        doors,
+        crate::test_support::resolved_usage_types(),
+        "test",
+        db,
+    )
+    .await
+}
+/// A category-less draft SKU through the door (P-D-196): its id.
+async fn sku_named(app: &Router, tenant: Uuid, code: &str) -> Uuid {
+    let r = post(
+        app,
+        tenant,
+        "/bss-products/v1/skus",
+        json!({"code":code,"name":code,"type":"recurring"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    serde_json::from_value(body_json(r).await["id"].clone()).unwrap()
+}
+fn counts(sku_id: Uuid, entries: u64, plans: u64) -> bss_products_sdk::sku_usage::SkuUsage {
+    bss_products_sdk::sku_usage::SkuUsage {
+        sku_id,
+        entries,
+        currencies: vec!["EUR".into(), "USD".into()],
+        prices: bss_products_sdk::sku_usage::PriceCounts {
+            approved: 3,
+            pending: 1,
+            draft: 2,
+        },
+        plans,
+    }
+}
+
+/// P-D-197: with pricing's port registered, the card and every list item carry its usage, and
+/// the list asks the port once per page with the ids of that page.
+#[tokio::test]
+async fn the_sku_reads_carry_pricing_usage_with_one_port_call_per_list_page() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let tenant = Uuid::new_v4();
+    let (app, state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let b = sku_named(&app, tenant, "B").await;
+    let c = sku_named(&app, tenant, "C").await;
+    let port = UsagePort::new(PortAnswer::Counts);
+    port.set(counts(a, 2, 1));
+    port.set(counts(b, 5, 3));
+    port.set(bss_products_sdk::sku_usage::SkuUsage {
+        sku_id: c,
+        ..Default::default()
+    });
+    state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let card = get(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    let card = body_json(card).await;
+    assert_eq!(card["sku"]["id"], a.to_string());
+    assert!(card["references"].is_object(), "{card}");
+    assert_eq!(
+        card["usage"],
+        json!({
+            "entries": 2,
+            "currencies": ["EUR", "USD"],
+            "prices": {"approved": 3, "pending": 1, "draft": 2},
+            "plans": 1,
+        })
+    );
+    assert_eq!(port.calls(), vec![(tenant, vec![a])]);
+    let page = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2").await).await;
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(page["next"], "B");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["code"], "A", "the SKU's own fields stay flat");
+    assert_eq!(items[0]["usage"]["entries"], 2);
+    assert_eq!(items[1]["code"], "B");
+    assert_eq!(items[1]["usage"]["entries"], 5);
+    assert_eq!(items[1]["usage"]["plans"], 3);
+    let rest = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2&after=B").await).await;
+    assert_eq!(
+        rest["items"][0]["usage"],
+        json!({
+            "entries": 0,
+            "currencies": [],
+            "prices": {"approved": 0, "pending": 0, "draft": 0},
+            "plans": 0,
+        }),
+        "an unpriced SKU reads zeros"
+    );
+    assert_eq!(
+        port.calls(),
+        vec![(tenant, vec![a]), (tenant, vec![a, b]), (tenant, vec![c])],
+        "one batch call per page, with that page's ids"
+    );
+}
+
+/// P-D-197: no port registered — the SKU reads answer as before, with `usage: null`.
+#[tokio::test]
+async fn without_a_usage_port_the_sku_reads_answer_usage_null() {
+    let tenant = Uuid::new_v4();
+    let (app, _state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let card = get(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    let card = body_json(card).await;
+    assert_eq!(card.get("usage"), Some(&Value::Null), "{card}");
+    let list = get(&app, tenant, "/bss-products/v1/skus").await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    assert_eq!(list["items"][0].get("usage"), Some(&Value::Null), "{list}");
+    assert_eq!(list["items"][0]["code"], "A");
+}
+
+/// P-D-197: a port that refuses the caller, cannot answer, or breaks leaves `usage: null`, and
+/// the SKU read still answers 200.
+#[tokio::test]
+async fn a_usage_port_that_refuses_fails_or_breaks_leaves_usage_null() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    for answer in [PortAnswer::Refuses, PortAnswer::Fails, PortAnswer::Panics] {
+        let tenant = Uuid::new_v4();
+        let (app, state) = usage_app(tenant).await;
+        let a = sku_named(&app, tenant, "A").await;
+        let port = UsagePort::new(answer);
+        state.hub.register::<dyn SkuUsageV1>(port.clone());
+        let card = get(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+        assert_eq!(card.status(), StatusCode::OK);
+        let card = body_json(card).await;
+        assert_eq!(card.get("usage"), Some(&Value::Null), "{card}");
+        assert_eq!(card["sku"]["code"], "A");
+        let list = get(&app, tenant, "/bss-products/v1/skus").await;
+        assert_eq!(list.status(), StatusCode::OK);
+        let list = body_json(list).await;
+        assert_eq!(list["items"][0].get("usage"), Some(&Value::Null), "{list}");
+        assert_eq!(
+            port.calls().len(),
+            2,
+            "the port was asked: null is its answer, not its absence"
+        );
+    }
+}

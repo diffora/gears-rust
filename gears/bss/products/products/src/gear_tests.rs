@@ -172,6 +172,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
             .resolved_idempotency_retention_hours(),
         fence_ttl_minutes: 30,
         reference_principals: std::collections::BTreeMap::new(),
+        hub: Arc::new(toolkit::ClientHub::new()),
     });
     gear.runtime.store(Some(Arc::new(ProductsRuntime {
         enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),

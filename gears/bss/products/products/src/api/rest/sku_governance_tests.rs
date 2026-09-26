@@ -663,6 +663,7 @@ async fn second_app(
         idempotency_retention_hours: 24,
         fence_ttl_minutes: 30,
         reference_principals: f.state.reference_principals.clone(),
+        hub: f.state.hub.clone(),
     });
     routes(state, &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(flat_in_enforcer(f.tenant)))
