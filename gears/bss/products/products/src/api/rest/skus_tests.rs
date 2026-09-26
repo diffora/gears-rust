@@ -837,6 +837,8 @@ enum PortAnswer {
     Fails,
     /// The call never finishes as an answer.
     Panics,
+    /// The call never returns at all.
+    Hangs,
 }
 /// Pricing's port as a counting double: every call's tenant and ids, in call order.
 struct UsagePort {
@@ -844,6 +846,15 @@ struct UsagePort {
     counts:
         std::sync::Mutex<std::collections::BTreeMap<Uuid, bss_products_sdk::sku_usage::SkuUsage>>,
     calls: std::sync::Mutex<Vec<(Uuid, Vec<Uuid>)>>,
+    /// Hanging calls whose future was dropped: the caller aborted them.
+    abandoned: std::sync::atomic::AtomicUsize,
+}
+/// Counts one abandoned call when the hanging call's future is dropped.
+struct Abandoned<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for Abandoned<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 impl UsagePort {
     fn new(answer: PortAnswer) -> Arc<Self> {
@@ -851,6 +862,7 @@ impl UsagePort {
             answer,
             counts: std::sync::Mutex::default(),
             calls: std::sync::Mutex::default(),
+            abandoned: std::sync::atomic::AtomicUsize::default(),
         })
     }
     fn set(&self, usage: bss_products_sdk::sku_usage::SkuUsage) {
@@ -885,6 +897,10 @@ impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
                 "pricing is down",
             )),
             PortAnswer::Panics => panic!("the SKU usage port broke"),
+            PortAnswer::Hangs => {
+                let _abandoned = Abandoned(&self.abandoned);
+                std::future::pending().await
+            }
         }
     }
 }
@@ -1029,4 +1045,40 @@ async fn a_usage_port_that_refuses_fails_or_breaks_leaves_usage_null() {
             "the port was asked: null is its answer, not its absence"
         );
     }
+}
+
+/// A SKU read that must answer while the port hangs; the test's own bound, well past the door's.
+async fn answered(app: &Router, tenant: Uuid, uri: &str) -> axum::response::Response {
+    tokio::time::timeout(std::time::Duration::from_secs(10), get(app, tenant, uri))
+        .await
+        .expect("the SKU read answers although the port never does")
+}
+
+/// P-D-197: a port call that never returns is bounded. Once the bound elapses the SKU read
+/// answers 200 with `usage: null`, on the card and on the list.
+#[tokio::test]
+async fn a_usage_port_that_never_answers_leaves_usage_null_once_its_bound_elapses() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let tenant = Uuid::new_v4();
+    let (app, state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let port = UsagePort::new(PortAnswer::Hangs);
+    state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let card = answered(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    let card = body_json(card).await;
+    assert_eq!(card.get("usage"), Some(&Value::Null), "{card}");
+    assert_eq!(card["sku"]["code"], "A");
+    let list = answered(&app, tenant, "/bss-products/v1/skus").await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    assert_eq!(list["items"][0].get("usage"), Some(&Value::Null), "{list}");
+    assert_eq!(port.calls().len(), 2, "the port was asked each time");
+    for _ in 0..100 {
+        if port.abandoned.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a call past its bound is aborted, not left running");
 }

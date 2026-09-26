@@ -4,15 +4,19 @@
 //! refusal (the caller holds no pricing `price_book_entry:read`), any error, and a call that does
 //! not finish all leave `usage: null`. The port is called once per read, on a task of its own,
 //! after the read's own work and outside any transaction of this gear, so a port that opens its
-//! own connection or breaks cannot disturb the read. The usage never takes part in a fence, a
-//! retirement or a type change (P-D-188, P-D-194).
+//! own connection or breaks cannot disturb the read; a call still running after [`PORT_BOUND`] is
+//! aborted. The usage never takes part in a fence, a retirement or a type change (P-D-188,
+//! P-D-194).
 use super::{ApiState, dto::SkuUsageDto};
 use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageV1};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+/// How long a SKU read waits for the port: past it the call has not finished (P-D-197), and the
+/// read answers `usage: null`.
+const PORT_BOUND: Duration = Duration::from_secs(2);
 /// Pricing's usage of `ids`, by SKU, from one call of the port resolved now (the two gears boot
 /// in either order).
 pub async fn of(
@@ -27,7 +31,15 @@ pub async fn of(
         return BTreeMap::new();
     };
     let (caller, tenant, asked) = (ctx.clone(), ctx.subject_tenant_id(), ids.to_vec());
-    let answer = tokio::spawn(async move { port.usage(&caller, tenant, &asked).await }).await;
+    let mut call = tokio::spawn(async move { port.usage(&caller, tenant, &asked).await });
+    let Ok(answer) = tokio::time::timeout(PORT_BOUND, &mut call).await else {
+        call.abort();
+        tracing::warn!(
+            bound = ?PORT_BOUND,
+            "bss-products: the SKU usage port did not answer in time; usage is null"
+        );
+        return BTreeMap::new();
+    };
     by_sku(ids, answer)
 }
 /// The answer by SKU: only the ids asked, the first answer of each; nothing when the port did not

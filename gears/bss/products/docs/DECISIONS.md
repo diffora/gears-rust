@@ -289,7 +289,8 @@ it beside `sku` and `references`. The list asks the port once per page, with the
 for its one id. `usage` is `null` when no port is registered, when the port refuses the caller (403: the caller
 has no pricing `price_book_entry:read`), and when it cannot answer (any error, or a call that does not finish).
 The SKU read never fails because of the port: it calls the port on a task of its own, after its own reads, and
-outside any transaction of this gear.
+outside any transaction of this gear. It waits two seconds at most; a call still running then has not finished,
+and it is aborted.
 
 The usage is information for the SKUs screen: "N prices" with the currency chips, "unpriced", "N plans"; a
 bundle shows "by plan" from its type. It never takes part in a fence, a retirement or a type change: those stay
