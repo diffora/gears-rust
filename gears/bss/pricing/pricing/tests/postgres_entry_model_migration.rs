@@ -17,7 +17,7 @@ use bss_pricing::infra::storage::repo::{book_repo, idempotency_repo as idem, ref
 use bss_pricing::module::BssPricingGear;
 use entry_support::{Script, app_for, request, state_on, user_of};
 use pg_support::Pg;
-use sea_orm::{ConnectionTrait, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, DbBackend, Statement, TransactionTrait};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use toolkit::contracts::DatabaseCapability;
@@ -682,6 +682,73 @@ async fn postgres_an_in_flight_create_for_a_taken_key_meets_it_after_the_model_m
         ["answered 409"]
     );
     assert!(Script::count(&script.releases) >= 1);
+}
+
+/// The statement of the one session of this database that waits for a lock.
+async fn waiting_statement(pg: &Pg) -> String {
+    for _ in 0..500 {
+        let waiting = strings(
+            pg,
+            "SELECT query AS v FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .await;
+        if let [statement] = waiting.as_slice() {
+            return statement.clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the migration never waited for the open writer");
+}
+
+/// On Postgres the two-model check and the backfill are separate statements of a READ COMMITTED
+/// transaction: a price in a second model committed between them would be backfilled away by
+/// `min()` instead of refused. So 000013 first locks both tables ACCESS EXCLUSIVE. A writer of the
+/// old chain still open when it starts (a price of STORAGE, graduated, in `per_unit`) holds the
+/// migration at that lock, its first statement; once committed, that price is judged by the check,
+/// and the migration fails naming STORAGE and records nothing.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_the_migration_locks_both_tables_before_it_judges_the_models() {
+    let pg = seeded().await;
+    let history_before = history(&pg).await;
+    let writer = pg.raw().await;
+    let open = writer.begin().await.unwrap();
+    open.execute_raw(Statement::from_string(
+        DbBackend::Postgres,
+        price_row(
+            0x19,
+            STORAGE,
+            9,
+            "per_unit",
+            &json!({"rate":"1.00"}),
+            "2032-01-01",
+            "rejected",
+            None,
+        ),
+    ))
+    .await
+    .unwrap();
+
+    let commit_once_waited = async {
+        let waiting = waiting_statement(&pg).await;
+        open.commit().await.unwrap();
+        waiting
+    };
+    let (result, waiting) = tokio::join!(migrate(&pg, None), commit_once_waited);
+
+    let error = result
+        .expect_err("the committed second model is refused, not backfilled away")
+        .to_string();
+    assert!(
+        error.contains(MIGRATION) && error.contains(&STORAGE.to_string()),
+        "names STORAGE: {error}"
+    );
+    assert_eq!(
+        waiting,
+        "LOCK TABLE bss.pricing_price_book_entry, bss.pricing_price IN ACCESS EXCLUSIVE MODE",
+        "the migration waits at its lock, before any other statement"
+    );
+    assert_eq!(history(&pg).await, history_before, "000013 is not recorded");
 }
 
 #[tokio::test]

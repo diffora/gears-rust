@@ -607,8 +607,10 @@ Products authorizes to the tenant: that refusal is about the SKU and loses the i
 a lost item emits PlanReferenceLost and is re-reserved once its SKU admits a reservation again.
 Settings and dimension values are versioned direct edits; invalid keys/value lists fail domain validation.
 
-Phase 5 adds the forward migration m20260926_000013_model_on_the_entry (D-427), in the runner's transaction. It
-fails, naming the entries and changing nothing, when an entry's prices of any state carry two or more models. Otherwise
+Phase 5 adds the forward migration m20260926_000013_model_on_the_entry (D-427), in the runner's transaction. On
+Postgres it first locks pricing_price_book_entry and pricing_price ACCESS EXCLUSIVE, so its check and its backfill
+judge the same prices. It fails, naming the entries and changing nothing, when an entry's prices of any state carry two
+or more models. Otherwise
 it adds pricing_price_book_entry.model (SQLite: ADD COLUMN … NOT NULL DEFAULT 'flat' with its CHECK, the default
 staying in the schema; Postgres: a nullable column, then SET NOT NULL and the named CHECK), backfills each entry with
 the one model of all its prices or, with no price, its charge kind's default (flat for recurring and one_time,

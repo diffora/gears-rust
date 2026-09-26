@@ -5,9 +5,14 @@
 //! It runs inside the toolkit runner's transaction on both dialects, so it uses no PRAGMA and no
 //! table rebuild: `ADD COLUMN` on the entry and `DROP COLUMN` on the price.
 //!
+//! 0. On Postgres, lock both tables ACCESS EXCLUSIVE before anything else: the check and the
+//!    backfill are separate statements of a READ COMMITTED transaction, so without the lock a
+//!    price in a second model committed between them would be backfilled away by `min()` instead
+//!    of refused. A writer still open waits here, and its price, once committed, meets the check.
+//!    `SQLite`'s writer lock already serialises the transaction.
 //! 1. Refuse, naming them, the entries whose prices of ANY state (draft, pending, approved,
 //!    rejected) carry two or more models: which one the entry keeps is the owner's call. The check
-//!    runs before any statement, so a refusal changes nothing.
+//!    runs before any statement that changes the schema, so a refusal changes nothing.
 //! 2. Add `pricing_price_book_entry.model`. `SQLite` adds it `NOT NULL DEFAULT 'flat'` with its
 //!    CHECK in one statement (a `NOT NULL` column needs a default there; the default stays in the
 //!    schema and no writer relies on it). Postgres adds it nullable, then sets it `NOT NULL` after
@@ -26,6 +31,11 @@ use uuid::Uuid;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
+
+/// Postgres: the migration's first statement, so the two-model check and the backfill judge the
+/// same prices (the review's migrations lens, L1).
+const PG_LOCK: &str =
+    "LOCK TABLE bss.pricing_price_book_entry, bss.pricing_price IN ACCESS EXCLUSIVE MODE";
 
 const PG_UP: &[&str] = &[
     r"ALTER TABLE bss.pricing_price_book_entry ADD COLUMN model text",
@@ -89,6 +99,9 @@ async fn entries_with_two_models(manager: &SchemaManager<'_>) -> Result<Vec<Stri
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if manager.get_database_backend() == DatabaseBackend::Postgres {
+            super::exec_backend(self.name(), manager, &[PG_LOCK], &[]).await?;
+        }
         let conflicts = entries_with_two_models(manager).await?;
         if !conflicts.is_empty() {
             return Err(DbErr::Migration(format!(
