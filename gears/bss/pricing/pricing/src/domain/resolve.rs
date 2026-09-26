@@ -89,6 +89,12 @@ impl Binding {
     pub fn dim_used(&self) -> Option<&str> {
         self.price.dim_value.as_deref()
     }
+    /// D-425: where the binding ends for its holder — the bound price's own end
+    /// ([`own_end`]); `None` when nothing but a successor's start closes its stored window.
+    #[must_use]
+    pub fn ends_on(&self) -> Option<Date> {
+        own_end(&self.price)
+    }
 }
 /// One row of an item's matrix: the default chain (`dim_value` `None`) or one value.
 #[toolkit_macros::domain_model]
@@ -320,17 +326,23 @@ fn walk<'a>(prices: &'a [Price], pinned: &'a Price, date: Date) -> &'a Price {
     reached
 }
 
-/// Rule 3: whether a price the walk reached still binds on `date`. It must have started, and an
-/// end of its own must not have passed: a temporary price's end or an explicit end. The start of
-/// a successor the walk did not take (a `new` price) does not end it for the pin; that is what
-/// `keep_for_bound` marks.
+/// Rule 3: whether a price the walk reached still binds on `date`. It must have started, and its
+/// own end ([`own_end`]) must not have passed. The start of a successor the walk did not take (a
+/// `new` price) does not end it for the pin; that is what `keep_for_bound` marks.
 fn binds_on(price: &Price, date: Date) -> bool {
-    let own_end = if price.temporary_until.is_some() || price.closed_explicitly {
-        price.effective_to.or(price.temporary_until)
-    } else {
-        None
-    };
-    price.effective_from <= date && own_end.is_none_or(|end| date < end)
+    price.effective_from <= date && own_end(price).is_none_or(|end| date < end)
+}
+/// A price's own end (D-420 read precisely, D-425), read from the stored fields normalisation
+/// does not rewrite: a temporary price's `temporary_until`, else an explicitly closed price's
+/// `effective_to`; `None` for a price whose stored window only a successor's start closes. Never a
+/// temporary price's normalised `effective_to`: a pair nested inside it cuts that at the inner
+/// start, which is a successor the walk did not take, not the price's end (phase 4 review C-1).
+/// An explicit close that a later pair cuts is stored as `min(end, next)` and ends there.
+#[must_use]
+pub fn own_end(price: &Price) -> Option<Date> {
+    price
+        .temporary_until
+        .or_else(|| price.effective_to.filter(|_| price.closed_explicitly))
 }
 
 /// A stored text counts only when it holds more than blanks.

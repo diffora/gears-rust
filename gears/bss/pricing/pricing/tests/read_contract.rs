@@ -256,7 +256,8 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
         "price_id": w.price, "dim_used": null, "pinned_from": null,
         "model": "flat", "price": {"amount": "30.00"}, "min_fee": null,
         "eligibility": "all", "effective_from": "2026-09-01",
-        "effective_to": null, "temporary_until": null, "keep_for_bound": false
+        "effective_to": null, "temporary_until": null, "ends_on": null,
+        "keep_for_bound": false
     });
     let item = json!({
         "item_id": w.item, "sku_id": w.sku, "treatment": "paid", "included_qty": null,
@@ -502,12 +503,72 @@ async fn a_renewal_walks_to_the_all_successor_and_a_signup_binds_the_new_price()
     assert_eq!(binding["keep_for_bound"], true);
     assert_eq!(binding["eligibility"], "all");
     assert_eq!(binding["effective_to"], "2026-11-01", "the stored window");
+    assert_eq!(
+        binding.get("ends_on"),
+        Some(&json!(null)),
+        "15's start is not an end for the pin (D-425)"
+    );
     let (s, signup) = resolve(&f, &base).await;
     assert_eq!(s, 200, "{signup}");
     let binding = &signup["items"][0]["chains"][0]["binding"];
     assert_eq!(binding["price_id"], json!(fifteen), "{signup}");
     assert_eq!(binding["pinned_from"], json!(null));
     assert_eq!(binding["eligibility"], "new");
+}
+
+/// D-425: a binding says where it ends for its holder — a temporary price at its
+/// `temporary_until`, an explicitly closed price at its end, an open price nowhere.
+#[tokio::test]
+async fn a_binding_says_where_it_ends_for_its_holder() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    dimension(&f, "region", &["eu", "us"]).await;
+    let sku = catalog.sku(SkuType::Usage);
+    let entry = entry_of(&f, eur, sku, "usage", (None, Some("region"), None)).await;
+    let usage = |rate: &str, from, version_no| Row {
+        model: "per_unit",
+        price: json!({ "rate": rate }),
+        from,
+        version_no,
+        ..Row::default()
+    };
+    let promo = put(
+        &f,
+        entry,
+        Row {
+            to: Some("2026-11-10"),
+            temporary_until: Some("2026-11-10"),
+            ..usage("0.07", "2026-09-01", 1)
+        },
+    )
+    .await;
+    let returned = put(&f, entry, usage("0.10", "2026-11-10", 2)).await;
+    let closed = put(
+        &f,
+        entry,
+        Row {
+            dim: Some("eu"),
+            to: Some("2026-12-01"),
+            closed: true,
+            ..usage("0.08", "2026-09-01", 3)
+        },
+    )
+    .await;
+    let (created, revision) = plan(&f, "pro", eur).await;
+    item(&f, revision, sku, Some(entry), "paid").await;
+    publish(&f, id_of(&created["id"]), revision).await;
+    let (s, b) = resolve(&f, &format!("plan_revision_id={revision}&date=2026-10-05")).await;
+    assert_eq!(s, 200, "{b}");
+    let chains = &b["items"][0]["chains"];
+    assert_eq!(chains[0]["binding"]["price_id"], json!(promo), "{b}");
+    assert_eq!(chains[0]["binding"]["ends_on"], "2026-11-10", "{b}");
+    assert_eq!(chains[1]["binding"]["price_id"], json!(closed), "{b}");
+    assert_eq!(chains[1]["binding"]["ends_on"], "2026-12-01", "{b}");
+    let (s, b) = resolve(&f, &format!("plan_revision_id={revision}&date=2026-11-15")).await;
+    assert_eq!(s, 200, "{b}");
+    let binding = &b["items"][0]["chains"][0]["binding"];
+    assert_eq!(binding["price_id"], json!(returned), "{b}");
+    assert_eq!(binding.get("ends_on"), Some(&json!(null)), "{b}");
 }
 
 /// The whole matrix: the default chain, then every registered value in the registry's order;
@@ -829,6 +890,10 @@ async fn resolve_needs_plan_read() {
     assert_eq!(denied.0, 403, "{denied:?}");
 }
 
+/// D-421 as D-424 leaves it: Products that cannot answer is 503, and a definite refusal of the
+/// read keeps Products' own status and code. Resolve reads as pricing's system actor (D-424), so
+/// the refusal a consumer can meet is one Products gives that actor: here Products bound its
+/// registry to another owner.
 #[tokio::test]
 async fn products_unavailable_is_503_and_its_refusal_keeps_its_own_status_and_code() {
     let w = world().await;
@@ -838,14 +903,119 @@ async fn products_unavailable_is_503_and_its_refusal_keeps_its_own_status_and_co
     assert_eq!(s, 503, "{b}");
     assert!(text(&b).contains("REGISTRY_UNAVAILABLE"), "{b}");
     w.catalog.down.store(false, SeqCst);
-    // A caller with plan:read but without products read: Products' own 403 comes back.
+    w.catalog.foreign_owner.store(true, SeqCst);
+    let (s, b) = resolve(&w.f, &query).await;
+    assert_eq!(s, 403, "{b}");
+    assert!(text(&b).contains("REFERENCE_OWNER_MISMATCH"), "{b}");
+    w.catalog.foreign_owner.store(false, SeqCst);
+    let (s, b) = resolve(&w.f, &query).await;
+    assert_eq!(s, 200, "{b}");
+}
+
+// ------------------------------------------------------------------ D-424: SKU versions as pricing's system actor
+
+/// A published plan whose SKU Products holds one dated version.
+async fn versioned_world() -> World {
+    let w = world().await;
+    w.catalog
+        .version(w.sku, 1, "2026-01-01", w.catalog.content(w.sku));
+    w
+}
+fn read_version() -> Value {
+    json!({"published_version": 1, "effective_from": "2026-01-01"})
+}
+
+/// D-424: Rating and Subscriptions call as `*.system` subjects, which Products' registry refuses
+/// outright (it admits no system subject but pricing's); resolve reads the SKU versions as
+/// pricing's system actor, so such a caller holding only pricing `plan:read` gets its answer.
+#[tokio::test]
+async fn a_system_caller_other_than_pricing_resolves_with_its_sku_versions() {
+    use bss_products_sdk::ReferenceRegistryV1;
+    let w = versioned_world().await;
+    let tenant = w.f.ctx.subject_tenant_id();
+    let app = plan_support::entry_support::app_granting_every_subject(w.f.state.clone(), tenant);
+    for consumer in ["bss-rating.system", "bss-subscriptions.system"] {
+        let caller = toolkit_security::SecurityContext::builder()
+            .subject_id(Uuid::new_v4())
+            .subject_tenant_id(tenant)
+            .subject_type(consumer)
+            .build()
+            .unwrap();
+        let own = w
+            .catalog
+            .sku_version_as_of(&caller, tenant, w.sku, date("2026-10-05"))
+            .await
+            .expect_err("Products refuses this subject a read of its own");
+        assert_eq!(own.status_code(), 403, "{consumer}");
+        let (s, b, _) = plan_support::request(
+            &app,
+            &caller,
+            "GET",
+            &format!("/resolve?plan_revision_id={}&date=2026-10-05", w.revision),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(s, 200, "{consumer}: {b}");
+        assert_eq!(
+            b["items"][0]["sku_version"],
+            read_version(),
+            "{consumer}: {b}"
+        );
+    }
+}
+
+/// D-424: a consumer needs pricing `plan:read` only — a caller Products would refuse a SKU read
+/// (no products `read`) resolves with the SKU version.
+#[tokio::test]
+async fn a_caller_without_products_read_resolves_with_its_sku_versions() {
+    use bss_products_sdk::ReferenceRegistryV1;
+    let w = versioned_world().await;
+    let query = format!("plan_revision_id={}&date=2026-10-05", w.revision);
     let reader = holding(&w.f, "plan:read");
     w.catalog.readers([w.f.ctx.subject_id()]);
+    let own = w
+        .catalog
+        .sku_version_as_of(
+            &reader,
+            reader.subject_tenant_id(),
+            w.sku,
+            date("2026-10-05"),
+        )
+        .await
+        .expect_err("Products refuses this caller a read of its own");
+    assert_eq!(own.status_code(), 403);
     let (s, b) = resolve_as(&w.f, &reader, &query).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["items"][0]["sku_version"], read_version(), "{b}");
+}
+
+/// D-424: every dated read is made as pricing's system actor, for the caller's tenant, and only
+/// after the caller passed `plan:read` and the revision was found in its tenant.
+#[tokio::test]
+async fn resolve_reads_every_sku_version_as_the_pricing_system_actor() {
+    let w = versioned_world().await;
+    let tenant = w.f.ctx.subject_tenant_id();
+    let query = format!("plan_revision_id={}&date=2026-10-05", w.revision);
+    let (s, b) = resolve_as(&w.f, &holding(&w.f, "price:read"), &query).await;
     assert_eq!(s, 403, "{b}");
-    assert!(text(&b).contains("SKU_READ_DENIED"), "{b}");
+    let (s, b) = resolve_as(&w.f, &stranger(), &query).await;
+    assert_eq!(s, 404, "{b}");
+    assert!(
+        w.catalog.version_readers.lock().unwrap().is_empty(),
+        "no Products read before plan:read and the revision"
+    );
     let (s, b) = resolve(&w.f, &query).await;
-    assert_eq!(s, 200, "a caller with products read resolves: {b}");
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        *w.catalog.version_readers.lock().unwrap(),
+        vec![(
+            bss_products_sdk::PRICING_SYSTEM_ACTOR,
+            Some("bss-pricing.system".to_owned()),
+            tenant
+        )]
+    );
 }
 
 #[tokio::test]

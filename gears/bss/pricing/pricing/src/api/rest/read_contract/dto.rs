@@ -104,8 +104,14 @@ pub struct PricingResolveBindingDto {
     /// `all` or `new`.
     pub eligibility: String,
     pub effective_from: String,
+    /// The stored window's end, for information: a successor's start sets it, including a `new`
+    /// successor a pinned subscription does not take, so it is not an end for the binding.
     pub effective_to: Option<String>,
     pub temporary_until: Option<String>,
+    /// Where the binding ends for its holder (D-425): `temporary_until` for a temporary price, the
+    /// end of an explicitly closed price, null when it has none. A consumer slices a period here,
+    /// never at `effective_to`.
+    pub ends_on: Option<String>,
     /// The price is kept for pinned subscriptions (the predecessor of a `new` price).
     pub keep_for_bound: bool,
 }

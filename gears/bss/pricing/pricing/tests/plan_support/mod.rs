@@ -40,6 +40,8 @@ use uuid::Uuid;
 #[toolkit_canonical_errors::resource_error(toolkit_gts::gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
 
+/// Who a registry call was made as: subject id, subject type, and the tenant it asked for.
+pub type Caller = (Uuid, Option<String>, Uuid);
 /// One SKU as the catalog answers it.
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -75,6 +77,12 @@ pub struct Catalog {
     /// a SKU the catalog declares, `None` when none is in force yet, and Products' 404 for a SKU
     /// it does not declare. Unset (the default) answers `None` for every SKU.
     pub versions: Mutex<Option<BTreeMap<Uuid, Vec<SkuVersion>>>>,
+    /// Who each `sku_version_as_of` call was made as: subject id, subject type and the tenant
+    /// asked for, in call order.
+    pub version_readers: Mutex<Vec<Caller>>,
+    /// Products bound its registry to another owner (a wiring error): every system subject,
+    /// pricing's own included, is `REFERENCE_OWNER_MISMATCH`.
+    pub foreign_owner: AtomicBool,
 }
 impl Catalog {
     /// Arm the dated reads (see `versions`) and add one published version of a declared SKU.
@@ -140,8 +148,30 @@ impl Catalog {
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+    /// Products' own rule for a system subject, which it applies before its PDP
+    /// (`reference_registry::scope`): pricing's system actor is admitted without a grant; any
+    /// other `*.system` subject, and pricing's own under a foreign owner, is 403
+    /// `REFERENCE_OWNER_MISMATCH`. `None` for any other subject: its grant decides.
+    fn system_subject(&self, ctx: &SecurityContext) -> Option<Result<(), CanonicalError>> {
+        if !ctx.subject_type().is_some_and(|s| s.ends_with(".system")) {
+            return None;
+        }
+        let pricing = ctx.subject_type() == Some("bss-pricing.system")
+            && ctx.subject_id() == bss_products_sdk::PRICING_SYSTEM_ACTOR
+            && !self.foreign_owner.load(Ordering::SeqCst);
+        Some(if pricing {
+            Ok(())
+        } else {
+            Err(SkuResource::permission_denied()
+                .with_reason("REFERENCE_OWNER_MISMATCH")
+                .create())
+        })
+    }
     /// Products' 403 for a caller without products `read`, when the opt-in set is armed.
     fn read_denied(&self, ctx: &SecurityContext) -> Result<(), CanonicalError> {
+        if let Some(verdict) = self.system_subject(ctx) {
+            return verdict;
+        }
         let readers = self.readers.lock().unwrap();
         if readers
             .as_ref()
@@ -156,6 +186,9 @@ impl Catalog {
     /// Products' 403 for a caller without products `reference`, when the opt-in set is armed.
     fn reference_denied(&self, ctx: &SecurityContext) -> Result<(), CanonicalError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(verdict) = self.system_subject(ctx) {
+            return verdict;
+        }
         let referencers = self.referencers.lock().unwrap();
         if referencers
             .as_ref()
@@ -338,11 +371,16 @@ impl ReferenceRegistryV1 for Catalog {
     async fn sku_version_as_of(
         &self,
         ctx: &SecurityContext,
-        _: Uuid,
+        tenant: Uuid,
         id: Uuid,
         date: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.version_readers.lock().unwrap().push((
+            ctx.subject_id(),
+            ctx.subject_type().map(str::to_owned),
+            tenant,
+        ));
         self.read_denied(ctx)?;
         if self.down.load(Ordering::SeqCst) {
             return Err(Self::unavailable());

@@ -21,6 +21,9 @@ pub async fn test_db() -> (
 struct Resolver {
     tenant: Uuid,
     allow: bool,
+    /// Grant every subject everything: a service principal holds its grants by policy, which the
+    /// grant-in-subject-type encoding below cannot spell for a `*.system` subject.
+    every_subject: bool,
 }
 #[async_trait::async_trait]
 impl authz_resolver_sdk::AuthZResolverApi for Resolver {
@@ -33,23 +36,24 @@ impl authz_resolver_sdk::AuthZResolverApi for Resolver {
         use authz_resolver_sdk::*;
         Ok(EvaluationResponse {
             decision: self.allow
-                && request
-                    .subject
-                    .subject_type
-                    .as_deref()
-                    .is_some_and(|grant| {
-                        grant == "user"
-                            || grant
-                                == format!(
-                                    "{}:{}",
-                                    request
-                                        .resource
-                                        .resource_type
-                                        .trim_start_matches("gts.cf.bss.pricing.")
-                                        .trim_end_matches(".v1~"),
-                                    request.action.name
-                                )
-                    }),
+                && (self.every_subject
+                    || request
+                        .subject
+                        .subject_type
+                        .as_deref()
+                        .is_some_and(|grant| {
+                            grant == "user"
+                                || grant
+                                    == format!(
+                                        "{}:{}",
+                                        request
+                                            .resource
+                                            .resource_type
+                                            .trim_start_matches("gts.cf.bss.pricing.")
+                                            .trim_end_matches(".v1~"),
+                                        request.action.name
+                                    )
+                        })),
             context: EvaluationResponseContext {
                 constraints: vec![Constraint {
                     predicates: vec![Predicate::In(InPredicate::new(
@@ -86,6 +90,21 @@ pub fn app_for(
         Arc::new(Resolver {
             tenant,
             allow: true,
+            every_subject: false,
+        }),
+    )))
+}
+/// The production router over a state whose policy grants every subject of `tenant`
+/// everything, a `*.system` service principal included.
+pub fn app_granting_every_subject(
+    state: Arc<bss_pricing::api::rest::authoring::AuthoringState>,
+    tenant: Uuid,
+) -> Router {
+    production(state).layer(axum::Extension(authz_resolver_sdk::PolicyEnforcer::new(
+        Arc::new(Resolver {
+            tenant,
+            allow: true,
+            every_subject: true,
         }),
     )))
 }
@@ -127,7 +146,11 @@ impl Fixture {
         );
         let make = |allow| {
             production(state.clone()).layer(axum::Extension(
-                authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Resolver { tenant, allow })),
+                authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Resolver {
+                    tenant,
+                    allow,
+                    every_subject: false,
+                })),
             ))
         };
         let ctx = SecurityContext::builder()
@@ -180,6 +203,7 @@ impl Fixture {
             Arc::new(Resolver {
                 tenant: self.ctx.subject_tenant_id(),
                 allow: true,
+                every_subject: false,
             }),
         )))
     }

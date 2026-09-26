@@ -7,7 +7,10 @@
 //! the dimension registry, the settings and the `keep_for_bound` ids); an unknown or another
 //! tenant's revision is 404 there, before any Products read. The pure model then judges the pins
 //! (`domain::resolve::matrix`), and only then, outside the transaction, is each SKU version read
-//! as of the date through the detached registry, as the caller (D-421).
+//! as of the date through the detached registry (D-421), as pricing's system actor (D-424): the
+//! caller has passed `plan:read` and its tenant holds the revision, the plan read already
+//! discloses the items' SKU ids, and Products' registry refuses every other system subject — so a
+//! consumer needs pricing's grants only.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-binding-sku-version:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-price-read-forever:p1
@@ -26,7 +29,7 @@ use crate::{
         resolve::{self, ItemResolution, Pin, ResolveContext, Resolved, TenantDefaults},
     },
     infra::{
-        reference_registry, reference_work,
+        reference_registry, reference_ticker, reference_work,
         storage::{
             RepoError,
             entity::{plan_revision, price},
@@ -295,7 +298,7 @@ async fn resolution(
     // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-4
     let versions = versions_as_of(
         &state.hub,
-        ctx,
+        tenant,
         resolved.iter().map(|r| r.sku_id),
         request.date,
     )
@@ -430,13 +433,15 @@ async fn read_stored(
 }
 
 /// D-421: each SKU version as of `date`, one read per distinct SKU, through the detached
-/// registry as the caller. A SKU Products does not know (404) has no version.
+/// registry as pricing's system actor for `tenant` (D-424); the door calls it only after the
+/// caller passed `plan:read` and the revision was found in the caller's tenant. A SKU Products
+/// does not know (404) has no version.
 /// # Errors
 /// Any other definite refusal as Products gave it; 503 `REGISTRY_UNAVAILABLE` when Products
 /// cannot answer.
 async fn versions_as_of(
     hub: &toolkit::ClientHub,
-    ctx: &SecurityContext,
+    tenant: Uuid,
     skus: impl IntoIterator<Item = Uuid>,
     date: Date,
 ) -> Result<BTreeMap<Uuid, SkuVersion>, CanonicalError> {
@@ -446,11 +451,9 @@ async fn versions_as_of(
         return Ok(found);
     }
     let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
+    let actor = reference_ticker::system_actor(tenant)?;
     for sku in wanted {
-        match registry
-            .sku_version_as_of(ctx, ctx.subject_tenant_id(), sku, date)
-            .await
-        {
+        match registry.sku_version_as_of(&actor, tenant, sku, date).await {
             Ok(Some(version)) => {
                 found.insert(sku, version);
             }
@@ -508,6 +511,7 @@ fn render(
                         effective_from: row.effective_from.to_string(),
                         effective_to: row.effective_to.map(|d| d.to_string()),
                         temporary_until: row.temporary_until.map(|d| d.to_string()),
+                        ends_on: b.ends_on().map(|d| d.to_string()),
                         keep_for_bound: b.keep_for_bound,
                     })
                 })

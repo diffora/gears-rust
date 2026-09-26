@@ -394,6 +394,121 @@ fn rule_3_a_pin_not_yet_in_force_binds_the_price_in_force() {
     assert_eq!(binding(&r, None).pinned_from, Some(id(12)));
 }
 
+/// Phase 4 review C-1: a pinned price ends at its OWN end, never at the stored end that
+/// normalisation gives it. An inner `new` pair inside an outer `all` pair (both built by the
+/// domain's own pair builder) cuts the outer promo's stored window at the inner start; that start
+/// is a successor the walk did not take, so the pin keeps the outer promo until its
+/// `temporary_until`, then binds the outer return.
+#[test]
+fn rule_3_a_pinned_outer_promo_binds_to_its_own_end_through_a_nested_new_pair() {
+    let mut chain = with_temporary(
+        vec![all(10, "10.00", "2026-01-01", None)],
+        all(30, "8.00", "2026-10-01", None),
+        "2026-12-01",
+        31,
+    );
+    price::normalize_windows(&mut chain);
+    let chain = with_temporary(chain, new(40, "5.00", "2026-10-15", None), "2026-11-01", 41);
+    // Apply marks the outer promo keep_for_bound: it is the price in force before the `new` one.
+    let c = ctx(vec![item_of(ITEM, Some(entry(chain, &[])))], &[30]);
+    let outer = c.items[0]
+        .entry
+        .as_ref()
+        .unwrap()
+        .prices
+        .iter()
+        .find(|p| p.id == id(30))
+        .unwrap();
+    assert_eq!(
+        (outer.effective_to, outer.temporary_until),
+        (Some(date("2026-10-15")), Some(date("2026-12-01"))),
+        "the stored window ends at the inner start; the promo's own end is later"
+    );
+    for on in ["2026-10-20", "2026-11-05"] {
+        let r = resolve(&c, on, &[pin(30)]);
+        assert_eq!(bound(&r, None), 30, "on {on}");
+        assert_eq!(amount(&r, None), "8.00", "on {on}");
+        assert_eq!(binding(&r, None).pinned_from, Some(id(30)), "on {on}");
+        assert!(binding(&r, None).keep_for_bound, "on {on}");
+    }
+    let after = resolve(&c, "2026-12-05", &[pin(30)]);
+    assert_eq!(bound(&after, None), 31, "the outer return");
+    assert_eq!(amount(&after, None), "10.00");
+    assert_eq!(binding(&after, None).pinned_from, Some(id(30)));
+    // A signup inside the inner window takes the new-customers promo.
+    assert_eq!(bound(&resolve(&c, "2026-10-20", &[]), None), 40);
+}
+
+/// D-425: the binding says where it ends for its holder — a temporary price's `temporary_until`,
+/// an explicitly closed price's end — and names no end for a price whose stored window only a
+/// successor's start closes.
+#[test]
+fn a_binding_ends_on_its_own_end_never_on_a_successors_start() {
+    // 12 is kept for its pins: its stored window closes at the `new` 15's start, not its own end.
+    let c = ctx(
+        vec![item_of(
+            ITEM,
+            Some(entry(
+                vec![
+                    all(10, "10.00", "2026-09-01", None),
+                    all(12, "12.00", "2026-10-01", None),
+                    new(15, "15.00", "2026-11-01", None),
+                ],
+                &[],
+            )),
+        )],
+        &[12],
+    );
+    let kept = resolve(&c, "2026-11-05", &[pin(10)]);
+    assert_eq!(bound(&kept, None), 12);
+    assert_eq!(
+        binding(&kept, None).price.effective_to,
+        Some(date("2026-11-01"))
+    );
+    assert_eq!(binding(&kept, None).ends_on(), None);
+    // An `all` promo pair: the promo ends at its `temporary_until`; its return has no end.
+    let pair = one(entry(
+        with_temporary(
+            vec![all(10, "10.00", "2026-09-01", None)],
+            all(30, "7.00", "2026-10-10", None),
+            "2026-11-10",
+            31,
+        ),
+        &[],
+    ));
+    let promo = resolve(&pair, "2026-10-20", &[pin(10)]);
+    assert_eq!(bound(&promo, None), 30);
+    assert_eq!(binding(&promo, None).ends_on(), Some(date("2026-11-10")));
+    let back = resolve(&pair, "2026-11-15", &[pin(10)]);
+    assert_eq!(
+        (bound(&back, None), binding(&back, None).ends_on()),
+        (31, None)
+    );
+    // A value price closed with no return, then a promo inside it: the promo's return copies the
+    // explicit close (no `temporary_until`), and ends there.
+    let mut closed_chain = with_temporary(
+        vec![all(1, "10.00", "2026-09-01", None)],
+        all(40, "8.00", "2026-10-01", Some("us")),
+        "2026-12-01",
+        41,
+    );
+    price::normalize_windows(&mut closed_chain);
+    let nested = with_temporary(
+        closed_chain,
+        all(50, "6.00", "2026-10-10", Some("us")),
+        "2026-11-01",
+        51,
+    );
+    let returned = nested.iter().find(|p| p.id == id(51)).unwrap();
+    assert!(returned.closed_explicitly && returned.temporary_until.is_none());
+    let c = one(entry(nested, &["us"]));
+    let r = resolve(&c, "2026-11-15", &[pin(50)]);
+    assert_eq!(bound(&r, Some("us")), 51);
+    assert_eq!(binding(&r, Some("us")).ends_on(), Some(date("2026-12-01")));
+    // The default chain's open price has no end.
+    assert_eq!(binding(&r, None).ends_on(), None);
+}
+
 // ---------- D-420 rule 4: a default-chain pin moves to the value's own later `all` price ----------
 
 #[test]
