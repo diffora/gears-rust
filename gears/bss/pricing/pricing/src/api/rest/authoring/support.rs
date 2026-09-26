@@ -385,7 +385,10 @@ async fn transaction_coded<T: Send + 'static>(
     .await
     .map_err(|error| exhausted_contention(db.backend(), code, error))
 }
-/// Classify a finished transaction's error: retryable contention is the door's 409 `code`.
+/// Classify a finished transaction's error: retryable contention is the door's 409 `code`, kept
+/// as a typed conflict so each door names its own resource (phase 4 second review B-1): an
+/// authoring door renders it through `From<DoorError>` as [`conflict`], a read door as its own
+/// resource's conflict (`read_contract::read_failure`).
 #[must_use]
 pub fn exhausted_contention(
     backend: sea_orm::DbBackend,
@@ -397,7 +400,7 @@ pub fn exhausted_contention(
             if toolkit_db::contention::is_retryable_contention(backend, source) =>
         {
             tracing::warn!(error=%error, code, "pricing transaction contention outlasted its retries");
-            conflict(code).into()
+            DoorError::Repo(RepoError::Conflict { code })
         }
         _ => error,
     }

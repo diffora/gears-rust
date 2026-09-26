@@ -55,9 +55,14 @@ async fn contention_that_outlasts_the_retries_is_409_contended() {
     );
     assert_eq!(error.status_code(), 409);
     assert_eq!(reason(&error).as_deref(), Some("CONTENDED"));
+    // Phase 4 second review B-1: the classified contention is a typed conflict, which an authoring
+    // door renders exactly as before — the same 409 problem, on the price book's type.
+    let body = |error: CanonicalError| serde_json::to_value(Problem::from(error)).unwrap();
+    assert_eq!(body(error), body(conflict(CONTENDED)));
     let (error, _) = run(true, busy).await;
     assert_eq!(error.status_code(), 409);
     assert_eq!(reason(&error).as_deref(), Some("UNIT_CONTENDED"));
+    assert_eq!(body(error), body(conflict(UNIT_CONTENDED)));
 }
 #[tokio::test]
 async fn any_other_driver_failure_stays_a_500() {
@@ -68,16 +73,19 @@ async fn any_other_driver_failure_stays_a_500() {
     let (error, _) = run(true, broken).await;
     assert_eq!(error.status_code(), 500);
 }
+/// Exhausted contention is a typed conflict with the door's code (phase 4 second review B-1), so
+/// each door names its own resource: the authoring doors through `From<DoorError>`, the read
+/// doors through `read_failure`. Another backend's contention text stays a driver failure.
 #[test]
 fn the_classifier_follows_the_backend() {
     let pg = || driver("could not serialize access due to concurrent update");
     assert!(matches!(
         exhausted_contention(sea_orm::DbBackend::Postgres, CONTENDED, pg()),
-        DoorError::Api(_)
+        DoorError::Repo(RepoError::Conflict { code: CONTENDED })
     ));
     assert!(matches!(
         exhausted_contention(sea_orm::DbBackend::Sqlite, CONTENDED, pg()),
-        DoorError::Repo(_)
+        DoorError::Repo(RepoError::Driver { .. })
     ));
 }
 /// The unit doors answer `UNIT_CONTENDED`; every other mutation door keeps `CONTENDED`.

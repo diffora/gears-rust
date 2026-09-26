@@ -1482,4 +1482,33 @@ async fn every_read_contract_refusal_names_the_resource_it_refused() {
     let (s, b) = price_read(&w.f, &holding(&w.f, "plan:read"), w.price).await;
     assert_eq!(s, 403, "{b}");
     assert_eq!(b["context"]["resource_type"], PRICE_RESOURCE, "{b}");
+
+    // Phase 4 second review B-1: a read transaction whose contention outlasts the retries is the
+    // door's own 409 CONTENDED. The classifier's contention path is forced as the support tests
+    // force it, with SQLite's busy signature as the driver error: every read of `pricing_price`
+    // (both doors read it inside their transaction) now fails with that text.
+    busy_prices(&w.f).await;
+    let (s, b) = resolve(&w.f, &format!("plan_revision_id={rev}&{on}")).await;
+    assert_eq!(s, 409, "{b}");
+    assert!(text(&b).contains("CONTENDED"), "{b}");
+    assert_eq!(b["context"]["resource_type"], PLAN_RESOURCE, "{b}");
+    let (s, b) = price_read(&w.f, &w.f.ctx, w.price).await;
+    assert_eq!(s, 409, "{b}");
+    assert!(text(&b).contains("CONTENDED"), "{b}");
+    assert_eq!(b["context"]["resource_type"], PRICE_RESOURCE, "{b}");
+}
+/// Park `pricing_price` behind a view whose every read fails with `SQLite`'s busy signature —
+/// `(code: 5) database is locked`, the text the toolkit's retry classifier calls contention.
+async fn busy_prices(f: &Fixture) {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let db = Database::connect(&f.dsn).await.unwrap();
+    for sql in [
+        "ALTER TABLE pricing_price RENAME TO pricing_price_parked",
+        "CREATE VIEW pricing_price AS \
+         SELECT [(code: 5) database is locked] AS id FROM pricing_price_parked",
+    ] {
+        db.execute_raw(Statement::from_string(DbBackend::Sqlite, sql.to_owned()))
+            .await
+            .unwrap();
+    }
 }
