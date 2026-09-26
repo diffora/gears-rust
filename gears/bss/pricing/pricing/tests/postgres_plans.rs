@@ -831,6 +831,18 @@ async fn postgres_an_item_add_racing_a_publishing_submit_never_lands_after_the_l
             let (added, submitted) = tokio::join!(add, submit);
             (submitted, added)
         };
+        if submitted.0 == 409 {
+            // D-403: a submit whose serializable retries run out answers 409 UNIT_CONTENDED and
+            // writes nothing (seen under a loaded gate). The invariant still holds: no unit, so
+            // nothing was published, and the add that won landed in a draft that stays a draft.
+            assert!(
+                submitted.1.to_string().contains("UNIT_CONTENDED"),
+                "round {round}: {submitted:?}"
+            );
+            assert_eq!(added.0, 201, "round {round}: {added:?}");
+            assert!(units_of(&p.a, revision).await.is_empty(), "round {round}");
+            continue;
+        }
         assert_eq!(submitted.0, 201, "round {round}: {submitted:?}");
         let stored = published_is_what_was_approved(&p.a, revision, &submitted.1).await;
         let carried = skus_of(&stored["items"]).contains(&sku.to_string());
