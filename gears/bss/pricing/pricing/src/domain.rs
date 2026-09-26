@@ -40,5 +40,6 @@ pub mod plan;
 pub mod price;
 pub mod price_book_entry;
 pub mod reference_op;
+pub mod resolve;
 #[cfg(test)]
 mod test_support;
