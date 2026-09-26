@@ -121,7 +121,7 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | binding | price_id | The bound price. |
 | binding | dim_used | The chain the bound price belongs to: the value, or null for the default chain. |
 | binding | pinned_from | The pin the renewal walk started from; null for a signup. |
-| binding | model, price, min_fee | The price's model and money, exact decimal text; min_fee null when the price has none. |
+| binding | model, price, min_fee | The price's model and its money object as stored: { amount } for flat; { rate } for per_unit; { tiers: [{ up_to, rate }] } for graduated and volume, the last up_to null; { package_size, package_price } for package. Every amount is exact decimal text; min_fee is null when the price has none. |
 | binding | eligibility | all or new. |
 | binding | effective_from, effective_to, temporary_until | The stored window and the temporary end, if any. effective_to is for information: a successor's start sets it, including a new successor that a pinned subscription does not take. |
 | binding | ends_on | Where the binding ends for its holder (D-425): temporary_until for a temporary price, the stored end of an explicitly closed price, null when it has none. A consumer slices a period at ends_on, never at effective_to. |
