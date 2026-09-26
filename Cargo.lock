@@ -1895,27 +1895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cf-gears-bss-fixtures"
-version = "0.0.0"
-dependencies = [
- "chrono",
- "serde",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
-name = "cf-gears-bss-fixtures-conformance"
-version = "0.0.0"
-dependencies = [
- "cf-gears-bss-fixtures",
- "chrono",
- "serde",
- "thiserror 2.0.18",
- "toml 1.1.2+spec-1.1.0",
-]
-
-[[package]]
 name = "cf-gears-bss-ledger"
 version = "0.0.0"
 dependencies = [

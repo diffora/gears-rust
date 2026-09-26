@@ -283,14 +283,6 @@ jobs:
       - name: cargo test (no macros)
         run: make test-no-macros
 
-      # `bss-fixtures` is the only crate in the tree whose *production* surface
-      # is the narrow one: pricing's `FixtureGate` inherits it with
-      # `default-features = false`. `default = ["corpus"]`, so the workspace run
-      # above compiles the wide build, where `tests/production_surface.rs`'s
-      # assertions hold trivially and prove nothing they were written for.
-      - name: cargo test (bss-fixtures narrow production surface)
-        run: make test-fixtures-narrow
-
   integration:
     name: Integration tests
     needs: changes

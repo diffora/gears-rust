@@ -30,10 +30,6 @@ reason = "Ignore 'approval' shared utility library (the BSS approval-unit engine
 patterns = ["gears/bss/libs/approval/*"]
 
 [[ignore]]
-reason = "Ignore 'fixtures' joint golden conformance corpus (cf-gears-bss-fixtures + its conformance harness; test-support infrastructure crates consumed by the BSS gears, not an SDLC-documented product module — no PRD/DESIGN required, README-documented). Same class as 'coord' above."
-patterns = ["gears/bss/fixtures/*"]
-
-[[ignore]]
 reason = "Ignore authn-resolver root module node while allowing nested plugin docs scopes."
 patterns = ["gears/system/authn-resolver"]
 
