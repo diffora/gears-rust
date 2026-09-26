@@ -61,6 +61,10 @@ const OP_DONE: Uuid = Uuid::from_u128(0x801);
 const OP_CREATE: Uuid = Uuid::from_u128(0x802);
 const OP_REREREVE: Uuid = Uuid::from_u128(0x803);
 const KEY: &str = "k-before";
+/// The entry a create stored before 000013 would write for STORAGE's key (its op, its key).
+const TWIN: Uuid = Uuid::from_u128(0xe7);
+const OP_TWIN: Uuid = Uuid::from_u128(0x804);
+const TWIN_KEY: &str = "k-twin";
 
 /// The SKU of an entry: its id with a marker bit.
 fn sku(entry: Uuid) -> Uuid {
@@ -347,6 +351,56 @@ impl Lite {
         .await
         .unwrap();
         idem::bind_op(&conn, &scope, TENANT, &endpoint, KEY, OP_CREATE)
+            .await
+            .unwrap();
+    }
+
+    /// A create stored before 000013 (no `model`) for STORAGE's key — its book, SKU, charge kind
+    /// and period, the whole key then — still reserving, its receipt held and its Idempotency-Key
+    /// bound: the rollout stopped it before its Tx B.
+    async fn seed_a_create_for_a_taken_key(&self) {
+        let provider = DBProvider::<toolkit_db::DbError>::new(self.pool().await);
+        let conn = provider.conn().unwrap();
+        let scope = AccessScope::for_tenant(TENANT);
+        let now = time::OffsetDateTime::now_utc();
+        reference_op_repo::insert(
+            &conn,
+            &scope,
+            reference_op::Model {
+                op_id: OP_TWIN,
+                tenant_id: TENANT,
+                kind: "create".into(),
+                ref_kind: "price_book_entry".into(),
+                ref_id: TWIN,
+                sku_id: sku(STORAGE),
+                reservation_id: Some(Uuid::from_u128(0x9e7)),
+                idempotency_key: Some(TWIN_KEY.into()),
+                state: "reserving".into(),
+                outcome: Some(old_outcome(BOOK, sku(STORAGE))),
+                attempts: 0,
+                next_attempt_at: now,
+                last_error: None,
+                created_by: AUTHOR,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .unwrap();
+        let endpoint = format!("/bss-pricing/v1/price-books/{BOOK}/entries");
+        idem::claim_idempotency_key(
+            &conn,
+            &scope,
+            TENANT,
+            &endpoint,
+            TWIN_KEY,
+            &[1],
+            now,
+            now + time::Duration::hours(24),
+        )
+        .await
+        .unwrap();
+        idem::bind_op(&conn, &scope, TENANT, &endpoint, TWIN_KEY, OP_TWIN)
             .await
             .unwrap();
     }
@@ -773,6 +827,69 @@ async fn an_entry_op_stored_before_the_migration_resumes_after_it() {
         ))
         .await,
         ["confirmed"]
+    );
+}
+
+/// A create stored before 000013 was posted under the key of its day — book, SKU, charge kind,
+/// period — and has no `model`. When an entry already holds that key (STORAGE, backfilled
+/// `graduated`, not the usage default), the create takes that entry's model, so its insert meets
+/// the key and the op ends `ENTRY_KEY_TAKEN`, as the contract it was called under answers; it
+/// does not write a second entry beside STORAGE in a model nobody chose.
+#[tokio::test]
+async fn an_in_flight_create_for_a_taken_key_meets_it_after_the_model_moved() {
+    let db = seeded().await;
+    db.seed_a_create_for_a_taken_key().await;
+    db.migrate(None).await.unwrap();
+    assert!(
+        db.models()
+            .await
+            .contains(&(STORAGE, "graduated".to_owned())),
+        "the key holder's model is not the usage default"
+    );
+    let script = Arc::new(Script::default());
+    let state = state_on(DBProvider::new(db.pool().await), script.clone()).await;
+    let system = system_actor(TENANT).unwrap();
+
+    let receipt = reference_work::drive(
+        &state,
+        &system,
+        OP_TWIN,
+        Arc::new(WallClock),
+        Caller::Ticker,
+    )
+    .await
+    .unwrap()
+    .expect("the create finished with its answer");
+
+    assert_eq!(receipt.status, 409, "{}", receipt.body);
+    assert!(receipt.body.contains("ENTRY_KEY_TAKEN"), "{}", receipt.body);
+    assert_eq!(
+        db.strings(&format!(
+            "SELECT lower(hex(id)) AS v FROM pricing_price_book_entry WHERE sku_id = {}",
+            x(sku(STORAGE))
+        ))
+        .await,
+        [STORAGE.simple().to_string()],
+        "no second entry for the key"
+    );
+    assert_eq!(
+        db.strings(&format!(
+            "SELECT state AS v FROM pricing_reference_op WHERE op_id = {}",
+            x(OP_TWIN)
+        ))
+        .await,
+        ["done"]
+    );
+    assert_eq!(
+        db.strings(&format!(
+            "SELECT state || ' ' || response_status AS v FROM pricing_idempotency WHERE client_key = '{TWIN_KEY}'"
+        ))
+        .await,
+        ["answered 409"]
+    );
+    assert!(
+        Script::count(&script.releases) >= 1,
+        "the refused create released its reservation"
     );
 }
 

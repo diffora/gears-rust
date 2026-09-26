@@ -44,6 +44,9 @@ const OP_DONE: Uuid = Uuid::from_u128(0x801);
 const OP_CREATE: Uuid = Uuid::from_u128(0x802);
 const OP_REREREVE: Uuid = Uuid::from_u128(0x803);
 const KEY: &str = "k-before";
+const TWIN: Uuid = Uuid::from_u128(0xe7);
+const OP_TWIN: Uuid = Uuid::from_u128(0x804);
+const TWIN_KEY: &str = "k-twin";
 
 fn sku(entry: Uuid) -> Uuid {
     Uuid::from_u128(entry.as_u128() | 0x5c00)
@@ -245,6 +248,55 @@ async fn seed_through_repositories(pg: &Pg) {
     .await
     .unwrap();
     idem::bind_op(&conn, &scope, TENANT, &endpoint, KEY, OP_CREATE)
+        .await
+        .unwrap();
+}
+
+/// A create stored before 000013 (no `model`) for STORAGE's key, still reserving with its receipt
+/// and its bound Idempotency-Key.
+async fn seed_a_create_for_a_taken_key(pg: &Pg) {
+    let provider = DBProvider::<toolkit_db::DbError>::new(pg.db().await);
+    let conn = provider.conn().unwrap();
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = time::OffsetDateTime::now_utc();
+    reference_op_repo::insert(
+        &conn,
+        &scope,
+        reference_op::Model {
+            op_id: OP_TWIN,
+            tenant_id: TENANT,
+            kind: "create".into(),
+            ref_kind: "price_book_entry".into(),
+            ref_id: TWIN,
+            sku_id: sku(STORAGE),
+            reservation_id: Some(Uuid::from_u128(0x9e7)),
+            idempotency_key: Some(TWIN_KEY.into()),
+            state: "reserving".into(),
+            outcome: Some(old_outcome(BOOK, sku(STORAGE))),
+            attempts: 0,
+            next_attempt_at: now,
+            last_error: None,
+            created_by: AUTHOR,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap();
+    let endpoint = format!("/bss-pricing/v1/price-books/{BOOK}/entries");
+    idem::claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        &endpoint,
+        TWIN_KEY,
+        &[1],
+        now,
+        now + time::Duration::hours(24),
+    )
+    .await
+    .unwrap();
+    idem::bind_op(&conn, &scope, TENANT, &endpoint, TWIN_KEY, OP_TWIN)
         .await
         .unwrap();
 }
@@ -564,6 +616,72 @@ async fn postgres_an_entry_op_stored_before_the_migration_resumes_after_it() {
             assert_eq!(p["model"], e["entry"]["model"], "{p}");
         }
     }
+}
+
+/// A create stored before 000013 for a key STORAGE holds (backfilled `graduated`, not the usage
+/// default) takes STORAGE's model and ends `ENTRY_KEY_TAKEN`; no second entry is written.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_an_in_flight_create_for_a_taken_key_meets_it_after_the_model_moved() {
+    let pg = seeded().await;
+    seed_a_create_for_a_taken_key(&pg).await;
+    migrate(&pg, None).await.unwrap();
+    assert!(
+        models(&pg)
+            .await
+            .contains(&(STORAGE, "graduated".to_owned()))
+    );
+    let script = Arc::new(Script::default());
+    let state = state_on(DBProvider::new(pg.db().await), script.clone()).await;
+    let system = system_actor(TENANT).unwrap();
+
+    let receipt = reference_work::drive(
+        &state,
+        &system,
+        OP_TWIN,
+        Arc::new(WallClock),
+        Caller::Ticker,
+    )
+    .await
+    .unwrap()
+    .expect("the create finished with its answer");
+
+    assert_eq!(receipt.status, 409, "{}", receipt.body);
+    assert!(receipt.body.contains("ENTRY_KEY_TAKEN"), "{}", receipt.body);
+    assert_eq!(
+        strings(
+            &pg,
+            &format!(
+                "SELECT id::text AS v FROM bss.pricing_price_book_entry WHERE sku_id = {}",
+                u(sku(STORAGE))
+            )
+        )
+        .await,
+        [STORAGE.to_string()],
+        "no second entry for the key"
+    );
+    assert_eq!(
+        strings(
+            &pg,
+            &format!(
+                "SELECT state AS v FROM bss.pricing_reference_op WHERE op_id = {}",
+                u(OP_TWIN)
+            )
+        )
+        .await,
+        ["done"]
+    );
+    assert_eq!(
+        strings(
+            &pg,
+            &format!(
+                "SELECT state || ' ' || response_status AS v FROM bss.pricing_idempotency WHERE client_key = '{TWIN_KEY}'"
+            )
+        )
+        .await,
+        ["answered 409"]
+    );
+    assert!(Script::count(&script.releases) >= 1);
 }
 
 #[tokio::test]

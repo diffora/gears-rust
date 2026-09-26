@@ -57,9 +57,11 @@ pub struct Work {
 }
 /// An entry's persisted create input (D-401): what its create writes, rebuilt from the entry by
 /// every later op of it (a rereserve, a delete). Its JSON is the door's request body field for
-/// field. `model` (D-427) is absent from an op stored before `m20260926_000013`: such an op
-/// resolves to the model that migration gives an entry without prices, its charge kind's default
-/// (`default_model`). A rereserve or a delete never writes the model, so its entry keeps its own.
+/// field. `model` (D-427) is absent from an op stored before `m20260926_000013`: such a create
+/// takes the model of the entry that already holds its key (book, SKU, charge kind, period), so it
+/// meets `ENTRY_KEY_TAKEN`; else the model that migration gives an entry without prices, its charge
+/// kind's default (`default_model`). A rereserve or a delete never writes the model, so its entry
+/// keeps its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryInput {
     pub sku_id: Uuid,
@@ -773,10 +775,13 @@ async fn write_entry(
     tx: &(impl DBRunner + Sync),
     scope: &AccessScope,
     op: &entity::Model,
-    entry: price_book_entry::Model,
+    mut entry: price_book_entry::Model,
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     if op.kind != OpKind::Rereserve.as_str() {
+        if let Some(model) = taken_model(tx, scope, op, &entry).await? {
+            entry.model = model;
+        }
         price_book_entry_repo::insert(tx, scope, entry).await?;
         return Ok(());
     }
@@ -800,6 +805,40 @@ async fn write_entry(
     )
     .await?;
     Ok(())
+}
+/// The model of the entry that already holds a create's key, for a create stored before
+/// `m20260926_000013` (its input has no model, D-427). Such a create was posted under the key of
+/// its day — book, SKU, charge kind and period — and [`model_to_write`] gave it the charge kind's
+/// default. When an entry holds that key, its model replaces the default, so the insert meets
+/// `ENTRY_KEY_TAKEN` as the contract the create was called under answers, and no second entry is
+/// written beside it in a model nobody chose. Read in Tx B, the insert's own transaction.
+async fn taken_model(
+    tx: &(impl DBRunner + Sync),
+    scope: &AccessScope,
+    op: &entity::Model,
+    entry: &price_book_entry::Model,
+) -> Result<Option<String>, DoorError> {
+    let Target::PriceBookEntry { input, .. } = Work::read(op)?.target else {
+        return Err(corrupt().into());
+    };
+    if input.model.is_some() {
+        return Ok(None);
+    }
+    // The key index reads the period as `coalesce(period, '')`.
+    let key = |e: &price_book_entry::Model| {
+        (
+            e.sku_id,
+            e.charge_kind.clone(),
+            e.period.clone().unwrap_or_default(),
+        )
+    };
+    Ok(
+        price_book_entry_repo::for_book(tx, scope, entry.tenant_id, entry.book_id)
+            .await?
+            .into_iter()
+            .find(|holder| key(holder) == key(entry))
+            .map(|holder| holder.model),
+    )
 }
 /// Tx C. A confirmed receipt confirms the entry. A receipt released before its confirm keeps
 /// the entry `confirmation_pending` and starts a `rereserve_entry` op in this transaction;
@@ -1141,7 +1180,8 @@ fn sku_refusal_answer(kind: RefKind, code: &'static str) -> CanonicalError {
 }
 /// Tx B's judgement of the input's model (D-427) against the charge kind of the SKU type the
 /// reservation froze: the model to write, or the code of its 400 refusal. An op stored before
-/// `m20260926_000013` has none and resolves to the charge kind's default.
+/// `m20260926_000013` has none and resolves to the charge kind's default, unless an entry already
+/// holds its key: then Tx B writes that entry's model ([`taken_model`]) and meets the key.
 fn model_to_write(
     input: &EntryInput,
     kind: crate::domain::price_book_entry::ChargeKind,
