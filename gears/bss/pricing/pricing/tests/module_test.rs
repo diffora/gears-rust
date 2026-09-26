@@ -51,6 +51,7 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
         ("POST", "/bss-pricing/v1/plans/{id}/clone"),
         ("GET", "/bss-pricing/v1/resolve"),
+        ("GET", "/bss-pricing/v1/prices/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -108,7 +109,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 43);
+    assert_eq!(registered.len(), 44);
     assert!(router.has_routes());
 }
 
@@ -145,8 +146,8 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // item and checks doors (four registrations, the item PATCH and the checks answer); + 2:
         // the revision submit door (its registration and its 201 answer); + 2: the clone door
         // (its registration and its 201 answer); + 2: the resolve door (its registration and its
-        // 200 answer).
-        ("StatusCode::", 2, 86),
+        // 200 answer); + 2: the pinned price read (its registration and its 200 answer).
+        ("StatusCode::", 2, 88),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -257,3 +258,4 @@ async fn no_operation_declares_a_422() {
 
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
+// GET /prices/{id} price:read false false

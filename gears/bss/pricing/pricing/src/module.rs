@@ -242,3 +242,4 @@ impl MigrationTrait for InvalidOutboxMigration {
 
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
+// GET /prices/{id} price:read false false

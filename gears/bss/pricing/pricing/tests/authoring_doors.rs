@@ -400,6 +400,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/plan-revisions/{id}/submit")),
         ("POST", format!("/plans/{id}/clone")),
         ("GET", "/resolve".into()),
+        ("GET", format!("/prices/{id}")),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -707,6 +708,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ),
         ("POST", format!("/plans/{id}/clone"), "plan", "author"),
         ("GET", "/resolve".into(), "plan", "read"),
+        ("GET", format!("/prices/{id}"), "price", "read"),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -718,7 +720,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 43);
+    assert_eq!(table.len(), 44);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

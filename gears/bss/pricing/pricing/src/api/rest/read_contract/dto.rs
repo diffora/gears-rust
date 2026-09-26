@@ -109,6 +109,46 @@ pub struct PricingResolveBindingDto {
     /// The price is kept for pinned subscriptions (the predecessor of a `new` price).
     pub keep_for_bound: bool,
 }
+/// `GET /prices/{id}`: one approved price as stored, served forever whatever its window (D-422),
+/// with its entry's SKU, charge kind and period and its book's currency. Stored facts only: no
+/// display status or other value computed from today, and no authoring internals.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPinnedPriceDto {
+    pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
+    pub sku_id: Uuid,
+    /// `recurring`, `usage` or `one_time`.
+    pub charge_kind: String,
+    pub period: Option<String>,
+    pub book_id: Uuid,
+    pub currency: String,
+    /// The price's place in its entry's order of prices.
+    pub version_no: i32,
+    /// The value's chain; null for the default chain.
+    pub dim_value: Option<String>,
+    /// `flat`, `per_unit`, `graduated`, `volume` or `package`.
+    pub model: String,
+    /// The price's money as stored, amounts as exact decimal text.
+    pub price: serde_json::Value,
+    /// Exact decimal text.
+    pub min_fee: Option<String>,
+    /// `all` or `new`.
+    pub eligibility: String,
+    pub effective_from: String,
+    pub effective_to: Option<String>,
+    pub temporary_until: Option<String>,
+    /// The price is kept for pinned subscriptions (the predecessor of a `new` price).
+    pub keep_for_bound: bool,
+    /// The window was ended explicitly rather than by a successor's start.
+    pub closed_explicitly: bool,
+    /// A temporary price's return partner, or the price a return partner restores.
+    pub paired_price_id: Option<Uuid>,
+    pub return_of_price_id: Option<Uuid>,
+    /// The approval unit that applied the price.
+    pub approved_by_unit_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub approved_at: Option<time::OffsetDateTime>,
+}
 #[derive(Default, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PricingResolveQuery {

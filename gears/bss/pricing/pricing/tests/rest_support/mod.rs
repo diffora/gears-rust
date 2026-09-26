@@ -216,6 +216,7 @@ impl Harness {
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
             ("POST", "/bss-pricing/v1/plans/{id}/clone"),
             ("GET", "/bss-pricing/v1/resolve"),
+            ("GET", "/bss-pricing/v1/prices/{id}"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -283,3 +284,4 @@ impl Harness {
 
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
+// GET /prices/{id} price:read false false

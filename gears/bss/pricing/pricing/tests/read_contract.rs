@@ -1007,3 +1007,173 @@ async fn the_entry_override_is_the_first_invoice_line_source() {
         json!({"value":"Pro {period}","source":"entry"})
     );
 }
+
+// ------------------------------------------------------------------ Task 4.3.2: the pinned price
+
+async fn price_read(
+    f: &Fixture,
+    ctx: &toolkit_security::SecurityContext,
+    id: Uuid,
+) -> (u16, Value) {
+    let (s, b, tag) = f
+        .call_as(ctx, "GET", &format!("/prices/{id}"), json!({}), None, None)
+        .await;
+    assert_eq!(tag, "", "the pinned price read carries no ETag");
+    (s, b)
+}
+
+/// AC `dod-price-read-forever`: an approved price is served with its original money whatever
+/// its window, with its entry's SKU, charge kind, period, book and currency, and nothing
+/// computed from today or of its authoring (D-422).
+#[tokio::test]
+async fn an_approved_price_is_served_forever_whatever_its_window() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let sku = catalog.sku(SkuType::Recurring);
+    let entry = entry_of(&f, eur, sku, "recurring", (Some("month"), None, None)).await;
+    let closed = put(
+        &f,
+        entry,
+        Row {
+            price: flat("10.00"),
+            from: "2025-01-01",
+            to: Some("2025-06-01"),
+            closed: true,
+            ..Row::default()
+        },
+    )
+    .await;
+    let kept = put(
+        &f,
+        entry,
+        Row {
+            price: flat("12.00"),
+            from: "2025-06-01",
+            to: Some("2026-01-01"),
+            keep: true,
+            version_no: 2,
+            ..Row::default()
+        },
+    )
+    .await;
+    let open = put(
+        &f,
+        entry,
+        Row {
+            price: flat("15.00"),
+            min_fee: Some("1.50"),
+            from: "2026-01-01",
+            eligibility: "new",
+            version_no: 3,
+            ..Row::default()
+        },
+    )
+    .await;
+    let before = written(&f).await;
+    let (s, b) = price_read(&f, &f.ctx, open).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(
+        b,
+        json!({
+            "price_id": open, "price_book_entry_id": entry, "sku_id": sku,
+            "charge_kind": "recurring", "period": "month", "book_id": eur, "currency": "EUR",
+            "version_no": 3, "dim_value": null, "model": "flat", "price": {"amount": "15.00"},
+            "min_fee": "1.50", "eligibility": "new", "effective_from": "2026-01-01",
+            "effective_to": null, "temporary_until": null, "keep_for_bound": false,
+            "closed_explicitly": false, "paired_price_id": null, "return_of_price_id": null,
+            "approved_by_unit_id": null, "approved_at": null
+        })
+    );
+    for (id, money, to, keep) in [
+        (closed, "10.00", json!("2025-06-01"), false),
+        (kept, "12.00", json!("2026-01-01"), true),
+    ] {
+        let (s, b) = price_read(&f, &f.ctx, id).await;
+        assert_eq!(s, 200, "{b}");
+        assert_eq!(b["price_id"], json!(id));
+        assert_eq!(b["price"], flat(money), "the original money: {b}");
+        assert_eq!(b["effective_to"], to);
+        assert_eq!(b["keep_for_bound"], keep);
+    }
+    let (_, b) = price_read(&f, &f.ctx, closed).await;
+    assert_eq!(b["closed_explicitly"], true);
+    for internal in [
+        "status",
+        "state",
+        "version",
+        "pending_unit_id",
+        "note",
+        "created_by",
+        "created_at",
+        "updated_at",
+    ] {
+        assert!(b.get(internal).is_none(), "{internal} is not served: {b}");
+    }
+    assert_eq!(written(&f).await, before, "a read writes nothing");
+}
+
+#[tokio::test]
+async fn a_draft_pending_rejected_unknown_or_foreign_price_is_one_and_the_same_404() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let sku = catalog.sku(SkuType::Recurring);
+    let entry = entry_of(&f, eur, sku, "recurring", (Some("month"), None, None)).await;
+    let approved = put(&f, entry, Row::default()).await;
+    let mut hidden = vec![Uuid::new_v4()];
+    for (state, from, version_no) in [
+        ("draft", "2031-01-01", 2),
+        ("pending", "2031-02-01", 3),
+        ("rejected", "2031-03-01", 4),
+    ] {
+        hidden.push(
+            put(
+                &f,
+                entry,
+                Row {
+                    from,
+                    state,
+                    version_no,
+                    ..Row::default()
+                },
+            )
+            .await,
+        );
+    }
+    let (s, _) = price_read(&f, &f.ctx, approved).await;
+    assert_eq!(s, 200);
+    let (s, first) = price_read(&f, &stranger(), approved).await;
+    assert_eq!(s, 404, "another tenant's approved price: {first}");
+    assert!(text(&first).contains("price"), "a pricing 404: {first}");
+    for id in hidden {
+        let (s, b) = price_read(&f, &f.ctx, id).await;
+        assert_eq!(s, 404, "{id}: {b}");
+        assert_eq!(b, first, "one body for every hidden price");
+    }
+}
+
+#[tokio::test]
+async fn the_pinned_price_read_needs_price_read() {
+    let w = world().await;
+    for grant in ["plan:read", "price:author", "price_book:read"] {
+        let (s, b) = price_read(&w.f, &holding(&w.f, grant), w.price).await;
+        assert_eq!(s, 403, "{grant}: {b}");
+    }
+    let (s, b) = price_read(&w.f, &holding(&w.f, "price:read"), w.price).await;
+    assert_eq!(s, 200, "{b}");
+    let denied = plan_support::request(
+        &w.f.denied,
+        &w.f.ctx,
+        "GET",
+        &format!("/prices/{}", w.price),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(denied.0, 403, "{denied:?}");
+    assert_eq!(
+        w.catalog.calls(),
+        0,
+        "the pinned read asks Products nothing"
+    );
+}

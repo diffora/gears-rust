@@ -1,5 +1,6 @@
-//! The consumer read contract (D-419…D-422): `GET /resolve`, the chain matrix Rating and
-//! Subscriptions bind from, mounted beside the authoring router.
+//! The consumer read contract (D-419…D-422), mounted beside the authoring router: `GET /resolve`,
+//! the chain matrix Rating and Subscriptions bind from, and `GET /prices/{id}`, the pinned price a
+//! replay reads.
 //!
 //! A read writes nothing: no audit row, no idempotency key, no binding. `resolve` reads the stored
 //! revision in ONE transaction (the revision, its plan and items, each entry with ALL its prices,
@@ -13,10 +14,11 @@ use super::authoring::{
     support::{self, DoorError, authz_failure, require_authenticated},
 };
 use crate::{
-    authz::{self, actions, resource_types},
+    authz::{self, ResourceRef, actions, resource_types},
     domain::{
         book, dimension,
         plan::{RevisionState, Treatment},
+        price::PriceState,
         price_book_entry::ChargeKind,
         resolve::{self, ItemResolution, Pin, ResolveContext, Resolved, TenantDefaults},
     },
@@ -33,11 +35,11 @@ use crate::{
     },
 };
 use authz_resolver_sdk::PolicyEnforcer;
-use axum::{Extension, Router, http::StatusCode, response::Response};
+use axum::{Extension, Router, extract::Path, http::StatusCode, response::Response};
 use bss_products_sdk::models::SkuVersion;
 use dto::{
-    PricingResolveBindingDto, PricingResolveChainDto, PricingResolveDto, PricingResolveInputDto,
-    PricingResolveItemDto, PricingResolveMeterDto, PricingResolveQuery,
+    PricingPinnedPriceDto, PricingResolveBindingDto, PricingResolveChainDto, PricingResolveDto,
+    PricingResolveInputDto, PricingResolveItemDto, PricingResolveMeterDto, PricingResolveQuery,
     PricingResolveSkuVersionDto,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,6 +85,23 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PricingResolveDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/prices/{id}")
+        .operation_id("bss_pricing.get_price")
+        .summary("Read a pinned price")
+        .description(
+            "Returns an approved price of the tenant with its original money whatever its \
+             window (closed, followed by a later price, kept for bound subscriptions), with its \
+             entry's SKU, charge kind, period, book and currency: stored facts only. A draft, \
+             pending, rejected, unknown or foreign price is one and the same 404.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price id")
+        .handler(get_price)
+        .json_response_with_schema::<PricingPinnedPriceDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
     router.layer(Extension(state))
 }
 
@@ -105,6 +124,78 @@ async fn resolve(
     .map_err(authz_failure)?;
     let request = ResolveRequest::parse(&uri)?;
     resolution(&state, scope, &ctx, request).await
+}
+
+async fn get_price(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE,
+        actions::READ,
+        None,
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let tenant = ctx.subject_tenant_id();
+    let body = support::transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { pinned_price(tx, &scope, tenant, id).await })
+    })
+    .await?;
+    support::response(StatusCode::OK, &body, None)
+}
+/// `GET /prices/{id}` below its door (D-422): an approved price of the tenant, as stored.
+/// # Errors
+/// One and the same 404 for a draft, pending or rejected price, an unknown id and another
+/// tenant's id.
+async fn pinned_price(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<PricingPinnedPriceDto, DoorError> {
+    let row = price_repo::find(tx, scope, tenant, id)
+        .await?
+        .filter(|p| p.state == PriceState::Approved.as_str())
+        .ok_or_else(|| support::missing_what("price"))?;
+    let children = AccessScope::for_tenant(tenant);
+    let entry = price_book_entry_repo::find(tx, &children, tenant, row.price_book_entry_id)
+        .await?
+        .ok_or_else(|| corrupt(format!("price {id} has no entry")))?;
+    let book = book_repo::find(tx, &children, tenant, entry.book_id)
+        .await?
+        .ok_or_else(|| corrupt(format!("entry {} has no book", entry.id)))?;
+    Ok(PricingPinnedPriceDto {
+        price_id: row.id,
+        price_book_entry_id: entry.id,
+        sku_id: entry.sku_id,
+        charge_kind: entry.charge_kind,
+        period: entry.period,
+        book_id: book.id,
+        currency: book.currency,
+        version_no: row.version_no,
+        dim_value: row.dim_value,
+        model: row.model,
+        price: row.price_json,
+        min_fee: row.min_fee,
+        eligibility: row.eligibility,
+        effective_from: row.effective_from.to_string(),
+        effective_to: row.effective_to.map(|d| d.to_string()),
+        temporary_until: row.temporary_until.map(|d| d.to_string()),
+        keep_for_bound: row.keep_for_bound,
+        closed_explicitly: row.closed_explicitly,
+        paired_price_id: row.paired_price_id,
+        return_of_price_id: row.return_of_price_id,
+        approved_by_unit_id: row.approved_by_unit_id,
+        approved_at: row.approved_at,
+    })
 }
 
 /// A parsed `GET /resolve` query.
