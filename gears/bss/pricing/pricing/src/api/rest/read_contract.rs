@@ -12,6 +12,12 @@
 //! discloses the items' SKU ids, and Products' registry refuses every other system subject — so a
 //! consumer needs pricing's grants only.
 //!
+//!
+//! Every refusal names the type of what it refused (phase 4 review F1): each `GET /resolve`
+//! refusal — the query, the grant, the revision, its item, its state and the pins — is a
+//! `plan.v1~` resource error, each `GET /prices/{id}` refusal — the id, the grant and the price —
+//! a `price.v1~` one. The authoring doors still answer with the price book's type (owed).
+//!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-binding-sku-version:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-price-read-forever:p1
 pub mod dto;
@@ -51,11 +57,66 @@ use dto::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use time::Date;
-use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit::api::{
+    OpenApiRegistry, canonical_prelude::resource_error, operation_builder::OperationBuilder,
+};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+
+/// What `GET /resolve` refuses: a plan revision, its items, the pins judged against them.
+#[resource_error(gts_id!("cf.bss.pricing.plan.v1~"))]
+struct PlanResource;
+/// What `GET /prices/{id}` refuses: a price.
+#[resource_error(gts_id!("cf.bss.pricing.price.v1~"))]
+struct PriceResource;
+
+/// A 400 of `GET /resolve`, with its code.
+fn plan_invalid(field: &str, code: &str) -> CanonicalError {
+    PlanResource::invalid_argument()
+        .with_field_violation(field, code, code)
+        .create()
+}
+/// A 404 of `GET /resolve`: the plan revision or item the caller's tenant does not hold.
+fn plan_missing(what: &str) -> CanonicalError {
+    PlanResource::not_found(format!("{what} not found"))
+        .with_resource(what)
+        .create()
+}
+/// A 409 of `GET /resolve`, with its code.
+fn plan_conflict(code: &str) -> CanonicalError {
+    PlanResource::aborted(code).with_reason(code).create()
+}
+/// `plan:read` denied; an unreachable PDP stays 503.
+fn plan_denied(error: authz::AuthzError) -> CanonicalError {
+    match error {
+        authz::AuthzError::Denied(d) => PlanResource::permission_denied()
+            .with_reason(d.reason)
+            .create(),
+        unavailable @ authz::AuthzError::Unavailable(_) => authz_failure(unavailable),
+    }
+}
+/// `price:read` denied; an unreachable PDP stays 503.
+fn price_denied(error: authz::AuthzError) -> CanonicalError {
+    match error {
+        authz::AuthzError::Denied(d) => PriceResource::permission_denied()
+            .with_reason(d.reason)
+            .create(),
+        unavailable @ authz::AuthzError::Unavailable(_) => authz_failure(unavailable),
+    }
+}
+/// A read transaction's failure: exhausted contention is a `plan` or `price` conflict like every
+/// other refusal of the door; anything else as the doors render it.
+fn read_failure(error: DoorError, conflict: fn(&str) -> CanonicalError) -> CanonicalError {
+    match error {
+        DoorError::Repo(RepoError::Conflict { code }) => conflict(code),
+        other => other.into(),
+    }
+}
+fn price_conflict(code: &str) -> CanonicalError {
+    PriceResource::aborted(code).with_reason(code).create()
+}
 
 /// Mount the consumer reads.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
@@ -99,7 +160,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Returns an approved price of the tenant with its original money whatever its window \
              (closed, followed by a later price, kept for bound subscriptions), with its entry's \
              SKU, charge kind, period, book and currency: stored facts only. A draft, pending, \
-             rejected, unknown or foreign price is one and the same 404.",
+             rejected, unknown or foreign price is one and the same 404; an id that is not an id \
+             is 400 ID_INVALID.",
         )
         .tag("Pricing")
         .authenticated()
@@ -128,7 +190,7 @@ async fn resolve(
         None,
     )
     .await
-    .map_err(authz_failure)?;
+    .map_err(plan_denied)?;
     let request = ResolveRequest::parse(&uri)?;
     resolution(&state, scope, &ctx, request).await
 }
@@ -137,9 +199,14 @@ async fn get_price(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
-    Path(id): Path<Uuid>,
+    Path(id): Path<String>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
+    let id = Uuid::parse_str(&id).map_err(|_| {
+        PriceResource::invalid_argument()
+            .with_field_violation("id", "ID_INVALID", "ID_INVALID")
+            .create()
+    })?;
     let scope = authz::access_scope(
         &enforcer,
         &ctx,
@@ -149,13 +216,14 @@ async fn get_price(
         Some(ResourceRef(id)),
     )
     .await
-    .map_err(authz_failure)?;
+    .map_err(price_denied)?;
     let tenant = ctx.subject_tenant_id();
-    let body = support::transaction(&state.db.db(), move |tx| {
+    let body = support::transaction_door(&state.db.db(), move |tx| {
         let scope = scope.clone();
         Box::pin(async move { pinned_price(tx, &scope, tenant, id).await })
     })
-    .await?;
+    .await
+    .map_err(|e| read_failure(e, price_conflict))?;
     support::response(StatusCode::OK, &body, None)
 }
 /// `GET /prices/{id}` below its door (D-422): an approved price of the tenant, as stored.
@@ -172,7 +240,11 @@ async fn pinned_price(
     let row = price_repo::find(tx, scope, tenant, id)
         .await?
         .filter(|p| p.state == PriceState::Approved.as_str())
-        .ok_or_else(|| support::missing_what("price"))?;
+        .ok_or_else(|| {
+            PriceResource::not_found("price not found")
+                .with_resource("price")
+                .create()
+        })?;
     let children = AccessScope::for_tenant(tenant);
     let entry = price_book_entry_repo::find(tx, &children, tenant, row.price_book_entry_id)
         .await?
@@ -223,15 +295,17 @@ impl ResolveRequest {
         // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-1
         let axum::extract::Query(query) =
             axum::extract::Query::<PricingResolveQuery>::try_from_uri(uri)
-                .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+                .map_err(|_| plan_invalid("query", "QUERY_INVALID"))?;
         let id = |field: &str, text: Option<&str>| {
-            text.map(|t| Uuid::parse_str(t).map_err(|_| support::invalid(field, "QUERY_INVALID")))
+            text.map(|t| Uuid::parse_str(t).map_err(|_| plan_invalid(field, "QUERY_INVALID")))
                 .transpose()
         };
         let revision = id("plan_revision_id", query.plan_revision_id.as_deref())?
-            .ok_or_else(|| support::invalid("plan_revision_id", "QUERY_INVALID"))?;
-        let date = support::date(Some(query.date.unwrap_or_default()), "date")?
-            .ok_or_else(|| support::invalid("date", "DATE_INVALID"))?;
+            .ok_or_else(|| plan_invalid("plan_revision_id", "QUERY_INVALID"))?;
+        let date = support::date(Some(query.date.unwrap_or_default()), "date")
+            .ok()
+            .flatten()
+            .ok_or_else(|| plan_invalid("date", "DATE_INVALID"))?;
         let item = id("item_id", query.item_id.as_deref())?;
         let pins = match query.pins.as_deref() {
             None | Some("") => Vec::new(),
@@ -248,7 +322,7 @@ impl ResolveRequest {
 }
 /// One pin: `price_id`, or `price_id:dim_value` with a value spelled as a dimension value is.
 fn pin(text: &str) -> Result<Pin, CanonicalError> {
-    let foreign = || support::invalid("pins", "PIN_FOREIGN");
+    let foreign = || plan_invalid("pins", "PIN_FOREIGN");
     let (id, value) = match text.split_once(':') {
         Some((id, value)) if dimension::is_value(value) => (id, Some(value.to_owned())),
         Some(_) => return Err(foreign()),
@@ -284,14 +358,15 @@ async fn resolution(
 ) -> Result<Response, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
     let (revision, item) = (request.revision, request.item);
-    let stored = support::transaction(&state.db.db(), move |tx| {
+    let stored = support::transaction_door(&state.db.db(), move |tx| {
         let scope = scope.clone();
         Box::pin(async move { read_stored(tx, &scope, tenant, revision, item).await })
     })
-    .await?;
+    .await
+    .map_err(|e| read_failure(e, plan_conflict))?;
     let resolved: Vec<ItemResolution> =
         resolve::matrix(&stored.context, request.date, &request.pins)
-            .map_err(|e| support::invalid("pins", e.code))?
+            .map_err(|e| plan_invalid("pins", e.code))?
             .into_iter()
             .filter(|r| item.is_none_or(|id| r.item_id == id))
             .collect();
@@ -323,20 +398,20 @@ async fn read_stored(
     let children = AccessScope::for_tenant(tenant);
     let revision = plan_revision_repo::find(tx, scope, tenant, id)
         .await?
-        .ok_or_else(|| support::missing_what("plan_revision"))?;
+        .ok_or_else(|| plan_missing("plan_revision"))?;
     let state: RevisionState = revision
         .state
         .parse()
         .map_err(|_| corrupt(format!("revision {id} state")))?;
     if !matches!(state, RevisionState::Published | RevisionState::Superseded) {
-        return Err(support::conflict("REVISION_NOT_PUBLISHED").into());
+        return Err(plan_conflict("REVISION_NOT_PUBLISHED").into());
     }
     plan_repo::find(tx, &children, tenant, revision.plan_id)
         .await?
         .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
     let rows = plan_item_repo::for_revision(tx, &children, tenant, revision.id).await?;
     if item.is_some_and(|wanted| !rows.iter().any(|r| r.id == wanted)) {
-        return Err(support::missing_what("plan_item").into());
+        return Err(plan_missing("plan_item").into());
     }
     let book = book_repo::find(tx, &children, tenant, revision.book_id)
         .await?

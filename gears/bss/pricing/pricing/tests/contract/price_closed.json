@@ -31,7 +31,7 @@
         "paired_price_id": null,
         "return_of_price_id": null,
         "approved_by_unit_id": "<unit:prices-1>",
-        "approved_at": "<timestamp>"
+        "approved_at": "2025-12-15T09:00:00Z"
       }
     },
     {
@@ -63,7 +63,7 @@
         "paired_price_id": null,
         "return_of_price_id": null,
         "approved_by_unit_id": "<unit:prices-2>",
-        "approved_at": "<timestamp>"
+        "approved_at": "2026-08-28T09:00:00Z"
       }
     }
   ]

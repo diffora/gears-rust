@@ -1,6 +1,6 @@
 {
   "golden": "resolve_default_pin_moves",
-  "proves": "D-420 rule 4 (owner 2026-09-26): a value pinned to a default-chain price moves to its own chain once the own price in force is `all` and started after the pin (us, from 2026-10-01); a `new` own price does not move it (apac); before the own price starts both stay on the default",
+  "proves": "D-420 rule 4 (owner 2026-09-26): a value pinned to a default-chain price moves to its own chain once the own price in force is `all` and started after the pin (us, from 2026-10-01); a `new` own price does not move it (apac); before the own price starts both stay on the default. D-420 rule 2's date bound: the default's later `all` successor (from 2027-01-01) is not walked to, so apac stays on the default, not on its own `new` price",
   "exchanges": [
     {
       "case": "us and apac pinned to the default on 2026-09-15",
@@ -66,8 +66,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -87,6 +88,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -104,8 +106,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -123,8 +126,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -144,6 +148,7 @@
                   "effective_from": "2026-09-01",
                   "effective_to": "2026-09-20",
                   "temporary_until": "2026-09-20",
+                  "ends_on": "2026-09-20",
                   "keep_for_bound": false
                 }
               }
@@ -216,8 +221,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -237,6 +243,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -256,6 +263,7 @@
                   "effective_from": "2026-10-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -273,8 +281,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -292,8 +301,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               }

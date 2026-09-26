@@ -68,6 +68,7 @@
                   "effective_from": "2026-11-01",
                   "effective_to": "2026-12-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": true
                 }
               }
@@ -142,6 +143,7 @@
                   "effective_from": "2026-12-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               }

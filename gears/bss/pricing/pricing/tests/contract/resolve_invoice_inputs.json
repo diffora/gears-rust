@@ -68,6 +68,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": "2026-11-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               }
@@ -121,8 +122,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -142,6 +144,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -159,8 +162,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -178,8 +182,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -199,6 +204,7 @@
                   "effective_from": "2026-09-01",
                   "effective_to": "2026-09-20",
                   "temporary_until": "2026-09-20",
+                  "ends_on": "2026-09-20",
                   "keep_for_bound": false
                 }
               }
@@ -310,6 +316,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -329,6 +336,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -348,6 +356,7 @@
                   "effective_from": "2026-09-10",
                   "effective_to": "2026-09-20",
                   "temporary_until": "2026-09-20",
+                  "ends_on": "2026-09-20",
                   "keep_for_bound": false
                 }
               },

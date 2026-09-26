@@ -73,6 +73,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -92,6 +93,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -174,8 +176,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -195,6 +198,7 @@
                   "effective_from": "2026-01-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -214,6 +218,7 @@
                   "effective_from": "2026-10-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -233,6 +238,7 @@
                   "effective_from": "2026-10-01",
                   "effective_to": null,
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -250,8 +256,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               },
@@ -269,8 +276,9 @@
                   "min_fee": "5.00",
                   "eligibility": "all",
                   "effective_from": "2026-01-01",
-                  "effective_to": null,
+                  "effective_to": "2027-01-01",
                   "temporary_until": null,
+                  "ends_on": null,
                   "keep_for_bound": false
                 }
               }

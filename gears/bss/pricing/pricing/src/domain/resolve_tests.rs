@@ -259,6 +259,25 @@ fn rule_2_the_walk_is_bounded_by_the_date() {
     let r = resolve(&c, "2026-11-05", &[pin(10)]);
     assert_eq!(bound(&r, None), 10);
     assert_eq!(bound(&resolve(&c, "2026-12-01", &[pin(10)]), None), 12);
+    // Phase 4 review G-1: where the bound decides the binding. A value pinned to the default, its
+    // own `new` price in force (rule 4 does not move it), a default successor after the date:
+    // walked past the date, the pin would reach a price not yet in force, and rule 3 would bind
+    // the value's own `new` price — a renewal bound to a price for new subscribers.
+    let c = one(entry(
+        vec![
+            all(1, "10.00", "2026-09-01", None),
+            new(20, "9.00", "2026-10-01", Some("us")),
+            all(2, "12.00", "2027-01-01", None),
+        ],
+        &["us"],
+    ));
+    let r = resolve(&c, "2026-10-05", &[pin_for(1, "us")]);
+    assert_eq!(bound(&r, Some("us")), 1);
+    assert_eq!(binding(&r, Some("us")).dim_used(), None);
+    assert_eq!(binding(&r, Some("us")).pinned_from, Some(id(1)));
+    // From its start, the default successor is walked to.
+    let later = resolve(&c, "2027-01-05", &[pin_for(1, "us")]);
+    assert_eq!(bound(&later, Some("us")), 2);
 }
 
 #[test]

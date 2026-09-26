@@ -1394,3 +1394,92 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
     }
     assert_eq!(measured, 18, "every GET operation is measured");
 }
+
+// ------------------------------------------------------------------ phase 4 review F1: what was refused
+
+const PLAN_RESOURCE: &str = "gts.cf.bss.pricing.plan.v1~";
+const PRICE_RESOURCE: &str = "gts.cf.bss.pricing.price.v1~";
+
+/// Every refusal of the two consumer doors names the type of what it refused: `GET /resolve` a
+/// plan (the query, the pins, the revision, its item, its state and the grant), `GET
+/// /prices/{id}` a price (the id, the price and the grant). A consumer routes a refusal by it.
+#[tokio::test]
+async fn every_read_contract_refusal_names_the_resource_it_refused() {
+    let w = world().await;
+    let rev = w.revision;
+    let (_, draft) = plan(&w.f, "draft", w.book).await;
+    item(&w.f, draft, w.sku, Some(w.entry), "paid").await;
+    let many = vec![w.price.to_string(); 1_001].join(",");
+    let on = "date=2026-10-05";
+    for (query, status, code) in [
+        (
+            format!("plan_revision_id={rev}&{on}&as_of=x"),
+            400,
+            "QUERY_INVALID",
+        ),
+        ("date=2026-10-05".to_owned(), 400, "QUERY_INVALID"),
+        (format!("plan_revision_id={rev}"), 400, "DATE_INVALID"),
+        (
+            format!("plan_revision_id={rev}&{on}&pins=nope"),
+            400,
+            "PIN_FOREIGN",
+        ),
+        (
+            format!("plan_revision_id={rev}&{on}&pins={}", Uuid::new_v4()),
+            400,
+            "PIN_FOREIGN",
+        ),
+        (
+            format!("plan_revision_id={rev}&{on}&pins={0},{0}", w.price),
+            400,
+            "PIN_DUPLICATE",
+        ),
+        (
+            format!("plan_revision_id={rev}&{on}&pins={many}"),
+            400,
+            "PINS_TOO_MANY",
+        ),
+        (
+            format!("plan_revision_id={}&{on}", Uuid::new_v4()),
+            404,
+            "plan_revision",
+        ),
+        (
+            format!("plan_revision_id={rev}&{on}&item_id={}", Uuid::new_v4()),
+            404,
+            "plan_item",
+        ),
+        (
+            format!("plan_revision_id={draft}&{on}"),
+            409,
+            "REVISION_NOT_PUBLISHED",
+        ),
+    ] {
+        let (s, b) = resolve(&w.f, &query).await;
+        assert_eq!(s, status, "{query}: {b}");
+        assert!(text(&b).contains(code), "{query}: {b}");
+        assert_eq!(b["context"]["resource_type"], PLAN_RESOURCE, "{query}: {b}");
+    }
+    let (s, b) = resolve_as(
+        &w.f,
+        &holding(&w.f, "price:read"),
+        &format!("plan_revision_id={rev}&{on}"),
+    )
+    .await;
+    assert_eq!(s, 403, "{b}");
+    assert_eq!(b["context"]["resource_type"], PLAN_RESOURCE, "{b}");
+
+    let (s, b) = price_read(&w.f, &w.f.ctx, Uuid::new_v4()).await;
+    assert_eq!(s, 404, "{b}");
+    assert_eq!(b["context"]["resource_name"], "price", "{b}");
+    assert_eq!(b["context"]["resource_type"], PRICE_RESOURCE, "{b}");
+    let (s, b, _) =
+        w.f.call("GET", "/prices/not-an-id", json!({}), None, None)
+            .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(text(&b).contains("ID_INVALID"), "{b}");
+    assert_eq!(b["context"]["resource_type"], PRICE_RESOURCE, "{b}");
+    let (s, b) = price_read(&w.f, &holding(&w.f, "plan:read"), w.price).await;
+    assert_eq!(s, 403, "{b}");
+    assert_eq!(b["context"]["resource_type"], PRICE_RESOURCE, "{b}");
+}

@@ -9,7 +9,8 @@
 //! refuses a start before today (`WINDOW_START_IN_PAST`), so a door-built fixture cannot hold a
 //! fixed calendar. Nothing here reads `now()`. Every response is read through the two consumer
 //! doors, `GET /resolve` and `GET /prices/{id}`, and normalised by [`normalise`] alone: each id
-//! becomes the fixture name it was minted under and each timestamp becomes `<timestamp>`.
+//! becomes the fixture name it was minted under, and each timestamp — every one the fixture sets
+//! itself — is kept as its canonical UTC RFC 3339 value, never masked.
 //!
 //! The calendar (tenant settings: timing `arrears`, rounding `half_even`, GL `9000`, tax `std`,
 //! invoice-line templates for `recurring` and `usage`; dimension `region` = eu, us, apac, latam —
@@ -21,22 +22,26 @@
 //! | `price:10` | pro, default | flat 10.00 | 2026-01-01 → 2026-11-01 | all | `unit:prices-1` |
 //! | `price:12` | pro, default | flat 12.00 | 2026-11-01 → 2026-12-01, `keep_for_bound` | all | `unit:prices-3` |
 //! | `price:15` | pro, default | flat 15.00 | 2026-12-01 → open | new | `unit:prices-3` |
-//! | `price:storage-default` | storage, default | per unit 0.10, min fee 5.00 | 2026-01-01 → open | all | `unit:prices-1` |
+//! | `price:storage-default` | storage, default | per unit 0.10, min fee 5.00 | 2026-01-01 → 2027-01-01 | all | `unit:prices-1` |
+//! | `price:storage-default-2027` | storage, default | per unit 0.12, min fee 5.00 | 2027-01-01 → open | all | `unit:prices-3` |
 //! | `price:storage-eu` | storage, eu | per unit 0.08 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:storage-us` | storage, us | per unit 0.09 | 2026-10-01 → open | all | `unit:prices-3` |
 //! | `price:storage-apac` | storage, apac | per unit 0.11 | 2026-10-01 → open | new | `unit:prices-3` |
 //! | `price:storage-latam-temp` | storage, latam | per unit 0.05 | 2026-09-01 → 2026-09-20, temporary, no chain to return to | all | `unit:prices-2` |
 //! | `price:egress-eu`, `price:egress-us` | egress, eu / us (no default price) | per unit 0.02 / 0.03 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:egress-apac-temp` | egress, apac | per unit 0.01 | 2026-09-10 → 2026-09-20, temporary | all | `unit:prices-2` |
+//! | `price:requests-graduated` | requests, default | graduated: 0.010 up to 1000, then 0.008 | 2026-01-01 → open | all | `unit:prices-1` |
+//! | `price:requests-volume` | requests, eu | volume: 0.009 up to 1000, then 0.007 | 2026-01-01 → open | all | `unit:prices-1` |
+//! | `price:requests-package` | requests, us | package: 5.00 per 1000 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:archive` | archive (an entry no revision names) | per unit 0.01 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:pro-draft`, `-pending`, `-rejected` | pro, default | flat 18.00 / 19.00 / 20.00 | 2027 | all | — (`unit:prices-4` holds the pending one) |
 //!
 //! Plan `pro` on book `eur`: revision 1 (published 2026-05-20, superseded 2026-08-20) holds pro
 //! (paid), storage (paid) and legacy (included, a SKU Products no longer knows); revision 2
-//! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional) and
-//! backup (included, 100 units, no entry); revision 3 is a draft. Plan `trial` revision 1 is
+//! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional),
+//! backup (included, 100 units, no entry) and requests (paid); revision 3 is a draft. Plan `trial` revision 1 is
 //! pending. Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
-//! and one version each of storage, egress and backup from 2026-01-01. Another tenant holds one
+//! and one version each of storage, egress, backup and requests from 2026-01-01. Another tenant holds one
 //! approved price, `price:other-tenant`.
 #![allow(dead_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
@@ -61,22 +66,53 @@ use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-/// Every golden, one file each under `tests/contract/`.
-pub const GOLDENS: [&str; 13] = [
-    "resolve_signup",
-    "resolve_renewal_walk",
-    "resolve_ended_chain",
-    "resolve_default_pin_moves",
-    "resolve_matrix_uncovered",
-    "resolve_sku_version_by_date",
-    "resolve_invoice_inputs",
-    "resolve_superseded_revision",
-    "resolve_refusals",
-    "price_approved_open",
-    "price_closed",
-    "price_keep_for_bound",
-    "price_not_found",
-];
+/// THE list of goldens, one file each under `tests/contract/`: it hands the names to `$then!`
+/// after the tokens `$args`. Both tiers expand their tests from it (`contract_tests!`) and so does
+/// [`GOLDENS`], so no tier can check a list of its own.
+macro_rules! with_goldens {
+    ($then:ident! $args:tt) => {
+        $then! {
+            $args resolve_signup,
+            resolve_renewal_walk,
+            resolve_ended_chain,
+            resolve_default_pin_moves,
+            resolve_matrix_uncovered,
+            resolve_sku_version_by_date,
+            resolve_invoice_inputs,
+            resolve_superseded_revision,
+            resolve_refusals,
+            price_approved_open,
+            price_closed,
+            price_keep_for_bound,
+            price_not_found,
+        }
+    };
+}
+/// The names of [`with_goldens!`] as text.
+macro_rules! golden_names {
+    ([] $($golden:ident),* $(,)?) => {
+        &[$(stringify!($golden)),*]
+    };
+}
+/// One `#[tokio::test]` per golden of [`with_goldens!`], each carrying the tier's extra attributes
+/// and calling the tier's own `check(golden)`: `with_goldens!(contract_tests! [])` on `SQLite`,
+/// `with_goldens!(contract_tests! [#[ignore = "…"]])` on Postgres.
+macro_rules! contract_tests {
+    (@one [$(#[$attr:meta])*] $golden:ident) => {
+        #[tokio::test]
+        $(#[$attr])*
+        async fn $golden() {
+            check(stringify!($golden)).await;
+        }
+    };
+    ($attrs:tt $(,)?) => {};
+    ($attrs:tt $golden:ident $(, $rest:ident)* $(,)?) => {
+        contract_tests!(@one $attrs $golden);
+        contract_tests!($attrs $($rest),*);
+    };
+}
+/// Every golden, one file each under `tests/contract/`, as [`with_goldens!`] lists them.
+pub const GOLDENS: &[&str] = with_goldens!(golden_names![]);
 
 // ------------------------------------------------------------------ names and the normaliser
 
@@ -107,9 +143,10 @@ impl Names {
             .unwrap_or_else(|| panic!("the fixture has no {name}"))
     }
 }
-/// THE normaliser, for every body and every request line: each id becomes its fixture name and
-/// each timestamp becomes `<timestamp>`. An id the fixture never minted fails the contract: a
-/// golden may not freeze an id it cannot name.
+/// THE normaliser, for every body and every request line: each id becomes its fixture name, and
+/// each RFC 3339 timestamp becomes its canonical UTC form (the same instant on both backends; the
+/// fixture sets every one, so the golden freezes the value, never a mask). An id the fixture never
+/// minted fails the contract: a golden may not freeze an id it cannot name.
 pub fn normalise(names: &Names, value: &Value) -> Value {
     match value {
         Value::String(text) => Value::String(normalise_text(names, text)),
@@ -124,8 +161,11 @@ pub fn normalise(names: &Names, value: &Value) -> Value {
     }
 }
 fn normalise_text(names: &Names, text: &str) -> String {
-    if OffsetDateTime::parse(text, &Rfc3339).is_ok() {
-        return "<timestamp>".to_owned();
+    if let Ok(instant) = OffsetDateTime::parse(text, &Rfc3339) {
+        return instant
+            .to_offset(time::UtcOffset::UTC)
+            .format(&Rfc3339)
+            .unwrap();
     }
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -578,6 +618,7 @@ fn products(names: &mut Names, catalog: &Catalog) {
         ("sku:storage", SkuType::Usage, Some("storage")),
         ("sku:egress", SkuType::Usage, Some("egress")),
         ("sku:backup", SkuType::Usage, Some("backup")),
+        ("sku:requests", SkuType::Usage, Some("requests")),
     ] {
         let id = names.mint(sku);
         catalog.put(id, r#type, Lifecycle::Published, meter);
@@ -649,6 +690,21 @@ fn products(names: &mut Names, catalog: &Catalog) {
             Some("backup"),
         ),
     );
+    version(
+        catalog,
+        names.id("sku:requests"),
+        1,
+        "2026-01-01",
+        content(
+            "requests",
+            SkuType::Usage,
+            None,
+            None,
+            None,
+            None,
+            Some("requests"),
+        ),
+    );
 }
 /// The tenant's settings and dimension registry, its price units, its book and entries.
 async fn book_and_entries(w: &mut Writer<'_>) {
@@ -715,6 +771,14 @@ async fn book_and_entries(w: &mut Writer<'_>) {
         "entry:egress",
         "book:eur",
         "sku:egress",
+        "usage",
+        (None, Some("region"), None),
+    )
+    .await;
+    w.entry(
+        "entry:requests",
+        "book:eur",
+        "sku:requests",
         "usage",
         (None, Some("region"), None),
     )
@@ -794,10 +858,13 @@ async fn pro_prices(w: &mut Writer<'_>) {
 }
 /// The usage entries' chains.
 async fn usage_prices(w: &mut Writer<'_>) {
-    // Storage: a default with a minimum fee; eu open; us `all` and apac `new` from October; latam
-    // a temporary price on a value with no chain of its own (one closed price, no return).
+    // Storage: a default with a minimum fee, followed by a later `all` default (0.12 from 2027,
+    // so D-420 rule 2's date bound decides a pinned value's binding); eu open; us `all` and apac
+    // `new` from October; latam a temporary price on a value with no chain of its own (one closed
+    // price, no return).
     w.price(P {
         min_fee: Some("5.00"),
+        to: Some("2027-01-01"),
         ..P::approved(
             "price:storage-default",
             "entry:storage",
@@ -806,6 +873,19 @@ async fn usage_prices(w: &mut Writer<'_>) {
             rate("0.10"),
             "2026-01-01",
             U1,
+        )
+    })
+    .await;
+    w.price(P {
+        min_fee: Some("5.00"),
+        ..P::approved(
+            "price:storage-default-2027",
+            "entry:storage",
+            6,
+            "per_unit",
+            rate("0.12"),
+            "2027-01-01",
+            U3,
         )
     })
     .await;
@@ -900,6 +980,51 @@ async fn usage_prices(w: &mut Writer<'_>) {
         )
     })
     .await;
+    // Requests: the tiered and package models — every band shape a consumer reads (a band with
+    // `up_to`, an open top band `up_to: null`), one model per chain.
+    for (name, version_no, dim, model, money) in [
+        (
+            "price:requests-graduated",
+            1,
+            None,
+            "graduated",
+            json!({ "tiers": [
+                { "up_to": "1000", "rate": "0.010" },
+                { "up_to": null, "rate": "0.008" }
+            ] }),
+        ),
+        (
+            "price:requests-volume",
+            2,
+            Some("eu"),
+            "volume",
+            json!({ "tiers": [
+                { "up_to": "1000", "rate": "0.009" },
+                { "up_to": null, "rate": "0.007" }
+            ] }),
+        ),
+        (
+            "price:requests-package",
+            3,
+            Some("us"),
+            "package",
+            json!({ "package_size": "1000", "package_price": "5.00" }),
+        ),
+    ] {
+        w.price(P {
+            dim,
+            ..P::approved(
+                name,
+                "entry:requests",
+                version_no,
+                model,
+                money,
+                "2026-01-01",
+                U1,
+            )
+        })
+        .await;
+    }
     w.price(P::approved(
         "price:archive",
         "entry:archive",
@@ -974,6 +1099,27 @@ async fn plans(w: &mut Writer<'_>) {
     .await;
     w.revision("revision:pro-2", "plan:pro", 2, at(2026, 8, 1))
         .await;
+    revision_2_items(w).await;
+    w.publish(
+        "plan:pro",
+        "revision:pro-2",
+        "unit:revision-pro-2",
+        at(2026, 8, 20),
+    )
+    .await;
+    w.revision("revision:pro-3", "plan:pro", 3, at(2026, 9, 10))
+        .await;
+    w.plan("plan:trial", "trial").await;
+    w.revision("revision:trial-1", "plan:trial", 1, at(2026, 9, 11))
+        .await;
+    w.lock("revision:trial-1", "unit:revision-trial-1").await;
+    // Ids no row holds, so a golden can name what a refusal was asked about.
+    w.names.mint("revision:unknown");
+    w.names.mint("item:unknown");
+    w.names.mint("price:unknown");
+}
+/// Revision 2's items, in the order they are minted (a revision lists its items in id order).
+async fn revision_2_items(w: &mut Writer<'_>) {
     w.item(
         "item:pro-2/pro",
         "revision:pro-2",
@@ -1010,23 +1156,15 @@ async fn plans(w: &mut Writer<'_>) {
         (Some("100"), None),
     )
     .await;
-    w.publish(
-        "plan:pro",
+    w.item(
+        "item:pro-2/requests",
         "revision:pro-2",
-        "unit:revision-pro-2",
-        at(2026, 8, 20),
+        "sku:requests",
+        Some("entry:requests"),
+        "paid",
+        (None, None),
     )
     .await;
-    w.revision("revision:pro-3", "plan:pro", 3, at(2026, 9, 10))
-        .await;
-    w.plan("plan:trial", "trial").await;
-    w.revision("revision:trial-1", "plan:trial", 1, at(2026, 9, 11))
-        .await;
-    w.lock("revision:trial-1", "unit:revision-trial-1").await;
-    // Ids no row holds, so a golden can name what a refusal was asked about.
-    w.names.mint("revision:unknown");
-    w.names.mint("item:unknown");
-    w.names.mint("price:unknown");
 }
 /// Another tenant: one approved price of its own.
 async fn other_tenant(f: &Fixture, names: &mut Names) -> Uuid {
@@ -1131,10 +1269,11 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
     let r2 = |rest: &str| format!("{REV2}{rest}");
     match golden {
         "resolve_signup" => (
-            "D-419/D-420 rule 1, D-421: a signup (no pins) of the published revision on one date - every item, the default \
-             chain then every registered value in registry order, each binding the price in force (own chain, else the \
-             default, dim_used saying which), an item without an entry with no chains, the SKU version in force and the \
-             resolved invoice inputs with their sources; no totals",
+            "D-419/D-420 rule 1, D-421, D-425: a signup (no pins) of the published revision on one date - every item, the \
+             default chain then every registered value in registry order, each binding the price in force (own chain, else \
+             the default, dim_used saying which) with its own end (ends_on), every price model's money as stored (flat, \
+             per_unit, graduated and volume bands with an open top band, package), an item without an entry with no \
+             chains, the SKU version in force and the resolved invoice inputs with their sources; no totals",
             vec![ask("signup on 2026-10-05", &r2("&date=2026-10-05"))],
         ),
         "resolve_renewal_walk" => (
@@ -1173,7 +1312,8 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
         "resolve_default_pin_moves" => (
             "D-420 rule 4 (owner 2026-09-26): a value pinned to a default-chain price moves to its own chain once the own \
              price in force is `all` and started after the pin (us, from 2026-10-01); a `new` own price does not move it \
-             (apac); before the own price starts both stay on the default",
+             (apac); before the own price starts both stay on the default. D-420 rule 2's date bound: the default's later \
+             `all` successor (from 2027-01-01) is not walked to, so apac stays on the default, not on its own `new` price",
             vec![
                 ask(
                     "us and apac pinned to the default on 2026-09-15",
@@ -1253,7 +1393,9 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
             "D-419 refusals, whole request: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN (a pin that does not parse, a \
              forged pin on another entry's chain, a draft price, a value pin on a value-chain price, another tenant's \
              price), PIN_DUPLICATE, PINS_TOO_MANY; 404 for an unknown revision, another tenant's revision and an item the \
-             revision lacks; 409 REVISION_NOT_PUBLISHED for a draft and a pending revision; and the pinned price read's 404",
+             revision lacks; 409 REVISION_NOT_PUBLISHED for a draft and a pending revision - each a plan resource error; \
+             and the pinned price read's 404 and its 400 ID_INVALID for an id that is not an id - each a price resource \
+             error",
             vec![
                 ask("no date", REV2),
                 ask(
@@ -1317,17 +1459,31 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
                     "/resolve?plan_revision_id={revision:trial-1}&date=2026-10-05",
                 ),
                 ask("an unknown price", "/prices/{price:unknown}"),
+                ask("a price id that is not an id", "/prices/not-an-id"),
             ],
         ),
         "price_approved_open" => (
             "D-422: an approved price with an open window, as stored - its entry's SKU, charge kind and period, its book \
-             and currency, the approval that applied it; no status or other value computed from today, no authoring \
-             internals",
+             and currency, the approval that applied it and when (UTC, as stored); every price model's money as stored \
+             (flat, per_unit, graduated and volume bands with an open top band, package); no status or other value \
+             computed from today, no authoring internals",
             vec![
                 ask("the new 15, open", "/prices/{price:15}"),
                 ask(
-                    "the storage default, open, with a minimum fee",
-                    "/prices/{price:storage-default}",
+                    "the 2027 storage default, open, with a minimum fee",
+                    "/prices/{price:storage-default-2027}",
+                ),
+                ask(
+                    "a graduated price: a band up to 1000, then an open top band",
+                    "/prices/{price:requests-graduated}",
+                ),
+                ask(
+                    "a volume price: a band up to 1000, then an open top band",
+                    "/prices/{price:requests-volume}",
+                ),
+                ask(
+                    "a package price: 5.00 per 1000",
+                    "/prices/{price:requests-package}",
                 ),
             ],
         ),

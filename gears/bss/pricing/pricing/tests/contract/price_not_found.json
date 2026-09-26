@@ -13,7 +13,7 @@
         "status": 404,
         "detail": "price not found",
         "context": {
-          "resource_type": "gts.cf.bss.pricing.price_book.v1~",
+          "resource_type": "gts.cf.bss.pricing.price.v1~",
           "resource_name": "price"
         }
       }
@@ -29,7 +29,7 @@
         "status": 404,
         "detail": "price not found",
         "context": {
-          "resource_type": "gts.cf.bss.pricing.price_book.v1~",
+          "resource_type": "gts.cf.bss.pricing.price.v1~",
           "resource_name": "price"
         }
       }
@@ -45,7 +45,7 @@
         "status": 404,
         "detail": "price not found",
         "context": {
-          "resource_type": "gts.cf.bss.pricing.price_book.v1~",
+          "resource_type": "gts.cf.bss.pricing.price.v1~",
           "resource_name": "price"
         }
       }
@@ -61,7 +61,7 @@
         "status": 404,
         "detail": "price not found",
         "context": {
-          "resource_type": "gts.cf.bss.pricing.price_book.v1~",
+          "resource_type": "gts.cf.bss.pricing.price.v1~",
           "resource_name": "price"
         }
       }
@@ -77,7 +77,7 @@
         "status": 404,
         "detail": "price not found",
         "context": {
-          "resource_type": "gts.cf.bss.pricing.price_book.v1~",
+          "resource_type": "gts.cf.bss.pricing.price.v1~",
           "resource_name": "price"
         }
       }
@@ -93,7 +93,7 @@
         "status": 404,
         "detail": "price not found",
         "context": {
-          "resource_type": "gts.cf.bss.pricing.price_book.v1~",
+          "resource_type": "gts.cf.bss.pricing.price.v1~",
           "resource_name": "price"
         }
       }

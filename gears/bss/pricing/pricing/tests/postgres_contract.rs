@@ -2,6 +2,7 @@
 //! `SQLite`, against the same files under `tests/contract/`. This tier only compares — it never
 //! re-records — so a contract that holds on one backend and drifts on the other is red here.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#[macro_use]
 mod contract_support;
 mod pg_support;
 mod plan_support;
@@ -32,29 +33,4 @@ async fn check(golden: &str) {
     contract_support::verify(&world, golden, false).await;
 }
 
-macro_rules! goldens {
-    ($($golden:ident),* $(,)?) => {
-        $(
-            #[tokio::test]
-            #[ignore = "needs the Postgres harness"]
-            async fn $golden() {
-                check(stringify!($golden)).await;
-            }
-        )*
-    };
-}
-goldens!(
-    resolve_signup,
-    resolve_renewal_walk,
-    resolve_ended_chain,
-    resolve_default_pin_moves,
-    resolve_matrix_uncovered,
-    resolve_sku_version_by_date,
-    resolve_invoice_inputs,
-    resolve_superseded_revision,
-    resolve_refusals,
-    price_approved_open,
-    price_closed,
-    price_keep_for_bound,
-    price_not_found,
-);
+with_goldens!(contract_tests! [#[ignore = "needs the Postgres harness"]]);
