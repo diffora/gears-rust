@@ -64,7 +64,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 07](../design/07-read-contract-events.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-418; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-423; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -76,8 +76,9 @@ Holding multiple permissions never bypasses separation of duties.
 1. [ ] - `p1` - Rating or Subscriptions sends the revision id, period start and optional current pins. - `inst-read-contract-events-flow-1`
 2. [ ] - `p1` - Load immutable revision structure and the full chain matrix, scoped to the tenant. - `inst-read-contract-events-flow-2`
 3. [ ] - `p1` - For existing pins walk eligible all successors, stopping before the first new price; for signup select in-force prices. - `inst-read-contract-events-flow-3`
-4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit and return the whole dimension matrix plus promotion version (deferred with promotions, D-409). - `inst-read-contract-events-flow-4`
-5. [ ] - `p1` - Consumers lazily bind usage per value and retain the complete inputs; later replay reads the pinned price and stored binding without choosing new descriptors. - `inst-read-contract-events-flow-5`
+4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit with their source (entry, SKU or tenant, D-421) and return the whole dimension matrix. - `inst-read-contract-events-flow-4`
+5. [ ] - `p1` - A later replay reads the pinned price by id (GET /bss-pricing/v1/prices/{id}, D-422): the approved money is served forever, whatever its window; binding usage lazily per value and keeping the complete inputs are the consumer's part. - `inst-read-contract-events-flow-5`
+6. [ ] - `p1` - Return the active promotion (id, version) with the matrix: deferred with promotions (D-409), this step stays unticked until they return. - `inst-read-contract-events-flow-6`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -186,7 +187,7 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-consumer-golden-contracts`
 
-Golden responses cover resolve matrix, renewal eligibility, descriptor dates, promotion versions and forever-readable prices. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
+Golden responses cover resolve matrix, renewal eligibility, descriptor dates and forever-readable prices; promotion versions are deferred with promotions (D-409) and are not part of this DoD until they return. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 

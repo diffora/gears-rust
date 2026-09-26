@@ -298,17 +298,17 @@ An approved migration_request records target plan/revision, subscription ids, ne
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-resolve`
 
-**Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
+**Phase:** 4. **Source:** spec §2.2, §2.4, §5–§7, §12–§13; D-419, D-420, D-421.
 
-GET /pricing/v1/resolve accepts plan_revision_id, date and optional pins and returns each item's full default/value chain matrix and active promotion (id, version) (deferred with promotions, D-409), without totals. Renewal walks a pinned chain through all successors, stopping before the first new successor. New subscriptions bind the price in force. Usage binds lazily per (item, dim_value); slice at chain boundaries. Bind sku_version and descriptors using Products versions?as_of at period start, with timing, rounding and currency scale.
+GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). New subscriptions bind the price in force, the value's own chain else the default. Renewal walks a pinned chain through all successors, stopping before the first new successor; a binding is always a price in force on the date, and a default-chain pin moves to the value's own later all price (D-420). A chain that no price covers is explicit uncovered, never refused and never an invented price. Usage binds lazily per (item, dim_value); the consumer slices at chain boundaries. Each item binds its SKU version from Products versions?as_of at the date, and resolved invoice inputs with their source (entry, SKU or tenant): invoice-line template, GL code, tax category and billing timing, with rounding policy and currency scale (D-421).
 
 #### `fr-price-read`
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-read`
 
-**Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
+**Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; D-422.
 
-GET /pricing/v1/prices/{id} serves a pinned price forever, including closed, superseded and keep_for_bound prices. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version in its binding; later descriptor changes do not rewrite earlier pins.
+GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, book and currency: stored facts only, nothing computed from today. A draft, pending or rejected price, an unknown id and another tenant's id answer the same 404. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version (deferred with promotions, D-409) in its binding; later descriptor changes do not rewrite earlier pins.
 
 #### `fr-quote`
 
@@ -419,7 +419,7 @@ earlier pins retain the original GL. Pricing creates no refreeze prices or appro
 | AC #15 | `cpt-cf-bss-pricing-fr-plans` | Given a revision awaiting a price unit, when checks run then ITEM_UNCOVERED names the blocking unit and submit is refused; once prices are approved checks pass, while mixed recurring frequencies and foreign-book entries still fail. |
 | AC #16 | `cpt-cf-bss-pricing-fr-promotions` | Deferred by the owner (D-409). Given an approved promotion, when a period starts on its end date then it receives no discount; overlapping promotions are refused, and an approved edit creates a new version without changing a prior pin. |
 | AC #17 | `cpt-cf-bss-pricing-fr-migrations` | Deferred by the owner (D-410). Given subscriptions pinned to revision 3, when revision 5 publishes then the pins remain; approving an eligible migration emits a request, an unpublished target is refused, and Pricing does not claim the move completed. |
-| AC #18 | `cpt-cf-bss-pricing-fr-resolve` | Given pinned 10, an all price at 12 and a new price at 15, when renewal resolves then it binds 12 while signup binds 15; a date with no coverage is refused, and no resolve response contains quantity-derived totals. |
+| AC #18 | `cpt-cf-bss-pricing-fr-resolve` | Given pinned 10, an all price at 12 and a new price at 15, when renewal resolves then it binds 12 while signup binds 15; a date with no coverage is explicit uncovered, never refused, and no resolve response contains quantity-derived totals. |
 | AC #19 | `cpt-cf-bss-pricing-fr-price-read` | Given a closed price referenced by a prior invoice, when its id is read then the original money remains available; an unknown id or another tenant's id exposes no price. |
 | AC #20 | `cpt-cf-bss-pricing-fr-quote` | Not built (D-415). Given quantities spanning a temporary boundary, when preview runs then slices use their own models and the price floor aggregates correctly before promotion; invalid quantities fail and preview does not mutate pins. |
 | AC #21 | `cpt-cf-bss-pricing-nfr-authz` | Given an otherwise valid request without the required action, when the door runs then it denies without a mutation; the permitted action succeeds under the same tenant scope. |

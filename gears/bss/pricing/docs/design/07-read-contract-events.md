@@ -33,7 +33,7 @@ Deliver reproducible resolution matrices, pinned-price reads and Studio quote, p
 Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`, `cpt-cf-bss-pricing-fr-events`. Architecture: `cpt-cf-bss-pricing-component-read-contract`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`.
 [FEATURE](../features/read-contract-events.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: `cpt-cf-bss-pricing-feature-plans`, `cpt-cf-bss-pricing-feature-promotions-migrations`, `cpt-cf-bss-pricing-feature-approvals`.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-418.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-423.
 
 ## 2. Actor Flows (CDSL)
 
@@ -44,8 +44,9 @@ Actors: `cpt-cf-bss-pricing-actor-rating`, `cpt-cf-bss-pricing-actor-subscriptio
 1. [ ] - `p1` - Rating or Subscriptions sends the revision id, period start and optional current pins. - `inst-read-contract-events-flow-1`
 2. [ ] - `p1` - Load immutable revision structure and the full chain matrix, scoped to the tenant. - `inst-read-contract-events-flow-2`
 3. [ ] - `p1` - For existing pins walk eligible all successors, stopping before the first new price; for signup select in-force prices. - `inst-read-contract-events-flow-3`
-4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit and return the whole dimension matrix plus promotion version (deferred with promotions, D-409). - `inst-read-contract-events-flow-4`
-5. [ ] - `p1` - Consumers lazily bind usage per value and retain the complete inputs; later replay reads the pinned price and stored binding without choosing new descriptors. - `inst-read-contract-events-flow-5`
+4. [ ] - `p1` - Read Products versions?as_of for the period start, bind descriptors/timing/meter/unit with their source (entry, SKU or tenant, D-421) and return the whole dimension matrix. - `inst-read-contract-events-flow-4`
+5. [ ] - `p1` - A later replay reads the pinned price by id (GET /bss-pricing/v1/prices/{id}, D-422): the approved money is served forever, whatever its window; binding usage lazily per value and keeping the complete inputs are the consumer's part. - `inst-read-contract-events-flow-5`
+6. [ ] - `p1` - Return the active promotion (id, version) with the matrix: deferred with promotions (D-409), this step stays unticked until they return. - `inst-read-contract-events-flow-6`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -84,14 +85,48 @@ State definition: `cpt-cf-bss-pricing-state-read-contract-events` in the FEATURE
 
 ## 5. API Surface
 
-The spec consumer paths are GET /pricing/v1/resolve?plan_revision_id&date with optional pins, and GET /pricing/v1/prices/{id}. GET /pricing/v1/quote is a Studio preview with quantities and optional-item choices; it is not built, and the Studio is not wired to the API (D-415). Phase 4 explicitly registers these public paths and golden snake_case request/response contracts. All reads require tenant-scoped pricing:read and create no binding mutation.
+The spec consumer paths GET /pricing/v1/resolve and GET /pricing/v1/prices/{id} are mounted below the gear's base; phase 4 registers them with golden snake_case request/response contracts:
+
+- GET /bss-pricing/v1/resolve?plan_revision_id=&date=&item_id=&pins= (label plan, action read; D-419). plan_revision_id and date (YYYY-MM-DD) are required; item_id resolves that one item only; pins is comma-separated, each pin price_id (the price's own chain) or price_id:dim_value (a default-chain price that value was bound to), at most 1 000. Only a published or superseded revision resolves. Refusals: 409 REVISION_NOT_PUBLISHED (a draft or pending revision); 400 DATE_INVALID; 400 PIN_FOREIGN for the whole request (a pin that names no approved price of an entry an item of this revision names, or a :dim_value pin on a price that is not a default-chain price; the value itself is not checked against today's registry); 400 PIN_DUPLICATE (two pins for one item and value); 400 PINS_TOO_MANY; 404 for an unknown or another tenant's revision, before any Products read, and for an item_id the revision does not have. Each item's SKU version is read as of date as the caller (products read): 503 REGISTRY_UNAVAILABLE when Products cannot answer, Products' own status and code on a definite refusal, and sku_version null for a SKU Products does not know (D-421). A chain that no price covers is not a refusal: it is uncovered (D-420, PRD AC #18).
+- GET /bss-pricing/v1/prices/{id} (label price, action read; D-422): an approved price of the tenant, whatever its window (closed, followed by a later price, keep_for_bound), with its entry's SKU, charge kind, period, book and currency; stored facts only, no status or other value computed from today, no authoring internals (version, pending_unit_id, note, created_by). A draft, pending or rejected price, an unknown id and another tenant's id are 404 with one body.
+
+GET /pricing/v1/quote is a Studio preview with quantities and optional-item choices; it is not built, and the Studio is not wired to the API (D-415). Both reads are tenant-scoped and deny-by-default, and write nothing: no binding, no audit row, no idempotency key.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
 
 ## 6. Data Model
 
-Resolution is a per-item matrix of default and value chains: price_id, dim_value, dim_used, model, price, min_fee, eligibility, window, sku_version, descriptors, billing_timing, rounding_policy, currency scale and active promotion id/version. A binding additionally retains the SKU version's meter/unit. Pricing prices are read forever; consumer pins persist outside this gear. Events use toolkit outbox envelopes, not a second pricing schema.
+Resolution is a per-item matrix of default and value chains (D-420) with each item's SKU version and resolved invoice inputs (D-421); it carries no totals, and the active promotion (id, version) is deferred with promotions (D-409). The resolve response, field by field (the golden contracts freeze it):
+
+| Level | Field | Content |
+| --- | --- | --- |
+| revision | plan_revision_id, plan_id, rev_no, state | The revision resolved; state is published or superseded. |
+| revision | book_id, currency, currency_minor_digits | The revision's book, its currency and that currency's scale (domain::book::minor_digits). |
+| revision | rounding_policy | The tenant default_rounding. |
+| revision | date | The date resolved (YYYY-MM-DD). |
+| revision | items | One per item of the revision, or the one item_id names. |
+| item | item_id, sku_id, treatment, included_qty, qty_min | The item as stored; included_qty is exact decimal text or null. |
+| item | price_book_entry_id, charge_kind, period | The item's entry and its key; null for an included item without an entry, which has no chains. |
+| item | sku_version | { published_version, effective_from } of the SKU version in force on date; null when Products has no version on that date or does not know the SKU. |
+| item | invoice_line_template | { value, source }: the entry's invoice_line_override (source entry), else the SKU version's template (sku), else the tenant template for the charge kind (tenant; an item without an entry takes its SKU version's type); { null, null } when none. |
+| item | gl_code | { value, source }: the SKU version's (sku), else the tenant default_gl (tenant), else { null, null }. |
+| item | tax_category | { value, source }: the SKU version's (sku), else the tenant default_tax_category (tenant), else { null, null }. |
+| item | billing_timing | { value, source }: the SKU version's (sku), else the tenant default_timing (tenant); PRD AC #13. |
+| item | meter | { usage_type_ref, unit } of that SKU version; both null without a version. |
+| item | chains | The default chain first, then each value registered today for the entry's dimension key in the registry's order, then any other value a pin names (a removed value still resolves for its pin). |
+| chain | dim_value | The value; null for the default chain. |
+| chain | uncovered | True when neither the value's own chain nor the default binds on date; binding is then null. Never a refusal, never an invented price. |
+| chain | binding | The price bound for the period, or null. |
+| binding | price_id | The bound price. |
+| binding | dim_used | The chain the bound price belongs to: the value, or null for the default chain. |
+| binding | pinned_from | The pin the renewal walk started from; null for a signup. |
+| binding | model, price, min_fee | The price's model and money, exact decimal text; min_fee null when the price has none. |
+| binding | eligibility | all or new. |
+| binding | effective_from, effective_to, temporary_until | The stored window and the temporary end, if any. |
+| binding | keep_for_bound | Whether the price is kept for pinned subscriptions (the predecessor of a new price). |
+
+The pinned price read returns one approved price's stored facts with its entry's SKU, charge kind, period, book and currency (D-422). Pricing prices are read forever; consumer pins persist outside this gear. Events use toolkit outbox envelopes, not a second pricing schema.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.

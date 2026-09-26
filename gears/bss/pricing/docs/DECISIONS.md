@@ -55,6 +55,10 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-416 | H | Descriptors are read best-effort; the reads a rule needs stay hard | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F2, surface S-1, docs F1 and F2) |
 | D-417 | M | The last revision of a never-published plan takes the plan with it | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F1, surface S-2) |
 | D-418 | H | A plan revision is submitted under plan:submit | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief |
+| D-419 | H | Resolve answers one revision on one date, with the caller's pins | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b, L4, L7 |
+| D-420 | H | The matrix and the walk: a binding is always in force | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); owner, 2026-09-26 (no promotion rule; rule 4 as recommended); spec §2.4, §5, §7.1; plan review H2, M4, L1 |
+| D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7 |
+| D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 |
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
 
 ## Entries
@@ -306,6 +310,47 @@ DELETE /plan-revisions/{id} of the last revision of a plan that was never publis
 POST /plan-revisions/{id}/submit checks the plan label's own submit action, plan:submit: the label-specific analogue of price:submit on POST /prices/{id}/submit and of price_book:submit on publish-changes. The plan label's actions are read, author and submit. approval_unit:submit, which the run 3.4 brief bound to this door, stays the right to withdraw a unit; it no longer lets a prices submitter submit, or read through the receipt, a plan revision, so a tenant can withhold plan submission from its prices submitters.
 
 **Source:** Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief.
+
+#### D-419 [H] Resolve answers one revision on one date, with the caller's pins
+
+**Status:** DECIDED 2026-09-26.
+
+GET /bss-pricing/v1/resolve?plan_revision_id=&date=&item_id=&pins= (label plan, action read); it is spec §7.1's /pricing/v1/resolve below the gear's base. Only a published or superseded revision resolves; a draft or pending one is 409 REVISION_NOT_PUBLISHED. date is required, YYYY-MM-DD (400 DATE_INVALID). item_id is optional: resolve that one item only (404 if the revision has no such item); a consumer with many pins splits its request by item. pins is optional and comma-separated, each pin either price_id or price_id:dim_value: the first pins the price's own chain; the second pins a DEFAULT-chain price that the value dim_value was bound to. A pin must name an approved price of the tenant, of an entry an item of this revision names; with :dim_value it must be a default-chain price of that entry, and the value is NOT checked against today's registry (a value may have been removed since). Otherwise the whole request is 400 PIN_FOREIGN. Two pins for one (item, value) are 400 PIN_DUPLICATE; more than 1 000 pins are 400 PINS_TOO_MANY. Resolve is a read: it writes nothing (no audit row, no idempotency key, no binding) and returns no totals and no promotion (D-409, D-415).
+
+**Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b (a removed value is not checked against the registry), L4 (the pin bound and the split by item) and L7.
+
+#### D-420 [H] The matrix and the walk: a binding is always in force
+
+**Status:** DECIDED 2026-09-26.
+
+Per item, the chains are the default chain and one per value registered today for the entry's dimension key, plus any value a pin names (so a removed value still resolves for the subscription that holds it); an item without an entry has no chains. Per (item, value):
+
+1. No pin (signup): the binding is the price in force on date, the value's own chain, else the default chain (domain::price::version_at); dim_used says which; neither gives uncovered: true and no binding (never an invented price, never a total).
+2. With a pin: walk the pinned price's chain forward through approved successors with effective_from <= date: an all successor is taken; the walk stops before the first new successor (spec §7.1, D-397), except as rules 3 and 4 say. The last price reached is the binding; pinned_from names the pin.
+3. A binding is always in force (generic; plan review H2 i and iii): if the walk ends on a price that is no longer in force on date (a closed value chain, a temporary price whose window ended, a chain with no successor), the binding is chosen as in rule 1 for that value (own chain, else default: the value reads the default again, spec §5); pinned_from still names the pin. This is also what happens to a pin on an ended temporary price. There is no promotion-specific rule: a temporary pair is walked like any other prices of its chain, and a new promo pair is NOT skipped (the owner, 2026-09-26: promo is not built now, spec §2.4 addendum); promotion-aware renewal comes back with promotions (D-409).
+4. A default-chain pin for a value that later got its own chain (plan review M4 a): the binding moves to the value's own chain when the own price in force on date has eligibility all and started after the pin's effective_from (spec §7.1: a new all price changes the binding from the next period); a new own price does not move it. This is the owner's decision of 2026-09-26 (plan question 2, answered "the second question as recommended").
+
+Read precisely: a price reached by the walk is no longer in force on date when it starts after date, or when an end of its own has passed: a temporary price's end (temporary_until) or an explicit end (closed_explicitly). The start of a successor the walk did not take does not end it for the pin: a price stopped before a new successor stays the binding, and keep_for_bound marks exactly such a price. keep_for_bound predecessors stay readable and bindable; the resolve context carries the set of keep_for_bound price ids (the domain Price has no such field; plan review L1) and the binding reports it.
+
+**Source:** Phase 4 plan rev 3 (Run 4.2); the owner, 2026-09-26 (Q1: no promotion-specific renewal rule; Q2: rule 4 as recommended); spec §2.4 addendum, §5, §7.1, §12; plan review H2, M4, L1.
+
+#### D-421 [H] The binding carries resolved invoice inputs with their source
+
+**Status:** DECIDED 2026-09-26.
+
+Each item's SKU version is read as of date through sku_version_as_of (the detached registry read, made as the caller: consumers need products read). A registry that cannot answer is 503; Products' definite refusal keeps its own status and code; a 404 for an unknown SKU gives sku_version: null, like no version on that date, never a pass-through 404 that reads like "revision not found". The item returns, each as { value, source } with source entry, sku, tenant or null: invoice_line_template = the entry's invoice_line_override, then the SKU version's template, then the tenant template for the charge kind (settings.invoice_line_templates); gl_code = the SKU, then the tenant default_gl; tax_category = the SKU, then the tenant default_tax_category; billing_timing = the SKU, then the tenant default_timing (PRD AC #13: advance on the SKU beats arrears as the tenant default). It also returns sku_version { published_version, effective_from } and meter { usage_type_ref, unit } of that version (null without a version). The rules mirror the prototype (ui-prototype pricebook 50-rules.js, resolveInvoiceLine and the DESCRIPTORS check) and the plan checks' Defaults. Revision-level: book_id, currency, currency_minor_digits (domain::book::minor_digits), rounding_policy (the tenant default_rounding) and date.
+
+Read precisely: settings.invoice_line_templates is keyed by SKU type (recurring, usage, one_time, bundle; PUT /settings refuses any other key). A charge kind's name is its SKU type's, so the entry's charge kind is the key; an item without an entry takes its SKU version's type, as the prototype does. A source that is absent or blank falls through to the next one; when none is left the field is { value: null, source: null } (the prototype's built-in "{sku}" line is not adopted). billing_timing always has a value: the tenant default_timing is advance until the settings are written.
+
+**Source:** Phase 4 plan rev 3 (Run 4.2); PRD AC #13 (fr-settings); spec §7.1 (what a pin carries), decision 14; plan review H3 and L7.
+
+#### D-422 [H] The pinned price read serves approved money forever
+
+**Status:** DECIDED 2026-09-26.
+
+GET /bss-pricing/v1/prices/{id} (label price, action read), spec §7.1's /pricing/v1/prices/{id} below the gear's base, answers an APPROVED price of the tenant whatever its window (closed, followed by a later price, keep_for_bound) with its entry's SKU, charge kind, period, book and currency. It returns only stored facts: no status or other value computed from today, and no authoring internals (version, pending_unit_id, note, created_by). A draft, pending or rejected price, an unknown id and another tenant's id are 404, with the same body.
+
+**Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 (no value computed from today).
 
 #### D-423 [H] Both gears refuse a legacy or stale schema at boot
 
