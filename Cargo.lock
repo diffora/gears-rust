@@ -2426,6 +2426,7 @@ dependencies = [
  "cf-gears-usage-collector",
  "clap",
  "mimalloc",
+ "sea-orm",
  "serde-saphyr 0.0.22",
  "serde_json",
  "tempfile",

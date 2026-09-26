@@ -458,6 +458,14 @@ The shared DDL supports all Pricing subject kinds; only prices is executable in 
 and item tables are phase 3's; they follow the reference-op prose below and slice 04 describes them. The promotion
 (D-409) and migration-request (D-410) tables are deferred by the owner.
 
+The chain starts with the schema guard m0000_pricing_refuse_a_legacy_or_stale_schema (D-423). Its name sorts it
+before every other migration of the gear, including the coordination, broker and outbox ones, and it creates
+nothing. It reads the catalog only and refuses to migrate a database that holds a legacy pricing_* table (the
+pre-PriceBook chain's tables minus today's, a constant in the guard) or a stale shape: pricing_reference_op
+without ref_kind, pricing_price_row, or pricing_price without price_book_entry_id. Boot then fails with
+"bss-pricing: this database holds a legacy|stale bss-pricing schema (…); PriceBook does not migrate it — start
+from an empty data root / empty bss-pricing tables". Fresh databases and databases migrated by today's chain pass.
+
 ```sql
 CREATE TABLE bss.pricing_settings (
   tenant_id uuid PRIMARY KEY, default_timing text NOT NULL CHECK (default_timing IN ('advance','arrears')),
@@ -743,5 +751,5 @@ act with 500 instead of being retried by the transaction; Products has the same 
 | 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; deferred by the owner (D-409, D-410). |
 | 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2; quote not built, D-415). |
 
-All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-418.
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-418 and D-423.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.

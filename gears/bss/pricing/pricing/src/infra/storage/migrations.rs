@@ -42,6 +42,7 @@ pub async fn exec_backend(
     Ok(())
 }
 
+pub mod m0000_pricing_refuse_a_legacy_or_stale_schema;
 mod m20260926_000001_create_pricing_settings;
 mod m20260926_000002_create_pricing_approvals;
 mod m20260926_000003_create_pricing_dimension_key;
@@ -61,6 +62,7 @@ pub struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
+            Box::new(m0000_pricing_refuse_a_legacy_or_stale_schema::Migration),
             Box::new(coord::migration::Migration::in_schema("bss")),
             Box::new(m20260926_000001_create_pricing_settings::Migration),
             Box::new(m20260926_000002_create_pricing_approvals::Migration),

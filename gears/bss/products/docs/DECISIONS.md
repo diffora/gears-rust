@@ -27,6 +27,7 @@
 | P-D-192 | H | Stale units refresh with a new generation; votes name their generation; unit writes use a version, without row locks | DECIDED 2026-09-24 · spec §2.2, §6 |
 | P-D-193 | M | Audit rows and the single idempotency store are kept on the new chain | DECIDED 2026-09-24 · spec §3 items 23, 27, §2.2 |
 | P-D-194 | H | Products owns reference reservations; pricing reserves before writing and confirms with durable retries; live references and fences exclude each other | DECIDED 2026-09-24 · spec §2 decision 17, §4, §13 |
+| P-D-195 | H | The chain refuses a legacy or stale products schema at boot | DECIDED 2026-09-26 · pricing D-423; phase 4 plan rev 2 (Run 4.1) |
 
 ## Entries
 
@@ -204,3 +205,29 @@ and explicit release. No remote count sits on a fence.
 **Traceability:** [PRD `fr-reference-registry`](PRD.md#fr-reference-registry),
 [`fr-read-model`](PRD.md#fr-read-model), [`fr-sku-bundle`](PRD.md#fr-sku-bundle),
 [`fr-events`](PRD.md#fr-events); spec §2 decision 17, §2.2, §4, §13.
+
+#### P-D-195 [H] The chain refuses a legacy or stale schema
+
+The chain starts with one guard migration, `m0000_products_refuse_a_legacy_or_stale_schema`, named to sort
+first under the toolkit runner's name sort: before the coordination, broker and outbox migrations
+(`m0001_…`, `m001_…`) and before `m20260925_000001`. It is pending on every database that predates
+phase 4, so it runs there once, before anything of the gear is created, and it creates nothing. It reads
+the catalog only (`sqlite_master` on SQLite; `information_schema` and `pg_constraint` on Postgres, tables
+in schema `bss`) and refuses, so that boot fails naming the gear, when it finds:
+
+- a legacy table: one of the 35 `products_*` tables that the legacy chain creates (`bss/products-backup`,
+  `m20260829_000001` to `m20260922_000031`, 40 tables) and today's chain does not. `products_sku`,
+  `products_category`, `products_audit_log`, `products_idempotency` and `products_approval_decision`
+  (which `bss_approval::ddl` creates with prefix `products_`) exist in both and are not evidence. The set
+  is a constant in the guard; a test proves it disjoint from every table a fresh chain creates.
+- a stale shape: `products_sku_reference` whose `ref_kind` CHECK does not admit `price_book_entry`. The
+  phase 2 rename edited `m20260925_000006` in place, from `price` to `price_book_entry`, and
+  `CREATE TABLE IF NOT EXISTS` keeps the old CHECK on a database migrated before it.
+
+The refusal reads `bss-products: this database holds a <legacy|stale> bss-products schema (<what was
+found>); PriceBook does not migrate it — start from an empty data root / empty bss-products tables`. A
+fresh database passes, and so does a database migrated by today's chain: the guard is pending there
+once and finds nothing. The pricing gear carries the same guard over its own tables (pricing D-423).
+
+**Traceability:** [PRD `nfr-two-backends`](PRD.md#nfr-two-backends); pricing D-423; phase 4 plan rev 2,
+Run 4.1; plan review H1, M1 and L6.

@@ -41,6 +41,7 @@ pub async fn exec_backend(
     Ok(())
 }
 
+pub mod m0000_products_refuse_a_legacy_or_stale_schema;
 mod m20260925_000001_create_products_category;
 mod m20260925_000002_create_products_sku;
 mod m20260925_000003_create_products_approvals;
@@ -54,6 +55,7 @@ pub struct Migrator;
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
+            Box::new(m0000_products_refuse_a_legacy_or_stale_schema::Migration),
             Box::new(coord::migration::Migration::in_schema("bss")),
             Box::new(m20260925_000001_create_products_category::Migration),
             Box::new(m20260925_000002_create_products_sku::Migration),

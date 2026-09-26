@@ -80,17 +80,17 @@ async fn migration(index: usize, tables: &[&str]) {
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_m20260926_000010_plan() {
-    migration(10, &["pricing_plan"]).await;
+    migration(11, &["pricing_plan"]).await;
 }
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_m20260926_000011_plan_revision() {
-    migration(11, &["pricing_plan_revision"]).await;
+    migration(12, &["pricing_plan_revision"]).await;
 }
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_m20260926_000012_plan_item() {
-    migration(12, &["pricing_plan_item"]).await;
+    migration(13, &["pricing_plan_item"]).await;
 }
 
 struct Seed {

@@ -55,6 +55,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-416 | H | Descriptors are read best-effort; the reads a rule needs stay hard | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F2, surface S-1, docs F1 and F2) |
 | D-417 | M | The last revision of a never-published plan takes the plan with it | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F1, surface S-2) |
 | D-418 | H | A plan revision is submitted under plan:submit | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief |
+| D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
 
 ## Entries
 
@@ -305,3 +306,16 @@ DELETE /plan-revisions/{id} of the last revision of a plan that was never publis
 POST /plan-revisions/{id}/submit checks the plan label's own submit action, plan:submit: the label-specific analogue of price:submit on POST /prices/{id}/submit and of price_book:submit on publish-changes. The plan label's actions are read, author and submit. approval_unit:submit, which the run 3.4 brief bound to this door, stays the right to withdraw a unit; it no longer lets a prices submitter submit, or read through the receipt, a plan revision, so a tenant can withhold plan submission from its prices submitters.
 
 **Source:** Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief.
+
+#### D-423 [H] Both gears refuse a legacy or stale schema at boot
+
+**Status:** DECIDED 2026-09-26.
+
+Each gear's chain starts with ONE guard migration, named to sort first under the toolkit runner's name sort: m0000_pricing_refuse_a_legacy_or_stale_schema here and m0000_products_refuse_a_legacy_or_stale_schema in Products (products P-D-195). It sorts before the coordination, broker and outbox migrations (m0001_…, m001_…), so it is pending on every database that predates phase 4 and runs there once, before anything of the gear is created. It creates nothing and reads the catalog only: sqlite_master and table_info on SQLite; information_schema and pg_constraint on Postgres, tables in schema bss. It refuses (the migration fails, and boot fails naming the gear) when it finds:
+
+- a legacy table: one of the 45 pricing_* tables that the pre-PriceBook chain creates (bss/products-backup, m20260821_000001 to m20260921_000050, 47 tables) and today's chain does not. pricing_plan and pricing_price exist in both and are not evidence. The set is a constant in the guard; a test proves it disjoint from every table a fresh chain creates.
+- a stale shape, a table that today's chain edited in place (D-412) or renamed: pricing_reference_op without the column ref_kind; pricing_price_row present (the pre-rename name); pricing_price without the column price_book_entry_id (the pre-rename, entry-shaped table). Because the guard sorts first, a pre-rename database, on which the renamed migrations 000005 and 000007 are pending too, meets the guard's refusal and not a raw SQL error from 000007.
+
+The refusal reads: bss-pricing: this database holds a <legacy|stale> bss-pricing schema (<what was found>); PriceBook does not migrate it — start from an empty data root / empty bss-pricing tables. A fresh database passes, and so does a database migrated by today's chain: the guard is pending there once and finds nothing. The schema goldens do not change.
+
+**Source:** Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2 and L6. It is the phase 4 legacy-history guard that D-412 names.

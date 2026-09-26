@@ -136,3 +136,5 @@ uuid = { workspace = true }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }
 serde-saphyr = { workspace = true }
+# `tests/schema_guard_boot.rs` seeds a legacy table into an isolated data root.
+sea-orm = { workspace = true, features = ["sqlx-sqlite"] }
