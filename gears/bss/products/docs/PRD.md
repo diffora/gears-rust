@@ -380,6 +380,10 @@ and durable version reads.
 - `GET /skus/{id}/references` reads the local registry, returning reference rows and counts grouped by owner
   and kind; reserved references count alongside confirmed ones.
 - The card makes unresolved reservations visible so an operator can inspect and release abandoned attempts.
+- The list items and the card carry pricing's usage of each SKU (its entries, their currencies, prices by
+  state and distinct plans) through the `SkuUsageV1` port that pricing fills. The usage is `null` when the port
+  is absent, refuses the caller or cannot answer; the read never fails for it, and the usage never takes part
+  in a fence (P-D-197).
 - Dated reads use the version timeline, not the latest SKU row, which can contain future-effective content.
   A date earlier than the first version returns 404 `NO_VERSION_IN_FORCE`.
 - Reads require `products:read` and tenant scope; a caller cannot use search, card, reference or version reads
@@ -484,7 +488,7 @@ also report the current generation. PATCH uses `If-Match`; POST accepts an optio
 | Surface | Calls and behavior |
 | --- | --- |
 | SKU authoring | `POST /skus`; `PATCH /skus/{id}` for drafts; `POST /skus/{id}/changes` for published/deprecated content and/or lifecycle, with `effective_from` defaulting to today. |
-| SKU reads | `GET /skus`, `GET /skus/{id}`; list/search by code, name, category, type and lifecycle. |
+| SKU reads | `GET /skus`, `GET /skus/{id}`; list/search by code, name, category, type and lifecycle; each SKU carries pricing's `usage` or `null` (P-D-197). |
 | Lifecycle | `POST /skus/{id}/submit`, `POST /skus/{id}/retire`, `POST /skus/{id}/unfence`. |
 | Versions | `GET /skus/{id}/versions?asOf=<date>` reads the version in force; spec §7.2 spells the parameter `as_of`, while §2.2 and §4 spell it `asOf` (see §13). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |
@@ -493,7 +497,8 @@ also report the current generation. PATCH uses `If-Match`; POST accepts an optio
 | Settings | `GET /settings`, `PUT /settings`, including tenant approval policy and its optional per-kind quorum overrides. |
 
 The `products-sdk` surface exposes `Sku`, `SkuType`, `Lifecycle`, `Category`, `SkuVersion` and
-`SkuChangedPayload`. The usage-type catalog port remains available. `ProductCatalogClientV1` and its browse
+`SkuChangedPayload`. The usage-type catalog port remains available, and the `SkuUsageV1` port, which pricing
+fills, carries pricing's usage of SKUs to the SKU reads (P-D-197). `ProductCatalogClientV1` and its browse
 transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by the Task 3 interface boundary.
 
 ### 7.2 External Integration Contracts

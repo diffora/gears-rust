@@ -29,6 +29,7 @@
 | P-D-194 | H | Products owns reference reservations; pricing reserves before writing and confirms with durable retries; live references and fences exclude each other | DECIDED 2026-09-24 · spec §2 decision 17, §4, §13 |
 | P-D-195 | H | The chain refuses a legacy or stale products schema at boot | DECIDED 2026-09-26 · pricing D-423; phase 4 plan rev 2 (Run 4.1) |
 | P-D-196 | M | A SKU's category is optional; an omitted category stays null, with no default fallback | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
+| P-D-197 | M | SKU reads carry pricing's usage through a port that pricing fills; the usage is information and never a fence input | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; pricing D-428 |
 
 ## Entries
 
@@ -271,3 +272,29 @@ filter.
 
 **Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat), [`fr-sku-define`](PRD.md#fr-sku-define);
 DESIGN §3.1, §3.7; slice 01 §5, slice 02; phase 5 plan rev 2 (Run 5.1); plan review H1, M8, L9 and L13.
+
+#### P-D-197 [M] SKU reads carry pricing's usage through a port that pricing fills
+
+`products-sdk` gains the port `SkuUsageV1` (module `sku_usage`): `usage(ctx, tenant, sku_ids) ->
+Result<Vec<SkuUsage>, CanonicalError>`, with `SkuUsage { sku_id, entries, currencies, prices { approved,
+pending, draft }, plans }`. Pricing D-428 defines each count: `plans` is distinct across the SKU's entries,
+never a sum of their counts; `currencies` are sorted; each requested id is answered once; an unknown SKU, a SKU
+of another tenant and a bundle SKU answer zeros. Pricing implements the port and registers it in the
+`ClientHub` at its init as `dyn SkuUsageV1`. Products resolves it at each read and not at its own init, because
+the two gears boot in either order (pricing resolves its reference registry key the same way). The port types
+carry no serde; the REST DTOs of this gear map them.
+
+`GET /skus` and `GET /skus/{id}` carry `usage`: each list item has it next to the SKU's fields, and the card has
+it beside `sku` and `references`. The list asks the port once per page, with the ids of the page; the card asks
+for its one id. `usage` is `null` when no port is registered, when the port refuses the caller (403: the caller
+has no pricing `price_book_entry:read`), and when it cannot answer (any error, or a call that does not finish).
+The SKU read never fails because of the port: it calls the port on a task of its own, after its own reads, and
+outside any transaction of this gear.
+
+The usage is information for the SKUs screen: "N prices" with the currency chips, "unpriced", "N plans"; a
+bundle shows "by plan" from its type. It never takes part in a fence, a retirement or a type change: those stay
+on the local registry (P-D-188, P-D-194), and no remote count sits on a fence. The card's `references` stay
+the local registry's counts.
+
+**Source:** Owner, 2026-09-26 (option 1: the counts on the entry and on the SKU); phase 5 plan rev 2; pricing
+D-428.

@@ -134,8 +134,8 @@ use snake_case, scoped SDK types and Foundation's Problem mapping.
 
 | Route | Contract |
 | --- | --- |
-| `GET /skus?q&type&category&lifecycle&limit&after` | products:read; search code/name, intersect provided filters, enforce bounded limit and exclusive code cursor ordering (codes are tenant-unique). Scope before filtering and cursor evaluation. |
-| `GET /skus/{id}` | products:read; current card with ETag and reference summary, including unconfirmed reservations. Shares slice 02's head read. |
+| `GET /skus?q&type&category&lifecycle&limit&after` | products:read; search code/name, intersect provided filters, enforce bounded limit and exclusive code cursor ordering (codes are tenant-unique). Scope before filtering and cursor evaluation. Each item carries `usage` from pricing's `SkuUsageV1` port, asked once per page with the page's ids, or `null` (P-D-197). |
+| `GET /skus/{id}` | products:read; current card with ETag and reference summary, including unconfirmed reservations, and `usage` from pricing's `SkuUsageV1` port or `null` (P-D-197). Shares slice 02's head read. |
 | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | products:author plus authenticated owner check; 201 `{ reservation_id }` or 200 for the same live attempt; 409 SKU_FENCED for a new reservation through a fence. |
 | `POST /references/{id}/confirm` | products:author plus owner check; 200 also when already confirmed; 409 REFERENCE_RELEASED for a released id. |
@@ -146,6 +146,10 @@ Cross-tenant ids and cursors must not disclose another tenant's SKU/reference. C
 must agree with authenticated ownership; a client cannot force-release by merely naming another gear.
 A reserve outage produces Pricing's 503 REGISTRY_UNAVAILABLE and prevents its object write. Products'
 registry has no fallback remote-count path and no pretend-zero response when storage is unavailable.
+The `usage` of a SKU read is `{ entries, currencies, prices { approved, pending, draft }, plans }` as pricing
+answers it (pricing D-428). It is `null` when no port is registered, when the port refuses the caller (no pricing
+`price_book_entry:read`) and when it cannot answer: the SKU read never fails for it, and it calls the port on a task
+of its own outside any transaction. The usage is information and never takes part in a fence (P-D-197).
 
 ## 6. Data Model
 

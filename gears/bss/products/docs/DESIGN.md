@@ -302,7 +302,7 @@ registration and standardized errors.
 | Surface | Routes | Contract |
 | --- | --- | --- |
 | SKU authoring | `POST /skus`; `PATCH /skus/{id}` | Create independent draft, `category_id` optional; patch drafts only (`category_id: null` clears it); reject edits while pending. |
-| SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters (a category filter never matches a SKU without a category), bounded limit and exclusive code cursor (tenant-unique codes); SKU card. |
+| SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters (a category filter never matches a SKU without a category), bounded limit and exclusive code cursor (tenant-unique codes); SKU card. Each list item and the card carry `usage` { entries, currencies, prices { approved, pending, draft }, plans } from pricing's `SkuUsageV1` port, one call per page, or `null` when the port is absent, refuses or cannot answer; the read never fails for it (P-D-197). |
 | Dated versions | `GET /skus/{id}/versions?as_of=<date>` | Greatest effective_from not after date, then greatest published_version; 404 before first version. Without as_of, list history. |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
@@ -386,6 +386,12 @@ catalog or unconfigured mode. Resolution tests resolvability only. On draft save
 definitive unresolved answer is 400 `USAGE_TYPE_UNRESOLVED`; a catalog non-answer does not block save.
 Submit and apply revalidate, fail closed for unresolved refs, and return 503 for an unreachable configured
 catalog (P-D-184, carried from P-D-183 (backup); spec §4, §15).
+
+`SkuUsageV1` is the second port in `products-sdk`, and pricing fills it (P-D-197; pricing D-428). Pricing
+registers it in `ClientHub` at its init; Products resolves it at each `GET /skus` and `GET /skus/{id}`, calls
+it once per list page on a task of its own and outside any transaction, and shows `usage: null` when it is
+absent, refuses or cannot answer. The usage is display information: it never takes part in a fence, retirement
+or type change, which stay on the local registry (P-D-188, P-D-194).
 
 ### 3.6 Interactions & Sequences
 
@@ -887,4 +893,4 @@ defined here.
 The decision allocation is P-D-184 → metering; P-D-185–187 → SKU/category model; P-D-188–189 →
 type and retirement barriers; P-D-190 → approval policy and subjects; P-D-191 → dated versions;
 P-D-192 → generations and conditional writes; P-D-193 → audit/replay; P-D-194 → the reference
-registry and Pricing protocol; P-D-196 → the optional category. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → the SKU usage port. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

@@ -253,8 +253,8 @@ unit and rejects any unit.
 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
-| Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override? (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, period, model) in the book; the PATCH does not carry model); GET /price-book-entries/{id} reads one entry with its ETag (price_book_entry read); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
+| Books | 2 | POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries (each entry with its usage, D-428); GET /price-books/{id}/export |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override? (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, period, model) in the book; the PATCH does not carry model); GET /price-book-entries/{id} reads one entry with its ETag and its usage (price_book_entry read, D-428); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
 | Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); neither carries model: a price's money is in its entry's model, and a shape that does not match it is 400 PRICE_MISSING; every price read carries model read-only, copied from the entry (D-427); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter. Every unit door dispatches on the unit's stored kind (phase 3): its subject, the domain event its apply writes and the impact its card shows; a stored kind pricing does not record is a corrupt row (500), never judged as `prices` |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys; PUT /approval-policy sets the default (`*`) or one kind's quorum, `prices` or `plan_revision` (phase 3); any other kind is 400 POLICY_KIND_INVALID |
@@ -264,6 +264,14 @@ unit and rejects any unit.
 | Read contract | 4 | GET /resolve?plan_revision_id&date&item_id?&pins? (plan read, D-419): a published or superseded revision on one date, each item with its entry's model (null without an entry, D-427) and its chain matrix (default and every value, `binding` or `uncovered`), its SKU version as of the date and its resolved invoice inputs with their source (D-420, D-421); no totals, no promotion (D-409, D-415); pins are price_id or price_id:dim_value, at most 1 000. GET /prices/{id} (price read, D-422): an approved price of the tenant, whatever its window, with its entry's SKU, charge kind, period, model, book and currency, stored facts only. Both are reads: no audit row, no idempotency key, no binding |
 | Promotions | deferred (D-409) | Deferred by the owner and not built in phase 3; the planned shape: POST /promotions with name, percent, from_date, to_date, plan_ids (at most 50), apply_to; GET /promotions; GET /promotions/{id} (the current approved version, the open version and the history); PATCH /promotions/{id} under If-Match on the promotion, editing the open draft version or creating it from the current approved one; POST /promotions/{id}/submit, /end-today, /cancel |
 | Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
+
+The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, answer
+PricingPriceBookEntryReadDto: the fields of the entry and usage { prices { approved, pending, draft }, plans,
+plans_superseded_only } (D-428). prices counts the entry's prices by state, a rejected price excluded; plans counts
+the distinct plans with a draft, pending or published revision whose items name the entry; plans_superseded_only
+counts the distinct plans that name it only through superseded revisions. The counts are read tenant-scoped, under
+price_book_entry read alone, with a fixed number of set-based reads per request. The POST and PATCH answers, the
+stored Tx B receipt, the export and the publish-changes listing keep PricingPriceBookEntryDto, without usage.
 
 The consumer surface named by spec §7.1, `GET /pricing/v1/resolve` and `GET /pricing/v1/prices/{id}`, is
 `GET /bss-pricing/v1/resolve` and `GET /bss-pricing/v1/prices/{id}` below the gear's base (D-419, D-422; the Read contract
@@ -330,6 +338,12 @@ A future out-of-process transport uses the REST reference_principals mapping and
 service_principal_id credentials with the same semantics; that transport is not implemented here.
 The fresh sku_for_write read accepts every lifecycle; sku_version_as_of resolves the version in force
 at each price start for the D-402 pair guard.
+In the other direction, pricing implements Products' SkuUsageV1 port (products-sdk, P-D-197) and registers
+it in the ClientHub at init as dyn SkuUsageV1; Products resolves it at each SKU read. For the SKU ids of one
+tenant it answers each distinct id once with { sku_id, entries, currencies (sorted), prices { approved, pending,
+draft }, plans }, plans distinct across the SKU's entries; an unknown, foreign or bundle SKU answers zeros; a
+caller without price_book_entry read gets 403, which Products shows as no usage (D-428). Pricing reads only the
+SKU ids it is given.
 Reserve is idempotent on the live logical reference, not on a released receipt. The same tenant and SKU must be
 bound to the receipt and object. Products versions?as_of provides descriptor history in phase 4. There is no
 SkuChanged listener/local SKU read model in phase 2 (D-399). Subscriptions migration execution and Rating
@@ -779,5 +793,5 @@ act with 500 instead of being retried by the transaction; Products has the same 
 | 06 Promotions & Migrations | promotions-migrations | `cpt-cf-bss-pricing-fr-promotions`, `cpt-cf-bss-pricing-fr-migrations`; deferred by the owner (D-409, D-410). |
 | 07 Read Contract & Events | read-contract-events | `cpt-cf-bss-pricing-fr-events`, `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`; phase 4 (core events in phase 2; quote not built, D-415). |
 
-All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-427.
+All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-428.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.
