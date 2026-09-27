@@ -893,4 +893,6 @@ defined here.
 The decision allocation is P-D-184 → metering; P-D-185–187 → SKU/category model; P-D-188–189 →
 type and retirement barriers; P-D-190 → approval policy and subjects; P-D-191 → dated versions;
 P-D-192 → generations and conditional writes; P-D-193 → audit/replay; P-D-194 → the reference
-registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → the SKU usage port. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → the SKU usage port;
+P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
+shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration). Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

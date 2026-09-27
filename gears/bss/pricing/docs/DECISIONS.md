@@ -65,6 +65,11 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-426 | H | An entry's invoice line is locked once the entry carries money | DECIDED 2026-09-26 · Owner, 2026-09-26 (option 1 of three); amends D-421 |
 | D-427 | H | The model belongs to the entry, fixed for its life, and is part of its key | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; closes D-412; amends D-386, D-390, D-391, D-401, D-402 |
 | D-428 | H | Entries and SKUs report their usage | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
+| D-429 | M | The replay store's mechanics (twin of products P-D-198) | DECIDED 2026-09-27 · Carried from D-142 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-430 | M | A tier ladder's top band is open | DECIDED 2026-09-27 · Carried from D-17 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
+| D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 
 ## Entries
 
@@ -422,3 +427,43 @@ The two entry reads carry the entry's usage, for the SKUs screen and the book vi
 Pricing also fills the SKU usage port of Products (P-D-197): products-sdk SkuUsageV1, which pricing registers in the ClientHub at its init as dyn SkuUsageV1. For the SKU ids of one tenant it answers each distinct id once, as { sku_id, entries, currencies, prices { approved, pending, draft }, plans }. entries counts the SKU's entries in every book of the tenant, in every reference state. currencies are the distinct currencies of their books, sorted. prices adds up the counts of those entries. plans counts the distinct plans across all the SKU's entries, with the entry rule above: a plan that names two entries of the SKU counts once, where a sum of the entry counts would count it twice. An unknown id, the SKU of another tenant and a bundle SKU (it has no entry, D-386) answer zeros. The caller must hold price_book_entry read; otherwise the port answers 403, and Products shows no usage. Pricing reads only the SKU ids that it is given, and no Products data flows back into pricing.
 
 **Source:** Owner, 2026-09-26; phase 5 plan rev 2 (the counts on the entry and on the SKU, option 1; the semantics confirmed by the owner; plan review M6, M7, L10).
+
+#### D-429 [M] The replay store's mechanics (twin of products P-D-198)
+
+**Status:** DECIDED 2026-09-27.
+
+A key's row in pricing_idempotency is claimed or answered, and a CHECK ties the response pair to the state. The claim INSERT is the at-most-once gate: a door claims on the transaction that writes its act (D-396), and a reference-work door claims in Tx A with its op (D-401), so the claim commits before the reserve; when that create is cancelled before its write, the cancellation deletes the claim and frees the key. The endpoint is the concrete resource path, never the route template, and no in-flight deadline exists. The answered row stores the status and body the caller was told, so a replay reads no other row. An answer is stored only when its transaction commits: a refusal that rolls back takes the claim with it, and a committed refusal (Tx B's 400 receipt, D-401 and D-427) is stored and replays. Expiry is judged at claim time: an expired row is taken over by a compare-and-swap on the expires_at that was read, and the loser answers IDEMPOTENCY_KEY_IN_FLIGHT having executed nothing. A matching live claimed row is IDEMPOTENCY_KEY_IN_FLIGHT; a digest mismatch is IDEMPOTENCY_CONFLICT in either state. The entity_ref column is carried in the DDL and always NULL. Products runs the same store (P-D-198).
+
+**Source:** Carried from D-142 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-430 [M] A tier ladder's top band is open
+
+**Status:** DECIDED 2026-09-27.
+
+A graduated or volume price has at least one band (TIER_BAND_EMPTY), strictly ascending bounds below the top (TIER_BANDS_ORDER), and an open top band: a closed top band is TIER_TOP_CLOSED. No quantity above a last bound is left unrated; capping usage is not a price. The band edges themselves are D-387's.
+
+**Source:** Carried from D-17 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-431 [M] The request's correlation id is minted at the authoring edge
+
+**Status:** DECIDED 2026-09-27.
+
+The authoring router mounts correlation::establish: each request gets one UUID v7 before any handler runs, and an inbound traceparent is not consumed. Every audit row the request writes carries it as correlation_id, so the rows of one call join. It is not the Idempotency-Key and is not derived from the payload. A handler reached without the layer answers 500 and never mints its own. The read-contract router (resolve, the pinned price read) writes nothing and mounts none; events carry no correlation id. Products establishes no correlation and writes NULL (P-D-200).
+
+**Source:** Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-432 [M] If-Match on every write to a versioned row, and on a draft price's DELETE
+
+**Status:** DECIDED 2026-09-27.
+
+PATCH of books, entries, plans, plan revisions and plan items, PUT of settings, dimension keys and the approval policy, and DELETE /prices/{id} of a draft price require If-Match with the row's strong version: a missing or malformed header is 400, a stale one 409 STALE_REVISION. The DELETEs of an entry, a plan revision and a plan item take none, as built. This extends D-396's "If-Match protects PATCH/PUT".
+
+**Source:** Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27. Extends D-396.
+
+#### D-433 [M] The audit log is append-only with a reserved sealing seam (twin of products P-D-200)
+
+**Status:** DECIDED 2026-09-27.
+
+pricing_audit refuses every DELETE by trigger and admits one UPDATE: unsealed to sealed, supplying chain_id, seq and row_hash (prev_hash NULL only on a segment head) with every record column unchanged. The gear writes seal_state = unsealed with the four seal columns NULL on every row and never seals, chains or verifies: sealing is a platform capability the columns are reserved for. The key is a surrogate audit_id, because seq is NULL until a row is sealed. No REVOKE UPDATE, DELETE is issued (a deployment role the migration does not own; SQLite has none). correlation_id is text: pricing writes its edge id (D-431), and products writes NULL (P-D-200). error_code, attempted_key, session_id and ceremony_ref are carried in the DDL and written NULL. Products has the same table shape (P-D-200).
+
+**Source:** Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
