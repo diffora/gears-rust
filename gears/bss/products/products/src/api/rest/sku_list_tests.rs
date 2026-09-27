@@ -273,6 +273,9 @@ async fn every_filter_field_narrows_the_list() {
             vec!["B", "D"],
         ),
         ("not (lifecycle eq 'draft')".to_owned(), vec!["A", "C", "D"]),
+        // The text functions the contract publishes for every text field.
+        ("contains(lifecycle, 'pub')".to_owned(), vec!["A"]),
+        ("startswith(type, 'us')".to_owned(), vec!["B", "E"]),
     ] {
         assert_eq!(
             d.codes(&list(&[("$filter", &filter)])).await,
@@ -284,8 +287,7 @@ async fn every_filter_field_narrows_the_list() {
         "type eq 'bad'",
         "lifecycle eq 'bad'",
         "lifecycle in ('draft', 'bad')",
-        "contains(lifecycle, 'pub')",
-        "startswith(type, 'us')",
+        "type ne 'onetime'",
         "code eq null",
         "lifecycle ne null",
         "category_id in (null)",

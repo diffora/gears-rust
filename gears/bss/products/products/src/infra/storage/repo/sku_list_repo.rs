@@ -107,8 +107,9 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
     }
     /// `updated_at` orders only: on `SQLite` a `$filter` would bind chrono's `+00:00` against
     /// the stored RFC 3339 `Z`, and a text comparison lies at the boundary. `lifecycle` and
-    /// `type` take their closed values with `eq`, `ne` and `in` only. `null` compares only with
-    /// a nullable field.
+    /// `type` compare (`eq`, `ne`, `in`) with one of their closed values only; the text
+    /// functions take any text there, as on every text field, since the served contract
+    /// publishes them for every text field. `null` compares only with a nullable field.
     fn map_value(
         field: SkuListField,
         op: FilterOp,
@@ -133,13 +134,9 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
             SkuListField::Type => Some(|v| SkuType::parse(v).is_some()),
             _ => None,
         };
-        if let Some(known) = closed {
-            if !matches!(op, FilterOp::Eq | FilterOp::Ne | FilterOp::In) {
-                return Err(format!(
-                    "`{}` takes `eq`, `ne` or `in` with one of its values",
-                    field.name()
-                ));
-            }
+        if let Some(known) = closed
+            && matches!(op, FilterOp::Eq | FilterOp::Ne | FilterOp::In)
+        {
             match value {
                 ODataValue::String(v) if known(v) => {}
                 other => return Err(format!("unknown {}: {other}", field.name())),

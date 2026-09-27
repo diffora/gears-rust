@@ -30,8 +30,10 @@ fn only_the_four_non_nullable_keys_order_and_only_the_two_nullable_fields_compar
     }
 }
 
+/// The closed fields compare with one of their values; the text functions the served contract
+/// publishes for every text field take any text on them too.
 #[test]
-fn the_closed_fields_take_their_values_with_eq_ne_and_in_only() {
+fn the_closed_fields_compare_with_their_values_and_take_the_text_functions() {
     for (field, good, bad) in [
         (SkuListField::Lifecycle, "retiring", "active"),
         (SkuListField::Type, "one_time", "onetime"),
@@ -44,7 +46,8 @@ fn the_closed_fields_take_their_values_with_eq_ne_and_in_only() {
             assert!(SkuListMapping::map_value(field, op, &string(bad)).is_err());
         }
         for op in [FilterOp::Contains, FilterOp::StartsWith, FilterOp::EndsWith] {
-            assert!(SkuListMapping::map_value(field, op, &string(good)).is_err());
+            assert!(SkuListMapping::map_value(field, op, &string(&good[..2])).is_ok());
+            assert!(SkuListMapping::map_value(field, op, &string(bad)).is_ok());
         }
     }
     // The open text fields take any text.

@@ -503,8 +503,9 @@ Owner decision 1 of the phase 6 plan: `GET /skus` moves to the toolkit's OData, 
 own `type`, `category`, `lifecycle` and `after` parameters go.
 
 - **`$filter`** names `id`, `code`, `name` (the toolkit's operators for their kinds), `lifecycle` and `type`
-  (`eq`, `ne` or `in` with one of their values; any other value or operator is 400 `INVALID_FILTER`),
-  `category_id` and `pending_unit_id` (`eq`, `ne`, `in`, and `eq null` / `ne null`: no category, in review).
+  (`eq`, `ne` or `in` with one of their values, another value being 400 `INVALID_FILTER`; the text functions
+  as on any text field, since the served contract publishes them for every text field), `category_id` and
+  `pending_unit_id` (`eq`, `ne`, `in`, and `eq null` / `ne null`: no category, in review).
   Only those two compare with `null`. `updated_at` orders and never filters: on SQLite a `$filter` would bind
   chrono's `+00:00` against the stored RFC 3339 `Z`, and a text comparison lies at the boundary.
 - **`$orderby`** names `code`, `name` or `updated_at` (a narrower order vocabulary, ledger's
