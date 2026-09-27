@@ -148,3 +148,77 @@ async fn malformed_fields_are_400_and_authentication_precedes_body_validation() 
         .unwrap();
     assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// P-D-196: a SKU without a category never blocks a category's retirement, nor counts as the
+/// category's use; a SKU that points at the category still does.
+#[tokio::test]
+async fn a_sku_without_a_category_never_blocks_a_retirement() {
+    use crate::infra::storage::repo;
+    use crate::test_support::repo_connection;
+    use std::sync::Arc;
+    fn doors(
+        s: Arc<crate::api::rest::ApiState>,
+        o: &dyn toolkit::api::OpenApiRegistry,
+    ) -> axum::Router {
+        router(Arc::clone(&s), o).merge(crate::api::rest::skus::router(s, o))
+    }
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, doors).await;
+    let category = |code: &'static str| {
+        let app = app.clone();
+        async move {
+            let r = post(
+                &app,
+                tenant,
+                "/bss-products/v1/categories",
+                json!({"code":code,"name":code}),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::CREATED);
+            serde_json::from_value::<Uuid>(body_json(r).await["id"].clone()).unwrap()
+        }
+    };
+    let unused = category("unused").await;
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/skus",
+        json!({"code":"LOOSE","name":"Loose","type":"recurring"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let (db, scope) = repo_connection(&dsn, tenant).await;
+    assert_eq!(
+        repo::count_skus_in_category(&db.conn().unwrap(), &scope, tenant, unused)
+            .await
+            .unwrap(),
+        0
+    );
+    let r = post(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{unused}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(body_json(r).await["status"], "retired");
+    let used = category("used").await;
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/skus",
+        json!({"code":"HELD","name":"Held","type":"recurring","category_id":used}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = post(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{used}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "CATEGORY_IN_USE");
+}

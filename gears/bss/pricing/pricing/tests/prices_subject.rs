@@ -73,10 +73,13 @@ async fn setup_with(mode: usize, dimension: bool) -> Setup {
             .await;
         assert_eq!(saved.0, 200, "{saved:?}");
     }
+    // D-427: the entry carries the model; a recurring entry is `flat`, a usage one `per_unit`.
     let body = match (mode, dimension) {
-        (11, _) => json!({"sku_id":Uuid::new_v4(),"period":"month"}),
-        (_, true) => json!({"sku_id":Uuid::new_v4(),"dimension_key":"region"}),
-        _ => json!({"sku_id":Uuid::new_v4()}),
+        (11, _) => json!({"sku_id":Uuid::new_v4(),"period":"month","model":"flat"}),
+        (_, true) => {
+            json!({"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"})
+        }
+        _ => json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
     };
     let (status, entry, _) = f
         .call(
@@ -148,10 +151,11 @@ impl Setup {
                 .await
                 .unwrap()
                 .unwrap();
+        // D-427: the price's money is in its entry's model; the caller names that model.
+        assert_eq!(p.model, model, "the entry's model");
         let mut r = entry_support::price(&p);
         r.version_no = version_no;
         r.state = "approved".into();
-        r.model = model.into();
         r.price_json = entry;
         r.effective_from = day(from);
         price_repo::insert(&conn, &scope, r).await.unwrap().id
@@ -182,6 +186,16 @@ impl Setup {
     }
     /// The value a chain reads on a date once every approved price is applied (default fallback).
     async fn reads(&self, on: &str, dim: Option<&str>) -> Option<Value> {
+        let entry = price_book_entry_repo::find(
+            &self.f.db.conn().unwrap(),
+            &AccessScope::for_tenant(self.tenant()),
+            self.tenant(),
+            self.price_book_entry_id(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let model = price_book_entry_repo::model_of(&entry).unwrap();
         let prices: Vec<_> = price_repo::for_entry(
             &self.f.db.conn().unwrap(),
             &AccessScope::for_tenant(self.tenant()),
@@ -191,7 +205,7 @@ impl Setup {
         .await
         .unwrap()
         .iter()
-        .map(|m| price_repo::to_domain(m).unwrap())
+        .map(|m| price_repo::to_domain(m, model).unwrap())
         .collect();
         bss_pricing::domain::price::version_at(&prices, self.price_book_entry_id(), day(on), dim)
             .map(|r| serde_json::to_value(&r.price).unwrap())
@@ -292,7 +306,7 @@ impl Setup {
     }
 }
 fn body(from: &str) -> Value {
-    json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
+    json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
 }
 
 #[tokio::test]
@@ -327,6 +341,18 @@ async fn collect_is_business_content_with_the_pair_partner_and_the_chain_predece
                 "{lock_or_version}"
             );
         }
+    }
+    // D-427: the model is the entry's, so it is no longer a price's fingerprinted content; a unit
+    // pending at the deploy refreshes once.
+    for item in &items {
+        assert!(item.after.get("model").is_none(), "{}", item.after);
+        assert!(
+            item.before
+                .as_ref()
+                .is_none_or(|b| b.get("model").is_none()),
+            "{:?}",
+            item.before
+        );
     }
     let promo_item = items.iter().find(|i| i.item_id == promo_id).unwrap();
     assert_eq!(promo_item.after["price"], json!({"rate":"0.10"}));
@@ -396,12 +422,16 @@ async fn the_chain_guard_reads_sku_metering_as_of_each_start() {
         "the unit differs as of each start"
     );
     assert!(s.submit(s.subject(), early.clone(), 1).await.is_ok());
+    // D-427: the model cannot change on a chain at all: it is the entry's, and money of another
+    // model's shape is refused at the door, before any unit.
     let mut graduated = body("2031-04-01");
-    graduated["model"] = json!("graduated");
     graduated["price"] = json!({"tiers":[{"up_to":null,"rate":"1"}]});
-    let changed = s.draft("graduated", graduated).await;
-    let err = s.submit(s.subject(), changed, 1).await.unwrap_err();
-    assert_eq!(code(&err), "CHAIN_MODEL_CHANGED", "the model kind is kept");
+    let (status, refused) = s.try_draft("graduated", graduated).await;
+    assert_eq!(status, 400, "{refused}");
+    assert!(
+        refused.to_string().contains("PRICE_MISSING"),
+        "the model kind is kept: {refused}"
+    );
     s.script
         .versions_down
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -415,9 +445,11 @@ async fn a_recurring_chain_is_not_guarded_and_reads_no_metering() {
     let s = setup(11).await;
     s.approved(1, "2031-01-01", "flat", json!({"amount":"10"}))
         .await;
-    let mut per_seat = body("2031-03-01");
-    per_seat["price"] = json!({"rate":"2"});
-    let ids = s.draft("seat", per_seat).await;
+    // D-427: the recurring entry is flat, so its successor is flat too (the model is the
+    // entry's); a recurring chain is still not guarded and reads no metering.
+    let mut successor = body("2031-03-01");
+    successor["price"] = json!({"amount":"12"});
+    let ids = s.draft("seat", successor).await;
     assert!(s.submit(s.subject(), ids, 1).await.is_ok());
     assert_eq!(Script::count(&s.script.version_reads), 0);
 }

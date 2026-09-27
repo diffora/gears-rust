@@ -296,7 +296,7 @@ pub fn temporary(
             .or(back.effective_to.filter(|_| back.closed_explicitly));
         returned.temporary_until = None;
         returned.closed_explicitly = returned.effective_to.is_some();
-        returned.model = back.model;
+        // The money only: the model is the entry's (D-427), the one the promo already carries.
         returned.price.clone_from(&back.price);
         returned.min_fee = back.min_fee;
         returned.return_of_price_id = Some(back.id);
@@ -359,7 +359,8 @@ pub fn temporary_is_current(prices: &[Price], temporary: &Price, unit: &[Price])
                     } else {
                         r.return_of_price_id == Some(b.id)
                     };
-                    restores && r.model == b.model && r.price == b.price && r.min_fee == b.min_fee
+                    // Money and min fee; the model is the entry's (D-427), never a price's.
+                    restores && r.price == b.price && r.min_fee == b.min_fee
                 }
                 _ => false,
             }
@@ -477,11 +478,13 @@ pub fn in_force_before<'a>(chain: &'a [Price], price: &Price) -> Option<&'a Pric
         price.dim_value.as_deref(),
     )
 }
-/// The input field a refusal code names, for the wire problem.
+/// The input field of a PRICE request a refusal code names, for the wire problem. A price
+/// carries no `model` (D-427), so no code names one here: `CHAIN_MODEL_CHANGED` (package size or
+/// dated metering) and a model refusal name the money, `price`. The entry create names `model`
+/// itself.
 #[must_use]
 pub fn field_of(code: &str) -> &'static str {
     match code {
-        "MODEL_KIND_CHARGEKIND_MISMATCH" | "MODEL_INVALID" | "CHAIN_MODEL_CHANGED" => "model",
         "WINDOW_START_IN_PAST"
         | "WINDOW_START_INVALID"
         | "WINDOW_OVERLAP"
@@ -519,7 +522,8 @@ pub struct SkuMetering {
     pub unit: Option<String>,
     pub usage_type_ref: Option<String>,
 }
-/// Preserve model, package size and dated metering on usage chains.
+/// Preserve package size and dated metering on usage chains. The model needs no comparison:
+/// every price of a chain has its entry's model (D-427, D-402).
 /// # Errors
 /// Returns `CHAIN_MODEL_CHANGED` if any guarded attribute changes.
 pub fn chain_guard(
@@ -536,8 +540,7 @@ pub fn chain_guard(
         Some(PriceData::Package { package_size, .. }) => Some(*package_size),
         _ => None,
     };
-    if predecessor.model != successor.model
-        || before != after
+    if before != after
         || (predecessor.model == Model::Package && size(predecessor) != size(successor))
     {
         return Err(RuleError::new("CHAIN_MODEL_CHANGED"));

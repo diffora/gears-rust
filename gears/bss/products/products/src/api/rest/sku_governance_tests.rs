@@ -663,6 +663,7 @@ async fn second_app(
         idempotency_retention_hours: 24,
         fence_ttl_minutes: 30,
         reference_principals: f.state.reference_principals.clone(),
+        hub: f.state.hub.clone(),
     });
     routes(state, &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(flat_in_enforcer(f.tenant)))
@@ -2167,7 +2168,8 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
         &f.author,
         Method::POST,
         &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
-        json!({"sku_id":f.id}),
+        // Pricing D-427: an entry is created in a model; `per_unit` is one every charge kind allows.
+        json!({"sku_id":f.id,"model":"per_unit"}),
     )
     .await;
     assert_eq!(status, 201, "{entry}");
@@ -2212,4 +2214,186 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
     assert_eq!(status, 200, "{unit}");
     assert_eq!(f.vote(&unit, "approve", 1).await.0, 200);
     assert_eq!(f.card().await["lifecycle"], "retired");
+}
+
+/// P-D-196: a SKU without a category publishes, and a `sku_change` sets and then clears the
+/// category: the unit's item diff, the applied version and `SkuChanged.changed` show it.
+#[tokio::test]
+async fn a_sku_without_a_category_publishes_and_a_change_sets_and_clears_it() {
+    let f = Fixture::new(0).await;
+    let cat = f.card().await["category_id"].clone();
+    assert!(cat.is_string(), "the fixture's draft has a category");
+    let r = request_as(
+        &f.app,
+        &f.author,
+        Method::PATCH,
+        &format!("/bss-products/v1/skus/{}", f.id),
+        Some(json!({"category_id":null})),
+        Some("\"1\""),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    assert_eq!(f.card().await["category_id"], Value::Null);
+    f.publish().await;
+    let today = time::OffsetDateTime::now_utc().date();
+    let in_force = || async {
+        let (status, body) = call(
+            &f.app,
+            &f.author,
+            Method::GET,
+            &format!("/skus/{}/versions?as_of={today}", f.id),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        body
+    };
+    let v = in_force().await;
+    assert_eq!(v["published_version"], 1);
+    assert_eq!(v["content"]["category_id"], Value::Null);
+    for (version, before, after) in [(2, Value::Null, cat.clone()), (3, cat.clone(), Value::Null)] {
+        let (status, u) = f.post("/changes", json!({"category_id":after})).await;
+        assert_eq!(status, 200, "{u}");
+        assert_eq!(u["applied"], true);
+        let item = &u["unit"]["snapshot"]["skus"][0];
+        assert_eq!(item["before"]["content"]["category_id"], before, "{item}");
+        assert_eq!(item["after"]["content"]["category_id"], after, "{item}");
+        assert_eq!(f.card().await["category_id"], after);
+        let v = in_force().await;
+        assert_eq!(v["published_version"], version);
+        assert_eq!(v["content"]["category_id"], after);
+        assert_eq!(
+            enqueued_event_envelope(&f.dsn, SkuChanged::TYPE_ID).await["changed"],
+            json!(["category_id"])
+        );
+    }
+}
+
+/// An active category of the fixture's tenant, created through the door; its id.
+async fn new_category(f: &Fixture, code: &str) -> Value {
+    let (status, c) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/categories",
+        json!({"code":code,"name":code}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{c}");
+    c["id"].clone()
+}
+
+async fn retire_category(f: &Fixture, id: &Value) {
+    let (status, b) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &format!("/categories/{}/retire", id.as_str().unwrap()),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+}
+
+/// The category row gone from the tenant, as for a unit submitted before a `sku_change` resolved
+/// its category: nothing else names it.
+async fn forget_category(f: &Fixture, id: &Value) {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let id = Uuid::parse_str(id.as_str().unwrap()).unwrap();
+    let conn = Database::connect(&f.dsn).await.unwrap();
+    let deleted = conn
+        .execute_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                "DELETE FROM products_category WHERE lower(hex(id)) = '{}' OR id = '{id}'",
+                id.simple()
+            ),
+        ))
+        .await
+        .unwrap()
+        .rows_affected();
+    conn.close().await.ok();
+    assert_eq!(deleted, 1);
+}
+
+/// P-D-196: a category a `sku_change` sets is resolved in tenant scope and must be active, as the
+/// draft doors resolve it. At quorum 0 the submit is also the apply: an unknown category answers
+/// 404 and a retired one 409 `CATEGORY_RETIRED`; no unit is recorded and no version is written.
+#[tokio::test]
+async fn a_change_to_an_unknown_or_retired_category_is_refused_at_quorum_zero() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let retired = new_category(&f, "retired").await;
+    retire_category(&f, &retired).await;
+    let units = "SELECT count(*) AS v FROM products_approval_unit";
+    let before = raw_i64(&f.dsn, units).await;
+
+    let (status, b) = f
+        .post("/changes", json!({"category_id":Uuid::new_v4()}))
+        .await;
+    assert_eq!(status, 404, "an unknown category: {b}");
+    let (status, b) = f.post("/changes", json!({"category_id":retired})).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "CATEGORY_RETIRED");
+
+    assert_eq!(raw_i64(&f.dsn, units).await, before, "no unit recorded");
+    let s = f.card().await;
+    assert_eq!(s["published_version"], 1);
+    assert!(s["pending_unit_id"].is_null());
+}
+
+/// At quorum 1 the submit refuses an unknown category with 404 before any unit exists. A unit
+/// already pending on a category the tenant no longer holds answers its approve with 404, not a
+/// 500, and leaves the SKU at its version until it is withdrawn; a unit pending on a category
+/// retired since answers 409 `CATEGORY_RETIRED`.
+#[tokio::test]
+async fn a_change_to_an_unknown_category_is_refused_at_submit_and_at_approve_at_quorum_one() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    f.policy(1).await;
+
+    let (status, b) = f
+        .post("/changes", json!({"category_id":Uuid::new_v4()}))
+        .await;
+    assert_eq!(status, 404, "an unknown category at submit: {b}");
+    assert!(
+        f.card().await["pending_unit_id"].is_null(),
+        "no unit locks the SKU"
+    );
+
+    let gone = new_category(&f, "gone").await;
+    let (status, unit) = f.post("/changes", json!({"category_id":gone})).await;
+    assert_eq!(status, 200, "{unit}");
+    assert_eq!(unit["applied"], false, "{unit}");
+    forget_category(&f, &gone).await;
+    let (status, b) = f.vote(&unit, "approve", 1).await;
+    assert_eq!(status, 404, "an unknown category at apply: {b}");
+    let s = f.card().await;
+    assert_eq!(s["published_version"], 1);
+    assert_eq!(s["pending_unit_id"], unit["unit"]["id"], "still pending");
+    let (status, b) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        &format!(
+            "/approval-units/{}/withdraw",
+            unit["unit"]["id"].as_str().unwrap()
+        ),
+        json!({"generation":1,"note":"its category is gone"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+
+    let retired = new_category(&f, "retired").await;
+    let (status, unit) = f.post("/changes", json!({"category_id":retired})).await;
+    assert_eq!(status, 200, "{unit}");
+    retire_category(&f, &retired).await;
+    let (status, b) = f.vote(&unit, "approve", 1).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "CATEGORY_RETIRED");
+    assert_eq!(f.card().await["published_version"], 1);
 }

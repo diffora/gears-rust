@@ -700,3 +700,416 @@ async fn only_the_drafts_author_may_patch_it() {
     let r = patch(&app, tenant, &url, json!({"name":"Renamed"}), Some(&tag)).await;
     assert_eq!(r.status(), StatusCode::OK, "the author still edits");
 }
+
+/// P-D-196: an omitted `category_id` stays null, even when the tenant has a default category
+/// (no fallback to `is_default`), and so does an explicit null.
+#[tokio::test]
+async fn a_sku_without_a_category_is_created_with_null_and_no_default_fallback() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, doors).await;
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/categories",
+        json!({"code":"default","name":"Default","is_default":true}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    for (code, body) in [
+        (
+            "OMITTED",
+            json!({"code":"OMITTED","name":"Omitted","type":"recurring"}),
+        ),
+        (
+            "NULL",
+            json!({"code":"NULL","name":"Null","type":"recurring","category_id":null}),
+        ),
+    ] {
+        let r = post(&app, tenant, "/bss-products/v1/skus", body).await;
+        assert_eq!(r.status(), StatusCode::CREATED, "{code}");
+        let s = body_json(r).await;
+        assert_eq!(s["category_id"], Value::Null, "{code}: {s}");
+        let url = format!("/bss-products/v1/skus/{}", s["id"].as_str().unwrap());
+        let card = body_json(get(&app, tenant, &url).await).await;
+        assert_eq!(card["sku"]["category_id"], Value::Null, "{code}");
+        assert_eq!(
+            raw_i64(
+                &dsn,
+                &format!(
+                    "SELECT COUNT(*) AS v FROM products_sku WHERE code = '{code}' AND category_id IS NULL"
+                )
+            )
+            .await,
+            1,
+            "{code}"
+        );
+    }
+}
+
+/// P-D-196, plan review L13: the draft PATCH clears the category with an explicit null
+/// (`double_option`); an omitted field keeps it, and a category can be set again.
+#[tokio::test]
+async fn the_draft_patch_clears_the_category_with_null_and_an_omitted_field_keeps_it() {
+    let tenant = Uuid::new_v4();
+    let (app, _dsn) = rest_app(tenant, doors).await;
+    let cat = category(&app, tenant).await;
+    let r = post(&app, tenant, "/bss-products/v1/skus", new(cat, "A", "A")).await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    let url = format!(
+        "/bss-products/v1/skus/{}",
+        body_json(r).await["id"].as_str().unwrap()
+    );
+    let r = patch(&app, tenant, &url, json!({"name":"Renamed"}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        body_json(r).await["category_id"],
+        json!(cat),
+        "omitted keeps it"
+    );
+    let r = patch(&app, tenant, &url, json!({"category_id":null}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let tag = r.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(
+        body_json(r).await["category_id"],
+        Value::Null,
+        "null clears it"
+    );
+    assert_eq!(
+        body_json(get(&app, tenant, &url).await).await["sku"]["category_id"],
+        Value::Null
+    );
+    let r = patch(&app, tenant, &url, json!({"category_id":cat}), Some(&tag)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(body_json(r).await["category_id"], json!(cat), "set again");
+}
+
+/// P-D-196: browse by a category matches only that category's SKUs, so a SKU without a category
+/// never matches it; the unfiltered list includes it.
+#[tokio::test]
+async fn browse_by_a_category_excludes_skus_without_one_and_the_unfiltered_list_includes_them() {
+    let tenant = Uuid::new_v4();
+    let (app, _dsn) = rest_app(tenant, doors).await;
+    let cat = category(&app, tenant).await;
+    let r = post(&app, tenant, "/bss-products/v1/skus", new(cat, "A", "A")).await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/skus",
+        json!({"code":"B","name":"B","type":"usage"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    let codes = |list: Value| -> Vec<String> {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["code"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let by_category = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus?category={cat}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(codes(by_category), ["A"]);
+    let all = body_json(get(&app, tenant, "/bss-products/v1/skus").await).await;
+    assert_eq!(codes(all), ["A", "B"]);
+}
+
+// ------------------------------------------------------------------ P-D-197: pricing's usage
+
+/// What the scripted port does when it is asked.
+#[derive(Clone, Copy)]
+enum PortAnswer {
+    /// The counts the test set, for the ids it knows.
+    Counts,
+    /// 403: the caller holds no pricing `price_book_entry:read`.
+    Refuses,
+    /// 503: pricing cannot answer.
+    Fails,
+    /// The call never finishes as an answer.
+    Panics,
+    /// The call never returns at all.
+    Hangs,
+}
+/// Pricing's port as a counting double: every call's tenant and ids, in call order.
+struct UsagePort {
+    answer: PortAnswer,
+    counts:
+        std::sync::Mutex<std::collections::BTreeMap<Uuid, bss_products_sdk::sku_usage::SkuUsage>>,
+    calls: std::sync::Mutex<Vec<(Uuid, Vec<Uuid>)>>,
+    /// Hanging calls whose future was dropped: the caller aborted them.
+    abandoned: std::sync::atomic::AtomicUsize,
+}
+/// Counts one abandoned call when the hanging call's future is dropped.
+struct Abandoned<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for Abandoned<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl UsagePort {
+    fn new(answer: PortAnswer) -> Arc<Self> {
+        Arc::new(Self {
+            answer,
+            counts: std::sync::Mutex::default(),
+            calls: std::sync::Mutex::default(),
+            abandoned: std::sync::atomic::AtomicUsize::default(),
+        })
+    }
+    fn set(&self, usage: bss_products_sdk::sku_usage::SkuUsage) {
+        self.counts.lock().unwrap().insert(usage.sku_id, usage);
+    }
+    fn calls(&self) -> Vec<(Uuid, Vec<Uuid>)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+#[async_trait::async_trait]
+impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
+    async fn usage(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        tenant: Uuid,
+        sku_ids: &[Uuid],
+    ) -> Result<
+        Vec<bss_products_sdk::sku_usage::SkuUsage>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.calls.lock().unwrap().push((tenant, sku_ids.to_vec()));
+        match self.answer {
+            PortAnswer::Counts => {
+                let counts = self.counts.lock().unwrap();
+                Ok(sku_ids
+                    .iter()
+                    .filter_map(|id| counts.get(id).cloned())
+                    .collect())
+            }
+            PortAnswer::Refuses => Err(bss_products_sdk::sku_usage::sku_usage_denied()),
+            PortAnswer::Fails => Err(bss_products_sdk::sku_usage::sku_usage_unavailable(
+                "pricing is down",
+            )),
+            PortAnswer::Panics => panic!("the SKU usage port broke"),
+            PortAnswer::Hangs => {
+                let _abandoned = Abandoned(&self.abandoned);
+                std::future::pending().await
+            }
+        }
+    }
+}
+/// A router and its state over a fresh database, with no usage port registered.
+async fn usage_app(tenant: Uuid) -> (Router, Arc<ApiState>) {
+    let (db, _, _, _) = crate::test_support::test_db().await;
+    crate::test_support::rest_app_on_db(
+        tenant,
+        doors,
+        crate::test_support::resolved_usage_types(),
+        "test",
+        db,
+    )
+    .await
+}
+/// A category-less draft SKU through the door (P-D-196): its id.
+async fn sku_named(app: &Router, tenant: Uuid, code: &str) -> Uuid {
+    let r = post(
+        app,
+        tenant,
+        "/bss-products/v1/skus",
+        json!({"code":code,"name":code,"type":"recurring"}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    serde_json::from_value(body_json(r).await["id"].clone()).unwrap()
+}
+fn counts(sku_id: Uuid, entries: u64, plans: u64) -> bss_products_sdk::sku_usage::SkuUsage {
+    bss_products_sdk::sku_usage::SkuUsage {
+        sku_id,
+        entries,
+        currencies: vec!["EUR".into(), "USD".into()],
+        prices: bss_products_sdk::sku_usage::PriceCounts {
+            approved: 3,
+            pending: 1,
+            draft: 2,
+        },
+        plans,
+    }
+}
+
+/// P-D-197: with pricing's port registered, the card and every list item carry its usage, and
+/// the list asks the port once per page with the ids of that page.
+#[tokio::test]
+async fn the_sku_reads_carry_pricing_usage_with_one_port_call_per_list_page() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let tenant = Uuid::new_v4();
+    let (app, state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let b = sku_named(&app, tenant, "B").await;
+    let c = sku_named(&app, tenant, "C").await;
+    let port = UsagePort::new(PortAnswer::Counts);
+    port.set(counts(a, 2, 1));
+    port.set(counts(b, 5, 3));
+    port.set(bss_products_sdk::sku_usage::SkuUsage {
+        sku_id: c,
+        ..Default::default()
+    });
+    state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let card = get(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    let card = body_json(card).await;
+    assert_eq!(card["sku"]["id"], a.to_string());
+    assert!(card["references"].is_object(), "{card}");
+    assert_eq!(
+        card["usage"],
+        json!({
+            "entries": 2,
+            "currencies": ["EUR", "USD"],
+            "prices": {"approved": 3, "pending": 1, "draft": 2},
+            "plans": 1,
+        })
+    );
+    assert_eq!(port.calls(), vec![(tenant, vec![a])]);
+    let page = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2").await).await;
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(page["next"], "B");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["code"], "A", "the SKU's own fields stay flat");
+    assert_eq!(items[0]["usage"]["entries"], 2);
+    assert_eq!(items[1]["code"], "B");
+    assert_eq!(items[1]["usage"]["entries"], 5);
+    assert_eq!(items[1]["usage"]["plans"], 3);
+    let rest = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2&after=B").await).await;
+    assert_eq!(
+        rest["items"][0]["usage"],
+        json!({
+            "entries": 0,
+            "currencies": [],
+            "prices": {"approved": 0, "pending": 0, "draft": 0},
+            "plans": 0,
+        }),
+        "an unpriced SKU reads zeros"
+    );
+    assert_eq!(
+        port.calls(),
+        vec![(tenant, vec![a]), (tenant, vec![a, b]), (tenant, vec![c])],
+        "one batch call per page, with that page's ids"
+    );
+}
+
+/// P-D-197: no port registered — the SKU reads answer as before, with `usage: null`.
+#[tokio::test]
+async fn without_a_usage_port_the_sku_reads_answer_usage_null() {
+    let tenant = Uuid::new_v4();
+    let (app, _state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let card = get(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    let card = body_json(card).await;
+    assert_eq!(card.get("usage"), Some(&Value::Null), "{card}");
+    let list = get(&app, tenant, "/bss-products/v1/skus").await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    assert_eq!(list["items"][0].get("usage"), Some(&Value::Null), "{list}");
+    assert_eq!(list["items"][0]["code"], "A");
+}
+
+/// P-D-197: a port that refuses the caller, cannot answer, or breaks leaves `usage: null`, and
+/// the SKU read still answers 200.
+#[tokio::test]
+async fn a_usage_port_that_refuses_fails_or_breaks_leaves_usage_null() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    for answer in [PortAnswer::Refuses, PortAnswer::Fails, PortAnswer::Panics] {
+        let tenant = Uuid::new_v4();
+        let (app, state) = usage_app(tenant).await;
+        let a = sku_named(&app, tenant, "A").await;
+        let port = UsagePort::new(answer);
+        state.hub.register::<dyn SkuUsageV1>(port.clone());
+        let card = get(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+        assert_eq!(card.status(), StatusCode::OK);
+        let card = body_json(card).await;
+        assert_eq!(card.get("usage"), Some(&Value::Null), "{card}");
+        assert_eq!(card["sku"]["code"], "A");
+        let list = get(&app, tenant, "/bss-products/v1/skus").await;
+        assert_eq!(list.status(), StatusCode::OK);
+        let list = body_json(list).await;
+        assert_eq!(list["items"][0].get("usage"), Some(&Value::Null), "{list}");
+        assert_eq!(
+            port.calls().len(),
+            2,
+            "the port was asked: null is its answer, not its absence"
+        );
+    }
+}
+
+/// A SKU read that must answer while the port hangs; the test's own bound, well past the door's.
+async fn answered(app: &Router, tenant: Uuid, uri: &str) -> axum::response::Response {
+    tokio::time::timeout(std::time::Duration::from_secs(10), get(app, tenant, uri))
+        .await
+        .expect("the SKU read answers although the port never does")
+}
+
+/// P-D-197: a port call that never returns is bounded. Once the bound elapses the SKU read
+/// answers 200 with `usage: null`, on the card and on the list.
+#[tokio::test]
+async fn a_usage_port_that_never_answers_leaves_usage_null_once_its_bound_elapses() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let tenant = Uuid::new_v4();
+    let (app, state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let port = UsagePort::new(PortAnswer::Hangs);
+    state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let card = answered(&app, tenant, &format!("/bss-products/v1/skus/{a}")).await;
+    assert_eq!(card.status(), StatusCode::OK);
+    let card = body_json(card).await;
+    assert_eq!(card.get("usage"), Some(&Value::Null), "{card}");
+    assert_eq!(card["sku"]["code"], "A");
+    let list = answered(&app, tenant, "/bss-products/v1/skus").await;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list = body_json(list).await;
+    assert_eq!(list["items"][0].get("usage"), Some(&Value::Null), "{list}");
+    assert_eq!(port.calls().len(), 2, "the port was asked each time");
+    for _ in 0..100 {
+        if port.abandoned.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a call past its bound is aborted, not left running");
+}
+
+/// P-D-197: a SKU read dropped before the bound (its client went away) takes the port call with
+/// it; a call that outlives its read would hold pricing's connection with nobody to abort it.
+#[tokio::test]
+async fn a_sku_read_dropped_before_the_bound_aborts_its_port_call() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let tenant = Uuid::new_v4();
+    let (app, state) = usage_app(tenant).await;
+    let a = sku_named(&app, tenant, "A").await;
+    let port = UsagePort::new(PortAnswer::Hangs);
+    state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let uri = format!("/bss-products/v1/skus/{a}");
+    let mut read = Box::pin(get(&app, tenant, &uri));
+    let asked = async {
+        while port.calls().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    };
+    tokio::select! {
+        _ = &mut read => panic!("the read answered before its port call hung"),
+        () = asked => {}
+    }
+    drop(read);
+    for _ in 0..100 {
+        if port.abandoned.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a port call whose read was dropped is aborted, not left running");
+}

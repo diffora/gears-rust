@@ -5,8 +5,8 @@
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
     dto::{
-        ReferencesDto, SkuCard, SkuDto, SkuList, SkuPatchRequest, SkuRequest, SkuVersionDto,
-        parse_token,
+        ReferencesDto, SkuCard, SkuDto, SkuList, SkuListItem, SkuPatchRequest, SkuRequest,
+        SkuVersionDto, parse_token,
     },
     json_body,
     preconditions::{etag, if_match, if_match_param},
@@ -277,15 +277,17 @@ fn response(status: StatusCode, s: Sku) -> Response {
     )
         .into_response()
 }
-/// Translate only known repository business refusals, retaining all driver errors.
-fn write_error(e: RepoError, category_id: Uuid) -> TxError {
+/// Translate only known repository business refusals, retaining all driver errors. A SKU without
+/// a category (P-D-196) resolves none, so only a named category can be missing.
+fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
     match e {
-        RepoError::Db(code) if code == "CATEGORY_NOT_FOUND" => {
-            TxError::Refused(DomainError::NotFound {
+        RepoError::Db(code) if code == "CATEGORY_NOT_FOUND" => match category_id {
+            Some(id) => TxError::Refused(DomainError::NotFound {
                 what: "category",
-                id: category_id,
-            })
-        }
+                id,
+            }),
+            None => TxError::Repo(RepoError::Db(code)),
+        },
         RepoError::Db(code)
             if matches!(
                 code.as_str(),
@@ -537,11 +539,14 @@ async fn get_sku(
     let refs = repo::reference_summary(&conn, &reference_scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
+    // P-D-197: pricing's usage, or null; the card never fails for it.
+    let usage = super::usage::of(&state, &ctx, &[s.id]).await.remove(&s.id);
     Ok((
         [(header::ETAG, etag(InternalRevision::new(s.revision)))],
         Json(SkuCard {
             sku: s.into(),
             references: refs.into(),
+            usage,
         }),
     )
         .into_response())
@@ -622,8 +627,20 @@ async fn list_skus(
     } else {
         None
     };
+    // P-D-197: one call of pricing's usage port for the page, after the page's transaction.
+    let ids: Vec<Uuid> = items.iter().map(|s| s.id).collect();
+    let mut usage = super::usage::of(&state, &ctx, &ids).await;
     Ok(Json(SkuList {
-        items: items.into_iter().map(Into::into).collect(),
+        items: items
+            .into_iter()
+            .map(|s| {
+                let counted = usage.remove(&s.id);
+                SkuListItem {
+                    sku: s.into(),
+                    usage: counted,
+                }
+            })
+            .collect(),
         next,
     }))
 }

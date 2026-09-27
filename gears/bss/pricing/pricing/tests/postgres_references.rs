@@ -356,7 +356,7 @@ async fn postgres_removing_a_dimension_key_an_entry_names_is_refused_409() {
         .call(
             "POST",
             &p.target.endpoint(),
-            json!({"sku_id":Uuid::new_v4(),"dimension_key":"region"}),
+            json!({"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"}),
             Some("one"),
         )
         .await;

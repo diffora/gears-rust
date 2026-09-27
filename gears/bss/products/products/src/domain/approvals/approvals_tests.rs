@@ -475,3 +475,42 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
     );
     handle.stop().await;
 }
+
+/// P-D-196: a category missing at the store — a race past the subject's own check — is a refusal
+/// with its code, 409, never the store's 500; the subject's own refusal names the category id and
+/// answers 404, as the draft doors do.
+#[test]
+fn a_missing_category_is_a_refusal_at_the_store_and_a_404_from_the_subject() {
+    use crate::domain::error::DomainError;
+    use toolkit::api::canonical_prelude::CanonicalError;
+    let raced = super::store_err(crate::infra::storage::RepoError::Db(
+        "CATEGORY_NOT_FOUND".into(),
+    ));
+    assert!(
+        matches!(
+            raced,
+            ApprovalError::ApplyRefused {
+                code: "CATEGORY_NOT_FOUND",
+                ..
+            }
+        ),
+        "{raced:?}"
+    );
+    assert_eq!(
+        CanonicalError::from(DomainError::from(raced)).status_code(),
+        409
+    );
+    let id = Uuid::new_v4();
+    let named = DomainError::from(ApprovalError::ApplyRefused {
+        code: "CATEGORY_NOT_FOUND",
+        detail: id.to_string(),
+    });
+    assert_eq!(
+        named,
+        DomainError::NotFound {
+            what: "category",
+            id
+        }
+    );
+    assert_eq!(CanonicalError::from(named).status_code(), 404);
+}

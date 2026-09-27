@@ -13,7 +13,8 @@ pub struct Model {
     pub name: String,
     #[sea_orm(column_name = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// Nullable since `m20260925_000007` (P-D-196).
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub lifecycle: String,

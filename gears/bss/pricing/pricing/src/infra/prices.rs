@@ -12,7 +12,7 @@ use crate::{
     domain::{
         RuleError, book,
         price::{self, Eligibility, Price, PriceState, SkuMetering},
-        price_book_entry::ChargeKind,
+        price_book_entry::{ChargeKind, Model},
     },
     infra::{
         plan_revisions::{self, SUBSCRIPTIONS_UNAVAILABLE},
@@ -53,6 +53,8 @@ pub const ITEM_TYPE: &str = "price";
 /// What the pure rules need to judge a price of one entry.
 pub struct PriceBookEntryContext {
     pub kind: ChargeKind,
+    /// The entry's model (D-427): every price of the entry is decoded and judged in it.
+    pub model: Model,
     pub values: Option<Vec<String>>,
     pub digits: u32,
     pub prices: Vec<entity::price::Model>,
@@ -87,6 +89,7 @@ impl PriceBookEntryContext {
         let prices = price_repo::for_entry(tx, &children, tenant, entry.id).await?;
         Ok(Self {
             kind,
+            model: price_book_entry_repo::model_of(entry)?,
             values,
             digits: book::minor_digits(&book.currency),
             prices,
@@ -96,7 +99,10 @@ impl PriceBookEntryContext {
     /// # Errors
     /// Returns a corrupt stored price.
     pub fn domain_prices(&self) -> Result<Vec<Price>, RepoError> {
-        self.prices.iter().map(price_repo::to_domain).collect()
+        self.prices
+            .iter()
+            .map(|m| price_repo::to_domain(m, self.model))
+            .collect()
     }
     /// The first pure refusal of a candidate against the entry's approved prices.
     #[must_use]
@@ -200,13 +206,13 @@ fn applied(error: ApprovalError) -> ApprovalError {
 fn date(d: Date) -> String {
     d.to_string()
 }
-/// Proposed business content only: never state, lock, version or recomputed columns.
+/// Proposed business content only: never state, lock, version or recomputed columns. The model
+/// is the entry's, not the price's content (D-427).
 fn after(r: &Price, note: Option<&str>) -> Value {
     json!({
         "price_book_entry_id": r.price_book_entry_id,
         "version_no": r.version_no,
         "dim_value": r.dim_value,
-        "model": r.model.as_str(),
         "price": r.price,
         "min_fee": r.min_fee.map(|v| v.to_string()),
         "eligibility": r.eligibility.as_str(),
@@ -223,7 +229,6 @@ fn before(r: &Price) -> Value {
     json!({
         "price_id": r.id,
         "version_no": r.version_no,
-        "model": r.model.as_str(),
         "price": r.price,
         "min_fee": r.min_fee.map(|v| v.to_string()),
         "eligibility": r.eligibility.as_str(),
@@ -508,7 +513,7 @@ impl PricesSubject {
             .collect();
         let drafts = prices
             .iter()
-            .map(price_repo::to_domain)
+            .map(|m| price_repo::to_domain(m, pc.model))
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage)?;
         let proposed =
@@ -594,18 +599,26 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
         self.review(tx, &grouped.keys().copied().collect()).await?;
         for (price_book_entry_id, prices) in grouped {
             let unit: BTreeSet<Uuid> = prices.iter().map(|m| m.id).collect();
+            let entry =
+                price_book_entry_repo::find(tx, &self.scope(), self.tenant_id, price_book_entry_id)
+                    .await
+                    .map_err(storage)?
+                    .ok_or_else(|| {
+                        invalid("ENTRY_NOT_FOUND", format!("entry {price_book_entry_id}"))
+                    })?;
+            let model = price_book_entry_repo::model_of(&entry).map_err(storage)?;
             let mut chain: Vec<Price> =
                 price_repo::for_entry(tx, &self.scope(), self.tenant_id, price_book_entry_id)
                     .await
                     .map_err(storage)?
                     .iter()
                     .filter(|m| m.state == PriceState::Approved.as_str() && !unit.contains(&m.id))
-                    .map(price_repo::to_domain)
+                    .map(|m| price_repo::to_domain(m, model))
                     .collect::<Result<_, _>>()
                     .map_err(storage)?;
             let drafts = prices
                 .iter()
-                .map(price_repo::to_domain)
+                .map(|m| price_repo::to_domain(m, model))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(storage)?;
             let proposed = price::shift_selection(&drafts, self.common_effective_date)

@@ -115,6 +115,7 @@ The fresh migration allocation is:
 | `000004` | Audit table and append-only guards. |
 | `000005` | Replay table and response-state guards. |
 | `000006` | Reference registry and live-reference indexes. |
+| `000007` | A SKU's category becomes optional (P-D-196): Postgres drops the NOT NULL; SQLite rebuilds `products_sku` with its two child tables inside the runner's transaction, without PRAGMA. `down()` is irreversible. |
 
 Before `000001` runs the guard `m0000_products_refuse_a_legacy_or_stale_schema` ([P-D-195](../DECISIONS.md)).
 Its name sorts it before every other migration of the gear, and it creates nothing. It refuses a database

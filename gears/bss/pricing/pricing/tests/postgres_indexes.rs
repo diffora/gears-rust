@@ -24,7 +24,8 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
     ),
     (
         "pricing_price_book_entry_key",
-        "(book_id, sku_id, charge_kind, COALESCE(period, ''::text))",
+        // D-427: the model joined the key (m20260926_000013).
+        "(book_id, sku_id, charge_kind, COALESCE(period, ''::text), model)",
     ),
     (
         "pricing_price_approved_start",
@@ -166,6 +167,7 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_prices() 
                     sku_id: Uuid::new_v4(),
                     charge_kind: "usage".into(),
                     period: None,
+                    model: "per_unit".into(),
                     dimension_key: None,
                     invoice_line_override: None,
                     reservation_id: Uuid::new_v4(),
@@ -237,7 +239,6 @@ fn price_template(
         price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
-        model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.10"}),
         min_fee: None,
         eligibility: "all".into(),

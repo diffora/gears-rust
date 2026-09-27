@@ -1,5 +1,7 @@
-//! The new chain is replayable and every migration reverses independently; the schema guard
-//! (D-423) sorts first and creates nothing.
+//! The new chain is replayable and every migration reverses independently, with one named
+//! exception: the forward migration `m20260926_000013` (D-427) moves data and is irreversible, so it
+//! applies once through the runner and its down refuses. The schema guard (D-423) sorts first and
+//! creates nothing.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -106,13 +108,61 @@ async fn m0000_the_guard_creates_nothing() {
     guard.down(&manager).await.unwrap();
 }
 
+/// The named exception (D-427): 000013 applies once through the toolkit runner, a second run
+/// skips it, and its down refuses by name instead of reversing a data move.
+#[tokio::test]
+async fn m20260926_000013_applies_once_and_refuses_to_revert() {
+    let db = toolkit_db::connect_db(
+        "sqlite::memory:",
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..toolkit_db::ConnectOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+    let first = toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        bss_pricing::module::BssPricingGear::default().migrations(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        first
+            .applied_names
+            .iter()
+            .any(|n| n == "m20260926_000013_model_on_the_entry"),
+        "{:?}",
+        first.applied_names
+    );
+    let again = toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        bss_pricing::module::BssPricingGear::default().migrations(),
+    )
+    .await
+    .unwrap();
+    assert!(again.applied_names.is_empty(), "{:?}", again.applied_names);
+    let bare = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = SchemaManager::new(&bare);
+    let step = Migrator::migrations()
+        .into_iter()
+        .find(|m| m.name() == "m20260926_000013_model_on_the_entry")
+        .unwrap();
+    let refused = step.down(&manager).await.unwrap_err().to_string();
+    assert!(
+        refused.contains("m20260926_000013_model_on_the_entry") && refused.contains("irreversible"),
+        "{refused}"
+    );
+}
+
 #[test]
-fn gear_chain_is_the_guard_coord_then_twelve_ordered_unique_migrations() {
+fn gear_chain_is_the_guard_coord_then_thirteen_ordered_unique_migrations() {
     let names: Vec<_> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 14);
+    assert_eq!(names.len(), 15);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
@@ -123,6 +173,7 @@ fn gear_chain_is_the_guard_coord_then_twelve_ordered_unique_migrations() {
     assert_eq!(names[10], "m20260926_000009_create_pricing_idempotency");
     assert_eq!(names[11], "m20260926_000010_create_pricing_plan");
     assert_eq!(names[13], "m20260926_000012_create_pricing_plan_item");
+    assert_eq!(names[14], "m20260926_000013_model_on_the_entry");
 }
 
 /// The runner sorts the gear's WHOLE list by name, outbox and broker included: the guard must

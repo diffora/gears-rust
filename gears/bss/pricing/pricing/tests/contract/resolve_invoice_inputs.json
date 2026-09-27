@@ -27,6 +27,7 @@
             "price_book_entry_id": "<entry:pro>",
             "charge_kind": "recurring",
             "period": "month",
+            "model": "flat",
             "sku_version": {
               "published_version": 1,
               "effective_from": "2026-01-01"
@@ -59,7 +60,6 @@
                   "price_id": "<price:10>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "flat",
                   "price": {
                     "amount": "10.00"
                   },
@@ -83,6 +83,7 @@
             "price_book_entry_id": "<entry:storage>",
             "charge_kind": "usage",
             "period": null,
+            "model": "per_unit",
             "sku_version": {
               "published_version": 1,
               "effective_from": "2026-01-01"
@@ -115,7 +116,6 @@
                   "price_id": "<price:storage-default>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.10"
                   },
@@ -135,7 +135,6 @@
                   "price_id": "<price:storage-eu>",
                   "dim_used": "eu",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.08"
                   },
@@ -155,7 +154,6 @@
                   "price_id": "<price:storage-default>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.10"
                   },
@@ -175,7 +173,6 @@
                   "price_id": "<price:storage-default>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.10"
                   },
@@ -195,7 +192,6 @@
                   "price_id": "<price:storage-latam-temp>",
                   "dim_used": "latam",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.05"
                   },
@@ -219,6 +215,7 @@
             "price_book_entry_id": null,
             "charge_kind": null,
             "period": null,
+            "model": null,
             "sku_version": null,
             "invoice_line_template": {
               "value": null,
@@ -270,6 +267,7 @@
             "price_book_entry_id": "<entry:egress>",
             "charge_kind": "usage",
             "period": null,
+            "model": "per_unit",
             "sku_version": {
               "published_version": 1,
               "effective_from": "2026-01-01"
@@ -307,7 +305,6 @@
                   "price_id": "<price:egress-eu>",
                   "dim_used": "eu",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.02"
                   },
@@ -327,7 +324,6 @@
                   "price_id": "<price:egress-us>",
                   "dim_used": "us",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.03"
                   },
@@ -347,7 +343,6 @@
                   "price_id": "<price:egress-apac-temp>",
                   "dim_used": "apac",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.01"
                   },
@@ -395,6 +390,7 @@
             "price_book_entry_id": null,
             "charge_kind": null,
             "period": null,
+            "model": null,
             "sku_version": {
               "published_version": 1,
               "effective_from": "2026-01-01"

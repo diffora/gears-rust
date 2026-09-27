@@ -39,7 +39,7 @@ async fn gov(quorum: u32) -> Gov {
         .call(
             "POST",
             &format!("/price-books/{book}/entries"),
-            json!({"sku_id":Uuid::new_v4()}),
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
             None,
             Some("entry"),
         )
@@ -61,7 +61,7 @@ async fn gov(quorum: u32) -> Gov {
     Gov { f, book, entry }
 }
 fn body(from: &str, eligibility: &str) -> Value {
-    json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":eligibility,"effective_from":from})
+    json!({"price":{"rate":"0.10"},"eligibility":eligibility,"effective_from":from})
 }
 impl Gov {
     fn price_book_entry_id(&self) -> Uuid {

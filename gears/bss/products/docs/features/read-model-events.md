@@ -196,7 +196,7 @@ GET skus searches code/name and intersects type, category and lifecycle filters 
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/skus.rs`.
 
-The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat price_book_entries/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
+The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat price_book_entries/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read; the card's `usage` from pricing's `SkuUsageV1` port is information beside them, never a reference count (P-D-197) (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
 
 ### Durable reference identity and release
 

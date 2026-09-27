@@ -15,10 +15,11 @@ async fn setup(mode: usize) -> (Fixture, Arc<Script>, String, Value) {
         f,
         script,
         path,
+        // D-427: an entry is created in a model; `per_unit` is one every charge kind allows.
         if mode == 11 {
-            json!({"sku_id":Uuid::new_v4(),"period":"month"})
+            json!({"sku_id":Uuid::new_v4(),"period":"month","model":"per_unit"})
         } else {
-            json!({"sku_id":Uuid::new_v4()})
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit"})
         },
     )
 }
@@ -45,18 +46,26 @@ async fn create_replay_current_kind_unique_key_and_delete() {
     assert_eq!(dup.0, 409, "{dup:?}");
     assert!(dup.1.to_string().contains("ENTRY_KEY_TAKEN"));
     let id = first.1["id"].as_str().unwrap();
-    assert_eq!(
-        f.call(
+    // The read answers the entry the create answered, and its usage (D-428): nothing uses it yet.
+    let mut read = f
+        .call(
             "GET",
             &format!("/price-book-entries/{id}"),
             json!({}),
             None,
-            None
+            None,
         )
         .await
-        .1,
-        first.1
+        .1;
+    assert_eq!(
+        read.as_object_mut().unwrap().remove("usage"),
+        Some(json!({
+            "prices": {"approved": 0, "pending": 0, "draft": 0},
+            "plans": 0,
+            "plans_superseded_only": 0,
+        }))
     );
+    assert_eq!(read, first.1);
     assert_eq!(
         f.call(
             "DELETE",
@@ -393,24 +402,30 @@ impl bss_pricing::infra::reference_work::Clock for LaterClock {
 
 #[tokio::test]
 async fn period_and_dimension_refusals_are_400_before_any_reservation() {
-    // D-403: pure input refusals are 400, and they cost no Products reservation.
+    // D-403: pure input refusals are 400, and they cost no Products reservation. Each body has a
+    // model every charge kind allows (D-427), so the refusal is the one named.
     for (mode, body, field, code) in [
-        (11, json!({}), "period", "ENTRY_PERIOD_INVALID"),
         (
-            0,
-            json!({"period":"month"}),
+            11,
+            json!({"model":"per_unit"}),
             "period",
             "ENTRY_PERIOD_INVALID",
         ),
         (
             0,
-            json!({"period":"week"}),
+            json!({"period":"month","model":"per_unit"}),
             "period",
             "ENTRY_PERIOD_INVALID",
         ),
         (
             0,
-            json!({"dimension_key":"zone"}),
+            json!({"period":"week","model":"per_unit"}),
+            "period",
+            "ENTRY_PERIOD_INVALID",
+        ),
+        (
+            0,
+            json!({"dimension_key":"zone","model":"per_unit"}),
             "dimension_key",
             "DIM_NOT_DECLARED",
         ),
@@ -427,9 +442,9 @@ async fn period_and_dimension_refusals_are_400_before_any_reservation() {
         assert_eq!(Script::count(&script.reserve_calls), 0, "{body}");
         // Nothing was claimed: the corrected request runs under the same key.
         let fixed = if mode == 11 {
-            json!({"sku_id":input["sku_id"],"period":"month"})
+            json!({"sku_id":input["sku_id"],"period":"month","model":"per_unit"})
         } else {
-            json!({"sku_id":input["sku_id"]})
+            json!({"sku_id":input["sku_id"],"model":"per_unit"})
         };
         let created = f.call("POST", &path, fixed, None, Some("one")).await;
         assert_eq!(created.0, 201, "{created:?}");
@@ -523,7 +538,7 @@ async fn the_registry_is_seeded_with_region_and_an_entry_naming_it_stores_the_se
         "/price-book-entries/{}/prices",
         entry["id"].as_str().unwrap()
     );
-    let eu = json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all",
+    let eu = json!({"price":{"rate":"0.10"},"eligibility":"all",
         "effective_from":"2031-03-01","dim_value":"eu"});
     let (status, b, _) = f.call("POST", &prices, eu.clone(), None, Some("eu")).await;
     assert_eq!(status, 400, "no value is declared yet: {b}");
@@ -633,7 +648,7 @@ async fn a_contended_entry_write_after_the_reserve_cancels_the_create() {
 async fn a_missing_entry_is_named_as_an_entry_on_every_door() {
     let (f, _, _, _) = setup(0).await;
     let path = format!("/price-book-entries/{}", Uuid::new_v4());
-    let draft = json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-01-01"});
+    let draft = json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-01-01"});
     for (method, path, body, tag, key) in [
         ("GET", path.clone(), json!({}), None, None),
         (
@@ -659,5 +674,210 @@ async fn a_missing_entry_is_named_as_an_entry_on_every_door() {
                 .starts_with("ENTRY_NOT_FOUND"),
             "{method}: {b}"
         );
+    }
+}
+
+/// The stored outcome of every op of an entry, by kind, read straight from the op table.
+async fn op_inputs(f: &Fixture, entry: &str) -> Vec<(String, Value)> {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let id: Uuid = entry.parse().unwrap();
+    Database::connect(&f.dsn)
+        .await
+        .unwrap()
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                "SELECT kind, outcome FROM pricing_reference_op WHERE ref_id = X'{}' ORDER BY op_id",
+                id.simple()
+            ),
+        ))
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let outcome: String = row.try_get("", "outcome").unwrap();
+            let work: Value = serde_json::from_str(&outcome).unwrap();
+            (
+                row.try_get::<String>("", "kind").unwrap(),
+                work["target"]["price_book_entry"]["input"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// D-427: the create requires `model`, and it must be one the SKU's charge kind allows. Both are
+/// input refusals, 400 on `model` at the door, before anything is claimed or reserved.
+#[tokio::test]
+async fn the_entry_create_requires_a_model_its_charge_kind_allows() {
+    for (mode, model, code) in [
+        (0, json!(null), None),
+        (0, json!("stair"), Some("MODEL_INVALID")),
+        (0, json!("flat"), Some("MODEL_KIND_CHARGEKIND_MISMATCH")),
+        (
+            11,
+            json!("graduated"),
+            Some("MODEL_KIND_CHARGEKIND_MISMATCH"),
+        ),
+    ] {
+        let (f, script, path, mut input) = setup(mode).await;
+        if model.is_null() {
+            input.as_object_mut().unwrap().remove("model");
+        } else {
+            input["model"] = model.clone();
+        }
+        let refused = f
+            .call("POST", &path, input.clone(), None, Some("one"))
+            .await;
+        assert_eq!(refused.0, 400, "{model}: {refused:?}");
+        if let Some(code) = code {
+            assert!(refused.1.to_string().contains(code), "{refused:?}");
+            assert!(refused.1.to_string().contains("model"), "{refused:?}");
+        }
+        assert_eq!(Script::count(&script.reserve_calls), 0, "{model}");
+        // Nothing was claimed: the corrected request runs under the same key.
+        input["model"] = json!("per_unit");
+        let created = f.call("POST", &path, input, None, Some("one")).await;
+        assert_eq!(created.0, 201, "{created:?}");
+        assert_eq!(created.1["model"], "per_unit");
+        let read = f
+            .call(
+                "GET",
+                &format!("/price-book-entries/{}", created.1["id"].as_str().unwrap()),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(read.1["model"], "per_unit", "{read:?}");
+    }
+}
+
+/// D-427 with D-401: Tx B judges the model again, against the SKU type the reservation froze.
+/// The door read a one-time SKU (flat allowed); the re-read after the reserve answers usage, so
+/// the create is refused 400 `MODEL_KIND_CHARGEKIND_MISMATCH` as a receipt, its reservation is
+/// released, no entry is written, and the key replays the refusal.
+#[tokio::test]
+async fn tx_b_judges_the_model_again_against_the_type_the_reservation_froze() {
+    let (f, script, path, mut input) = setup(21).await;
+    input["model"] = json!("flat");
+    let refused = f
+        .call("POST", &path, input.clone(), None, Some("one"))
+        .await;
+    assert_eq!(refused.0, 400, "{refused:?}");
+    assert!(
+        refused
+            .1
+            .to_string()
+            .contains("MODEL_KIND_CHARGEKIND_MISMATCH"),
+        "{refused:?}"
+    );
+    assert_eq!(Script::count(&script.reserve_calls), 1, "the reserve ran");
+    assert_eq!(Script::count(&script.releases), 1, "and was released");
+    let (_, listed, _) = f.call("GET", &path, json!({}), None, None).await;
+    assert_eq!(listed["items"], json!([]), "no entry was written");
+    assert_eq!(
+        f.call("POST", &path, input, None, Some("one")).await,
+        refused,
+        "the key replays the refusal"
+    );
+}
+
+/// D-427: the model is part of the key. The same SKU, charge kind and period with two models are
+/// two entries of one book; the same model twice is `ENTRY_KEY_TAKEN`.
+#[tokio::test]
+async fn two_models_of_one_sku_kind_and_period_are_two_entries_of_one_book() {
+    let (f, _, path, input) = setup(0).await;
+    let with = |model: &str| {
+        let mut body = input.clone();
+        body["model"] = json!(model);
+        body
+    };
+    let per_unit = f
+        .call("POST", &path, with("per_unit"), None, Some("a"))
+        .await;
+    assert_eq!(per_unit.0, 201, "{per_unit:?}");
+    let graduated = f
+        .call("POST", &path, with("graduated"), None, Some("b"))
+        .await;
+    assert_eq!(graduated.0, 201, "{graduated:?}");
+    assert_ne!(per_unit.1["id"], graduated.1["id"]);
+    assert_eq!(per_unit.1["sku_id"], graduated.1["sku_id"]);
+    let taken = f
+        .call("POST", &path, with("per_unit"), None, Some("c"))
+        .await;
+    assert_eq!(taken.0, 409, "{taken:?}");
+    assert!(taken.1.to_string().contains("ENTRY_KEY_TAKEN"), "{taken:?}");
+    let (_, listed, _) = f.call("GET", &path, json!({}), None, None).await;
+    let mut models: Vec<&str> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["model"].as_str().unwrap())
+        .collect();
+    models.sort_unstable();
+    assert_eq!(models, ["graduated", "per_unit"]);
+}
+
+/// D-427: the model is fixed for the entry's life — the PATCH does not carry it.
+#[tokio::test]
+async fn the_entry_patch_does_not_carry_the_model() {
+    let (f, _, path, mut input) = setup(0).await;
+    input["model"] = json!("graduated");
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    let entry = format!("/price-book-entries/{}", created.1["id"].as_str().unwrap());
+    let refused = f
+        .call(
+            "PATCH",
+            &entry,
+            json!({"model":"per_unit"}),
+            Some(&created.2),
+            None,
+        )
+        .await;
+    assert_eq!(refused.0, 400, "{refused:?}");
+    let read = f.call("GET", &entry, json!({}), None, None).await;
+    assert_eq!(read.1["model"], "graduated");
+    assert_eq!(read.2, created.2, "nothing changed");
+}
+
+/// D-427 with D-401: every op of an entry carries its create input, `model` included: the create
+/// as the door stored it, the rereserve a released receipt starts, and the delete.
+#[tokio::test]
+async fn every_op_of_an_entry_carries_its_model() {
+    // Mode 7: the confirm finds the receipt released, so Tx C starts a rereserve op.
+    let (f, _, path, mut input) = setup(7).await;
+    input["model"] = json!("graduated");
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    let ops = op_inputs(&f, created.1["id"].as_str().unwrap()).await;
+    let kinds: Vec<&str> = ops.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(kinds, ["create", "rereserve"], "{ops:?}");
+    for (kind, input) in &ops {
+        assert_eq!(input["model"], "graduated", "{kind}: {input}");
+    }
+    // A confirmed entry's delete rebuilds the input from the entry, model included.
+    let (f, _, path, mut input) = setup(0).await;
+    input["model"] = json!("volume");
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    let id = created.1["id"].as_str().unwrap();
+    let deleted = f
+        .call(
+            "DELETE",
+            &format!("/price-book-entries/{id}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(deleted.0, 204, "{deleted:?}");
+    let ops = op_inputs(&f, id).await;
+    assert_eq!(
+        ops.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+        ["create", "delete"]
+    );
+    for (kind, input) in &ops {
+        assert_eq!(input["model"], "volume", "{kind}: {input}");
     }
 }

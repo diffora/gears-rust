@@ -117,6 +117,32 @@ pub async fn find(
         .await
         .map_err(|e| driver_failure("find plan revision".into(), e))
 }
+/// The tenant's revisions among `ids`, in ONE statement (D-428); an id the tenant does not hold
+/// has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn find_many(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::Id.is_in(ids.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list plan revisions by id".into(), e))
+}
 /// A plan's revisions by revision number.
 /// # Errors
 /// Returns typed database failures.

@@ -2,8 +2,8 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-change-effective-from:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-type-frozen:p1
 use super::{
-    KIND_SKU_CHANGE, SkuProposal, apply_error, decode, invalid, json, publish::SkuPublish, sku,
-    store_err,
+    KIND_SKU_CHANGE, SkuProposal, apply_error, decode, invalid, json, publish::SkuPublish,
+    require_category, sku, store_err,
 };
 use crate::{
     domain::sku::{SkuPatch, apply_patch, changed_fields, lifecycle_edge},
@@ -238,6 +238,14 @@ impl SkuChange {
                         "live references prevent type changes",
                     ));
                 }
+            }
+            // P-D-196: a category the change sets is resolved in tenant scope and must be active,
+            // at submit and again at apply, as the draft doors resolve it: 404 when the tenant
+            // does not hold it, 409 `CATEGORY_RETIRED` when it is retired.
+            if let Some(category) = proposed.content.category_id
+                && Some(category) != s.category_id
+            {
+                require_category(tx, &b.scope, b.tenant_id, category).await?;
             }
             b.validate_content(&proposed.content)?;
         }

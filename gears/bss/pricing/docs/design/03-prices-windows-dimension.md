@@ -33,7 +33,7 @@ Implement immutable money chains, models, temporary pairs and price floors; prot
 Requirements: `cpt-cf-bss-pricing-fr-price`, `cpt-cf-bss-pricing-fr-chain-windows`, `cpt-cf-bss-pricing-fr-pair-guard`, `cpt-cf-bss-pricing-fr-min-fee`, `cpt-cf-bss-pricing-fr-temporary-pair`, `cpt-cf-bss-pricing-fr-reference-protocol`. Architecture: `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-component-reservations-client`, `cpt-cf-bss-pricing-principle-reserve-before-write`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`, `cpt-cf-bss-pricing-constraint-no-row-locks`, `cpt-cf-bss-pricing-seq-reserve-write-confirm`, `cpt-cf-bss-pricing-seq-temporary-pair`.
 [FEATURE](../features/prices-windows-dimension.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: `cpt-cf-bss-pricing-feature-books-entries`.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-426.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-428.
 
 ## 2. Actor Flows (CDSL)
 
@@ -41,8 +41,8 @@ Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISION
 
 Actors: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-products`. Feature flow: `cpt-cf-bss-pricing-flow-prices-windows-dimension`.
 
-1. [ ] - `p1` - Finance Manager chooses an entry, dimension value, model inputs, effective_from and optional temporary_until. - `inst-prices-windows-dimension-flow-1`
-2. [ ] - `p1` - Read chain history and validate model, dates, dimension membership and usage structure. - `inst-prices-windows-dimension-flow-2`
+1. [ ] - `p1` - Finance Manager chooses an entry, dimension value, the money in the entry's model (D-427), effective_from and optional temporary_until. - `inst-prices-windows-dimension-flow-1`
+2. [ ] - `p1` - Read chain history and validate the money's shape against the entry's model, dates, dimension membership and usage structure. - `inst-prices-windows-dimension-flow-2`
 3. [ ] - `p1` - For an existing chain, copy the return money selected at the end into a linked price; for a previously unowned value create only one closed price. - `inst-prices-windows-dimension-flow-3`
 4. [ ] - `p1` - Persist draft prices atomically with author attribution and return their ETags; later edits require draft/unlocked state. - `inst-prices-windows-dimension-flow-4`
 5. [ ] - `p1` - Submit the complete pair or single price through slice 05; common-date shifts preserve temporary duration, and a shift that would carry a temporary across another start of its chain is refused TEMPORARY_SPANS_A_CHANGE (D-406). - `inst-prices-windows-dimension-flow-5`
@@ -62,9 +62,9 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-prices-windows-dimension-normalize-a
 
 Feature algorithm: `cpt-cf-bss-pricing-algo-prices-windows-dimension-model-and-floor`.
 
-1. [ ] - `p1` - Derive permitted models from charge kind; validate nonnegative prices and coherent model parameters. - `inst-prices-windows-dimension-model-and-floor-1`
+1. [ ] - `p1` - Derive permitted models from charge kind for the entry's model, chosen at its create (D-427); validate each price's money against its entry's model, nonnegative prices and coherent model parameters. - `inst-prices-windows-dimension-model-and-floor-1`
 2. [ ] - `p1` - Evaluate per_unit, graduated, volume and package with decimal arithmetic and half-open tier bands; recurring/one_time allow flat or per_unit. - `inst-prices-windows-dimension-model-and-floor-2`
-3. [ ] - `p1` - Preserve usage model kind, package size and SKU (unit, usage_type_ref) read as of each price's start across successors, a start before the SKU's first version reading that first version (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. - `inst-prices-windows-dimension-model-and-floor-3`
+3. [ ] - `p1` - Preserve usage package size and SKU (unit, usage_type_ref) read as of each price's start across successors, a start before the SKU's first version reading that first version (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. The model cannot change on a chain: it is the entry's (D-427). - `inst-prices-windows-dimension-model-and-floor-3`
 4. [ ] - `p1` - Aggregate rated amounts after included quantities by price/subscription/period across every bound value and slice; apply the prorated price floor, then promotions; not built in pricing, Rating applies the floor and pricing stores and validates min_fee (D-415). - `inst-prices-windows-dimension-model-and-floor-4`
 
 ### reserve-write-confirm
@@ -73,7 +73,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-prices-windows-dimension-reserve-wri
 
 1. [ ] - `p1` - Replay first; Tx A claims the key, mints price_book_entry_id and inserts a create op in reserving before reserve. - `inst-prices-windows-dimension-reserve-write-confirm-1`
 2. [ ] - `p1` - Reserve idempotently per (owner, kind, ref_id), then re-read SKU type/lifecycle; a refusal moves the op to cancelling. - `inst-prices-windows-dimension-reserve-write-confirm-2`
-3. [ ] - `p1` - Tx B commits the entry, reservation_id, reference_state = confirmation_pending and op written together. - `inst-prices-windows-dimension-reserve-write-confirm-3`
+3. [ ] - `p1` - Tx B judges the create input's period and model against the SKU type the reservation froze (a refusal is a 400 receipt, D-427), then commits the entry, reservation_id, reference_state = confirmation_pending and op written together. - `inst-prices-windows-dimension-reserve-write-confirm-3`
 4. [ ] - `p1` - Confirm after commit; Tx C sets entry confirmed, op done and answers the key. Retry transient failure with bounded backoff; never release on timeout. - `inst-prices-windows-dimension-reserve-write-confirm-4`
 5. [ ] - `p1` - On REFERENCE_RELEASED during confirm, or a 404 for a reservation Products does not know, keep the entry confirmation_pending and start a rereserve op; a release answered 404 counts as released. Reconcile confirmed entries through states(): re-reserve when not fenced, else mark lost, audit, enqueue PriceBookEntryReferenceLost and refuse new prices with ENTRY_REFERENCE_LOST; re-reserve lost entries once their SKU admits a reservation. - `inst-prices-windows-dimension-reserve-write-confirm-5`
 6. [ ] - `p1` - Cancellation persists op cancelling before release; deletion removes the entry and inserts a delete op releasing in one transaction. Release finishes the op; every op not done survives restart and is never dropped. - `inst-prices-windows-dimension-reserve-write-confirm-6`
@@ -86,14 +86,14 @@ State definition: `cpt-cf-bss-pricing-state-prices-windows-dimension` in the FEA
 
 ## 5. API Surface
 
-POST /bss-pricing/v1/price-book-entries/{id}/prices; PATCH/DELETE /bss-pricing/v1/prices/{id} draft only (409 PRICE_NOT_DRAFT for a pending, approved or rejected price), by its author only (403 NOT_DRAFT_AUTHOR, D-404), at the current version (409 STALE_REVISION). A decimal sent as a JSON number is 400 AMOUNT_INVALID. Submit and publish-changes enter slice 05. Entry create/delete use slice 02 doors but this slice owns their reference protocol, and GET /bss-pricing/v1/reference-ops?state&limit&cursor (config settings permission) lists that durable reference work for operators, in op-id order and paged by an exclusive cursor. Products calls are reserve, SKU read, confirm and release through ProductsClient.
+POST /bss-pricing/v1/price-book-entries/{id}/prices; PATCH/DELETE /bss-pricing/v1/prices/{id} draft only (409 PRICE_NOT_DRAFT for a pending, approved or rejected price), by its author only (403 NOT_DRAFT_AUTHOR, D-404), at the current version (409 STALE_REVISION). A decimal sent as a JSON number is 400 AMOUNT_INVALID. Neither the create nor the PATCH carries model: a price's money is in its entry's model, a shape that does not match it is 400 PRICE_MISSING, and every price read carries the entry's model, read-only (D-427). Submit and publish-changes enter slice 05. Entry create/delete use slice 02 doors but this slice owns their reference protocol, and GET /bss-pricing/v1/reference-ops?state&limit&cursor (config settings permission) lists that durable reference work for operators, in op-id order and paged by an exclusive cursor. Products calls are reserve, SKU read, confirm and release through ProductsClient.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
 
 ## 6. Data Model
 
-pricing_price holds version_no, nullable dim_value, model/price_json, min_fee, eligibility, dates, keep_for_bound, pair links, state, author and approval ownership. Approved chain indexes are per entry/value/start. pricing_price_book_entry holds reservation_id and reference_state; pricing_reference_op holds durable work before reserve, retry metadata and cancellation/deletion work without an entry FK. closed_explicitly preserves a temporary price's end through normalization. No price-level frozen descriptors or remote reference count exists.
+pricing_price holds version_no, nullable dim_value, price_json (in its entry's model: m20260926_000013 dropped the price's own model column, D-427), min_fee, eligibility, dates, keep_for_bound, pair links, state, author and approval ownership. Approved chain indexes are per entry/value/start. pricing_price_book_entry holds its model, reservation_id and reference_state; pricing_reference_op holds durable work before reserve, retry metadata and cancellation/deletion work without an entry FK. closed_explicitly preserves a temporary price's end through normalization. No price-level frozen descriptors or remote reference count exists.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.
@@ -122,11 +122,11 @@ The sole definitions live in [features/prices-windows-dimension.md](../features/
 
 ## 9. Acceptance Criteria
 
-1. PRD AC #4 / `cpt-cf-bss-pricing-dod-price-models`: Given usage and recurring entries, when valid models are drafted then they persist; usage flat, negative prices and approved-money PATCH fail.
+1. PRD AC #4 / `cpt-cf-bss-pricing-dod-price-models`: Given usage and recurring entries, when prices in their entries' models are drafted then they persist; a usage entry created flat (MODEL_KIND_CHARGEKIND_MISMATCH), a price whose shape does not match its entry's model (PRICE_MISSING), negative prices and approved-money PATCH fail (D-427).
 2. PRD AC #4 / `cpt-cf-bss-pricing-dod-tier-bands-half-open`: Given a boundary of 1000, when quantity equals 1000 then volume selects the next band; 999 remains in the prior band.
 3. PRD AC #5 / `cpt-cf-bss-pricing-dod-chain-windows`: Given default and EU prices, when EU gains a successor then default stays unchanged; duplicate approved start, overlap and past start fail.
 4. PRD AC #5 / `cpt-cf-bss-pricing-dod-dimension-fallback`: Given a closed EU tail and an open default, when its end date arrives then default applies; if both are absent selection reports uncovered.
-5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, model, dated unit or meter change returns 400 CHAIN_MODEL_CHANGED.
+5. PRD AC #6 / `cpt-cf-bss-pricing-dod-pair-guard`: Given a package predecessor, when only its amount changes then validation passes; a size, dated unit or meter change returns 400 CHAIN_MODEL_CHANGED; the model is the entry's and never changes on a chain (D-427).
 6. PRD AC #7 / `cpt-cf-bss-pricing-dod-min-fee-price-period` (the floor is applied by Rating, D-415): Given two 10 charges bound to one price with floor 30 then the result is 30; two distinct floor-30 prices yield 60, not 30 or 120.
 7. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-pair`: Given an existing EU chain, when a five-day temporary change shifts by three days then both boundaries shift and the return stays EU; partial pair submission fails.
 8. PRD AC #8 / `cpt-cf-bss-pricing-dod-temporary-value-fallback`: Given only a default chain, when a temporary EU override ends then EU follows the current default; no paired return price exists.

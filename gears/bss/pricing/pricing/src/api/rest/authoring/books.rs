@@ -3,7 +3,10 @@
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-currency-validity:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-export:p1
 use super::{
-    dto::{PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingExportEntry},
+    dto::{
+        PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingExportEntry,
+        PricingPriceDto,
+    },
     support::{DoorError, audit, check_version, conflict, date, invalid, missing, response, value},
 };
 use crate::{
@@ -208,9 +211,14 @@ pub async fn export(
                 b.id,
             ))
         });
+        // Every price echoes its entry's model (D-427).
+        let model = p.model.clone();
         result.push(PricingExportEntry {
             entry: p.into(),
-            prices: prices.into_iter().map(Into::into).collect(),
+            prices: prices
+                .into_iter()
+                .map(|m| PricingPriceDto::of(m, &model))
+                .collect(),
         });
     }
     Ok(PriceBookExport {

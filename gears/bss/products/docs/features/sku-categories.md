@@ -76,8 +76,8 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-sku-categories-author-drafts-a-sku`
 
-1. [ ] - `p1` - Author reads the tenant's categories and creates an independent SKU with code, name, type, category and initial content; authenticate products:author and resolve optional POST replay first - `inst-sku-create-input`
-2. [ ] - `p1` - Resolve the category in tenant scope, validate type-specific fields, apply the draft-save catalog posture, then insert under the separate code/name unique indexes - `inst-sku-create-validate`
+1. [ ] - `p1` - Author reads the tenant's categories and creates an independent SKU with code, name, type, an optional category and initial content; authenticate products:author and resolve optional POST replay first - `inst-sku-create-input`
+2. [ ] - `p1` - Resolve a given category in tenant scope (an omitted one stays null, with no default fallback), validate type-specific fields, apply the draft-save catalog posture, then insert under the separate code/name unique indexes - `inst-sku-create-validate`
 3. [ ] - `p1` - Commit the draft with revision 1, published_version 0 (revision is the concurrency version) and created_by; return its id and ETag - `inst-sku-create-commit`
 4. [ ] - `p1` - For subsequent PATCH, require If-Match, draft lifecycle and no pending unit; draft type changes need no fence because drafts cannot be reserved - `inst-sku-patch-guards`
 5. [ ] - `p1` - Conditionally update content and increment revision; preserve published_version until publication; hand publication to slice 03 - `inst-sku-patch-commit`
@@ -138,7 +138,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-sku-categories-category-retire-refused`
 
-1. [ ] - `p1` - Within the tenant transaction, refuse retirement if any SKU points to the category, regardless of its lifecycle; return 409 CATEGORY_IN_USE - `inst-sku-category-count`
+1. [ ] - `p1` - Within the tenant transaction, refuse retirement if any SKU points to the category, regardless of its lifecycle; return 409 CATEGORY_IN_USE; a SKU without a category never counts - `inst-sku-category-count`
 2. [ ] - `p1` - Otherwise conditionally set status retired and increment version without an approval unit; category assignment and retirement must serialize their reciprocal checks so a concurrent assignment cannot bypass this rule - `inst-sku-category-retire-write`
 
 ### Versions as-of
@@ -212,7 +212,7 @@ GET versions returns immutable history or, with as_of, the latest effective_from
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/categories.rs`.
 
-Categories expose code, name, is_default, sort_order and active/retired status, with one tenant-qualified category per SKU and no hierarchy. GET/POST/PATCH use scoped reads, tenant-unique code and If-Match on patch; creation and rename are direct operations without approval units (spec §2 decision 12, §4, §7.2; DESIGN §3.1, §3.3).
+Categories expose code, name, is_default, sort_order and active/retired status, with at most one tenant-qualified category per SKU (P-D-196: optional, no default fallback) and no hierarchy. GET/POST/PATCH use scoped reads, tenant-unique code and If-Match on patch; creation and rename are direct operations without approval units (spec §2 decision 12, §4, §7.2; DESIGN §3.1, §3.3).
 
 ### Referenced categories cannot retire
 
@@ -220,7 +220,7 @@ Categories expose code, name, is_default, sort_order and active/retired status, 
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/categories.rs`.
 
-Category retirement refuses any referencing SKU with CATEGORY_IN_USE, regardless of that SKU's lifecycle. Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
+Category retirement refuses any referencing SKU with CATEGORY_IN_USE, regardless of that SKU's lifecycle; a SKU without a category never counts (P-D-196). Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
 
 **Owed by pricing (phase 2).** Pricing must refuse bundle price book entries and plan items and allow a bundle only as a plan’s sold_as identity.
 

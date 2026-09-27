@@ -48,6 +48,7 @@ mod m20260925_000003_create_products_approvals;
 mod m20260925_000004_create_products_audit_log;
 mod m20260925_000005_create_products_idempotency;
 mod m20260925_000006_create_products_sku_reference;
+mod m20260925_000007_sku_category_optional;
 
 pub struct Migrator;
 
@@ -63,6 +64,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260925_000004_create_products_audit_log::Migration),
             Box::new(m20260925_000005_create_products_idempotency::Migration),
             Box::new(m20260925_000006_create_products_sku_reference::Migration),
+            Box::new(m20260925_000007_sku_category_optional::Migration),
         ]
     }
 }

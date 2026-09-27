@@ -187,6 +187,22 @@ fn run(path: &str) {
                     &metering(succ),
                 );
                 match a.expect.publish.as_deref().unwrap() {
+                    // D-427: the model is the entry's, fixed for its life and part of its key, so
+                    // a successor in another model is a price of ANOTHER entry: a kind flip never
+                    // reaches a chain, and the pair guard no longer compares a model. The corpus's
+                    // rejection holds by the key, not by `chain_guard`.
+                    "rejected" if pred.model_kind != succ.model_kind => {
+                        assert_eq!(
+                            a.expect.error_code.as_deref(),
+                            Some("SUPERSESSION_UNIT_MISMATCH")
+                        );
+                        let key = |s: &Snapshot| (s.charge_kind, s.model_kind);
+                        assert_ne!(
+                            key(pred),
+                            key(succ),
+                            "{path}: another model is another entry"
+                        );
+                    }
                     "accepted" => assert!(result.is_ok(), "{path}: {}", a.why),
                     "rejected" => {
                         assert_eq!(

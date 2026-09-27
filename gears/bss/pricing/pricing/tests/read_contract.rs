@@ -21,11 +21,11 @@ use uuid::Uuid;
 fn date(text: &str) -> time::Date {
     time::Date::parse(text, &time::format_description::well_known::Iso8601::DATE).unwrap()
 }
-/// One stored price row; the defaults are an approved open flat price of the default chain.
+/// One stored price row; the defaults are an approved open flat price of the default chain. Its
+/// model is its entry's (D-427): `entry_of` gives a recurring entry `flat`, a usage one `per_unit`.
 #[derive(Clone)]
 struct Row {
     dim: Option<&'static str>,
-    model: &'static str,
     price: Value,
     min_fee: Option<&'static str>,
     from: &'static str,
@@ -41,7 +41,6 @@ impl Default for Row {
     fn default() -> Self {
         Self {
             dim: None,
-            model: "flat",
             price: json!({"amount":"30.00"}),
             min_fee: None,
             from: "2026-09-01",
@@ -75,7 +74,6 @@ async fn put(f: &Fixture, entry: Uuid, row: Row) -> Uuid {
             price_book_entry_id: entry,
             version_no: row.version_no,
             dim_value: row.dim.map(str::to_owned),
-            model: row.model.into(),
             price_json: row.price,
             min_fee: row.min_fee.map(str::to_owned),
             eligibility: row.eligibility.into(),
@@ -122,6 +120,9 @@ async fn entry_of(
             sku_id: sku,
             charge_kind: kind.into(),
             period: period.map(str::to_owned),
+            model: bss_pricing::domain::price_book_entry::default_model(kind.parse().unwrap())
+                .as_str()
+                .into(),
             dimension_key: key.map(str::to_owned),
             invoice_line_override: line.map(str::to_owned),
             reservation_id: Uuid::new_v4(),
@@ -252,9 +253,10 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
     )
     .await;
     assert_eq!(s, 200, "{b}");
+    // D-427: the model is the item's (its entry's); the binding carries none.
     let binding = json!({
         "price_id": w.price, "dim_used": null, "pinned_from": null,
-        "model": "flat", "price": {"amount": "30.00"}, "min_fee": null,
+        "price": {"amount": "30.00"}, "min_fee": null,
         "eligibility": "all", "effective_from": "2026-09-01",
         "effective_to": null, "temporary_until": null, "ends_on": null,
         "keep_for_bound": false
@@ -262,7 +264,7 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
     let item = json!({
         "item_id": w.item, "sku_id": w.sku, "treatment": "paid", "included_qty": null,
         "qty_min": null, "price_book_entry_id": w.entry, "charge_kind": "recurring",
-        "period": "month", "sku_version": null,
+        "period": "month", "model": "flat", "sku_version": null,
         "invoice_line_template": {"value": null, "source": null},
         "gl_code": {"value": null, "source": null},
         "tax_category": {"value": null, "source": null},
@@ -526,7 +528,6 @@ async fn a_binding_says_where_it_ends_for_its_holder() {
     let sku = catalog.sku(SkuType::Usage);
     let entry = entry_of(&f, eur, sku, "usage", (None, Some("region"), None)).await;
     let usage = |rate: &str, from, version_no| Row {
-        model: "per_unit",
         price: json!({ "rate": rate }),
         from,
         version_no,
@@ -583,7 +584,6 @@ async fn the_matrix_carries_every_registered_value_and_an_uncovered_chain_is_exp
     let entry = entry_of(&f, eur, sku, "usage", (None, Some("region"), None)).await;
     let usage = |dim, rate: &str, version_no| Row {
         dim,
-        model: "per_unit",
         price: json!({ "rate": rate }),
         min_fee: Some("5.00"),
         version_no,
@@ -653,14 +653,19 @@ async fn a_pin_foreign_to_the_revision_or_not_approved_is_400_pin_foreign() {
     dimension(&f, "region", &["eu", "us"]).await;
     let sku = catalog.sku(SkuType::Usage);
     let entry = entry_of(&f, eur, sku, "usage", (None, Some("region"), None)).await;
-    put(&f, entry, Row::default()).await;
+    // D-427: a usage entry is `per_unit`, so its prices' money is a rate.
+    let usage = Row {
+        price: json!({"rate":"0.10"}),
+        ..Row::default()
+    };
+    put(&f, entry, usage.clone()).await;
     let eu = put(
         &f,
         entry,
         Row {
             dim: Some("eu"),
             version_no: 2,
-            ..Row::default()
+            ..usage.clone()
         },
     )
     .await;
@@ -678,7 +683,7 @@ async fn a_pin_foreign_to_the_revision_or_not_approved_is_400_pin_foreign() {
                     from,
                     state,
                     version_no,
-                    ..Row::default()
+                    ..usage.clone()
                 },
             )
             .await,
@@ -686,7 +691,7 @@ async fn a_pin_foreign_to_the_revision_or_not_approved_is_400_pin_foreign() {
     }
     let other_sku = catalog.sku(SkuType::Usage);
     let other = entry_of(&f, eur, other_sku, "usage", (None, None, None)).await;
-    let elsewhere = put(&f, other, Row::default()).await;
+    let elsewhere = put(&f, other, usage.clone()).await;
     let (created, revision) = plan(&f, "pro", eur).await;
     item(&f, revision, sku, Some(entry), "paid").await;
     publish(&f, id_of(&created["id"]), revision).await;
@@ -710,7 +715,7 @@ async fn a_pin_foreign_to_the_revision_or_not_approved_is_400_pin_foreign() {
     let their_book = book(&other_f, "eur").await;
     let their_sku = other_catalog.sku(SkuType::Usage);
     let their_entry = entry_of(&other_f, their_book, their_sku, "usage", (None, None, None)).await;
-    let theirs = put(&other_f, their_entry, Row::default()).await;
+    let theirs = put(&other_f, their_entry, usage).await;
     let (s, b) = resolve(
         &f,
         &format!("plan_revision_id={revision}&date=2026-10-05&pins={theirs}"),
@@ -1087,7 +1092,6 @@ async fn september_binds_sku_version_one_and_october_version_two() {
         &f,
         entry,
         Row {
-            model: "per_unit",
             price: json!({"rate":"0.10"}),
             ..Row::default()
         },

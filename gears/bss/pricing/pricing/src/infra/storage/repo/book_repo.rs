@@ -74,6 +74,31 @@ pub async fn list(
         .await
         .map_err(|e| driver_failure("list price_book".into(), e))
 }
+/// The tenant's books among `ids`, in ONE statement (D-428).
+/// # Errors
+/// Returns typed database failures.
+pub async fn find_many(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::Id.is_in(ids.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list price books by id".into(), e))
+}
 /// Change business columns only if the caller's version still owns the row.
 /// # Errors
 /// Zero matches is a typed version conflict; database failures preserve their type.

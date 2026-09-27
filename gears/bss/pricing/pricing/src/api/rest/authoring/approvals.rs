@@ -123,7 +123,12 @@ async fn prices_of(
     let mut prices = Vec::new();
     for item in store.items(tx, unit).await.map_err(approval_failure)? {
         if let Some(m) = price_repo::find(tx, &scope, store.tenant_id, item.item_id).await? {
-            prices.push(m.into());
+            // A price reads its entry's model (D-427).
+            let entry =
+                price_book_entry_repo::find(tx, &scope, store.tenant_id, m.price_book_entry_id)
+                    .await?
+                    .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", m.id)))?;
+            prices.push(PricingPriceDto::of(m, &entry.model));
         }
     }
     Ok(prices)
@@ -449,13 +454,15 @@ async fn proposals(
     let children = AccessScope::for_tenant(tenant);
     let entries = price_book_entry_repo::for_book(tx, &children, tenant, book).await?;
     let mut stored: Vec<entity::price::Model> = Vec::new();
+    let mut prices = Vec::new();
     for p in &entries {
-        stored.extend(price_repo::for_entry(tx, &children, tenant, p.id).await?);
+        let of_entry = price_repo::for_entry(tx, &children, tenant, p.id).await?;
+        let model = price_book_entry_repo::model_of(p)?;
+        for m in &of_entry {
+            prices.push(price_repo::to_domain(m, model)?);
+        }
+        stored.extend(of_entry);
     }
-    let prices = stored
-        .iter()
-        .map(price_repo::to_domain)
-        .collect::<Result<Vec<_>, RepoError>>()?;
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
     let mut out = Vec::new();
     for r in price::proposed_prices(book, &owners, &prices) {
@@ -473,9 +480,9 @@ async fn proposals(
         let before = price::in_force_before(&prices, r)
             .and_then(|b| stored.iter().find(|m| m.id == b.id))
             .cloned()
-            .map(PricingPriceDto::from);
+            .map(|b| PricingPriceDto::of(b, &entry.model));
         out.push(PricingProposedPrice {
-            price: m.clone().into(),
+            price: PricingPriceDto::of(m.clone(), &entry.model),
             entry: PricingPriceBookEntryDto::from(entry),
             chain: r.dim_value.clone().unwrap_or_else(|| "default".into()),
             before,

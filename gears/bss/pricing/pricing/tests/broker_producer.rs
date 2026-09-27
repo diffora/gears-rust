@@ -141,7 +141,7 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     let entry = call(
         "POST",
         format!("/price-books/{}/entries", book.1["id"].as_str().unwrap()),
-        json!({"sku_id":Uuid::new_v4()}),
+        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
         None,
         Some("entry"),
     )
@@ -149,8 +149,11 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     assert_eq!(entry.0, 201, "{entry:?}");
     let prices = call(
         "POST",
-        format!("/price-book-entries/{}/prices", entry.1["id"].as_str().unwrap()),
-        json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
+        format!(
+            "/price-book-entries/{}/prices",
+            entry.1["id"].as_str().unwrap()
+        ),
+        json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
         None,
         Some("price"),
     )

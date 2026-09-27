@@ -291,7 +291,7 @@ async fn a_red_revision_names_the_pending_price_unit_that_blocks_it() {
         .call(
             "POST",
             &format!("/price-book-entries/{e}/prices"),
-            json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":today}),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":today}),
             None,
             Some("price"),
         )
@@ -951,7 +951,7 @@ async fn an_approved_repricing_reaches_the_published_revision_and_a_rejected_one
         .call(
             "POST",
             &format!("/price-book-entries/{}/prices", g.entry),
-            json!({"model":"per_unit","price":{"rate":"0.25"},"eligibility":"all","effective_from":today}),
+            json!({"price":{"rate":"0.25"},"eligibility":"all","effective_from":today}),
             None,
             Some("reprice"),
         )

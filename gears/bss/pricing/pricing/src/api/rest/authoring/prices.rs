@@ -10,7 +10,6 @@ use crate::{
     domain::{
         RuleError, money,
         price::{self, Eligibility, Price, PriceState},
-        price_book_entry::Model,
     },
     infra::{
         prices::PriceBookEntryContext,
@@ -57,10 +56,6 @@ fn own_draft(m: &entity::price::Model, ctx: &SecurityContext) -> Result<(), Door
         Err(support::forbidden("NOT_DRAFT_AUTHOR").into())
     }
 }
-fn parse_model(text: &str) -> Result<Model, DoorError> {
-    text.parse()
-        .map_err(|_| support::invalid("model", "MODEL_INVALID").into())
-}
 fn parse_eligibility(text: &str) -> Result<Eligibility, DoorError> {
     text.parse()
         .map_err(|_| support::invalid("eligibility", "ELIGIBILITY_INVALID").into())
@@ -105,7 +100,6 @@ fn stored(
         price_book_entry_id: r.price_book_entry_id,
         version_no: r.version_no,
         dim_value: r.dim_value.clone(),
-        model: r.model.as_str().into(),
         price_json: price_json(r)?,
         min_fee: r.min_fee.map(|fee| fee.to_string()),
         eligibility: r.eligibility.as_str().into(),
@@ -227,7 +221,8 @@ async fn create_in(
     )
     .await?;
     let now = OffsetDateTime::now_utc();
-    let model = parse_model(&input.model)?;
+    // D-427: the money is judged against the entry's model; a price carries none of its own.
+    let model = pc.model;
     let promo = Price {
         id: Uuid::now_v7(),
         price_book_entry_id,
@@ -284,7 +279,10 @@ async fn create_in(
         first.paired_price_id = Some(second.id);
     }
     let body = PricingPriceCreated {
-        items: items.into_iter().map(PricingPriceDto::from).collect(),
+        items: items
+            .into_iter()
+            .map(|m| PricingPriceDto::of(m, pc.model.as_str()))
+            .collect(),
     };
     support::answer(
         tx,
@@ -332,7 +330,7 @@ pub async fn patch(
         &live_entry(tx, &children, tenant, m.price_book_entry_id).await?,
     )
     .await?;
-    let mut r = price_repo::to_domain(&m)?;
+    let mut r = price_repo::to_domain(&m, pc.model)?;
     let temporary = m.temporary_until.is_some() || m.paired_price_id.is_some();
     let fixed =
         || -> DoorError { support::invalid("effective_from", "TEMPORARY_PRICE_FIXED").into() };
@@ -348,9 +346,6 @@ pub async fn patch(
             return Err(fixed());
         }
         r.effective_from = start;
-    }
-    if let Some(model) = input.model.as_deref() {
-        r.model = parse_model(model)?;
     }
     if let Some(data) = input.price {
         r.price = Some(money::decode(r.model, data).map_err(refuse_price)?);
@@ -373,7 +368,6 @@ pub async fn patch(
     }
     let mut next = m.clone();
     next.dim_value = r.dim_value.clone();
-    next.model = r.model.as_str().into();
     next.price_json = price_json(&r)?;
     next.min_fee = r.min_fee.map(|fee| fee.to_string());
     next.eligibility = r.eligibility.as_str().into();
@@ -387,7 +381,7 @@ pub async fn patch(
     support::audit(tx, ctx, correlation, "price.patch", id, next.version).await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPriceDto::from(next),
+        &PricingPriceDto::of(next, pc.model.as_str()),
         Some(version + 1),
     )?)
 }

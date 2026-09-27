@@ -55,6 +55,7 @@ mod m20260926_000009_create_pricing_idempotency;
 mod m20260926_000010_create_pricing_plan;
 mod m20260926_000011_create_pricing_plan_revision;
 mod m20260926_000012_create_pricing_plan_item;
+mod m20260926_000013_model_on_the_entry;
 
 /// Coordination followed by pricing-owned migrations.
 pub struct Migrator;
@@ -76,6 +77,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260926_000010_create_pricing_plan::Migration),
             Box::new(m20260926_000011_create_pricing_plan_revision::Migration),
             Box::new(m20260926_000012_create_pricing_plan_item::Migration),
+            Box::new(m20260926_000013_model_on_the_entry::Migration),
         ]
     }
 }

@@ -113,12 +113,16 @@ impl Gear for BssPricingGear {
             }
         }
 
-        self.runtime.store(Some(Arc::new(PricingRuntime {
-            enforcer,
-            state: Arc::new(
-                crate::api::rest::authoring::AuthoringState::new(db, ctx.client_hub()).await?,
-            ),
-        })));
+        let state =
+            Arc::new(crate::api::rest::authoring::AuthoringState::new(db, ctx.client_hub()).await?);
+        // D-428, P-D-197: Products' SKU reads carry pricing's usage through this port, which
+        // Products resolves at each read (the two gears boot in either order).
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::sku_usage::SkuUsageV1>(Arc::new(
+                crate::api::sku_usage::PricingSkuUsage::new(state.clone(), (*enforcer).clone()),
+            ));
+        self.runtime
+            .store(Some(Arc::new(PricingRuntime { enforcer, state })));
         Ok(())
     }
 }

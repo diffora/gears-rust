@@ -45,7 +45,7 @@ async fn both_transports_serve_the_same_published_catalog_and_pages() {
                 code: code.into(),
                 name: name.into(),
                 r#type: SkuType::Usage,
-                category_id: cat.id,
+                category_id: Some(cat.id),
                 description: String::new(),
                 sellable: true,
                 gl_code: None,

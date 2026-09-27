@@ -366,6 +366,7 @@ impl Gear for BssProductsGear {
             idempotency_retention_hours,
             fence_ttl_minutes: cfg.fence_ttl_minutes,
             reference_principals: cfg.reference_principals.clone(),
+            hub: ctx.client_hub(),
         });
         register_products_client(&ctx.client_hub(), api_state.db.db(), Arc::clone(&enforcer));
         ctx.client_hub()

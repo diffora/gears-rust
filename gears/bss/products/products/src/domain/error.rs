@@ -85,6 +85,22 @@ impl From<bss_approval::ApprovalError> for DomainError {
                 report.violate(code, field, detail);
                 Self::Validation(report)
             }
+            // A category a subject's content names that the tenant does not hold is a 404, as
+            // at the draft doors; its refusal names the category id (`approvals::require_category`).
+            // Without an id (a store refusal) it stays a 409 refusal with its code.
+            bss_approval::ApprovalError::ApplyRefused {
+                code: "CATEGORY_NOT_FOUND",
+                detail,
+            } => match Uuid::parse_str(&detail) {
+                Ok(id) => Self::NotFound {
+                    what: "category",
+                    id,
+                },
+                Err(_) => Self::Conflict {
+                    code: "CATEGORY_NOT_FOUND",
+                    detail,
+                },
+            },
             bss_approval::ApprovalError::ApplyRefused { code, detail } => {
                 Self::Conflict { code, detail }
             }

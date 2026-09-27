@@ -15,7 +15,8 @@ pub struct NewSku {
     pub code: String,
     pub name: String,
     pub r#type: SkuType,
-    pub category_id: Uuid,
+    /// Optional (P-D-196): `None` stays null, with no fallback to the tenant's default category.
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub gl_code: Option<String>,
@@ -41,7 +42,9 @@ fn double_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
 #[allow(clippy::option_option)] // None = omitted; Some(None) = clear; Some(Some(_)) = set.
 pub struct SkuPatch {
     pub name: Option<String>,
-    pub category_id: Option<Uuid>,
+    /// `Some(None)` clears the category (P-D-196).
+    #[serde(default, deserialize_with = "double_option")]
+    pub category_id: Option<Option<Uuid>>,
     pub description: Option<String>,
     pub sellable: Option<bool>,
     #[serde(default, deserialize_with = "double_option")]
