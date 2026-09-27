@@ -538,6 +538,36 @@ pub async fn count_skus_in_category(
         .await
         .map_err(|e| driver_failure("count category SKUs".into(), e))
 }
+/// Delete a never-published, unlocked draft at the revision the caller read (P-D-206), in the
+/// caller's transaction. Only the head row goes: its audit rows are append-only and stay, and a
+/// draft owns no version row (`published_version = 0`) and admits no reservation. The door checks
+/// the registry for a row naming the SKU in the same transaction.
+/// # Errors
+/// Returns scoped storage failures. `false` when no row matched: absent, foreign, no longer a
+/// never-published draft, locked or at another revision; the door re-reads to say which.
+pub async fn delete_draft_sku(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    expected_revision: i64,
+) -> Result<bool, RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    let r = sku::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            key(tenant_id, id)
+                .add(sku::Column::Lifecycle.eq("draft"))
+                .add(sku::Column::PublishedVersion.eq(0_i64))
+                .add(sku::Column::PendingUnitId.is_null())
+                .add(sku::Column::Revision.eq(expected_revision)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete draft SKU".into(), e))?;
+    Ok(r.rows_affected == 1)
+}
 #[cfg(test)]
 #[path = "sku_repo_tests.rs"]
 mod sku_repo_tests;

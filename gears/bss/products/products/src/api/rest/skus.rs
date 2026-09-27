@@ -115,7 +115,7 @@ struct ReferenceList {
     items: Vec<ReferenceDto>,
 }
 
-/// Register the six SKU operations and their concrete response schemas.
+/// Register the seven SKU operations and their concrete response schemas.
 #[allow(clippy::too_many_lines)] // Keep each operation's complete contract together.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(SKUS)
@@ -184,6 +184,32 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .json_request::<SkuPatchRequest>(openapi, "Draft business fields")
         .handler(update_sku_draft)
         .json_response_with_schema::<SkuDto>(openapi, StatusCode::OK, "Edit a draft SKU.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::delete(format!("{SKUS}/{{id}}"))
+        .operation_id("bss_products.delete_sku_draft")
+        .summary("Delete a never-published draft SKU")
+        .description(
+            "Deletes a draft that was never published, at the revision the caller read \
+             (If-Match); only its author may (P-D-206). A draft is deleted, never retired. The \
+             SKU's audit rows stay, and a rejected or withdrawn unit that named it stays readable. \
+             Refusals: 403 NOT_DRAFT_AUTHOR; 400 for a missing or malformed If-Match; 404; 409 \
+             SKU_NOT_DRAFT (published once, or not a draft), ROW_LOCKED_PENDING, SKU_REFERENCED \
+             or STALE_REVISION.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "SKU id")
+        .param(if_match_param())
+        .handler(delete_sku_draft)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -520,6 +546,100 @@ async fn update_sku_draft(
         .await
         .map_err(tx_to_canonical)?;
     Ok(response(StatusCode::OK, updated))
+}
+/// P-D-206: only a never-published draft is deleted, as only it is edited: by its author, unlocked,
+/// at the revision the caller read. The refusals come in the draft PATCH's order.
+fn deletable(s: &Sku, expected: i64, actor: Uuid) -> Result<(), TxError> {
+    if s.lifecycle != Lifecycle::Draft || s.published_version != 0 {
+        return Err(TxError::Refused(DomainError::Conflict {
+            code: "SKU_NOT_DRAFT",
+            detail: "only a never-published draft is deleted; retire a published SKU".into(),
+        }));
+    }
+    if s.pending_unit_id.is_some() {
+        return Err(TxError::Refused(DomainError::Conflict {
+            code: "ROW_LOCKED_PENDING",
+            detail: "a pending approval unit locks this draft".into(),
+        }));
+    }
+    if s.created_by != actor {
+        return Err(TxError::Refused(DomainError::Forbidden {
+            code: "NOT_DRAFT_AUTHOR",
+            detail: "only the draft's author deletes it".into(),
+        }));
+    }
+    if s.revision != expected {
+        return Err(TxError::Refused(DomainError::StaleRevision {
+            expected,
+            found: s.revision,
+        }));
+    }
+    Ok(())
+}
+/// @cpt-cf-bss-products-fr-sku-lifecycle
+async fn delete_sku_draft(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let actor = ctx.subject_id();
+    // Authorization first, then the precondition (as the draft PATCH).
+    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let expected = if_match(&headers)?.get();
+    let now = OffsetDateTime::now_utc();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<(), TxError, _, _>(
+            category_tx_config(&state),
+            contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                Box::pin(async move {
+                    let current = find(tx, &scope, tenant_id, id).await?;
+                    deletable(&current, expected, actor)?;
+                    // A draft admits no reservation, so no registry row can name it; were one to,
+                    // its row would keep the SKU's key, and the delete is refused rather than
+                    // dropping it.
+                    if !repo::list_references(
+                        tx,
+                        &AccessScope::for_tenant(tenant_id),
+                        tenant_id,
+                        id,
+                        true,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?
+                    .is_empty()
+                    {
+                        return Err(TxError::Refused(DomainError::Conflict {
+                            code: "SKU_REFERENCED",
+                            detail: "the reference registry holds a row naming this SKU".into(),
+                        }));
+                    }
+                    if !repo::delete_draft_sku(tx, &scope, tenant_id, id, expected)
+                        .await
+                        .map_err(TxError::Repo)?
+                    {
+                        // Lost to a concurrent writer after the read: say what it left.
+                        let latest = find(tx, &scope, tenant_id, id).await?;
+                        deletable(&latest, expected, actor)?;
+                        return Err(TxError::Refused(DomainError::StaleRevision {
+                            expected,
+                            found: latest.revision,
+                        }));
+                    }
+                    audit(tx, &scope, tenant_id, actor, "sku.delete", &current, now).await
+                })
+            },
+        )
+        .await
+        .map_err(tx_to_canonical)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 /// Read a SKU and live reference counts from this gear's registry.
 async fn get_sku(

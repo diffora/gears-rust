@@ -282,7 +282,11 @@ async fn get(
                     OffsetDateTime::now_utc(),
                 )
                 .await?;
-                let live = g::find(tx, &scope, ctx.subject_tenant_id(), unit.ref_id).await?;
+                // A never-published draft may be deleted after its unit was rejected or withdrawn
+                // (P-D-206): the unit stays readable, with no live SKU to recompute against.
+                let live = repo::find_sku(tx, &scope, ctx.subject_tenant_id(), unit.ref_id)
+                    .await
+                    .map_err(TxError::Repo)?;
                 let decisions = store
                     .decisions(tx, id)
                     .await?
@@ -291,10 +295,12 @@ async fn get(
                     .collect();
                 let mut dto = UnitDto::from(unit);
                 dto.decisions = decisions;
-                dto.impact_live = Some(
-                    serde_json::to_value(super::dto::SkuDto::from(live))
-                        .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))?,
-                );
+                dto.impact_live = live
+                    .map(|live| {
+                        serde_json::to_value(super::dto::SkuDto::from(live))
+                            .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))
+                    })
+                    .transpose()?;
                 Ok(dto)
             })
         })
