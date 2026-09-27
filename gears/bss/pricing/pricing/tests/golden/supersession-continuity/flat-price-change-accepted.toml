@@ -1,7 +1,7 @@
 family     = "supersession-continuity"
 id         = "flat-price-change-accepted"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-mk-forbidden", "D-18", "D-82", "D-127"]
+provenance = ["inst-tb-supersession-units (backup)", "inst-mk-chargekind (backup)", "inst-mk-forbidden (backup)", "D-18 (backup)", "D-82 (backup)", "D-127 (backup)", "D-386", "D-402"]
 
 # The guard's own scope, stated on the simplest row there is.
 #
@@ -9,7 +9,7 @@ provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-mk-forbi
 # published canonical scope key, and it binds it for one reason: the tier counter
 # `Q` continues across the supersession, so what `Q` is denominated in, derived
 # from and priced by must not move under it. A `flat` row has no such counter to
-# protect. `inst-mk-chargekind` (D-18) makes `flat` legal on **non-usage** rows
+# protect. D-386 makes `flat` legal on **non-usage** rows
 # only - `flat` on a usage row is `MODEL_KIND_CHARGEKIND_MISMATCH`, because the
 # plain untiered metered rate is `per_unit` - so there is no `flat` row anywhere
 # in the catalog that meters anything.
@@ -47,4 +47,4 @@ amount_minor = 12900
 
 [[assert]]
 expect = { publish = "accepted" }
-why    = "a flat row is never a usage row, so no counter continues into the successor and no field is denominated in anything. The amount is the only lever it has, and a guard that blocked it would make supersession unusable for the simplest row in the catalog - the price change would have to route through plan revisioning, which is the outcome D-82 was careful not to cause"
+why    = "a flat row is never a usage row, so no counter continues into the successor and no field is denominated in anything. The amount is the only lever it has, and a guard that blocked it would make supersession unusable for the simplest row in the catalog - the price change would have to route through plan revisioning, which is the outcome the pair guard (D-402) is careful not to cause"

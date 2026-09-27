@@ -1,5 +1,5 @@
 //! The usage-type catalog as this registry sees it — one narrow port for one
-//! external dependency (**P-D-05**).
+//! external dependency (P-D-184).
 //!
 //! # Why the port is here and not bound to the collector's own client
 //!
@@ -103,7 +103,7 @@ pub fn usage_type_catalog_unreachable(detail: impl Into<String>) -> CanonicalErr
 
 /// One usage type, in the three fields this registry reads.
 ///
-/// Nothing else the catalog knows is carried: **P-D-05 is resolvability
+/// Nothing else the catalog knows is carried: **P-D-184 is resolvability
 /// only**, so a lifecycle state or a dimension set would be a fact this gear
 /// promises to judge and does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,7 +161,7 @@ pub struct UsageTypePage {
 pub trait UsageTypeCatalog: Send + Sync + 'static {
     /// Does this id name a usage type?
     ///
-    /// **Resolvability and nothing else** (P-D-05): no lifecycle check, no
+    /// **Resolvability and nothing else** (P-D-184): no lifecycle check, no
     /// dimension check. An implementation that cannot answer must say
     /// [`UsageTypeAnswer::Unavailable`] rather than guess, because the publish
     /// gate fails closed on it and would otherwise freeze a meter nobody

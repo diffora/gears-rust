@@ -140,9 +140,8 @@ pub(crate) enum ClaimVerdict {
     /// `IDEMPOTENCY_CONFLICT` (a different payload under a live key, in
     /// **either** of its states — stored answer or live claim) or
     /// `IDEMPOTENCY_KEY_IN_FLIGHT` (the same payload under a live claim, or
-    /// a lost takeover race). Both execute nothing and both audit through
-    /// `audit_refusal_and_report` like every other refusal on this
-    /// surface.
+    /// a lost takeover race). Both execute nothing and write no audit row
+    /// (P-D-202).
     Refused(DomainError),
 }
 
@@ -155,7 +154,7 @@ pub(crate) enum ClaimVerdict {
 /// lookup may serve an existing answer before external catalog resolution.
 /// Dropping a request never leaves a separately committed claim.
 ///
-////// The payload comparison is made **here** and not in the repository: that
+/// The payload comparison is made **here** and not in the repository: that
 /// layer was never handed the incoming request to compare against the stored
 /// digest (`IdempotencyClaim::Answered`'s own doc), and the comparison is
 /// what separates a replay from `IDEMPOTENCY_CONFLICT`
@@ -176,7 +175,7 @@ pub(crate) enum ClaimVerdict {
 /// digest: the loser of an expired-key takeover "may even carry a different
 /// payload from the winner, and is still refused in-flight rather than for
 /// the mismatch, since this transaction never compared the two"
-/// (§3.2 `inst-fd-idem-retention`, P-D-49). It read the *expired* holder's
+/// (P-D-198). It read the *expired* holder's
 /// row; the payload now under the key is the winner's, which it never saw.
 /// A conflict raised from a digest this transaction never read would be a
 /// fabricated verdict, so the two paths stay apart in the type rather than

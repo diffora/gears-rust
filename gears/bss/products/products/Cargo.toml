@@ -13,8 +13,9 @@ workspace = true
 [dependencies]
 # Shared BSS coordination primitive (`coord_leases` + `LeaseManager`). The
 # per-tenant increment coalescer is a singleton drain (design/06 sec 2 rule 2,
-# P-D-56), so this gear splices coord's migration into its own `Migrator`
-# exactly as the sibling pricing and ledger gears do for their sweeps.
+# P-D-56 (backup `3a38f0b28`)), so this gear splices coord's migration into
+# its own `Migrator` exactly as the sibling pricing and ledger gears do for
+# their sweeps.
 coord = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
@@ -27,10 +28,8 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# `infra::events::correlation_id` reads the W3C trace id off the ambient span,
-# which is the one request-scoped identifier the platform actually propagates
-# and the only honest source for the event envelope's `correlationId`
-# (P-D-01). `OpenTelemetrySpanExt::context` is the read-back;
+# `infra::events::traceparent` reads the ambient W3C trace context for each
+# event's traceparent (P-D-199). `OpenTelemetrySpanExt::context` is the read-back;
 # `opentelemetry::trace` supplies `TraceContextExt` and the `TraceId::INVALID`
 # sentinel that distinguishes "no active span" from a real id. The same pair
 # `gears/mini-chat` uses for `current_otel_trace_id`, taken rather than
@@ -77,12 +76,11 @@ sea-orm-migration = { workspace = true }
 # `#[domain_model]` marker on the domain types (enforced by dylint DE0309).
 toolkit-macros = { workspace = true }
 
-# The list surfaces' query contract, taken from the platform rather than
-# hand-rolled (P-D-165): `ODataQuery`/`Page`/`PageInfo`/`CursorV1` and the
-# typed `FilterField` vocabulary. `with-utoipa` because every paginated door
-# registers `Page<T>` as an `OpenAPI` schema, exactly as the sibling pricing
-# gear's manifest does.
-# The gear's one instant type (P-D-167): every column, domain field, DTO and
+# toolkit-odata: the retained browse filter and the usage-type pick-list page
+# through the platform's `ODataQuery`/`CursorV1` and the typed `FilterField`
+# vocabulary. `with-utoipa` because a paginated door registers `Page<T>` as an
+# `OpenAPI` schema, exactly as the sibling pricing gear's manifest does.
+# The gear's one instant type: every column, domain field, DTO and
 # fixture is `time::OffsetDateTime`. It replaced `chrono` wholesale rather
 # than beside it, because two representations of one instant is what let a
 # keyset walk over a timestamp lose every tied row — the platform's cursor
@@ -131,7 +129,7 @@ toolkit-security = { workspace = true }
 toolkit-gts = { workspace = true }
 # `gts_instance!`'s expansion references the `gts` crate directly.
 gts = { workspace = true }
-# P-D-47: the toolkit outbox's processor is the broker SDK's own producer, not a
+# P-D-199: the toolkit outbox's processor is the broker SDK's own producer, not a
 # handler of this gear's. `outbox` gates `ProducerOutboxQueue`/`ProducerOutbox`
 # and pulls `db` with it; `EventBrokerApi` and `TypedEvent` are unconditional.
 # The gear does not *require* a broker — `Gear::init` falls back to the holding

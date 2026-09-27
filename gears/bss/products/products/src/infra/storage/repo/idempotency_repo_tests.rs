@@ -71,7 +71,7 @@ async fn answer_idempotency_row(
 /// both response columns `NULL`.
 ///
 /// This is the ordinary path `dod-idempotency-store` exists for: nothing held
-/// the key before, so the claim `INSERT` itself is the gate (P-D-42) and
+/// the key before, so the claim `INSERT` itself is the gate (P-D-198) and
 /// there is nothing left to conflict with.
 #[tokio::test]
 async fn a_first_claim_on_a_fresh_key_succeeds_and_persists_an_unanswered_claimed_row() {
@@ -109,7 +109,7 @@ async fn a_first_claim_on_a_fresh_key_succeeds_and_persists_an_unanswered_claime
 ///
 /// If this returned `Claimed` a second time, the guarded mutation would run
 /// twice under one key — the exact failure the claim `INSERT` being the gate
-/// exists to prevent (P-D-42).
+/// exists to prevent (P-D-198).
 ///
 /// The duplicate deliberately carries the **same** digest as the held claim,
 /// because that is what `inst-fd-idem-claim-inflight` reserves the in-flight
@@ -245,7 +245,7 @@ async fn a_second_claim_under_a_different_payload_reports_the_held_digest_unchan
 /// A claim against an `answered` row returns the stored response for replay
 /// and does not overwrite it.
 ///
-/// The replay is self-contained (P-D-29): the caller can serve
+/// The replay is self-contained (P-D-198): the caller can serve
 /// `response_status`/`response_body` back without re-executing the guarded
 /// mutation or reading anything else, and the stored answer must survive
 /// being read this way.
@@ -316,9 +316,9 @@ async fn a_claim_against_an_answered_row_returns_the_stored_response_and_does_no
 ///
 /// Expiry is evaluated at claim time, not by a reaper
 /// (`design/01-foundation.md` §3.2, item 3): the very first request past the
-/// deadline is what reclaims the key, with no sweep having run. P-D-49 is the
-/// decision behind the *compare-and-swap* that makes the takeover safe under
-/// contention, which is the sibling case below, not this one.
+/// deadline is what reclaims the key, with no sweep having run. The
+/// *compare-and-swap* that makes the takeover safe under contention (P-D-198) is
+/// the sibling case below, not this one.
 #[tokio::test]
 async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
     let provider = harness().await;
@@ -366,7 +366,7 @@ async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
 /// Two claims that both read the same expired row: exactly one wins the
 /// takeover and the other is told in flight, having executed nothing.
 ///
-/// This is the case P-D-49 exists for. Nothing holds an expired row between
+/// This is the case P-D-198's compare-and-swap exists for. Nothing holds an expired row between
 /// one caller's conflict check and its takeover `UPDATE`, so two duplicates
 /// racing on the same expired key both clear the check and both read the
 /// same expired row; without the compare-and-swap on `expires_at`, both would
@@ -381,9 +381,7 @@ async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
 /// mismatch stays `IDEMPOTENCY_CONFLICT` in either state": the loser "may
 /// even carry a different payload from the winner, and is still refused
 /// in-flight rather than for the mismatch, since this transaction never
-/// compared the two" (`design/01-foundation.md` §3.2, which cites P-D-49 for
-/// the compare-and-swap the sentence rests on; the sentence itself is not in
-/// P-D-49's own entry). It read the expired holder's row, not the
+/// compared the two" (P-D-198). It read the expired holder's row, not the
 /// winner's, so the outcome is `TakeoverRaceLost` — the variant that carries
 /// no digest, precisely so no caller can compute a verdict from a hash this
 /// transaction never saw.

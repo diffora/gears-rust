@@ -1,20 +1,13 @@
 family     = "supersession-continuity"
 id         = "meter-change-rejected"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "D-22", "D-82"]
+provenance = ["inst-tb-supersession-units (backup)", "D-22 (backup)", "D-82 (backup)", "D-402"]
 
 # `meter` is two of the four components of the counter's own key. A successor
 # that moved it does not inherit the continued counter at all - it silently
 # reads a **different** one, which is the failure mode a supersession exists to
 # make impossible: the customer's accumulated `Q` vanishes and the new ladder
 # starts from zero mid-period, at a rate the first band prices.
-#
-# The gear's own unit tests have covered the rule since it was written. This
-# case exists because the corpus is what earns the `publish` flag, and until
-# 2026-08-18 no pair in it ever moved `meter` or `dimensionKey` - so a gear that
-# deleted both comparisons would still have earned `publish = true` for every
-# kind and opened every variant of the gate. Seed is not coverage: the field was
-# on 20 of 29 snapshots and varied in none of them.
 
 [predecessor]
 model_kind              = "graduated"

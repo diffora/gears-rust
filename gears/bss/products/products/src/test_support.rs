@@ -82,13 +82,8 @@ impl AuthZResolverApi for FlatInResolver {
 
 /// A fixture instant: `2026-09-02` at `hour`, UTC.
 ///
-/// # Four copies, three epochs, and `at(9)` meant three different things
-///
-/// **P-D-110** arm 1 hoisted this. `repo_tests` had it on `2026-08-29`,
-/// `repo/governance_tests` and `repo/taxonomy_tests` on `2026-09-02`, and
-/// `repo/retention_tests` arrived on `2026-09-03` — a new module bringing a
-/// new epoch, which is how the drift was accelerating. Two other modules had
-/// no `at()` at all.
+/// One fixture epoch for every suite: a second epoch makes `at(9)` mean two
+/// instants.
 ///
 /// **The count was never the trigger.** `harness()` is copied five times too
 /// and stays copied: its forms differ only in an `.expect()` message, so
@@ -99,7 +94,7 @@ impl AuthZResolverApi for FlatInResolver {
 /// already used and the only one that says what it is asserting: that the
 /// One UTC instant from its civil components — the fixture spelling that
 /// replaced `chrono`'s `crate::test_support::utc(..)` when the gear
-/// moved to `time` (P-D-167).
+/// moved to `time`.
 ///
 /// A helper rather than seventy-two inline conversions: `time` builds an
 /// instant through a `Date` and a civil time, so the inline form is four
@@ -358,7 +353,7 @@ pub async fn audit_error_code(dsn: &str) -> Option<String> {
 /// A usage-type resolver that answers `Resolved` for every ref — what a test
 /// `ApiState` carries unless a probe injects [`StubUsageTypes`] to script the
 /// other two answers. Production never sees it: `gear.rs` installs the
-/// collector's client or `NoCollector` (P-D-141).
+/// resolved catalog (P-D-184).
 #[must_use]
 pub fn resolved_usage_types() -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
     Arc::new(StubUsageTypes::always(

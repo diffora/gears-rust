@@ -32,7 +32,7 @@ async fn an_unconfigured_catalog_refuses_the_list_rather_than_answering_empty() 
     );
 }
 
-/// And its `resolve` stays fail-closed, which is P-D-131 unchanged.
+/// And its `resolve` stays fail-closed (P-D-184).
 #[tokio::test]
 async fn an_unconfigured_catalog_resolves_nothing_and_says_unavailable() {
     assert_eq!(

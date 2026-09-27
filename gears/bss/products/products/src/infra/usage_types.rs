@@ -1,5 +1,5 @@
 //! The usage-type collector as the publish door sees it
-//! (`dod-usage-type-resolution`; **P-D-131**, **P-D-141**).
+//! (`dod-usage-type-resolution`; P-D-184, P-D-203).
 //!
 //! One question, three answers ([`UsageTypeAnswer`]), asked **once per
 //! publish** for the SKU's one `usage_type_ref`, **before** the publish
@@ -12,10 +12,10 @@
 //! The first cut of this seam was a function that answered `Resolved` in the
 //! test binary and `Unavailable` in production. That is two programs: every
 //! probe exercised a path production never ran, and the production path — a
-//! constant refusal — was exercised by nothing. `PiiDetector` had already
-//! taken the shape that fixes it (P-D-136): the door reads a trait object off
-//! `ApiState`, `gear.rs` installs the real one, tests inject a stub per
-//! outcome, and no `cfg(test)` sits in the path.
+//! constant refusal — was exercised by nothing. So the door reads the catalog
+//! as a trait object off `ApiState`, `gear.rs` installs the resolved one
+//! (P-D-184), tests inject a stub per outcome, and no `cfg(test)` sits in the
+//! path.
 //!
 //! # The three answers, and how the collector's errors become them
 //!
@@ -25,7 +25,7 @@
 //!   asking the collector would only rephrase the same `400`).
 //! - `Unavailable` — every other error, and a call that outlives
 //!   `usage_type_resolver_timeout_ms`: fail-closed, the gear's `503` channel,
-//!   for usage SKUs only (P-D-131 — a latency coupling, not a lock).
+//!   for usage SKUs only (P-D-184, P-D-203 — a latency coupling, not a lock).
 //!
 //! [`UnconfiguredUsageTypes`] is what a deployment with no catalog at all gets:
 //! `Unavailable` from `resolve`, always, and a **501** from `list` — never an
@@ -56,7 +56,7 @@ use bss_products_sdk::usage_types::{
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_odata::{CursorV1, ODataQuery, parse_filter_string};
 
-/// No catalog is wired: `resolve` is `Unavailable`, fail-closed (P-D-131), and
+/// No catalog is wired: `resolve` is `Unavailable`, fail-closed (P-D-184), and
 /// `list` is a **501**. Installed by `gear.rs` when nothing answers, with a
 /// boot-time warning naming this type.
 #[derive(Debug, Default, Clone, Copy)]
@@ -92,7 +92,7 @@ pub struct CollectorUsageTypes {
 
 impl CollectorUsageTypes {
     /// `timeout` is `ProductsConfig::usage_type_resolver_timeout()` — read,
-    /// never inlined (P-D-107, P-D-121 row 12).
+    /// never inlined (P-D-203).
     #[must_use]
     pub fn new(client: Arc<dyn UsageCollectorClientV1>, timeout: Duration) -> Self {
         Self { client, timeout }

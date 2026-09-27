@@ -24,7 +24,7 @@ pub enum IdempotencyClaim {
     /// (`inst-fd-idem-conflict`), a comparison this repository does not make
     /// because it was never handed the incoming request to compare.
     /// `response_status`/`response_body` are the replay itself, and it is
-    /// self-contained (**P-D-29**): nothing else needs to be read to serve
+    /// self-contained (D-429): nothing else needs to be read to serve
     /// it.
     Answered {
         /// The digest the stored answer was recorded against.
@@ -48,14 +48,14 @@ pub enum IdempotencyClaim {
         /// The digest the live `claimed` row was recorded against.
         payload_hash: Vec<u8>,
     },
-    /// This call lost the expired-key takeover race (**P-D-49**): another
+    /// This call lost the expired-key takeover race (D-429): another
     /// caller's compare-and-swap moved the row off the stamp this one read.
     ///
     /// Distinct from [`InFlight`](Self::InFlight) because **no digest
     /// comparison is owed here and none is possible**. The loser "may even
     /// carry a different payload from the winner, and is still refused
     /// in-flight rather than for the mismatch, since this transaction never
-    /// compared the two" (§3.2 `inst-fd-idem-retention`, **P-D-49**): the
+    /// compared the two" (D-429): the
     /// row this call read was the *expired* holder's, and the payload now
     /// under the key is the winner's, which this transaction never saw.
     /// Answering `IDEMPOTENCY_CONFLICT` from a hash this call never read
@@ -101,7 +101,7 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
-        // `entity_ref` is carried in the DDL (P-D-193) and always NULL: no
+        // `entity_ref` is carried in the DDL (D-429) and always NULL: no
         // door stamps it.
         entity_ref: Set(None),
     };
@@ -264,7 +264,7 @@ async fn take_over_expired_idempotency_claim(
     // would tell two callers they both hold a key only one of them does.
     // It is not `InFlight` either: that outcome carries the held digest for
     // the caller to compare, and the digest now under the key is the
-    // winner's, which this transaction never read (P-D-49).
+    // winner's, which this transaction never read (D-429).
     if result.rows_affected == 0 {
         return Ok(IdempotencyClaim::TakeoverRaceLost);
     }

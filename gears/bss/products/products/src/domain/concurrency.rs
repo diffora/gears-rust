@@ -138,13 +138,11 @@ impl InternalRevision {
 ///
 /// # Why this is a function and not a rule each parser repeats
 ///
-/// [`InternalRevision::from_etag`] and
-/// `api::rest::recognized_sets::member_if_match` (**P-D-174**) assert the
-/// same four refusals — the wildcard, a weak validator, a list, an unquoted
-/// body — over two different tag bodies: a decimal revision and a content
-/// digest. Written twice they are two contracts that can drift, and the one
-/// that drifts is the one nobody re-reads. What differs between the two is
-/// only what the quoted body has to look like, which stays with each caller.
+/// [`InternalRevision::from_etag`] asserts four refusals through it — the
+/// wildcard, a weak validator, a list, an unquoted body. A later tag parser
+/// reuses this rather than writing the refusals a second time, so the two
+/// cannot drift; what differs between tag bodies is only what the quoted body
+/// has to look like, which stays with each caller.
 ///
 /// # Errors
 ///

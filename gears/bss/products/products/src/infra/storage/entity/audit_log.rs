@@ -1,11 +1,10 @@
-//! `SeaORM` entity for `bss.products_audit_log` — the append-only trail for
-//! every act that emits no broker event: a refusal, a read under elevation,
-//! and a committed act the design declares eventless.
+//! `SeaORM` entity for `bss.products_audit_log` — the append-only audit trail
+//! (P-D-193, P-D-200).
 //!
 //! # The reserved platform-sealing seam
 //!
 //! `seal_state`, `chain_id`, `seq`, `prev_hash` and `row_hash` exist so the
-//! platform sealing capability (P-D-08) can activate without a migration.
+//! platform sealing capability (P-D-200) can activate without a migration.
 //! `seal_state` is written `unsealed` at INSERT, always; this gear computes
 //! no hash and runs no verification job — that is the platform capability's
 //! job. The one admitted `UPDATE`, the one-way `unsealed -> sealed`
@@ -45,20 +44,14 @@ pub struct Model {
     pub attempted_key: Option<String>,
     /// A free-text reason, where the door supplies one.
     pub reason: Option<String>,
-    /// Ties related rows together across a single request, where one exists:
-    /// the W3C trace id `infra::events::correlation_id` renders, 32 hex
-    /// characters, **`text`** since P-D-118 (the column shipped `uuid` and
-    /// could hold none of them). `None` on a background act, which has no
-    /// request.
+    /// The request's correlation, as `text` (P-D-200). Products writes `None`
+    /// on every row: this gear establishes no request correlation.
     pub correlation_id: Option<String>,
-    /// The operand `10-retention-erasure`'s `RetentionClock` reads.
+    /// The commit instant.
     pub written_at: TimeDateTimeWithTimeZone,
-    /// Present on the elevation class only.
+    /// Carried in the DDL; no writer sets it, so it is always `NULL`.
     pub session_id: Option<Uuid>,
-    /// The audit side of `07`'s ceremony join (P-D-129): the same value `06`'s
-    /// freeze ledger stores under `not_frozen(forced_at, ceremony_ref)`.
-    /// Written by the break-glass and correction doors when they land; `None`
-    /// on every other class.
+    /// Carried in the DDL (P-D-193); no writer sets it, so it is always `NULL`.
     pub ceremony_ref: Option<Uuid>,
     /// `unsealed | sealed`. Written `unsealed` at INSERT, always; this gear
     /// never advances it.

@@ -61,7 +61,7 @@ pub struct CatalogSku {
     /// metering-only member — priced, never picked as a line of its own.
     pub sellable: bool,
     /// The usage collector's `UsageType` id a usage SKU's declaration carries
-    /// (registry **P-D-05**); absent on a SKU priced per period. Present
+    /// (registry P-D-184); absent on a SKU priced per period. Present
     /// exactly when `metering_unit` is, on a well-formed registry row.
     pub usage_type_ref: Option<String>,
     /// Registry-owned withdrawal from new sale. Independent of `status`: the

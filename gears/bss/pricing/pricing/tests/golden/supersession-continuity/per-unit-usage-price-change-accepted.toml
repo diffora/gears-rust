@@ -1,10 +1,10 @@
 family     = "supersession-continuity"
 id         = "per-unit-usage-price-change-accepted"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-tb-window", "D-18", "D-82"]
+provenance = ["inst-tb-supersession-units (backup)", "inst-mk-chargekind (backup)", "inst-tb-window (backup)", "D-18 (backup)", "D-82 (backup)", "D-386", "D-402"]
 
 # `per_unit` is the one kind legal on **both** sides of the guard's boundary
-# (`inst-mk-chargekind`, D-18), which makes it the kind where the boundary is
+# (D-386), which makes it the kind where the boundary is
 # visible without changing anything else about the row. This is its usage side:
 # the plain untiered metered rate, unit price x metered `Q`.
 #
@@ -12,8 +12,8 @@ provenance = ["inst-tb-supersession-units", "inst-mk-chargekind", "inst-tb-windo
 # it *is* inside the guard - the price-change case therefore has to be authored
 # separately from the `flat` one, which is outside it. What this case pins is
 # that being inside the guard is not the same as being frozen: the unit price is
-# a price, and D-82's whole framing is that supersession is a price change on one
-# key.
+# a price, and the pair guard's whole framing (D-402) is that a successor is a
+# price change on one chain.
 #
 # The row carries `billingGranularity` because `inst-tb-window` requires it on
 # every usage row - it is what one billable unit is - and carries no
