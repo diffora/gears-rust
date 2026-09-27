@@ -19,7 +19,10 @@ the SKU list carry pricing's ``usage`` through the port pricing registers in the
 Phase 6: products' policy is written under If-Match (P-D-205), a never-published draft is
 deleted (P-D-206), and the usage-type picker is products' own route (P-D-207). A SKU's history
 reads the lifecycle moves its audit rows carry since migration 000008 (P-D-213), the version in
-force has its own path (P-D-214), and a category reads alone with its SKU count (P-D-215).
+force has its own path (P-D-214), and a category reads alone with its SKU count (P-D-215). Pricing
+says where a SKU is priced and sold (D-434), a kind's quorum override is reset in both gears
+(D-435, P-D-216), dimension values are edited one at a time with their use (D-436), and the
+settings offer currencies and say who wrote them, with five rounding modes (D-437, D-438).
 """
 
 import datetime
@@ -950,3 +953,188 @@ def test_a_skus_history_its_version_in_force_and_its_category_read(api):
     assert [(c["id"], c["sku_count"]) for c in r.json()["items"]] == [(category, 1)], r.text
     assert r.json()["page_info"]["limit"] == 200, r.text
 
+
+
+def _settings(api) -> tuple[dict, str]:
+    r = api.get(f"{PRICING}/settings")
+    assert r.status_code == 200, r.text
+    return r.json(), r.headers["etag"]
+
+
+def _settings_body(read: dict) -> dict:
+    """A settings read as a PUT body: without what the read adds (D-438)."""
+    return {k: v for k, v in read.items() if k not in ("version", "updated_at", "updated_by")}
+
+
+@pytest.mark.timeout(120)
+def test_where_a_sku_is_priced_and_sold_and_the_settings_offer_currencies(api):
+    """D-434 to D-438 and P-D-216 on the real binary, whose chain ran migration 000014.
+
+    The settings PUT requires ``currencies``, knows five rounding modes and says who wrote it; a
+    new book outside the offered currencies is 409. A kind's quorum override is reset by DELETE in
+    both gears, and the default is never deleted. A SKU priced today in a EUR book and sold by a
+    published plan reads where it is priced (its entry with its book, usage and the price in force)
+    and where it is sold (the plan, and the plan item alone). A dimension key's values are edited
+    one at a time and each value carries its use. The settings and both policies are restored.
+    """
+    run = uuid.uuid4().hex[:8]
+    code = f"E2E-SOLD-{run}"
+    settings_before, _ = _settings(api)
+    policy_before, _ = _policy(api)
+    try:
+        # The settings: currencies required, five rounding modes, the writer stamped.
+        read, tag = _settings(api)
+        body = _settings_body(read)
+        without = {k: v for k, v in body.items() if k != "currencies"}
+        r = api.put(f"{PRICING}/settings", json=without, headers={"If-Match": tag})
+        assert r.status_code == 400, r.text
+        r = api.put(
+            f"{PRICING}/settings",
+            json={**body, "default_rounding": "bankers", "currencies": []},
+            headers={"If-Match": tag},
+        )
+        assert r.status_code == 400, r.text
+        assert "ROUNDING_INVALID" in r.text, r.text
+        r = api.put(
+            f"{PRICING}/settings",
+            json={**body, "default_rounding": "half_even", "currencies": ["EUR", "USD"]},
+            headers={"If-Match": tag},
+        )
+        assert r.status_code == 200, r.text
+        saved = r.json()
+        assert (saved["currencies"], saved["default_rounding"]) == (["EUR", "USD"], "half_even")
+        assert uuid.UUID(saved["updated_by"]) and saved["updated_at"], saved
+        r = api.post(
+            f"{PRICING}/price-books",
+            json={"code": f"gbp-sold-{run}", "name": f"GBP {run}", "currency": "GBP"},
+            headers=_key(),
+        )
+        assert r.status_code == 409, r.text
+        assert "CURRENCY_NOT_OFFERED" in r.text, r.text
+
+        # Products: an override reset by DELETE; the default is never deleted (P-D-216).
+        _products_quorum_zero(api)
+        r = api.get(f"{PRODUCTS}/approval-policy")
+        r = api.put(
+            f"{PRODUCTS}/approval-policy",
+            json={"kind": "sku_retire", "quorum": 3},
+            headers={"If-Match": r.headers["etag"]},
+        )
+        assert r.status_code == 200, r.text
+        tag = r.headers["etag"]
+        r = api.delete(f"{PRODUCTS}/approval-policy/*", headers={"If-Match": tag})
+        assert r.status_code == 400, r.text
+        assert "POLICY_DEFAULT_REQUIRED" in r.text, r.text
+        r = api.delete(f"{PRODUCTS}/approval-policy/sku_retire", headers={"If-Match": tag})
+        assert r.status_code == 200, r.text
+        assert "sku_retire" not in r.json()["overrides"], r.text
+
+        # Pricing: quorum 0 for both kinds while the SKU is priced and sold.
+        _set_quorum(api, "prices", 0)
+        _set_quorum(api, "plan_revision", 0)
+        _, tag = _policy(api)
+        r = api.delete(f"{PRICING}/approval-policy/*", headers={"If-Match": tag})
+        assert r.status_code == 400, r.text
+        assert "POLICY_DEFAULT_REQUIRED" in r.text, r.text
+
+        # A recurring SKU, priced from today in a EUR book and sold by a published plan.
+        r = api.post(
+            f"{PRODUCTS}/skus",
+            json={"code": code, "name": f"E2E sold {run}", "type": "recurring"},
+        )
+        assert r.status_code == 201, r.text
+        sku = r.json()["id"]
+        r = api.post(f"{PRODUCTS}/skus/{sku}/submit", json={})
+        assert r.status_code == 200, r.text
+        eur = _book(api, "EUR", run)
+        r = _monthly_entry(api, eur, sku, "flat")
+        assert r.status_code == 201, r.text
+        entry = r.json()
+        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        _draft_price(api, entry, {"amount": "30.00"}, today)
+        r = api.post(f"{PRICING}/price-books/{eur}/publish-changes", json={}, headers=_key())
+        assert r.status_code == 201, r.text
+        assert r.json()["applied"] is True, r.text
+        r = api.post(
+            f"{PRICING}/plans",
+            json={"code": f"plan-sold-{run}", "name": f"Plan sold {run}", "book_id": eur},
+            headers=_key(),
+        )
+        assert r.status_code == 201, r.text
+        plan = r.json()["id"]
+        rev1 = r.json()["revisions"][0]["id"]
+        r = api.post(
+            f"{PRICING}/plan-revisions/{rev1}/items",
+            json={"sku_id": sku, "price_book_entry_id": entry["id"], "treatment": "paid"},
+            headers=_key(),
+        )
+        assert r.status_code == 201, r.text
+        item = r.json()["id"]
+        r = api.post(f"{PRICING}/plan-revisions/{rev1}/submit", json={}, headers=_key())
+        assert r.status_code == 201, r.text
+        assert r.json()["revision"]["state"] == "published", r.text
+
+        # Where it is priced (D-434): the entry, its book, its usage and the price in force.
+        r = api.get(f"{PRICING}/price-book-entries")
+        assert r.status_code == 400, r.text
+        r = api.get(f"{PRICING}/price-book-entries", params={"sku_id": sku})
+        assert r.status_code == 200, r.text
+        [row] = r.json()["items"]
+        assert (row["id"], row["book_id"], row["currency"], row["model"]) == (
+            entry["id"],
+            eur,
+            "EUR",
+            "flat",
+        ), row
+        assert row["usage"] == _entry_usage(approved=1, plans=1), row
+        assert row["current_price"]["price_json"] == {"amount": "30.00"}, row
+        assert row["current_price"]["status"] == "active", row
+        # Where it is sold: the plan, in GET /plans' shape, and the plan item alone.
+        r = api.get(f"{PRICING}/plans", params={"sku_id": sku})
+        assert r.status_code == 200, r.text
+        assert [p["id"] for p in r.json()["items"]] == [plan], r.text
+        r = api.get(f"{PRICING}/plan-items/{item}")
+        assert r.status_code == 200, r.text
+        assert (r.json()["plan_id"], r.json()["rev_no"], r.json()["state"]) == (
+            plan,
+            1,
+            "published",
+        ), r.text
+        assert r.headers["etag"] == f'"{r.json()["version"]}"', r.headers
+
+        # Dimension values one at a time, each with its use (D-436).
+        r = api.get(f"{PRICING}/dimension-keys")
+        assert r.status_code == 200, r.text
+        region = next(k for k in r.json()["items"] if k["key"] == "region")
+        assert all(set(v) == {"value", "usage"} for v in region["values"]), r.text
+        added = [f"e2e-{run}-a", f"e2e-{run}-b"]
+        r = api.patch(
+            f"{PRICING}/dimension-keys",
+            json={"key": "region", "add": added},
+            headers={"If-Match": r.headers["etag"]},
+        )
+        assert r.status_code == 200, r.text
+        region = next(k for k in r.json()["items"] if k["key"] == "region")
+        assert [v["value"] for v in region["values"]][-2:] == added, r.text
+        assert all(v["usage"] == {"prices": 0} for v in region["values"][-2:]), r.text
+        r = api.patch(
+            f"{PRICING}/dimension-keys",
+            json={"key": "region", "remove": added},
+            headers={"If-Match": r.headers["etag"]},
+        )
+        assert r.status_code == 200, r.text
+        region = next(k for k in r.json()["items"] if k["key"] == "region")
+        assert not set(added) & {v["value"] for v in region["values"]}, r.text
+    finally:
+        # The pricing policy as it was: an override that was not there is reset (D-435).
+        for kind in ("prices", "plan_revision"):
+            if kind in policy_before["overrides"]:
+                _set_quorum(api, kind, policy_before["overrides"][kind])
+            else:
+                _, tag = _policy(api)
+                r = api.delete(f"{PRICING}/approval-policy/{kind}", headers={"If-Match": tag})
+                assert r.status_code in (200, 404), r.text
+        read, tag = _settings(api)
+        restored = {**_settings_body(settings_before), "currencies": settings_before["currencies"]}
+        r = api.put(f"{PRICING}/settings", json=restored, headers={"If-Match": tag})
+        assert r.status_code == 200, r.text
