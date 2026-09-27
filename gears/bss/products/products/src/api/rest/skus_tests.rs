@@ -355,8 +355,10 @@ async fn card_and_reference_details_read_the_live_registry() {
     assert_eq!(live["items"].as_array().unwrap().len(), 3);
 }
 
+/// P-D-214: the versions answer one shape each — the history always an array, the version in force
+/// on a date one object at its own path.
 #[tokio::test]
-async fn version_dates_resolve_as_of_and_before_the_first_is_named_404() {
+async fn versions_answer_an_array_and_as_of_answers_the_one_in_force() {
     let tenant = Uuid::new_v4();
     let (app, dsn) = rest_app(tenant, doors).await;
     let cat = category(&app, tenant).await;
@@ -380,37 +382,63 @@ async fn version_dates_resolve_as_of_and_before_the_first_is_named_404() {
         .unwrap();
     }
     let url = format!("/bss-products/v1/skus/{}/versions", s.id);
-    let r = get(&app, tenant, &format!("{url}?as_of=2026-09-15")).await;
+    let r = get(&app, tenant, &format!("{url}/as-of?date=2026-09-15")).await;
     assert_eq!(r.status(), StatusCode::OK);
     let v = body_json(r).await;
     assert_eq!(v["published_version"], 1);
     assert_eq!(v["effective_from"], "2026-09-02");
     assert_eq!(v["content"]["gl_code"], "401");
     assert_eq!(
-        body_json(get(&app, tenant, &format!("{url}?as_of=2026-09-20")).await).await["published_version"],
+        body_json(get(&app, tenant, &format!("{url}/as-of?date=2026-09-20")).await).await["published_version"],
         3
     );
+    let history = body_json(get(&app, tenant, &url).await).await;
+    let versions: Vec<&Value> = history.as_array().unwrap().iter().collect();
     assert_eq!(
-        body_json(get(&app, tenant, &url).await)
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        versions
+            .iter()
+            .map(|v| &v["published_version"])
+            .collect::<Vec<_>>(),
+        [1, 2, 3],
+        "{history}"
     );
-    let r = get(&app, tenant, &format!("{url}?as_of=2026-09-01")).await;
+    let r = get(&app, tenant, &format!("{url}/as-of?date=2026-09-01")).await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     assert_eq!(problem_code(&body_json(r).await), "NO_VERSION_IN_FORCE");
-    assert_eq!(
-        get(&app, tenant, &format!("{url}?as_of=bad"))
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        get(&app, Uuid::new_v4(), &url).await.status(),
-        StatusCode::NOT_FOUND
-    );
+    for query in [
+        "/as-of?date=bad",
+        "/as-of",
+        "/as-of?date=",
+        "/as-of?date=2026-09-15&as_of=2026-09-15",
+        "/as-of?date=2026-09-15&date=2026-09-16",
+        // The old spelling is refused, never answered with the history's array.
+        "?as_of=2026-09-15",
+        "?limit=1",
+    ] {
+        let r = get(&app, tenant, &format!("{url}{query}")).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+    for query in ["", "/as-of?date=2026-09-15"] {
+        assert_eq!(
+            get(&app, Uuid::new_v4(), &format!("{url}{query}"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "another tenant: {query}"
+        );
+    }
+    // A SKU never published has no version: the history is an empty array, never an object.
+    let draft = crate::test_support::seed_rest_sku(&conn, &scope, tenant, cat, "B").await;
+    let empty = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus/{}/versions", draft.id),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(empty, serde_json::json!([]));
 }
 
 #[tokio::test]

@@ -114,7 +114,7 @@ that integration gate. The retained ProductCatalogClientV1 transport is an inter
 2. [ ] - `p1` - Serve Published and Deprecated SKUs with lifecycle status and deprecated flag; exclude draft, retiring and retired entries - `inst-read-browse-map`
 3. [ ] - `p1` - Preserve the transport's existing response contract until phase 2 without recreating Product parents, CatalogVersion freezes or a second catalog authority - `inst-read-browse-contract`
 
-Browse is the current published catalog surface; historical period binding always uses versions?as_of=.
+Browse is the current published catalog surface; historical period binding always uses versions/as-of?date=.
 Authoring list/card may show other lifecycle states in the authorized tenant and must not inherit the
 Published/Deprecated predicate by accident.
 

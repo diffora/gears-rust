@@ -148,7 +148,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 1. [ ] - `p1` - On publish or applied change, validate effective_from against the latest version date; an earlier date yields 409 VERSION_ORDER, equal dates are allowed - `inst-sku-version-order`
 2. [ ] - `p1` - Increment published_version and append the complete business snapshot in the apply transaction; publication is effective immediately, changes use effective_from defaulting to today - `inst-sku-version-append`
 3. [ ] - `p1` - For a dated read filter effective_from <= as_of, order by effective_from DESC, published_version DESC and select one; before the first version return 404 NO_VERSION_IN_FORCE - `inst-sku-version-select`
-4. [ ] - `p1` - Without as_of return the durable history; never substitute the current SKU row for a version-in-force read or update an old snapshot - `inst-sku-version-history`
+4. [ ] - `p1` - The history read returns the durable history as an array, and the dated read one version at its own path (P-D-214); never substitute the current SKU row for a version-in-force read or update an old snapshot - `inst-sku-version-history`
 
 ## 4. States (CDSL)
 
@@ -204,7 +204,7 @@ Products stores and serves bundle identity, type and descriptors without composi
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/infra/storage/repo/version_repo.rs`.
 
-GET versions returns immutable history or, with as_of, the latest effective_from not after that date and then the highest published_version. Publish is immediate and applied changes append dated snapshots; earlier-than-latest dates fail with VERSION_ORDER, equal dates are allowed and dates before publication return NO_VERSION_IN_FORCE. The latest head may be future-effective and never replaces the dated read (spec §2.2, §4, §7.2; DESIGN §3.3, §3.7).
+GET versions returns the immutable history as an array; GET versions/as-of?date= returns the latest effective_from not after that date and then the highest published_version (P-D-214). Publish is immediate and applied changes append dated snapshots; earlier-than-latest dates fail with VERSION_ORDER, equal dates are allowed and dates before publication return NO_VERSION_IN_FORCE. The latest head may be future-effective and never replaces the dated read (spec §2.2, §4, §7.2; DESIGN §3.3, §3.7).
 
 ### Flat category CRUD
 

@@ -295,7 +295,8 @@ environment failure returns `APPLY_REFUSED` and rolls back (P-D-190, P-D-192–1
 ### 3.3 API Contracts
 
 Routes are relative to `/bss-products/v1`. Fields and query parameters use snake_case, including
-`as_of`, `effective_from`, `ref_id` and `reservation_id` (P-D-191 supersedes the older PRD spelling).
+`effective_from`, `ref_id` and `reservation_id` (P-D-191 supersedes the older PRD spelling); the dated version
+read takes `date` at its own path (P-D-214).
 Responses use toolkit RFC-9457 `Problem` with domain `code`, `field` and `message`; stale-generation
 responses additionally expose the current generation. All doors use authenticated OperationBuilder
 registration and standardized errors.
@@ -306,7 +307,7 @@ registration and standardized errors.
 | Usage-type picker | `GET /usage-types?q&kind&limit&cursor` | products:author; the `UsageTypeCatalog` the publish gate resolves against, read as the caller: `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable, 200 `[]` when empty (P-D-207). |
 | SKU reads | `GET /skus?$filter&$orderby&$top&cursor&q&priced&in_plan`; `GET /skus/counts?$filter&q&priced&in_plan`; `GET /skus/{id}` | Tenant-scoped list on the toolkit's OData (P-D-210): `$filter` over id, code, name, lifecycle, type, category_id (`eq null`: none) and pending_unit_id (`ne null`: in review); `$orderby` code, name or updated_at, tie-break id; `$top`/`limit` 50, clamped at 200; `cursor` from `page_info`; `q` a literal case-insensitive substring of code, name, unit, usage type and GL code; `priced` and `in_plan` keep or drop pricing's sets from the port's `usage_sets`, 403 `USAGE_FORBIDDEN` or 503 `USAGE_UNAVAILABLE` when it cannot answer (P-D-212). Other keys, `$select` and `$count` are 400. The tab counts `{ all, draft, published, deprecated, retiring, retired, in_review }` narrow alike, without `$filter`'s top-level `lifecycle` terms (P-D-211). SKU card. Each list item and the card carry `usage` { entries, currencies, prices { approved, pending, draft }, plans } from pricing's `SkuUsageV1` port, one call per page, or `null` when the port is absent, refuses or cannot answer; the read never fails for it (P-D-197). |
 | SKU history | `GET /skus/{id}/history?$top&cursor` | products:read; the SKU's audit rows and its approval units' rows, oldest first by `(written_at, audit_id)`, as `Page<ProductsSkuHistoryEntry>`: `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`; `$top`/`limit` 50, clamped at 200; other keys 400; 404 for a foreign SKU or a deleted draft (P-D-213). |
-| Dated versions | `GET /skus/{id}/versions?as_of=<date>` | Greatest effective_from not after date, then greatest published_version; 404 before first version. Without as_of, list history. |
+| Versions | `GET /skus/{id}/versions`; `GET /skus/{id}/versions/as-of?date=<date>` | The history is always an array, oldest first (empty before the first publication); any query key is 400. The dated read answers one version: greatest effective_from not after `date`, then greatest published_version; 404 `NO_VERSION_IN_FORCE` before the first version; a missing or malformed `date` is 400 (P-D-214). |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
 | Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
 | Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction; unfence only expired orphans. |
@@ -435,7 +436,7 @@ sequenceDiagram
     Note over Approval,DB: SKU, version, audit, outbox, approved unit
     DB-->>Reviewer: Approved
     DB-->>Pricing: SkuChanged via outbox
-    Pricing->>API: GET versions as_of period start
+    Pricing->>API: GET versions/as-of?date=period start
     API-->>Pricing: Version and descriptors
 ```
 

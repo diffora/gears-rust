@@ -365,7 +365,7 @@ async fn a_change_unit_applies_from_its_effective_date_and_emits_the_field_list(
             &f.app,
             &f.author,
             Method::GET,
-            &format!("/skus/{}/versions?as_of={as_of}", f.id),
+            &format!("/skus/{}/versions/as-of?date={as_of}", f.id),
             json!({}),
             None,
         )
@@ -1063,8 +1063,13 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         (Method::GET, "/usage-types".into(), "author"),
         (Method::GET, "/skus/counts".into(), "read"),
         (Method::GET, format!("{sku_path}/history"), "read"),
+        (
+            Method::GET,
+            format!("{sku_path}/versions/as-of?date=2026-09-27"),
+            "read",
+        ),
     ];
-    assert_eq!(cases.len(), 28);
+    assert_eq!(cases.len(), 29);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;
@@ -1380,7 +1385,7 @@ async fn equal_version_dates_work_and_backwards_changes_roll_back_the_head() {
         &f.app,
         &f.author,
         Method::GET,
-        &format!("/skus/{}/versions?as_of={date}", f.id),
+        &format!("/skus/{}/versions/as-of?date={date}", f.id),
         json!({}),
         None,
     )
@@ -2323,7 +2328,7 @@ async fn a_sku_without_a_category_publishes_and_a_change_sets_and_clears_it() {
             &f.app,
             &f.author,
             Method::GET,
-            &format!("/skus/{}/versions?as_of={today}", f.id),
+            &format!("/skus/{}/versions/as-of?date={today}", f.id),
             json!({}),
             None,
         )

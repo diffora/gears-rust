@@ -46,6 +46,7 @@
 | P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
 | P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
+| P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -662,3 +663,27 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
   a timestamp.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3).
+
+#### P-D-214 [L] SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=`
+
+`GET /skus/{id}/versions` answered an array, or one object when `as_of` was given: one path, two schemas, and a
+client could not know the shape without reading the query (validation L10). Breaking changes are allowed in this
+phase, so the shapes split.
+
+- `GET /skus/{id}/versions` always answers an array of `SkuVersionDto`, oldest first. The array is empty before
+  the first publication. Any query key is 400 `UNSUPPORTED_QUERY_PARAM`. The old `as_of` is refused, never
+  answered with the history, and the detail names the new path.
+- `GET /skus/{id}/versions/as-of?date=YYYY-MM-DD` answers one `SkuVersionDto`: the greatest `effective_from`
+  not after the date, then the greatest `published_version` (P-D-191). Before the first version it is 404 with
+  reason `NO_VERSION_IN_FORCE`, as before. A missing, repeated or malformed `date` is 400
+  `INVALID_QUERY_PARAMS`, and any other key is 400 `UNSUPPORTED_QUERY_PARAM`, every offender named. The
+  parameter is `date`, as pricing's `/resolve` spells it. This settles the PRD's `asOf`/`as_of` question
+  (PRD §13).
+- Both reads are authorized as the card is (`sku × read`), run the SKU's orphan-fence expiry first, and answer
+  404 for a SKU of another tenant. `VersionsResponse` (untagged, array or object) is gone from the contract.
+
+Pricing reads versions through the in-process registry port (`sku_version_as_of`, pricing D-424), not over REST,
+so it is untouched. The gears-rust e2e reads no versions. vhp-core's e2e reads `versions?as_of=`
+(`test_products_skus.py`) and follows in phase 6.6.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation L10; plan review L10).

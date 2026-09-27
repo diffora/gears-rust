@@ -7,7 +7,9 @@ use super::{
     dto::{ReferencesDto, SkuCard, SkuDto, SkuPatchRequest, SkuRequest, SkuVersionDto},
     json_body,
     preconditions::{etag, if_match, if_match_param},
-    replay, repo_error_to_canonical, require_authenticated, tx_to_canonical,
+    replay, repo_error_to_canonical, require_authenticated,
+    sku_list::{RawQuery, UNSUPPORTED, refused},
+    tx_to_canonical,
 };
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -40,6 +42,7 @@ use toolkit::api::{
     operation_builder::OperationBuilder,
 };
 use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_odata::errors::OdataError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -48,18 +51,6 @@ const TAG: &str = "SKUs";
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
 
-#[toolkit_macros::api_dto(request)]
-struct VersionQuery {
-    #[serde(default, with = "crate::infra::serde_date::option")]
-    as_of: Option<Date>,
-}
-/// History is an array; `as_of` selects a single version.
-#[toolkit_macros::api_dto(response)]
-#[serde(untagged)]
-enum VersionsResponse {
-    History(Vec<SkuVersionDto>),
-    AsOf(Box<SkuVersionDto>),
-}
 #[toolkit_macros::api_dto(request)]
 struct ReferenceQuery {
     #[serde(default)]
@@ -186,24 +177,55 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    // P-D-214: the history is always an array; the version in force on a date has its own path.
     let router = OperationBuilder::get(format!("{SKUS}/{{id}}/versions"))
         .operation_id("bss_products.sku_versions")
-        .summary("Read version history or the version in force")
+        .summary("Read a SKU's version history")
+        .description(
+            "Every published version of the SKU, oldest first, as an array (empty before the \
+             first publication). The version in force on a date is \
+             `GET /skus/{id}/versions/as-of?date=` (P-D-214); any query key here is 400.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "SKU id")
+        .handler(sku_versions)
+        .json_array_response_with_schema::<SkuVersionDto>(
+            openapi,
+            StatusCode::OK,
+            "The SKU's versions, oldest first.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get(format!("{SKUS}/{{id}}/versions/as-of"))
+        .operation_id("bss_products.sku_version_as_of")
+        .summary("Read the SKU version in force on a date")
+        .description(
+            "The version with the greatest effective_from not after `date`, then the greatest \
+             published_version (P-D-191, P-D-214). 404 with reason NO_VERSION_IN_FORCE before the \
+             first version; a missing or malformed `date`, or any other key, is 400.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
         .query_param_typed(
-            "as_of",
-            false,
-            "A date (YYYY-MM-DD): the version in force then",
+            "date",
+            true,
+            "The date (YYYY-MM-DD) the version is in force on",
             "string",
         )
-        .handler(sku_versions)
-        .json_response_with_schema::<VersionsResponse>(
+        .handler(sku_version_as_of)
+        .json_response_with_schema::<SkuVersionDto>(
             openapi,
             StatusCode::OK,
-            "Read version history or the version in force.",
+            "The version in force on the date.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -686,46 +708,128 @@ fn query<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, CanonicalError> {
         DomainError::Validation(r).into()
     })
 }
+/// The date `GET /skus/{id}/versions/as-of` reads: `date`, given once, `YYYY-MM-DD`; no other key
+/// (P-D-214). A missing, repeated or malformed `date` and any other key are 400, every offender
+/// named.
+fn as_of_date(query: RawQuery) -> Result<Date, CanonicalError> {
+    const KEY: &str = "date";
+    let Query(pairs) = query.map_err(|e| {
+        OdataError::invalid_argument()
+            .with_field_violation("query", e.body_text(), "INVALID_QUERY_PARAMS")
+            .create()
+    })?;
+    let mut offenders: Vec<(&str, String, &'static str)> = pairs
+        .iter()
+        .filter(|(k, _)| k != KEY)
+        .map(|(k, _)| {
+            (
+                k.as_str(),
+                format!("`{k}` is not a parameter of this read; it takes `{KEY}`"),
+                UNSUPPORTED,
+            )
+        })
+        .collect();
+    let dates: Vec<&str> = pairs
+        .iter()
+        .filter(|(k, _)| k == KEY)
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let date = match dates.as_slice() {
+        [one] => {
+            let format = time::format_description::parse_borrowed::<1>("[year]-[month]-[day]")
+                .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+            Date::parse(one, &format).ok()
+        }
+        _ => None,
+    };
+    if date.is_none() {
+        offenders.push((
+            KEY,
+            match dates.len() {
+                0 => format!("`{KEY}` (YYYY-MM-DD) is required"),
+                1 => format!("`{KEY}` is a date YYYY-MM-DD, not `{}`", dates[0]),
+                _ => format!("`{KEY}` is given more than once"),
+            },
+            "INVALID_QUERY_PARAMS",
+        ));
+    }
+    refused(&offenders)?;
+    date.ok_or_else(|| CanonicalError::internal("a checked date is present").create())
+}
+/// The version history takes no query key: `as_of` moved to its own path (P-D-214).
+fn no_query(query: RawQuery) -> Result<(), CanonicalError> {
+    let Query(pairs) = query.map_err(|e| {
+        OdataError::invalid_argument()
+            .with_field_violation("query", e.body_text(), "INVALID_QUERY_PARAMS")
+            .create()
+    })?;
+    let offenders: Vec<(&str, String, &'static str)> = pairs
+        .iter()
+        .map(|(k, _)| {
+            (
+                k.as_str(),
+                format!(
+                    "`{k}` is not a parameter of the version history; the version in force on a \
+                     date is GET /skus/{{id}}/versions/as-of?date=YYYY-MM-DD"
+                ),
+                UNSUPPORTED,
+            )
+        })
+        .collect();
+    refused(&offenders)
+}
 /// @cpt-cf-bss-products-fr-sku-versions
 async fn sku_versions(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
-    q: Result<Query<VersionQuery>, QueryRejection>,
-) -> Result<Response, CanonicalError> {
+    query: RawQuery,
+) -> Result<Json<Vec<SkuVersionDto>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = scope(&enforcer, &ctx, false).await?;
-    let q = query(q)?;
+    no_query(query)?;
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     find(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(tx_to_canonical)?;
-    if let Some(as_of) = q.as_of {
-        let version = repo::version_as_of(&conn, &scope, ctx.subject_tenant_id(), id, as_of)
-            .await
-            .map_err(|e| repo_error_to_canonical(&e))?;
-        let Some(version) = version else {
-            // The toolkit's NotFound context is empty, so attach this door's specified
-            // discriminator to its canonical Problem without changing the 404 family.
-            let error = SkuResource::not_found(format!("no SKU version is in force on {as_of}"))
-                .with_resource(id.to_string())
-                .create();
-            let mut problem = toolkit_canonical_errors::Problem::from_error(&error)
-                .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
-            problem.context["reason"] = serde_json::json!("NO_VERSION_IN_FORCE");
-            return Ok(problem.into_response());
-        };
-        return Ok(Json(VersionsResponse::AsOf(Box::new(version.into()))).into_response());
-    }
     let versions = repo::versions(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
-    Ok(Json(VersionsResponse::History(
-        versions.into_iter().map(Into::into).collect(),
-    ))
-    .into_response())
+    Ok(Json(versions.into_iter().map(Into::into).collect()))
+}
+/// @cpt-cf-bss-products-fr-sku-versions
+async fn sku_version_as_of(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    query: RawQuery,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = scope(&enforcer, &ctx, false).await?;
+    let as_of = as_of_date(query)?;
+    super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    find(&conn, &scope, ctx.subject_tenant_id(), id)
+        .await
+        .map_err(tx_to_canonical)?;
+    let version = repo::version_as_of(&conn, &scope, ctx.subject_tenant_id(), id, as_of)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some(version) = version else {
+        // The toolkit's NotFound context is empty, so attach this door's specified
+        // discriminator to its canonical Problem without changing the 404 family.
+        let error = SkuResource::not_found(format!("no SKU version is in force on {as_of}"))
+            .with_resource(id.to_string())
+            .create();
+        let mut problem = toolkit_canonical_errors::Problem::from_error(&error)
+            .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+        problem.context["reason"] = serde_json::json!("NO_VERSION_IN_FORCE");
+        return Ok(problem.into_response());
+    };
+    Ok(Json(SkuVersionDto::from(version)).into_response())
 }
 /// @cpt-cf-bss-products-fr-reference-registry
 async fn sku_references(

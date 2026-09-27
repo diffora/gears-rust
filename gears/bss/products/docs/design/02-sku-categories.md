@@ -101,7 +101,7 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 1. [ ] - `p1` - On publish or applied change, validate effective_from against the latest version date; an earlier date yields 409 VERSION_ORDER, equal dates are allowed - `inst-sku-version-order`
 2. [ ] - `p1` - Increment published_version and append the complete business snapshot in the apply transaction; publication is effective immediately, changes use effective_from defaulting to today - `inst-sku-version-append`
 3. [ ] - `p1` - For a dated read filter effective_from <= as_of, order by effective_from DESC, published_version DESC and select one; before the first version return 404 NO_VERSION_IN_FORCE - `inst-sku-version-select`
-4. [ ] - `p1` - Without as_of return the durable history; never substitute the current SKU row for a version-in-force read or update an old snapshot - `inst-sku-version-history`
+4. [ ] - `p1` - The history read returns the durable history as an array, and the dated read one version at its own path (P-D-214); never substitute the current SKU row for a version-in-force read or update an old snapshot - `inst-sku-version-history`
 
 ## 4. States (CDSL)
 
@@ -123,7 +123,8 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 | `GET /usage-types?q&kind&limit&cursor` | products:author; the usage-type catalog read as the caller, `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable (P-D-207). |
 | `GET /skus` | products:read; scoped current heads. Slice 04 owns search, filters and pagination. |
 | `GET /skus/{id}` | products:read; current SKU and ETag. Current applied content may be future-effective; use versions for dated truth. |
-| `GET /skus/{id}/versions?as_of=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE. Without as_of, return history. |
+| `GET /skus/{id}/versions` | products:read; the history, always an array, oldest first; any query key is 400 (P-D-214). |
+| `GET /skus/{id}/versions/as-of?date=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE; a missing or malformed `date` is 400 (P-D-214). |
 | `GET /categories` | products:read; scoped flat categories. |
 | `POST /categories` | products:author; create directly with tenant-unique code. |
 | `PATCH /categories/{id}` | products:author; direct edit under If-Match; return the new ETag. |
