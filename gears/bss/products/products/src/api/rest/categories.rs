@@ -112,6 +112,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post(format!("{CATEGORIES}/{{id}}/retire"))
         .operation_id("bss_products.retire_category")
         .summary("Retire an unused category")
+        .description(
+            "Retires a category no SKU in draft, published, deprecated or retiring names; retired \
+             SKUs do not keep it in use (P-D-208). Refusals: 404; 409 CATEGORY_IN_USE, or \
+             CATEGORY_RETIRED when it is already retired.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -368,9 +373,21 @@ async fn retire_category(
                     {
                         Some(HeadWrite::Written(c)) => c,
                         Some(HeadWrite::Unmatched) => {
-                            return Err(TxError::Refused(DomainError::Conflict {
-                                code: "CATEGORY_IN_USE",
-                                detail: "category is in use or already retired".into(),
+                            // P-D-208: an already retired category names its own cause.
+                            let retired = repo::find_category(tx, &scope, tenant_id, id)
+                                .await
+                                .map_err(TxError::Repo)?
+                                .is_some_and(|c| c.status == "retired");
+                            return Err(TxError::Refused(if retired {
+                                DomainError::Conflict {
+                                    code: "CATEGORY_RETIRED",
+                                    detail: "the category is already retired".into(),
+                                }
+                            } else {
+                                DomainError::Conflict {
+                                    code: "CATEGORY_IN_USE",
+                                    detail: "a SKU that is not retired names this category".into(),
+                                }
                             }));
                         }
                         None => {

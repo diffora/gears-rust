@@ -150,10 +150,16 @@ async fn category_written(
         .map(HeadWrite::Written)
         .ok_or_else(|| RepoError::CorruptRow("written category disappeared".into()))
 }
-/// Retire only an active, unused category; callers use a serializable transaction. A SKU without a
-/// category (P-D-196) never matches `category_id = <id>`, so it never keeps one in use.
+/// The SKU lifecycles that keep a category in use (P-D-208): every one but `retired`.
+pub const CATEGORY_HOLDING_LIFECYCLES: [&str; 4] = ["draft", "published", "deprecated", "retiring"];
+/// Retire only an active, unused category; callers use a serializable transaction. A category is
+/// in use while a SKU in `draft`, `published`, `deprecated` or `retiring` names it; a `retired` SKU
+/// no longer keeps it (P-D-208, amending P-D-186): nothing moves a retired SKU, and a `retiring`
+/// one may still return to its prior lifecycle. A SKU without a category (P-D-196) never matches
+/// `category_id = <id>`, so it never keeps one in use.
 /// # Errors
-/// Returns scoped storage failures. Missing categories return `None`.
+/// Returns scoped storage failures. Missing categories return `None`; an already retired or
+/// in-use category is `Unmatched`, and the door re-reads to say which.
 pub async fn retire_category_if_unused(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -166,6 +172,7 @@ pub async fn retire_category_if_unused(
         .from(sku::Entity)
         .and_where(sku::Column::TenantId.eq(tenant_id))
         .and_where(sku::Column::CategoryId.eq(id))
+        .and_where(sku::Column::Lifecycle.is_in(CATEGORY_HOLDING_LIFECYCLES))
         .to_owned();
     let r = category::Entity::update_many()
         .secure()

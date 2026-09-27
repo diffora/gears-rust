@@ -516,7 +516,8 @@ pub async fn unlock_sku(
         .map_err(|e| driver_failure("unlock SKU".into(), e))?;
     written(runner, scope, tenant_id, id, result.rows_affected).await
 }
-/// Count all heads that keep a category in use, including retired heads. A SKU without a category
+/// Count every head that names a category, retired heads included. Since P-D-208 a retired head no
+/// longer keeps a category in use (`retire_category_if_unused`); a SKU without a category
 /// (P-D-196) never matches `category_id = <id>`.
 /// # Errors
 /// Returns scoped storage failures.

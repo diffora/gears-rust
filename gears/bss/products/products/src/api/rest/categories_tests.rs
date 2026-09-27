@@ -222,3 +222,97 @@ async fn a_sku_without_a_category_never_blocks_a_retirement() {
     assert_eq!(r.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(&body_json(r).await), "CATEGORY_IN_USE");
 }
+
+/// P-D-208 (D6): retiring a category that is already retired names its own cause,
+/// `CATEGORY_RETIRED`, not `CATEGORY_IN_USE`.
+#[tokio::test]
+async fn retiring_a_retired_category_is_category_retired() {
+    let tenant = Uuid::new_v4();
+    let (app, _) = rest_app(tenant, router).await;
+    let c = body_json(
+        post(
+            &app,
+            tenant,
+            "/bss-products/v1/categories",
+            json!({"code":"gone","name":"Gone"}),
+        )
+        .await,
+    )
+    .await;
+    let url = format!(
+        "/bss-products/v1/categories/{}/retire",
+        c["id"].as_str().unwrap()
+    );
+    assert_eq!(
+        post(&app, tenant, &url, json!({})).await.status(),
+        StatusCode::OK
+    );
+    let r = post(&app, tenant, &url, json!({})).await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "CATEGORY_RETIRED");
+}
+
+/// P-D-208 (#9, amends P-D-186): a category is in use only while a SKU in `draft`, `published`,
+/// `deprecated` or `retiring` names it; SKUs that are all `retired` no longer hold it.
+#[tokio::test]
+async fn only_a_sku_that_is_not_retired_keeps_a_category_in_use() {
+    use crate::test_support::{id_matches, repo_connection, seed_rest_sku};
+    use sea_orm::{ConnectionTrait, Database};
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let (db, scope) = repo_connection(&dsn, tenant).await;
+    for (n, lifecycle, expected) in [
+        (0, "draft", StatusCode::CONFLICT),
+        (1, "published", StatusCode::CONFLICT),
+        (2, "deprecated", StatusCode::CONFLICT),
+        (3, "retiring", StatusCode::CONFLICT),
+        (4, "retired", StatusCode::OK),
+    ] {
+        let c = body_json(
+            post(
+                &app,
+                tenant,
+                "/bss-products/v1/categories",
+                json!({"code":format!("c{n}"),"name":format!("C{n}")}),
+            )
+            .await,
+        )
+        .await;
+        let id: Uuid = serde_json::from_value(c["id"].clone()).unwrap();
+        let retired =
+            seed_rest_sku(&db.conn().unwrap(), &scope, tenant, id, &format!("R{n}")).await;
+        let held = seed_rest_sku(&db.conn().unwrap(), &scope, tenant, id, &format!("H{n}")).await;
+        let raw = Database::connect(&dsn).await.unwrap();
+        raw.execute_unprepared(&format!(
+            "UPDATE products_sku SET lifecycle = 'retired' WHERE {}",
+            id_matches("id", retired.id)
+        ))
+        .await
+        .unwrap();
+        raw.execute_unprepared(&format!(
+            "UPDATE products_sku SET lifecycle = '{lifecycle}' WHERE {}",
+            id_matches("id", held.id)
+        ))
+        .await
+        .unwrap();
+        raw.close().await.unwrap();
+        let r = post(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/categories/{id}/retire"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            expected,
+            "a {lifecycle} SKU beside a retired one"
+        );
+        let b = body_json(r).await;
+        if expected == StatusCode::OK {
+            assert_eq!(b["status"], "retired");
+        } else {
+            assert_eq!(problem_code(&b), "CATEGORY_IN_USE", "{lifecycle}");
+        }
+    }
+}
