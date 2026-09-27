@@ -65,6 +65,13 @@ pub struct Model {
     pub prev_hash: Option<Vec<u8>>,
     /// Reserved for the platform sealing capability. `NULL` until sealed.
     pub row_hash: Option<Vec<u8>>,
+    /// The SKU lifecycle the act found (P-D-213, `m20260927_000008`): one of the five, held by a
+    /// named `CHECK`. `NULL` on a row whose act concerns no SKU, on a create (the SKU did not exist)
+    /// and on every row written before the migration.
+    pub from_lifecycle: Option<String>,
+    /// The SKU lifecycle the act left (P-D-213). `NULL` on a row whose act concerns no SKU, on a
+    /// draft delete (the SKU no longer exists) and on every row written before the migration.
+    pub to_lifecycle: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

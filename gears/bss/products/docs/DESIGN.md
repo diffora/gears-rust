@@ -815,6 +815,12 @@ CREATE OR REPLACE FUNCTION bss.products_audit_append_only() RETURNS trigger AS $
 CREATE TRIGGER trg_products_audit_append_only BEFORE DELETE OR UPDATE ON bss.products_audit FOR EACH ROW EXECUTE FUNCTION bss.products_audit_append_only();
 ```
 
+The forward migration `m20260927_000008_audit_lifecycle_move` adds two columns to the table above (P-D-213):
+`from_lifecycle text` and `to_lifecycle text`, both nullable, each held to the five lifecycles by a named CHECK. An
+audit row on a SKU, or on one of its units, carries the SKU lifecycle its act found and the one it left. It
+redefines the append-only function (on SQLite, the seal trigger) so the seal also keeps both unchanged. Rows
+written before it read null.
+
 ```sql
 CREATE TABLE bss.products_idempotency (
             tenant_id       uuid        NOT NULL,

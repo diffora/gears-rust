@@ -162,6 +162,7 @@ async fn put(
                     ctx.subject_tenant_id(),
                     None,
                     time::OffsetDateTime::now_utc(),
+                    repo::LifecycleMove::NONE,
                 )
                 .await?;
                 repo::read_policy(tx, &scope, ctx.subject_tenant_id())

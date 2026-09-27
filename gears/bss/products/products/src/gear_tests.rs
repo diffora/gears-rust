@@ -79,8 +79,8 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        9,
-        "the schema guard, coordination and the seven PriceBook migrations"
+        10,
+        "the schema guard, coordination and the eight PriceBook migrations"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;

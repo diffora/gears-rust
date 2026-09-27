@@ -33,7 +33,7 @@ fn vec_order_matches_name_order() {
 }
 
 #[test]
-fn the_chain_is_the_guard_coord_then_the_seven_pricebook_migrations() {
+fn the_chain_is_the_guard_coord_then_the_eight_pricebook_migrations() {
     let names: Vec<String> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
@@ -49,7 +49,8 @@ fn the_chain_is_the_guard_coord_then_the_seven_pricebook_migrations() {
             "m20260925_000004_create_products_audit_log",
             "m20260925_000005_create_products_idempotency",
             "m20260925_000006_create_products_sku_reference",
-            "m20260925_000007_sku_category_optional"
+            "m20260925_000007_sku_category_optional",
+            "m20260927_000008_audit_lifecycle_move"
         ]
     );
 }
@@ -90,13 +91,17 @@ async fn the_guard_creates_nothing() {
     guard.down(&manager).await.unwrap();
 }
 
-/// The one migration that does not revert (P-D-196, plan review L9): every other migration of
-/// the chain reverses, newest first, and `m20260925_000007_sku_category_optional` refuses by name.
+/// The migrations that do not revert (P-D-196, plan review L9; P-D-213): every other migration of
+/// the chain reverses, newest first, and `m20260927_000008_audit_lifecycle_move` and
+/// `m20260925_000007_sku_category_optional` refuse by name.
 #[tokio::test]
-async fn every_migration_reverses_except_the_named_irreversible_000007() {
+async fn every_migration_reverses_except_the_named_irreversible_000007_and_000008() {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
     use sea_orm_migration::SchemaManager;
-    const IRREVERSIBLE: &str = "m20260925_000007_sku_category_optional";
+    const IRREVERSIBLE: [&str; 2] = [
+        "m20260927_000008_audit_lifecycle_move",
+        "m20260925_000007_sku_category_optional",
+    ];
     let db = Database::connect("sqlite::memory:").await.unwrap();
     let manager = SchemaManager::new(&db);
     let chain = Migrator::migrations();
@@ -113,7 +118,7 @@ async fn every_migration_reverses_except_the_named_irreversible_000007() {
             }
         }
     }
-    assert_eq!(refused, [IRREVERSIBLE]);
+    assert_eq!(refused, IRREVERSIBLE);
     let left = db
         .query_all_raw(Statement::from_string(
             DbBackend::Sqlite,

@@ -70,6 +70,17 @@ pub async fn find(
         .map_err(TxError::Repo)?
         .ok_or(TxError::Refused(DomainError::NotFound { what: "sku", id }))
 }
+/// The SKU's lifecycle now, in the caller's transaction: the observed half of an audit row's
+/// lifecycle move (P-D-213).
+pub async fn lifecycle(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<bss_products_sdk::models::Lifecycle, TxError> {
+    find(tx, &AccessScope::for_tenant(tenant), tenant, id)
+        .await
+        .map(|s| s.lifecycle)
+}
 pub(super) async fn resolve(
     state: &ApiState,
     ctx: &SecurityContext,
@@ -88,7 +99,8 @@ pub(super) async fn resolve(
         UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => Ok(Some(answer)),
     }
 }
-/// Maintenance never releases a pending unit's fence and compares the observed operation.
+/// Maintenance never releases a pending unit's fence and compares the observed operation; a fence
+/// it lifts is the system's act, with its audit row (P-D-213).
 pub async fn expire(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -97,19 +109,44 @@ pub async fn expire(
     ttl: u32,
     now: OffsetDateTime,
 ) -> Result<(), TxError> {
-    if let Some(row) = repo::find_sku_fence(tx, scope, tenant, id)
+    let cutoff = now - time::Duration::minutes(i64::from(ttl));
+    if let Some(expired) = repo::expire_orphan_fence(tx, scope, tenant, id, cutoff)
         .await
         .map_err(TxError::Repo)?
-        && row.pending_unit_id.is_none()
-        && row
-            .fenced_at
-            .is_some_and(|at| now - at >= time::Duration::minutes(i64::from(ttl)))
     {
-        repo::unfence_sku(tx, scope, tenant, id, row.fence_op_id)
-            .await
-            .map_err(TxError::Repo)?;
+        expiry_audit(tx, tenant, expired, ttl, now).await?;
     }
     Ok(())
+}
+/// The audit row of an orphan fence the maintenance lifted (P-D-213): the system's act
+/// (`repo::SYSTEM_ACTOR`) `sku.fence_expired` on the SKU, with the move it made and the TTL it
+/// applied.
+pub async fn expiry_audit(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    expired: repo::ExpiredFence,
+    ttl: u32,
+    now: OffsetDateTime,
+) -> Result<(), TxError> {
+    repo::write_eventless_act_audit(
+        tx,
+        &AccessScope::for_tenant(tenant),
+        repo::AuditCommon {
+            audit_id: Uuid::now_v7(),
+            tenant_id: tenant,
+            actor_ref: repo::SYSTEM_ACTOR,
+            action: "sku.fence_expired".into(),
+            subject_kind: "sku".into(),
+            reason: Some(format!("fence_ttl_minutes={ttl}")),
+            correlation_id: None,
+            written_at: now,
+            lifecycle: repo::LifecycleMove::between(expired.from, expired.to),
+        },
+        expired.id,
+        Some(expired.revision),
+    )
+    .await
+    .map_err(TxError::Repo)
 }
 pub(super) async fn touch(
     state: &ApiState,
@@ -139,7 +176,9 @@ pub(super) async fn touch(
     clippy::too_many_arguments,
     reason = "Audit inputs explicitly bind subject and actor to the caller transaction"
 )]
-/// Audit row identifiers belong to a separate aggregate from the authorized resource.
+/// Audit row identifiers belong to a separate aggregate from the authorized resource. `lifecycle`
+/// is the SKU lifecycle move the act made (P-D-213): [`repo::LifecycleMove::NONE`] for an act on
+/// no SKU (the policy, a reference).
 pub async fn audit(
     tx: &impl DBRunner,
     _scope: &AccessScope,
@@ -149,6 +188,7 @@ pub async fn audit(
     id: Uuid,
     reason: Option<String>,
     now: OffsetDateTime,
+    lifecycle: repo::LifecycleMove,
 ) -> Result<(), TxError> {
     repo::write_eventless_act_audit(
         tx,
@@ -162,6 +202,7 @@ pub async fn audit(
             reason,
             correlation_id: None,
             written_at: now,
+            lifecycle,
         },
         id,
         None,

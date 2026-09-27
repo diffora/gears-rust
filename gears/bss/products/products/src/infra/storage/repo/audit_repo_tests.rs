@@ -27,6 +27,7 @@ fn common(
         reason: Some("test reason".to_owned()),
         correlation_id: None,
         written_at,
+        lifecycle: LifecycleMove::NONE,
     }
 }
 

@@ -348,6 +348,7 @@ async fn release(
                     id,
                     reason.clone(),
                     now,
+                    repo::LifecycleMove::NONE,
                 )
                 .await?;
                 if forced {
@@ -542,6 +543,7 @@ async fn reference_audit(
         id,
         Some(format!("owner={owner}; actor_kind={actor_kind}")),
         now,
+        repo::LifecycleMove::NONE,
     )
     .await
 }

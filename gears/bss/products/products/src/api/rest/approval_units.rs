@@ -557,6 +557,8 @@ async fn vote(
                     return Err(ApprovalError::AlreadyDecided.into());
                 }
                 let sub = subject(&state, tx, &store, &ctx, &unit, usage).await?;
+                // P-D-213: the SKU's lifecycle before the decision, and after it below.
+                let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
                 let now = OffsetDateTime::now_utc();
                 let outcome = match action {
                     Vote::Approve => {
@@ -607,17 +609,8 @@ async fn vote(
                 };
                 let (label, have, need) = match outcome {
                     ApproveOutcome::Refreshed { generation } => {
-                        g::audit(
-                            tx,
-                            &scope,
-                            &ctx,
-                            "approval.refreshed",
-                            "approval_unit",
-                            id,
-                            None,
-                            now,
-                        )
-                        .await?;
+                        decision_audit(tx, &scope, &ctx, "refreshed", &unit, found, None, now)
+                            .await?;
                         let mut problem = toolkit::api::canonical_prelude::Problem::from(
                             CanonicalError::from(DomainError::StaleUnit { generation }),
                         );
@@ -642,13 +635,7 @@ async fn vote(
                         None,
                     ),
                 };
-                let audit = match label {
-                    "pending" => "approval.vote",
-                    "rejected" => "approval.rejected",
-                    "withdrawn" => "approval.withdrawn",
-                    _ => "approval.approved",
-                };
-                g::audit(tx, &scope, &ctx, audit, "approval_unit", id, note, now).await?;
+                decision_audit(tx, &scope, &ctx, label, &unit, found, note, now).await?;
                 if matches!(outcome, ApproveOutcome::Applied) {
                     unit = load(tx, &store, id).await?;
                     g::decided(&state, tx, &store, &unit, ctx.subject_id()).await?;
@@ -678,6 +665,45 @@ async fn vote(
         )),
         Err(e) => Err(unit_tx_to_canonical(e)),
     }
+}
+
+/// A decision's audit row (P-D-193) for its outcome `label`, with the SKU lifecycle move it made
+/// (P-D-213): `found` before the decision, and the lifecycle it left, read now.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The row's actor, unit, outcome and move stay explicit at the one decision door"
+)]
+async fn decision_audit(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    label: &str,
+    unit: &Unit,
+    found: bss_products_sdk::models::Lifecycle,
+    note: Option<String>,
+    now: OffsetDateTime,
+) -> Result<(), TxError> {
+    let action = match label {
+        "refreshed" => "approval.refreshed",
+        "pending" => "approval.vote",
+        "rejected" => "approval.rejected",
+        "withdrawn" => "approval.withdrawn",
+        _ => "approval.approved",
+    };
+    let left = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+    let moved = repo::LifecycleMove::between(found, left);
+    g::audit(
+        tx,
+        scope,
+        ctx,
+        action,
+        "approval_unit",
+        unit.id,
+        note,
+        now,
+        moved,
+    )
+    .await
 }
 
 /// Load the authorized unit's proposed content before external catalog resolution.

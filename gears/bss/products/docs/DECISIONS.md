@@ -45,6 +45,7 @@
 | P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
+| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
 
 ## Entries
 
@@ -116,7 +117,8 @@ The fence records `fenced_at` and `fence_op_id`. A retried submit finding a fenc
 resumes by rechecking and submitting. An orphan fence older than configurable `fence_ttl_minutes` is
 reverted by the next request on the SKU or `POST /skus/{id}/unfence` (the TTL is a deployment setting, P-D-209); recovery cannot clear a pending
 unit's fence. Withdrawal or rejection clears the fence and pending lock in one statement guarded by
-the unit id and fence operation id, restoring the pre-fence state.
+the unit id and fence operation id, restoring the pre-fence state. P-D-213 amends this entry: an orphan fence
+the maintenance reverts is the system's act, with its own audit row `sku.fence_expired`.
 
 Apply revalidates the reference environment. A failed retirement check is `APPLY_REFUSED` with reason
 `SKU_REFERENCED`; the apply transaction rolls back and the SKU stays `retiring` until withdrawal or
@@ -364,6 +366,8 @@ migration does not own; SQLite has none). `correlation_id` is `text`: products w
 because this gear establishes no request correlation; pricing writes its edge id, or on a rereserve op's rows
 the id the op minted, and never NULL (pricing D-431). `error_code`, `attempted_key`, `session_id` and
 `ceremony_ref` are carried in the DDL and written NULL. Pricing has the same table shape (pricing D-433).
+P-D-213 amends this entry: the rows carry `from_lifecycle` and `to_lifecycle`, and the seal keeps both unchanged
+as well.
 
 **Source:** Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 
@@ -584,3 +588,61 @@ page's `usage` on the client, so the list and the counts take `priced=true|false
 - The cursor's hash covers both filters (P-D-210); the counts take them as the list does (P-D-211).
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 3; plan review M3).
+
+#### P-D-213 [M] A SKU's history: every audit row on a SKU carries the lifecycle move its act made
+
+The SKUs screen shows a SKU's history (ask 7): who did what, when, and the lifecycle the act moved the SKU
+from and to. The audit log carried the act and its actor but no lifecycle, the approval rows are keyed on
+the unit rather than the SKU, the retire's prior lifecycle lives only in `fence_prior_lifecycle` (cleared
+when the fence goes), and the orphan-fence expiry wrote no row at all (plan review H3).
+
+- **Two columns.** The migration `m20260927_000008_audit_lifecycle_move` adds `from_lifecycle` and
+  `to_lifecycle` to `products_audit_log`: nullable `text`, each held to the five lifecycles by a named CHECK
+  (`chk_products_audit_log_from_lifecycle`, `chk_products_audit_log_to_lifecycle`). It redefines the
+  append-only guard, so the platform's one-way seal (P-D-200) still requires every record column unchanged,
+  the two new ones included: the SQLite trigger `trg_products_audit_log_seal_unchanged`, and the Postgres
+  function `bss.products_audit_log_append_only()` (the trigger that calls it is unchanged). Every other
+  UPDATE and every DELETE stays refused. It is a forward migration, because the chain is deployed. On
+  SQLite, `up` adds a column only when the table lacks it, so it replays. `down()` is irreversible: dropping
+  the columns would erase recorded moves from an append-only record. A row written before the migration
+  reads null for both, and nothing is backfilled.
+- **Who stamps.** Every row whose act concerns a SKU carries the lifecycle the act found and the one it
+  left, whether the row's subject is the SKU (`subject_kind` `sku`) or one of its approval units
+  (`approval_unit`, whose `ref_id` is the SKU). Both values come from the act's own transaction, so a row
+  says what its act did, not what a later act made of it. An act that moves nothing stamps the same
+  lifecycle twice. A create has no `from` (the SKU did not exist), and a draft delete has no `to` (it no
+  longer does). A row on no SKU (a category, reference or policy act) carries null for both.
+- **The derivation table.** L is `published` or `deprecated`: the SKU's lifecycle when the act found it.
+  At quorum 0, the submit and its apply are two rows at one instant, and the submit's `to` is the apply's
+  `from`. Tests drive every row of the table through the doors, and they check that each row's `to` is the
+  next row's `from` wherever no other writer came between them.
+
+| action | unit kind | from | to |
+|---|---|---|---|
+| `sku.create` | none | null | `draft` |
+| `sku.draft_update` | none | `draft` | `draft` |
+| `sku.delete` | none | `draft` | null |
+| `approval.submit` | `sku_publish` | `draft` | `draft` |
+| `approval.submit` | `sku_change` | L | L (a type-change fence moves no lifecycle) |
+| `approval.submit` | `sku_retire` | L, or `retiring` when an orphan fence is resumed | `retiring` |
+| `approval.vote`, `approval.refreshed` | any | the lifecycle found | the same |
+| `approval.applied` (the apply at submit, quorum 0), `approval.approved` | `sku_publish` | `draft` | `published` |
+| `approval.applied`, `approval.approved` | `sku_change` | L | the proposed lifecycle, or L |
+| `approval.applied`, `approval.approved` | `sku_retire` | `retiring` | `retired` |
+| `approval.rejected`, `approval.withdrawn` | `sku_publish` | `draft` | `draft` |
+| `approval.rejected`, `approval.withdrawn` | `sku_change` | L | L |
+| `approval.rejected`, `approval.withdrawn` | `sku_retire` | `retiring` | the lifecycle before the fence |
+| `sku.unfence` | none | `retiring` (retire fence) or L (type-change fence) | the lifecycle before the fence, or L |
+| `sku.fence_expired` | none | as `sku.unfence` | as `sku.unfence` |
+
+- **The orphan-fence expiry is audited** (amends P-D-189). Every SKU read runs the expiry: the list, the
+  counts, the card, the versions, the references, the unit card, and the submit and reference doors. It
+  lifted a fence without writing a row. It now writes `sku.fence_expired` on the SKU for each fence it
+  lifts, with the move, the SKU's revision and the reason `fence_ttl_minutes=<n>`, in the read's own
+  transaction. Its actor is the system: `actor_ref` is the nil uuid, the subject of the platform's system
+  context, which no principal carries (`require_authenticated` refuses a nil subject). This is an audit
+  actor, not an authorization subject; products still reads as the caller (P-D-207). The list's expiry
+  reads the tenant's expired fences once and lifts each at the operation that holds it. A list with no
+  expired fence makes one read, as before, and each fence it lifts adds its update and its row.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3).

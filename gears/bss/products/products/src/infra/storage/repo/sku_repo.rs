@@ -576,25 +576,85 @@ pub async fn find_sku_fence(
         .map_err(|e| driver_failure("find SKU fence".into(), e))
 }
 
-/// Recover tenant-scoped orphan fences before applying list filters.
-/// Pending units cannot be released, even when their fences are old.
+/// An orphan fence the maintenance expiry lifted (P-D-189): the SKU, the lifecycle it had while
+/// fenced, the one it returned to, and its revision — what the expiry's audit row records
+/// (P-D-213).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpiredFence {
+    pub id: Uuid,
+    pub from: Lifecycle,
+    pub to: Lifecycle,
+    pub revision: i64,
+}
+/// Lift one orphan fence at the operation that holds it, reporting the move when it lifted one.
+async fn lift(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    fenced: &sku::Model,
+) -> Result<Option<ExpiredFence>, RepoError> {
+    let from = Lifecycle::parse(&fenced.lifecycle)
+        .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", fenced.lifecycle)))?;
+    Ok(
+        match unfence_sku(runner, scope, tenant, fenced.id, fenced.fence_op_id).await? {
+            HeadWrite::Written(s) => Some(ExpiredFence {
+                id: s.id,
+                from,
+                to: s.lifecycle,
+                revision: s.revision,
+            }),
+            HeadWrite::Unmatched => None,
+        },
+    )
+}
+/// Expire one SKU's orphan fence once it is older than `ttl_minutes`: never a fence a pending unit
+/// holds, and only at the operation observed (P-D-189). The caller writes the audit row.
 /// # Errors
-/// Returns scoped storage failures.
+/// Returns scoped storage failures and a stored lifecycle outside the five.
+pub async fn expire_orphan_fence(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    cutoff: OffsetDateTime,
+) -> Result<Option<ExpiredFence>, RepoError> {
+    match find_sku_fence(runner, scope, tenant, id).await? {
+        Some(row)
+            if row.pending_unit_id.is_none() && row.fenced_at.is_some_and(|at| at <= cutoff) =>
+        {
+            lift(runner, scope, tenant, &row).await
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Recover tenant-scoped orphan fences before applying list filters: one read of the tenant's
+/// fences older than `cutoff`, then each lifted at the operation that holds it. Pending units
+/// cannot be released, even when their fences are old. Answers what it lifted, for the caller's
+/// audit rows (P-D-213).
+/// # Errors
+/// Returns scoped storage failures and a stored lifecycle outside the five.
 pub async fn expire_orphan_fences(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
     cutoff: OffsetDateTime,
-) -> Result<(), RepoError> {
-    clear_fence(scope, false)
+) -> Result<Vec<ExpiredFence>, RepoError> {
+    let fenced = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
         .filter(
             Condition::all()
                 .add(sku::Column::TenantId.eq(tenant))
                 .add(sku::Column::PendingUnitId.is_null())
                 .add(sku::Column::FencedAt.lte(cutoff)),
         )
-        .exec(runner)
+        .all(runner)
         .await
-        .map_err(|e| driver_failure("expire orphan SKU fences".into(), e))?;
-    Ok(())
+        .map_err(|e| driver_failure("find orphan SKU fences".into(), e))?;
+    let mut expired = Vec::with_capacity(fenced.len());
+    for row in &fenced {
+        expired.extend(lift(runner, scope, tenant, row).await?);
+    }
+    Ok(expired)
 }

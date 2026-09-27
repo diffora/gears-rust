@@ -385,7 +385,11 @@ async fn create_sku(
                     let s = repo::insert_sku(tx, &scope, tenant_id, new, actor, now)
                         .await
                         .map_err(|e| write_error(e, category))?;
-                    audit(tx, &scope, tenant_id, actor, "sku.create", &s, now).await?;
+                    let created = repo::LifecycleMove {
+                        from: None,
+                        to: Some(s.lifecycle),
+                    };
+                    audit(tx, &scope, tenant_id, actor, "sku.create", &s, now, created).await?;
                     replay::finish(
                         tx,
                         tenant_id,
@@ -514,7 +518,18 @@ async fn update_sku_draft(
                             }));
                         }
                     };
-                    audit(tx, &scope, tenant_id, actor, "sku.draft_update", &s, now).await?;
+                    let moved = repo::LifecycleMove::between(current.lifecycle, s.lifecycle);
+                    audit(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        actor,
+                        "sku.draft_update",
+                        &s,
+                        now,
+                        moved,
+                    )
+                    .await?;
                     Ok(s)
                 })
             },
@@ -609,7 +624,21 @@ async fn delete_sku_draft(
                             found: latest.revision,
                         }));
                     }
-                    audit(tx, &scope, tenant_id, actor, "sku.delete", &current, now).await
+                    let deleted = repo::LifecycleMove {
+                        from: Some(current.lifecycle),
+                        to: None,
+                    };
+                    audit(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        actor,
+                        "sku.delete",
+                        &current,
+                        now,
+                        deleted,
+                    )
+                    .await
                 })
             },
         )
@@ -725,7 +754,12 @@ async fn sku_references(
         items: items.into_iter().map(Into::into).collect(),
     }))
 }
-/// Commit audit attribution atomically with the draft mutation.
+/// Commit audit attribution atomically with the draft mutation, with the lifecycle move it made
+/// (P-D-213).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The audit row's actor, subject and move stay explicit at each draft door"
+)]
 async fn audit(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -734,6 +768,7 @@ async fn audit(
     action: &str,
     s: &Sku,
     written_at: OffsetDateTime,
+    lifecycle: repo::LifecycleMove,
 ) -> Result<(), TxError> {
     repo::write_eventless_act_audit(
         tx,
@@ -747,6 +782,7 @@ async fn audit(
             reason: None,
             correlation_id: None,
             written_at,
+            lifecycle,
         },
         s.id,
         Some(s.revision),

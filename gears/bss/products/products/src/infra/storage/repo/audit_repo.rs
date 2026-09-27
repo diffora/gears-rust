@@ -2,10 +2,43 @@
 //! Audit row construction, on the caller's runner (P-D-193, P-D-200).
 use super::driver_failure;
 use crate::infra::storage::{RepoError, entity::audit_log};
+use bss_products_sdk::models::Lifecycle;
 use sea_orm::{EntityTrait, Set};
 use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, DBRunner, SecureInsertExt};
 use uuid::Uuid;
+
+/// The actor of an act no caller asked for: the orphan-fence expiry every SKU read runs
+/// (P-D-189, P-D-213). The nil uuid — the subject of `SecurityContext::anonymous()`, the
+/// platform's system context — which no principal carries: `require_authenticated` refuses a nil
+/// subject.
+pub const SYSTEM_ACTOR: Uuid = Uuid::nil();
+
+/// The SKU lifecycle an audited act found and the one it left (P-D-213): `from_lifecycle` and
+/// `to_lifecycle`. Both are read in the act's own transaction, so a row says what the act did,
+/// not what a later act made of it; an act that moves nothing stamps the same lifecycle twice.
+/// `from` is `None` on a create (the SKU did not exist), `to` on a draft delete (it no longer
+/// does), and both on a row whose act concerns no SKU (category, reference and policy acts).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LifecycleMove {
+    pub from: Option<Lifecycle>,
+    pub to: Option<Lifecycle>,
+}
+impl LifecycleMove {
+    /// A row whose act concerns no SKU.
+    pub const NONE: Self = Self {
+        from: None,
+        to: None,
+    };
+    /// An act that found the SKU in `from` and left it in `to`.
+    #[must_use]
+    pub const fn between(from: Lifecycle, to: Lifecycle) -> Self {
+        Self {
+            from: Some(from),
+            to: Some(to),
+        }
+    }
+}
 /// The fields every audit row carries beside its subject.
 #[derive(Clone, Debug)]
 pub struct AuditCommon {
@@ -27,6 +60,9 @@ pub struct AuditCommon {
     /// The commit instant, taken as a parameter rather than read from
     /// `OffsetDateTime::now_utc()`.
     pub written_at: OffsetDateTime,
+    /// The SKU lifecycle move the act made (P-D-213); [`LifecycleMove::NONE`] when it concerns no
+    /// SKU.
+    pub lifecycle: LifecycleMove,
 }
 
 /// Write one audit row in the caller's mutation transaction: a door's act on
@@ -69,6 +105,8 @@ pub async fn write_eventless_act_audit(
         seq: Set(None),
         prev_hash: Set(None),
         row_hash: Set(None),
+        from_lifecycle: Set(common.lifecycle.from.map(|l| l.as_str().to_owned())),
+        to_lifecycle: Set(common.lifecycle.to.map(|l| l.as_str().to_owned())),
     };
 
     audit_log::Entity::insert(model.clone())

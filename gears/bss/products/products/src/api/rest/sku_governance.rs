@@ -23,7 +23,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{Engine, SubmitRequest};
-use bss_products_sdk::models::SkuContent;
+use bss_products_sdk::models::{Lifecycle, SkuContent};
 use serde_json::Value;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -365,6 +365,15 @@ async fn execute(
                         "resume the type change or unfence it first",
                     ));
                 }
+                // P-D-213: the lifecycle the submit found, and the one it leaves before any apply:
+                // only a retire moves it, by its fence (a fence taken now, or the orphan resumed,
+                // is `retiring` either way); a type-change fence moves none.
+                let found = current.lifecycle;
+                let fenced = if matches!(kind, SubmitKind::Retire) {
+                    Lifecycle::Retiring
+                } else {
+                    found
+                };
                 let base = SkuPublish {
                     scope: scope.clone(),
                     tenant_id: tenant,
@@ -428,8 +437,10 @@ async fn execute(
                     submitted.unit.id,
                     None,
                     now,
+                    repo::LifecycleMove::between(found, fenced),
                 )
                 .await?;
+                let after = g::find(tx, &scope, tenant, id).await?;
                 if submitted.applied {
                     g::audit(
                         tx,
@@ -440,6 +451,7 @@ async fn execute(
                         submitted.unit.id,
                         None,
                         now,
+                        repo::LifecycleMove::between(fenced, after.lifecycle),
                     )
                     .await?;
                     g::decided(&state, tx, &store, &submitted.unit, ctx.subject_id()).await?;
@@ -447,7 +459,7 @@ async fn execute(
                 let receipt = SubmitReceipt {
                     applied: submitted.applied,
                     unit: submitted.unit.into(),
-                    sku: g::find(tx, &scope, tenant, id).await?.into(),
+                    sku: after.into(),
                 };
                 replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await
             })
@@ -491,7 +503,9 @@ async fn unfence(
             let ctx = ctx.clone();
             let claim = claim.clone();
             Box::pin(async move {
-                g::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
+                let found = g::find(tx, &scope, ctx.subject_tenant_id(), id)
+                    .await?
+                    .lifecycle;
                 if let Some(response) =
                     replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
                 {
@@ -515,6 +529,7 @@ async fn unfence(
                     id,
                     None,
                     OffsetDateTime::now_utc(),
+                    repo::LifecycleMove::between(found, sku.lifecycle),
                 )
                 .await?;
                 replay::finish(

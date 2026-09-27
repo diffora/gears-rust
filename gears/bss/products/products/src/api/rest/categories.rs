@@ -435,6 +435,7 @@ async fn audit(
             reason: None,
             correlation_id: None,
             written_at,
+            lifecycle: repo::LifecycleMove::NONE,
         },
         c.id,
         Some(c.version),

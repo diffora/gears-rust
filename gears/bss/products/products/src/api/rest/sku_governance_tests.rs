@@ -2774,3 +2774,6 @@ async fn a_collector_denial_is_403_at_submit_and_at_approve() {
     );
     assert_eq!(b["outcome"], "applied", "{b}");
 }
+
+#[path = "sku_history_tests.rs"]
+mod sku_history_tests;

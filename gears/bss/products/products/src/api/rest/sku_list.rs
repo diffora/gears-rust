@@ -514,21 +514,27 @@ async fn list_skus(
 }
 
 /// Recover the tenant's orphan fences before a read, in the read's transaction, so the list
-/// and the counts agree on `retiring` (P-D-189).
+/// and the counts agree on `retiring` (P-D-189); each fence lifted is the system's act, with its
+/// audit row (P-D-213).
 async fn expire(
     tx: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
     ttl: u32,
 ) -> Result<(), TxError> {
-    repo::expire_orphan_fences(
+    let now = OffsetDateTime::now_utc();
+    for expired in repo::expire_orphan_fences(
         tx,
         scope,
         tenant,
-        OffsetDateTime::now_utc() - time::Duration::minutes(i64::from(ttl)),
+        now - time::Duration::minutes(i64::from(ttl)),
     )
     .await
-    .map_err(TxError::Repo)
+    .map_err(TxError::Repo)?
+    {
+        super::governance::expiry_audit(tx, tenant, expired, ttl, now).await?;
+    }
+    Ok(())
 }
 
 /// Whether `expr` names `lifecycle` anywhere.
