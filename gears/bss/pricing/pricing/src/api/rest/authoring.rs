@@ -181,7 +181,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("List a book's entries")
         .description(
             "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
-             and period. Refusals: 404 for a book the tenant does not hold.",
+             and period, each with its usage (D-428): its prices by state (a rejected price is not \
+             counted), the distinct plans whose draft, pending or published revisions name it, \
+             and the distinct plans that name it only through superseded revisions. Refusals: 404 \
+             for a book the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -276,11 +279,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.create_entry")
         .summary("Add a SKU to a price book")
         .description(
-            "Adds an entry for a SKU to a book, reserving the SKU reference in Products before the \
-             write and confirming it after; the Idempotency-Key replays the receipt. Refusals: 400 \
-             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN, SKU_DRAFT, \
-             SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or \
-             CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+            "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), \
+             reserving the SKU reference in Products before the write and confirming it after; the \
+             Idempotency-Key replays the receipt. Refusals: 400 MODEL_INVALID, \
+             MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), \
+             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, \
+             period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, \
+             SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 \
+             REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()
@@ -301,14 +307,17 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Read a price book entry")
         .description(
             "Returns one price book entry of the tenant, its version as the ETag a following PATCH \
-             sends back as If-Match. Refusals: 404 ENTRY_NOT_FOUND.",
+             sends back as If-Match, and its usage (D-428): its prices by state (a rejected price \
+             is not counted), the distinct plans whose draft, pending or published revisions name \
+             it, and the distinct plans that name it only through superseded revisions. Refusals: \
+             404 ENTRY_NOT_FOUND.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Price book entry id")
         .handler(get_entry)
-        .json_response_with_schema::<dto::PricingPriceBookEntryDto>(
+        .json_response_with_schema::<dto::PricingPriceBookEntryReadDto>(
             openapi,
             StatusCode::OK,
             "Response",
@@ -987,9 +996,11 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a draft price")
         .description(
             "Adds a draft price to an entry's chain, and a temporary price's return partner with \
-             it; the Idempotency-Key replays the answer. Refusals: 400 for a rule the price breaks \
-             (for example MODEL_INVALID, AMOUNT_INVALID, WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN \
-             or PRICE_INSIDE_TEMPORARY); 409 ENTRY_REFERENCE_LOST.",
+             it; the Idempotency-Key replays the answer. The money is in the entry's model and the \
+             price carries no model of its own (D-427). Refusals: 400 for a rule the price breaks \
+             (for example PRICE_MISSING for money of another model's shape, AMOUNT_INVALID, \
+             WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY); 409 \
+             ENTRY_REFERENCE_LOST.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1286,11 +1297,17 @@ async fn list_entries(
         let (scope, ctx) = (scope.clone(), ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
+            let entries = books::entries(tx, &scope, tenant, id).await?;
+            let ids: Vec<Uuid> = entries.iter().map(|m| m.id).collect();
+            // D-428: every entry's usage in a fixed number of set-based reads.
+            let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids).await?;
             let body = PricingPriceBookEntryList {
-                items: books::entries(tx, &scope, tenant, id)
-                    .await?
+                items: entries
                     .into_iter()
-                    .map(Into::into)
+                    .map(|m| {
+                        let counted = usage.remove(&m.id).unwrap_or_default();
+                        dto::PricingPriceBookEntryReadDto::of(m, counted)
+                    })
                     .collect(),
             };
             Ok(response(StatusCode::OK, &body, None)?)
@@ -1492,13 +1509,18 @@ async fn get_entry(
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
         Box::pin(async move {
-            let m = price_book_entries::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
+            let tenant = ctx.subject_tenant_id();
+            let m = price_book_entries::find(tx, &scope, tenant, id).await?;
             let version = preconditions::RowVersion::from_stored(m.version)
                 .map_err(CanonicalError::from)?
                 .get();
+            let usage = crate::infra::usage::entry_usage(tx, tenant, &[m.id])
+                .await?
+                .remove(&m.id)
+                .unwrap_or_default();
             Ok(response(
                 StatusCode::OK,
-                &dto::PricingPriceBookEntryDto::from(m),
+                &dto::PricingPriceBookEntryReadDto::of(m, usage),
                 Some(version),
             )?)
         })

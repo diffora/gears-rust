@@ -113,6 +113,36 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
     assert!(router.has_routes());
 }
 
+/// D-428, P-D-197: init registers pricing's SKU usage port under the key Products resolves at
+/// each SKU read, and the port asks the policy before it reads anything: with the harness's
+/// authorization down it answers 503, never a guess.
+#[tokio::test]
+async fn init_registers_the_sku_usage_port_products_resolves() {
+    use bss_products_sdk::sku_usage::SkuUsageV1;
+    let harness = rest_support::Harness::new().await.unwrap();
+    let port = harness
+        .ctx
+        .client_hub()
+        .get::<dyn SkuUsageV1>()
+        .expect("pricing registers dyn SkuUsageV1 at init");
+    let tenant = uuid::Uuid::new_v4();
+    let reader = toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap();
+    let refused = port
+        .usage(&reader, tenant, &[uuid::Uuid::new_v4()])
+        .await
+        .unwrap_err();
+    let response = axum::response::IntoResponse::into_response(refused);
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
 #[test]
 fn the_registration_parser_has_a_positive_control() {
     let routes = census::registrations(census::CONTROL);

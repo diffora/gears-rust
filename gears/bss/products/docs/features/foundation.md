@@ -161,7 +161,7 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`, `cpt-cf-bss-p
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/infra/storage/migrations.rs`.
 
-Migrations 000001–000006 create category, SKU, versions, four approval tables, audit, replay and reference registry on SQLite and Postgres. Tenant isolation uses SecureORM scoping and scoped parent-category reads inside the write transaction; it does not depend on composite tenant foreign keys. Repositories, settings and canonical DomainError mapping use the same semantics on both engines, including bounded serialization retry without row locks (DESIGN §3.7; slice 01 §5).
+Migrations 000001–000006 create category, SKU, versions, four approval tables, audit, replay and reference registry on SQLite and Postgres; the forward migration 000007 makes a SKU's category optional (P-D-196). Tenant isolation uses SecureORM scoping and scoped parent-category reads inside the write transaction; it does not depend on composite tenant foreign keys. Repositories, settings and canonical DomainError mapping use the same semantics on both engines, including bounded serialization retry without row locks (DESIGN §3.7; slice 01 §5).
 
 ### Immutable SKU version table
 

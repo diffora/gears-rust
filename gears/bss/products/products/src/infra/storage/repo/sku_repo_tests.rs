@@ -18,7 +18,7 @@ fn new_sku(code: &str, name: &str, cat: uuid::Uuid) -> NewSku {
         code: code.into(),
         name: name.into(),
         r#type: SkuType::Usage,
-        category_id: cat,
+        category_id: Some(cat),
         description: String::new(),
         sellable: true,
         gl_code: None,

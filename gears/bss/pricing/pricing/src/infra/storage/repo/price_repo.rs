@@ -2,7 +2,7 @@
 use super::{driver_failure, map_unique, matched};
 use crate::infra::storage::{RepoError, entity::price as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -37,7 +37,6 @@ pub async fn insert(
         price_book_entry_id: Set(m.price_book_entry_id),
         version_no: Set(m.version_no),
         dim_value: Set(m.dim_value),
-        model: Set(m.model),
         price_json: Set(m.price_json),
         min_fee: Set(m.min_fee),
         eligibility: Set(m.eligibility),
@@ -116,7 +115,6 @@ pub async fn update_draft(
         .secure()
         .scope_with(scope)
         .col_expr(e::Column::DimValue, Expr::value(m.dim_value))
-        .col_expr(e::Column::Model, Expr::value(m.model))
         .col_expr(e::Column::PriceJson, Expr::value(m.price_json))
         .col_expr(e::Column::MinFee, Expr::value(m.min_fee))
         .col_expr(e::Column::Eligibility, Expr::value(m.eligibility))
@@ -163,6 +161,46 @@ pub async fn for_entry(
         .await
         .map_err(|e| driver_failure("list parent rows".into(), e))
 }
+/// How many prices of one entry are in one state: a row of [`count_by_entry_and_state`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct EntryStateCount {
+    pub price_book_entry_id: Uuid,
+    pub state: String,
+    pub count: i64,
+}
+/// The prices of the entries, counted by entry and state in ONE grouped statement, whatever the
+/// number of entries (D-428). An entry without prices has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn count_by_entry_and_state(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entries: &[Uuid],
+) -> Result<Vec<EntryStateCount>, RepoError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::PriceBookEntryId)
+                .column(e::Column::State)
+                .column_as(Expr::col(e::Column::Id).count(), "count")
+                .group_by(e::Column::PriceBookEntryId)
+                .group_by(e::Column::State)
+                .into_model::<EntryStateCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count prices by entry and state".into(), e))
+}
 /// Remove a draft only at its current version and outside an approval unit.
 /// # Errors
 /// Refuses stale versions, non-drafts and pending ownership.
@@ -188,13 +226,17 @@ pub async fn delete_draft(
         .map_err(|e| driver_failure("delete draft".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
-/// Decode a stored price into the pure model; unknown vocabulary is a corrupt row.
+/// Decode a stored price into the pure model, in its ENTRY's model (D-427: a price has no model
+/// of its own; the caller passes `price_book_entry_repo::model_of` of the price's entry). Unknown
+/// vocabulary, or money whose shape is not the entry's model, is a corrupt row.
 /// # Errors
 /// Returns `CorruptRow` for a stored enum or price shape the model does not know.
-pub fn to_domain(m: &e::Model) -> Result<crate::domain::price::Price, RepoError> {
-    use crate::domain::{money, price, price_book_entry::Model};
+pub fn to_domain(
+    m: &e::Model,
+    model: crate::domain::price_book_entry::Model,
+) -> Result<crate::domain::price::Price, RepoError> {
+    use crate::domain::{money, price};
     let corrupt = |what: &str| RepoError::CorruptRow(format!("price {} {what}", m.id));
-    let model: Model = m.model.parse().map_err(|_| corrupt("model"))?;
     Ok(price::Price {
         id: m.id,
         price_book_entry_id: m.price_book_entry_id,

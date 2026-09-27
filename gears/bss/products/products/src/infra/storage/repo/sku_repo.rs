@@ -66,7 +66,21 @@ fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
         updated_at: m.updated_at,
     })
 }
-/// Insert a draft under an active category in the caller's serializable transaction.
+/// A SKU without a category (P-D-196) has none to resolve; a given one must be the tenant's and
+/// active.
+async fn require_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Option<Uuid>,
+) -> Result<(), RepoError> {
+    match id {
+        Some(id) => require_active_category(runner, scope, tenant, id).await,
+        None => Ok(()),
+    }
+}
+/// Insert a draft, under an active category when it names one, in the caller's serializable
+/// transaction.
 /// # Errors
 /// Returns unique-code/name, category, or scoped storage errors.
 pub async fn insert_sku(
@@ -77,7 +91,7 @@ pub async fn insert_sku(
     created_by: Uuid,
     now: OffsetDateTime,
 ) -> Result<Sku, RepoError> {
-    require_active_category(runner, scope, tenant_id, new.category_id).await?;
+    require_category(runner, scope, tenant_id, new.category_id).await?;
     let model = sku::ActiveModel {
         id: Set(Uuid::new_v4()),
         tenant_id: Set(tenant_id),
@@ -256,7 +270,7 @@ pub async fn update_sku_draft(
     content: &SkuContent,
     now: OffsetDateTime,
 ) -> Result<HeadWrite<Sku>, RepoError> {
-    require_active_category(runner, scope, tenant_id, content.category_id).await?;
+    require_category(runner, scope, tenant_id, content.category_id).await?;
     let r = content_update(scope, content, now)
         .filter(
             key(tenant_id, id)
@@ -280,7 +294,7 @@ pub async fn write_sku_content(
     content: &SkuContent,
     now: OffsetDateTime,
 ) -> Result<Sku, RepoError> {
-    require_active_category(runner, scope, tenant_id, content.category_id).await?;
+    require_category(runner, scope, tenant_id, content.category_id).await?;
     let r = content_update(scope, content, now)
         .col_expr(
             sku::Column::PublishedVersion,
@@ -502,7 +516,8 @@ pub async fn unlock_sku(
         .map_err(|e| driver_failure("unlock SKU".into(), e))?;
     written(runner, scope, tenant_id, id, result.rows_affected).await
 }
-/// Count all heads that keep a category in use, including retired heads.
+/// Count all heads that keep a category in use, including retired heads. A SKU without a category
+/// (P-D-196) never matches `category_id = <id>`.
 /// # Errors
 /// Returns scoped storage failures.
 pub async fn count_skus_in_category(

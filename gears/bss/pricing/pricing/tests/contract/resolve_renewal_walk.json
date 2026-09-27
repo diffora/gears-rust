@@ -27,6 +27,7 @@
             "price_book_entry_id": "<entry:pro>",
             "charge_kind": "recurring",
             "period": "month",
+            "model": "flat",
             "sku_version": {
               "published_version": 2,
               "effective_from": "2026-10-01"
@@ -59,7 +60,6 @@
                   "price_id": "<price:12>",
                   "dim_used": null,
                   "pinned_from": "<price:10>",
-                  "model": "flat",
                   "price": {
                     "amount": "12.00"
                   },
@@ -102,6 +102,7 @@
             "price_book_entry_id": "<entry:pro>",
             "charge_kind": "recurring",
             "period": "month",
+            "model": "flat",
             "sku_version": {
               "published_version": 2,
               "effective_from": "2026-10-01"
@@ -134,7 +135,6 @@
                   "price_id": "<price:15>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "flat",
                   "price": {
                     "amount": "15.00"
                   },

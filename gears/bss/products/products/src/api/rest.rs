@@ -21,6 +21,7 @@ pub mod references;
 mod replay;
 pub mod sku_governance;
 pub mod skus;
+mod usage;
 
 /// The reserved service prefix.
 pub const PREFIX: &str = "/bss-products/v1";
@@ -38,6 +39,9 @@ pub struct ApiState {
     pub idempotency_retention_hours: u32,
     pub(crate) fence_ttl_minutes: u32,
     pub(crate) reference_principals: std::collections::BTreeMap<uuid::Uuid, String>,
+    /// Where pricing registers its `SkuUsageV1` port (P-D-197), resolved at each SKU read: the
+    /// two gears boot in either order.
+    pub hub: std::sync::Arc<toolkit::ClientHub>,
 }
 
 /// Shared REST foundation helper.

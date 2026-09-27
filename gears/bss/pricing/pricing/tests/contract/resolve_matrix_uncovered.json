@@ -27,6 +27,7 @@
             "price_book_entry_id": "<entry:egress>",
             "charge_kind": "usage",
             "period": null,
+            "model": "per_unit",
             "sku_version": {
               "published_version": 1,
               "effective_from": "2026-01-01"
@@ -64,7 +65,6 @@
                   "price_id": "<price:egress-eu>",
                   "dim_used": "eu",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.02"
                   },
@@ -84,7 +84,6 @@
                   "price_id": "<price:egress-us>",
                   "dim_used": "us",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.03"
                   },
@@ -137,6 +136,7 @@
             "price_book_entry_id": "<entry:storage>",
             "charge_kind": "usage",
             "period": null,
+            "model": "per_unit",
             "sku_version": {
               "published_version": 1,
               "effective_from": "2026-01-01"
@@ -169,7 +169,6 @@
                   "price_id": "<price:storage-default>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.10"
                   },
@@ -189,7 +188,6 @@
                   "price_id": "<price:storage-eu>",
                   "dim_used": "eu",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.08"
                   },
@@ -209,7 +207,6 @@
                   "price_id": "<price:storage-us>",
                   "dim_used": "us",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.09"
                   },
@@ -229,7 +226,6 @@
                   "price_id": "<price:storage-apac>",
                   "dim_used": "apac",
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.11"
                   },
@@ -249,7 +245,6 @@
                   "price_id": "<price:storage-default>",
                   "dim_used": null,
                   "pinned_from": null,
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.10"
                   },
@@ -269,7 +264,6 @@
                   "price_id": "<price:storage-default>",
                   "dim_used": null,
                   "pinned_from": "<price:storage-default>",
-                  "model": "per_unit",
                   "price": {
                     "rate": "0.10"
                   },

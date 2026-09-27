@@ -85,3 +85,16 @@ fn matrix_8_phase_placeholder_dropped() {
         "LINE_TEMPLATE_INVALID"
     );
 }
+/// D-427: an entry without prices takes its charge kind's default model — the rule 000013's
+/// backfill applies and an op stored before it resolves to. Each default is a model its kind allows.
+#[test]
+fn d427_the_charge_kinds_default_model_is_one_it_allows() {
+    for (kind, model) in [
+        (ChargeKind::Recurring, Model::Flat),
+        (ChargeKind::OneTime, Model::Flat),
+        (ChargeKind::Usage, Model::PerUnit),
+    ] {
+        assert_eq!(default_model(kind), model, "{kind:?}");
+        assert!(model_allowed(kind, default_model(kind)), "{kind:?}");
+    }
+}

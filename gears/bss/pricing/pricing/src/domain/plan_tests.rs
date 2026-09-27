@@ -87,7 +87,7 @@ fn sku(n: u128, name: &str, code: &str, kind: SkuType, usage_type: Option<&str>)
         code: code.into(),
         name: name.into(),
         r#type: kind,
-        category_id: id(0),
+        category_id: Some(id(0)),
         description: String::new(),
         sellable: true,
         lifecycle: Lifecycle::Published,

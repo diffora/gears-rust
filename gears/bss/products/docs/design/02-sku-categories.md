@@ -36,7 +36,7 @@ It depends on [Foundation](01-foundation.md) and provides subject validation to
 [Lifecycle & Approvals](03-lifecycle-approvals.md). [Read Model & Events](04-read-model-events.md)
 adds search, reference summaries and retained browse. The slice map is DESIGN §4.
 
-A SKU has no Product parent. Categories are flat, one per SKU; bundles have no composition here.
+A SKU has no Product parent. Categories are flat, at most one per SKU (P-D-196); bundles have no composition here.
 Spec §2.2 and §4 are the content authority, with §6 for submit/apply validation and §7.2 for doors
 (spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout).
 [DECISIONS](../DECISIONS.md) P-D-184–188 and P-D-191 fix metering, identity, type and version behavior.
@@ -45,8 +45,8 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 
 ### Author drafts a SKU
 
-1. [ ] - `p1` - Author reads the tenant's categories and creates an independent SKU with code, name, type, category and initial content; authenticate products:author and resolve optional POST replay first - `inst-sku-create-input`
-2. [ ] - `p1` - Resolve the category in tenant scope, validate type-specific fields, apply the draft-save catalog posture, then insert under the separate code/name unique indexes - `inst-sku-create-validate`
+1. [ ] - `p1` - Author reads the tenant's categories and creates an independent SKU with code, name, type, an optional category and initial content; authenticate products:author and resolve optional POST replay first - `inst-sku-create-input`
+2. [ ] - `p1` - Resolve a given category in tenant scope (an omitted one stays null, with no default fallback), validate type-specific fields, apply the draft-save catalog posture, then insert under the separate code/name unique indexes - `inst-sku-create-validate`
 3. [ ] - `p1` - Commit the draft with revision 1, published_version 0 (revision is the concurrency version) and created_by; return its id and ETag - `inst-sku-create-commit`
 4. [ ] - `p1` - For subsequent PATCH, require If-Match, draft lifecycle and no pending unit; draft type changes need no fence because drafts cannot be reserved - `inst-sku-patch-guards`
 5. [ ] - `p1` - Conditionally update content and increment revision; preserve published_version until publication; hand publication to slice 03 - `inst-sku-patch-commit`
@@ -93,7 +93,7 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 
 ### category-retire-refused
 
-1. [ ] - `p1` - Within the tenant transaction, refuse retirement if any SKU points to the category, regardless of its lifecycle; return 409 CATEGORY_IN_USE - `inst-sku-category-count`
+1. [ ] - `p1` - Within the tenant transaction, refuse retirement if any SKU points to the category, regardless of its lifecycle; return 409 CATEGORY_IN_USE; a SKU without a category never counts - `inst-sku-category-count`
 2. [ ] - `p1` - Otherwise conditionally set status retired and increment version without an approval unit; category assignment and retirement must serialize their reciprocal checks so a concurrent assignment cannot bypass this rule - `inst-sku-category-retire-write`
 
 ### versions-as-of
@@ -117,8 +117,8 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 
 | Route | Permission and behavior |
 | --- | --- |
-| `POST /skus` | products:author; 201 draft with id and ETag; code/name conflicts are 409. |
-| `PATCH /skus/{id}` | products:author; draft only, If-Match required; pending ownership returns ROW_LOCKED_PENDING; stale version returns STALE_REVISION. |
+| `POST /skus` | products:author; 201 draft with id and ETag; `category_id` is optional and an omitted one is null; code/name conflicts are 409. |
+| `PATCH /skus/{id}` | products:author; draft only, If-Match required; `category_id: null` clears the category; pending ownership returns ROW_LOCKED_PENDING; stale version returns STALE_REVISION. |
 | `GET /skus` | products:read; scoped current heads. Slice 04 owns search, filters and pagination. |
 | `GET /skus/{id}` | products:read; current SKU and ETag. Current applied content may be future-effective; use versions for dated truth. |
 | `GET /skus/{id}/versions?as_of=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE. Without as_of, return history. |
@@ -139,7 +139,7 @@ This slice assigns write ownership and snapshot contents.
 | Record | Fields and write rules |
 | --- | --- |
 | `products_sku` | Identity: id, tenant_id, code, name, type, category_id. Business content: description, sellable, lifecycle, gl_code, tax_category, invoice_line_template, billing_timing, usage_type_ref, unit. Attribution: created_by, created_at, updated_at. Counters: revision (concurrency version), published_version. Approval/fence columns are owned jointly with slice 03. |
-| `products_category` | id, tenant_id, code, name, is_default, sort_order, status, timestamps, version. There is no parent_id. One tenant-qualified category_id links each SKU to a category. |
+| `products_category` | id, tenant_id, code, name, is_default, sort_order, status, timestamps, version. There is no parent_id. A nullable tenant-qualified category_id links a SKU to at most one category. |
 | `products_sku_version` | tenant_id, sku_id, published_version, effective_from, snapshot. Snapshot preserves applied SKU business content, including type, lifecycle, descriptors and metering; pending ownership, fence metadata and concurrency tokens are not business content. |
 
 `revision` is the SKU concurrency version for ETag, If-Match and conditional writes;
@@ -178,7 +178,7 @@ Numbered criteria refer to [PRD §9](../PRD.md#9-acceptance-criteria).
 | `cpt-cf-bss-products-fr-sku-metering`; AC #5 | Given missing or unresolved usage metering, when publication is submitted, then USAGE_NEEDS_METER or USAGE_TYPE_UNRESOLVED prevents a unit/version; apply revalidates if the catalog changes. A draft-save catalog non-answer remains saveable per P-D-184. |
 | `cpt-cf-bss-products-fr-sku-bundle`; AC #6 | Given a bundle, when usage metering is assigned, then BUNDLE_HAS_NO_METER refuses it; the exposed type supports sold_as and prevents Pricing treating it as a priced SKU or item. |
 | `cpt-cf-bss-products-fr-sku-versions`; AC #8–9 | Given publication on September 24 and a change effective October 1, when reading September 30/October 1/September 23, then return old/new/NO_VERSION_IN_FORCE. Earlier-date changes fail VERSION_ORDER; equal dates retain both versions and select the larger number. |
-| `cpt-cf-bss-products-fr-category-flat`; AC #13, #27 | Given a flat category, when created/renamed it needs no approval; when referenced retirement fails CATEGORY_IN_USE; stale PATCH fails STALE_REVISION. An unreferenced category retires directly. |
+| `cpt-cf-bss-products-fr-category-flat`; AC #13, #27 | Given a flat category, when created/renamed it needs no approval; when referenced retirement fails CATEGORY_IN_USE; stale PATCH fails STALE_REVISION. An unreferenced category retires directly, also beside SKUs without a category. |
 | `cpt-cf-bss-products-fr-sku-define`, `cpt-cf-bss-products-fr-sku-descriptors`; AC #4, #19 | Given pending ownership, when direct edit or second submission is attempted, then ROW_LOCKED_PENDING preserves the reviewed content. |
 
 ## 10. Non-Functional Considerations

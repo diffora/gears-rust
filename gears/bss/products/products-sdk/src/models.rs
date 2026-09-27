@@ -97,7 +97,8 @@ pub struct Sku {
     pub code: String,
     pub name: String,
     pub r#type: SkuType,
-    pub category_id: Uuid,
+    /// `None`: the SKU has no category (P-D-196); the wire carries `null`.
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub lifecycle: Lifecycle,
@@ -125,7 +126,8 @@ pub struct SkuContent {
     pub code: String,
     pub name: String,
     pub r#type: SkuType,
-    pub category_id: Uuid,
+    /// `None`: the SKU has no category (P-D-196).
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub gl_code: Option<String>,

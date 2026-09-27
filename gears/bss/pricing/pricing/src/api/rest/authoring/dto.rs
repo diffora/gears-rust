@@ -40,6 +40,9 @@ pub struct PricingPriceBookEntryDto {
     pub sku_id: Uuid,
     pub charge_kind: String,
     pub period: Option<String>,
+    /// The entry's model (D-427), fixed for its life and part of its key: `flat`, `per_unit`,
+    /// `graduated`, `volume` or `package`.
+    pub model: String,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
     pub reservation_id: Uuid,
@@ -59,6 +62,7 @@ impl From<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
             sku_id: m.sku_id,
             charge_kind: m.charge_kind,
             period: m.period,
+            model: m.model,
             dimension_key: m.dimension_key,
             invoice_line_override: m.invoice_line_override,
             reservation_id: m.reservation_id,
@@ -69,6 +73,53 @@ impl From<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
         }
     }
 }
+/// An entry's prices by state; a rejected price is not counted (D-428).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEntryPriceCounts {
+    pub approved: u64,
+    pub pending: u64,
+    pub draft: u64,
+}
+/// An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,
+/// pending or published revision whose items name it; `plans_superseded_only`, the distinct plans
+/// that name it only through superseded revisions (they still keep it `ENTRY_IN_USE`).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEntryUsage {
+    pub prices: PricingEntryPriceCounts,
+    pub plans: u64,
+    pub plans_superseded_only: u64,
+}
+impl From<crate::infra::usage::EntryUsage> for PricingEntryUsage {
+    fn from(u: crate::infra::usage::EntryUsage) -> Self {
+        Self {
+            prices: PricingEntryPriceCounts {
+                approved: u.prices.approved,
+                pending: u.prices.pending,
+                draft: u.prices.draft,
+            },
+            plans: u.plans,
+            plans_superseded_only: u.plans_superseded_only,
+        }
+    }
+}
+/// What the two entry reads answer (D-428): the entry's fields and its `usage`. Every other answer
+/// that carries an entry (POST, PATCH, the stored receipt, the export, publish-changes) keeps
+/// [`PricingPriceBookEntryDto`].
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPriceBookEntryReadDto {
+    #[serde(flatten)]
+    pub entry: PricingPriceBookEntryDto,
+    pub usage: PricingEntryUsage,
+}
+impl PricingPriceBookEntryReadDto {
+    #[must_use]
+    pub fn of(m: entity::price_book_entry::Model, usage: crate::infra::usage::EntryUsage) -> Self {
+        Self {
+            entry: m.into(),
+            usage: usage.into(),
+        }
+    }
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceDto {
     pub id: Uuid,
@@ -76,6 +127,7 @@ pub struct PricingPriceDto {
     pub price_book_entry_id: Uuid,
     pub version_no: i32,
     pub dim_value: Option<String>,
+    /// The entry's model, read-only (D-427): a price has no model of its own.
     pub model: String,
     pub price_json: serde_json::Value,
     pub min_fee: Option<String>,
@@ -102,8 +154,10 @@ pub struct PricingPriceDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl From<entity::price::Model> for PricingPriceDto {
-    fn from(m: entity::price::Model) -> Self {
+impl PricingPriceDto {
+    /// A stored price with its entry's model (D-427).
+    #[must_use]
+    pub fn of(m: entity::price::Model, model: &str) -> Self {
         let status = m
             .state
             .parse::<crate::domain::price::PriceState>()
@@ -125,7 +179,7 @@ impl From<entity::price::Model> for PricingPriceDto {
             price_book_entry_id: m.price_book_entry_id,
             version_no: m.version_no,
             dim_value: m.dim_value,
-            model: m.model,
+            model: model.to_owned(),
             price_json: m.price_json,
             min_fee: m.min_fee,
             eligibility: m.eligibility,
@@ -189,7 +243,7 @@ pub struct PriceBookList {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryList {
-    pub items: Vec<PricingPriceBookEntryDto>,
+    pub items: Vec<PricingPriceBookEntryReadDto>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingExportEntry {
@@ -239,6 +293,9 @@ pub struct PricingSettingsDto {
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceBookEntryCreate {
     pub sku_id: Uuid,
+    /// Required and fixed for the entry's life (D-427): `flat`, `per_unit`, `graduated`,
+    /// `volume` or `package`, one the SKU's charge kind allows.
+    pub model: String,
     pub period: Option<String>,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
@@ -567,7 +624,7 @@ pub(super) struct PricingReferenceOpQuery {
 #[serde(deny_unknown_fields)]
 pub struct PricingPriceCreate {
     pub dim_value: Option<String>,
-    pub model: String,
+    /// Money in the entry's model (D-427); a price carries no model of its own.
     pub price: serde_json::Value,
     pub min_fee: Option<String>,
     pub eligibility: String,
@@ -585,7 +642,6 @@ pub struct PricingPriceCreate {
 pub struct PricingPricePatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub dim_value: Option<Option<String>>,
-    pub model: Option<String>,
     pub price: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "nullable_date")]
     pub min_fee: Option<Option<String>>,

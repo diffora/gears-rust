@@ -578,7 +578,7 @@ async fn checks_name_the_pending_price_unit_that_would_cover_an_item() {
         .call(
             "POST",
             &format!("/price-book-entries/{e}/prices"),
-            json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
             None,
             Some("price"),
         )
@@ -840,7 +840,7 @@ async fn a_rejected_or_withdrawn_price_unit_is_no_longer_named_by_the_next_check
             .call(
                 "POST",
                 &format!("/price-book-entries/{e}/prices"),
-                json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
+                json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from}),
                 None,
                 Some(&format!("price-{act}")),
             )

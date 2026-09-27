@@ -8,7 +8,8 @@ use std::sync::Arc;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
 
-/// A book, an optional `region` registry, and one confirmed usage entry.
+/// A book, an optional `region` registry, and one confirmed usage entry in `per_unit` (D-427: the
+/// entry carries the model).
 async fn priced(dimension: bool) -> (Fixture, Value) {
     let script = Arc::new(Script::default());
     let f = Fixture::new(script).await;
@@ -29,9 +30,9 @@ async fn priced(dimension: bool) -> (Fixture, Value) {
         assert_eq!(saved.0, 200, "{saved:?}");
     }
     let body = if dimension {
-        json!({"sku_id":Uuid::new_v4(),"dimension_key":"region"})
+        json!({"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"})
     } else {
-        json!({"sku_id":Uuid::new_v4()})
+        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"})
     };
     let (status, entry, _) = f
         .call(
@@ -45,14 +46,32 @@ async fn priced(dimension: bool) -> (Fixture, Value) {
     assert_eq!(status, 201, "{entry}");
     (f, entry)
 }
+/// Another entry of `entry`'s book and SKU in `model`: another model is another entry (D-427).
+async fn beside(f: &Fixture, entry: &Value, model: &str) -> Value {
+    let (status, other, _) = f
+        .call(
+            "POST",
+            &format!(
+                "/price-books/{}/entries",
+                entry["book_id"].as_str().unwrap()
+            ),
+            json!({"sku_id":entry["sku_id"],"dimension_key":entry["dimension_key"],"model":model}),
+            None,
+            Some(&format!("entry-{model}")),
+        )
+        .await;
+    assert_eq!(status, 201, "{other}");
+    other
+}
 fn prices_path(entry: &Value) -> String {
     format!(
         "/price-book-entries/{}/prices",
         entry["id"].as_str().unwrap()
     )
 }
+/// A draft in the `per_unit` entry's model (D-427: the price carries none of its own).
 fn draft(from: &str) -> Value {
-    json!({"model":"per_unit","price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
+    json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":from})
 }
 /// An approved price written directly, as a unit's apply would leave it.
 async fn approved(
@@ -206,73 +225,90 @@ async fn a_temporary_price_on_a_value_without_its_own_chain_is_one_closed_price(
 async fn pure_rule_refusals_answer_400_with_their_codes_and_no_price() {
     let (f, entry) = priced(true).await;
     approved(&f, &entry, 1, "2031-01-01", None).await;
-    let cases: Vec<(Value, &str)> = vec![
+    // D-427: a shape rule is judged against the entry's model, so each model's refusal runs on an
+    // entry of that model (the same SKU: another model is another entry). The model refusals
+    // themselves, MODEL_INVALID and MODEL_KIND_CHARGEKIND_MISMATCH, belong to the entry create
+    // (`entry_doors.rs`, the_entry_create_requires_a_model_its_charge_kind_allows).
+    let package = beside(&f, &entry, "package").await;
+    let graduated = beside(&f, &entry, "graduated").await;
+    let volume = beside(&f, &entry, "volume").await;
+    let cases: Vec<(&Value, Value, &str)> = vec![
         (
-            json!({"model":"flat","price":{"amount":"5"},"eligibility":"all","effective_from":"2031-05-01"}),
-            "MODEL_KIND_CHARGEKIND_MISMATCH",
-        ),
-        (
-            json!({"model":"per_unit","price":{"amount":"5"},"eligibility":"all","effective_from":"2031-05-01"}),
+            &entry,
+            json!({"price":{"amount":"5"},"eligibility":"all","effective_from":"2031-05-01"}),
             "PRICE_MISSING",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"-1"},"eligibility":"all","effective_from":"2031-05-01"}),
+            &package,
+            json!({"price":{"rate":"5"},"eligibility":"all","effective_from":"2031-05-01"}),
+            "PRICE_MISSING",
+        ),
+        (
+            &entry,
+            json!({"price":{"rate":"-1"},"eligibility":"all","effective_from":"2031-05-01"}),
             "AMOUNT_INVALID",
         ),
         (
-            json!({"model":"package","price":{"package_size":"0","package_price":"5"},"eligibility":"all","effective_from":"2031-05-01"}),
+            &package,
+            json!({"price":{"package_size":"0","package_price":"5"},"eligibility":"all","effective_from":"2031-05-01"}),
             "PACKAGE_FIELDS_INVALID",
         ),
         (
-            json!({"model":"graduated","price":{"tiers":[{"up_to":"10","rate":"1"},{"up_to":"5","rate":"1"},{"up_to":null,"rate":"1"}]},"eligibility":"all","effective_from":"2031-05-01"}),
+            &graduated,
+            json!({"price":{"tiers":[{"up_to":"10","rate":"1"},{"up_to":"5","rate":"1"},{"up_to":null,"rate":"1"}]},"eligibility":"all","effective_from":"2031-05-01"}),
             "TIER_BANDS_ORDER",
         ),
         (
-            json!({"model":"volume","price":{"tiers":[{"up_to":"10","rate":"1"}]},"eligibility":"all","effective_from":"2031-05-01"}),
+            &volume,
+            json!({"price":{"tiers":[{"up_to":"10","rate":"1"}]},"eligibility":"all","effective_from":"2031-05-01"}),
             "TIER_TOP_CLOSED",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2020-01-01"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2020-01-01"}),
             "WINDOW_START_IN_PAST",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-02-30"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-02-30"}),
             "WINDOW_START_INVALID",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","temporary_until":"2031-05-01"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","temporary_until":"2031-05-01"}),
             "WINDOW_END_INVALID",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-01-01"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-01-01"}),
             "WINDOW_OVERLAP",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","dim_value":"ap"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","dim_value":"ap"}),
             "DIM_VALUE_UNKNOWN",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","min_fee":"-1"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","min_fee":"-1"}),
             "MIN_FEE_INVALID",
         ),
         (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","min_fee":"0.001"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","min_fee":"0.001"}),
             "MIN_FEE_INVALID",
         ),
         (
-            json!({"model":"stair","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01"}),
-            "MODEL_INVALID",
-        ),
-        (
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"some","effective_from":"2031-05-01"}),
+            &entry,
+            json!({"price":{"rate":"1"},"eligibility":"some","effective_from":"2031-05-01"}),
             "ELIGIBILITY_INVALID",
         ),
     ];
-    for (n, (body, code)) in cases.into_iter().enumerate() {
+    for (n, (target, body, code)) in cases.into_iter().enumerate() {
         let refused = f
             .call(
                 "POST",
-                &prices_path(&entry),
+                &prices_path(target),
                 body,
                 None,
                 Some(&format!("k{n}")),
@@ -281,16 +317,21 @@ async fn pure_rule_refusals_answer_400_with_their_codes_and_no_price() {
         assert_eq!(refused.0, 400, "{code}: {refused:?}");
         assert!(code_in(&refused.1, code), "{code}: {refused:?}");
     }
-    let unknown = f
-        .call(
-            "POST",
-            &prices_path(&entry),
-            json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","variant":"x"}),
-            None,
-            Some("unknown"),
-        )
-        .await;
-    assert_eq!(unknown.0, 400, "deny_unknown_fields");
+    for unknown in [
+        json!({"price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01","variant":"x"}),
+        json!({"model":"per_unit","price":{"rate":"1"},"eligibility":"all","effective_from":"2031-05-01"}),
+    ] {
+        let refused = f
+            .call(
+                "POST",
+                &prices_path(&entry),
+                unknown.clone(),
+                None,
+                Some("unknown"),
+            )
+            .await;
+        assert_eq!(refused.0, 400, "deny_unknown_fields: {unknown}");
+    }
     let (undimensioned, plain) = priced(false).await;
     let mut body = draft("2031-05-01");
     body["dim_value"] = json!("eu");
@@ -416,17 +457,18 @@ async fn patch_and_delete_touch_only_unlocked_drafts_at_their_version() {
         .await;
     assert_eq!(stale.0, 409, "{stale:?}");
     assert!(code_in(&stale.1, "STALE_REVISION"), "{stale:?}");
+    // D-427: the money must be in the entry's model; a flat amount on a per_unit entry is not.
     let invalid = f
         .call(
             "PATCH",
             &path,
-            json!({"model":"flat","price":{"amount":"1"}}),
+            json!({"price":{"amount":"1"}}),
             Some(&changed.2),
             None,
         )
         .await;
     assert_eq!(invalid.0, 400);
-    assert!(code_in(&invalid.1, "MODEL_KIND_CHARGEKIND_MISMATCH"));
+    assert!(code_in(&invalid.1, "PRICE_MISSING"), "{invalid:?}");
     assert_eq!(
         f.call(
             "PATCH",
@@ -765,4 +807,105 @@ async fn every_conditional_door_answers_a_stale_token_with_stale_revision() {
         .await;
     assert_eq!(status, 409, "{b}");
     assert!(code_in(&b, "STALE_REVISION"), "{b}");
+}
+
+/// D-427: a price carries no model of its own. Its money is judged against its entry's model (a
+/// shape of another model is `PRICE_MISSING`), a `model` field is refused as unknown on the create
+/// and the PATCH, and every price read echoes the entry's model.
+#[tokio::test]
+async fn a_price_has_its_entrys_model_and_carries_none_of_its_own() {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let (status, entry, _) = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+            json!({"sku_id":Uuid::new_v4(),"model":"graduated"}),
+            None,
+            Some("entry"),
+        )
+        .await;
+    assert_eq!(status, 201, "{entry}");
+    let tiers =
+        |top: &str| json!({"tiers":[{"up_to":"1000","rate":top},{"up_to":null,"rate":"0.008"}]});
+    let created = f
+        .call(
+            "POST",
+            &prices_path(&entry),
+            json!({"price":tiers("0.010"),"eligibility":"all","effective_from":"2031-05-01"}),
+            None,
+            Some("p1"),
+        )
+        .await;
+    assert_eq!(created.0, 201, "{created:?}");
+    assert_eq!(created.1["items"][0]["model"], "graduated", "{created:?}");
+    let with_model = f
+        .call(
+            "POST",
+            &prices_path(&entry),
+            json!({"model":"graduated","price":tiers("0.010"),"eligibility":"all","effective_from":"2031-06-01"}),
+            None,
+            Some("p2"),
+        )
+        .await;
+    assert_eq!(
+        with_model.0, 400,
+        "a price has no model field: {with_model:?}"
+    );
+    let other_shape = f
+        .call(
+            "POST",
+            &prices_path(&entry),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-06-01"}),
+            None,
+            Some("p3"),
+        )
+        .await;
+    assert_eq!(other_shape.0, 400, "{other_shape:?}");
+    assert!(code_in(&other_shape.1, "PRICE_MISSING"), "{other_shape:?}");
+    let path = format!("/prices/{}", created.1["items"][0]["id"].as_str().unwrap());
+    let patch_model = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"model":"volume"}),
+            Some(&created.2),
+            None,
+        )
+        .await;
+    assert_eq!(patch_model.0, 400, "{patch_model:?}");
+    let patch_shape = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"price":{"amount":"1.00"}}),
+            Some(&created.2),
+            None,
+        )
+        .await;
+    assert_eq!(patch_shape.0, 400, "{patch_shape:?}");
+    assert!(code_in(&patch_shape.1, "PRICE_MISSING"), "{patch_shape:?}");
+    let patched = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"price":tiers("0.009")}),
+            Some(&created.2),
+            None,
+        )
+        .await;
+    assert_eq!(patched.0, 200, "{patched:?}");
+    assert_eq!(patched.1["model"], "graduated");
+    let (status, export, _) = f
+        .call(
+            "GET",
+            &format!("/price-books/{}/export", book["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{export}");
+    assert_eq!(export["entries"][0]["entry"]["model"], "graduated");
+    assert_eq!(export["entries"][0]["prices"][0]["model"], "graduated");
 }

@@ -114,13 +114,13 @@
       "status": 200,
       "body": {
         "price_id": "<price:requests-volume>",
-        "price_book_entry_id": "<entry:requests>",
-        "sku_id": "<sku:requests>",
+        "price_book_entry_id": "<entry:requests-volume>",
+        "sku_id": "<sku:requests-volume>",
         "charge_kind": "usage",
         "period": null,
         "book_id": "<book:eur>",
         "currency": "EUR",
-        "version_no": 2,
+        "version_no": 1,
         "dim_value": "eu",
         "model": "volume",
         "price": {
@@ -155,13 +155,13 @@
       "status": 200,
       "body": {
         "price_id": "<price:requests-package>",
-        "price_book_entry_id": "<entry:requests>",
-        "sku_id": "<sku:requests>",
+        "price_book_entry_id": "<entry:requests-package>",
+        "sku_id": "<sku:requests-package>",
         "charge_kind": "usage",
         "period": null,
         "book_id": "<book:eur>",
         "currency": "EUR",
-        "version_no": 3,
+        "version_no": 1,
         "dim_value": "us",
         "model": "package",
         "price": {

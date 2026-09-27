@@ -132,9 +132,68 @@ pub struct Fixture {
     pub ctx: SecurityContext,
     pub db: toolkit_db::DBProvider<toolkit_db::DbError>,
 }
+/// The policy the fixture's routers run under, for a caller outside the router (the SKU usage
+/// port, D-428): every `user` of `tenant` holds every grant, another subject type holds the one
+/// `label:action` it names.
+pub fn enforcer_for(tenant: Uuid) -> authz_resolver_sdk::PolicyEnforcer {
+    authz_resolver_sdk::PolicyEnforcer::new(Arc::new(Resolver {
+        tenant,
+        allow: true,
+        every_subject: false,
+    }))
+}
+/// A migrated file-backed database whose every statement the returned recorder sees
+/// (toolkit-db `QueryRecorder`): provider, recorder, tenant and DSN. The migrations' own
+/// statements are cleared.
+pub async fn recorded_db() -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::test_support::QueryRecorder,
+    Uuid,
+    String,
+) {
+    use toolkit::contracts::DatabaseCapability;
+    let dsn = format!(
+        "sqlite://{}?mode=rwc",
+        std::env::temp_dir()
+            .join(format!("pricing-recorded-{}.sqlite3", Uuid::new_v4()))
+            .display()
+    );
+    let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
+        &dsn,
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..toolkit_db::ConnectOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        bss_pricing::module::BssPricingGear::default().migrations(),
+    )
+    .await
+    .unwrap();
+    recorder.clear();
+    (
+        toolkit_db::DBProvider::new(db),
+        recorder,
+        Uuid::new_v4(),
+        dsn,
+    )
+}
 impl Fixture {
     pub async fn new(registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>) -> Self {
         let (db, _, tenant, dsn) = storage_support::test_db().await;
+        Self::on(db, tenant, dsn, registry).await
+    }
+    /// The fixture over a database the caller opened (a recorded one, [`recorded_db`]).
+    pub async fn on(
+        db: toolkit_db::DBProvider<toolkit_db::DbError>,
+        tenant: Uuid,
+        dsn: String,
+        registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
+    ) -> Self {
         let hub = Arc::new(toolkit::ClientHub::default());
         hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
             bss_products_sdk::PricingReferenceRegistry(registry),
@@ -509,10 +568,14 @@ impl ReferenceRegistryV1 for Script {
                 SkuType::Bundle
             } else if mode == 11 {
                 SkuType::Recurring
+            } else if mode == 21 && Self::count(&self.reserve_calls) == 0 {
+                // D-427: the door's read sees a one-time SKU; the re-read after the reserve sees
+                // the type the reservation froze, usage, which does not allow `flat`.
+                SkuType::OneTime
             } else {
                 SkuType::Usage
             },
-            category_id: Uuid::new_v4(),
+            category_id: Some(Uuid::new_v4()),
             description: String::new(),
             sellable: true,
             lifecycle: if mode == 9 {
@@ -585,6 +648,7 @@ impl ReferenceRegistryV1 for Script {
 
 use bss_pricing::infra::storage::entity::{price, price_book_entry};
 use storage_support::at;
+/// A draft of a `per_unit` entry: the money is in the entry's model (D-427).
 pub fn price(p: &price_book_entry::Model) -> price::Model {
     price::Model {
         id: Uuid::new_v4(),
@@ -592,7 +656,6 @@ pub fn price(p: &price_book_entry::Model) -> price::Model {
         price_book_entry_id: p.id,
         version_no: 1,
         dim_value: None,
-        model: "per_unit".into(),
         price_json: serde_json::json!({"rate":"0.1"}),
         min_fee: Some("12.34".into()),
         eligibility: "all".into(),
@@ -796,7 +859,8 @@ impl Target {
     #[must_use]
     pub fn input_for(&self, sku: Uuid) -> Value {
         match self.kind {
-            Kind::Entry => json!({"sku_id":sku}),
+            // `per_unit` is a model every charge kind allows (D-386, D-427).
+            Kind::Entry => json!({"sku_id":sku,"model":"per_unit"}),
             Kind::Item => json!({"sku_id":sku,"treatment":"included"}),
         }
     }

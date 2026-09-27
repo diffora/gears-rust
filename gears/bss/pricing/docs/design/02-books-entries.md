@@ -33,7 +33,7 @@ Author currency books and unique SKU entries, maintain dimensions/settings and e
 Requirements: `cpt-cf-bss-pricing-fr-dimension-registry`, `cpt-cf-bss-pricing-fr-price-book`, `cpt-cf-bss-pricing-fr-entry-key`, `cpt-cf-bss-pricing-fr-book-export`, `cpt-cf-bss-pricing-fr-settings`. Architecture: `cpt-cf-bss-pricing-component-books`, `cpt-cf-bss-pricing-component-reservations-client`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-principle-reserve-before-write`, `cpt-cf-bss-pricing-constraint-one-replay-store`, `cpt-cf-bss-pricing-seq-reserve-write-confirm`.
 [FEATURE](../features/books-entries.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: `cpt-cf-bss-pricing-feature-foundation`.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-426.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-428.
 
 ## 2. Actor Flows (CDSL)
 
@@ -42,7 +42,7 @@ Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISION
 Actors: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-products`, `cpt-cf-bss-pricing-actor-auditor`. Feature flow: `cpt-cf-bss-pricing-flow-books-entries`.
 
 1. [ ] - `p1` - Finance Manager creates a uniquely coded currency book and reads its ETag. - `inst-books-entries-flow-1`
-2. [ ] - `p1` - Select a published non-bundle SKU, recurring period if applicable and optional registered dimension key. - `inst-books-entries-flow-2`
+2. [ ] - `p1` - Select a published non-bundle SKU, the entry's model, recurring period if applicable and optional registered dimension key. - `inst-books-entries-flow-2`
 3. [ ] - `p1` - Resolve replay and pass the stable entry identity to the reserve-write-confirm protocol in slice 03. - `inst-books-entries-flow-3`
 4. [ ] - `p1` - After reservation, re-read SKU type/lifecycle, derive charge kind, enforce key uniqueness and persist through that protocol. - `inst-books-entries-flow-4`
 5. [ ] - `p1` - Return book/entry facts; later money is drafted as prices, not embedded in the key. - `inst-books-entries-flow-5`
@@ -54,8 +54,8 @@ Actors: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-pr
 Feature algorithm: `cpt-cf-bss-pricing-algo-books-entries-book-and-key`.
 
 1. [ ] - `p1` - Validate currency and nonempty validity interval; scope code uniqueness to tenant. - `inst-books-entries-book-and-key-1`
-2. [ ] - `p1` - Derive charge_kind from the current SKU; recurring accepts month/year, usage and one_time require null period. - `inst-books-entries-book-and-key-2`
-3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
+2. [ ] - `p1` - Derive charge_kind from the current SKU; recurring accepts month/year, usage and one_time require null period; the model must be one the charge kind allows (D-386, D-427). - `inst-books-entries-book-and-key-2`
+3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period/model unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
 4. [ ] - `p1` - PATCH name/validity or permitted entry overrides conditionally; reject currency edits and dimension changes after valued prices exist. - `inst-books-entries-book-and-key-4`
 
 ### dimension-registry
@@ -78,20 +78,22 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-books-entries-settings-and-export`.
 
 ## 4. States (CDSL)
 
-A book is valid or invalid for a queried date according to its optional interval; no approval state is added. An entry progresses through reference confirmation in slice 03. Currency and key identity are fixed; editable metadata uses versions. Registry/settings changes are direct and versioned.
+A book is valid or invalid for a queried date according to its optional interval; no approval state is added. An entry progresses through reference confirmation in slice 03. Currency and key identity, the entry's model included (D-427), are fixed; editable metadata uses versions. Registry/settings changes are direct and versioned.
 
 State definition: `cpt-cf-bss-pricing-state-books-entries` in the FEATURE.
 
 ## 5. API Surface
 
-Under /bss-pricing/v1: POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export; POST /price-books/{id}/entries; GET/PATCH/DELETE /price-book-entries/{id}; GET/PUT /settings and /dimension-keys. Entry deletion refuses approved or pending prices with 409 ENTRY_PRICES_IN_USE and another author's draft with 403 NOT_DRAFT_AUTHOR (D-404), and, from phase 3, an entry a plan item names in a revision of any state with 409 ENTRY_IN_USE (D-408); the caller's draft and all rejected prices are deleted with the entry (a rejected price's review history stays in its unit snapshot), and DELETE answers 204 once the removal commits while the release completes as durable reference work. POST requires Idempotency-Key; PATCH/PUT require If-Match, and a stale token is 409 STALE_REVISION. A new entry on a SKU that is fenced, retiring or retired, deprecated or still draft is 409 SKU_FENCED (Products' own refusal), SKU_RETIRING, SKU_DEPRECATED or SKU_DRAFT; a bundle SKU is 409 BUNDLE_SKU_NOT_PRICEABLE. A dimension_key change after a valued price, or removing a registry key an entry names, is 409 DIMENSION_KEY_IN_USE. A change of invoice_line_override once the entry has an approved or pending price is 409 INVOICE_LINE_LOCKED (D-426): the override reaches consumers through resolve, so another invoice line needs another entry. Permissions are read, author and settings as appropriate.
+Under /bss-pricing/v1: POST/GET /price-books; GET/PATCH /price-books/{id}; GET /price-books/{id}/entries; GET /price-books/{id}/export; POST /price-books/{id}/entries; GET/PATCH/DELETE /price-book-entries/{id}; GET/PUT /settings and /dimension-keys. Entry deletion refuses approved or pending prices with 409 ENTRY_PRICES_IN_USE and another author's draft with 403 NOT_DRAFT_AUTHOR (D-404), and, from phase 3, an entry a plan item names in a revision of any state with 409 ENTRY_IN_USE (D-408); the caller's draft and all rejected prices are deleted with the entry (a rejected price's review history stays in its unit snapshot), and DELETE answers 204 once the removal commits while the release completes as durable reference work. POST requires Idempotency-Key; PATCH/PUT require If-Match, and a stale token is 409 STALE_REVISION. POST /price-books/{id}/entries requires model, fixed for the entry's life (D-427): 400 MODEL_INVALID for a string that is not flat, per_unit, graduated, volume or package, and 400 MODEL_KIND_CHARGEKIND_MISMATCH for a model the charge kind does not allow, judged at the door and again after the reservation (a 400 receipt that releases it); 409 ENTRY_KEY_TAKEN for a (SKU, charge kind, period, model) the book already has. The PATCH does not carry model. A new entry on a SKU that is fenced, retiring or retired, deprecated or still draft is 409 SKU_FENCED (Products' own refusal), SKU_RETIRING, SKU_DEPRECATED or SKU_DRAFT; a bundle SKU is 409 BUNDLE_SKU_NOT_PRICEABLE. A dimension_key change after a valued price, or removing a registry key an entry names, is 409 DIMENSION_KEY_IN_USE. A change of invoice_line_override once the entry has an approved or pending price is 409 INVOICE_LINE_LOCKED (D-426): the override reaches consumers through resolve, so another invoice line needs another entry. Permissions are read, author and settings as appropriate.
+
+The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, carry each entry's usage (D-428): usage = { prices: { approved, pending, draft }, plans, plans_superseded_only }. prices counts the entry's prices by state, and a rejected price is not counted; plans counts the distinct plans with a draft, pending or published revision whose items name the entry; plans_superseded_only counts the distinct plans that name it only through superseded revisions, which still keep it ENTRY_IN_USE. An entry in any reference state counts. The counts are read tenant-scoped under price_book_entry read, with a fixed number of set-based reads per request, whatever the number of entries. The POST and PATCH answers, the stored receipt, the export and the publish-changes listing carry no usage. The same counts, added up per SKU with plans distinct across the SKU's entries, fill Products' SkuUsageV1 port, which pricing registers at init (P-D-197).
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
 
 ## 6. Data Model
 
-pricing_price_book stores code, name, currency, validity and version. pricing_price_book_entry uses a normalized nullable period in its unique book/SKU/kind key and carries dimension_key, invoice_line_override and its reference receipt. pricing_dimension_key stores tenant/key/allowed values; pricing_settings stores defaults and invoice-line templates by SKU type. Entry authoring delegates reference work to slice 03.
+pricing_price_book stores code, name, currency, validity and version. pricing_price_book_entry uses a normalized nullable period and its model in its unique book/SKU/kind/period/model key and carries model (NOT NULL, CHECKed, fixed for its life; m20260926_000013, D-427), dimension_key, invoice_line_override and its reference receipt. pricing_dimension_key stores tenant/key/allowed values; pricing_settings stores defaults and invoice-line templates by SKU type. Entry authoring delegates reference work to slice 03.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.
@@ -117,7 +119,7 @@ The sole definitions live in [features/books-entries.md](../features/books-entri
 ## 9. Acceptance Criteria
 
 1. PRD AC #2 / `cpt-cf-bss-pricing-dod-book-currency-validity`: Given a EUR book, when name/validity changes with its ETag then currency stays EUR; duplicate tenant code or inverted dates are refused.
-2. PRD AC #3 / `cpt-cf-bss-pricing-dod-entry-key-unique`: Given the same nonrecurring SKU twice, when concurrent creates use null period then only one entry persists; a bundle has no entry.
+2. PRD AC #3 / `cpt-cf-bss-pricing-dod-entry-key-unique`: Given the same nonrecurring SKU twice with one model, when concurrent creates use null period then only one entry persists; the same SKU with another model is a second entry of the book (D-427); a bundle has no entry.
 3. PRD AC #3 / `cpt-cf-bss-pricing-dod-entry-metadata`: Given a valued price, when a dimension change is requested then it is refused DIMENSION_KEY_IN_USE; given an approved or pending price, entry deletion is refused ENTRY_PRICES_IN_USE, and NOT_DRAFT_AUTHOR (D-404) while another author's draft exists; the caller's drafts and all rejected prices are deleted with the entry; allowed metadata updates retain receipt identity.
 4. PRD AC #1 / `cpt-cf-bss-pricing-dod-dimension-registry`: Given EU prices, when US is added then it is available; deleting EU or drafting UNKNOWN is refused without changing the registry.
 5. PRD AC #13 / `cpt-cf-bss-pricing-dod-settings-defaults`: Given default arrears and SKU advance, when inputs bind then advance wins; stale settings update fails with no partial changes.

@@ -66,9 +66,9 @@ reference. The prototype model and the explicit dispositions in spec §3 define 
 
 | Term | Meaning |
 | --- | --- |
-| SKU | The tenant's named and coded commercial definition, with its own type, category and lifecycle. |
+| SKU | The tenant's named and coded commercial definition, with its own type, optional category and lifecycle. |
 | Type | `recurring`, `usage`, `one_time` or `bundle`; determines charge kind where the SKU can be priced. |
-| Category | One flat grouping per SKU, with code, name, default flag, sort order and active/retired status. |
+| Category | An optional flat grouping, at most one per SKU, with code, name, default flag, sort order and active/retired status. |
 | Descriptors | `gl_code`, `tax_category` and `invoice_line_template`, bound by pricing from a dated SKU version. |
 | Metering | A usage SKU's `usage_type_ref` and `unit`; the reference resolves through the usage-type catalog port. |
 | Lifecycle | `draft`, `published`, `deprecated`, `retiring`, `retired`; `retiring` is the transient retirement fence. |
@@ -155,11 +155,13 @@ adaptation, and Studio API wiring, are separate programmes (spec §3 D, §4, §1
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-sku-define`
 
 The registry shall create and edit a SKU as an independent tenant-scoped definition with code, name, type,
-category, description, sellable flag, descriptors, billing timing and type-appropriate metering.
+an optional category, description, sellable flag, descriptors, billing timing and type-appropriate metering.
 
 **Rules**
 
 - Code and name are each unique per tenant; collisions return 409 `SKU_CODE_TAKEN` and `SKU_NAME_TAKEN`.
+- The category is optional (P-D-196): an omitted `category_id` is null, with no fallback to the default
+  category; a draft `PATCH` with `category_id: null` and a `sku_change` can clear it.
 - SKU and category records carry tenant identity, creation/update timestamps and a concurrency `version`;
   a SKU also carries `revision` and `published_version`.
 - Direct `PATCH` edits drafts only; published or deprecated content changes use `sku_change`.
@@ -301,13 +303,14 @@ racing with approval and apply.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-category-flat`
 
-The registry shall maintain a flat category list with one category per SKU.
+The registry shall maintain a flat category list with at most one category per SKU.
 
 **Rules**
 
 - Categories carry `id`, tenant-unique `code`, `name`, `is_default`, `sort_order` and `active | retired` status.
 - Category creation and edits are direct operations and require no approval unit.
-- Retirement fails with `CATEGORY_IN_USE` while any SKU points at the category.
+- Retirement fails with `CATEGORY_IN_USE` while any SKU points at the category. A SKU without a category
+  does not block a retirement (P-D-196).
 - Category patches participate in optimistic concurrency (`STALE_REVISION` for a stale revision).
 
 **Rationale**: spec §2 decision 12, §4 (category schema and retire rule), §7.2, §14.
@@ -372,10 +375,15 @@ and durable version reads.
 
 **Rules**
 
-- List and search support code, name, category, type and lifecycle.
+- List and search support code, name, category, type and lifecycle. A category filter matches only the SKUs
+  in that category; an unfiltered list includes the SKUs without a category (P-D-196).
 - `GET /skus/{id}/references` reads the local registry, returning reference rows and counts grouped by owner
   and kind; reserved references count alongside confirmed ones.
 - The card makes unresolved reservations visible so an operator can inspect and release abandoned attempts.
+- The list items and the card carry pricing's usage of each SKU (its entries, their currencies, prices by
+  state and distinct plans) through the `SkuUsageV1` port that pricing fills. The usage is `null` when the port
+  is absent, refuses the caller or cannot answer; the read never fails for it, and the usage never takes part
+  in a fence (P-D-197).
 - Dated reads use the version timeline, not the latest SKU row, which can contain future-effective content.
   A date earlier than the first version returns 404 `NO_VERSION_IN_FORCE`.
 - Reads require `products:read` and tenant scope; a caller cannot use search, card, reference or version reads
@@ -480,7 +488,7 @@ also report the current generation. PATCH uses `If-Match`; POST accepts an optio
 | Surface | Calls and behavior |
 | --- | --- |
 | SKU authoring | `POST /skus`; `PATCH /skus/{id}` for drafts; `POST /skus/{id}/changes` for published/deprecated content and/or lifecycle, with `effective_from` defaulting to today. |
-| SKU reads | `GET /skus`, `GET /skus/{id}`; list/search by code, name, category, type and lifecycle. |
+| SKU reads | `GET /skus`, `GET /skus/{id}`; list/search by code, name, category, type and lifecycle; each SKU carries pricing's `usage` or `null` (P-D-197). |
 | Lifecycle | `POST /skus/{id}/submit`, `POST /skus/{id}/retire`, `POST /skus/{id}/unfence`. |
 | Versions | `GET /skus/{id}/versions?asOf=<date>` reads the version in force; spec §7.2 spells the parameter `as_of`, while §2.2 and §4 spell it `asOf` (see §13). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |
@@ -489,7 +497,8 @@ also report the current generation. PATCH uses `If-Match`; POST accepts an optio
 | Settings | `GET /settings`, `PUT /settings`, including tenant approval policy and its optional per-kind quorum overrides. |
 
 The `products-sdk` surface exposes `Sku`, `SkuType`, `Lifecycle`, `Category`, `SkuVersion` and
-`SkuChangedPayload`. The usage-type catalog port remains available. `ProductCatalogClientV1` and its browse
+`SkuChangedPayload`. The usage-type catalog port remains available, and the `SkuUsageV1` port, which pricing
+fills, carries pricing's usage of SKUs to the SKU reads (P-D-197). `ProductCatalogClientV1` and its browse
 transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by the Task 3 interface boundary.
 
 ### 7.2 External Integration Contracts
@@ -658,7 +667,7 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 - **Given** a flat category referenced by a SKU.
 - **When** an administrator requests category retirement.
 - **Then** retirement fails with `CATEGORY_IN_USE`; an unreferenced category can retire directly without an
-  approval unit.
+  approval unit, also when the tenant has SKUs without a category.
 
 **AC #14. Separation of duties — `fr-approval-units`, `nfr-authz`**
 

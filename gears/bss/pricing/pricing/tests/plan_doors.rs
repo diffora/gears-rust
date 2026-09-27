@@ -921,3 +921,54 @@ fn granted(f: &plan_support::Fixture, grant: &str) -> toolkit_security::Security
         .build()
         .unwrap()
 }
+
+/// D-427: a book change remaps an item to the new book's entry of the same (SKU, charge kind,
+/// period, model). A twin of another model is not a match, even when it comes first.
+#[tokio::test]
+async fn a_book_change_remaps_an_item_to_the_twin_of_its_own_model() {
+    let (f, catalog) = setup().await;
+    let (eur, other) = (book(&f, "eur").await, book(&f, "other").await);
+    let (_, rev) = plan(&f, "pro", eur).await;
+    let seats = catalog.sku(SkuType::Recurring);
+    let mut ids = Vec::new();
+    for (book, model, key) in [
+        (eur, "flat", "eur-flat"),
+        (other, "per_unit", "other-per-unit"),
+        (other, "flat", "other-flat"),
+    ] {
+        let (s, b, _) = f
+            .call(
+                "POST",
+                &format!("/price-books/{book}/entries"),
+                json!({"sku_id":seats,"period":"month","model":model}),
+                None,
+                Some(key),
+            )
+            .await;
+        assert_eq!(s, 201, "{model}: {b}");
+        ids.push(id_of(&b["id"]));
+    }
+    let seats_item = item(&f, rev, seats, Some(ids[0]), "paid").await;
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/plan-revisions/{rev}"),
+            json!({"book_id":other}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let remapped = b["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == seats_item.id.to_string())
+        .unwrap()["price_book_entry_id"]
+        .clone();
+    assert_eq!(
+        remapped,
+        ids[2].to_string(),
+        "the flat twin, not the per_unit entry listed first"
+    );
+}

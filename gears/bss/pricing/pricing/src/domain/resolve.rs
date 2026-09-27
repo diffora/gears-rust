@@ -14,7 +14,7 @@ use super::{
     RuleError,
     plan::Treatment,
     price::{self, Eligibility, Price, PriceState},
-    price_book_entry::ChargeKind,
+    price_book_entry::{ChargeKind, Model},
 };
 use bss_products_sdk::models::{BillingTiming, SkuVersion};
 use rust_decimal::Decimal;
@@ -46,6 +46,8 @@ pub struct Entry {
     pub id: Uuid,
     pub charge_kind: ChargeKind,
     pub period: Option<String>,
+    /// The entry's model (D-427): every price of the entry is money in it.
+    pub model: Model,
     pub invoice_line_override: Option<String>,
     /// The values registered today for the entry's dimension key, in the registry's order;
     /// empty for an entry without a key.
@@ -122,6 +124,8 @@ pub struct ItemResolution {
     pub price_book_entry_id: Option<Uuid>,
     pub charge_kind: Option<ChargeKind>,
     pub period: Option<String>,
+    /// The entry's model (D-427); `None` for an item without an entry.
+    pub model: Option<Model>,
     /// The default chain, then each value registered today in the registry's order, then any
     /// other value a pin names.
     pub chains: Vec<Chain>,
@@ -257,6 +261,7 @@ fn resolve_item(ctx: &ResolveContext, item: &Item, date: Date, pinned: &Pinned) 
         price_book_entry_id: item.entry.as_ref().map(|e| e.id),
         charge_kind: item.entry.as_ref().map(|e| e.charge_kind),
         period: item.entry.as_ref().and_then(|e| e.period.clone()),
+        model: item.entry.as_ref().map(|e| e.model),
         chains,
     }
 }

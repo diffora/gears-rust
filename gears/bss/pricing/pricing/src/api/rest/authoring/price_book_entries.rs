@@ -15,7 +15,7 @@ use crate::{
         reference_op::{OpKind, RefKind},
     },
     infra::{
-        reference_work::{self, Caller, Receipt, Ref, Target, WallClock, Work},
+        reference_work::{self, Caller, EntryInput, Receipt, Ref, Target, WallClock, Work},
         storage::{
             entity,
             repo::{
@@ -105,14 +105,22 @@ pub(super) async fn stored(
         None => Ok(None),
     }
 }
-/// The period rule needs the SKU's type, read before anything is claimed or reserved: an
-/// input refusal is 400 and costs no reservation (D-403). A registry that cannot answer is
-/// 503 with nothing written; a definite Products refusal is answered as Products gave it.
-async fn check_period(
+/// The period and model rules need the SKU's type, read before anything is claimed or reserved:
+/// an input refusal is 400 and costs no reservation (D-403). The model is required (D-427): an
+/// unknown one is `MODEL_INVALID` before any read, one the charge kind does not allow is
+/// `MODEL_KIND_CHARGEKIND_MISMATCH` (a bundle SKU is left to the reservation's own refusal, 409
+/// `BUNDLE_SKU_NOT_PRICEABLE`). Tx B judges both again against the type the reservation froze. A
+/// registry that cannot answer is 503 with nothing written; a definite Products refusal is
+/// answered as Products gave it.
+async fn check_sku_rules(
     state: &AuthoringState,
     ctx: &SecurityContext,
     input: &PricingPriceBookEntryCreate,
 ) -> Result<(), CanonicalError> {
+    let model: price_book_entry::Model = input
+        .model
+        .parse()
+        .map_err(|_| support::invalid("model", "MODEL_INVALID"))?;
     let registry = crate::infra::reference_registry::resolve(&state.hub)
         .map_err(|_| support::unavailable())?;
     let sku = registry
@@ -125,10 +133,14 @@ async fn check_period(
                 support::unavailable()
             }
         })?;
-    if price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
-        Ok(())
-    } else {
-        Err(support::invalid("period", "ENTRY_PERIOD_INVALID"))
+    if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
+        return Err(support::invalid("period", "ENTRY_PERIOD_INVALID"));
+    }
+    match price_book_entry::charge_kind_for(sku.r#type) {
+        Ok(kind) if !price_book_entry::model_allowed(kind, model) => {
+            Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
+        }
+        _ => Ok(()),
     }
 }
 /// A named dimension key must be declared in the tenant's registry (the seed key counts while
@@ -166,7 +178,7 @@ pub(super) async fn create(
     {
         return receipt.response();
     }
-    check_period(&state, &ctx, &input).await?;
+    check_sku_rules(&state, &ctx, &input).await?;
     let result = support::transaction(&state.db.db(), move |tx| {
         let (scope, ctx, key, digest, input, endpoint) = (
             scope.clone(),
@@ -207,7 +219,7 @@ pub(super) async fn create(
             let work = Work {
                 target: Target::PriceBookEntry {
                     book_id: book,
-                    input,
+                    input: EntryInput::from(input),
                 },
                 correlation,
                 refusal: None,
@@ -350,12 +362,7 @@ pub(super) async fn delete(
             let work = Work {
                 target: Target::PriceBookEntry {
                     book_id: m.book_id,
-                    input: PricingPriceBookEntryCreate {
-                        sku_id: m.sku_id,
-                        period: m.period,
-                        dimension_key: m.dimension_key,
-                        invoice_line_override: m.invoice_line_override,
-                    },
+                    input: EntryInput::of(&m),
                 },
                 correlation,
                 refusal: None,

@@ -618,6 +618,7 @@ pub async fn rest_app_on_db(
             Uuid::from_u128(42),
             "pricing".into(),
         )]),
+        hub: Arc::new(toolkit::ClientHub::new()),
     });
     let app = build(state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(flat_in_enforcer(tenant)))
@@ -677,7 +678,7 @@ pub async fn seed_rest_sku(
             code: code.to_owned(),
             name: code.to_owned(),
             r#type: bss_products_sdk::models::SkuType::Usage,
-            category_id,
+            category_id: Some(category_id),
             description: String::new(),
             sellable: true,
             gl_code: None,

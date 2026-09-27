@@ -68,6 +68,7 @@ fn entry_of(n: u128, mut prices: Vec<Price>, values: &[&str]) -> Entry {
         id: id(n),
         charge_kind: ChargeKind::Recurring,
         period: Some("month".to_owned()),
+        model: Model::Flat,
         invoice_line_override: None,
         values: values.iter().map(|v| (*v).to_owned()).collect(),
         prices,
@@ -209,6 +210,11 @@ fn the_matrix_is_the_default_chain_then_every_registered_value_in_registry_order
     assert_eq!(r[0].price_book_entry_id, Some(id(ENTRY)));
     assert_eq!(r[0].charge_kind, Some(ChargeKind::Recurring));
     assert_eq!(r[0].period.as_deref(), Some("month"));
+    assert_eq!(
+        r[0].model,
+        Some(Model::Flat),
+        "D-427: the entry's model, on the item"
+    );
 }
 
 // ---------- D-420 rule 2: the pinned walk; spec §7.1 ----------
@@ -836,6 +842,7 @@ fn an_item_without_an_entry_has_no_chains() {
     assert!(r[0].chains.is_empty());
     assert_eq!(r[0].price_book_entry_id, None);
     assert_eq!(r[0].charge_kind, None);
+    assert_eq!(r[0].model, None, "D-427: no entry, no model");
     assert_eq!(r[1].item_id, id(ITEM));
 }
 
@@ -874,7 +881,7 @@ fn sku_version(
             code: "WP-PRO".to_owned(),
             name: "WordPress Pro".to_owned(),
             r#type: SkuType::Recurring,
-            category_id: id(7),
+            category_id: Some(id(7)),
             description: String::new(),
             sellable: true,
             gl_code: gl.map(str::to_owned),

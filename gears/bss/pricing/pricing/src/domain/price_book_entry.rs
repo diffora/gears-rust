@@ -49,6 +49,16 @@ pub fn model_allowed(kind: ChargeKind, model: Model) -> bool {
         }
     }
 }
+/// The model an entry without prices takes (D-427): flat for recurring and one-time, per unit for
+/// usage. `m20260926_000013` backfills a priceless entry with it, and an entry create op stored
+/// before that migration (no `model` in its input) resolves to it.
+#[must_use]
+pub const fn default_model(kind: ChargeKind) -> Model {
+    match kind {
+        ChargeKind::Usage => Model::PerUnit,
+        ChargeKind::Recurring | ChargeKind::OneTime => Model::Flat,
+    }
+}
 /// Check braces and the six supported placeholders.
 /// # Errors
 /// Returns `LINE_TEMPLATE_EMPTY` or `LINE_TEMPLATE_INVALID`.

@@ -117,7 +117,6 @@ COLUMN bss.pricing_price eligibility text NOT NULL DEFAULT -
 COLUMN bss.pricing_price id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price keep_for_bound boolean NOT NULL DEFAULT false
 COLUMN bss.pricing_price min_fee text NULL DEFAULT -
-COLUMN bss.pricing_price model text NOT NULL DEFAULT -
 COLUMN bss.pricing_price note text NULL DEFAULT -
 COLUMN bss.pricing_price paired_price_id uuid NULL DEFAULT -
 COLUMN bss.pricing_price pending_unit_id uuid NULL DEFAULT -
@@ -146,6 +145,7 @@ COLUMN bss.pricing_price_book_entry created_at timestamp with time zone NOT NULL
 COLUMN bss.pricing_price_book_entry dimension_key text NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry invoice_line_override text NULL DEFAULT -
+COLUMN bss.pricing_price_book_entry model text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry period text NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry reference_state text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry reservation_id uuid NOT NULL DEFAULT -
@@ -262,7 +262,6 @@ CONSTRAINT bss.pricing_price pricing_price_check CHECK (((effective_to IS NULL) 
 CONSTRAINT bss.pricing_price pricing_price_dim_value_check CHECK (((dim_value IS NULL) OR (dim_value <> ''::text)))
 CONSTRAINT bss.pricing_price pricing_price_eligibility_check CHECK ((eligibility = ANY (ARRAY['all'::text, 'new'::text])))
 CONSTRAINT bss.pricing_price pricing_price_min_fee_check CHECK ((min_fee ~ '^[0-9]+(\.[0-9]+)?$'::text))
-CONSTRAINT bss.pricing_price pricing_price_model_check CHECK ((model = ANY (ARRAY['flat'::text, 'per_unit'::text, 'graduated'::text, 'volume'::text, 'package'::text])))
 CONSTRAINT bss.pricing_price pricing_price_paired_price_id_fkey FOREIGN KEY (paired_price_id) REFERENCES bss.pricing_price(id)
 CONSTRAINT bss.pricing_price pricing_price_pending_unit_id_fkey FOREIGN KEY (pending_unit_id) REFERENCES bss.pricing_approval_unit(id)
 CONSTRAINT bss.pricing_price pricing_price_pkey PRIMARY KEY (id)
@@ -277,6 +276,7 @@ CONSTRAINT bss.pricing_price_book pricing_price_book_tenant_id_id_key UNIQUE (te
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_book_id_fkey FOREIGN KEY (book_id) REFERENCES bss.pricing_price_book(id)
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_charge_kind_check CHECK ((charge_kind = ANY (ARRAY['recurring'::text, 'usage'::text, 'one_time'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_check CHECK ((((charge_kind = 'recurring'::text) AND (period IS NOT NULL) AND (period = ANY (ARRAY['month'::text, 'year'::text]))) OR ((charge_kind = ANY (ARRAY['usage'::text, 'one_time'::text])) AND (period IS NULL))))
+CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_model_check CHECK ((model = ANY (ARRAY['flat'::text, 'per_unit'::text, 'graduated'::text, 'volume'::text, 'package'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_pkey PRIMARY KEY (id)
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_reference_state_check CHECK ((reference_state = ANY (ARRAY['confirmation_pending'::text, 'confirmed'::text, 'lost'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_tenant_id_dimension_key_fkey FOREIGN KEY (tenant_id, dimension_key) REFERENCES bss.pricing_dimension_key(tenant_id, key)
@@ -324,7 +324,7 @@ INDEX bss pricing_plan_revision_open CREATE UNIQUE INDEX pricing_plan_revision_o
 INDEX bss pricing_plan_revision_pkey CREATE UNIQUE INDEX pricing_plan_revision_pkey ON bss.pricing_plan_revision USING btree (id)
 INDEX bss pricing_plan_revision_published CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'published'::text)
 INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)
-INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text))
+INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text), model)
 INDEX bss pricing_price_book_entry_pkey CREATE UNIQUE INDEX pricing_price_book_entry_pkey ON bss.pricing_price_book_entry USING btree (id)
 INDEX bss pricing_price_book_pkey CREATE UNIQUE INDEX pricing_price_book_pkey ON bss.pricing_price_book USING btree (id)
 INDEX bss pricing_price_book_tenant_id_code_key CREATE UNIQUE INDEX pricing_price_book_tenant_id_code_key ON bss.pricing_price_book USING btree (tenant_id, code)

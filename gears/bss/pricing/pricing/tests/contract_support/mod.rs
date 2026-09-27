@@ -31,8 +31,8 @@
 //! | `price:egress-eu`, `price:egress-us` | egress, eu / us (no default price) | per unit 0.02 / 0.03 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:egress-apac-temp` | egress, apac | per unit 0.01 | 2026-09-10 → 2026-09-20, temporary | all | `unit:prices-2` |
 //! | `price:requests-graduated` | requests, default | graduated: 0.010 up to 1000, then 0.008 | 2026-01-01 → open | all | `unit:prices-1` |
-//! | `price:requests-volume` | requests, eu | volume: 0.009 up to 1000, then 0.007 | 2026-01-01 → open | all | `unit:prices-1` |
-//! | `price:requests-package` | requests, us | package: 5.00 per 1000 | 2026-01-01 → open | all | `unit:prices-1` |
+//! | `price:requests-volume` | requests-volume, eu (no default price) | volume: 0.009 up to 1000, then 0.007 | 2026-01-01 → open | all | `unit:prices-1` |
+//! | `price:requests-package` | requests-package, us (no default price) | package: 5.00 per 1000 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:archive` | archive (an entry no revision names) | per unit 0.01 | 2026-01-01 → open | all | `unit:prices-1` |
 //! | `price:promo-base` | promo, default | flat 10.00 | 2026-01-01 → 2026-10-01 | all | `unit:prices-1` |
 //! | `price:promo-outer` | promo, default | flat 8.00 | 2026-10-01 → 2026-10-15 as stored (the inner start cuts it), temporary until 2026-12-01 | all | `unit:prices-2` |
@@ -44,9 +44,11 @@
 //! Plan `pro` on book `eur`: revision 1 (published 2026-05-20, superseded 2026-08-20) holds pro
 //! (paid), storage (paid) and legacy (included, a SKU Products no longer knows); revision 2
 //! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional),
-//! backup (included, 100 units, no entry) and requests (paid); revision 3 is a draft. Plan `trial` revision 1 is
-//! pending. Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
-//! and one version each of storage, egress, backup, requests and promo from 2026-01-01. Plan `promo`
+//! backup (included, 100 units, no entry), requests, requests-volume and requests-package (paid; each
+//! entry has one model, D-427: graduated, volume, package); revision 3 is a draft. Plan `trial` revision 1 is
+//! pending and holds egress (paid): an entry a pending revision names (D-428). Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
+//! and one version each of storage, egress, backup, requests, requests-volume, requests-package and
+//! promo from 2026-01-01. Plan `promo`
 //! revision 1 (published 2026-09-02) holds promo (paid), whose chain is two nested pairs built by the
 //! domain's own pair builder (`price::temporary`, then `normalize_windows`), each drafted as the door
 //! drafts a pair and approved as its applied unit approves it. Another tenant holds one approved
@@ -99,6 +101,7 @@ macro_rules! with_goldens {
             price_closed,
             price_keep_for_bound,
             price_not_found,
+            price_book_entry_usage,
         }
     };
 }
@@ -149,6 +152,14 @@ impl Names {
         );
         self.by_id.insert(id, format!("<{name}>"));
         id
+    }
+    /// Name an id the fixture did not mint but sets itself (the tenant): shown as `<name>`.
+    pub fn adopt(&mut self, name: &str, id: Uuid) {
+        assert!(
+            self.by_name.insert(name.to_owned(), id).is_none(),
+            "{name} is named twice"
+        );
+        self.by_id.insert(id, format!("<{name}>"));
     }
     pub fn id(&self, name: &str) -> Uuid {
         *self
@@ -352,16 +363,19 @@ impl Writer<'_> {
         .unwrap();
         id
     }
+    /// An entry in `model`, fixed for its life (D-427).
     async fn entry(
         &mut self,
         name: &str,
         book: &str,
         sku: &str,
         kind: &str,
+        model: &str,
         shape: (Option<&str>, Option<&str>, Option<&str>),
     ) {
         let (period, key, line) = shape;
         let id = self.names.mint(name);
+        let reservation = self.names.mint(&format!("reservation:{name}"));
         price_book_entry_repo::insert(
             &self.f.db.conn().unwrap(),
             &self.scope,
@@ -372,9 +386,10 @@ impl Writer<'_> {
                 sku_id: self.names.id(sku),
                 charge_kind: kind.into(),
                 period: period.map(str::to_owned),
+                model: model.into(),
                 dimension_key: key.map(str::to_owned),
                 invoice_line_override: line.map(str::to_owned),
-                reservation_id: Uuid::from_u128(id.as_u128() ^ 1),
+                reservation_id: reservation,
                 reference_state: "confirmed".into(),
                 version: 1,
                 created_at: created(),
@@ -384,7 +399,23 @@ impl Writer<'_> {
         .await
         .unwrap();
     }
+    /// A stored price. Its declared model must be its entry's (D-427): the price has no model of
+    /// its own, so a fixture price in another model would be money its entry cannot read.
     async fn price(&mut self, p: P) {
+        let entry = price_book_entry_repo::find(
+            &self.f.db.conn().unwrap(),
+            &self.scope,
+            self.tenant,
+            self.names.id(p.entry),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            entry.model, p.model,
+            "{}: the entry's model (D-427)",
+            p.name
+        );
         let id = self.names.mint(p.name);
         let unit = p.unit.map(|(unit, _)| self.names.id(unit));
         let approved_at = p.unit.map(|(_, when)| at(when.0, when.1, when.2));
@@ -397,7 +428,6 @@ impl Writer<'_> {
                 price_book_entry_id: self.names.id(p.entry),
                 version_no: p.version_no,
                 dim_value: p.dim.map(str::to_owned),
-                model: p.model.into(),
                 price_json: p.price,
                 min_fee: p.min_fee.map(str::to_owned),
                 eligibility: p.eligibility.into(),
@@ -432,7 +462,6 @@ impl Writer<'_> {
             price_book_entry_id: p.price_book_entry_id,
             version_no: p.version_no,
             dim_value: p.dim_value.clone(),
-            model: p.model.as_str().into(),
             price_json: serde_json::to_value(p.price.as_ref().unwrap()).unwrap(),
             min_fee: p.min_fee.map(|fee| fee.to_string()),
             eligibility: p.eligibility.as_str().into(),
@@ -701,7 +730,7 @@ fn content(
         code: code.to_owned(),
         name: code.to_owned(),
         r#type,
-        category_id: Uuid::nil(),
+        category_id: Some(Uuid::nil()),
         description: String::new(),
         sellable: true,
         gl_code: gl_code.map(str::to_owned),
@@ -817,6 +846,22 @@ fn products(names: &mut Names, catalog: &Catalog) {
             Some("requests"),
         ),
     );
+    // D-427: one model per entry, so the volume and the package examples are entries of SKUs of
+    // their own, each an item of revision 2.
+    for (sku, meter) in [
+        ("sku:requests-volume", "requests-volume"),
+        ("sku:requests-package", "requests-package"),
+    ] {
+        let id = names.mint(sku);
+        catalog.put(id, SkuType::Usage, Lifecycle::Published, Some(meter));
+        version(
+            catalog,
+            id,
+            1,
+            "2026-01-01",
+            content(meter, SkuType::Usage, None, None, None, None, Some(meter)),
+        );
+    }
 }
 /// The tenant's settings and dimension registry, its price units, its book and entries.
 async fn book_and_entries(w: &mut Writer<'_>) {
@@ -868,6 +913,7 @@ async fn book_and_entries(w: &mut Writer<'_>) {
         "book:eur",
         "sku:pro",
         "recurring",
+        "flat",
         (Some("month"), None, Some("Pro plan, {period}")),
     )
     .await;
@@ -876,6 +922,7 @@ async fn book_and_entries(w: &mut Writer<'_>) {
         "book:eur",
         "sku:storage",
         "usage",
+        "per_unit",
         (None, Some("region"), None),
     )
     .await;
@@ -884,6 +931,7 @@ async fn book_and_entries(w: &mut Writer<'_>) {
         "book:eur",
         "sku:egress",
         "usage",
+        "per_unit",
         (None, Some("region"), None),
     )
     .await;
@@ -892,6 +940,7 @@ async fn book_and_entries(w: &mut Writer<'_>) {
         "book:eur",
         "sku:requests",
         "usage",
+        "graduated",
         (None, Some("region"), None),
     )
     .await;
@@ -900,9 +949,24 @@ async fn book_and_entries(w: &mut Writer<'_>) {
         "book:eur",
         "sku:archive",
         "usage",
+        "per_unit",
         (None, None, None),
     )
     .await;
+    for (name, sku, model) in [
+        ("entry:requests-volume", "sku:requests-volume", "volume"),
+        ("entry:requests-package", "sku:requests-package", "package"),
+    ] {
+        w.entry(
+            name,
+            "book:eur",
+            sku,
+            "usage",
+            model,
+            (None, Some("region"), None),
+        )
+        .await;
+    }
 }
 /// Pro: spec section 7.1's chain, 10 -> all 12 -> new 15 (12 is kept for the subscriptions bound
 /// to it), and three prices no consumer may see.
@@ -1093,10 +1157,12 @@ async fn usage_prices(w: &mut Writer<'_>) {
     })
     .await;
     // Requests: the tiered and package models — every band shape a consumer reads (a band with
-    // `up_to`, an open top band `up_to: null`), one model per chain.
-    for (name, version_no, dim, model, money) in [
+    // `up_to`, an open top band `up_to: null`), one model per entry (D-427): graduated on requests'
+    // default chain, volume on eu of requests-volume, package on us of requests-package.
+    for (name, entry, version_no, dim, model, money) in [
         (
             "price:requests-graduated",
+            "entry:requests",
             1,
             None,
             "graduated",
@@ -1107,7 +1173,8 @@ async fn usage_prices(w: &mut Writer<'_>) {
         ),
         (
             "price:requests-volume",
-            2,
+            "entry:requests-volume",
+            1,
             Some("eu"),
             "volume",
             json!({ "tiers": [
@@ -1117,7 +1184,8 @@ async fn usage_prices(w: &mut Writer<'_>) {
         ),
         (
             "price:requests-package",
-            3,
+            "entry:requests-package",
+            1,
             Some("us"),
             "package",
             json!({ "package_size": "1000", "package_price": "5.00" }),
@@ -1125,15 +1193,7 @@ async fn usage_prices(w: &mut Writer<'_>) {
     ] {
         w.price(P {
             dim,
-            ..P::approved(
-                name,
-                "entry:requests",
-                version_no,
-                model,
-                money,
-                "2026-01-01",
-                U1,
-            )
+            ..P::approved(name, entry, version_no, model, money, "2026-01-01", U1)
         })
         .await;
     }
@@ -1224,6 +1284,15 @@ async fn plans(w: &mut Writer<'_>) {
     w.plan("plan:trial", "trial").await;
     w.revision("revision:trial-1", "plan:trial", 1, at(2026, 9, 11))
         .await;
+    w.item(
+        "item:trial-1/egress",
+        "revision:trial-1",
+        "sku:egress",
+        Some("entry:egress"),
+        "paid",
+        (None, None),
+    )
+    .await;
     w.lock("revision:trial-1", "unit:revision-trial-1").await;
     // Ids no row holds, so a golden can name what a refusal was asked about.
     w.names.mint("revision:unknown");
@@ -1277,6 +1346,28 @@ async fn revision_2_items(w: &mut Writer<'_>) {
         (None, None),
     )
     .await;
+    for (name, sku, entry) in [
+        (
+            "item:pro-2/requests-volume",
+            "sku:requests-volume",
+            "entry:requests-volume",
+        ),
+        (
+            "item:pro-2/requests-package",
+            "sku:requests-package",
+            "entry:requests-package",
+        ),
+    ] {
+        w.item(
+            name,
+            "revision:pro-2",
+            sku,
+            Some(entry),
+            "paid",
+            (None, None),
+        )
+        .await;
+    }
 }
 /// Plan promo (phase 4 second review M1): one item whose chain holds a pair nested in another
 /// pair, built by the domain's own pair builder and normalised as apply normalises it (D-391,
@@ -1298,6 +1389,7 @@ async fn nested_pairs(w: &mut Writer<'_>, catalog: &Catalog) {
         "book:eur",
         "sku:promo",
         "recurring",
+        "flat",
         (Some("month"), None, None),
     )
     .await;
@@ -1400,6 +1492,7 @@ async fn other_tenant(f: &Fixture, names: &mut Names) -> Uuid {
         "book:other-tenant",
         "sku:pro",
         "recurring",
+        "flat",
         (Some("month"), None, None),
     )
     .await;
@@ -1421,6 +1514,8 @@ pub async fn world(f: Fixture, catalog: &Catalog) -> World {
     let mut names = Names::default();
     products(&mut names, catalog);
     let tenant = f.ctx.subject_tenant_id();
+    // The entry reads carry their tenant (D-428's golden): the fixture's own, named.
+    names.adopt("tenant", tenant);
     let mut w = Writer {
         f: &f,
         names: &mut names,
@@ -1753,6 +1848,36 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
                 ask_as_other_tenant(
                     "this tenant's price read by another tenant",
                     "/prices/{price:10}",
+                ),
+            ],
+        ),
+        "price_book_entry_usage" => (
+            "D-428: the two entry reads answer the entry's fields and its usage - its prices by state (a rejected price \
+             is not counted), the distinct plans whose draft, pending or published revisions name it (one plan counts \
+             once however many of its revisions name the entry) and the distinct plans that name it only through \
+             superseded revisions; the list carries it on every entry, an entry nothing uses reads zeros; another \
+             tenant reads nothing",
+            vec![
+                ask(
+                    "an entry with approved, pending, draft and rejected prices, named by a superseded and a \
+                     published revision of one plan",
+                    "/price-book-entries/{entry:pro}",
+                ),
+                ask(
+                    "an entry named by a published revision of one plan and the pending revision of another",
+                    "/price-book-entries/{entry:egress}",
+                ),
+                ask(
+                    "an entry no revision names",
+                    "/price-book-entries/{entry:archive}",
+                ),
+                ask(
+                    "the book's entries, each with its usage",
+                    "/price-books/{book:eur}/entries",
+                ),
+                ask_as_other_tenant(
+                    "this tenant's entry read by another tenant",
+                    "/price-book-entries/{entry:pro}",
                 ),
             ],
         ),

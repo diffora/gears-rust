@@ -43,7 +43,8 @@ pub struct SkuDto {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// `null`: the SKU has no category (P-D-196).
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub lifecycle: String,
@@ -102,7 +103,8 @@ pub struct SkuContentDto {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// `null`: the SKU has no category (P-D-196).
+    pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
     pub gl_code: Option<String>,
@@ -211,6 +213,40 @@ pub struct CategoryList {
 pub struct SkuCard {
     pub sku: SkuDto,
     pub references: ReferencesDto,
+    /// Pricing's usage of the SKU through the port pricing fills (P-D-197); `null` when no port is
+    /// registered, when it refuses the caller, or when it cannot answer.
+    pub usage: Option<SkuUsageDto>,
+}
+/// A SKU's prices by state, as pricing counts them (pricing D-428).
+#[toolkit_macros::api_dto(response)]
+pub struct SkuUsagePricesDto {
+    pub approved: u64,
+    pub pending: u64,
+    pub draft: u64,
+}
+/// Pricing's usage of a SKU (P-D-197): its price-book entries, the distinct currencies of their
+/// books (sorted), their prices by state, and the distinct plans naming them. Information for the
+/// SKUs screen; never a fence input.
+#[toolkit_macros::api_dto(response)]
+pub struct SkuUsageDto {
+    pub entries: u64,
+    pub currencies: Vec<String>,
+    pub prices: SkuUsagePricesDto,
+    pub plans: u64,
+}
+impl From<bss_products_sdk::sku_usage::SkuUsage> for SkuUsageDto {
+    fn from(u: bss_products_sdk::sku_usage::SkuUsage) -> Self {
+        Self {
+            entries: u.entries,
+            currencies: u.currencies,
+            prices: SkuUsagePricesDto {
+                approved: u.prices.approved,
+                pending: u.prices.pending,
+                draft: u.prices.draft,
+            },
+            plans: u.plans,
+        }
+    }
 }
 #[toolkit_macros::api_dto(response)]
 pub struct ReferencesDto {
@@ -229,9 +265,17 @@ impl From<crate::domain::references::ReferenceSummary> for ReferencesDto {
         }
     }
 }
+/// One item of the SKU list: the SKU's fields and pricing's `usage` (P-D-197), `null` when the
+/// port is absent, refuses or cannot answer.
+#[toolkit_macros::api_dto(response)]
+pub struct SkuListItem {
+    #[serde(flatten)]
+    pub sku: SkuDto,
+    pub usage: Option<SkuUsageDto>,
+}
 #[toolkit_macros::api_dto(response)]
 pub struct SkuList {
-    pub items: Vec<SkuDto>,
+    pub items: Vec<SkuListItem>,
     pub next: Option<String>,
 }
 #[toolkit_macros::api_dto(request)]
@@ -240,7 +284,9 @@ pub struct SkuRequest {
     pub name: String,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub category_id: Uuid,
+    /// Optional (P-D-196): omitted or `null` stays null, with no fallback to the default category.
+    #[serde(default)]
+    pub category_id: Option<Uuid>,
     #[serde(default)]
     pub description: String,
     #[serde(default = "default_sellable")]
@@ -282,7 +328,9 @@ impl TryFrom<SkuRequest> for NewSku {
 #[allow(clippy::option_option)] // None = omitted; Some(None) = clear; Some(Some(_)) = set.
 pub struct SkuPatchRequest {
     pub name: Option<String>,
-    pub category_id: Option<Uuid>,
+    /// Omitted keeps the category, `null` clears it (P-D-196), a value sets it.
+    #[serde(default, deserialize_with = "double_option")]
+    pub category_id: Option<Option<Uuid>>,
     pub description: Option<String>,
     pub sellable: Option<bool>,
     #[serde(default, deserialize_with = "double_option")]

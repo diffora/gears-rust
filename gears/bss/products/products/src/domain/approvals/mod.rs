@@ -40,13 +40,18 @@ pub(crate) fn store_err(error: RepoError) -> ApprovalError {
         RepoError::Db(ref code)
             if matches!(
                 code.as_str(),
-                "SKU_NAME_TAKEN" | "SKU_CODE_TAKEN" | "CATEGORY_RETIRED" | "VERSION_ORDER"
+                "SKU_NAME_TAKEN"
+                    | "SKU_CODE_TAKEN"
+                    | "CATEGORY_RETIRED"
+                    | "CATEGORY_NOT_FOUND"
+                    | "VERSION_ORDER"
             ) =>
         {
             let code = match code.as_str() {
                 "SKU_NAME_TAKEN" => "SKU_NAME_TAKEN",
                 "SKU_CODE_TAKEN" => "SKU_CODE_TAKEN",
                 "CATEGORY_RETIRED" => "CATEGORY_RETIRED",
+                "CATEGORY_NOT_FOUND" => "CATEGORY_NOT_FOUND",
                 _ => "VERSION_ORDER",
             };
             ApprovalError::ApplyRefused {
@@ -56,6 +61,27 @@ pub(crate) fn store_err(error: RepoError) -> ApprovalError {
         }
         other => ApprovalError::Store(other.to_string()),
     }
+}
+/// The refusal of a category a SKU's content names (P-D-196), with the draft doors' answers: a
+/// category the tenant does not hold is `CATEGORY_NOT_FOUND` with the id as its detail, which
+/// answers 404 (`DomainError::from`); a retired one is `CATEGORY_RETIRED`, 409.
+async fn require_category(
+    tx: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<(), ApprovalError> {
+    repo::category_repo::require_active_category(tx, scope, tenant, id)
+        .await
+        .map_err(|error| match error {
+            RepoError::Db(ref code) if code == "CATEGORY_NOT_FOUND" => {
+                ApprovalError::ApplyRefused {
+                    code: "CATEGORY_NOT_FOUND",
+                    detail: id.to_string(),
+                }
+            }
+            other => store_err(other),
+        })
 }
 fn invalid(code: &'static str, field: &str, detail: impl Into<String>) -> ApprovalError {
     ApprovalError::InvalidSubmit {

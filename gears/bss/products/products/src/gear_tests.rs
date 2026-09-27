@@ -79,8 +79,8 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        8,
-        "the schema guard, coordination and the six PriceBook migrations"
+        9,
+        "the schema guard, coordination and the seven PriceBook migrations"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -172,6 +172,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
             .resolved_idempotency_retention_hours(),
         fence_ttl_minutes: 30,
         reference_principals: std::collections::BTreeMap::new(),
+        hub: Arc::new(toolkit::ClientHub::new()),
     });
     gear.runtime.store(Some(Arc::new(ProductsRuntime {
         enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),
