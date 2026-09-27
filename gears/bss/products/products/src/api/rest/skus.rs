@@ -333,7 +333,9 @@ fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
         other => TxError::Repo(other),
     }
 }
-/// P-D-184: a configured catalog's definite unknown refuses; silence allows draft save.
+/// P-D-184: a configured catalog's definite unknown refuses; silence allows draft save. A catalog
+/// that refuses the caller (P-D-207) is not a verdict on the ref either, so the save proceeds; the
+/// submit and the approve answer it 403 `USAGE_TYPE_FORBIDDEN`.
 async fn resolve_draft_ref(
     state: &ApiState,
     ctx: &SecurityContext,

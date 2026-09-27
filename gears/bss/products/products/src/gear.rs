@@ -11,7 +11,7 @@ use toolkit::api::OpenApiRegistry;
 use toolkit::contracts::RestApiCapability;
 use toolkit::{Gear, GearCtx};
 
-/// `source` on the pick-list: a supplier another module registered.
+/// `source` on the pick-list (`GET /usage-types`, P-D-207): a supplier another module registered.
 pub const USAGE_TYPE_SOURCE_REGISTRY: &str = "registry";
 /// `source`: this crate's adapter over the usage collector's own client.
 pub const USAGE_TYPE_SOURCE_COLLECTOR: &str = "usage_collector";
@@ -411,6 +411,10 @@ impl RestApiCapability for BssProductsGear {
                     openapi,
                 ))
                 .merge(crate::api::rest::browse::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .merge(crate::api::rest::usage_types::router(
                     Arc::clone(&rt.api_state),
                     openapi,
                 ))

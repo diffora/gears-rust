@@ -36,6 +36,8 @@ pub enum DomainError {
     UsageTypeUnresolved(String),
     #[error("usage type unavailable: {0}")]
     UsageTypeUnavailable(String),
+    #[error("usage type catalog refused the caller: {0}")]
+    UsageTypeForbidden(String),
     #[error("unrecognized metering unit: {0}")]
     UnrecognizedUnit(String),
     #[error("incomplete meter declaration: {0}")]
@@ -58,6 +60,7 @@ impl DomainError {
             Self::AuditUnavailable(_) => "AUDIT_UNAVAILABLE",
             Self::UsageTypeUnresolved(_) => "USAGE_TYPE_UNRESOLVED",
             Self::UsageTypeUnavailable(_) => "USAGE_TYPE_UNAVAILABLE",
+            Self::UsageTypeForbidden(_) => "USAGE_TYPE_FORBIDDEN",
             Self::UnrecognizedUnit(_) => "UNRECOGNIZED_UNIT",
             Self::MeterDeclarationIncomplete(_) => "METER_DECLARATION_INCOMPLETE",
         }

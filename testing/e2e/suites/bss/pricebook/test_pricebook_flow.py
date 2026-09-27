@@ -15,6 +15,9 @@ Phase 5 on the same wire: the model is the entry's (D-427), so an entry is creat
 the SKU list carry pricing's ``usage`` through the port pricing registers in the ClientHub
 (P-D-197) — these suites are its only proof on the real binary; and a SKU may have no category
 (P-D-196).
+
+Phase 6: products' policy is written under If-Match (P-D-205), a never-published draft is
+deleted (P-D-206), and the usage-type picker is products' own route (P-D-207).
 """
 
 import datetime
@@ -784,3 +787,35 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
     finally:
         for kind, quorum in found.items():
             _set_quorum(api, kind, quorum)
+
+
+@pytest.mark.timeout(60)
+def test_a_never_published_draft_is_deleted_and_the_picker_is_served(api):
+    """P-D-206 and P-D-207 on the real binary.
+
+    A draft is deleted by its author under If-Match (204), and its card is 404 after. The
+    usage-type picker is products' own route: 200 with the catalog's provenance, or 503 when the
+    linked collector has no storage to answer from; never a 404.
+    """
+    run = uuid.uuid4().hex[:8]
+    r = api.post(
+        f"{PRODUCTS}/skus",
+        json={"code": f"E2E-DRAFT-{run}", "name": f"E2E draft {run}", "type": "recurring"},
+    )
+    assert r.status_code == 201, r.text
+    sku = r.json()["id"]
+    r = api.delete(f"{PRODUCTS}/skus/{sku}")
+    assert r.status_code == 400, r.text
+    r = api.get(f"{PRODUCTS}/skus/{sku}")
+    assert r.status_code == 200, r.text
+    r = api.delete(f"{PRODUCTS}/skus/{sku}", headers={"If-Match": r.headers["etag"]})
+    assert r.status_code == 204, r.text
+    assert api.get(f"{PRODUCTS}/skus/{sku}").status_code == 404
+
+    r = api.get(f"{PRODUCTS}/usage-types", params={"limit": 5})
+    assert r.status_code in (200, 503), r.text
+    if r.status_code == 200:
+        page = r.json()
+        assert page["source"] == "usage_collector", page
+        assert isinstance(page["items"], list), page
+        assert "next_cursor" in page["page_info"], page

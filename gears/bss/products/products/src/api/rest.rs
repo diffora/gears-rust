@@ -22,6 +22,7 @@ mod replay;
 pub mod sku_governance;
 pub mod skus;
 mod usage;
+pub mod usage_types;
 
 /// The reserved service prefix.
 pub const PREFIX: &str = "/bss-products/v1";

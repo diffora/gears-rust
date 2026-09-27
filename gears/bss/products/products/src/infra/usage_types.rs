@@ -1,11 +1,11 @@
 //! The usage-type collector as the publish door sees it
 //! (`dod-usage-type-resolution`; P-D-184, P-D-203).
 //!
-//! One question, three answers ([`UsageTypeAnswer`]), asked **once per
+//! One question, four answers ([`UsageTypeAnswer`]), asked **once per
 //! publish** for the SKU's one `usage_type_ref`, **before** the publish
-//! transaction opens — so a `503` leaves no claimed idempotency key and the
-//! retry is a fresh act. The judge is the domain's (`domain::sku`); this
-//! module is the seam that fetches the answer.
+//! transaction opens — so a `503` or a `403` leaves no claimed idempotency key
+//! and the retry is a fresh act. The judge is the domain's (`domain::sku`);
+//! this module is the seam that fetches the answer.
 //!
 //! # Why a trait on `ApiState`, and why not a `cfg(test)` fork
 //!
@@ -17,12 +17,16 @@
 //! (P-D-184), tests inject a stub per outcome, and no `cfg(test)` sits in the
 //! path.
 //!
-//! # The three answers, and how the collector's errors become them
+//! # The four answers, and how the collector's errors become them
 //!
 //! - `Resolved` — the collector returned the type.
 //! - `Unresolved` — the collector answered `NotFound`, **or the ref is not a
 //!   valid GTS id** (an id that cannot name anything cannot resolve anywhere;
 //!   asking the collector would only rephrase the same `400`).
+//! - `Forbidden` — the collector answered `PermissionDenied`: the catalog is
+//!   read **as the caller** (P-D-207, owner option b), so a caller without collector
+//!   read is told so with a 403 `USAGE_TYPE_FORBIDDEN`, never the 503 of an
+//!   outage it could retry forever.
 //! - `Unavailable` — every other error, and a call that outlives
 //!   `usage_type_resolver_timeout_ms`: fail-closed, the gear's `503` channel,
 //!   for usage SKUs only (P-D-184, P-D-203 — a latency coupling, not a lock).
@@ -108,6 +112,11 @@ impl UsageTypeCatalog for CollectorUsageTypes {
         match tokio::time::timeout(self.timeout, self.client.get_usage_type(ctx, gts_id)).await {
             Ok(Ok(usage_type)) => UsageTypeAnswer::Resolved(binding_of(&usage_type)),
             Ok(Err(UsageCollectorError::NotFound { .. })) => UsageTypeAnswer::Unresolved,
+            // The PDP's reason is for operator logs only, as `list` below keeps it.
+            Ok(Err(error @ UsageCollectorError::PermissionDenied { .. })) => {
+                tracing::warn!(%error, usage_type_ref, "bss-products: usage-type collector refused the caller");
+                UsageTypeAnswer::Forbidden
+            }
             Ok(Err(error)) => {
                 tracing::warn!(%error, usage_type_ref, "bss-products: usage-type collector failed");
                 UsageTypeAnswer::Unavailable

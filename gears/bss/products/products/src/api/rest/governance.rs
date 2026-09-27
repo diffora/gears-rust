@@ -79,10 +79,14 @@ pub(super) async fn resolve(
         return Ok(None);
     };
     let answer = state.usage_type_catalog.resolve(ctx, reference).await;
-    if matches!(answer, UsageTypeAnswer::Unavailable) {
-        return Err(DomainError::UsageTypeUnavailable(reference.into()).into());
+    match answer {
+        UsageTypeAnswer::Unavailable => {
+            Err(DomainError::UsageTypeUnavailable(reference.into()).into())
+        }
+        // P-D-207: read as the caller; a denial is the caller's 403, not an outage.
+        UsageTypeAnswer::Forbidden => Err(DomainError::UsageTypeForbidden(reference.into()).into()),
+        UsageTypeAnswer::Resolved(_) | UsageTypeAnswer::Unresolved => Ok(Some(answer)),
     }
-    Ok(Some(answer))
 }
 /// Maintenance never releases a pending unit's fence and compares the observed operation.
 pub async fn expire(

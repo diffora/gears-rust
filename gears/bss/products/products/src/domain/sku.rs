@@ -145,6 +145,13 @@ pub fn validate_publish(c: &SkuContent, usage_type: Option<&UsageTypeAnswer>) ->
                     "usage_type_ref",
                     "the usage type catalog did not answer",
                 ),
+                // Unreachable from the doors (`governance::resolve` answers a denial as 403
+                // before any report is built); kept so the pure validator never admits it.
+                Some(UsageTypeAnswer::Forbidden) => r.violate(
+                    "USAGE_TYPE_FORBIDDEN",
+                    "usage_type_ref",
+                    "the usage type catalog refused this caller",
+                ),
                 Some(UsageTypeAnswer::Unresolved) => r.violate(
                     "USAGE_TYPE_UNRESOLVED",
                     "usage_type_ref",

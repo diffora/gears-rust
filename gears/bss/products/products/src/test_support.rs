@@ -502,6 +502,116 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for UnreachableUsageTypes {
     }
 }
 
+/// The usage collector refusing every caller with its own `PermissionDenied`, as the platform PDP
+/// answers an author without collector read (P-D-207). Every method refuses, so a case that reaches
+/// a method it did not mean to is still told no rather than handed a fabricated answer.
+pub struct DenyingCollector;
+
+fn collector_denial() -> usage_collector_sdk::UsageCollectorError {
+    usage_collector_sdk::UsageCollectorError::permission_denied(
+        "the probe's PDP refuses this caller",
+    )
+}
+
+#[async_trait]
+impl usage_collector_sdk::UsageCollectorClientV1 for DenyingCollector {
+    async fn create_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::CreateUsageRecord,
+    ) -> Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn create_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: Vec<usage_collector_sdk::CreateUsageRecord>,
+    ) -> Result<
+        Vec<Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError>>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn get_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn query_aggregated_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+        _: &toolkit_odata::ODataQuery,
+        _: &[usage_collector_sdk::MetadataFilter],
+        _: usage_collector_sdk::AggregationSpec,
+    ) -> Result<usage_collector_sdk::AggregationResult, usage_collector_sdk::UsageCollectorError>
+    {
+        Err(collector_denial())
+    }
+    async fn list_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+        _: &toolkit_odata::ODataQuery,
+        _: &[usage_collector_sdk::MetadataFilter],
+    ) -> Result<
+        toolkit_odata::Page<usage_collector_sdk::UsageRecord>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn deactivate_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn create_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageType,
+    ) -> Result<usage_collector_sdk::UsageType, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn get_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+    ) -> Result<usage_collector_sdk::UsageType, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn list_usage_types(
+        &self,
+        _: &SecurityContext,
+        _: &toolkit_odata::ODataQuery,
+    ) -> Result<
+        toolkit_odata::Page<usage_collector_sdk::UsageType>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn delete_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+}
+
+/// The production collector adapter over [`DenyingCollector`]: the catalog an author without
+/// collector read meets.
+#[must_use]
+pub fn denying_collector_catalog() -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
+    Arc::new(crate::infra::usage_types::CollectorUsageTypes::new(
+        Arc::new(DenyingCollector),
+        std::time::Duration::from_secs(2),
+    ))
+}
+
 /// A PDP that refuses every request, for the "authorization is judged first" probes.
 struct DenyingResolver;
 

@@ -121,6 +121,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.confirm_reference",
         "bss_products.release_reference",
         "bss_products.browse",
+        "bss_products.list_usage_types",
     ];
     expected.sort_unstable();
     assert_eq!(actual, expected);

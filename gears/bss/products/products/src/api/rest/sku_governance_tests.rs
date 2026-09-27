@@ -23,7 +23,8 @@ fn routes(s: Arc<crate::api::rest::ApiState>, o: &dyn toolkit::api::OpenApiRegis
         .merge(crate::api::rest::sku_governance::router(s.clone(), o))
         .merge(crate::api::rest::approval_units::router(s.clone(), o))
         .merge(crate::api::rest::approval_policy::router(s.clone(), o))
-        .merge(crate::api::rest::references::router(s, o))
+        .merge(crate::api::rest::references::router(s.clone(), o))
+        .merge(crate::api::rest::usage_types::router(s, o))
 }
 struct Fixture {
     state: Arc<crate::api::rest::ApiState>,
@@ -1059,8 +1060,9 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         ),
         (Method::DELETE, reference_path, "submit"),
         (Method::DELETE, sku_path.clone(), "author"),
+        (Method::GET, "/usage-types".into(), "author"),
     ];
-    assert_eq!(cases.len(), 25);
+    assert_eq!(cases.len(), 26);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;
@@ -2701,4 +2703,73 @@ async fn a_replayed_create_answers_the_deleted_draft() {
     )
     .await;
     assert_eq!(status, 404);
+}
+
+/// P-D-207 (owner option b): usage types are read as the caller. A collector that refuses the caller is
+/// 403 `USAGE_TYPE_FORBIDDEN` at submit and at approve, never the 503 of an outage; nothing is
+/// recorded and no key is claimed.
+#[tokio::test]
+async fn a_collector_denial_is_403_at_submit_and_at_approve() {
+    let f = Fixture::new(1).await;
+    // A ref the collector adapter would ask about: a well-formed usage-record GTS id.
+    let (status, s) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"METERED","name":"Metered","type":"usage","unit":"GB",
+               "usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.e2e.pricebook.storage.v1"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{s}");
+    let submit = format!("/skus/{}/submit", s["id"].as_str().unwrap());
+    let denied = second_app(&f, denying_collector_catalog()).await;
+    let (status, b) = call(
+        &denied,
+        &f.author,
+        Method::POST,
+        &submit,
+        json!({}),
+        Some("denied-submit"),
+    )
+    .await;
+    assert_eq!(status, 403, "{b}");
+    assert_eq!(problem_code(&b), "USAGE_TYPE_FORBIDDEN");
+    assert_eq!(
+        raw_i64(&f.dsn, "SELECT count(*) AS v FROM products_approval_unit").await,
+        0
+    );
+    assert_eq!(idempotency_rows_for(&f.dsn, "denied-submit").await, 0);
+    let (status, u) = call(&f.app, &f.author, Method::POST, &submit, json!({}), None).await;
+    assert_eq!(status, 200, "{u}");
+    let approve = format!(
+        "/approval-units/{}/approve",
+        u["unit"]["id"].as_str().unwrap()
+    );
+    let (status, b) = call(
+        &denied,
+        &f.reviewer,
+        Method::POST,
+        &approve,
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "{b}");
+    assert_eq!(problem_code(&b), "USAGE_TYPE_FORBIDDEN");
+    let (status, b) = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &approve,
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "a reviewer the collector admits still decides: {b}"
+    );
+    assert_eq!(b["outcome"], "applied", "{b}");
 }

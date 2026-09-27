@@ -119,10 +119,12 @@ pub struct UsageTypeBinding {
 
 /// What the catalog answers about one id.
 ///
-/// **Three values, not two**, and the third is the point: a catalog that says
-/// *no* and a catalog that says *nothing* are different facts, and the publish
-/// gate treats them differently — the first is a refusal the author can fix,
-/// the second is fail-closed and retryable.
+/// **Four values, not two**: a catalog that says *no*, a catalog that says
+/// *nothing* and a catalog that refuses *the caller* are different facts, and
+/// the publish gate treats them differently — the first is a refusal the
+/// author can fix, the second is fail-closed and retryable, the third is a
+/// permission the caller lacks (P-D-207: the catalog is read as the caller, so
+/// a denial is an honest 403, never an outage).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageTypeAnswer {
     /// The catalog knows this id.
@@ -134,6 +136,10 @@ pub enum UsageTypeAnswer {
     /// The catalog did not answer: absent, unreachable, or past the caller's
     /// deadline.
     Unavailable,
+    /// The catalog refused the caller: it answered, and the answer is that
+    /// this caller may not read usage types. Retrying does not help; a grant
+    /// does.
+    Forbidden,
 }
 
 /// One page of the authoring pick-list.

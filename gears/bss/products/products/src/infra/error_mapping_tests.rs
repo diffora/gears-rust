@@ -26,7 +26,9 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         | DomainError::StaleRevision { .. }
         | DomainError::IdempotencyConflict(_)
         | DomainError::IdempotencyKeyInFlight(_) => (409, Some(err.code())),
-        DomainError::Forbidden { .. } => (403, Some(err.code())),
+        DomainError::Forbidden { .. } | DomainError::UsageTypeForbidden(_) => {
+            (403, Some(err.code()))
+        }
         DomainError::NotFound { .. } => (404, None),
         DomainError::Approval(r) => match r.code {
             "SOD_VIOLATION" | "NOT_SUBMITTER" => (403, Some(r.code)),
@@ -69,11 +71,12 @@ fn one_of_every_variant() -> Vec<DomainError> {
         DomainError::AuditUnavailable("detail".to_owned()),
         DomainError::UsageTypeUnresolved("detail".to_owned()),
         DomainError::UsageTypeUnavailable("detail".to_owned()),
+        DomainError::UsageTypeForbidden("detail".to_owned()),
         DomainError::UnrecognizedUnit("detail".to_owned()),
         DomainError::MeterDeclarationIncomplete("detail".to_owned()),
     ]
 }
-const DOMAIN_ERROR_VARIANTS: usize = 14;
+const DOMAIN_ERROR_VARIANTS: usize = 15;
 
 #[test]
 fn every_domain_error_variant_lands_in_its_declared_category() {
@@ -211,4 +214,16 @@ fn actual_approval_errors_keep_custom_codes_fields_and_details() {
             );
         }
     }
+}
+
+/// P-D-207: a publish report carrying the catalog's refusal of the caller answers 403
+/// `USAGE_TYPE_FORBIDDEN`, as the door's own resolve does, never a 400 field fix.
+#[test]
+fn a_report_carrying_a_catalog_denial_is_403() {
+    let mut report = ValidationReport::new();
+    report.violate("USAGE_NEEDS_METER", "unit", "a usage SKU names its unit");
+    report.violate("USAGE_TYPE_FORBIDDEN", "usage_type_ref", "refused");
+    let canonical = CanonicalError::from(DomainError::Validation(report));
+    assert_eq!(canonical.status_code(), 403);
+    assert_eq!(code_of(&canonical), Some("USAGE_TYPE_FORBIDDEN"));
 }
