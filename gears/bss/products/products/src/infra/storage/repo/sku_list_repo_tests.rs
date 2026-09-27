@@ -1,0 +1,101 @@
+//! The pager's field vocabulary: what each field admits and which fields order.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+use super::*;
+
+fn string(s: &str) -> ODataValue {
+    ODataValue::String(s.to_owned())
+}
+
+#[test]
+fn only_the_four_non_nullable_keys_order_and_only_the_two_nullable_fields_compare_with_null() {
+    for field in SkuListField::FIELDS {
+        let orderable = matches!(
+            field,
+            SkuListField::Id | SkuListField::Code | SkuListField::Name | SkuListField::UpdatedAt
+        );
+        assert_eq!(SkuListMapping::is_orderable(*field), orderable, "{field:?}");
+        assert!(
+            !(field.nullable() && orderable),
+            "{field:?}: a nullable key breaks the cursor"
+        );
+        let null = SkuListMapping::map_value(*field, FilterOp::Eq, &ODataValue::Null);
+        assert_eq!(
+            null.is_ok(),
+            matches!(
+                field,
+                SkuListField::CategoryId | SkuListField::PendingUnitId
+            ),
+            "{field:?}: {null:?}"
+        );
+    }
+}
+
+#[test]
+fn the_closed_fields_take_their_values_with_eq_ne_and_in_only() {
+    for (field, good, bad) in [
+        (SkuListField::Lifecycle, "retiring", "active"),
+        (SkuListField::Type, "one_time", "onetime"),
+    ] {
+        for op in [FilterOp::Eq, FilterOp::Ne, FilterOp::In] {
+            assert!(matches!(
+                SkuListMapping::map_value(field, op, &string(good)),
+                Ok(ODataValue::String(v)) if v == good
+            ));
+            assert!(SkuListMapping::map_value(field, op, &string(bad)).is_err());
+        }
+        for op in [FilterOp::Contains, FilterOp::StartsWith, FilterOp::EndsWith] {
+            assert!(SkuListMapping::map_value(field, op, &string(good)).is_err());
+        }
+    }
+    // The open text fields take any text.
+    assert!(
+        SkuListMapping::map_value(SkuListField::Code, FilterOp::Contains, &string("%")).is_ok()
+    );
+}
+
+#[test]
+fn updated_at_orders_and_never_filters() {
+    let toolkit_odata::filter::FilterNode::Binary { value: at, .. } =
+        toolkit_odata::filter::parse_odata_filter::<SkuListField>(
+            "updated_at eq 2026-01-01T00:00:00Z",
+        )
+        .unwrap()
+    else {
+        panic!("a comparison parses to a binary node");
+    };
+    for op in [FilterOp::Eq, FilterOp::Ge, FilterOp::Lt] {
+        assert!(SkuListMapping::map_value(SkuListField::UpdatedAt, op, &at).is_err());
+    }
+    assert!(SkuListMapping::is_orderable(SkuListField::UpdatedAt));
+}
+
+/// `q` folds both sides with the database's `lower()` and escapes its pattern, on both
+/// dialects: `LOWER(col) LIKE LOWER(?) ESCAPE '\'` for each of the five columns.
+#[test]
+fn the_text_search_lowers_both_sides_and_escapes_on_both_dialects() {
+    use sea_orm::{EntityTrait, QueryFilter, QueryTrait};
+    let filter = SkuListFilter {
+        text: Some("50%_Off".into()),
+    };
+    for backend in [DbBackend::Postgres, DbBackend::Sqlite] {
+        let sql = sku::Entity::find()
+            .filter(list_condition(Uuid::nil(), &filter, backend))
+            .build(backend)
+            .to_string();
+        for column in ["code", "name", "unit", "usage_type_ref", "gl_code"] {
+            assert!(
+                sql.contains(&format!(r#"LOWER("products_sku"."{column}") LIKE LOWER("#)),
+                "{backend:?} {column}: {sql}"
+            );
+        }
+        assert_eq!(sql.matches(" ESCAPE ").count(), 5, "{backend:?}: {sql}");
+        // The escaped pattern, as each dialect spells a backslash in a literal (Postgres
+        // renders `E'…'`, doubling it).
+        let escaped = if backend == DbBackend::Postgres {
+            r"'%50\\%\\_Off%'"
+        } else {
+            r"'%50\%\_Off%'"
+        };
+        assert!(sql.contains(escaped), "{backend:?}: {sql}");
+    }
+}

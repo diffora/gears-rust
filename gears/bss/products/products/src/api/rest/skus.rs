@@ -4,10 +4,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-create-unique:p1
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
-    dto::{
-        ReferencesDto, SkuCard, SkuDto, SkuList, SkuListItem, SkuPatchRequest, SkuRequest,
-        SkuVersionDto, parse_token,
-    },
+    dto::{ReferencesDto, SkuCard, SkuDto, SkuPatchRequest, SkuRequest, SkuVersionDto},
     json_body,
     preconditions::{etag, if_match, if_match_param},
     replay, repo_error_to_canonical, require_authenticated, tx_to_canonical,
@@ -34,7 +31,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use bss_products_sdk::models::{Lifecycle, Sku, SkuContent, SkuType};
+use bss_products_sdk::models::{Lifecycle, Sku, SkuContent};
 use std::sync::Arc;
 use time::{Date, OffsetDateTime};
 use toolkit::api::{
@@ -51,16 +48,6 @@ const TAG: &str = "SKUs";
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
 
-/// List query vocabulary mirrors the repository's scoped filters.
-#[toolkit_macros::api_dto(request)]
-struct ListQuery {
-    q: Option<String>,
-    r#type: Option<String>,
-    category: Option<Uuid>,
-    lifecycle: Option<String>,
-    limit: Option<u32>,
-    after: Option<String>,
-}
 #[toolkit_macros::api_dto(request)]
 struct VersionQuery {
     #[serde(default, with = "crate::infra::serde_date::option")]
@@ -136,27 +123,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(Router::new(), openapi);
-    let router = OperationBuilder::get(SKUS)
-        .operation_id("bss_products.list_skus")
-        .summary("List and search SKUs")
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .query_param("q", false, "q")
-        .query_param("type", false, "type")
-        .query_param("category", false, "category")
-        .query_param("lifecycle", false, "lifecycle")
-        .query_param("limit", false, "limit")
-        .query_param("after", false, "after")
-        .handler(list_skus)
-        .json_response_with_schema::<SkuList>(openapi, StatusCode::OK, "List and search SKUs.")
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    // The list and its counts (P-D-210, P-D-211).
+    let router = super::sku_list::register(router, openapi);
     let router = OperationBuilder::get(format!("{SKUS}/{{id}}"))
         .operation_id("bss_products.get_sku")
         .summary("Read a SKU card")
@@ -225,7 +193,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
-        .query_param("as_of", false, "as_of")
+        .query_param_typed(
+            "as_of",
+            false,
+            "A date (YYYY-MM-DD): the version in force then",
+            "string",
+        )
         .handler(sku_versions)
         .json_response_with_schema::<VersionsResponse>(
             openapi,
@@ -246,10 +219,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
-        .query_param(
+        .query_param_typed(
             "include_released",
             false,
             "Include released reference history (default false)",
+            "boolean",
         )
         .handler(sku_references)
         .json_response_with_schema::<ReferenceList>(
@@ -680,91 +654,6 @@ fn query<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, CanonicalError> {
         r.violate("VALIDATION", "query", e.body_text());
         DomainError::Validation(r).into()
     })
-}
-/// List by an exclusive code cursor, returning the last delivered code as continuation.
-async fn list_skus(
-    Extension(state): Extension<Arc<ApiState>>,
-    Extension(enforcer): Extension<PolicyEnforcer>,
-    extension_ctx: Option<Extension<SecurityContext>>,
-    q: Result<Query<ListQuery>, QueryRejection>,
-) -> Result<Json<SkuList>, CanonicalError> {
-    let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
-    let q = query(q)?;
-    let limit = q.limit.unwrap_or(50).min(200);
-    if limit == 0 {
-        let mut r = ValidationReport::new();
-        r.violate("VALIDATION", "limit", "limit must be at least one");
-        return Err(DomainError::Validation(r).into());
-    }
-    let q = repo::SkuQuery {
-        catalog_filter: None,
-        text: q.q,
-        r#type: q
-            .r#type
-            .as_deref()
-            .map(|s| parse_token(s, "type", SkuType::parse))
-            .transpose()
-            .map_err(DomainError::Validation)?,
-        category_id: q.category,
-        lifecycle: q
-            .lifecycle
-            .as_deref()
-            .map(|s| parse_token(s, "lifecycle", Lifecycle::parse))
-            .transpose()
-            .map_err(DomainError::Validation)?,
-        limit: u64::from(limit),
-        after_code: q.after,
-    };
-    let tenant = ctx.subject_tenant_id();
-    let ttl = state.fence_ttl_minutes;
-    let mut items = state
-        .db
-        .db()
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let scope = scope.clone();
-            let q = q.clone();
-            Box::pin(async move {
-                repo::expire_orphan_fences(
-                    tx,
-                    &scope,
-                    tenant,
-                    OffsetDateTime::now_utc() - time::Duration::minutes(i64::from(ttl)),
-                )
-                .await
-                .map_err(TxError::Repo)?;
-                repo::list_skus(tx, &scope, tenant, &q)
-                    .await
-                    .map_err(TxError::Repo)
-            })
-        })
-        .await
-        .map_err(tx_to_canonical)?;
-    let limit =
-        usize::try_from(limit).map_err(|e| CanonicalError::internal(e.to_string()).create())?;
-    let more = items.len() > limit;
-    items.truncate(limit);
-    let next = if more {
-        items.last().map(|s| s.code.clone())
-    } else {
-        None
-    };
-    // P-D-197: one call of pricing's usage port for the page, after the page's transaction.
-    let ids: Vec<Uuid> = items.iter().map(|s| s.id).collect();
-    let mut usage = super::usage::of(&state, &ctx, &ids).await;
-    Ok(Json(SkuList {
-        items: items
-            .into_iter()
-            .map(|s| {
-                let counted = usage.remove(&s.id);
-                SkuListItem {
-                    sku: s.into(),
-                    usage: counted,
-                }
-            })
-            .collect(),
-        next,
-    }))
 }
 /// @cpt-cf-bss-products-fr-sku-versions
 async fn sku_versions(

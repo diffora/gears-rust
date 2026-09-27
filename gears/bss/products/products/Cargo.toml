@@ -155,6 +155,9 @@ secrecy = { workspace = true }
 
 [dev-dependencies]
 bss-pricing = { workspace = true }
+# The SKU list and counts prove a fixed statement count with toolkit-db's `QueryRecorder`
+# (P-D-210), as pricing's usage reads do.
+toolkit-db = { workspace = true, features = ["pg", "sqlite", "test-support"] }
 # `ServiceExt::oneshot` drives one request through the composed router in
 # `gear.rs`'s mount test, so the prefix reservation is asserted at the
 # HTTP level rather than by constructing a `Router` and trusting it.

@@ -434,18 +434,28 @@ async fn filtered_code_cursor_never_skips_the_first_row_of_the_next_page() {
         .await
         .unwrap();
     }
-    let query = format!(
-        "/bss-products/v1/skus?q=stor&type=usage&lifecycle=published&category={cat}&limit=2"
+    // P-D-210: the filters are OData now; the cursor is the pager's, and carries the filter.
+    let filter = format!(
+        "type%20eq%20%27usage%27%20and%20lifecycle%20eq%20%27published%27%20and%20category_id%20eq%20{cat}"
     );
+    let query = format!("/bss-products/v1/skus?q=stor&%24filter={filter}&limit=2");
     let page = body_json(get(&app, tenant, &query).await).await;
     assert_eq!(page["items"].as_array().unwrap().len(), 2);
     assert_eq!(page["items"][0]["code"], "stor-a");
     assert_eq!(page["items"][1]["code"], "stor-b");
-    let next = page["next"].as_str().unwrap();
-    let page = body_json(get(&app, tenant, &format!("{query}&after={next}")).await).await;
-    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    let next = page["page_info"]["next_cursor"].as_str().unwrap();
+    let page = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus?q=stor&%24filter={filter}&limit=2&cursor={next}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 1, "{page}");
     assert_eq!(page["items"][0]["code"], "stor-c");
-    assert_eq!(page["next"], Value::Null);
+    assert_eq!(page["page_info"]["next_cursor"], Value::Null);
 }
 
 #[tokio::test]
@@ -528,9 +538,13 @@ async fn invalid_enum_fields_and_lifecycle_edits_are_400_and_audit_failure_rolls
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     assert!(violation_for(&body_json(r).await, "lifecycle").is_some());
     assert_eq!(
-        get(&app, tenant, "/bss-products/v1/skus?type=bad")
-            .await
-            .status(),
+        get(
+            &app,
+            tenant,
+            "/bss-products/v1/skus?%24filter=type%20eq%20%27bad%27"
+        )
+        .await
+        .status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -814,12 +828,23 @@ async fn browse_by_a_category_excludes_skus_without_one_and_the_unfiltered_list_
         get(
             &app,
             tenant,
-            &format!("/bss-products/v1/skus?category={cat}"),
+            &format!("/bss-products/v1/skus?%24filter=category_id%20eq%20{cat}"),
         )
         .await,
     )
     .await;
     assert_eq!(codes(by_category), ["A"]);
+    // P-D-196's owed `category=none` browse is `category_id eq null` (P-D-210).
+    let without = body_json(
+        get(
+            &app,
+            tenant,
+            "/bss-products/v1/skus?%24filter=category_id%20eq%20null",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(codes(without), ["B"]);
     let all = body_json(get(&app, tenant, "/bss-products/v1/skus").await).await;
     assert_eq!(codes(all), ["A", "B"]);
 }
@@ -977,14 +1002,25 @@ async fn the_sku_reads_carry_pricing_usage_with_one_port_call_per_list_page() {
     assert_eq!(port.calls(), vec![(tenant, vec![a])]);
     let page = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2").await).await;
     let items = page["items"].as_array().unwrap();
-    assert_eq!(page["next"], "B");
+    let next = page["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["code"], "A", "the SKU's own fields stay flat");
     assert_eq!(items[0]["usage"]["entries"], 2);
     assert_eq!(items[1]["code"], "B");
     assert_eq!(items[1]["usage"]["entries"], 5);
     assert_eq!(items[1]["usage"]["plans"], 3);
-    let rest = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2&after=B").await).await;
+    let rest = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus?limit=2&cursor={next}"),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(
         rest["items"][0]["usage"],
         json!({

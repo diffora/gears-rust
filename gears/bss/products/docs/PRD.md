@@ -380,7 +380,9 @@ and durable version reads.
 **Rules**
 
 - List and search support code, name, category, type and lifecycle. A category filter matches only the SKUs
-  in that category; an unfiltered list includes the SKUs without a category (P-D-196).
+  in that category; an unfiltered list includes the SKUs without a category (P-D-196), and `category_id eq
+  null` lists those. The list pages on the toolkit's OData, with a case-insensitive `q` over code, name, unit,
+  usage type and GL code, and answers tab counts per lifecycle and in review (P-D-210, P-D-211).
 - `GET /skus/{id}/references` reads the local registry, returning reference rows and counts grouped by owner
   and kind; reserved references count alongside confirmed ones.
 - The card makes unresolved reservations visible so an operator can inspect and release abandoned attempts.
@@ -493,7 +495,7 @@ an optional `Idempotency-Key` (spec §7.2 products row, with §2.2 amendments).
 | --- | --- |
 | SKU authoring | `POST /skus`; `PATCH /skus/{id}` for drafts; `DELETE /skus/{id}` for a never-published draft (P-D-206); `POST /skus/{id}/changes` for published/deprecated content and/or lifecycle, with `effective_from` defaulting to today. |
 | Usage-type picker | `GET /usage-types?q&kind&limit&cursor`, the catalog the publish gate resolves against, read as the caller (P-D-207). |
-| SKU reads | `GET /skus`, `GET /skus/{id}`; list/search by code, name, category, type and lifecycle; each SKU carries pricing's `usage` or `null` (P-D-197). |
+| SKU reads | `GET /skus` on the toolkit's OData (`$filter`, `$orderby`, `$top`/`limit`, `cursor`) with `q`, `GET /skus/counts`, `GET /skus/{id}`; list/search by code, name, category (or none), type, lifecycle and in-review (P-D-210, P-D-211); each SKU carries pricing's `usage` or `null` (P-D-197). |
 | Lifecycle | `POST /skus/{id}/submit`, `POST /skus/{id}/retire`, `POST /skus/{id}/unfence`. |
 | Versions | `GET /skus/{id}/versions?asOf=<date>` reads the version in force; spec §7.2 spells the parameter `as_of`, while §2.2 and §4 spell it `asOf` (see §13). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |

@@ -42,6 +42,8 @@
 | P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203 |
 | P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186 |
 | P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
+| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -281,8 +283,8 @@ The chain is deployed, so the change is the forward migration `m20260925_000007_
 
 Products has no schema golden. The proof is a structural comparison on both dialects, through the real
 runner, from a database migrated by the chain before this migration, with SKUs, versions and references
-seeded: only `category_id`'s NOT NULL changes, and every row survives. Owed: a `category=none` browse
-filter.
+seeded: only `category_id`'s NOT NULL changes, and every row survives. The `category=none` browse filter
+this entry owed is the list's `$filter=category_id eq null` (P-D-210).
 
 **Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat), [`fr-sku-define`](PRD.md#fr-sku-define);
 DESIGN §3.1, §3.7; slice 01 §5, slice 02; phase 5 plan rev 2 (Run 5.1); plan review H1, M8, L9 and L13.
@@ -491,3 +493,62 @@ the approval policy stays on its own doors (P-D-190, P-D-205).
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D2).
 
+#### P-D-210 [M] The SKU list pages on the toolkit's OData, with a literal case-insensitive `q`
+
+Owner decision 1 of the phase 6 plan: `GET /skus` moves to the toolkit's OData, as ledger's lists do. Its
+own `type`, `category`, `lifecycle` and `after` parameters go.
+
+- **`$filter`** names `id`, `code`, `name` (the toolkit's operators for their kinds), `lifecycle` and `type`
+  (`eq`, `ne` or `in` with one of their values; any other value or operator is 400 `INVALID_FILTER`),
+  `category_id` and `pending_unit_id` (`eq`, `ne`, `in`, and `eq null` / `ne null`: no category, in review).
+  Only those two compare with `null`. `updated_at` orders and never filters: on SQLite a `$filter` would bind
+  chrono's `+00:00` against the stored RFC 3339 `Z`, and a text comparison lies at the boundary.
+- **`$orderby`** names `code`, `name` or `updated_at` (a narrower order vocabulary, ledger's
+  `ExceptionOrderField` pattern); every order ends with the tie-break `id`, and the default is `code`. A
+  nullable or filter-only field never keys an order: the cursor's comparison has no answer for a null key.
+- **Paging** is the toolkit's: `$top` (alias `limit`) defaults to 50 and is clamped at 200; `cursor` (alias
+  `$skiptoken`) comes from `page_info`. The answer is `Page<SkuListItem>`: `{ items, page_info { next_cursor,
+  prev_cursor, limit } }`, each item the SKU's fields and its `usage` from one port call per page (P-D-197).
+- **`q`** is `lower(column) LIKE lower(?) ESCAPE '\'` over `code`, `name`, `unit`, `usage_type_ref` and
+  `gl_code`, the caller's `%`, `_` and `\` escaped. `lower()` folds ASCII only on SQLite and Unicode on
+  Postgres, so a non-ASCII letter matches another case of itself on Postgres only; the two backends differ
+  there (`nfr-two-backends`), and both are pinned by tests. An empty `q` is no search. The toolkit's
+  `contains` in `$filter` follows the backend's `LIKE` (case-sensitive on Postgres); `q` is the
+  case-insensitive search.
+- **Refusals.** Any key besides `limit`, `cursor`, `q` and the OData options is 400
+  `UNSUPPORTED_QUERY_PARAM`, every offender named (a products copy of ledger's
+  `reject_non_odata_list_params_allowing`); a plain key given twice is 400. `$select` and `$count` are 400.
+  The cursor carries a hash of `$filter` and `q`: a cursor replayed with other values is 400
+  `FILTER_MISMATCH`. Authorization is judged first (`sku × read`).
+- **The transaction.** As before, the list recovers the tenant's orphan fences and reads its page in one
+  transaction (P-D-189).
+
+The toolkit change this rests on is recorded in the toolkit's own docs
+(`docs/web-docs/build-with-gears/add-pagination-odata.md`, `libs/toolkit-db/src/odata/README.md`): its typed
+`$filter` path admits `null` with `eq` and `ne` on any field kind (and still refuses it inside `in`), and
+`contains`, `startswith` and `endswith` emit `LIKE … ESCAPE '\'` with the pattern escaped. SQLite has no
+default escape character, so the browse search (`search_skus`, a `startswith` on the name) matched nothing
+for a name holding `%`, `_` or `\` until then. P-D-196's owed `category=none` browse is `category_id eq null`.
+
+Every products query parameter is declared with its type in the served contract (`limit` integer,
+`include_released` boolean, the rest string; validation D4).
+
+Breaking: the list's parameters and its envelope (`next` is `page_info.next_cursor`). The gears-rust e2e
+follows in this run; vhp-core's e2e in phase 6.6.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (owner decision 1; asks 1, 2 and 4; validation D4, D7; plan
+review H1, L1–L5, L10).
+
+#### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
+
+`GET /skus/counts` answers `{ all, draft, published, deprecated, retiring, retired, in_review }` for the tabs
+of the SKUs screen: every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
+(`pending_unit_id` set, in any lifecycle). It narrows as the list does, by `q` and `$filter`, except that `$filter`'s `lifecycle` terms are dropped, because the counts count every
+lifecycle. Only a term that is a top-level `and` conjunct is dropped; a `lifecycle` term under `or` or `not`
+cannot go without changing what the rest means, so it is 400 `INVALID_FILTER`. The whole filter is checked as
+the list reads it before the terms go. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are
+400 `UNSUPPORTED_QUERY_PARAM`. It recovers the tenant's orphan fences in its own transaction, as the list
+does, so its `retiring` agrees with the list, and it counts in one grouped statement whatever the number of
+SKUs. Authorization is `sku × read`.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2).

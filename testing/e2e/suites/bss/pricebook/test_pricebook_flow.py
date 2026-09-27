@@ -619,9 +619,34 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         )
         assert r.status_code == 201, r.text
         unused = r.json()["id"]
-        r = api.get(f"{PRODUCTS}/skus", params={"q": code, "category": unused})
+        r = api.get(
+            f"{PRODUCTS}/skus", params={"q": code, "$filter": f"category_id eq {unused}"}
+        )
         assert r.status_code == 200, r.text
         assert r.json()["items"] == [], r.text
+        # The list speaks OData (P-D-210): `category_id eq null` is "no category", the old
+        # parameters are refused, and the page carries the toolkit's page_info.
+        r = api.get(f"{PRODUCTS}/skus", params={"q": code, "$filter": "category_id eq null"})
+        assert r.status_code == 200, r.text
+        assert [row["id"] for row in r.json()["items"]] == [sku], r.text
+        assert r.json()["page_info"]["limit"] == 50, r.text
+        r = api.get(f"{PRODUCTS}/skus", params={"q": code, "category": unused})
+        assert r.status_code == 400, r.text
+        # Its tab counts narrow alike, and drop a top-level lifecycle term (P-D-211).
+        r = api.get(
+            f"{PRODUCTS}/skus/counts",
+            params={"q": code, "$filter": "lifecycle eq 'draft' and category_id eq null"},
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {
+            "all": 1,
+            "draft": 0,
+            "published": 1,
+            "deprecated": 0,
+            "retiring": 0,
+            "retired": 0,
+            "in_review": 0,
+        }, r.text
         r = api.post(f"{PRODUCTS}/categories/{unused}/retire", json={})
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "retired", r.text

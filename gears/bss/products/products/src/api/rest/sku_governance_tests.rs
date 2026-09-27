@@ -1061,8 +1061,9 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         (Method::DELETE, reference_path, "submit"),
         (Method::DELETE, sku_path.clone(), "author"),
         (Method::GET, "/usage-types".into(), "author"),
+        (Method::GET, "/skus/counts".into(), "read"),
     ];
-    assert_eq!(cases.len(), 26);
+    assert_eq!(cases.len(), 27);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;
@@ -1257,7 +1258,7 @@ async fn list_recovers_an_expired_orphan_before_filtering_and_submit_accepts_no_
         &f.app,
         &f.author,
         Method::GET,
-        "/skus?lifecycle=published",
+        "/skus?%24filter=lifecycle%20eq%20%27published%27",
         json!({}),
         None,
     )

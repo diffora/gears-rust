@@ -30,7 +30,7 @@ fn billing_token(b: BillingTiming) -> &'static str {
         BillingTiming::Arrears => "arrears",
     }
 }
-fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
+pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
     Ok(Sku {
         id: m.id,
         tenant_id: m.tenant_id,
@@ -148,19 +148,17 @@ pub async fn find_sku(
         .map(sku_of)
         .transpose()
 }
-/// Filters and an exclusive code cursor; one extra row signals another page.
+/// The browse catalog's filters and its exclusive code cursor; one extra row signals another
+/// page. The operator's SKU list pages through [`super::page_skus`] (P-D-210).
 #[derive(Debug, Clone)]
 pub struct SkuQuery {
     /// Additional validated catalog predicate, composed inside the tenant scope.
     pub catalog_filter: Option<Condition>,
-    pub text: Option<String>,
-    pub r#type: Option<SkuType>,
-    pub category_id: Option<Uuid>,
     pub lifecycle: Option<Lifecycle>,
     pub limit: u64,
     pub after_code: Option<String>,
 }
-/// List matching SKUs in stable code order.
+/// List matching SKUs in stable code order (the browse catalog's read).
 /// # Errors
 /// Returns scoped storage or corrupt-row errors.
 pub async fn list_skus(
@@ -172,19 +170,6 @@ pub async fn list_skus(
     let mut c = Condition::all().add(sku::Column::TenantId.eq(tenant_id));
     if let Some(filter) = &q.catalog_filter {
         c = c.add(filter.clone());
-    }
-    if let Some(v) = &q.text {
-        c = c.add(
-            Condition::any()
-                .add(sku::Column::Code.contains(v))
-                .add(sku::Column::Name.contains(v)),
-        );
-    }
-    if let Some(v) = q.r#type {
-        c = c.add(sku::Column::Type.eq(v.as_str()));
-    }
-    if let Some(v) = q.category_id {
-        c = c.add(sku::Column::CategoryId.eq(v));
     }
     if let Some(v) = q.lifecycle {
         c = c.add(sku::Column::Lifecycle.eq(v.as_str()));

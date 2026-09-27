@@ -101,6 +101,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.retire_category",
         "bss_products.create_sku",
         "bss_products.list_skus",
+        "bss_products.count_skus",
         "bss_products.get_sku",
         "bss_products.update_sku_draft",
         "bss_products.delete_sku_draft",
@@ -133,6 +134,91 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         Arc::new(gear).serve(cancel),
     )
     .await??;
+    Ok(())
+}
+
+/// D4 (P-D-210): every query parameter the gear serves is declared with its type — `limit` an
+/// integer, `include_released` a boolean, the rest strings (the builder has no uuid or date
+/// format) — and the SKU list publishes its `OData` vocabulary: the filter fields without
+/// `updated_at`, the order fields without any nullable or filter-only field.
+#[tokio::test]
+async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_vocabulary()
+-> anyhow::Result<()> {
+    use toolkit::api::{OpenApiInfo, OpenApiRegistryImpl};
+    let (gear, ctx) = skeleton_harness().await?;
+    let openapi = OpenApiRegistryImpl::new();
+    let _router = gear.register_rest(&ctx, Router::new(), &openapi)?;
+    let api = serde_json::to_value(openapi.build_openapi(&OpenApiInfo::default())?)?;
+    let mut seen = 0;
+    for (path, item) in api["paths"].as_object().unwrap() {
+        for (method, op) in item.as_object().unwrap() {
+            for p in op["parameters"].as_array().into_iter().flatten() {
+                if p["in"] != "query" {
+                    continue;
+                }
+                seen += 1;
+                let name = p["name"].as_str().unwrap();
+                let expected = match name {
+                    "limit" => "integer",
+                    "include_released" => "boolean",
+                    _ => "string",
+                };
+                assert_eq!(
+                    p["schema"]["type"], expected,
+                    "{method} {path} `{name}`: {p}"
+                );
+                assert!(
+                    p["description"].as_str().is_some_and(|d| d != name),
+                    "{method} {path} `{name}` says what it is: {p}"
+                );
+            }
+        }
+    }
+    assert!(seen > 15, "the census read the query parameters: {seen}");
+    let list = &api["paths"]["/bss-products/v1/skus"]["get"];
+    let mut filter: Vec<&str> = list["x-odata-filter"]["allowedFields"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    filter.sort_unstable();
+    assert_eq!(
+        filter,
+        [
+            "category_id",
+            "code",
+            "id",
+            "lifecycle",
+            "name",
+            "pending_unit_id",
+            "type"
+        ],
+        "{list}"
+    );
+    let mut order: Vec<&str> = list["x-odata-orderby"]["allowedFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    order.sort_unstable();
+    assert_eq!(
+        order,
+        [
+            "code asc",
+            "code desc",
+            "id asc",
+            "id desc",
+            "name asc",
+            "name desc",
+            "updated_at asc",
+            "updated_at desc"
+        ],
+        "{list}"
+    );
+    let counts = &api["paths"]["/bss-products/v1/skus/counts"]["get"];
+    assert!(counts["x-odata-orderby"].is_null(), "{counts}");
     Ok(())
 }
 

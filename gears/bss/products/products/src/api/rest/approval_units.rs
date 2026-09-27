@@ -65,9 +65,19 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag("Approval units")
         .authenticated()
         .no_license_required()
-        .query_param("state", false, "Unit state")
-        .query_param("kind", false, "Approval kind")
-        .query_param("ref_id", false, "SKU id")
+        .query_param_typed(
+            "state",
+            false,
+            "Unit state: pending, approved, rejected or withdrawn",
+            "string",
+        )
+        .query_param_typed(
+            "kind",
+            false,
+            "Approval kind: sku_publish, sku_change or sku_retire",
+            "string",
+        )
+        .query_param_typed("ref_id", false, "SKU id (a UUID)", "string")
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)

@@ -20,6 +20,7 @@ pub mod preconditions;
 pub mod references;
 mod replay;
 pub mod sku_governance;
+pub mod sku_list;
 pub mod skus;
 mod usage;
 pub mod usage_types;
@@ -143,6 +144,8 @@ pub(crate) enum TxError {
         code: &'static str,
         rows: serde_json::Value,
     },
+    /// A list query the toolkit's pager refused (a value, an order field, a cursor): a 400.
+    OData(toolkit_odata::Error),
 }
 impl From<toolkit_db::DbError> for TxError {
     fn from(e: toolkit_db::DbError) -> Self {
@@ -175,7 +178,8 @@ pub(crate) fn contention_db_err(e: &TxError) -> Option<&sea_orm::DbErr> {
         TxError::Repo(_)
         | TxError::Refused(_)
         | TxError::GenerationMismatch { .. }
-        | TxError::FencedReferences { .. } => None,
+        | TxError::FencedReferences { .. }
+        | TxError::OData(_) => None,
     }
 }
 /// Convert only after the retry loop has finished. Contention the retries could not clear is
@@ -224,6 +228,7 @@ fn tx_to_canonical_coded(e: TxError, unit: bool) -> CanonicalError {
                 .into()
         }
         TxError::Repo(r) => repo_error_to_canonical(&r),
+        TxError::OData(e) => e.into(),
         TxError::ApprovalDb(source) => repo_error_to_canonical(&RepoError::Driver {
             context: "approval".into(),
             source,

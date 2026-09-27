@@ -8,6 +8,7 @@ pub mod audit_repo;
 pub mod category_repo;
 pub mod idempotency_repo;
 pub mod reference_repo;
+pub mod sku_list_repo;
 pub mod sku_repo;
 pub mod version_repo;
 
@@ -16,6 +17,7 @@ pub use audit_repo::*;
 pub use category_repo::*;
 pub use idempotency_repo::*;
 pub use reference_repo::*;
+pub use sku_list_repo::*;
 pub use sku_repo::*;
 pub use version_repo::*;
 

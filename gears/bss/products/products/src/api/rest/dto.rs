@@ -273,10 +273,30 @@ pub struct SkuListItem {
     pub sku: SkuDto,
     pub usage: Option<SkuUsageDto>,
 }
+/// The SKU list's tab counts (P-D-211): every SKU the narrowing keeps, those in each lifecycle,
+/// and those a pending approval unit locks (in any lifecycle).
 #[toolkit_macros::api_dto(response)]
-pub struct SkuList {
-    pub items: Vec<SkuListItem>,
-    pub next: Option<String>,
+pub struct ProductsSkuCounts {
+    pub all: u64,
+    pub draft: u64,
+    pub published: u64,
+    pub deprecated: u64,
+    pub retiring: u64,
+    pub retired: u64,
+    pub in_review: u64,
+}
+impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
+    fn from(c: crate::infra::storage::repo::SkuCounts) -> Self {
+        Self {
+            all: c.all,
+            draft: c.draft,
+            published: c.published,
+            deprecated: c.deprecated,
+            retiring: c.retiring,
+            retired: c.retired,
+            in_review: c.in_review,
+        }
+    }
 }
 #[toolkit_macros::api_dto(request)]
 pub struct SkuRequest {

@@ -94,18 +94,19 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag("SKUs")
         .authenticated()
         .no_license_required()
-        .query_param("q", false, "Substring of the usage type's GTS id")
-        .query_param("kind", false, "counter or gauge")
+        .query_param_typed("q", false, "Substring of the usage type's GTS id", "string")
+        .query_param_typed("kind", false, "counter or gauge", "string")
         .query_param_typed(
             "limit",
             false,
             "Page size (default 50, at most 200)",
             "integer",
         )
-        .query_param(
+        .query_param_typed(
             "cursor",
             false,
             "Continuation token from page_info.next_cursor",
+            "string",
         )
         .handler(list_usage_types)
         .json_response_with_schema::<ProductsUsageTypeList>(openapi, StatusCode::OK, "Usage types")
