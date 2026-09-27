@@ -170,6 +170,7 @@ COLUMN bss.pricing_reference_op state text NOT NULL DEFAULT -
 COLUMN bss.pricing_reference_op tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_reference_op updated_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_settings created_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_settings currencies jsonb NOT NULL DEFAULT '[]'::jsonb
 COLUMN bss.pricing_settings default_gl text NULL DEFAULT -
 COLUMN bss.pricing_settings default_rounding text NOT NULL DEFAULT -
 COLUMN bss.pricing_settings default_tax_category text NULL DEFAULT -
@@ -177,6 +178,7 @@ COLUMN bss.pricing_settings default_timing text NOT NULL DEFAULT -
 COLUMN bss.pricing_settings invoice_line_templates jsonb NOT NULL DEFAULT -
 COLUMN bss.pricing_settings tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_settings updated_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_settings updated_by uuid NULL DEFAULT -
 COLUMN bss.pricing_settings version bigint NOT NULL DEFAULT 1
 COLUMN public.bss_pricing_outbox_body created_at timestamp with time zone NOT NULL DEFAULT now()
 COLUMN public.bss_pricing_outbox_body id bigint NOT NULL DEFAULT -

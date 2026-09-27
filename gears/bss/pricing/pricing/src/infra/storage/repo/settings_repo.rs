@@ -30,6 +30,8 @@ pub async fn insert(
         version: Set(m.version),
         created_at: Set(m.created_at),
         updated_at: Set(m.updated_at),
+        currencies: Set(m.currencies),
+        updated_by: Set(m.updated_by),
     };
     e::Entity::insert(active.clone())
         .secure()
@@ -97,6 +99,8 @@ pub async fn update(
             Expr::value(m.invoice_line_templates),
         )
         .col_expr(e::Column::UpdatedAt, Expr::value(m.updated_at))
+        .col_expr(e::Column::Currencies, Expr::value(m.currencies))
+        .col_expr(e::Column::UpdatedBy, Expr::value(m.updated_by))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(predicate)
         .exec(runner)

@@ -1037,7 +1037,7 @@ async fn a_sku_products_does_not_know_resolves_with_a_null_sku_version() {
     settings(
         &f,
         json!({"default_timing":"arrears","default_rounding":"half_even","default_gl":"9000",
-               "default_tax_category":"std","invoice_line_templates":{"recurring":"{sku} per {period}"}}),
+               "default_tax_category":"std","invoice_line_templates":{"recurring":"{sku} per {period}"},"currencies":[]}),
     )
     .await;
     let (s, b) = resolve(&f, &format!("plan_revision_id={revision}&date=2026-10-05")).await;
@@ -1084,7 +1084,7 @@ async fn september_binds_sku_version_one_and_october_version_two() {
     settings(
         &f,
         json!({"default_timing":"arrears","default_rounding":"half_up","default_gl":"9000",
-               "default_tax_category":"std","invoice_line_templates":{"usage":"{sku} usage"}}),
+               "default_tax_category":"std","invoice_line_templates":{"usage":"{sku} usage"},"currencies":[]}),
     )
     .await;
     let entry = entry_of(&f, eur, sku, "usage", (None, None, None)).await;

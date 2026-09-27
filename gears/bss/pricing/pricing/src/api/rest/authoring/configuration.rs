@@ -12,7 +12,7 @@ use super::{
     },
 };
 use crate::{
-    domain::{dimension, price_book_entry::validate_template},
+    domain::{book, dimension, price_book_entry::validate_template},
     infra::storage::{
         RepoError,
         entity::{dimension_key, settings},
@@ -26,30 +26,53 @@ use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+/// The rounding modes a tenant's `default_rounding` may name (D-437). The column has no CHECK: a
+/// stored value outside the set reads back as stored, and the deploy pre-flight normalises one
+/// before the door that refuses it ships.
+pub const ROUNDING_MODES: [&str; 5] = ["half_up", "half_even", "half_down", "up", "down"];
+
 pub async fn settings(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
 ) -> Result<PricingSettingsDto, DoorError> {
-    let m = settings_repo::find(tx, scope, tenant, tenant).await?;
-    Ok(m.map_or_else(
-        || PricingSettingsDto {
+    let Some(m) = settings_repo::find(tx, scope, tenant, tenant).await? else {
+        // Version 0: nothing was ever written, so nobody changed anything (D-438).
+        return Ok(PricingSettingsDto {
             default_timing: "advance".into(),
             default_rounding: "half_up".into(),
             default_gl: None,
             default_tax_category: None,
             invoice_line_templates: serde_json::json!({}),
+            currencies: Vec::new(),
             version: 0,
-        },
-        |m| PricingSettingsDto {
-            default_timing: m.default_timing,
-            default_rounding: m.default_rounding,
-            default_gl: m.default_gl,
-            default_tax_category: m.default_tax_category,
-            invoice_line_templates: m.invoice_line_templates,
-            version: m.version,
-        },
-    ))
+            updated_at: None,
+            updated_by: None,
+        });
+    };
+    let currencies = serde_json::from_value(m.currencies)
+        .map_err(|_| RepoError::CorruptRow(format!("settings of {tenant}: currencies")))?;
+    Ok(PricingSettingsDto {
+        default_timing: m.default_timing,
+        default_rounding: m.default_rounding,
+        default_gl: m.default_gl,
+        default_tax_category: m.default_tax_category,
+        invoice_line_templates: m.invoice_line_templates,
+        currencies,
+        version: m.version,
+        updated_at: Some(m.updated_at),
+        updated_by: m.updated_by,
+    })
+}
+/// D-438: each offered code is spelled as a book's currency is, once.
+fn validate_currencies(codes: &[String]) -> Result<(), CanonicalError> {
+    let mut seen = BTreeSet::new();
+    for code in codes {
+        if !book::currency_code(code) || !seen.insert(code.as_str()) {
+            return Err(invalid("currencies", "CURRENCY_INVALID"));
+        }
+    }
+    Ok(())
 }
 pub async fn put_settings(
     tx: &impl DBRunner,
@@ -68,12 +91,16 @@ pub async fn put_settings(
     if body.default_rounding.trim().is_empty() {
         return Err(invalid("default_rounding", "ROUNDING_REQUIRED").into());
     }
+    if !ROUNDING_MODES.contains(&body.default_rounding.as_str()) {
+        return Err(invalid("default_rounding", "ROUNDING_INVALID").into());
+    }
     for (kind, template) in &body.invoice_line_templates {
         if !matches!(kind.as_str(), "recurring" | "usage" | "one_time" | "bundle") {
             return Err(invalid("invoice_line_templates", "SKU_TYPE_INVALID").into());
         }
         validate_template(template).map_err(|e| invalid("invoice_line_templates", e.code))?;
     }
+    validate_currencies(&body.currencies)?;
     let now = time::OffsetDateTime::now_utc();
     let m = settings::Model {
         tenant_id: tenant,
@@ -85,6 +112,8 @@ pub async fn put_settings(
         version: before.version,
         created_at: now,
         updated_at: now,
+        currencies: value(&body.currencies)?,
+        updated_by: Some(ctx.subject_id()),
     };
     if before.version == 0 {
         settings_repo::insert(tx, scope, settings::Model { version: 1, ..m }).await?;
@@ -105,6 +134,30 @@ pub async fn put_settings(
         &settings(tx, scope, tenant).await?,
         Some(version + 1),
     )?)
+}
+/// D-438: a NEW book takes a currency the tenant offers; an empty list (or no settings) offers
+/// every currency. The settings are read tenant-scoped: the book author needs no config read.
+/// # Errors
+/// 409 `CURRENCY_NOT_OFFERED`; storage failures.
+pub async fn offer_currency(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    currency: &str,
+) -> Result<(), DoorError> {
+    let offered = settings(tx, &AccessScope::for_tenant(tenant), tenant)
+        .await?
+        .currencies;
+    if offered.is_empty() || offered.iter().any(|c| c == currency) {
+        return Ok(());
+    }
+    Err(conflict_because(
+        "CURRENCY_NOT_OFFERED",
+        format!(
+            "the tenant settings offer {}, not {currency}",
+            offered.join(", ")
+        ),
+    )
+    .into())
 }
 /// The stored registry, by key, and its content tag: the first 64 SHA-256 bits of the complete
 /// sorted collection, each row's version included, which keeps the door's strong decimal-tag

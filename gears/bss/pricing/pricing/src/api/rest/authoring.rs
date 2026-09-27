@@ -116,9 +116,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Create a price book")
         .description(
             "Creates a price book of the tenant with a code, a name, one currency and an optional \
-             validity window; the Idempotency-Key replays the first answer. Refusals: 400 \
+             validity window; the Idempotency-Key replays the first answer. The currency must be \
+             one the tenant settings offer, when they offer any (D-438). Refusals: 400 \
              BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID or \
-             BOOK_VALIDITY_INVALID; 409 BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
+             BOOK_VALIDITY_INVALID; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
+             IDEMPOTENCY_CONFLICT.",
         )
         .tag("Pricing")
         .authenticated()
@@ -214,9 +216,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_settings")
         .summary("Read the tenant settings")
         .description(
-            "Returns the tenant's billing defaults (timing, rounding, GL code, tax category) and \
-             invoice-line templates by SKU type, its version as the ETag; the defaults apply until \
-             the settings are first written.",
+            "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), \
+             invoice-line templates by SKU type and the currencies a new book may take (empty: \
+             any), with who wrote them last and when, and its version as the ETag; the defaults \
+             apply, with no writer, until the settings are first written.",
         )
         .tag("Pricing")
         .authenticated()
@@ -230,9 +233,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.put_settings")
         .summary("Write the tenant settings")
         .description(
-            "Replaces the tenant settings at the version the caller read (If-Match). Refusals: 400 \
-             TIMING_INVALID, ROUNDING_REQUIRED, SKU_TYPE_INVALID or an invalid line template \
-             (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
+            "Replaces the tenant settings at the version the caller read (If-Match), currencies \
+             included (required; [] offers any currency, D-438), and records the caller and the \
+             time. Rounding is half_up, half_even, half_down, up or down (D-437). Refusals: 400 \
+             TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, \
+             CURRENCY_INVALID or an invalid line template (LINE_TEMPLATE_EMPTY, \
+             LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()

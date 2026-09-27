@@ -92,12 +92,14 @@ Where a SKU is priced (D-434): GET /price-book-entries?sku_id= lists the tenant'
 
 Dimension values (D-436): every registry answer (GET, PUT and PATCH /dimension-keys) is PricingDimensionRegistry, each value with usage { prices }: the prices of any state whose entry names the key and whose chain is the value, from one grouped count. PATCH /dimension-keys { key, add, remove } edits the values of one declared key under If-Match; keys are added and removed by the PUT. Removing a value a price uses is 409 DIM_VALUE_IN_USE naming it, at the PATCH and at the PUT, and both judge from the same grouped count.
 
+Settings (D-437, D-438): default_rounding is half_up, half_even, half_down, up or down (400 ROUNDING_INVALID); PUT /settings requires currencies, the codes a new book may take ([] offers any; 400 CURRENCY_INVALID for a malformed or repeated code); a new book outside a non-empty list is 409 CURRENCY_NOT_OFFERED, and existing books are untouched. The settings answer carries updated_at and updated_by, null before the first write; updated_by is also null on a row written before m20260927_000014, and each PUT stamps both.
+
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
 
 ## 6. Data Model
 
-pricing_price_book stores code, name, currency, validity and version. pricing_price_book_entry uses a normalized nullable period and its model in its unique book/SKU/kind/period/model key and carries model (NOT NULL, CHECKed, fixed for its life; m20260926_000013, D-427), dimension_key, invoice_line_override and its reference receipt. pricing_dimension_key stores tenant/key/allowed values; pricing_settings stores defaults and invoice-line templates by SKU type. Entry authoring delegates reference work to slice 03.
+pricing_price_book stores code, name, currency, validity and version. pricing_price_book_entry uses a normalized nullable period and its model in its unique book/SKU/kind/period/model key and carries model (NOT NULL, CHECKed, fixed for its life; m20260926_000013, D-427), dimension_key, invoice_line_override and its reference receipt. pricing_dimension_key stores tenant/key/allowed values; pricing_settings stores defaults, invoice-line templates by SKU type, the offered currencies and the last writer (currencies and updated_by, m20260927_000014, D-438). Entry authoring delegates reference work to slice 03.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a
 cross-gear read for transactional local ownership/version guards. Approved money and historical pins survive.

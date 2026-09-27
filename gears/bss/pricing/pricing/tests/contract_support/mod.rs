@@ -882,6 +882,8 @@ async fn book_and_entries(w: &mut Writer<'_>) {
             version: 1,
             created_at: at(2025, 12, 1),
             updated_at: at(2025, 12, 1),
+            currencies: json!([]),
+            updated_by: None,
         },
     )
     .await

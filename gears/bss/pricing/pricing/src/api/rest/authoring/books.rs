@@ -119,6 +119,8 @@ pub async fn create(
         updated_at: now,
     };
     validate(&model)?;
+    // D-438: a new book takes a currency the tenant offers (any, while it offers none).
+    super::configuration::offer_currency(tx, tenant, &model.currency).await?;
     let model = book_repo::insert(tx, scope, model).await?;
     audit(tx, ctx, correlation, "price_book.create", model.id, 1).await?;
     let body = value(&PriceBookDto::from(model))?;

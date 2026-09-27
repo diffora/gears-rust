@@ -9,9 +9,9 @@ fn runtime_chain_contains_coord_pricing_and_toolkit_delivery() {
     let chain = BssPricingGear::default().migrations();
     assert_eq!(
         chain.len(),
-        17,
-        "the schema guard, coordination, thirteen pricing migrations (000013, D-427) and two \
-         toolkit migrations"
+        18,
+        "the schema guard, coordination, fourteen pricing migrations (000013, D-427; 000014, \
+         D-438) and two toolkit migrations"
     );
     assert_eq!(
         chain[0].name(),

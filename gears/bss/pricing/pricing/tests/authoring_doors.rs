@@ -270,7 +270,10 @@ async fn settings_positive_preconditions_and_matrix_8_templates() {
     let (s, mut body, tag) = f.call("GET", "/settings", json!({}), None, None).await;
     assert_eq!(s, 200);
     assert_eq!(tag, "\"0\"");
-    body.as_object_mut().unwrap().remove("version");
+    // What the read adds to what the PUT takes (D-438): the version and who changed it when.
+    for field in ["version", "updated_at", "updated_by"] {
+        body.as_object_mut().unwrap().remove(field);
+    }
     body["invoice_line_templates"] = json!({"usage":"{sku}"});
     assert_eq!(
         f.call("PUT", "/settings", body.clone(), None, None).await.0,

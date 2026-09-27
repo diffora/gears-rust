@@ -770,7 +770,7 @@ async fn every_conditional_door_answers_a_stale_token_with_stale_revision() {
         (
             "PUT",
             "/settings".to_owned(),
-            json!({"default_timing":"arrears","default_rounding":"half_up","invoice_line_templates":{}}),
+            json!({"default_timing":"arrears","default_rounding":"half_up","invoice_line_templates":{},"currencies":[]}),
             settings_tag,
         ),
         (

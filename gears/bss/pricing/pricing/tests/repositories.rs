@@ -629,6 +629,8 @@ async fn settings_and_dimensions_roundtrip_and_version_guards() {
         version: 1,
         created_at: at(9),
         updated_at: at(9),
+        currencies: serde_json::json!(["EUR"]),
+        updated_by: Some(Uuid::from_u128(7)),
     };
     assert_eq!(
         settings_repo::insert(&conn, &scope, s.clone())

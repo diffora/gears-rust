@@ -103,7 +103,7 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | --- | --- | --- |
 | revision | plan_revision_id, plan_id, rev_no, state | The revision resolved; state is published or superseded. |
 | revision | book_id, currency, currency_minor_digits | The revision's book, its currency and that currency's scale (domain::book::minor_digits). |
-| revision | rounding_policy | The tenant default_rounding. |
+| revision | rounding_policy | The tenant default_rounding: half_up, half_even, half_down, up or down since D-437; a value stored before it reads as stored. |
 | revision | date | The date resolved (YYYY-MM-DD). |
 | revision | items | One per item of the revision, or the one item_id names. |
 | item | item_id, sku_id, treatment, included_qty, qty_min | The item as stored; included_qty is exact decimal text or null. |

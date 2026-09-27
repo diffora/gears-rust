@@ -17,13 +17,20 @@ pub fn validate(book: &Book) -> Vec<RuleError> {
     if book.name.trim().is_empty() {
         errors.push(RuleError::new("BOOK_NAME_REQUIRED"));
     }
-    if book.currency.len() != 3 || !book.currency.bytes().all(|b| b.is_ascii_uppercase()) {
+    if !currency_code(&book.currency) {
         errors.push(RuleError::new("BOOK_CURRENCY_INVALID"));
     }
     if matches!((book.valid_from,book.valid_until),(Some(a),Some(b)) if a>=b) {
         errors.push(RuleError::new("BOOK_VALIDITY_INVALID"));
     }
     errors
+}
+/// Whether `text` is spelled as a currency code: three uppercase ASCII letters. The shape only —
+/// the workspace holds no ISO 4217 list — and the one rule for a book's currency and for the
+/// tenant settings' offered currencies (D-438).
+#[must_use]
+pub fn currency_code(text: &str) -> bool {
+    text.len() == 3 && text.bytes().all(|b| b.is_ascii_uppercase())
 }
 /// Whether sales from this book are allowed on a date.
 #[must_use]

@@ -157,12 +157,12 @@ async fn m20260926_000013_applies_once_and_refuses_to_revert() {
 }
 
 #[test]
-fn gear_chain_is_the_guard_coord_then_thirteen_ordered_unique_migrations() {
+fn gear_chain_is_the_guard_coord_then_fourteen_ordered_unique_migrations() {
     let names: Vec<_> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 15);
+    assert_eq!(names.len(), 16);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
@@ -174,6 +174,49 @@ fn gear_chain_is_the_guard_coord_then_thirteen_ordered_unique_migrations() {
     assert_eq!(names[11], "m20260926_000010_create_pricing_plan");
     assert_eq!(names[13], "m20260926_000012_create_pricing_plan_item");
     assert_eq!(names[14], "m20260926_000013_model_on_the_entry");
+    assert_eq!(names[15], "m20260927_000014_settings_currencies_and_author");
+}
+
+/// D-438: 000014 adds two columns to `pricing_settings` and nothing else. It re-applies without
+/// effect (a column the table holds is not added twice) and reverses on its own: its down drops
+/// the two columns, twice without effect.
+#[tokio::test]
+async fn m20260927_000014_adds_and_drops_its_two_columns() {
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = SchemaManager::new(&db);
+    let chain = Migrator::migrations();
+    let at = chain
+        .iter()
+        .position(|m| m.name() == "m20260927_000014_settings_currencies_and_author")
+        .unwrap();
+    for prior in &chain[..at] {
+        prior.up(&manager).await.unwrap();
+    }
+    let columns = || async {
+        let mut names: Vec<String> = db
+            .query_all_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT name FROM pragma_table_info('pricing_settings')".to_owned(),
+            ))
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.try_get::<String>("", "name").unwrap())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = columns().await;
+    let step = &chain[at];
+    step.up(&manager).await.unwrap();
+    step.up(&manager).await.unwrap();
+    let mut expected = before.clone();
+    expected.extend(["currencies".to_owned(), "updated_by".to_owned()]);
+    expected.sort();
+    assert_eq!(columns().await, expected);
+    step.down(&manager).await.unwrap();
+    step.down(&manager).await.unwrap();
+    assert_eq!(columns().await, before);
 }
 
 /// The runner sorts the gear's WHOLE list by name, outbox and broker included: the guard must

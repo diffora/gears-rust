@@ -335,10 +335,13 @@ pub struct PricingDimensionRegistry {
 #[serde(deny_unknown_fields)]
 pub struct PricingSettingsPut {
     pub default_timing: String,
+    /// `half_up`, `half_even`, `half_down`, `up` or `down` (D-437).
     pub default_rounding: String,
     pub default_gl: Option<String>,
     pub default_tax_category: Option<String>,
     pub invoice_line_templates: std::collections::BTreeMap<String, String>,
+    /// Required (D-438): the currencies a NEW book may take, a full replace; `[]` is any.
+    pub currencies: Vec<String>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSettingsDto {
@@ -347,7 +350,14 @@ pub struct PricingSettingsDto {
     pub default_gl: Option<String>,
     pub default_tax_category: Option<String>,
     pub invoice_line_templates: serde_json::Value,
+    /// The currencies a new book may take; empty means any (D-438).
+    pub currencies: Vec<String>,
     pub version: i64,
+    /// When the settings were last written; null before the first write (version 0).
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub updated_at: Option<time::OffsetDateTime>,
+    /// Who wrote them last; null before the first write and on a row written before D-438.
+    pub updated_by: Option<Uuid>,
 }
 
 #[toolkit_macros::api_dto(request)]
