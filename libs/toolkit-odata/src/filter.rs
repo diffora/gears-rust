@@ -284,8 +284,6 @@ pub fn convert_expr_to_filter_node<F: FilterField>(
             let field = F::from_name(field_name)
                 .ok_or_else(|| FilterError::UnknownField(field_name.to_owned()))?;
 
-            validate_value_type(field, &value)?;
-
             let filter_op = match op {
                 odata_ast::CompareOperator::Eq => FilterOp::Eq,
                 odata_ast::CompareOperator::Ne => FilterOp::Ne,
@@ -294,6 +292,21 @@ pub fn convert_expr_to_filter_node<F: FilterField>(
                 odata_ast::CompareOperator::Lt => FilterOp::Lt,
                 odata_ast::CompareOperator::Le => FilterOp::Le,
             };
+
+            // Absence is not a value of the field's kind, so the value check does not apply:
+            // `eq null` asks for the rows where the field is absent and `ne null` for the rows
+            // where it is present, on a field of any kind. An ordering has no answer for it.
+            if matches!(value, odata_ast::Value::Null) {
+                if !matches!(filter_op, FilterOp::Eq | FilterOp::Ne) {
+                    return Err(FilterError::UnsupportedOperation(format!(
+                        "`{filter_op}` with null on field `{field_name}`; only `eq null` and \
+                         `ne null` compare with null"
+                    )));
+                }
+                return Ok(FilterNode::binary(field, filter_op, value));
+            }
+
+            validate_value_type(field, &value)?;
             reject_unsupported_op(field, field_name, filter_op)?;
 
             Ok(FilterNode::binary(field, filter_op, value))
@@ -396,6 +409,13 @@ pub fn convert_expr_to_filter_node<F: FilterField>(
             let mut values = Vec::with_capacity(list.len());
             for item in list {
                 match item {
+                    // An `in` list is a set of values; absence is asked with `eq null`.
+                    E::Value(odata_ast::Value::Null) => {
+                        return Err(FilterError::InvalidExpression(format!(
+                            "null is not a member of an `in` list on field `{field_name}`; \
+                             compare with `eq null`"
+                        )));
+                    }
                     E::Value(val) => {
                         validate_value_type(field, val)?;
                         values.push(val.clone());

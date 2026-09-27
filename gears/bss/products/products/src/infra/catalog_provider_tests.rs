@@ -169,3 +169,70 @@ async fn both_transports_serve_the_same_published_catalog_and_pages() {
         result = axum::serve(listener, app) => { result.unwrap(); panic!("server ended before requests"); }
     }
 }
+
+/// `search_skus` sends the caller's text as `startswith(name, …)`: a `%`, `_` or `\` in it is a
+/// literal on both dialects, because the toolkit's `LIKE` carries `ESCAPE '\'` (it had none, and
+/// `SQLite` has no default escape, so such a search matched nothing).
+#[tokio::test]
+async fn a_wildcard_in_the_search_text_is_a_literal() {
+    let (db, scope, tenant, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    let now = OffsetDateTime::now_utc();
+    for (code, name) in [
+        ("A", "O'Brien_%"),
+        ("B", "O'BrienX%"),
+        ("C", "O'Brien_x"),
+        ("D", r"back\slash"),
+        ("E", "backXslash"),
+    ] {
+        let s = repo::insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            NewSku {
+                code: code.into(),
+                name: name.into(),
+                r#type: SkuType::Recurring,
+                category_id: None,
+                description: String::new(),
+                sellable: true,
+                gl_code: None,
+                tax_category: None,
+                invoice_line_template: None,
+                billing_timing: None,
+                usage_type_ref: None,
+                unit: None,
+            },
+            tenant,
+            now,
+        )
+        .await
+        .unwrap();
+        repo::set_lifecycle(
+            &conn,
+            &scope,
+            tenant,
+            s.id,
+            &[Lifecycle::Draft],
+            Lifecycle::Published,
+            now,
+        )
+        .await
+        .unwrap();
+    }
+    let ctx = authed_ctx(tenant);
+    let provider = BrowseCatalogProvider::new(db.db(), Arc::new(flat_in_enforcer(tenant)));
+    for (text, expected) in [
+        ("O'Brien_%", vec!["A"]),
+        ("O'Brien_", vec!["A", "C"]),
+        ("O'Brien", vec!["A", "B", "C"]),
+        (r"back\", vec!["D"]),
+    ] {
+        let page = provider
+            .search_skus(&ctx, Some(text), 50, None)
+            .await
+            .unwrap();
+        let codes: Vec<&str> = page.items.iter().map(|s| s.sku_code.as_str()).collect();
+        assert_eq!(codes, expected, "search {text}");
+    }
+}

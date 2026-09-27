@@ -31,6 +31,15 @@ pub use UserQueryFilterField as UserFilterField;
 
 Supported `kind`s include `Uuid`, `String`, `DateTimeUtc`, `I32`, `I64`, `Bool`.
 
+### Absence and text search
+
+- `field eq null` matches the rows where the field is absent (`IS NULL`) and `field ne null` the
+  rows where it is present (`IS NOT NULL`), on a field of any kind. No other operator takes
+  `null`, and `null` is not a member of an `in` list.
+- `contains`, `startswith` and `endswith` treat the caller's text literally: `%`, `_` and `\` in
+  it are escaped and the `LIKE` carries `ESCAPE '\'`, on `SQLite` and Postgres alike. Case
+  follows the backend's `LIKE`: `SQLite` ignores ASCII case, Postgres does not.
+
 ## Enable OData on the route
 
 Attach the filter/select/orderby capabilities to the `OperationBuilder` declaration; the
