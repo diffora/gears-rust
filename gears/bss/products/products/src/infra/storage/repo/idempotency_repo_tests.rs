@@ -380,7 +380,7 @@ async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
 /// is still not a conflict.** That is the one exception to "a payload
 /// mismatch stays `IDEMPOTENCY_CONFLICT` in either state": the loser "may
 /// even carry a different payload from the winner, and is still refused
-/// in-flight rather than for the mismatch, since this transaction never
+/// in-flight rather than for the mismatch, since its transaction never
 /// compared the two" (P-D-198). It read the expired holder's row, not the
 /// winner's, so the outcome is `TakeoverRaceLost` — the variant that carries
 /// no digest, precisely so no caller can compute a verdict from a hash this

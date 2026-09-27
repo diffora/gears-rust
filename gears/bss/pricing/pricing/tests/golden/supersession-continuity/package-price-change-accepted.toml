@@ -51,4 +51,4 @@ package_price_minor     = 3000
 
 [[assert]]
 expect = { publish = "accepted" }
-why    = "the block is still a thousand calls, so every block the window already counted still means what it meant - the cumulative ceil-diff rating computes is unaffected, which is the whole of D-402's reason for guarding the size. What each block costs from here is a price, and D-402 exists to let a price move on one chain. Rejecting this would price-freeze every block-priced row in the catalog for the life of its plan revision"
+why    = "the block is still a thousand calls, so every block the window already counted still means what it meant - the cumulative ceil-diff rating computes is unaffected, which is why the size is guarded. What each block costs from here is a price, and the pair guard (D-402) compares the package size and the SKU's metering, never a price. Rejecting this would price-freeze every block-priced row in the catalog for the life of its plan revision"

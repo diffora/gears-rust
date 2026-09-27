@@ -55,10 +55,10 @@
 //!
 //! A handler that minted its own would satisfy "not NULL" and break clause (2)
 //! the moment a call writes two records. So the value is established **once**,
-//! before any handler runs, and reaches the writers through the [`AuditStamp`]
-//! that [`crate::api::rest::auth_context::audit_stamp`] builds.
-//!
-//! [`AuditStamp`]: crate::api::rest::auth_context::AuditStamp
+//! before any handler runs; a handler takes it with [`require_correlation`] and
+//! passes the raw `Uuid` to every writer (`support::audit(…, correlation, …)`).
+//! A rereserve op, which no request begins, mints its own when it is created,
+//! and the rows it writes carry that id (D-431).
 //!
 //! [`require_correlation`] therefore refuses to mint. A route reachable without
 //! this layer is a **wiring defect** — the authoring router applies
@@ -70,8 +70,8 @@
 //!
 //! The read-only `read_contract` router does not apply it: nothing behind it
 //! writes an audit record, so there is no field for a correlation to satisfy. If
-//! it ever grows a writer, that writer cannot build an [`AuditStamp`] without one
-//! and this function is what tells it so.
+//! it ever grows a writer, that writer has no correlation to pass until the
+//! router mounts the layer, and [`require_correlation`] is what tells it so.
 
 use axum::extract::{Extension, Request};
 use axum::middleware::Next;

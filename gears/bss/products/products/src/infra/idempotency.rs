@@ -174,7 +174,7 @@ pub(crate) enum ClaimVerdict {
 /// reason that outcome is a variant rather than an in-flight hit with no
 /// digest: the loser of an expired-key takeover "may even carry a different
 /// payload from the winner, and is still refused in-flight rather than for
-/// the mismatch, since this transaction never compared the two"
+/// the mismatch, since its transaction never compared the two"
 /// (P-D-198). It read the *expired* holder's
 /// row; the payload now under the key is the winner's, which it never saw.
 /// A conflict raised from a digest this transaction never read would be a

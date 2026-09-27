@@ -24,7 +24,8 @@ pub struct AuditCommon {
     pub reason: Option<String>,
     /// The request's correlation id, minted once at the authoring edge
     /// (D-431) and rendered as text (D-433): every row one request writes
-    /// carries the same value. `None` only where no request exists.
+    /// carries the same value. Never `NULL`: a rereserve op's rows carry the
+    /// id the op minted (D-431).
     pub correlation_id: Option<String>,
     /// The commit instant, taken as a parameter rather than read from
     /// `OffsetDateTime::now_utc()`.

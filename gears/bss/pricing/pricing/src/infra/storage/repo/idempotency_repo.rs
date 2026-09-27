@@ -54,7 +54,7 @@ pub enum IdempotencyClaim {
     /// Distinct from [`InFlight`](Self::InFlight) because **no digest
     /// comparison is owed here and none is possible**. The loser "may even
     /// carry a different payload from the winner, and is still refused
-    /// in-flight rather than for the mismatch, since this transaction never
+    /// in-flight rather than for the mismatch, since its transaction never
     /// compared the two" (D-429): the
     /// row this call read was the *expired* holder's, and the payload now
     /// under the key is the winner's, which this transaction never saw.

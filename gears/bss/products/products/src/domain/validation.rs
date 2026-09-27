@@ -1,9 +1,11 @@
 //! The findings a door's checks collect, and the one rejection they become.
 //!
-//! A door runs its checks, each appending to one [`ValidationReport`]; a
-//! non-empty report is refused as a whole, every violation in the answer
-//! (P-D-202). A door authorizes before it touches the replay store, so a
-//! denied caller consumes no key (P-D-198).
+//! Validation is staged, and the first stage that fails answers (P-D-202):
+//! the shape parse refuses first, then the door's checks run, each appending
+//! to one [`ValidationReport`] that is refused as a whole with every violation
+//! of that stage in the answer, then the usage-type resolve runs. A door
+//! authorizes before it touches the replay store, so a denied caller consumes
+//! no key (P-D-198).
 
 use core::fmt;
 

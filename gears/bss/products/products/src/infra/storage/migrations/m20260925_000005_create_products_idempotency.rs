@@ -49,7 +49,7 @@
 //! other finds nothing left to update, and the loser is refused
 //! `IDEMPOTENCY_KEY_IN_FLIGHT` having executed nothing.
 //!
-//! Retention (at least 24 hours, P-D-193) is configuration, not a constraint
+//! Retention (at least 24 hours, P-D-198) is configuration, not a constraint
 //! this table can express. Expiry is decided at claim time, so correctness
 //! never waits on a sweep.
 //!

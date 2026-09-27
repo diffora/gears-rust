@@ -38,7 +38,7 @@ included_allowance      = { quantity = 100, rollover_policy = "none" }
 [[assert]]
 given  = { q = 50 }
 expect = { charge_minor = 0 }
-why    = "inside the allowance: the compiled [0,100) band is $0 and nothing else is reached"
+why    = "inside the allowance: all 50 units are deducted before the ladder, so no band is reached and nothing is billable"
 
 [[assert]]
 given  = { q = 100 }

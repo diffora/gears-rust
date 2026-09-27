@@ -28,19 +28,19 @@ pub struct Model {
     /// The audit action token (`design/01-foundation.md` §4.4). No
     /// vocabulary `CHECK` yet — an owed debt the migration's own doc names.
     pub action: String,
-    /// The kind of thing `subject_id`/`attempted_key` names. Same owed debt
-    /// as `action`.
+    /// The kind of thing `subject_id` names. Same owed debt as `action`.
     pub subject_kind: String,
-    /// The subject's id, when one was minted. Nullable: a refusal raised
-    /// before the mint has no id to carry.
+    /// The subject's id. Nullable in the DDL; the one writer,
+    /// `write_eventless_act_audit`, sets it on every row.
     pub subject_id: Option<Uuid>,
-    /// The subject's revision at the time of the act. Nullable for the same
-    /// reason as `subject_id`.
+    /// The subject's revision at the time of the act, where the caller passes
+    /// one: the rows `governance::audit` writes (approval policy, approval
+    /// unit, reference and unfence acts) carry `NULL`.
     pub subject_revision: Option<i64>,
-    /// The refusal's error code. Null on every class that is not a refusal.
+    /// Carried in the DDL and always `NULL`: no door writes a refusal row
+    /// (P-D-200).
     pub error_code: Option<String>,
-    /// The attempted `name`, `sku_code` or `product_code` a pre-mint refusal
-    /// carries instead of a `subject_id`.
+    /// Carried in the DDL and always `NULL` (P-D-200).
     pub attempted_key: Option<String>,
     /// A free-text reason, where the door supplies one.
     pub reason: Option<String>,

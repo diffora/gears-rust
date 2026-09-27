@@ -75,4 +75,4 @@ tier_aggregation_window = "invoice_period"
 
 [[assert]]
 expect = { publish = "accepted" }
-why    = "the counter continues, and it continues meaning the same thing: same meter, same dimension, same billable unit, same window, same formula. Only the ladder moved, and a ladder is a price - even on Variant A, where the new rate applies to the whole continued Q rather than to the units above the moved edge. Rejecting this would make `volume` the one kind that cannot be repriced through the mechanism D-402 exists to permit, and it would leave the corpus with no evidence at all that a volume row can be published"
+why    = "the counter continues, and it continues meaning the same thing: same meter, same dimension, same billable unit, same window, same formula. Only the ladder moved, and a ladder is a price - even on Variant A, where the new rate applies to the whole continued Q rather than to the units above the moved edge. Rejecting this would make `volume` the one kind that cannot be repriced on one chain, though the pair guard (D-402) compares no band, and it would leave the corpus with no evidence at all that a volume row can be published"

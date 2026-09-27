@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-/// The retention floor: a replay key is kept at least 24 hours (P-D-193).
+/// The retention floor: a replay key is kept at least 24 hours (P-D-198).
 ///
 /// A **floor**, not a default: a window shorter than this expires a key while
 /// the client that owns it is still retrying, and the next request on that

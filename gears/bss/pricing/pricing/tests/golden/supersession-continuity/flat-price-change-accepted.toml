@@ -47,4 +47,4 @@ amount_minor = 12900
 
 [[assert]]
 expect = { publish = "accepted" }
-why    = "a flat row is never a usage row, so no counter continues into the successor and no field is denominated in anything. The amount is the only lever it has, and a guard that blocked it would make supersession unusable for the simplest row in the catalog - the price change would have to route through plan revisioning, which is the outcome the pair guard (D-402) is careful not to cause"
+why    = "a flat row is never a usage row, so no counter continues into the successor and no field is denominated in anything. The amount is the only lever it has, and a guard that blocked it would make supersession unusable for the simplest row in the catalog - the price change would have to route through plan revisioning. The pair guard (D-402) binds a usage chain only, and a flat row is never on one"

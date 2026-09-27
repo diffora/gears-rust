@@ -321,7 +321,8 @@ registration and standardized errors.
 SKU reads/writes expose `ETag` from `revision`, its concurrency version; categories use `version`. Every PATCH
 requires `If-Match`; compare-and-swap guards the write and increments the version. Stale versions return
 409 `STALE_REVISION`; missing required preconditions use the toolkit precondition response. Every POST
-accepts optional `Idempotency-Key`, with 24-hour replay keyed by tenant, concrete endpoint and client key.
+accepts optional `Idempotency-Key`, with replay keyed by tenant, concrete endpoint and client key and retained
+for the configured hours, 24 by default (P-D-198).
 Authenticate and authorize first, then perform a read-only replay lookup before external resolution.
 Claim, mutation and receipt commit in the same transaction for every POST, including decisions and
 reference reserve/confirm. A keyed approval replays after the decision; a keyed reserve replays its
@@ -828,12 +829,13 @@ CREATE TABLE bss.products_idempotency (
 CREATE INDEX idx_products_idempotency_expires ON bss.products_idempotency USING btree (tenant_id, expires_at);
 ```
 
-The replay store is the only client-key store, checked before fence/unit work and retained for 24
-hours. `payload_hash` distinguishes request content; response status/body hold the replay result.
-Claim/answer writes use the same guarded operation's transaction; resumable fence operations retain
-`fence_op_id` so a resumed orphan does not permit a second independent operation. Audit records
-are append-only; retention/erasure remains outside this programme. Events use the existing toolkit
-outbox table rather than a second Products-specific outbox.
+The replay store is the only client-key store, checked before fence/unit work and retained for
+`idempotency_retention_hours` (default 24), clamped to at least 24 hours and at most ten years (P-D-198,
+which amends P-D-193's fixed 24 hours). `payload_hash` distinguishes request content; response
+status/body hold the replay result. Claim/answer writes use the same guarded operation's transaction;
+resumable fence operations retain `fence_op_id` so a resumed orphan does not permit a second independent
+operation. Audit records are append-only; retention/erasure remains outside this programme. Events use
+the existing toolkit outbox table rather than a second Products-specific outbox.
 
 ## 4. Additional context
 

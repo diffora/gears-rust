@@ -12,8 +12,8 @@ provenance = ["inst-tb-supersession-units (backup)", "inst-mk-chargekind (backup
 # it *is* inside the guard - the price-change case therefore has to be authored
 # separately from the `flat` one, which is outside it. What this case pins is
 # that being inside the guard is not the same as being frozen: the unit price is
-# a price, and the pair guard's whole framing (D-402) is that a successor is a
-# price change on one chain.
+# a price, and the pair guard (D-402) compares the package size and the SKU's
+# metering, never a price.
 #
 # The row carries `billingGranularity` because `inst-tb-window` requires it on
 # every usage row - it is what one billable unit is - and carries no

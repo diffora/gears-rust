@@ -30,11 +30,11 @@
 | P-D-195 | H | The chain refuses a legacy or stale products schema at boot | DECIDED 2026-09-26 · pricing D-423; phase 4 plan rev 2 (Run 4.1) |
 | P-D-196 | M | A SKU's category is optional; an omitted category stays null, with no default fallback | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
 | P-D-197 | M | SKU reads carry pricing's usage through a port that pricing fills; the usage is information and never a fence input | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; pricing D-428 |
-| P-D-198 | M | The replay store's mechanics (twin of pricing D-429) | DECIDED 2026-09-27 · Carried from P-D-29, P-D-30, P-D-38, P-D-42, P-D-49 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-198 | M | The replay store's mechanics (twin of pricing D-429) | DECIDED 2026-09-27 · Carried from P-D-29, P-D-30, P-D-38, P-D-42, P-D-49 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; amends P-D-193 |
 | P-D-199 | M | Events ride the toolkit outbox and the broker SDK producer | DECIDED 2026-09-27 · Carried from P-D-01, P-D-22, P-D-47 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | P-D-200 | M | The audit log is append-only with a reserved sealing seam (twin of pricing D-433) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | P-D-201 | M | The request digest | DECIDED 2026-09-27 · Carried from P-D-29, P-D-34 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| P-D-202 | L | A validation refusal lists every violation | DECIDED 2026-09-27 · Carried from P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-202 | L | A validation refusal lists every violation of its stage | DECIDED 2026-09-27 · Carried from P-D-33, P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | P-D-203 | M | The usage-type resolve is bounded and runs outside the transaction | DECIDED 2026-09-27 · Carried from P-D-121 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; amends P-D-184 |
 | P-D-204 | L | Authz label schemas are registered at boot | DECIDED 2026-09-27 · Carried from P-D-134 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 
@@ -309,18 +309,22 @@ D-428.
 
 #### P-D-198 [M] The replay store's mechanics
 
-A key's row in `products_idempotency` is `claimed` or `answered`, and a CHECK ties the response pair to the
-state. The claim INSERT, on the transaction that writes the act, is the at-most-once gate; `endpoint` is the
-concrete resource path, never the route template; no in-flight deadline exists. A door authorizes before it
-looks up or claims a key, so a denied caller consumes none. The answered row stores the status and body the
-caller was told, so a replay reads no other row. An answer is stored only when its transaction commits: a
-refusal that rolls back takes the claim with it and frees the key, and a committed refusal (the 400
-`UNIT_STALE` after a refresh, P-D-192) is stored and replays. Expiry is judged at claim time: an expired row
-is taken over by a compare-and-swap on the `expires_at` that was read, and the loser answers
-`IDEMPOTENCY_KEY_IN_FLIGHT` having executed nothing. A matching live `claimed` row is
-`IDEMPOTENCY_KEY_IN_FLIGHT`; a digest mismatch is `IDEMPOTENCY_CONFLICT` in either state. The retention
-(P-D-193) is the configured hours clamped to at least 24 and at most ten years. `entity_ref` is carried in the
-DDL and always NULL. Pricing runs the same store (pricing D-429).
+Amends P-D-193: the retention is configured, no longer a fixed 24 hours. A key's row in `products_idempotency`
+is `claimed` or `answered`, and a CHECK ties the response pair to the state. The claim INSERT, on the
+transaction that writes the act, is the at-most-once gate; `endpoint` is the concrete resource path, never the
+route template; no in-flight deadline exists. A door authorizes before it looks up or claims a key, so a
+denied caller consumes none. The answered row stores the status and body the caller was told, so a replay
+reads no other row. An answer is stored only when its transaction commits: a refusal that rolls back takes the
+claim with it and frees the key, and a committed refusal (the 400 `UNIT_STALE` after a refresh, P-D-192) is
+stored and replays. Expiry is judged at claim time: an expired row is taken over by a compare-and-swap on the
+`expires_at` that was read, and the loser answers `IDEMPOTENCY_KEY_IN_FLIGHT` having executed nothing. The
+loser may even carry a different payload from the winner, and is still refused in-flight rather than for the
+mismatch, since its transaction never compared the two: it read the expired holder's digest, never the
+winner's. Apart from that loser, a matching live `claimed` row is `IDEMPOTENCY_KEY_IN_FLIGHT`, and a digest
+mismatch is `IDEMPOTENCY_CONFLICT` in either state. The retention is `idempotency_retention_hours` (default
+24), clamped to at least 24 hours and at most ten years. `entity_ref` is carried in the DDL and always NULL:
+no products door binds an op. Pricing runs the same store (pricing D-429), with one difference: pricing binds
+POST entry's and POST plan item's claim to its durable reference op, and never takes over a bound claim.
 
 **Source:** Carried from P-D-29, P-D-30, P-D-38, P-D-42, P-D-49 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 
@@ -337,15 +341,15 @@ that fallback into a boot failure. Each event carries the ambient W3C traceparen
 
 #### P-D-200 [M] The audit log is append-only with a reserved sealing seam
 
-`products_audit_log` refuses every DELETE by trigger and admits one UPDATE: `unsealed` to `sealed`,
-supplying `chain_id`, `seq` and `row_hash` (`prev_hash` NULL only on a segment head) with every record column
-unchanged. The gear writes `seal_state = unsealed` with the four seal columns NULL on every row and never
-seals, chains or verifies: sealing is a platform capability the columns are reserved for. The key is a
-surrogate `audit_id`, because `seq` is NULL until a row is sealed. No `REVOKE UPDATE, DELETE` is issued (a
-deployment role the migration does not own; SQLite has none). `correlation_id` is `text`: products writes
-NULL on every row, because this gear establishes no request correlation; pricing writes its edge id (pricing
-D-431). `error_code`, `attempted_key`, `session_id` and `ceremony_ref` are carried in the DDL and written
-NULL. Pricing has the same table shape (pricing D-433).
+`products_audit_log` refuses every DELETE by trigger and admits one UPDATE: `unsealed` to `sealed`, supplying
+`chain_id`, `seq` and `row_hash` (`prev_hash` NULL only on a segment head) with every record column unchanged.
+The gear writes `seal_state = unsealed` with the four seal columns NULL on every row and never seals, chains
+or verifies: sealing is a platform capability the columns are reserved for. The key is a surrogate `audit_id`,
+because `seq` is NULL until a row is sealed. No `REVOKE UPDATE, DELETE` is issued (a deployment role the
+migration does not own; SQLite has none). `correlation_id` is `text`: products writes NULL on every row,
+because this gear establishes no request correlation; pricing writes its edge id, or on a rereserve op's rows
+the id the op minted, and never NULL (pricing D-431). `error_code`, `attempted_key`, `session_id` and
+`ceremony_ref` are carried in the DDL and written NULL. Pricing has the same table shape (pricing D-433).
 
 **Source:** Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 
@@ -359,13 +363,19 @@ Pricing's hash is pricing D-396's.
 
 **Source:** Carried from P-D-29, P-D-34 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 
-#### P-D-202 [L] A validation refusal lists every violation
+#### P-D-202 [L] A validation refusal lists every violation of its stage
 
-A door's checks collect every violation into one report, and the refusal is one 400 that carries all of
-them, each with its subject, detail and code, the first collected first. A report that holds
-`USAGE_TYPE_UNAVAILABLE` answers 503 instead, because an outage is retryable. Refusals write no audit row.
+Validation is staged, and the first stage that fails answers; a later stage does not run. The shape parse
+refuses first: the body's deserialization, and on `POST /skus` `NewSku::try_from`, which stops at the first
+unknown token (`type`, then `billing_timing`). Then the door's checks (`validate_new` on `POST /skus`) collect
+every violation of their stage into one report, and the refusal is one 400 that carries all of them, each with
+its subject, detail and code, the first collected first. On the SKU draft doors the usage-type resolve
+(P-D-184) runs last. So `POST /skus` with an unknown `type` and a blank `code` is told only of the `type`. A
+report that holds `USAGE_TYPE_UNAVAILABLE` answers 503 instead, because an outage is retryable. Refusals write
+no audit row.
 
-**Source:** Carried from P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+**Source:** Carried from P-D-33 (backup `3a38f0b28`: the pipeline stops at the first failing phase and
+collects violations within it) and P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 
 #### P-D-203 [M] The usage-type resolve is bounded and runs outside the transaction
 

@@ -221,9 +221,10 @@ pub(crate) async fn bind_producer(
                 // carries no diagnostic value either.
                 .client_agent(SOURCE),
         )
-        // **Monotonic, not chained** (P-D-199). The
-        // toolkit outbox's `seq` is the durable local sequence the chain's
-        // `meta.sequence` is built from, write-only, for ingest-side dedup.
+        // **Monotonic, not chained**: the managed monotonic mode of P-D-47
+        // (backup `3a38f0b28`). The toolkit outbox's `seq` is the durable local
+        // sequence the chain's `meta.sequence` is built from, write-only, for
+        // ingest-side dedup.
         .deduplication(
             event_broker_sdk::DbDeduplication::managed(event_broker_sdk::ProducerMode::Monotonic)
                 .key(SOURCE)
