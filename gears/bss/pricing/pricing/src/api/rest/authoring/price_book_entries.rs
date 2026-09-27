@@ -409,3 +409,106 @@ pub(super) async fn delete(
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
+/// `GET /price-book-entries?sku_id=` (D-434): the tenant's entries of one SKU across its books,
+/// each with its book's code, name and currency, its usage (D-428), and the default chain's price
+/// in force today when `books` — the scope the caller's `price_book` read gives, or `None` without
+/// that grant — admits the entry's book. The entries are read under the caller's entry scope, the
+/// books' names and the usage tenant-scoped (facts of an entry the caller may read). A fixed
+/// number of set-based statements, whatever the number of entries; an unknown SKU is an empty
+/// list, never a 404 (pricing does not know which SKUs exist).
+/// # Errors
+/// Storage failures; an entry whose book is gone is a corrupt row.
+pub(super) async fn for_sku(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    books: Option<&AccessScope>,
+    tenant: Uuid,
+    sku: Uuid,
+) -> Result<super::dto::PricingSkuEntryList, DoorError> {
+    use crate::infra::storage::RepoError;
+    use std::collections::{BTreeMap, BTreeSet};
+    let entries = price_book_entry_repo::for_skus(tx, scope, tenant, &[sku]).await?;
+    let book_ids: Vec<Uuid> = entries
+        .iter()
+        .map(|e| e.book_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let tenant_scope = AccessScope::for_tenant(tenant);
+    let named: BTreeMap<Uuid, entity::price_book::Model> =
+        book_repo::find_many(tx, &tenant_scope, tenant, &book_ids)
+            .await?
+            .into_iter()
+            .map(|b| (b.id, b))
+            .collect();
+    let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
+    let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids).await?;
+    // The money: only the entries whose book the caller's price_book read admits.
+    let mut current: BTreeMap<Uuid, entity::price::Model> = BTreeMap::new();
+    if let Some(books) = books {
+        let readable: BTreeSet<Uuid> = book_repo::find_many(tx, books, tenant, &book_ids)
+            .await?
+            .into_iter()
+            .map(|b| b.id)
+            .collect();
+        let shown: Vec<&entity::price_book_entry::Model> = entries
+            .iter()
+            .filter(|e| readable.contains(&e.book_id))
+            .collect();
+        let shown_ids: Vec<Uuid> = shown.iter().map(|e| e.id).collect();
+        let stored =
+            price_repo::approved_default_chain(tx, &tenant_scope, tenant, &shown_ids).await?;
+        let today = time::OffsetDateTime::now_utc().date();
+        for e in shown {
+            let model = price_book_entry_repo::model_of(e)?;
+            let chain: Vec<&entity::price::Model> = stored
+                .iter()
+                .filter(|p| p.price_book_entry_id == e.id)
+                .collect();
+            let prices = chain
+                .iter()
+                .map(|p| price_repo::to_domain(p, model))
+                .collect::<Result<Vec<_>, RepoError>>()?;
+            if let Some(found) = crate::domain::price::own_version_at(&prices, e.id, today, None)
+                && let Some(row) = chain.into_iter().find(|p| p.id == found.id)
+            {
+                current.insert(e.id, row.clone());
+            }
+        }
+    }
+    let mut items = Vec::with_capacity(entries.len());
+    for e in entries {
+        let book = named.get(&e.book_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("entry {} names lost book {}", e.id, e.book_id))
+        })?;
+        let current_price = current
+            .remove(&e.id)
+            .map(|p| super::dto::PricingPriceDto::of(p, &e.model));
+        let entry_usage = usage.remove(&e.id).unwrap_or_default().into();
+        items.push(super::dto::PricingSkuEntryDto {
+            entry: e.into(),
+            book_code: book.code.clone(),
+            book_name: book.name.clone(),
+            currency: book.currency.clone(),
+            usage: entry_usage,
+            current_price,
+        });
+    }
+    items.sort_by(|a, b| {
+        (
+            &a.book_code,
+            &a.entry.charge_kind,
+            a.entry.period.as_deref().unwrap_or(""),
+            &a.entry.model,
+            a.entry.id,
+        )
+            .cmp(&(
+                &b.book_code,
+                &b.entry.charge_kind,
+                b.entry.period.as_deref().unwrap_or(""),
+                &b.entry.model,
+                b.entry.id,
+            ))
+    });
+    Ok(super::dto::PricingSkuEntryList { items })
+}

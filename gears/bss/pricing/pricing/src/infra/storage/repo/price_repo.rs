@@ -201,6 +201,34 @@ pub async fn count_by_entry_and_state(
         .await
         .map_err(|e| driver_failure("count prices by entry and state".into(), e))
 }
+/// The approved prices of the DEFAULT chain (no dimension value) of the entries, in ONE statement
+/// whatever their number (D-434): what the price in force of each is chosen from.
+/// # Errors
+/// Returns typed database failures.
+pub async fn approved_default_chain(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entries: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied()))
+                .add(e::Column::State.eq(crate::domain::price::PriceState::Approved.as_str()))
+                .add(e::Column::DimValue.is_null()),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list approved default-chain prices".into(), e))
+}
 /// Remove a draft only at its current version and outside an approval unit.
 /// # Errors
 /// Refuses stale versions, non-drafts and pending ownership.

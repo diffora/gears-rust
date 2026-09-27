@@ -120,6 +120,31 @@ impl PricingPriceBookEntryReadDto {
         }
     }
 }
+/// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its
+/// book's code, name and currency, its usage (D-428), and the default chain's price in force
+/// today — `null` when none is, or when the caller does not hold `price_book` read (the export's
+/// grant).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingSkuEntryDto {
+    #[serde(flatten)]
+    pub entry: PricingPriceBookEntryDto,
+    pub book_code: String,
+    pub book_name: String,
+    pub currency: String,
+    pub usage: PricingEntryUsage,
+    pub current_price: Option<PricingPriceDto>,
+}
+/// `GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingSkuEntryList {
+    pub items: Vec<PricingSkuEntryDto>,
+}
+/// The query of `GET /price-book-entries`: exactly one `sku_id`.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingSkuEntryQuery {
+    pub sku_id: Option<Uuid>,
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceDto {
     pub id: Uuid,
@@ -367,6 +392,22 @@ impl From<entity::plan_item::Model> for PricingPlanItemDto {
             updated_at: m.updated_at,
         }
     }
+}
+/// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanItemReadDto {
+    #[serde(flatten)]
+    pub item: PricingPlanItemDto,
+    pub plan_id: Uuid,
+    pub rev_no: i32,
+    /// The revision's state: `draft`, `pending`, `published` or `superseded`.
+    pub state: String,
+}
+/// The query of `GET /plans`: an optional `sku_id` (D-434).
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingPlanQuery {
+    pub sku_id: Option<Uuid>,
 }
 /// `POST /plans`: a plan and its draft rev 1 on `book_id`.
 #[toolkit_macros::api_dto(request)]

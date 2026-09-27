@@ -242,6 +242,35 @@ pub(super) async fn patch(
         Some(version + 1),
     )?)
 }
+/// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan,
+/// its version as the `ETag` a following PATCH sends back as If-Match.
+/// # Errors
+/// 404 for an item the tenant does not hold.
+pub(super) async fn get(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Response, DoorError> {
+    let m = plan_item_repo::find(tx, scope, tenant, id)
+        .await?
+        .ok_or_else(|| support::missing_what("plan_item"))?;
+    let r =
+        plans::find_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.revision_id).await?;
+    let version = crate::api::rest::preconditions::RowVersion::from_stored(m.version)
+        .map_err(CanonicalError::from)?
+        .get();
+    Ok(support::response(
+        StatusCode::OK,
+        &super::dto::PricingPlanItemReadDto {
+            item: m.into(),
+            plan_id: r.plan_id,
+            rev_no: r.rev_no,
+            state: r.state,
+        },
+        Some(version),
+    )?)
+}
 enum Begun {
     Replay(Receipt),
     Op(Uuid),

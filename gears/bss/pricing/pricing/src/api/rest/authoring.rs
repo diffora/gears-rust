@@ -302,6 +302,24 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .standard_errors(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries")
+        .operation_id("bss_pricing.list_sku_entries")
+        .summary("Where a SKU is priced")
+        .description(
+            "Lists the tenant's price book entries of one SKU across its books (D-434), each with \
+             its book's code, name and currency, its usage (D-428) and current_price: the default \
+             chain's approved price in force today, shown to a caller who also holds price_book \
+             read (the export's grant) and null otherwise. Refusals: 400 QUERY_INVALID without \
+             exactly one well-formed sku_id, or with any other key.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .query_param("sku_id", true, "The SKU whose entries are listed")
+        .handler(list_sku_entries)
+        .json_response_with_schema::<dto::PricingSkuEntryList>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.get_entry")
         .summary("Read a price book entry")
@@ -1456,6 +1474,61 @@ async fn put_dimensions(
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
             configuration::put_dimensions(tx, &scope, &ctx, correlation, version, body).await
+        })
+    })
+    .await
+}
+async fn list_sku_entries(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    uri: axum::http::Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK_ENTRY,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<dto::PricingSkuEntryQuery>::try_from_uri(&uri)
+            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    let sku = query
+        .sku_id
+        .ok_or_else(|| support::invalid("sku_id", "QUERY_INVALID"))?;
+    // D-434: the money is the export's — price_book read. Without it the entries still list, each
+    // with a null current_price; only an unavailable policy fails the read.
+    let books = match authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(books) => Some(books),
+        Err(authz::AuthzError::Denied(_)) => None,
+        Err(unavailable) => return Err(authz_failure(unavailable)),
+    };
+    transaction(&state.db.db(), move |tx| {
+        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+        Box::pin(async move {
+            let body = price_book_entries::for_sku(
+                tx,
+                &scope,
+                books.as_ref(),
+                ctx.subject_tenant_id(),
+                sku,
+            )
+            .await?;
+            Ok(response(StatusCode::OK, &body, None)?)
         })
     })
     .await

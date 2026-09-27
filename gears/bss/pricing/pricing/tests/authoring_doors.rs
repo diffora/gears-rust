@@ -401,6 +401,8 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/plans/{id}/clone")),
         ("GET", "/resolve".into()),
         ("GET", format!("/prices/{id}")),
+        ("GET", "/price-book-entries".into()),
+        ("GET", format!("/plan-items/{id}")),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -575,6 +577,10 @@ async fn export_contains_all_states_in_order_and_used_dimension_cannot_be_remove
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the label table is a route census: one row per route, in one place"
+)]
 async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
     let f = Fixture::new().await;
     let (b, _) = f.book().await;
@@ -709,6 +715,13 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("POST", format!("/plans/{id}/clone"), "plan", "author"),
         ("GET", "/resolve".into(), "plan", "read"),
         ("GET", format!("/prices/{id}"), "price", "read"),
+        (
+            "GET",
+            "/price-book-entries".into(),
+            "price_book_entry",
+            "read",
+        ),
+        ("GET", format!("/plan-items/{id}"), "plan", "read"),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -720,7 +733,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 44);
+    assert_eq!(table.len(), 46);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

@@ -217,6 +217,8 @@ impl Harness {
             ("POST", "/bss-pricing/v1/plans/{id}/clone"),
             ("GET", "/bss-pricing/v1/resolve"),
             ("GET", "/bss-pricing/v1/prices/{id}"),
+            ("GET", "/bss-pricing/v1/price-book-entries"),
+            ("GET", "/bss-pricing/v1/plan-items/{id}"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))

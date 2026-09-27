@@ -52,6 +52,8 @@ fn declared_paths() -> Routes {
         ("POST", "/bss-pricing/v1/plans/{id}/clone"),
         ("GET", "/bss-pricing/v1/resolve"),
         ("GET", "/bss-pricing/v1/prices/{id}"),
+        ("GET", "/bss-pricing/v1/price-book-entries"),
+        ("GET", "/bss-pricing/v1/plan-items/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -109,7 +111,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 44);
+    assert_eq!(registered.len(), 46);
     assert!(router.has_routes());
 }
 
@@ -176,8 +178,10 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // item and checks doors (four registrations, the item PATCH and the checks answer); + 2:
         // the revision submit door (its registration and its 201 answer); + 2: the clone door
         // (its registration and its 201 answer); + 2: the resolve door (its registration and its
-        // 200 answer); + 2: the pinned price read (its registration and its 200 answer).
-        ("StatusCode::", 2, 88),
+        // 200 answer); + 2: the pinned price read (its registration and its 200 answer); + 4: run
+        // 6.4's two doors (D-434) — the SKU's entries and the plan item read, each registration and
+        // each 200 answer.
+        ("StatusCode::", 2, 92),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -221,6 +225,7 @@ fn etag_routes() -> Routes {
         ("GET", "/bss-pricing/v1/approval-policy"),
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("GET", "/bss-pricing/v1/plan-items/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -257,7 +262,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 44);
+    assert_eq!(described, 46);
 }
 
 /// Every read that answers an `ETag` declares the header on its 200 response, and nothing else
@@ -293,7 +298,7 @@ async fn every_read_that_sets_an_etag_declares_it() {
                 .any(|h| h.name.eq_ignore_ascii_case("etag"))
         })
         .count();
-    assert_eq!(anywhere, 7, "only the 200 of those reads declares it");
+    assert_eq!(anywhere, 8, "only the 200 of those reads declares it");
 }
 
 #[test]
@@ -375,3 +380,7 @@ async fn no_operation_declares_a_422() {
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
 // GET /prices/{id} price:read false false
+
+// Run 6.4 (D-434): method | path | resource:action | If-Match | Idempotency-Key
+// GET /price-book-entries price_book_entry:read false false
+// GET /plan-items/{id} plan:read false false

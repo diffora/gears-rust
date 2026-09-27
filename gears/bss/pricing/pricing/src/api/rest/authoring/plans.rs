@@ -203,19 +203,39 @@ pub(super) async fn create(
     )
     .await
 }
-/// `GET /plans`: the tenant's plans by code, each with its revision headers.
+/// `GET /plans`: the tenant's plans by code, each with its revision headers; with `sku`, only
+/// the plans that have a draft, pending or published revision naming the SKU through an entry
+/// (D-434, the SKU usage's `plans`). Two set-based statements whatever the number of plans: the
+/// plans, then all their revisions.
 /// # Errors
 /// Storage failures.
 pub(super) async fn list(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
+    sku: Option<Uuid>,
 ) -> Result<PricingPlanList, DoorError> {
-    let mut items = Vec::new();
-    for p in plan_repo::list(tx, scope, tenant).await? {
-        items.push(plan_body(tx, tenant, p).await?);
+    let plans = match sku {
+        Some(sku) => plan_repo::naming_sku(tx, scope, tenant, sku).await?,
+        None => plan_repo::list(tx, scope, tenant).await?,
+    };
+    let ids: Vec<Uuid> = plans.iter().map(|p| p.id).collect();
+    let mut revisions: std::collections::BTreeMap<Uuid, Vec<plan_revision::Model>> =
+        std::collections::BTreeMap::new();
+    for r in
+        plan_revision_repo::for_plans(tx, &AccessScope::for_tenant(tenant), tenant, &ids).await?
+    {
+        revisions.entry(r.plan_id).or_default().push(r);
     }
-    Ok(PricingPlanList { items })
+    Ok(PricingPlanList {
+        items: plans
+            .into_iter()
+            .map(|p| {
+                let own = revisions.remove(&p.id).unwrap_or_default();
+                PricingPlanDto::of(p, &own)
+            })
+            .collect(),
+    })
 }
 /// `GET /plans/{id}`: the plan and its version.
 /// # Errors
