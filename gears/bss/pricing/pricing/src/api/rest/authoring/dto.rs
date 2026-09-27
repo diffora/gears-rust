@@ -280,18 +280,55 @@ pub struct PriceBookExport {
     pub book: PriceBookDto,
     pub entries: Vec<PricingExportEntry>,
 }
-#[toolkit_macros::api_dto(request, response)]
+/// One key of `PUT /dimension-keys`: the key and its whole list of values (a full replace).
+#[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PricingDimensionEntry {
     pub key: String,
     pub values: Vec<String>,
 }
-#[toolkit_macros::api_dto(request, response)]
+/// `PUT /dimension-keys`: the tenant's whole registry.
+#[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PricingDimensions {
     pub items: Vec<PricingDimensionEntry>,
+}
+/// `PATCH /dimension-keys` (D-436): the values of ONE declared key to add and to remove; keys
+/// themselves are added and removed by the PUT.
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingDimensionKeyPatch {
+    pub key: String,
+    #[serde(default)]
+    pub add: Vec<String>,
+    #[serde(default)]
+    pub remove: Vec<String>,
+}
+/// What uses one dimension value (D-436): the prices, of any state, whose entry names the key
+/// and whose chain is the value. A value with prices is not removed (`DIM_VALUE_IN_USE`).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingDimensionValueUsage {
+    pub prices: u64,
+}
+/// One value of a key with its use.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingDimensionValue {
+    pub value: String,
+    pub usage: PricingDimensionValueUsage,
+}
+/// One key of the registry as the reads and writes answer it.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingDimensionKey {
+    pub key: String,
+    pub values: Vec<PricingDimensionValue>,
+}
+/// The registry as `GET`, `PUT` and `PATCH /dimension-keys` answer it (D-436).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingDimensionRegistry {
+    pub items: Vec<PricingDimensionKey>,
 }
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]

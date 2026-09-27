@@ -147,7 +147,7 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-registry`
 
-Keys and values are tenant-owned and validated with the four DIM errors. The registry starts seeded with region, declared with no values; the first entry naming it stores the seed. A referenced value cannot be removed even when its price is historical, and registry edits require no approval (spec §5, §14).
+Keys and values are tenant-owned and validated with the four DIM errors. The registry starts seeded with region, declared with no values; the first entry naming it stores the seed. A referenced value cannot be removed even when its price is historical, and registry edits require no approval (spec §5, §14). Every registry answer shows each value's use, the prices of any state that carry it, from one grouped count; PATCH /dimension-keys adds and removes one declared key's values, and a used value's refusal names it (D-436).
 
 Requirement: `cpt-cf-bss-pricing-fr-dimension-registry`; PRD AC #1.
 

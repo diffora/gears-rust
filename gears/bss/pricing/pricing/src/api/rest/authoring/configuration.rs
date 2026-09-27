@@ -2,21 +2,30 @@
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-dimension-registry:p1
 use super::{
-    dto::{PricingDimensionEntry, PricingDimensions, PricingSettingsDto, PricingSettingsPut},
-    support::{DoorError, audit, check_version, conflict, invalid, response, value},
+    dto::{
+        PricingDimensionKey, PricingDimensionKeyPatch, PricingDimensionRegistry,
+        PricingDimensionValue, PricingDimensionValueUsage, PricingDimensions, PricingSettingsDto,
+        PricingSettingsPut,
+    },
+    support::{
+        DoorError, audit, check_version, conflict, conflict_because, invalid, response, value,
+    },
 };
 use crate::{
     domain::{dimension, price_book_entry::validate_template},
     infra::storage::{
+        RepoError,
         entity::{dimension_key, settings},
         repo::{dimension_repo, price_book_entry_repo, price_repo, settings_repo},
     },
 };
 use axum::{http::StatusCode, response::Response};
+use std::collections::{BTreeMap, BTreeSet};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+
 pub async fn settings(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -97,14 +106,15 @@ pub async fn put_settings(
         Some(version + 1),
     )?)
 }
-pub async fn dimensions(
+/// The stored registry, by key, and its content tag: the first 64 SHA-256 bits of the complete
+/// sorted collection, each row's version included, which keeps the door's strong decimal-tag
+/// grammar. What uses a value is not part of it.
+async fn stored(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
-) -> Result<(PricingDimensions, u64), DoorError> {
+) -> Result<(Vec<(String, Vec<String>, i64)>, u64), DoorError> {
     let rows = dimension_repo::list(tx, scope, tenant).await?;
-    // A content validator covers the complete sorted collection, including each row version.
-    // The decimal tag uses the first 64 SHA-256 bits to retain the door's strong decimal-tag grammar.
     let content: Vec<_> = rows
         .iter()
         .map(|r| (&r.key, &r.values, r.version))
@@ -114,23 +124,86 @@ pub async fn dimensions(
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&hash[..8]);
     let tag = u64::from_be_bytes(bytes);
-    let mut items = Vec::new();
+    let mut keys = Vec::new();
     for r in rows {
-        items.push(PricingDimensionEntry {
-            key: r.key,
-            values: serde_json::from_value(r.values)
-                .map_err(|_| CanonicalError::internal("invalid stored dimension").create())?,
-        });
+        let values = serde_json::from_value(r.values)
+            .map_err(|_| CanonicalError::internal("invalid stored dimension").create())?;
+        keys.push((r.key, values, r.version));
     }
+    Ok((keys, tag))
+}
+/// D-436: the prices of every state that use each `(key, value)`, from ONE grouped count.
+async fn value_use(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+) -> Result<BTreeMap<(String, String), u64>, DoorError> {
+    let mut used = BTreeMap::new();
+    for row in price_repo::count_by_key_and_value(tx, tenant).await? {
+        let count = u64::try_from(row.count)
+            .map_err(|_| RepoError::CorruptRow(format!("a negative price count {}", row.count)))?;
+        used.insert((row.dimension_key, row.dim_value), count);
+    }
+    Ok(used)
+}
+/// The registry as its doors answer it: each key with its values and their use. A tenant that
+/// stores no registry reads the seed key, declared and not yet valued (spec decision 4).
+fn render(
+    keys: Vec<(String, Vec<String>, i64)>,
+    used: &BTreeMap<(String, String), u64>,
+) -> PricingDimensionRegistry {
+    let mut items: Vec<PricingDimensionKey> = keys
+        .into_iter()
+        .map(|(key, values, _)| {
+            let values = values
+                .into_iter()
+                .map(|value| {
+                    let prices = used
+                        .get(&(key.clone(), value.clone()))
+                        .copied()
+                        .unwrap_or_default();
+                    PricingDimensionValue {
+                        value,
+                        usage: PricingDimensionValueUsage { prices },
+                    }
+                })
+                .collect();
+            PricingDimensionKey { key, values }
+        })
+        .collect();
     if items.is_empty() {
-        // Spec decision 4: a tenant that stores no registry reads the seed, declared and not
-        // yet valued; the tag still covers only what is stored.
-        items.push(PricingDimensionEntry {
+        items.push(PricingDimensionKey {
             key: dimension::SEED_KEY.into(),
             values: Vec::new(),
         });
     }
-    Ok((PricingDimensions { items }, tag))
+    PricingDimensionRegistry { items }
+}
+/// The first value of `removed` a price uses, as the 409 that names it (D-436).
+fn value_in_use(
+    used: &BTreeMap<(String, String), u64>,
+    key: &str,
+    removed: impl Fn(&str) -> bool,
+) -> Option<CanonicalError> {
+    used.iter()
+        .find(|((k, v), n)| k == key && **n > 0 && removed(v))
+        .map(|((k, v), n)| {
+            conflict_because(
+                "DIM_VALUE_IN_USE",
+                format!(
+                    "{k}={v} is used by {n} price{}",
+                    if *n == 1 { "" } else { "s" }
+                ),
+            )
+        })
+}
+pub async fn dimensions(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+) -> Result<(PricingDimensionRegistry, u64), DoorError> {
+    let (keys, tag) = stored(tx, scope, tenant).await?;
+    let used = value_use(tx, tenant).await?;
+    Ok((render(keys, &used), tag))
 }
 pub async fn put_dimensions(
     tx: &impl DBRunner,
@@ -141,11 +214,11 @@ pub async fn put_dimensions(
     mut body: PricingDimensions,
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
-    let (_, tag) = dimensions(tx, scope, tenant).await?;
+    let (old, tag) = stored(tx, scope, tenant).await?;
     if tag != version {
         return Err(conflict("STALE_REVISION").into());
     }
-    let mut keys = std::collections::BTreeSet::new();
+    let mut keys = BTreeSet::new();
     for item in &mut body.items {
         item.key = item.key.trim().into();
         item.values = item
@@ -161,37 +234,41 @@ pub async fn put_dimensions(
             return Err(invalid("items", e.code).into());
         }
     }
-    // Inspect all states. A rejected or pending price still carries its value.
-    let dependency_scope = AccessScope::for_tenant(tenant);
-    for p in price_book_entry_repo::list(tx, &dependency_scope, tenant).await? {
-        if let Some(key) = p.dimension_key.as_deref() {
-            let next = body.items.iter().find(|i| i.key == key);
-            for price in price_repo::for_entry(tx, &dependency_scope, tenant, p.id).await? {
-                if let Some(value) = price.dim_value
-                    && next.is_none_or(|i| !i.values.contains(&value))
-                {
-                    return Err(conflict("DIM_VALUE_IN_USE").into());
-                }
-            }
-            // An entry names the key whatever its prices hold (the entry's key is a foreign key
-            // to the registry): removing it is the same refusal PATCH /price-book-entries answers.
-            if next.is_none() {
-                return Err(conflict("DIMENSION_KEY_IN_USE").into());
-            }
+    // D-436: every state counts (a rejected or pending price still carries its value), read in
+    // one grouped count and one read of the keys entries name, whatever the number of entries.
+    let used = value_use(tx, tenant).await?;
+    for (key, _) in used.keys() {
+        let next = body.items.iter().find(|i| &i.key == key);
+        if let Some(refusal) = value_in_use(&used, key, |v| {
+            next.is_none_or(|i| !i.values.iter().any(|kept| kept == v))
+        }) {
+            return Err(refusal.into());
         }
     }
-    for old in dimension_repo::list(tx, scope, tenant).await? {
-        if !keys.contains(&old.key) {
-            dimension_repo::delete(tx, scope, tenant, &old.key, old.version).await?;
+    // An entry names the key whatever its prices hold (the entry's key is a foreign key to the
+    // registry): removing it is the same refusal PATCH /price-book-entries answers.
+    for named in price_book_entry_repo::named_keys(tx, tenant).await? {
+        if !keys.contains(&named) {
+            return Err(conflict_because(
+                "DIMENSION_KEY_IN_USE",
+                format!("a price book entry names the key {named}"),
+            )
+            .into());
+        }
+    }
+    for (key, _, version) in &old {
+        if !keys.contains(key) {
+            dimension_repo::delete(tx, scope, tenant, key, *version).await?;
         }
     }
     for item in body.items {
-        let prior = dimension_repo::find(tx, scope, tenant, &item.key).await?;
+        let prior = old.iter().find(|(key, _, _)| *key == item.key);
+        let values = value(&item.values)?;
         let model = dimension_key::Model {
             tenant_id: tenant,
             key: item.key,
-            values: value(&item.values)?,
-            version: prior.as_ref().map_or(1, |r| r.version),
+            values,
+            version: prior.map_or(1, |(_, _, v)| *v),
         };
         if prior.is_some() {
             dimension_repo::update(tx, scope, model).await?;
@@ -200,6 +277,83 @@ pub async fn put_dimensions(
         }
     }
     audit(tx, ctx, correlation, "dimension_keys.update", tenant, 0).await?;
-    let (body, tag) = dimensions(tx, scope, tenant).await?;
-    Ok(response(StatusCode::OK, &body, Some(tag))?)
+    // The write moved no price, so the use read above still holds.
+    let (keys, tag) = stored(tx, scope, tenant).await?;
+    Ok(response(StatusCode::OK, &render(keys, &used), Some(tag))?)
+}
+/// `PATCH /dimension-keys` (D-436): add and remove values of ONE declared key — stored, or the
+/// seed key while the tenant stores no registry — at the registry the caller read (If-Match).
+/// The result keeps the key's values in their order without the removed ones, then the added
+/// ones in the order sent; it is judged as the PUT judges a key. An empty patch writes nothing.
+/// # Errors
+/// 400 `DIM_NOT_DECLARED`, `DIM_VALUE_DUPLICATE`, `DIM_VALUE_UNKNOWN`, or the key's own rule
+/// (`DIM_VALUE_INVALID`, `DIM_VALUES_FEW`); 409 `DIM_VALUE_IN_USE` naming the value, or
+/// `STALE_REVISION`.
+pub async fn patch_dimensions(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    version: u64,
+    body: PricingDimensionKeyPatch,
+) -> Result<Response, DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    let (old, tag) = stored(tx, scope, tenant).await?;
+    if tag != version {
+        return Err(conflict("STALE_REVISION").into());
+    }
+    let key = body.key.trim().to_owned();
+    let prior = old.iter().find(|(k, _, _)| *k == key);
+    if prior.is_none() && !(key == dimension::SEED_KEY && old.is_empty()) {
+        return Err(invalid("key", "DIM_NOT_DECLARED").into());
+    }
+    let current: Vec<String> = prior
+        .map(|(_, values, _)| values.clone())
+        .unwrap_or_default();
+    let clean = |values: &[String]| -> Vec<String> {
+        values
+            .iter()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+            .collect()
+    };
+    let (add, remove) = (clean(&body.add), clean(&body.remove));
+    let mut named = BTreeSet::new();
+    for v in add.iter().chain(&remove) {
+        if !named.insert(v.as_str()) || (add.contains(v) && current.contains(v)) {
+            return Err(invalid("add", "DIM_VALUE_DUPLICATE").into());
+        }
+    }
+    if remove.iter().any(|v| !current.contains(v)) {
+        return Err(invalid("remove", "DIM_VALUE_UNKNOWN").into());
+    }
+    let used = value_use(tx, tenant).await?;
+    if add.is_empty() && remove.is_empty() {
+        return Ok(response(StatusCode::OK, &render(old, &used), Some(tag))?);
+    }
+    let next: Vec<String> = current
+        .into_iter()
+        .filter(|v| !remove.contains(v))
+        .chain(add)
+        .collect();
+    if let Some(e) = dimension::validate(&key, &next).first() {
+        return Err(invalid("add", e.code).into());
+    }
+    if let Some(refusal) = value_in_use(&used, &key, |v| remove.iter().any(|r| r == v)) {
+        return Err(refusal.into());
+    }
+    let model = dimension_key::Model {
+        tenant_id: tenant,
+        key,
+        values: value(&next)?,
+        version: prior.map_or(1, |(_, _, v)| *v),
+    };
+    if prior.is_some() {
+        dimension_repo::update(tx, scope, model).await?;
+    } else {
+        dimension_repo::insert(tx, scope, model).await?;
+    }
+    audit(tx, ctx, correlation, "dimension_keys.patch", tenant, 0).await?;
+    let (keys, tag) = stored(tx, scope, tenant).await?;
+    Ok(response(StatusCode::OK, &render(keys, &used), Some(tag))?)
 }

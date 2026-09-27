@@ -182,6 +182,39 @@ pub async fn for_skus(
         .await
         .map_err(|e| driver_failure("list price book entries of SKUs".into(), e))
 }
+/// One dimension key an entry names.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct KeyRow {
+    dimension_key: String,
+}
+/// The distinct dimension keys the tenant's entries name, in any reference state, sorted, in ONE
+/// statement whatever the number of entries (D-436): a key one names is not removed
+/// (`DIMENSION_KEY_IN_USE`).
+/// # Errors
+/// Returns typed database failures.
+pub async fn named_keys(runner: &impl DBRunner, tenant: Uuid) -> Result<Vec<String>, RepoError> {
+    use sea_orm::{QueryOrder, QuerySelect};
+    Ok(e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::DimensionKey.is_not_null()),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::DimensionKey)
+                .distinct()
+                .order_by(e::Column::DimensionKey, Order::Asc)
+                .into_model::<KeyRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("list the dimension keys price book entries name".into(), e))?
+        .into_iter()
+        .map(|r| r.dimension_key)
+        .collect())
+}
 /// One SKU id of a set read.
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct SkuIdRow {

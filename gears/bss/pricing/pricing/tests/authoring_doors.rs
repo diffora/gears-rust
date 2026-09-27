@@ -324,7 +324,14 @@ async fn dimension_registry_positive_preconditions_and_matrix_11() {
         .await;
     assert_eq!(saved.0, 200, "{saved:?}");
     assert_eq!(saved.1["items"][0]["key"], "region");
-    assert_eq!(saved.1["items"][0]["values"], json!(["eu", "us"]));
+    // D-436: the answer carries each value with its use.
+    assert_eq!(
+        saved.1["items"][0]["values"],
+        json!([
+            {"value": "eu", "usage": {"prices": 0}},
+            {"value": "us", "usage": {"prices": 0}},
+        ])
+    );
     assert_eq!(
         f.call("PUT", "/dimension-keys", input, Some(&tag), None)
             .await
@@ -404,6 +411,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("GET", "/price-book-entries".into()),
         ("GET", format!("/plan-items/{id}")),
         ("DELETE", "/approval-policy/prices".into()),
+        ("PATCH", "/dimension-keys".into()),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -569,11 +577,25 @@ async fn export_contains_all_states_in_order_and_used_dimension_cannot_be_remove
         assert_eq!(refused.0, 409);
         assert!(refused.1.to_string().contains("DIM_VALUE_IN_USE"));
     }
+    // Nothing was removed: the registry's content tag is the one the PUT answered (its `usage`
+    // now counts the prices written since, D-436).
+    let (_, now, tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    assert_eq!(tag, saved.2);
     assert_eq!(
-        f.call("GET", "/dimension-keys", json!({}), None, None)
-            .await
-            .1,
-        saved.1
+        now["items"][0]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].clone())
+            .collect::<Vec<_>>(),
+        saved.1["items"][0]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].clone())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -729,6 +751,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "config",
             "settings",
         ),
+        ("PATCH", "/dimension-keys".into(), "config", "settings"),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -744,7 +767,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 47);
+    assert_eq!(table.len(), 48);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

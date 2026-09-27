@@ -201,6 +201,52 @@ pub async fn count_by_entry_and_state(
         .await
         .map_err(|e| driver_failure("count prices by entry and state".into(), e))
 }
+/// How many prices of any state carry one value of one dimension key: a row of
+/// [`count_by_key_and_value`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct KeyValueCount {
+    pub dimension_key: String,
+    pub dim_value: String,
+    pub count: i64,
+}
+/// The tenant's prices of EVERY state (a rejected or pending price still carries its value)
+/// counted by their entry's dimension key and their own value, in ONE grouped statement whatever
+/// the number of entries and prices (D-436). A value no price carries has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn count_by_key_and_value(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+) -> Result<Vec<KeyValueCount>, RepoError> {
+    use crate::infra::storage::entity::price_book_entry as entry;
+    use sea_orm::JoinType;
+    let on_entry: sea_orm::RelationDef = e::Entity::belongs_to(entry::Entity)
+        .from(e::Column::PriceBookEntryId)
+        .to(entry::Column::Id)
+        .into();
+    e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::DimValue.is_not_null())
+                .add(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
+                .add(Expr::col((entry::Entity, entry::Column::DimensionKey)).is_not_null()),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .join(JoinType::InnerJoin, on_entry)
+                .column(entry::Column::DimensionKey)
+                .column(e::Column::DimValue)
+                .column_as(Expr::col((e::Entity, e::Column::Id)).count(), "count")
+                .group_by(entry::Column::DimensionKey)
+                .group_by(e::Column::DimValue)
+                .into_model::<KeyValueCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count prices by dimension key and value".into(), e))
+}
 /// The approved prices of the DEFAULT chain (no dimension value) of the entries, in ONE statement
 /// whatever their number (D-434): what the price in force of each is chosen from.
 /// # Errors

@@ -24,7 +24,8 @@ use axum::{
 };
 use dto::{
     PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookList, PriceBookPatch,
-    PricingDimensions, PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
+    PricingDimensionKeyPatch, PricingDimensionRegistry, PricingDimensions,
+    PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
@@ -246,14 +247,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_dimensions")
         .summary("Read the dimension registry")
         .description(
-            "Returns the tenant's dimension keys with their values, and a content ETag a following \
-             PUT sends back as If-Match. Only a caller without config read is refused (403).",
+            "Returns the tenant's dimension keys with their values, each value with the prices \
+             of any state that use it (D-436), and a content ETag a following PUT or PATCH sends \
+             back as If-Match. Only a caller without config read is refused (403).",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .handler(get_dimensions)
-        .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
+        .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
@@ -264,7 +266,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Replaces the tenant's dimension keys and values at the content the caller read \
              (If-Match). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID or \
              DIM_KEY_DUPLICATE; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry \
-             names or a value a price uses; 409 STALE_REVISION.",
+             names or a value a price uses (naming it); 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -272,7 +274,26 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_request::<PricingDimensions>(openapi, "Request")
         .param(header("If-Match"))
         .handler(put_dimensions)
-        .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
+        .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::patch("/bss-pricing/v1/dimension-keys")
+        .operation_id("bss_pricing.patch_dimension_values")
+        .summary("Add or remove values of one dimension key")
+        .description(
+            "Adds and removes values of one declared key (stored, or the seed key while nothing \
+             is stored) at the content the caller read (If-Match); keys themselves are added and \
+             removed by the PUT (D-436). Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, \
+             DIM_VALUE_UNKNOWN, DIM_VALUE_INVALID or DIM_VALUES_FEW; 409 DIM_VALUE_IN_USE naming \
+             the value a price uses, or STALE_REVISION.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .json_request::<PricingDimensionKeyPatch>(openapi, "Request")
+        .param(header("If-Match"))
+        .handler(patch_dimensions)
+        .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/entries")
@@ -1526,6 +1547,36 @@ async fn put_dimensions(
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
             configuration::put_dimensions(tx, &scope, &ctx, correlation, version, body).await
+        })
+    })
+    .await
+}
+async fn patch_dimensions(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::CONFIG,
+        actions::SETTINGS,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let body: PricingDimensionKeyPatch = preconditions::parse_body(&body)?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
+        Box::pin(async move {
+            configuration::patch_dimensions(tx, &scope, &ctx, correlation, version, body).await
         })
     })
     .await

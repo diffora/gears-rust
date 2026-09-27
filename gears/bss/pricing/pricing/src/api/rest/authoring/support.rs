@@ -72,6 +72,13 @@ pub fn forbidden_because(code: &str, detail: impl Into<String>) -> CanonicalErro
 pub fn conflict(code: &str) -> CanonicalError {
     PricingResource::aborted(code).with_reason(code).create()
 }
+/// [`conflict`] whose detail names what is in conflict (for example the dimension value a price
+/// uses, D-436); the detail leads with the code.
+pub fn conflict_because(code: &str, detail: impl Into<String>) -> CanonicalError {
+    PricingResource::aborted(format!("{code}: {}", detail.into()))
+        .with_reason(code)
+        .create()
+}
 pub fn missing() -> CanonicalError {
     PricingResource::not_found("Price book not found")
         .with_resource("price_book")
