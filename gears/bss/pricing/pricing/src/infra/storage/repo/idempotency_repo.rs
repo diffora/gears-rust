@@ -47,11 +47,6 @@ pub enum IdempotencyClaim {
     InFlight {
         /// The digest the live `claimed` row was recorded against.
         payload_hash: Vec<u8>,
-        /// The composite act's parent handle, if the holding act stamped one
-        /// (P-D-79): the family clone's committed-but-unanswered claim
-        /// carries its new parent here, and the same-key retry resumes from
-        /// it. `None` for every single-entity door's claim.
-        entity_ref: Option<Uuid>,
     },
     /// This call lost the expired-key takeover race (**P-D-49**): another
     /// caller's compare-and-swap moved the row off the stamp this one read.
@@ -106,8 +101,8 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
-        // A fresh claim carries no parent handle; a composite door stamps
-        // one afterwards, in this same transaction (P-D-79).
+        // `entity_ref` is carried in the DDL (P-D-193) and always NULL: no
+        // door stamps it.
         entity_ref: Set(None),
     };
 
@@ -162,7 +157,7 @@ pub async fn claim_idempotency_key(
             ))
         })?;
 
-    if now > held.expires_at && !(held.state == "claimed" && held.entity_ref.is_some()) {
+    if now > held.expires_at {
         return take_over_expired_idempotency_claim(runner, scope, &held, payload_hash, expires_at)
             .await;
     }
@@ -210,7 +205,6 @@ fn held_claim(held: idempotency::Model) -> Result<IdempotencyClaim, RepoError> {
         }
         "claimed" => Ok(IdempotencyClaim::InFlight {
             payload_hash: held.payload_hash,
-            entity_ref: held.entity_ref,
         }),
         other => Err(RepoError::CorruptRow(format!(
             "pricing_idempotency.state `{other}` on stored key"
@@ -245,8 +239,7 @@ async fn take_over_expired_idempotency_claim(
             Expr::value(None::<JsonValue>),
         )
         .col_expr(idempotency::Column::ExpiresAt, Expr::value(new_expires_at))
-        // The taken-over claim is a fresh act's: a stale parent handle from
-        // the crashed holder must not leak into it (P-D-79).
+        // `entity_ref` stays NULL on a taken-over claim, as on a fresh one.
         .col_expr(idempotency::Column::EntityRef, Expr::value(None::<Uuid>))
         .filter(
             idempotency_key_of(held.tenant_id, &held.endpoint, &held.client_key)
