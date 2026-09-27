@@ -45,7 +45,8 @@ pub struct Model {
     /// compare-and-swap operand the expired-key takeover reads before it
     /// writes (D-429).
     pub expires_at: TimeDateTimeWithTimeZone,
-    /// Carried in the DDL and always `NULL`: no door stamps it (D-429).
+    /// The durable op an unanswered claim is bound to (`bind_op`: POST entry, POST plan item); a bound
+    /// `claimed` row is never taken over on expiry (D-429). `NULL` for every other door.
     pub entity_ref: Option<Uuid>,
 }
 

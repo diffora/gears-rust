@@ -101,8 +101,8 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
-        // `entity_ref` is carried in the DDL (D-429) and always NULL: no
-        // door stamps it.
+        // A fresh claim is bound to no op; a door that begins a durable op
+        // binds it afterwards, in this same transaction ([`bind_op`]).
         entity_ref: Set(None),
     };
 
@@ -157,7 +157,9 @@ pub async fn claim_idempotency_key(
             ))
         })?;
 
-    if now > held.expires_at {
+    // A claim bound to its durable op is never taken over, however old: the op may still be retrying,
+    // and a takeover would mint a second op under the same key (D-401, D-429).
+    if now > held.expires_at && !(held.state == "claimed" && held.entity_ref.is_some()) {
         return take_over_expired_idempotency_claim(runner, scope, &held, payload_hash, expires_at)
             .await;
     }
@@ -239,7 +241,8 @@ async fn take_over_expired_idempotency_claim(
             Expr::value(None::<JsonValue>),
         )
         .col_expr(idempotency::Column::ExpiresAt, Expr::value(new_expires_at))
-        // `entity_ref` stays NULL on a taken-over claim, as on a fresh one.
+        // A taken-over claim is a fresh act's: the expired holder's op binding
+        // (an answered row may still carry one) does not carry over.
         .col_expr(idempotency::Column::EntityRef, Expr::value(None::<Uuid>))
         .filter(
             idempotency_key_of(held.tenant_id, &held.endpoint, &held.client_key)

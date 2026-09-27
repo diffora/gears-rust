@@ -363,6 +363,63 @@ async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
     assert_eq!(row.expires_at, at(20));
 }
 
+/// A claim bound to its durable op is never taken over, however old: the op may still be retrying
+/// (Products down, a rollout between its two transactions), and a takeover would mint a second op
+/// and write the entry or plan item twice under one key. The retry waits in flight and replays the
+/// answer once the op finishes (D-401, D-429).
+#[tokio::test]
+async fn an_expired_claim_bound_to_its_op_stays_in_flight_and_is_not_taken_over() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let op_id = Uuid::from_u128(0x0b_01);
+
+    claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "pricing/entries",
+        "key-bound",
+        b"hash-1",
+        at(9),
+        at(9),
+    )
+    .await
+    .expect("claim with an already-passed expiry");
+    bind_op(&conn, &scope, TENANT, "pricing/entries", "key-bound", op_id)
+        .await
+        .expect("bind the claim to its op");
+
+    let outcome = claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "pricing/entries",
+        "key-bound",
+        b"hash-1",
+        at(10),
+        at(20),
+    )
+    .await
+    .expect("a retry against a bound claim does not error");
+
+    assert_eq!(
+        outcome,
+        IdempotencyClaim::InFlight {
+            payload_hash: b"hash-1".to_vec(),
+        }
+    );
+    let row = find_idempotency_row(&conn, &scope, TENANT, "pricing/entries", "key-bound")
+        .await
+        .expect("the row exists");
+    assert_eq!(
+        row.entity_ref,
+        Some(op_id),
+        "the binding survives the retry"
+    );
+    assert_eq!(row.expires_at, at(9), "the refused retry writes nothing");
+}
+
 /// Two claims that both read the same expired row: exactly one wins the
 /// takeover and the other is told in flight, having executed nothing.
 ///
