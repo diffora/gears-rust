@@ -136,6 +136,9 @@ impl From<DomainError> for CanonicalError {
                 Some("USAGE_TYPE_UNAVAILABLE"),
             ),
             D::UsageTypeForbidden(detail) => catalog_denied(&detail),
+            D::UsageUnavailable(detail) => {
+                unavailable("sku_usage_port", &detail, Some("USAGE_UNAVAILABLE"))
+            }
             D::UnrecognizedUnit(detail) => precondition("meter", &detail, "UNRECOGNIZED_UNIT"),
             D::MeterDeclarationIncomplete(detail) => {
                 precondition("meter", &detail, "METER_DECLARATION_INCOMPLETE")

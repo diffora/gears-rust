@@ -44,6 +44,7 @@
 | P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
 | P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
 
 ## Entries
 
@@ -313,6 +314,9 @@ bundle shows "by plan" from its type. It never takes part in a fence, a retireme
 on the local registry (P-D-188, P-D-194), and no remote count sits on a fence. The card's `references` stay
 the local registry's counts.
 
+P-D-212 amends this entry for one case: the list filters on the same facts (`priced`, `in_plan`) through the
+port's `usage_sets`, and there a port that refuses or cannot answer fails the read instead of leaving `null`.
+
 **Source:** Owner, 2026-09-26 (option 1: the counts on the entry and on the SKU); phase 5 plan rev 2; pricing
 D-428.
 
@@ -515,11 +519,11 @@ own `type`, `category`, `lifecycle` and `after` parameters go.
   there (`nfr-two-backends`), and both are pinned by tests. An empty `q` is no search. The toolkit's
   `contains` in `$filter` follows the backend's `LIKE` (case-sensitive on Postgres); `q` is the
   case-insensitive search.
-- **Refusals.** Any key besides `limit`, `cursor`, `q` and the OData options is 400
-  `UNSUPPORTED_QUERY_PARAM`, every offender named (a products copy of ledger's
+- **Refusals.** Any key besides `limit`, `cursor`, `q`, P-D-212's `priced` and `in_plan`, and the OData
+  options is 400 `UNSUPPORTED_QUERY_PARAM`, every offender named (a products copy of ledger's
   `reject_non_odata_list_params_allowing`); a plain key given twice is 400. `$select` and `$count` are 400.
-  The cursor carries a hash of `$filter` and `q`: a cursor replayed with other values is 400
-  `FILTER_MISMATCH`. Authorization is judged first (`sku × read`).
+  The cursor carries a hash of `$filter`, `q`, `priced` and `in_plan`: a cursor replayed with other values is
+  400 `FILTER_MISMATCH`. Authorization is judged first (`sku × read`).
 - **The transaction.** As before, the list recovers the tenant's orphan fences and reads its page in one
   transaction (P-D-189).
 
@@ -543,7 +547,7 @@ review H1, L1–L5, L10).
 
 `GET /skus/counts` answers `{ all, draft, published, deprecated, retiring, retired, in_review }` for the tabs
 of the SKUs screen: every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
-(`pending_unit_id` set, in any lifecycle). It narrows as the list does, by `q` and `$filter`, except that `$filter`'s `lifecycle` terms are dropped, because the counts count every
+(`pending_unit_id` set, in any lifecycle). It narrows as the list does, by `q`, P-D-212's `priced` and `in_plan`, and `$filter`, except that `$filter`'s `lifecycle` terms are dropped, because the counts count every
 lifecycle. Only a term that is a top-level `and` conjunct is dropped; a `lifecycle` term under `or` or `not`
 cannot go without changing what the rest means, so it is 400 `INVALID_FILTER`. The whole filter is checked as
 the list reads it before the terms go. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are
@@ -552,3 +556,30 @@ does, so its `retiring` agrees with the list, and it counts in one grouped state
 SKUs. Authorization is `sku × read`.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2).
+
+#### P-D-212 [M] The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets
+
+Amends P-D-197. The SKUs screen filters on what the usage shows, and a list that pages cannot filter a
+page's `usage` on the client, so the list and the counts take `priced=true|false` and `in_plan=true|false`.
+
+- **The definitions are the usage's own** (pricing D-428): `priced` keeps the SKUs whose `usage.entries` is
+  above zero (an entry in any book of the tenant, in any reference state), `in_plan` those whose `usage.plans`
+  is above zero (a draft, pending or published revision names one of the SKU's entries). A plan item that
+  names a SKU without an entry (an `included` item) does not count, as it does not in `plans`: the owner's open
+  question from phase 5 stays open. `false` keeps the other SKUs. Tests pin `priced` ⇔ `entries > 0` and
+  `in_plan` ⇔ `plans > 0` on the same data.
+- **The port gains a method.** `SkuUsageV1::usage_sets(ctx, tenant) -> SkuUsageSets { priced, in_plan }`,
+  each sorted and distinct. Pricing reads them under the same rule as `usage` (`price_book_entry:read`, the
+  entries under that scope, the items and revisions tenant-scoped) in two set-based statements, the same
+  whatever the number of SKUs.
+- **One bind.** Products filters by a set with ONE bound value whatever its size: a JSON array read by
+  `json_each` on SQLite (`unhex`, because a UUID is 16 bytes there), a `uuid[]` with `= ANY` on Postgres.
+- **One call of each method per request.** A read with a usage filter asks `usage_sets` once, after the query
+  is found valid and before its transaction; the list still asks `usage` once for its page (none for an empty
+  page). The call is bounded like `usage`: two seconds on a task of its own, aborted when the read ends first.
+- **Never an unfiltered page.** A port that refuses the caller is 403 `USAGE_FORBIDDEN`; no registered port,
+  an error, a broken call and a call past the bound are 503 `USAGE_UNAVAILABLE`. A read without a usage filter
+  is unchanged: its `usage` is `null` in those cases (P-D-197).
+- The cursor's hash covers both filters (P-D-210); the counts take them as the list does (P-D-211).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 3; plan review M3).

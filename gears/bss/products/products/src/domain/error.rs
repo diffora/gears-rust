@@ -38,6 +38,9 @@ pub enum DomainError {
     UsageTypeUnavailable(String),
     #[error("usage type catalog refused the caller: {0}")]
     UsageTypeForbidden(String),
+    /// Pricing's SKU usage port could not answer a filter on it (P-D-212).
+    #[error("SKU usage unavailable: {0}")]
+    UsageUnavailable(String),
     #[error("unrecognized metering unit: {0}")]
     UnrecognizedUnit(String),
     #[error("incomplete meter declaration: {0}")]
@@ -61,6 +64,7 @@ impl DomainError {
             Self::UsageTypeUnresolved(_) => "USAGE_TYPE_UNRESOLVED",
             Self::UsageTypeUnavailable(_) => "USAGE_TYPE_UNAVAILABLE",
             Self::UsageTypeForbidden(_) => "USAGE_TYPE_FORBIDDEN",
+            Self::UsageUnavailable(_) => "USAGE_UNAVAILABLE",
             Self::UnrecognizedUnit(_) => "UNRECOGNIZED_UNIT",
             Self::MeterDeclarationIncomplete(_) => "METER_DECLARATION_INCOMPLETE",
         }

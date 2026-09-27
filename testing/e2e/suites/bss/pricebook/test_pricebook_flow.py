@@ -231,6 +231,13 @@ def _sku_reads(api, sku: str, code: str) -> tuple[dict, dict]:
     return card, rows[0]
 
 
+def _usage_filtered(api, code: str, **flags: str) -> list[str]:
+    """The ids the SKU list keeps for ``q`` = a unique code and the usage filters (P-D-212)."""
+    r = api.get(f"{PRODUCTS}/skus", params={"q": code, **flags})
+    assert r.status_code == 200, r.text
+    return [row["id"] for row in r.json()["items"]]
+
+
 def _policy(api) -> tuple[dict, str]:
     r = api.get(f"{PRICING}/approval-policy")
     assert r.status_code == 200, r.text
@@ -737,6 +744,16 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         assert (card["sku"]["category_id"], row["category_id"]) == (None, None), (card, row)
         unplanned = _sku_usage(3, ["EUR", "USD"], approved=2, draft=1)
         assert (card["usage"], row["usage"]) == (unplanned, unplanned), (card, row)
+        # The list filters on the same facts (P-D-212): priced, in no plan yet.
+        assert _usage_filtered(api, code, priced="true") == [sku]
+        assert _usage_filtered(api, code, priced="false") == []
+        assert _usage_filtered(api, code, in_plan="true") == []
+        assert _usage_filtered(api, code, in_plan="false") == [sku]
+        r = api.get(
+            f"{PRODUCTS}/skus/counts", params={"q": code, "priced": "true", "in_plan": "false"}
+        )
+        assert r.status_code == 200, r.text
+        assert (r.json()["all"], r.json()["published"]) == (1, 1), r.text
 
         # A plan publishes rev 1 with the flat entry.
         r = api.post(
@@ -786,6 +803,8 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         planned = _sku_usage(3, ["EUR", "USD"], approved=2, draft=1, plans=1)
         card, row = _sku_reads(api, sku, code)
         assert (card["usage"], row["usage"]) == (planned, planned), (card, row)
+        assert _usage_filtered(api, code, in_plan="true") == [sku]
+        assert _usage_filtered(api, code, priced="true", in_plan="false") == []
 
         # Rev 2 published supersedes rev 1: the flat entry is named by history only.
         r = api.post(f"{PRICING}/plan-revisions/{rev2}/submit", json={}, headers=_key())

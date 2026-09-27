@@ -343,7 +343,8 @@ it in the ClientHub at init as dyn SkuUsageV1; Products resolves it at each SKU 
 tenant it answers each distinct id once with { sku_id, entries, currencies (sorted), prices { approved, pending,
 draft }, plans }, plans distinct across the SKU's entries; an unknown, foreign or bundle SKU answers zeros; a
 caller without price_book_entry read gets 403, which Products shows as no usage (D-428). Pricing reads only the
-SKU ids it is given.
+SKU ids it is given. Its usage_sets answers the tenant's priced and in-plan SKUs under the same rule, in two
+set-based statements, for the Products list's priced and in_plan filters (Products P-D-212).
 Reserve is idempotent on the live logical reference, not on a released receipt. The same tenant and SKU must be
 bound to the receipt and object. Products versions?as_of provides descriptor history in phase 4. There is no
 SkuChanged listener/local SKU read model in phase 2 (D-399). Subscriptions migration execution and Rating

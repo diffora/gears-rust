@@ -76,6 +76,7 @@ fn the_text_search_lowers_both_sides_and_escapes_on_both_dialects() {
     use sea_orm::{EntityTrait, QueryFilter, QueryTrait};
     let filter = SkuListFilter {
         text: Some("50%_Off".into()),
+        ..SkuListFilter::default()
     };
     for backend in [DbBackend::Postgres, DbBackend::Sqlite] {
         let sql = sku::Entity::find()
@@ -97,5 +98,47 @@ fn the_text_search_lowers_both_sides_and_escapes_on_both_dialects() {
             r"'%50\%\_Off%'"
         };
         assert!(sql.contains(escaped), "{backend:?}: {sql}");
+    }
+}
+
+/// P-D-212: a usage filter binds its whole id set as ONE value — a `uuid[]` on Postgres, a JSON
+/// array read by `json_each` on `SQLite` — so the statement is the same whatever the set's size,
+/// and `false` negates the membership.
+#[test]
+fn a_usage_filter_binds_its_whole_set_once_on_both_dialects() {
+    use sea_orm::{EntityTrait, QueryFilter, QueryTrait};
+    for backend in [DbBackend::Postgres, DbBackend::Sqlite] {
+        let mut statements = Vec::new();
+        for n in [1_usize, 10, 1000] {
+            let ids: Vec<Uuid> = (0..n).map(|_| Uuid::new_v4()).collect();
+            let filter = SkuListFilter {
+                priced: Some(SetFilter {
+                    member: true,
+                    ids: ids.clone(),
+                }),
+                in_plan: Some(SetFilter { member: false, ids }),
+                ..SkuListFilter::default()
+            };
+            let statement = sku::Entity::find()
+                .filter(list_condition(Uuid::nil(), &filter, backend))
+                .build(backend);
+            let binds = statement.values.map_or(0, |v| v.0.len());
+            let sql = statement.sql;
+            // The tenant, and one value per usage filter.
+            assert_eq!(binds, 3, "{backend:?} n={n}: {sql}");
+            statements.push(sql);
+        }
+        assert!(
+            statements.windows(2).all(|w| w[0] == w[1]),
+            "{backend:?}: one statement whatever the size: {statements:#?}"
+        );
+        let sql = &statements[0];
+        let membership = if backend == DbBackend::Postgres {
+            r#""products_sku"."id" = ANY(CAST($"#
+        } else {
+            r#""products_sku"."id" IN (SELECT unhex("value") FROM json_each(?))"#
+        };
+        assert_eq!(sql.matches(membership).count(), 2, "{backend:?}: {sql}");
+        assert!(sql.contains("NOT"), "{backend:?}: `false` negates: {sql}");
     }
 }

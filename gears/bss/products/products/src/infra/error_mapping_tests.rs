@@ -36,7 +36,9 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
             "DB" | "STORE" => (500, None),
             _ => (409, Some(r.code)),
         },
-        DomainError::AuditUnavailable(_) | DomainError::UsageTypeUnavailable(_) => (503, None),
+        DomainError::AuditUnavailable(_)
+        | DomainError::UsageTypeUnavailable(_)
+        | DomainError::UsageUnavailable(_) => (503, None),
     }
 }
 
@@ -72,11 +74,12 @@ fn one_of_every_variant() -> Vec<DomainError> {
         DomainError::UsageTypeUnresolved("detail".to_owned()),
         DomainError::UsageTypeUnavailable("detail".to_owned()),
         DomainError::UsageTypeForbidden("detail".to_owned()),
+        DomainError::UsageUnavailable("detail".to_owned()),
         DomainError::UnrecognizedUnit("detail".to_owned()),
         DomainError::MeterDeclarationIncomplete("detail".to_owned()),
     ]
 }
-const DOMAIN_ERROR_VARIANTS: usize = 15;
+const DOMAIN_ERROR_VARIANTS: usize = 16;
 
 #[test]
 fn every_domain_error_variant_lands_in_its_declared_category() {

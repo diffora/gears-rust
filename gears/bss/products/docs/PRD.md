@@ -389,7 +389,8 @@ and durable version reads.
 - The list items and the card carry pricing's usage of each SKU (its entries, their currencies, prices by
   state and distinct plans) through the `SkuUsageV1` port that pricing fills. The usage is `null` when the port
   is absent, refuses the caller or cannot answer; the read never fails for it, and the usage never takes part
-  in a fence (P-D-197).
+  in a fence (P-D-197). The list filters on the same facts (`priced`, `in_plan`) through the port's sets; a
+  filter the port cannot answer fails the read rather than widening it (P-D-212).
 - Dated reads use the version timeline, not the latest SKU row, which can contain future-effective content.
   A date earlier than the first version returns 404 `NO_VERSION_IN_FORCE`.
 - Reads require `products:read` and tenant scope; a caller cannot use search, card, reference or version reads
@@ -495,7 +496,7 @@ an optional `Idempotency-Key` (spec §7.2 products row, with §2.2 amendments).
 | --- | --- |
 | SKU authoring | `POST /skus`; `PATCH /skus/{id}` for drafts; `DELETE /skus/{id}` for a never-published draft (P-D-206); `POST /skus/{id}/changes` for published/deprecated content and/or lifecycle, with `effective_from` defaulting to today. |
 | Usage-type picker | `GET /usage-types?q&kind&limit&cursor`, the catalog the publish gate resolves against, read as the caller (P-D-207). |
-| SKU reads | `GET /skus` on the toolkit's OData (`$filter`, `$orderby`, `$top`/`limit`, `cursor`) with `q`, `GET /skus/counts`, `GET /skus/{id}`; list/search by code, name, category (or none), type, lifecycle and in-review (P-D-210, P-D-211); each SKU carries pricing's `usage` or `null` (P-D-197). |
+| SKU reads | `GET /skus` on the toolkit's OData (`$filter`, `$orderby`, `$top`/`limit`, `cursor`) with `q`, `priced` and `in_plan`, `GET /skus/counts`, `GET /skus/{id}`; list/search by code, name, category (or none), type, lifecycle, in-review and pricing's usage (P-D-210, P-D-211, P-D-212); each SKU carries pricing's `usage` or `null` (P-D-197). |
 | Lifecycle | `POST /skus/{id}/submit`, `POST /skus/{id}/retire`, `POST /skus/{id}/unfence`. |
 | Versions | `GET /skus/{id}/versions?asOf=<date>` reads the version in force; spec §7.2 spells the parameter `as_of`, while §2.2 and §4 spell it `asOf` (see §13). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |

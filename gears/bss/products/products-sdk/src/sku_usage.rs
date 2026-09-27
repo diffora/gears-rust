@@ -17,6 +17,14 @@
 //! Fences, retirement and type changes read the local reference registry only
 //! (P-D-188, P-D-194): no remote count sits on a fence.
 //!
+//! # A filter, when the caller asks for one
+//!
+//! The SKU list filters by the same facts (`priced`, `in_plan`; **P-D-212**):
+//! [`SkuUsageV1::usage_sets`] answers the tenant's priced and in-plan SKUs as
+//! two sets. There the answer is not decoration: a refusal is the list's 403,
+//! and an absent port, an error or a call past its bound the list's 503 —
+//! never an unfiltered page.
+//!
 //! # No serde here
 //!
 //! As in [`crate::usage_types`]: the gear's REST DTOs own serde and map onto
@@ -76,6 +84,20 @@ pub struct SkuUsage {
     pub plans: u64,
 }
 
+/// The tenant's SKUs pricing uses, as two sets (P-D-212): what the SKU list's
+/// `priced` and `in_plan` filters keep or drop. Each is sorted and distinct.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkuUsageSets {
+    /// The SKUs with an entry in a book of the tenant, in any reference state:
+    /// exactly those whose [`SkuUsage::entries`] is above zero.
+    pub priced: Vec<Uuid>,
+    /// The SKUs whose entries a plan item of a draft, pending or published
+    /// revision names: exactly those whose [`SkuUsage::plans`] is above zero.
+    /// An item that names a SKU without an entry does not count, as it does not
+    /// in `plans`.
+    pub in_plan: Vec<Uuid>,
+}
+
 /// Pricing's usage of SKUs, which pricing registers on `ClientHub` as
 /// `dyn SkuUsageV1`.
 #[async_trait]
@@ -96,4 +118,20 @@ pub trait SkuUsageV1: Send + Sync + 'static {
         tenant: Uuid,
         sku_ids: &[Uuid],
     ) -> Result<Vec<SkuUsage>, CanonicalError>;
+
+    /// The tenant's priced and in-plan SKUs (P-D-212), under the same rule as
+    /// [`Self::usage`] and read set-based: the same number of statements
+    /// whatever the number of SKUs. The tenant argument narrows the read; it
+    /// never grants access.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::usage`]: [`sku_usage_denied`] (403) for a caller without
+    /// pricing `price_book_entry:read`, [`sku_usage_unavailable`] (503) when the
+    /// sets cannot be read. **Neither is an empty set.**
+    async fn usage_sets(
+        &self,
+        ctx: &SecurityContext,
+        tenant: Uuid,
+    ) -> Result<SkuUsageSets, CanonicalError>;
 }

@@ -6,7 +6,7 @@ mod pg_support;
 
 use bss_products::{
     domain::{category::NewCategory, sku::NewSku},
-    infra::storage::repo::{self, SkuCounts, SkuListFilter},
+    infra::storage::repo::{self, SetFilter, SkuCounts, SkuListFilter},
 };
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use pg_support::Pg;
@@ -120,6 +120,7 @@ impl Fixture {
             .page(
                 SkuListFilter {
                     text: q.map(Into::into),
+                    ..SkuListFilter::default()
                 },
                 &query,
             )
@@ -253,4 +254,62 @@ async fn null_filters_the_order_and_the_counts_hold_on_postgres() {
             in_review: 1,
         }
     );
+}
+
+/// P-D-212 on Postgres: a usage filter's whole id set is one `uuid[]` bind, kept or negated, in
+/// the list and in the counts, whatever its size.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_usage_set_filters_through_one_uuid_array_on_postgres() {
+    let (_pg, f) = Fixture::new().await;
+    let mut ids = Vec::new();
+    for code in ["A", "B", "C", "D"] {
+        ids.push(f.sku(code, code, None, Lifecycle::Draft, None).await);
+    }
+    for extra in [0_usize, 5000] {
+        let mut priced = vec![ids[0], ids[2]];
+        priced.extend((0..extra).map(|_| Uuid::new_v4()));
+        let filter = |member: bool| SkuListFilter {
+            priced: Some(SetFilter {
+                member,
+                ids: priced.clone(),
+            }),
+            in_plan: Some(SetFilter {
+                member: false,
+                ids: vec![ids[2]],
+            }),
+            ..SkuListFilter::default()
+        };
+        assert_eq!(
+            f.page(filter(true), &ODataQuery::default()).await,
+            ["A"],
+            "{extra}"
+        );
+        assert_eq!(
+            f.page(filter(false), &ODataQuery::default()).await,
+            ["B", "D"],
+            "{extra}"
+        );
+        let counts = repo::count_skus(
+            &f.db.conn().unwrap(),
+            &f.scope,
+            f.tenant,
+            DbBackend::Postgres,
+            &filter(false),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!((counts.all, counts.draft), (2, 2), "{extra}");
+    }
+    // An empty set keeps nothing, and its negation everything.
+    let empty = |member| SkuListFilter {
+        priced: Some(SetFilter {
+            member,
+            ids: Vec::new(),
+        }),
+        ..SkuListFilter::default()
+    };
+    assert!(f.page(empty(true), &ODataQuery::default()).await.is_empty());
+    assert_eq!(f.page(empty(false), &ODataQuery::default()).await.len(), 4);
 }

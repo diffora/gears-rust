@@ -834,3 +834,358 @@ async fn the_list_and_the_counts_read_in_fixed_statements_for_10_and_100_skus() 
         assert_eq!(a, b, "{uri}: the same statements whatever the size");
     }
 }
+
+// ------------------------------------------------------------------ P-D-212: usage filters
+
+use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use toolkit::api::canonical_prelude::CanonicalError;
+use toolkit_security::SecurityContext;
+
+/// What the scripted port does when asked.
+#[derive(Clone, Copy, Debug)]
+enum Answer {
+    Answers,
+    /// 403: the caller holds no pricing `price_book_entry:read`.
+    Refuses,
+    /// 503: pricing cannot answer.
+    Fails,
+    Panics,
+    Hangs,
+}
+/// Pricing's port as a scripted double: its sets, the usage derived from them, and every call by
+/// method, in call order.
+struct SetsPort {
+    answer: Answer,
+    sets: SkuUsageSets,
+    calls: Mutex<Vec<&'static str>>,
+    abandoned: AtomicUsize,
+}
+struct Abandoned<'a>(&'a AtomicUsize);
+impl Drop for Abandoned<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+impl SetsPort {
+    fn new(answer: Answer, priced: &[Uuid], in_plan: &[Uuid]) -> Arc<Self> {
+        let sorted = |ids: &[Uuid]| {
+            let mut v = ids.to_vec();
+            v.sort_unstable();
+            v
+        };
+        Arc::new(Self {
+            answer,
+            sets: SkuUsageSets {
+                priced: sorted(priced),
+                in_plan: sorted(in_plan),
+            },
+            calls: Mutex::default(),
+            abandoned: AtomicUsize::default(),
+        })
+    }
+    fn calls(&self) -> Vec<&'static str> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+    async fn answer<T>(&self, ok: T) -> Result<T, CanonicalError> {
+        match self.answer {
+            Answer::Answers => Ok(ok),
+            Answer::Refuses => Err(bss_products_sdk::sku_usage::sku_usage_denied()),
+            Answer::Fails => Err(bss_products_sdk::sku_usage::sku_usage_unavailable(
+                "pricing is down",
+            )),
+            Answer::Panics => panic!("the SKU usage port broke"),
+            Answer::Hangs => {
+                let _abandoned = Abandoned(&self.abandoned);
+                std::future::pending().await
+            }
+        }
+    }
+}
+#[async_trait::async_trait]
+impl SkuUsageV1 for SetsPort {
+    async fn usage(
+        &self,
+        _ctx: &SecurityContext,
+        _tenant: Uuid,
+        sku_ids: &[Uuid],
+    ) -> Result<Vec<SkuUsage>, CanonicalError> {
+        self.calls.lock().unwrap().push("usage");
+        let usage = sku_ids
+            .iter()
+            .map(|&sku_id| SkuUsage {
+                sku_id,
+                entries: u64::from(self.sets.priced.contains(&sku_id)),
+                plans: u64::from(self.sets.in_plan.contains(&sku_id)),
+                ..SkuUsage::default()
+            })
+            .collect();
+        self.answer(usage).await
+    }
+    async fn usage_sets(
+        &self,
+        _ctx: &SecurityContext,
+        _tenant: Uuid,
+    ) -> Result<SkuUsageSets, CanonicalError> {
+        self.calls.lock().unwrap().push("usage_sets");
+        self.answer(self.sets.clone()).await
+    }
+}
+
+/// `priced` and `in_plan` keep or drop pricing's sets, alone, together and beside `q` and
+/// `$filter`; the counts narrow alike. A read asks `usage_sets` once when it filters by usage and
+/// never otherwise, and the list asks `usage` once for its page.
+#[tokio::test]
+async fn priced_and_in_plan_keep_or_drop_pricings_sets_with_one_call_of_each_method() {
+    let d = Door::new().await;
+    let mut id = std::collections::BTreeMap::new();
+    for code in ["A", "B", "C", "D", "E"] {
+        id.insert(code, d.sku(seed(code)).await);
+    }
+    // Pricing also names SKUs this tenant does not hold: they change nothing.
+    let port = SetsPort::new(
+        Answer::Answers,
+        &[id["A"], id["B"], id["C"], Uuid::new_v4()],
+        &[id["B"], Uuid::new_v4()],
+    );
+    d.state.hub.register::<dyn SkuUsageV1>(port.clone());
+    for (params, expected) in [
+        (vec![("priced", "true")], vec!["A", "B", "C"]),
+        (vec![("priced", "false")], vec!["D", "E"]),
+        (vec![("in_plan", "true")], vec!["B"]),
+        (vec![("in_plan", "false")], vec!["A", "C", "D", "E"]),
+        (
+            vec![("priced", "true"), ("in_plan", "false")],
+            vec!["A", "C"],
+        ),
+        (vec![("priced", "false"), ("in_plan", "true")], vec![]),
+        (
+            vec![("priced", "true"), ("$filter", "code ne 'A'"), ("q", "c")],
+            vec!["C"],
+        ),
+    ] {
+        // An empty page asks no usage for it.
+        let calls: &[&str] = if expected.is_empty() {
+            &["usage_sets"]
+        } else {
+            &["usage_sets", "usage"]
+        };
+        assert_eq!(
+            d.codes(&list(&params)).await,
+            sorted(expected),
+            "{params:?}"
+        );
+        assert_eq!(port.calls(), calls, "{params:?}: one call of each");
+    }
+    // No usage filter: only the page's usage.
+    assert_eq!(d.codes(&list(&[])).await.len(), 5);
+    assert_eq!(port.calls(), ["usage"]);
+    // The page's usage agrees with the sets it was filtered by.
+    let (_, page) = d.get(&list(&[("priced", "true")])).await;
+    for item in page["items"].as_array().unwrap() {
+        assert_eq!(item["usage"]["entries"], 1, "{item}");
+    }
+    port.calls();
+    // The counts: one call of `usage_sets` with a usage filter, none without.
+    let (status, body) = d.get(&counts(&[("priced", "true")])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        (body["all"].as_u64(), body["draft"].as_u64()),
+        (Some(3), Some(3))
+    );
+    assert_eq!(port.calls(), ["usage_sets"]);
+    let (_, body) = d
+        .get(&counts(&[("in_plan", "false"), ("priced", "true")]))
+        .await;
+    assert_eq!(body["all"], 2, "{body}");
+    assert_eq!(port.calls(), ["usage_sets"]);
+    let (_, body) = d.get(&counts(&[])).await;
+    assert_eq!(body["all"], 5, "{body}");
+    assert!(port.calls().is_empty());
+    // A malformed flag is 400 before pricing is asked.
+    for (key, value) in [("priced", "yes"), ("in_plan", "1"), ("priced", "")] {
+        let body = d.refused(&list(&[(key, value)])).await;
+        assert_eq!(
+            problem_code(&body),
+            "INVALID_QUERY_PARAMS",
+            "{key}={value}: {body}"
+        );
+        let body = d.refused(&counts(&[(key, value)])).await;
+        assert_eq!(
+            problem_code(&body),
+            "INVALID_QUERY_PARAMS",
+            "{key}={value}: {body}"
+        );
+    }
+    assert!(
+        port.calls().is_empty(),
+        "a refused query asks pricing nothing"
+    );
+    // The cursor carries the usage filters: replayed with another value, it is 400.
+    let (_, page) = d.get(&list(&[("priced", "true"), ("limit", "1")])).await;
+    let cursor = page["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        d.codes(&list(&[
+            ("priced", "true"),
+            ("limit", "1"),
+            ("cursor", &cursor)
+        ]))
+        .await,
+        ["B"]
+    );
+    for params in [
+        vec![("priced", "false"), ("cursor", cursor.as_str())],
+        vec![("cursor", cursor.as_str())],
+        vec![
+            ("priced", "true"),
+            ("in_plan", "true"),
+            ("cursor", cursor.as_str()),
+        ],
+    ] {
+        let body = d.refused(&list(&params)).await;
+        assert_eq!(problem_code(&body), "FILTER_MISMATCH", "{params:?}: {body}");
+    }
+}
+
+/// A usage filter pricing cannot answer fails the read: 403 `USAGE_FORBIDDEN` when it refuses
+/// the caller, 503 `USAGE_UNAVAILABLE` when no port is registered, when it fails and when it
+/// breaks — never an unfiltered page. Without a usage filter the list still answers, `usage:
+/// null`.
+#[tokio::test]
+async fn a_usage_filter_pricing_cannot_answer_fails_the_read_and_never_widens_it() {
+    for answer in [
+        None,
+        Some(Answer::Refuses),
+        Some(Answer::Fails),
+        Some(Answer::Panics),
+    ] {
+        let d = Door::new().await;
+        d.sku(seed("A")).await;
+        let port = answer.map(|a| SetsPort::new(a, &[], &[]));
+        if let Some(port) = &port {
+            d.state.hub.register::<dyn SkuUsageV1>(port.clone());
+        }
+        let (status, code) = match answer {
+            Some(Answer::Refuses) => (StatusCode::FORBIDDEN, "USAGE_FORBIDDEN"),
+            _ => (StatusCode::SERVICE_UNAVAILABLE, "USAGE_UNAVAILABLE"),
+        };
+        for uri in [
+            list(&[("priced", "false")]),
+            list(&[("in_plan", "false"), ("q", "a")]),
+            counts(&[("priced", "false")]),
+        ] {
+            let (got, body) = d.get(&uri).await;
+            assert_eq!(got, status, "{answer:?} {uri}: {body}");
+            assert!(body.get("items").is_none(), "never a page: {body}");
+            assert!(body.to_string().contains(code), "{answer:?} {uri}: {body}");
+        }
+        let (got, body) = d.get(&list(&[])).await;
+        assert_eq!(got, StatusCode::OK, "{answer:?}: {body}");
+        assert_eq!(body["items"][0]["usage"], Value::Null, "{answer:?}: {body}");
+        if let Some(port) = port {
+            assert_eq!(
+                port.calls(),
+                ["usage_sets", "usage_sets", "usage_sets", "usage"],
+                "{answer:?}: the filter was asked of pricing, once per read"
+            );
+        }
+    }
+}
+
+/// A usage filter whose call never returns is 503 once the bound elapses, and the call is
+/// aborted, not left running.
+#[tokio::test]
+async fn a_usage_filter_that_never_answers_is_503_after_its_bound_and_is_aborted() {
+    let d = Door::new().await;
+    d.sku(seed("A")).await;
+    let port = SetsPort::new(Answer::Hangs, &[], &[]);
+    d.state.hub.register::<dyn SkuUsageV1>(port.clone());
+    let started = std::time::Instant::now();
+    let (status, body) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        d.get(&list(&[("priced", "true")])),
+    )
+    .await
+    .expect("the read answers although the port never does");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(body.to_string().contains("USAGE_UNAVAILABLE"), "{body}");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "the 2 s bound"
+    );
+    for _ in 0..100 {
+        if port.abandoned.load(Ordering::SeqCst) == 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("a call past its bound is aborted, not left running");
+}
+
+/// A usage filter's id set is ONE bind: the list and the counts make the same statements, with
+/// the same binds, for a set of 10 ids and a set of 5000, and each keeps the right SKUs.
+#[tokio::test]
+async fn a_usage_set_of_any_size_filters_through_one_bind() {
+    let mut traces = Vec::new();
+    for extra in [10, 5000] {
+        let (d, recorder) = recorded_door(20).await;
+        let conn = d.state.db.conn().unwrap();
+        let page = repo::page_skus(
+            &conn,
+            &d.scope,
+            d.tenant,
+            d.state.db.db().backend(),
+            &repo::SkuListFilter::default(),
+            &toolkit_odata::ODataQuery::default().with_limit(3),
+        )
+        .await
+        .map_err(|_| "page")
+        .unwrap();
+        let mut priced: Vec<Uuid> = page.items.iter().map(|s| s.id).collect();
+        priced.extend((0..extra).map(|_| Uuid::new_v4()));
+        let port = SetsPort::new(Answer::Answers, &priced, &[]);
+        d.state.hub.register::<dyn SkuUsageV1>(port.clone());
+        let listed = statements(
+            &d,
+            &recorder,
+            &list(&[("priced", "true"), ("limit", "200")]),
+        )
+        .await;
+        let (_, body) = d.get(&list(&[("priced", "true")])).await;
+        assert_eq!(codes(&body), ["R000", "R001", "R002"], "{extra}");
+        let (_, body) = d.get(&list(&[("priced", "false")])).await;
+        assert_eq!(body["items"].as_array().unwrap().len(), 17, "{extra}");
+        let counted = statements(&d, &recorder, &counts(&[("priced", "false")])).await;
+        let (_, body) = d.get(&counts(&[("priced", "false")])).await;
+        assert_eq!(body["all"], 17, "{extra}: {body}");
+        traces.push((listed, counted));
+    }
+    for (listed, counted) in &traces {
+        assert_eq!(listed.len(), 2, "{listed:#?}");
+        assert_eq!(counted.len(), 2, "{counted:#?}");
+    }
+    assert_eq!(
+        traces[0], traces[1],
+        "the same statements and binds for 10 and 5000 ids"
+    );
+}
+
+/// An empty set keeps nothing, and its negation every SKU.
+#[tokio::test]
+async fn an_empty_usage_set_keeps_nothing_and_its_negation_everything() {
+    let d = Door::new().await;
+    for code in ["A", "B"] {
+        d.sku(seed(code)).await;
+    }
+    d.state
+        .hub
+        .register::<dyn SkuUsageV1>(SetsPort::new(Answer::Answers, &[], &[]));
+    assert!(d.codes(&list(&[("priced", "true")])).await.is_empty());
+    assert_eq!(d.codes(&list(&[("priced", "false")])).await, ["A", "B"]);
+    assert!(d.codes(&list(&[("in_plan", "true")])).await.is_empty());
+    assert_eq!(d.codes(&list(&[("in_plan", "false")])).await, ["A", "B"]);
+}

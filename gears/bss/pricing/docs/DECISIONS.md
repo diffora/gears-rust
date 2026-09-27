@@ -426,6 +426,8 @@ The two entry reads carry the entry's usage, for the SKUs screen and the book vi
 
 Pricing also fills the SKU usage port of Products (P-D-197): products-sdk SkuUsageV1, which pricing registers in the ClientHub at its init as dyn SkuUsageV1. For the SKU ids of one tenant it answers each distinct id once, as { sku_id, entries, currencies, prices { approved, pending, draft }, plans }. entries counts the SKU's entries in every book of the tenant, in every reference state. currencies are the distinct currencies of their books, sorted. prices adds up the counts of those entries. plans counts the distinct plans across all the SKU's entries, with the entry rule above: a plan that names two entries of the SKU counts once, where a sum of the entry counts would count it twice. An unknown id, the SKU of another tenant and a bundle SKU (it has no entry, D-386) answer zeros. The caller must hold price_book_entry read; otherwise the port answers 403, and Products shows no usage. Pricing reads only the SKU ids that it is given, and no Products data flows back into pricing.
 
+Products P-D-212 adds the port's usage_sets(ctx, tenant): the tenant's priced SKUs (an entry in any book, in any reference state: entries above zero) and its in-plan SKUs (an entry named by a plan item of a draft, pending or published revision: plans above zero), each sorted and distinct, under the same rule and scope, in two set-based statements whatever the number of SKUs. They are what the Products SKU list's priced and in_plan filters keep or drop.
+
 **Source:** Owner, 2026-09-26; phase 5 plan rev 2 (the counts on the entry and on the SKU, option 1; the semantics confirmed by the owner; plan review M6, M7, L10).
 
 #### D-429 [M] The replay store's mechanics (twin of products P-D-198)

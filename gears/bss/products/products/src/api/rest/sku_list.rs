@@ -3,22 +3,26 @@
 //!
 //! The list takes `$filter` over [`SkuFilterField`], `$orderby` over [`SkuOrderField`] (tie-break
 //! `id`), `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`),
-//! plus `q`. Any other key is 400; `$select` and `$count` are refused. The cursor carries a hash
-//! of `$filter` and `q`, so a cursor replayed with other values is 400. Each item carries pricing's
-//! `usage` from one port call per page, as before (P-D-197).
+//! plus `q` and the usage filters `priced` and `in_plan` (P-D-212). Any other key is 400;
+//! `$select` and `$count` are refused. The cursor carries a hash of `$filter`, `q`, `priced` and
+//! `in_plan`, so a cursor replayed with other values is 400. Each item carries pricing's `usage`
+//! from one port call per page, as before (P-D-197); a usage filter adds one call of the port's
+//! `usage_sets`, and a filter it cannot answer fails the read (403 or 503), never widening it.
 //!
-//! The counts take the list's narrowing — `q` and `$filter` with its top-level `lifecycle` terms
-//! dropped — and nothing that pages or orders.
+//! The counts take the list's narrowing — `q`, the usage filters and `$filter` with its top-level
+//! `lifecycle` terms dropped — and nothing that pages or orders.
 //! @cpt-dod:cpt-cf-bss-products-dod-list-search:p1
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
     dto::{ProductsSkuCounts, SkuListItem},
-    require_authenticated, tx_to_canonical,
+    require_authenticated, tx_to_canonical, usage,
 };
 use crate::{
     authz::{access_scope, actions, resource_types},
     domain::canonical::{canonical_rendering, content_digest},
-    infra::storage::repo::{self, SkuListError, SkuListField, SkuListFilter, SkuListMapping},
+    infra::storage::repo::{
+        self, SetFilter, SkuListError, SkuListField, SkuListFilter, SkuListMapping,
+    },
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
@@ -26,6 +30,7 @@ use axum::{
     extract::{Query, rejection::QueryRejection},
     http::StatusCode,
 };
+use bss_products_sdk::sku_usage::SkuUsageSets;
 use std::sync::Arc;
 use time::OffsetDateTime;
 use toolkit::api::{
@@ -144,8 +149,11 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
              code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias \
              `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, \
              name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). \
-             Any other key, `$select` and `$count` are 400; a cursor replayed with another \
-             `$filter` or `q` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
+             `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan \
+             names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the \
+             caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and \
+             `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or \
+             `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
         )
         .tag(TAG)
         .authenticated()
@@ -168,6 +176,18 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "Case-insensitive substring of the code, name, unit, usage type or GL code",
             "string",
         )
+        .query_param_typed(
+            "priced",
+            false,
+            "true: SKUs pricing has an entry for; false: the others",
+            "boolean",
+        )
+        .query_param_typed(
+            "in_plan",
+            false,
+            "true: SKUs a live plan names through an entry; false: the others",
+            "boolean",
+        )
         .handler(list_skus)
         .with_odata_filter::<SkuFilterField>()
         .with_odata_orderby::<SkuOrderField>()
@@ -187,9 +207,10 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("Count SKUs by lifecycle and in review")
         .description(
             "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review \
-             (`pending_unit_id` set), narrowed like the list by `q` and `$filter`, whose \
-             top-level `lifecycle` terms are dropped (a `lifecycle` term under `or` or `not` is \
-             400). `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400.",
+             (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and \
+             `$filter`, whose top-level `lifecycle` terms are dropped (a `lifecycle` term under \
+             `or` or `not` is 400). `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and \
+             `$select` are 400.",
         )
         .tag(TAG)
         .authenticated()
@@ -199,6 +220,18 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             false,
             "Case-insensitive substring of the code, name, unit, usage type or GL code",
             "string",
+        )
+        .query_param_typed(
+            "priced",
+            false,
+            "true: SKUs pricing has an entry for; false: the others",
+            "boolean",
+        )
+        .query_param_typed(
+            "in_plan",
+            false,
+            "true: SKUs a live plan names through an entry; false: the others",
+            "boolean",
         )
         .handler(count_skus)
         .with_odata_filter::<SkuFilterField>()
@@ -252,6 +285,14 @@ fn refused(keys: &[(&str, String, &'static str)]) -> Result<(), CanonicalError> 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ListParams {
     pub q: Option<String>,
+    pub priced: Option<bool>,
+    pub in_plan: Option<bool>,
+}
+impl ListParams {
+    /// Whether a usage filter asks pricing's sets.
+    const fn filters_usage(&self) -> bool {
+        self.priced.is_some() || self.in_plan.is_some()
+    }
 }
 
 /// The `$` options the list takes, as the extractor binds them (`limit` and `cursor` are their
@@ -314,8 +355,26 @@ fn params(
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.clone())
     };
+    let mut malformed: Vec<(&str, String, &'static str)> = Vec::new();
+    let mut flag = |name: &'static str| match value(name).as_deref() {
+        None => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(other) => {
+            malformed.push((
+                name,
+                format!("`{name}` is `true` or `false`, not `{other}`"),
+                "INVALID_QUERY_PARAMS",
+            ));
+            None
+        }
+    };
+    let (priced, in_plan) = (flag("priced"), flag("in_plan"));
+    refused(&malformed)?;
     Ok(ListParams {
         q: value("q").filter(|q| !q.is_empty()),
+        priced,
+        in_plan,
     })
 }
 
@@ -336,11 +395,13 @@ fn checked_filter(filter: Option<&Expr>) -> Result<Option<sea_orm::Condition>, C
 }
 
 /// The cursor's filter hash over everything that narrows the list: the extractor's hash of
-/// `$filter` and `q`.
+/// `$filter`, `q`, `priced` and `in_plan`.
 fn list_hash(odata: &ODataQuery, params: &ListParams) -> String {
     let rendering = canonical_rendering(&serde_json::json!({
         "filter": odata.filter_hash,
         "q": params.q,
+        "priced": params.priced,
+        "in_plan": params.in_plan,
     }));
     content_digest(&rendering)
         .iter()
@@ -353,11 +414,29 @@ fn list_hash(odata: &ODataQuery, params: &ListParams) -> String {
         })
 }
 
-/// The narrowing the repository applies before `$filter`.
-fn list_filter(params: &ListParams) -> SkuListFilter {
-    SkuListFilter {
+/// The narrowing the repository applies before `$filter`: `q`, and each usage filter against
+/// pricing's sets (asked once, only when a usage filter is given).
+async fn list_filter(
+    state: &ApiState,
+    ctx: &SecurityContext,
+    params: &ListParams,
+) -> Result<SkuListFilter, CanonicalError> {
+    let sets = if params.filters_usage() {
+        usage::sets(state, ctx).await?
+    } else {
+        SkuUsageSets::default()
+    };
+    let set = |member: Option<bool>, ids: &[Uuid]| {
+        member.map(|member| SetFilter {
+            member,
+            ids: ids.to_vec(),
+        })
+    };
+    Ok(SkuListFilter {
         text: params.q.clone(),
-    }
+        priced: set(params.priced, &sets.priced),
+        in_plan: set(params.in_plan, &sets.in_plan),
+    })
 }
 
 /// @cpt-cf-bss-products-fr-read-model
@@ -371,7 +450,7 @@ async fn list_skus(
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
     let scope = read_scope(&enforcer, &ctx).await?;
-    let params = params(query, &["limit", "cursor", "q"], None)?;
+    let params = params(query, &["limit", "cursor", "q", "priced", "in_plan"], None)?;
     let OData(mut odata) = odata?;
     if odata.select.is_some() {
         refused(&[(
@@ -393,7 +472,8 @@ async fn list_skus(
         return Err(ODataError::FilterMismatch.into());
     }
     odata.filter_hash = Some(hash);
-    let filter = list_filter(&params);
+    // The query is valid; now pricing's sets, if a usage filter needs them (P-D-212).
+    let filter = list_filter(&state, &ctx, &params).await?;
     let tenant = ctx.subject_tenant_id();
     let ttl = state.fence_ttl_minutes;
     let backend = state.db.db().backend();
@@ -494,7 +574,7 @@ async fn count_skus(
 ) -> Result<Json<ProductsSkuCounts>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = read_scope(&enforcer, &ctx).await?;
-    let params = params(query, &["q"], Some(&["$filter"]))?;
+    let params = params(query, &["q", "priced", "in_plan"], Some(&["$filter"]))?;
     let OData(odata) = odata?;
     // The whole filter is checked as the list would read it, then its lifecycle terms go.
     checked_filter(odata.filter.as_deref())?;
@@ -505,7 +585,7 @@ async fn count_skus(
         },
         None => None,
     };
-    let filter = list_filter(&params);
+    let filter = list_filter(&state, &ctx, &params).await?;
     let tenant = ctx.subject_tenant_id();
     let ttl = state.fence_ttl_minutes;
     let backend = state.db.db().backend();

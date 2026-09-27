@@ -174,6 +174,46 @@ impl ODataFieldMapping<SkuListField> for SkuListMapping {
 pub struct SkuListFilter {
     /// `q`: a case-insensitive substring of the code, name, unit, usage type or GL code.
     pub text: Option<String>,
+    /// `priced`: in or out of pricing's priced set (P-D-212).
+    pub priced: Option<SetFilter>,
+    /// `in_plan`: in or out of pricing's in-plan set (P-D-212).
+    pub in_plan: Option<SetFilter>,
+}
+/// Keep the SKUs in `ids` (`member`), or the SKUs outside it.
+#[derive(Debug, Clone)]
+pub struct SetFilter {
+    pub member: bool,
+    pub ids: Vec<Uuid>,
+}
+
+/// `id` in `ids`, with ONE bind whatever the set's size: a JSON array read by `json_each` on
+/// `SQLite` (a UUID is stored as 16 bytes there, hence `unhex`), a `uuid[]` on Postgres.
+fn membership(backend: DbBackend, ids: &[Uuid]) -> Condition {
+    let expr = if backend == DbBackend::Postgres {
+        let array = format!(
+            "{{{}}}",
+            ids.iter()
+                .map(|id| id.hyphenated().to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        Expr::cust_with_values(r#""products_sku"."id" = ANY(CAST($1 AS uuid[]))"#, [array])
+    } else {
+        let hex: Vec<String> = ids
+            .iter()
+            .map(|id| id.simple().to_string().to_uppercase())
+            .collect();
+        let json = serde_json::Value::from(hex).to_string();
+        Expr::cust_with_values(
+            r#""products_sku"."id" IN (SELECT unhex("value") FROM json_each(?))"#,
+            [json],
+        )
+    };
+    Condition::all().add(expr)
+}
+fn set_condition(backend: DbBackend, set: &SetFilter) -> Condition {
+    let inside = membership(backend, &set.ids);
+    if set.member { inside } else { inside.not() }
 }
 
 /// `q` over the five text columns: `lower(column) LIKE lower(pattern) ESCAPE '\'`, the caller's
@@ -206,10 +246,13 @@ fn text_condition(text: &str) -> Condition {
 
 /// The tenant's SKUs narrowed by `filter`, before `$filter`, the cursor and the order.
 #[must_use]
-pub fn list_condition(tenant: Uuid, filter: &SkuListFilter, _backend: DbBackend) -> Condition {
+pub fn list_condition(tenant: Uuid, filter: &SkuListFilter, backend: DbBackend) -> Condition {
     let mut c = Condition::all().add(sku::Column::TenantId.eq(tenant));
     if let Some(text) = filter.text.as_deref() {
         c = c.add(text_condition(text));
+    }
+    for set in [&filter.priced, &filter.in_plan].into_iter().flatten() {
+        c = c.add(set_condition(backend, set));
     }
     c
 }

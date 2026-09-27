@@ -1003,3 +1003,110 @@ async fn postgres_an_item_create_and_a_copied_items_attach_round_trip_through_th
     );
     assert_eq!(p.catalog.releases(), 0, "nothing was released");
 }
+
+/// A plan item of `revision` naming `sku`, through `entry` or (an included item) through none.
+fn usage_item(
+    s: &Seed,
+    revision: Uuid,
+    sku: Uuid,
+    entry: Option<Uuid>,
+    treatment: &str,
+) -> plan_item::Model {
+    plan_item::Model {
+        id: Uuid::new_v4(),
+        tenant_id: s.tenant,
+        revision_id: revision,
+        sku_id: sku,
+        price_book_entry_id: entry,
+        treatment: treatment.into(),
+        included_qty: None,
+        qty_min: None,
+        reservation_id: Some(Uuid::new_v4()),
+        reference_state: "confirmed".into(),
+        version: 1,
+        created_by: Uuid::new_v4(),
+        created_at: now(),
+        updated_at: now(),
+    }
+}
+
+/// P-D-212 on Postgres: the priced and in-plan sets are two set-based reads — the `DISTINCT`
+/// and the correlated `EXISTS` over items and revisions — with the usage count's definitions: a
+/// superseded revision and an item without an entry do not put a SKU in plan.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_pricing_usage_sets_read_set_based() {
+    use bss_pricing::infra::usage::sku_usage_sets;
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let entry_for = |sku: Uuid| price_book_entry::Model {
+        id: Uuid::new_v4(),
+        sku_id: sku,
+        reservation_id: Uuid::new_v4(),
+        ..s.entry.clone()
+    };
+    // The seed's entry is named by its draft revision: priced and in plan.
+    let live = s.entry.sku_id;
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, s.revision.id, live, Some(s.entry.id), "paid"),
+    )
+    .await
+    .unwrap();
+    // Priced, in no plan.
+    let priced = Uuid::new_v4();
+    price_book_entry_repo::insert(&conn, &s.scope, entry_for(priced))
+        .await
+        .unwrap();
+    // Named only through a superseded revision: priced, not in plan.
+    let old = Uuid::new_v4();
+    let old_entry = price_book_entry_repo::insert(&conn, &s.scope, entry_for(old))
+        .await
+        .unwrap();
+    let old_plan = plan_repo::insert(&conn, &s.scope, plan(s.tenant, "old"))
+        .await
+        .unwrap();
+    let superseded = plan_revision_repo::insert(&conn, &s.scope, revision(&old_plan, &s.book, 1))
+        .await
+        .unwrap();
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, superseded.id, old, Some(old_entry.id), "paid"),
+    )
+    .await
+    .unwrap();
+    let u = unit(&s, "plan_revision").await;
+    assert!(
+        plan_revision_repo::try_lock(&conn, &s.scope, s.tenant, superseded.id, u, 1)
+            .await
+            .unwrap()
+    );
+    plan_revision_repo::publish(&conn, &s.scope, s.tenant, superseded.id, u, now())
+        .await
+        .unwrap();
+    plan_revision_repo::supersede(&conn, &s.scope, s.tenant, superseded.id, 3, now())
+        .await
+        .unwrap();
+    // Named by an included item with no entry: neither.
+    let included = Uuid::new_v4();
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, s.revision.id, included, None, "included"),
+    )
+    .await
+    .unwrap();
+    let sets = sku_usage_sets(&conn, &s.scope, s.tenant).await.unwrap();
+    let mut expected = vec![live, priced, old];
+    expected.sort_unstable();
+    assert_eq!(sets.priced, expected);
+    assert_eq!(sets.in_plan, vec![live]);
+    // Another tenant reads nothing of this one.
+    let other = Uuid::new_v4();
+    let theirs = sku_usage_sets(&conn, &AccessScope::for_tenant(other), other)
+        .await
+        .unwrap();
+    assert!(theirs.priced.is_empty() && theirs.in_plan.is_empty());
+}

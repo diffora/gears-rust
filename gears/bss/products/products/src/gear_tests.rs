@@ -138,7 +138,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
 }
 
 /// D4 (P-D-210): every query parameter the gear serves is declared with its type — `limit` an
-/// integer, `include_released` a boolean, the rest strings (the builder has no uuid or date
+/// integer, `include_released`, `priced` and `in_plan` booleans, the rest strings (the builder has no uuid or date
 /// format) — and the SKU list publishes its `OData` vocabulary: the filter fields without
 /// `updated_at`, the order fields without any nullable or filter-only field.
 #[tokio::test]
@@ -160,7 +160,7 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
                 let name = p["name"].as_str().unwrap();
                 let expected = match name {
                     "limit" => "integer",
-                    "include_released" => "boolean",
+                    "include_released" | "priced" | "in_plan" => "boolean",
                     _ => "string",
                 };
                 assert_eq!(

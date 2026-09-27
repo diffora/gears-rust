@@ -928,6 +928,17 @@ impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
             }
         }
     }
+    /// The SKU reads here never filter by usage: a call is a defect of the read.
+    async fn usage_sets(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        _tenant: Uuid,
+    ) -> Result<
+        bss_products_sdk::sku_usage::SkuUsageSets,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        panic!("a SKU read without a usage filter asked for the usage sets")
+    }
 }
 /// A router and its state over a fresh database, with no usage port registered.
 async fn usage_app(tenant: Uuid) -> (Router, Arc<ApiState>) {

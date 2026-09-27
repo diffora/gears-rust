@@ -134,8 +134,8 @@ use snake_case, scoped SDK types and Foundation's Problem mapping.
 
 | Route | Contract |
 | --- | --- |
-| `GET /skus?$filter&$orderby&$top&cursor&q` | products:read; the toolkit's OData pager (P-D-210): `$filter` over id, code, name, lifecycle, type, category_id and pending_unit_id (`eq null`/`ne null` on the last two); `$orderby` code, name or updated_at with tie-break id (default code); `$top` (alias `limit`) 50, clamped at 200; `cursor` (alias `$skiptoken`) whose hash covers `$filter` and `q`; `q` is `lower(col) LIKE lower(?) ESCAPE '\'` over code, name, unit, usage_type_ref and gl_code (ASCII folding on SQLite, Unicode on Postgres). Other keys, `$select` and `$count` are 400. Scope before filtering and cursor evaluation; orphan fences recovered in the read's transaction. Answers `Page<SkuListItem>`; each item carries `usage` from pricing's `SkuUsageV1` port, asked once per page with the page's ids, or `null` (P-D-197). |
-| `GET /skus/counts?$filter&q` | products:read; `{ all, draft, published, deprecated, retiring, retired, in_review }` narrowed like the list, `$filter`'s top-level `lifecycle` terms dropped (under `or`/`not` 400); paging, order and `$select` 400; orphan fences recovered in the same transaction; one grouped statement (P-D-211). |
+| `GET /skus?$filter&$orderby&$top&cursor&q&priced&in_plan` | products:read; the toolkit's OData pager (P-D-210): `$filter` over id, code, name, lifecycle, type, category_id and pending_unit_id (`eq null`/`ne null` on the last two); `$orderby` code, name or updated_at with tie-break id (default code); `$top` (alias `limit`) 50, clamped at 200; `cursor` (alias `$skiptoken`) whose hash covers `$filter`, `q`, `priced` and `in_plan`; `q` is `lower(col) LIKE lower(?) ESCAPE '\'` over code, name, unit, usage_type_ref and gl_code (ASCII folding on SQLite, Unicode on Postgres); `priced`/`in_plan` keep or drop pricing's sets from one `usage_sets` call, bound as one value, 403 `USAGE_FORBIDDEN` / 503 `USAGE_UNAVAILABLE` when it cannot answer (P-D-212). Other keys, `$select` and `$count` are 400. Scope before filtering and cursor evaluation; orphan fences recovered in the read's transaction. Answers `Page<SkuListItem>`; each item carries `usage` from pricing's `SkuUsageV1` port, asked once per page with the page's ids, or `null` (P-D-197). |
+| `GET /skus/counts?$filter&q&priced&in_plan` | products:read; `{ all, draft, published, deprecated, retiring, retired, in_review }` narrowed like the list, `$filter`'s top-level `lifecycle` terms dropped (under `or`/`not` 400); paging, order and `$select` 400; orphan fences recovered in the same transaction; one grouped statement (P-D-211). |
 | `GET /skus/{id}` | products:read; current card with ETag and reference summary, including unconfirmed reservations, and `usage` from pricing's `SkuUsageV1` port or `null` (P-D-197). Shares slice 02's head read. |
 | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | products:author plus authenticated owner check; 201 `{ reservation_id }` or 200 for the same live attempt; 409 SKU_FENCED for a new reservation through a fence. |
@@ -150,7 +150,10 @@ registry has no fallback remote-count path and no pretend-zero response when sto
 The `usage` of a SKU read is `{ entries, currencies, prices { approved, pending, draft }, plans }` as pricing
 answers it (pricing D-428). It is `null` when no port is registered, when the port refuses the caller (no pricing
 `price_book_entry:read`) and when it cannot answer: the SKU read never fails for it, and it calls the port on a task
-of its own outside any transaction. The usage is information and never takes part in a fence (P-D-197).
+of its own outside any transaction. The usage is information and never takes part in a fence (P-D-197). The
+list's `priced` and `in_plan` filters are the one place the port's answer decides a read: they ask its
+`usage_sets` once per request (`priced` ⇔ `entries > 0`, `in_plan` ⇔ `plans > 0`), and a refusal is 403
+`USAGE_FORBIDDEN`, an absent, failing or late port 503 `USAGE_UNAVAILABLE`, never an unfiltered page (P-D-212).
 
 ## 6. Data Model
 

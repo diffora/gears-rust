@@ -378,7 +378,8 @@ Reserve is idempotent for a live logical reference, confirm on a confirmed recei
 never reactivate. Rating and Subscriptions receive golden responses and adapt in separate plans. The retained
 ProductCatalogClientV1 transport exists for compatibility until later demolition; it does not replace this protocol.
 Pricing fills Products' SkuUsageV1 port, which gives each SKU read its count of entries, their currencies, prices
-by state and distinct plans (D-428, Products P-D-197).
+by state and distinct plans (D-428, Products P-D-197), and the priced and in-plan SKU sets the Products list
+filters by (Products P-D-212).
 
 ## 8. Use Cases
 
