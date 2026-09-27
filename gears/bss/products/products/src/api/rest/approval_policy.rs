@@ -1,20 +1,32 @@
 //! Direct tenant quorum policy under SETTINGS, with atomic audit.
+//!
+//! P-D-205: the policy is read with a strong content `ETag` and written under `If-Match`. The
+//! policy has no revision column (it is a set of `(kind, quorum)` rows), so its tag is a digest of
+//! its content, as pricing's is: a write to any kind moves it, and a writer holding the tag of an
+//! earlier read is refused `STALE_REVISION` instead of silently overwriting a concurrent edit.
 //! @cpt-dod:cpt-cf-bss-products-dod-quorum-zero-records-unit:p1
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{ApprovalPolicyDto, ApprovalPolicyRequest},
-    governance as g, json_body, require_authenticated, tx_to_canonical,
+    governance as g, json_body,
+    preconditions::{etag_header, if_match_content, if_match_param},
+    require_authenticated, tx_to_canonical,
 };
 use crate::{
     authz::actions,
-    domain::approvals::{KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE},
-    infra::storage::repo,
+    domain::{
+        approvals::{KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE},
+        canonical::{canonical_rendering, content_digest},
+        concurrency::ContentTag,
+        error::DomainError,
+    },
+    infra::storage::{RepoError, repo},
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Json, Router,
     extract::rejection::JsonRejection,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use std::sync::Arc;
@@ -26,11 +38,17 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::get("/bss-products/v1/approval-policy")
         .operation_id("bss_products.get_approval_policy")
         .summary("Read approval policy")
+        .description(
+            "Returns the tenant's default quorum and the per-kind overrides, with a content ETag \
+             a following PUT sends back as If-Match (P-D-205). A caller without products \
+             settings is refused (403).",
+        )
         .tag("Approval policy")
         .authenticated()
         .no_license_required()
         .handler(get)
         .json_response_with_schema::<ApprovalPolicyDto>(openapi, StatusCode::OK, "Policy")
+        .response_header(etag_header())
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -39,19 +57,41 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     OperationBuilder::put("/bss-products/v1/approval-policy")
         .operation_id("bss_products.put_approval_policy")
         .summary("Set approval policy")
+        .description(
+            "Sets the default quorum, or one kind's (sku_publish, sku_change, sku_retire), at the \
+             policy the caller read (If-Match, P-D-205). Refusals: 403 without products settings, \
+             judged first; 400 for a missing or malformed If-Match, an unknown kind or a quorum \
+             past storage; 409 STALE_REVISION when the policy changed since the read.",
+        )
         .tag("Approval policy")
         .authenticated()
         .no_license_required()
+        .param(if_match_param())
         .json_request::<ApprovalPolicyRequest>(openapi, "Policy")
         .handler(put)
         .json_response_with_schema::<ApprovalPolicyDto>(openapi, StatusCode::OK, "Policy")
+        .response_header(etag_header())
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi)
         .layer(Extension(state))
+}
+/// The strong content tag of a policy: a digest of its wire rendering, so the tag and the body a
+/// client reads can never disagree.
+fn policy_tag(policy: &ApprovalPolicyDto) -> Result<ContentTag, CanonicalError> {
+    let value = serde_json::to_value(policy)
+        .map_err(|e| CanonicalError::internal(format!("bss-products: policy tag: {e}")).create())?;
+    ContentTag::of_digest(&content_digest(&canonical_rendering(&value)))
+        .ok_or_else(|| CanonicalError::internal("bss-products: policy tag: short digest").create())
+}
+/// The policy with its `ETag`.
+fn answer(policy: ApprovalPolicyDto) -> Result<Response, CanonicalError> {
+    let tag = policy_tag(&policy)?.to_etag();
+    Ok(([(header::ETAG, tag)], Json(policy)).into_response())
 }
 async fn get(
     Extension(state): Extension<Arc<ApiState>>,
@@ -67,17 +107,20 @@ async fn get(
     )
     .await
     .map_err(|e| tx_to_canonical(TxError::Repo(e)))?;
-    Ok(Json(ApprovalPolicyDto::from(p)).into_response())
+    answer(ApprovalPolicyDto::from(p))
 }
 /// @cpt-cf-bss-products-fr-approval-units
 async fn put(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
     body: Result<Json<ApprovalPolicyRequest>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
+    // Authorization first, then the precondition, then the body (as pricing's doors do).
     let scope = g::scope(&enforcer, &ctx, actions::SETTINGS, true).await?;
+    let expected = if_match_content(&headers)?;
     let p = json_body(body)?;
     let kind = p.kind.unwrap_or_else(|| "*".into());
     if p.quorum > i32::MAX.cast_unsigned()
@@ -96,6 +139,17 @@ async fn put(
             let ctx = ctx.clone();
             let kind = kind.clone();
             Box::pin(async move {
+                // The comparison reads the policy under the write, in its transaction.
+                let current = ApprovalPolicyDto::from(
+                    repo::read_policy(tx, &scope, ctx.subject_tenant_id())
+                        .await
+                        .map_err(TxError::Repo)?,
+                );
+                let tag = policy_tag(&current)
+                    .map_err(|_| TxError::Repo(RepoError::Db("the policy's content tag".into())))?;
+                if tag != expected {
+                    return Err(stale_tag());
+                }
                 repo::write_policy(tx, &scope, ctx.subject_tenant_id(), &kind, p.quorum)
                     .await
                     .map_err(TxError::Repo)?;
@@ -117,5 +171,15 @@ async fn put(
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(ApprovalPolicyDto::from(policy)).into_response())
+    answer(ApprovalPolicyDto::from(policy))
 }
+/// The policy changed since the caller's read.
+fn stale_tag() -> TxError {
+    TxError::Refused(DomainError::Conflict {
+        code: "STALE_REVISION",
+        detail: "the approval policy changed since it was read; read it again".into(),
+    })
+}
+#[cfg(test)]
+#[path = "approval_policy_tests.rs"]
+mod approval_policy_tests;

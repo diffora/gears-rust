@@ -69,9 +69,11 @@
 
 use axum::http::HeaderMap;
 use axum::http::header::IF_MATCH;
-use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
+use toolkit::api::operation_builder::{
+    ParamLocation, ParamSpec, ResponseHeaderSpec, ResponseHeaderType,
+};
 
-use crate::domain::concurrency::InternalRevision;
+use crate::domain::concurrency::{ContentTag, InternalRevision};
 use crate::domain::error::DomainError;
 use crate::domain::validation::ValidationReport;
 
@@ -112,6 +114,26 @@ pub fn if_match(headers: &HeaderMap) -> Result<InternalRevision, DomainError> {
     InternalRevision::from_etag(raw)
 }
 
+/// The content tag an `If-Match` header asserts, for a resource tagged by its
+/// content rather than a revision (P-D-205: the approval policy).
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming `If-Match` when the header is absent,
+/// not UTF-8, or not one strong decimal tag ([`ContentTag::from_etag`]).
+pub fn if_match_content(headers: &HeaderMap) -> Result<ContentTag, DomainError> {
+    let Some(raw) = headers.get(IF_MATCH) else {
+        return Err(refuse(
+            "If-Match is required on this verb: a write asserts the content it was authored \
+             against. Read the `ETag` off the `GET` and send it back verbatim",
+        ));
+    };
+    let raw = raw
+        .to_str()
+        .map_err(|_| refuse("If-Match: the header value is not valid UTF-8"))?;
+    ContentTag::from_etag(raw)
+}
+
 /// Build the [`DomainError::Validation`] an absent or unreadable `If-Match`
 /// header is refused with.
 ///
@@ -141,4 +163,13 @@ pub(crate) fn if_match_param() -> ParamSpec {
         // here has.
         array: false,
     }
+}
+
+/// The `ETag` response header in `OpenAPI`: the tag a following write sends back as `If-Match`.
+pub(crate) fn etag_header() -> ResponseHeaderSpec {
+    ResponseHeaderSpec::new(
+        "ETag",
+        "The version to send back as If-Match",
+        ResponseHeaderType::String,
+    )
 }

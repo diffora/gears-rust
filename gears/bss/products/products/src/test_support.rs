@@ -502,6 +502,32 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for UnreachableUsageTypes {
     }
 }
 
+/// A PDP that refuses every request, for the "authorization is judged first" probes.
+struct DenyingResolver;
+
+#[async_trait]
+impl AuthZResolverApi for DenyingResolver {
+    async fn evaluate(
+        &self,
+        _ctx: PlatformSecurityContext,
+        _req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        Ok(EvaluationResponse {
+            decision: false,
+            context: EvaluationResponseContext {
+                constraints: Vec::new(),
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// A [`PolicyEnforcer`] over a PDP that refuses everything.
+#[must_use]
+pub fn denying_enforcer() -> PolicyEnforcer {
+    PolicyEnforcer::new(Arc::new(DenyingResolver))
+}
+
 /// File-backed database with the production migration chains and a PDP-derived scope.
 ///
 /// # Panics

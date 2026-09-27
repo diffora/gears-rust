@@ -31,6 +31,23 @@ def _key() -> dict:
     return {"Idempotency-Key": str(uuid.uuid4())}
 
 
+def _products_quorum_zero(api) -> None:
+    """Products' default quorum 0, written at the policy's own ETag (P-D-205).
+
+    A PUT without If-Match is refused 400 first: the policy write asserts the policy it read.
+    """
+    r = api.put(f"{PRODUCTS}/approval-policy", json={"quorum": 0})
+    assert r.status_code == 400, r.text
+    r = api.get(f"{PRODUCTS}/approval-policy")
+    assert r.status_code == 200, r.text
+    r = api.put(
+        f"{PRODUCTS}/approval-policy",
+        json={"quorum": 0},
+        headers={"If-Match": r.headers["etag"]},
+    )
+    assert r.status_code == 200, r.text
+
+
 def _usage_type_or_skip(api) -> None:
     r = api.post(
         USAGE_TYPES,
@@ -67,8 +84,7 @@ def test_a_priced_sku_publishes_its_price_and_blocks_retirement(api, variant):
     run = uuid.uuid4().hex[:8]
 
     # Products: quorum 0, a category and a SKU, published at submit.
-    r = api.put(f"{PRODUCTS}/approval-policy", json={"quorum": 0})
-    assert r.status_code == 200, r.text
+    _products_quorum_zero(api)
     r = api.post(
         f"{PRODUCTS}/categories",
         json={"code": f"e2e-{variant}-{run}", "name": f"E2E {variant} {run}"},
@@ -289,8 +305,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
     }
     try:
         # Products: a published recurring SKU.
-        r = api.put(f"{PRODUCTS}/approval-policy", json={"quorum": 0})
-        assert r.status_code == 200, r.text
+        _products_quorum_zero(api)
         r = api.post(
             f"{PRODUCTS}/categories",
             json={"code": f"e2e-plan-{run}", "name": f"E2E plan {run}"},
@@ -580,8 +595,7 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
     }
     try:
         # Products: a recurring SKU with no category, published at quorum 0.
-        r = api.put(f"{PRODUCTS}/approval-policy", json={"quorum": 0})
-        assert r.status_code == 200, r.text
+        _products_quorum_zero(api)
         r = api.post(
             f"{PRODUCTS}/skus",
             json={"code": code, "name": f"E2E no category {run}", "type": "recurring"},

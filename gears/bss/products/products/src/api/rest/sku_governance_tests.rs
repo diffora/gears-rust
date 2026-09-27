@@ -59,6 +59,41 @@ async fn call(
     let status = r.status().as_u16();
     (status, body_json(r).await)
 }
+/// [`call`] with arbitrary request headers, answering the response headers too; an empty body
+/// (a 204) reads as `null`.
+async fn call_with(
+    app: &Router,
+    ctx: &SecurityContext,
+    method: Method,
+    path: &str,
+    body: Value,
+    headers: &[(&str, String)],
+) -> (u16, axum::http::HeaderMap, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(format!("/bss-products/v1{path}"))
+        .extension(ctx.clone())
+        .header("Content-Type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, value);
+    }
+    let r = app
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let response_headers = r.headers().clone();
+    let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, response_headers, body)
+}
 impl Fixture {
     async fn new(quorum: u32) -> Self {
         let tenant = Uuid::new_v4();
@@ -98,14 +133,26 @@ impl Fixture {
         f.policy(quorum).await;
         f
     }
+    /// P-D-205: the policy is written at the tag its read answered.
     async fn policy(&self, quorum: u32) {
-        let (status, b) = call(
+        let (status, headers, b) = call_with(
+            &self.app,
+            &self.author,
+            Method::GET,
+            "/approval-policy",
+            json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, 200, "{b}");
+        let tag = headers["etag"].to_str().unwrap().to_owned();
+        let (status, _, b) = call_with(
             &self.app,
             &self.author,
             Method::PUT,
             "/approval-policy",
             json!({"quorum":quorum}),
-            None,
+            &[("If-Match", tag)],
         )
         .await;
         assert_eq!(status, 200, "{b}");

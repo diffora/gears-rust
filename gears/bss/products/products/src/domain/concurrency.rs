@@ -133,6 +133,58 @@ impl InternalRevision {
     }
 }
 
+/// A strong validator over a resource's **content** rather than a stored
+/// counter: the first eight bytes of the SHA-256 of its canonical rendering,
+/// as a decimal (P-D-205).
+///
+/// For a resource with no revision column of its own — the tenant's approval
+/// policy is a set of `(kind, quorum)` rows, and a write to one kind moves no
+/// counter another kind carries. Pricing's policy tag has the same shape
+/// (`policy_tag`, a strong decimal over the whole policy), so a client that
+/// speaks one speaks both.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ContentTag(u64);
+
+impl ContentTag {
+    /// The tag of a canonical-rendering digest, `None` for a digest shorter
+    /// than the eight bytes the tag reads.
+    #[must_use]
+    pub fn of_digest(digest: &[u8]) -> Option<Self> {
+        digest
+            .get(..8)
+            .and_then(|head| <[u8; 8]>::try_from(head).ok())
+            .map(|head| Self(u64::from_be_bytes(head)))
+    }
+
+    /// The RFC 9110 strong entity tag: the decimal in double quotes.
+    #[must_use]
+    pub fn to_etag(self) -> String {
+        format!("\"{}\"", self.0)
+    }
+
+    /// Parse one `If-Match` header value naming a content tag.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Validation`] naming the `If-Match` subject for every
+    /// shape [`strong_tag_body`] refuses, an empty or non-digit body, and a
+    /// value past `u64` — the same `VALIDATION` code as an absent header.
+    pub fn from_etag(raw: &str) -> Result<Self, DomainError> {
+        let digits = strong_tag_body(raw)?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(refuse_tag(
+                raw,
+                "the tag must quote one or more ASCII digits naming the content read",
+            ));
+        }
+        digits
+            .parse::<u64>()
+            .map(Self)
+            .map_err(|_| refuse_tag(raw, "the tag is past the representable range"))
+    }
+}
+
 /// The body of one **strong** entity tag, with every shape that is not one
 /// refused — the syntax half of `If-Match`, shared by every tagged subject.
 ///
