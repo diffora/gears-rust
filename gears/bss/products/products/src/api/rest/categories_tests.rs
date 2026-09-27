@@ -316,3 +316,400 @@ async fn only_a_sku_that_is_not_retired_keeps_a_category_in_use() {
         }
     }
 }
+
+// ------------------------------------------------------------------ P-D-215: category reads
+
+/// A category of `tenant` with this code and sort order, by the door.
+async fn new_category(app: &axum::Router, tenant: Uuid, code: &str, sort_order: i32) -> Uuid {
+    let r = post(
+        app,
+        tenant,
+        "/bss-products/v1/categories",
+        json!({"code":code,"name":format!("Name {code}"),"sort_order":sort_order}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    serde_json::from_value(body_json(r).await["id"].clone()).unwrap()
+}
+
+/// SKUs of `category` in each lifecycle named, seeded as drafts and moved there raw.
+async fn skus_in(dsn: &str, tenant: Uuid, category: Uuid, prefix: &str, lifecycles: &[&str]) {
+    use crate::test_support::{id_matches, repo_connection, seed_rest_sku};
+    use sea_orm::{ConnectionTrait, Database};
+    let (db, scope) = repo_connection(dsn, tenant).await;
+    let raw = Database::connect(dsn).await.unwrap();
+    for (n, lifecycle) in lifecycles.iter().enumerate() {
+        let s = seed_rest_sku(
+            &db.conn().unwrap(),
+            &scope,
+            tenant,
+            category,
+            &format!("{prefix}{n}"),
+        )
+        .await;
+        raw.execute_unprepared(&format!(
+            "UPDATE products_sku SET lifecycle = '{lifecycle}' WHERE {}",
+            id_matches("id", s.id)
+        ))
+        .await
+        .unwrap();
+    }
+    raw.close().await.unwrap();
+}
+
+/// `GET /categories/{id}` reads one category with its `ETag` and its `sku_count`: the SKUs that
+/// are not retired (the ones that keep it in use); another category's SKUs, a SKU without a
+/// category and another tenant's are not counted, and another tenant's category is 404.
+#[tokio::test]
+async fn a_category_reads_alone_with_its_etag_and_sku_count() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let hosting = new_category(&app, tenant, "hosting", 1).await;
+    let storage = new_category(&app, tenant, "storage", 2).await;
+    skus_in(
+        &dsn,
+        tenant,
+        hosting,
+        "H",
+        &[
+            "draft",
+            "published",
+            "deprecated",
+            "retiring",
+            "retired",
+            "retired",
+        ],
+    )
+    .await;
+    skus_in(&dsn, tenant, storage, "S", &["published"]).await;
+    let r = get(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{hosting}"),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.headers()["etag"], "\"1\"");
+    let c = body_json(r).await;
+    assert_eq!(
+        (&c["code"], &c["status"], &c["sort_order"], &c["sku_count"]),
+        (&json!("hosting"), &json!("active"), &json!(1), &json!(4)),
+        "{c}"
+    );
+    let r = get(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{storage}"),
+    )
+    .await;
+    assert_eq!(body_json(r).await["sku_count"], 1);
+    let empty = new_category(&app, tenant, "empty", 3).await;
+    let r = get(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{empty}"),
+    )
+    .await;
+    assert_eq!(body_json(r).await["sku_count"], 0);
+    for (who, id) in [(Uuid::new_v4(), hosting), (tenant, Uuid::new_v4())] {
+        let r = get(&app, who, &format!("/bss-products/v1/categories/{id}")).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+    // A retired category reads too, with no SKU keeping it (P-D-208).
+    skus_in(&dsn, tenant, empty, "E", &["retired"]).await;
+    let r = post(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{empty}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let c = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/categories/{empty}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        (&c["status"], &c["sku_count"]),
+        (&json!("retired"), &json!(0))
+    );
+}
+
+/// The codes of a list page, and the page.
+async fn codes(app: &axum::Router, tenant: Uuid, query: &str) -> (Vec<String>, serde_json::Value) {
+    let r = get(app, tenant, &format!("/bss-products/v1/categories{query}")).await;
+    assert_eq!(r.status(), StatusCode::OK, "{query}");
+    let page = body_json(r).await;
+    let codes = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["code"].as_str().unwrap().to_owned())
+        .collect();
+    (codes, page)
+}
+
+/// `GET /categories` pages on the toolkit's `OData`: by default in `sort_order`, then `code`, 200 to
+/// a page; `sort_order` orders, `status` and `is_default` filter; every item carries its
+/// `sku_count`; a cursor walks the list in the order it was cut; the list refuses what it does not
+/// take.
+#[tokio::test]
+#[allow(clippy::too_many_lines, reason = "the whole list contract")]
+async fn the_category_list_pages_in_sort_order_then_code_with_counts() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    for (code, sort_order) in [
+        ("delta", 2),
+        ("alpha", 2),
+        ("charlie", 1),
+        ("bravo", 3),
+        ("echo", 1),
+    ] {
+        new_category(&app, tenant, code, sort_order).await;
+    }
+    let r = post(
+        &app,
+        tenant,
+        "/bss-products/v1/categories",
+        json!({"code":"foxtrot","name":"Foxtrot","is_default":true,"sort_order":0}),
+    )
+    .await;
+    let foxtrot: Uuid = serde_json::from_value(body_json(r).await["id"].clone()).unwrap();
+    skus_in(
+        &dsn,
+        tenant,
+        foxtrot,
+        "F",
+        &["published", "retired", "draft"],
+    )
+    .await;
+    let order = ["foxtrot", "charlie", "echo", "alpha", "delta", "bravo"];
+    let (all, page) = codes(&app, tenant, "").await;
+    assert_eq!(all, order);
+    assert_eq!(page["page_info"]["limit"], 200, "{page}");
+    assert!(page["page_info"]["next_cursor"].is_null());
+    let counts: Vec<&serde_json::Value> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["sku_count"])
+        .collect();
+    assert_eq!(counts, [2, 0, 0, 0, 0, 0], "{page}");
+    // Walked two at a time, the cursor keeps the default order.
+    let mut walked = Vec::new();
+    let mut query = "?limit=2".to_owned();
+    loop {
+        let (codes, page) = codes(&app, tenant, &query).await;
+        walked.extend(codes);
+        let Some(next) = page["page_info"]["next_cursor"].as_str() else {
+            break;
+        };
+        query = format!("?limit=2&cursor={next}");
+    }
+    assert_eq!(walked, order);
+    assert_eq!(
+        codes(&app, tenant, "?%24orderby=sort_order%20desc,code%20desc")
+            .await
+            .0,
+        ["bravo", "delta", "alpha", "echo", "charlie", "foxtrot"]
+    );
+    // "Foxtrot" sorts before every "Name …".
+    assert_eq!(
+        codes(&app, tenant, "?%24orderby=name").await.0,
+        ["foxtrot", "alpha", "bravo", "charlie", "delta", "echo"]
+    );
+    assert_eq!(
+        codes(&app, tenant, "?%24filter=is_default%20eq%20true")
+            .await
+            .0,
+        ["foxtrot"]
+    );
+    let r = post(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{}/retire", {
+            let (_, page) = codes(&app, tenant, "?%24filter=code%20eq%20%27echo%27").await;
+            page["items"][0]["id"].as_str().unwrap().to_owned()
+        }),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(
+        codes(&app, tenant, "?%24filter=status%20eq%20%27active%27")
+            .await
+            .0,
+        ["foxtrot", "charlie", "alpha", "delta", "bravo"]
+    );
+    assert_eq!(
+        codes(&app, tenant, "?%24filter=sort_order%20ge%202")
+            .await
+            .0,
+        ["alpha", "delta", "bravo"]
+    );
+    let (_, page) = codes(&app, tenant, "?%24top=5000").await;
+    assert_eq!(page["page_info"]["limit"], 200, "`$top` is clamped at 200");
+    // A cursor cut under one filter is refused under another, or under none.
+    let (_, page) = codes(&app, tenant, "?%24filter=sort_order%20ge%201&limit=1").await;
+    let cursor = page["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for query in [
+        format!("?cursor={cursor}"),
+        format!("?%24filter=sort_order%20ge%202&cursor={cursor}"),
+    ] {
+        let r = get(&app, tenant, &format!("/bss-products/v1/categories{query}")).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{query}");
+        assert_eq!(problem_code(&body_json(r).await), "FILTER_MISMATCH");
+    }
+    for query in [
+        "?%24select=code",
+        "?%24count=true",
+        "?bogus=1",
+        "?%24orderby=status",
+        "?%24orderby=is_default",
+        "?%24filter=status%20eq%20%27gone%27",
+        "?%24filter=nope%20eq%201",
+        "?%24filter=code%20eq%20null",
+        "?limit=0",
+        "?cursor=garbage",
+    ] {
+        let r = get(&app, tenant, &format!("/bss-products/v1/categories{query}")).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+    let (other, _) = codes(&app, Uuid::new_v4(), "").await;
+    assert!(other.is_empty(), "another tenant lists none");
+}
+
+/// A door over a database whose statements are recorded, with `n` categories, each named by one
+/// published SKU.
+async fn recorded_categories(
+    n: usize,
+) -> (
+    axum::Router,
+    Uuid,
+    Uuid,
+    toolkit_db::test_support::QueryRecorder,
+) {
+    use sea_orm_migration::MigratorTrait;
+    let dsn = format!(
+        "sqlite://{}?mode=rwc",
+        std::env::temp_dir()
+            .join(format!("products-categories-{}.sqlite3", Uuid::new_v4()))
+            .display()
+    );
+    let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
+        &dsn,
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..toolkit_db::ConnectOpts::default()
+        },
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::infra::storage::migrations::Migrator::migrations(),
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(
+            crate::infra::events::OUTBOX_TABLE_PREFIX,
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let tenant = Uuid::new_v4();
+    let (app, _) = crate::test_support::rest_app_on_db(
+        tenant,
+        router,
+        crate::test_support::resolved_usage_types(),
+        "test",
+        toolkit_db::DBProvider::new(db),
+    )
+    .await;
+    let mut first = Uuid::nil();
+    for i in 0..n {
+        let id = new_category(&app, tenant, &format!("c{i:03}"), 0).await;
+        if i == 0 {
+            first = id;
+        }
+        skus_in(&dsn, tenant, id, &format!("S{i:03}-"), &["published"]).await;
+    }
+    recorder.clear();
+    (app, tenant, first, recorder)
+}
+
+/// The statements on the gear's tables one read makes, with their bind counts.
+async fn statements(
+    app: &axum::Router,
+    tenant: Uuid,
+    recorder: &toolkit_db::test_support::QueryRecorder,
+    uri: &str,
+) -> Vec<(String, usize)> {
+    recorder.clear();
+    let r = get(app, tenant, uri).await;
+    assert_eq!(r.status(), StatusCode::OK, "{uri}");
+    let page = body_json(r).await;
+    assert!(page.to_string().contains("\"sku_count\":1"), "{page}");
+    recorder
+        .events()
+        .into_iter()
+        .filter(|q| {
+            q.table
+                .as_deref()
+                .is_some_and(|t| t.starts_with("products_"))
+        })
+        .map(|q| (q.sql, q.param_count))
+        .collect()
+}
+
+/// The list and the single read count the SKUs in ONE grouped statement, the same for 10 and for
+/// 100 categories: one read of the categories and one count.
+#[tokio::test]
+async fn category_reads_count_skus_in_fixed_statements_for_10_and_100_categories() {
+    let (ten, ten_tenant, ten_first, ten_rec) = recorded_categories(10).await;
+    let (hundred, hundred_tenant, hundred_first, hundred_rec) = recorded_categories(100).await;
+    let a = statements(&ten, ten_tenant, &ten_rec, "/bss-products/v1/categories").await;
+    let b = statements(
+        &hundred,
+        hundred_tenant,
+        &hundred_rec,
+        "/bss-products/v1/categories",
+    )
+    .await;
+    for (i, (sql, binds)) in b.iter().enumerate() {
+        eprintln!("list statement {i} ({binds} binds): {sql}");
+    }
+    assert_eq!(a.len(), 2, "one page read and one grouped count: {a:#?}");
+    assert_eq!(
+        a, b,
+        "the same statements whatever the number of categories"
+    );
+    let a = statements(
+        &ten,
+        ten_tenant,
+        &ten_rec,
+        &format!("/bss-products/v1/categories/{ten_first}"),
+    )
+    .await;
+    let b = statements(
+        &hundred,
+        hundred_tenant,
+        &hundred_rec,
+        &format!("/bss-products/v1/categories/{hundred_first}"),
+    )
+    .await;
+    assert_eq!(a.len(), 2, "one read and one grouped count: {a:#?}");
+    assert_eq!(a, b);
+}

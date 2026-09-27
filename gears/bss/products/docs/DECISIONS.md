@@ -47,6 +47,7 @@
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
 | P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -687,3 +688,37 @@ so it is untouched. The gears-rust e2e reads no versions. vhp-core's e2e reads `
 (`test_products_skus.py`) and follows in phase 6.6.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation L10; plan review L10).
+
+#### P-D-215 [M] Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData
+
+The Settings screen lists the categories with how many SKUs each holds, and opens one to edit it (ask 9). The
+gear served the whole list only, with no count and no single read.
+
+- **`GET /categories/{id}`** answers one category as `ProductsCategoryItem`: the category's fields and
+  `sku_count`. The `ETag` is its version, the value the category PATCH takes as `If-Match`. A category the
+  tenant does not hold is 404.
+- **`sku_count`** counts the SKUs that are not retired and name the category: `draft`, `published`,
+  `deprecated` and `retiring`. These are the SKUs that keep a category in use (P-D-208), so an active category
+  with `sku_count` 0 may be retired. Both reads take it from ONE grouped read (`COUNT` grouped by
+  `category_id`, over the tenant's SKUs), never one count per category. Tests pin the list and the single
+  read at two statements each for 10 and for 100 categories. A category that no counted SKU names reads 0. The
+  count is an aggregate of the tenant's SKUs, served under the category read grant (`category × read`),
+  without the SKU read grant. It is the same fact the retire refusal `CATEGORY_IN_USE` already discloses to a
+  category author. The write doors (create, PATCH, retire) answer the category without the count, as before.
+- **The list** (`GET /categories`) pages on the toolkit's OData, the SKU list's pattern (P-D-210).
+  `$filter` names `id`, `code`, `name`, `status` (`active` or `retired` with `eq`, `ne` and `in`, another
+  value being 400), `is_default` and `sort_order`. `null` is refused, because no field is nullable.
+  `$orderby` names `sort_order`, `code` or `name`, and every order ends with the tie-break `id`. The default
+  order is kept: `sort_order`, then `code`. `status` and `is_default` filter only. `$top` (alias `limit`)
+  defaults to 200, a generous page for a flat list (plan review M4), and is clamped at 200. `cursor` (alias
+  `$skiptoken`) comes from `page_info`, and it carries a hash of the `$filter` it was cut under, none
+  included: a cursor replayed under another `$filter` is 400 `FILTER_MISMATCH`. Any other key, `$select`
+  and `$count` are 400. The answer is `Page<ProductsCategoryItem>`, and `CategoryList` is gone. Authorization
+  is judged first (`category × read`).
+
+Breaking: the list's envelope (`page_info`) and its page size. A tenant with more than 200 categories now
+pages, so a client that reads the list whole must follow `next_cursor`. The gears-rust e2e reads no category
+list. vhp-core's e2e reads it whole (`test_products_skus.py`, `test_products_isolation.py`) and follows in
+phase 6.6.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 9; plan review M4).

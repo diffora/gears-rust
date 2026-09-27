@@ -97,6 +97,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     let mut expected = vec![
         "bss_products.create_category",
         "bss_products.list_categories",
+        "bss_products.get_category",
         "bss_products.update_category",
         "bss_products.retire_category",
         "bss_products.create_sku",
@@ -221,6 +222,52 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
     );
     let counts = &api["paths"]["/bss-products/v1/skus/counts"]["get"];
     assert!(counts["x-odata-orderby"].is_null(), "{counts}");
+    // P-D-215: the category list publishes its vocabulary; `status` and `is_default` only filter.
+    let categories = &api["paths"]["/bss-products/v1/categories"]["get"];
+    let mut filter: Vec<&str> = categories["x-odata-filter"]["allowedFields"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    filter.sort_unstable();
+    assert_eq!(
+        filter,
+        ["code", "id", "is_default", "name", "sort_order", "status"],
+        "{categories}"
+    );
+    let mut order: Vec<&str> = categories["x-odata-orderby"]["allowedFields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    order.sort_unstable();
+    assert_eq!(
+        order,
+        [
+            "code asc",
+            "code desc",
+            "id asc",
+            "id desc",
+            "name asc",
+            "name desc",
+            "sort_order asc",
+            "sort_order desc"
+        ],
+        "{categories}"
+    );
+    // P-D-213, P-D-214: the history and the versions publish no OData vocabulary.
+    for path in [
+        "/bss-products/v1/skus/{id}/history",
+        "/bss-products/v1/skus/{id}/versions",
+        "/bss-products/v1/skus/{id}/versions/as-of",
+    ] {
+        let op = &api["paths"][path]["get"];
+        assert!(op.is_object(), "{path} is served");
+        assert!(op["x-odata-filter"].is_null(), "{path}: {op}");
+        assert!(op["x-odata-orderby"].is_null(), "{path}: {op}");
+    }
     Ok(())
 }
 

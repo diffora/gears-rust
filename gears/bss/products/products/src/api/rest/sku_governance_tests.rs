@@ -1068,8 +1068,9 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
             format!("{sku_path}/versions/as-of?date=2026-09-27"),
             "read",
         ),
+        (Method::GET, category_path.clone(), "read"),
     ];
-    assert_eq!(cases.len(), 29);
+    assert_eq!(cases.len(), 30);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;

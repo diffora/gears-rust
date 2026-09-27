@@ -205,9 +205,14 @@ pub struct CategoryPatchRequest {
     pub is_default: Option<bool>,
     pub sort_order: Option<i32>,
 }
+/// A category as its reads answer it (P-D-215): the category's fields and `sku_count`, the SKUs
+/// that are not retired naming it — the ones that keep it in use (P-D-208), so a category with
+/// `sku_count` 0 may be retired.
 #[toolkit_macros::api_dto(response)]
-pub struct CategoryList {
-    pub items: Vec<CategoryDto>,
+pub struct ProductsCategoryItem {
+    #[serde(flatten)]
+    pub category: CategoryDto,
+    pub sku_count: u64,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct SkuCard {

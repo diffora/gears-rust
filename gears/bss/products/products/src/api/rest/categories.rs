@@ -4,9 +4,11 @@
 use super::authz_error_to_canonical;
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
-    dto::{CategoryDto, CategoryList, CategoryPatchRequest, CategoryRequest},
+    dto::{CategoryDto, CategoryPatchRequest, CategoryRequest, ProductsCategoryItem},
     preconditions::{etag, if_match, if_match_param},
-    replay, repo_error_to_canonical, require_authenticated, tx_to_canonical,
+    replay, repo_error_to_canonical, require_authenticated,
+    sku_list::{RawQuery, UNSUPPORTED, cursor_hash, params, refused},
+    tx_to_canonical,
 };
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -18,7 +20,7 @@ use crate::{
     },
     infra::storage::{
         RepoError,
-        repo::{self, HeadWrite},
+        repo::{self, CategoryListField, HeadWrite, SkuListError},
     },
 };
 use authz_resolver_sdk::PolicyEnforcer;
@@ -34,9 +36,14 @@ use time::OffsetDateTime;
 use toolkit::api::{
     OpenApiRegistry,
     canonical_prelude::{CanonicalError, resource_error},
-    operation_builder::OperationBuilder,
+    odata::OData,
+    operation_builder::{OperationBuilder, OperationBuilderODataExt},
 };
 use toolkit_db::secure::{AccessScope, TxConfig};
+use toolkit_odata::{
+    Error as ODataError, Page,
+    filter::{FieldKind, FilterField},
+};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -45,7 +52,39 @@ const TAG: &str = "Categories";
 #[resource_error(gts_id!("cf.bss.products.category.v1~"))]
 struct CategoryResource;
 
-/// Register the four category operations.
+/// The fields a category list `$orderby` names: never a filter-only field (`status`,
+/// `is_default`). `id` is the tie-break every order ends with (P-D-215).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CategoryOrderField {
+    SortOrder,
+    Code,
+    Name,
+    Id,
+}
+impl CategoryOrderField {
+    const fn field(self) -> CategoryListField {
+        match self {
+            Self::SortOrder => CategoryListField::SortOrder,
+            Self::Code => CategoryListField::Code,
+            Self::Name => CategoryListField::Name,
+            Self::Id => CategoryListField::Id,
+        }
+    }
+}
+impl FilterField for CategoryOrderField {
+    const FIELDS: &'static [Self] = &[Self::SortOrder, Self::Code, Self::Name, Self::Id];
+    fn name(&self) -> &'static str {
+        self.field().name()
+    }
+    fn kind(&self) -> FieldKind {
+        self.field().kind()
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS.iter().copied().find(|f| f.name() == name)
+    }
+}
+
+/// Register the five category operations.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(CATEGORIES)
         .operation_id("bss_products.create_category")
@@ -72,17 +111,65 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::get(CATEGORIES)
         .operation_id("bss_products.list_categories")
         .summary("List categories")
+        .description(
+            "One page of the tenant's categories on the toolkit's OData (P-D-215): `$filter` over \
+             id, code, name, status (active or retired), is_default and sort_order; `$orderby` \
+             sort_order, code or name (tie-break id; default sort_order, then code); `$top` (alias \
+             `limit`; default 200, clamped at 200) and `cursor` (alias `$skiptoken`) from \
+             `page_info`. Each item carries `sku_count`, the SKUs that are not retired naming it, \
+             from one grouped count. Any other key, `$select` and `$count` are 400; a cursor \
+             replayed under another `$filter` is 400.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size, alias of $top (default 200, clamped at 200)",
+            "integer",
+        )
+        .query_param_typed(
+            "cursor",
+            false,
+            "Continuation from page_info (alias $skiptoken)",
+            "string",
+        )
         .handler(list_categories)
-        .json_response_with_schema::<CategoryList>(
+        .with_odata_filter::<CategoryListField>()
+        .with_odata_orderby::<CategoryOrderField>()
+        .json_response_with_schema::<Page<ProductsCategoryItem>>(
             openapi,
             StatusCode::OK,
-            "Categories by sort order then code.",
+            "One page of categories, by sort order then code unless ordered otherwise.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get(format!("{CATEGORIES}/{{id}}"))
+        .operation_id("bss_products.get_category")
+        .summary("Read a category")
+        .description(
+            "The category with its `ETag` (its version) and `sku_count`, the SKUs that are not \
+             retired naming it (P-D-215). 404 for a category the tenant does not hold.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Category id")
+        .handler(get_category)
+        .json_response_with_schema::<ProductsCategoryItem>(
+            openapi,
+            StatusCode::OK,
+            "The category; ETag carries its version.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -243,21 +330,102 @@ async fn create_category(
         .map_err(tx_to_canonical)?;
     Ok(created)
 }
-/// Read categories in display order.
+/// One page of the tenant's categories, each with its `sku_count` from ONE grouped count of the
+/// tenant's SKUs that are not retired (P-D-215).
+/// @cpt-cf-bss-products-fr-category-flat
 async fn list_categories(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-) -> Result<Json<CategoryList>, CanonicalError> {
+    query: RawQuery,
+    odata: Result<OData, CanonicalError>,
+) -> Result<Json<Page<ProductsCategoryItem>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // Authorization first, then the query (a 403 before a 400).
     let scope = scope(&enforcer, &ctx, false).await?;
+    params(query, &["limit", "cursor"], None)?;
+    let OData(mut odata) = odata?;
+    if odata.select.is_some() {
+        refused(&[(
+            "$select",
+            "a category is not projected; drop `$select`".to_owned(),
+            UNSUPPORTED,
+        )])?;
+    }
+    for key in &odata.order.0 {
+        if CategoryOrderField::from_name(&key.field).is_none() {
+            return Err(ODataError::InvalidOrderByField(key.field.clone()).into());
+        }
+    }
+    // The cursor carries the hash of the `$filter` it was cut under, none included.
+    let hash = cursor_hash(&serde_json::json!({ "categories": odata.filter_hash }));
+    if let Some(cursor) = &odata.cursor
+        && cursor.f.as_deref() != Some(hash.as_str())
+    {
+        return Err(ODataError::FilterMismatch.into());
+    }
+    odata.filter_hash = Some(hash);
+    let tenant = ctx.subject_tenant_id();
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
-    let items = repo::list_categories(&conn, &scope, ctx.subject_tenant_id())
+    let page = repo::page_categories(&conn, &scope, tenant, &odata)
+        .await
+        .map_err(|e| match e {
+            SkuListError::Query(e) => CanonicalError::from(e),
+            SkuListError::Repo(e) => repo_error_to_canonical(&e),
+        })?;
+    let counts = repo::count_live_skus_by_category(&conn, tenant, None)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
-    Ok(Json(CategoryList {
-        items: items.into_iter().map(Into::into).collect(),
+    Ok(Json(Page {
+        items: page
+            .items
+            .into_iter()
+            .map(|c| {
+                let sku_count = counts.get(&c.id).copied().unwrap_or(0);
+                ProductsCategoryItem {
+                    category: c.into(),
+                    sku_count,
+                }
+            })
+            .collect(),
+        page_info: page.page_info,
     }))
+}
+/// One category with its `ETag` and `sku_count` (P-D-215).
+/// @cpt-cf-bss-products-fr-category-flat
+async fn get_category(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = scope(&enforcer, &ctx, false).await?;
+    let tenant = ctx.subject_tenant_id();
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    let c = repo::find_category(&conn, &scope, tenant, id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .ok_or_else(|| {
+            CanonicalError::from(DomainError::NotFound {
+                what: "category",
+                id,
+            })
+        })?;
+    let sku_count = repo::count_live_skus_by_category(&conn, tenant, Some(id))
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .get(&id)
+        .copied()
+        .unwrap_or(0);
+    Ok((
+        [(header::ETAG, etag(InternalRevision::new(c.version)))],
+        Json(ProductsCategoryItem {
+            category: c.into(),
+            sku_count,
+        }),
+    )
+        .into_response())
 }
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
 async fn update_category(

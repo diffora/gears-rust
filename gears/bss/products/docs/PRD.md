@@ -502,7 +502,7 @@ an optional `Idempotency-Key` (spec §7.2 products row, with §2.2 amendments).
 | History | `GET /skus/{id}/history`: every act on the SKU and its approval units, oldest first, with who, when, the lifecycle it moved from and to, the unit and the note (P-D-213). |
 | Versions | `GET /skus/{id}/versions` reads every version as an array; `GET /skus/{id}/versions/as-of?date=<date>` reads the version in force (P-D-214; the spelling question of §13 is settled). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |
-| Categories | `GET /categories`, `POST /categories`, `PATCH /categories/{id}`, `POST /categories/{id}/retire`. |
+| Categories | `GET /categories` (paged, filtered and ordered on the toolkit's OData), `GET /categories/{id}`, `POST /categories`, `PATCH /categories/{id}`, `POST /categories/{id}/retire`; the reads carry `sku_count`, the SKUs that are not retired naming the category (P-D-215). |
 | Approvals | `GET /approval-units?state&kind&refId`, `GET /approval-units/{id}`, `POST /approval-units/{id}/approve`, `/reject`, `/withdraw`; approve/reject carry `generation`, reject requires a note. |
 | Approval policy | `GET /approval-policy` with a content `ETag`, `PUT /approval-policy` under `If-Match`: the tenant default quorum and its optional per-kind overrides (P-D-205). The fence TTL is a deployment setting, not a tenant one (P-D-209). |
 

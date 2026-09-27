@@ -212,7 +212,7 @@ GET versions returns the immutable history as an array; GET versions/as-of?date=
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/categories.rs`.
 
-Categories expose code, name, is_default, sort_order and active/retired status, with at most one tenant-qualified category per SKU (P-D-196: optional, no default fallback) and no hierarchy. GET/POST/PATCH use scoped reads, tenant-unique code and If-Match on patch; creation and rename are direct operations without approval units (spec §2 decision 12, §4, §7.2; DESIGN §3.1, §3.3).
+Categories expose code, name, is_default, sort_order and active/retired status, with at most one tenant-qualified category per SKU (P-D-196: optional, no default fallback) and no hierarchy. GET/POST/PATCH use scoped reads, tenant-unique code and If-Match on patch; creation and rename are direct operations without approval units (spec §2 decision 12, §4, §7.2; DESIGN §3.1, §3.3). GET categories pages on the toolkit's OData in sort_order then code, 200 to a page, and GET categories/{id} reads one with its ETag; each carries sku_count, the SKUs that are not retired naming it, from one grouped count (P-D-215).
 
 ### Referenced categories cannot retire
 

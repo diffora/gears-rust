@@ -7,11 +7,17 @@ use crate::infra::storage::{
 };
 use bss_products_sdk::models::Category;
 use sea_orm::sea_query::{Expr, ExprTrait, Query};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, FromQueryResult, Order, QuerySelect, Set};
+use std::collections::HashMap;
 use time::OffsetDateTime;
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, paginate_odata_try,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::filter::{FieldKind, FilterField, FilterOp, ODataValue};
+use toolkit_odata::{ODataOrderBy, ODataQuery, OrderKey, Page, SortDir};
 use uuid::Uuid;
 
 fn category_of(m: category::Model) -> Category {
@@ -200,6 +206,215 @@ pub async fn retire_category_if_unused(
         .await
         .map(Some)
 }
+/// The page size when the caller names none, and the most a page holds (P-D-215).
+pub const CATEGORY_PAGE: LimitCfg = LimitCfg {
+    default: 200,
+    max: 200,
+};
+
+/// Every field of the category list's pager: what a `$filter` may name and what an `$orderby`
+/// may name (the door publishes the two views).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CategoryListField {
+    Id,
+    Code,
+    Name,
+    Status,
+    IsDefault,
+    SortOrder,
+}
+impl FilterField for CategoryListField {
+    const FIELDS: &'static [Self] = &[
+        Self::Id,
+        Self::Code,
+        Self::Name,
+        Self::Status,
+        Self::IsDefault,
+        Self::SortOrder,
+    ];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Code => "code",
+            Self::Name => "name",
+            Self::Status => "status",
+            Self::IsDefault => "is_default",
+            Self::SortOrder => "sort_order",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Id => FieldKind::Uuid,
+            Self::Code | Self::Name | Self::Status => FieldKind::String,
+            Self::IsDefault => FieldKind::Bool,
+            Self::SortOrder => FieldKind::I64,
+        }
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS.iter().copied().find(|f| f.name() == name)
+    }
+}
+impl CategoryListField {
+    /// Whether the field may key an order and a cursor: `status` and `is_default` are filter-only
+    /// (two values each; an order by them says nothing a filter does not).
+    #[must_use]
+    pub const fn orderable(self) -> bool {
+        matches!(self, Self::Id | Self::Code | Self::Name | Self::SortOrder)
+    }
+}
+/// How the pager reads the category row for each field.
+pub struct CategoryListMapping;
+impl FieldToColumn<CategoryListField> for CategoryListMapping {
+    type Column = category::Column;
+    fn map_field(field: CategoryListField) -> category::Column {
+        match field {
+            CategoryListField::Id => category::Column::Id,
+            CategoryListField::Code => category::Column::Code,
+            CategoryListField::Name => category::Column::Name,
+            CategoryListField::Status => category::Column::Status,
+            CategoryListField::IsDefault => category::Column::IsDefault,
+            CategoryListField::SortOrder => category::Column::SortOrder,
+        }
+    }
+    /// No field is nullable; `status` compares (`eq`, `ne`, `in`) with `active` or `retired` only.
+    fn map_value(
+        field: CategoryListField,
+        op: FilterOp,
+        value: &ODataValue,
+    ) -> Result<ODataValue, String> {
+        if matches!(value, ODataValue::Null) {
+            return Err(format!(
+                "`{}` always has a value; it never compares with null",
+                field.name()
+            ));
+        }
+        if field == CategoryListField::Status
+            && matches!(op, FilterOp::Eq | FilterOp::Ne | FilterOp::In)
+            && !matches!(value, ODataValue::String(v) if v == "active" || v == "retired")
+        {
+            return Err(format!("unknown status: {value}"));
+        }
+        Ok(value.clone())
+    }
+    fn is_orderable(field: CategoryListField) -> bool {
+        field.orderable()
+    }
+}
+impl ODataFieldMapping<CategoryListField> for CategoryListMapping {
+    type Entity = category::Entity;
+    fn extract_cursor_value(model: &category::Model, field: CategoryListField) -> sea_orm::Value {
+        match field {
+            CategoryListField::Id => sea_orm::Value::Uuid(Some(model.id)),
+            CategoryListField::Code => sea_orm::Value::String(Some(model.code.clone())),
+            CategoryListField::Name => sea_orm::Value::String(Some(model.name.clone())),
+            CategoryListField::Status => sea_orm::Value::String(Some(model.status.clone())),
+            CategoryListField::IsDefault => sea_orm::Value::Bool(Some(model.is_default)),
+            CategoryListField::SortOrder => sea_orm::Value::Int(Some(model.sort_order)),
+        }
+    }
+}
+
+/// One page of the tenant's categories: the query's `$filter`, cursor and order — by default
+/// `sort_order`, then `code` (P-D-215) — tie-broken by `id`; `$top` defaults to 200 and is clamped
+/// there.
+/// # Errors
+/// [`super::SkuListError::Query`] for a value, order field or cursor the pager refuses;
+/// [`super::SkuListError::Repo`] for storage.
+pub async fn page_categories(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    query: &ODataQuery,
+) -> Result<Page<Category>, super::SkuListError> {
+    let mut query = query.clone();
+    if query.cursor.is_none() && query.order.0.is_empty() {
+        query.order = ODataOrderBy(
+            [CategoryListField::SortOrder, CategoryListField::Code]
+                .map(|field| OrderKey {
+                    field: field.name().to_owned(),
+                    dir: SortDir::Asc,
+                })
+                .to_vec(),
+        );
+    }
+    let select = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(category::Column::TenantId.eq(tenant)));
+    paginate_odata_try::<
+        CategoryListField,
+        CategoryListMapping,
+        category::Entity,
+        Category,
+        _,
+        RepoError,
+        _,
+    >(
+        select,
+        runner,
+        &query,
+        (CategoryListField::Id.name(), SortDir::Asc),
+        CATEGORY_PAGE,
+        |m| Ok(category_of(m)),
+    )
+    .await
+    .map_err(|e| match e {
+        // Kept as a driver failure so the retry classifier still reads the driver's message.
+        PaginateOdataTryError::OData(toolkit_odata::Error::Db(message)) => {
+            super::SkuListError::Repo(RepoError::Driver {
+                context: "list categories".into(),
+                source: sea_orm::DbErr::Custom(message),
+            })
+        }
+        PaginateOdataTryError::OData(other) => super::SkuListError::Query(other),
+        PaginateOdataTryError::MapError(e) => super::SkuListError::Repo(e),
+    })
+}
+
+#[derive(Debug, FromQueryResult)]
+struct CategoryCount {
+    category_id: Uuid,
+    n: i64,
+}
+/// How many SKUs that are not retired name each category (P-D-215) — the SKUs that keep it in use
+/// (P-D-208) — in ONE grouped read: the tenant's categories when `category` is `None`, that one
+/// otherwise. A category no such SKU names is absent from the map: its count is zero.
+/// # Errors
+/// Returns scoped storage failures; a negative count is a corrupt row.
+pub async fn count_live_skus_by_category(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+    category: Option<Uuid>,
+) -> Result<HashMap<Uuid, u64>, RepoError> {
+    let mut c = Condition::all()
+        .add(sku::Column::TenantId.eq(tenant))
+        .add(sku::Column::CategoryId.is_not_null())
+        .add(sku::Column::Lifecycle.is_in(CATEGORY_HOLDING_LIFECYCLES));
+    if let Some(id) = category {
+        c = c.add(sku::Column::CategoryId.eq(id));
+    }
+    sku::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(c)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(sku::Column::CategoryId)
+                .column_as(Expr::col((sku::Entity, sku::Column::Id)).count(), "n")
+                .group_by(sku::Column::CategoryId)
+                .into_model::<CategoryCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count category SKUs".into(), e))?
+        .into_iter()
+        .map(|row| {
+            u64::try_from(row.n)
+                .map(|n| (row.category_id, n))
+                .map_err(|_| RepoError::CorruptRow(format!("a negative count {}", row.n)))
+        })
+        .collect()
+}
+
 /// Validate the category in the caller's serializable authoring transaction.
 /// # Errors
 /// Returns `CATEGORY_RETIRED` for an inactive category, or a missing-category refusal.

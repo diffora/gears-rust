@@ -125,7 +125,8 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 | `GET /skus/{id}` | products:read; current SKU and ETag. Current applied content may be future-effective; use versions for dated truth. |
 | `GET /skus/{id}/versions` | products:read; the history, always an array, oldest first; any query key is 400 (P-D-214). |
 | `GET /skus/{id}/versions/as-of?date=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE; a missing or malformed `date` is 400 (P-D-214). |
-| `GET /categories` | products:read; scoped flat categories. |
+| `GET /categories?$filter&$orderby&$top&cursor` | products:read; one page of the tenant's categories on the toolkit's OData: `$filter` over id, code, name, status, is_default and sort_order; `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top`/`limit` 200, clamped at 200; each item with `sku_count`, from one grouped count (P-D-215). |
+| `GET /categories/{id}` | products:read; one category with its ETag and `sku_count`; 404 off the tenant (P-D-215). |
 | `POST /categories` | products:author; create directly with tenant-unique code. |
 | `PATCH /categories/{id}` | products:author; direct edit under If-Match; return the new ETag. |
 | `POST /categories/{id}/retire` | products:author; retire only while no SKU that is not retired references it, otherwise CATEGORY_IN_USE; a retired category is CATEGORY_RETIRED (P-D-208). |
