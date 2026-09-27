@@ -57,6 +57,7 @@ async fn answer_idempotency_row(
         client_key,
         response_status,
         response_body,
+        None,
     )
     .await
     .expect("answer the claimed row");
@@ -420,6 +421,75 @@ async fn an_expired_claim_bound_to_its_op_stays_in_flight_and_is_not_taken_over(
     assert_eq!(row.expires_at, at(9), "the refused retry writes nothing");
 }
 
+/// An op-bound claim answered after its deadline (the op retried past 24 hours) is kept a full
+/// retention from the answer: the next same-key retry replays the stored answer instead of taking
+/// the expired key over and starting the create again (D-429).
+#[tokio::test]
+async fn a_late_answer_to_a_bound_claim_is_retained_and_replays() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "pricing/entries",
+        "key-late",
+        b"hash-1",
+        at(1),
+        at(9),
+    )
+    .await
+    .expect("claim the key");
+    bind_op(
+        &conn,
+        &scope,
+        TENANT,
+        "pricing/entries",
+        "key-late",
+        Uuid::from_u128(0x0b_02),
+    )
+    .await
+    .expect("bind the claim to its op");
+    let answered = answer_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "pricing/entries",
+        "key-late",
+        201,
+        json!({"id": "entry-1"}),
+        Some(at(20)),
+    )
+    .await
+    .expect("the op answers past the claim's deadline");
+    assert_eq!(answered, IdempotencyAnswer::Recorded);
+
+    let retry = claim_idempotency_key(
+        &conn,
+        &scope,
+        TENANT,
+        "pricing/entries",
+        "key-late",
+        b"hash-1",
+        at(10),
+        at(22),
+    )
+    .await
+    .expect("a retry after the late answer does not error");
+    assert!(
+        matches!(
+            retry,
+            IdempotencyClaim::Answered {
+                response_status: 201,
+                ..
+            }
+        ),
+        "the retry replays the stored answer, got {retry:?}"
+    );
+}
+
 /// Two claims that both read the same expired row: exactly one wins the
 /// takeover and the other is told in flight, having executed nothing.
 ///
@@ -621,6 +691,7 @@ async fn the_answer_write_moves_the_row_to_answered_and_fills_both_response_colu
         "key-answer-1",
         201,
         json!({"productId": "p-1"}),
+        None,
     )
     .await
     .expect("answer the held claim");
@@ -729,6 +800,7 @@ async fn an_answer_write_on_a_row_that_is_not_claimed_reports_not_held_and_write
         "key-answer-3",
         201,
         json!({"productId": "p-3"}),
+        None,
     )
     .await
     .expect("answering an unclaimed key is an outcome, not a fault");
@@ -775,6 +847,7 @@ async fn an_answer_write_on_a_row_that_is_not_claimed_reports_not_held_and_write
         "key-answer-4",
         500,
         json!({"productId": "an-act-that-never-ran"}),
+        None,
     )
     .await
     .expect("a second answer is an outcome, not a fault");
@@ -834,6 +907,7 @@ async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
                     "key-answer-5",
                     201,
                     json!({"productId": "p-5"}),
+                    None,
                 )
                 .await
                 .map_err(|e| DbError::Other(anyhow::Error::msg(e.to_string())))?;

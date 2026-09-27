@@ -288,6 +288,11 @@ pub enum IdempotencyAnswer {
 /// Answer idempotency key.
 /// # Errors
 /// Returns scoped storage failures, preserving database errors for retry.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the composite key is three columns and the answer needs the status, the body and \
+              the late answer's retention beside them, like the claim above"
+)]
 pub async fn answer_idempotency_key(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -296,14 +301,21 @@ pub async fn answer_idempotency_key(
     client_key: &str,
     response_status: i32,
     response_body: JsonValue,
+    retain_until: Option<OffsetDateTime>,
 ) -> Result<IdempotencyAnswer, RepoError> {
-    let result = idempotency::Entity::update_many()
+    let mut update = idempotency::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
             idempotency::Column::State,
             Expr::value("answered".to_owned()),
-        )
+        );
+    // A durable op may answer long after its claim; its answer is kept a full retention from the
+    // answer, or the next same-key retry would find the row expired and take the key over (D-429).
+    if let Some(retain_until) = retain_until {
+        update = update.col_expr(idempotency::Column::ExpiresAt, Expr::value(retain_until));
+    }
+    let result = update
         .col_expr(
             idempotency::Column::ResponseStatus,
             Expr::value(Some(response_status)),

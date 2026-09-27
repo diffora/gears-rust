@@ -798,6 +798,7 @@ async fn idempotency_lookup_and_release_contract() {
         "k",
         201,
         serde_json::json!({"id":"receipt"}),
+        None,
     )
     .await
     .unwrap();

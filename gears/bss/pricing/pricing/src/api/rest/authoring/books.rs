@@ -122,8 +122,17 @@ pub async fn create(
     let model = book_repo::insert(tx, scope, model).await?;
     audit(tx, ctx, correlation, "price_book.create", model.id, 1).await?;
     let body = value(&PriceBookDto::from(model))?;
-    if idem::answer_idempotency_key(tx, &receipt_scope, tenant, endpoint, key, 201, body.clone())
-        .await?
+    if idem::answer_idempotency_key(
+        tx,
+        &receipt_scope,
+        tenant,
+        endpoint,
+        key,
+        201,
+        body.clone(),
+        None,
+    )
+    .await?
         != idem::IdempotencyAnswer::Recorded
     {
         return Err(CanonicalError::internal("idempotency claim lost")

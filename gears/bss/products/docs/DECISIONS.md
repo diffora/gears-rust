@@ -323,8 +323,9 @@ mismatch, since its transaction never compared the two: it read the expired hold
 winner's. Apart from that loser, a matching live `claimed` row is `IDEMPOTENCY_KEY_IN_FLIGHT`, and a digest
 mismatch is `IDEMPOTENCY_CONFLICT` in either state. The retention is `idempotency_retention_hours` (default
 24), clamped to at least 24 hours and at most ten years. `entity_ref` is carried in the DDL and always NULL:
-no products door binds an op. Pricing runs the same store (pricing D-429), with one difference: pricing binds
-POST entry's and POST plan item's claim to its durable reference op, and never takes over a bound claim.
+no products door binds an op. Pricing runs the same store (pricing D-429), with two differences: pricing binds
+POST entry's and POST plan item's claim to its durable reference op, never takes over a bound claim and keeps
+the op's late answer 24 hours from the answer; and pricing's retention is a fixed 24 hours.
 
 **Source:** Carried from P-D-29, P-D-30, P-D-38, P-D-42, P-D-49 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
 

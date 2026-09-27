@@ -463,6 +463,9 @@ async fn answer_key(
         key,
         i32::from(receipt.status),
         support::value(receipt)?,
+        // A durable op may answer long after its claim: the answer is kept a full retention from
+        // now, or the next same-key retry would find it expired and take the key over (D-429).
+        Some(OffsetDateTime::now_utc() + time::Duration::hours(24)),
     )
     .await?
         != idem::IdempotencyAnswer::Recorded
