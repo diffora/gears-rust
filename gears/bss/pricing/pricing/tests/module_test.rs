@@ -54,6 +54,7 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/prices/{id}"),
         ("GET", "/bss-pricing/v1/price-book-entries"),
         ("GET", "/bss-pricing/v1/plan-items/{id}"),
+        ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -71,6 +72,7 @@ fn if_match_routes() -> Routes {
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
         ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
+        ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -111,7 +113,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 46);
+    assert_eq!(registered.len(), 47);
     assert!(router.has_routes());
 }
 
@@ -170,7 +172,7 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 10),
+        ("preconditions::if_match(", 1, 11),
         ("preconditions::idempotency_key(", 1, 13),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
@@ -178,10 +180,10 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // item and checks doors (four registrations, the item PATCH and the checks answer); + 2:
         // the revision submit door (its registration and its 201 answer); + 2: the clone door
         // (its registration and its 201 answer); + 2: the resolve door (its registration and its
-        // 200 answer); + 2: the pinned price read (its registration and its 200 answer); + 4: run
-        // 6.4's two doors (D-434) — the SKU's entries and the plan item read, each registration and
-        // each 200 answer.
-        ("StatusCode::", 2, 92),
+        // 200 answer); + 2: the pinned price read (its registration and its 200 answer); + 6: run
+        // 6.4's three doors (D-434, D-435) — the SKU's entries, the plan item read and the policy
+        // reset, each registration and each 200 answer.
+        ("StatusCode::", 2, 94),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -262,7 +264,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 46);
+    assert_eq!(described, 47);
 }
 
 /// Every read that answers an `ETag` declares the header on its 200 response, and nothing else
@@ -381,6 +383,7 @@ async fn no_operation_declares_a_422() {
 // GET /resolve plan:read false false
 // GET /prices/{id} price:read false false
 
-// Run 6.4 (D-434): method | path | resource:action | If-Match | Idempotency-Key
+// Run 6.4 (D-434 and D-435): method | path | resource:action | If-Match | Idempotency-Key
 // GET /price-book-entries price_book_entry:read false false
 // GET /plan-items/{id} plan:read false false
+// DELETE /approval-policy/{kind} config:settings true false

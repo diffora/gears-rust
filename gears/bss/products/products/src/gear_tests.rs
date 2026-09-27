@@ -121,6 +121,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.withdraw_unit",
         "bss_products.get_approval_policy",
         "bss_products.put_approval_policy",
+        "bss_products.delete_approval_policy_override",
         "bss_products.reserve_reference",
         "bss_products.confirm_reference",
         "bss_products.release_reference",

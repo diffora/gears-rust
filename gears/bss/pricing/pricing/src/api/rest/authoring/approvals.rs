@@ -900,6 +900,45 @@ pub async fn get_policy(
         Some(tag),
     )?)
 }
+/// `DELETE /approval-policy/{kind}` (D-435): remove one kind's override at the policy the caller
+/// read, so the kind follows the default again; answers the policy and its new tag. The default
+/// (`*`) is never deleted: a tenant always has a quorum to fall back to.
+/// # Errors
+/// 400 `POLICY_DEFAULT_REQUIRED` or `POLICY_KIND_INVALID`; 409 `STALE_REVISION`; 404 when the
+/// kind has no override.
+pub async fn reset_policy(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    version: u64,
+    kind: &str,
+) -> Result<Response, DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    if kind == "*" {
+        return Err(support::invalid("kind", "POLICY_DEFAULT_REQUIRED").into());
+    }
+    if Kind::parse(kind).is_none() {
+        return Err(support::invalid("kind", "POLICY_KIND_INVALID").into());
+    }
+    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    if policy_tag(&policy)? != version {
+        return Err(support::conflict("STALE_REVISION").into());
+    }
+    if !policy.overrides.contains_key(kind)
+        || approval_repo::delete_policy(tx, scope, tenant, kind).await? == 0
+    {
+        return Err(support::missing_what("approval_policy_override").into());
+    }
+    support::audit(tx, ctx, correlation, "approval_policy.reset", tenant, 0).await?;
+    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    let tag = policy_tag(&policy)?;
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingApprovalPolicyDto::from(policy),
+        Some(tag),
+    )?)
+}
 /// `PUT /approval-policy`: set the default (`*`) or one kind's quorum (`prices`,
 /// `plan_revision`) under If-Match.
 /// # Errors

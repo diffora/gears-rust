@@ -1049,6 +1049,11 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         (Method::GET, "/approval-policy".into(), "settings"),
         (Method::PUT, "/approval-policy".into(), "settings"),
         (
+            Method::DELETE,
+            "/approval-policy/sku_publish".into(),
+            "settings",
+        ),
+        (
             Method::POST,
             format!("{sku_path}/references/reserve"),
             "reference",
@@ -1070,7 +1075,7 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         ),
         (Method::GET, category_path.clone(), "read"),
     ];
-    assert_eq!(cases.len(), 30);
+    assert_eq!(cases.len(), 31);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;

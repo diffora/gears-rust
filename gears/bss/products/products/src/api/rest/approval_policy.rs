@@ -25,15 +25,19 @@ use crate::{
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Json, Router,
-    extract::rejection::JsonRejection,
+    extract::{Path, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use std::sync::Arc;
 use toolkit::api::{
-    OpenApiRegistry, canonical_prelude::CanonicalError, operation_builder::OperationBuilder,
+    OpenApiRegistry,
+    canonical_prelude::{CanonicalError, resource_error},
+    operation_builder::OperationBuilder,
 };
 use toolkit_security::SecurityContext;
+#[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
+struct PolicyResource;
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::get("/bss-products/v1/approval-policy")
         .operation_id("bss_products.get_approval_policy")
@@ -54,7 +58,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(Router::new(), openapi);
-    OperationBuilder::put("/bss-products/v1/approval-policy")
+    let router = OperationBuilder::put("/bss-products/v1/approval-policy")
         .operation_id("bss_products.put_approval_policy")
         .summary("Set approval policy")
         .description(
@@ -74,6 +78,36 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::delete("/bss-products/v1/approval-policy/{kind}")
+        .operation_id("bss_products.delete_approval_policy_override")
+        .summary("Reset a kind's quorum to the default")
+        .description(
+            "Removes one kind's override (sku_publish, sku_change, sku_retire) at the policy the \
+             caller read (If-Match), so the kind follows the default quorum again (P-D-216); \
+             answers the policy with its new ETag. Refusals: 403 without products settings, \
+             judged first; 400 for a missing or malformed If-Match, POLICY_DEFAULT_REQUIRED for \
+             the default (*), which is never deleted, or an unknown kind; 404 when the kind has \
+             no override; 409 STALE_REVISION.",
+        )
+        .tag("Approval policy")
+        .authenticated()
+        .no_license_required()
+        .path_param(
+            "kind",
+            "Approval kind: sku_publish, sku_change or sku_retire",
+        )
+        .param(if_match_param())
+        .handler(delete)
+        .json_response_with_schema::<ApprovalPolicyDto>(openapi, StatusCode::OK, "Policy")
+        .response_header(etag_header())
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
@@ -173,6 +207,91 @@ async fn put(
         .await
         .map_err(tx_to_canonical)?;
     answer(ApprovalPolicyDto::from(policy))
+}
+/// P-D-216: `DELETE /approval-policy/{kind}` removes one kind's override at the policy the caller
+/// read, so the kind follows the default again. The default (`*`) is never deleted: a tenant always
+/// has a quorum to fall back to. Authorization first, then the precondition, then the kind.
+async fn delete(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(kind): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = g::scope(&enforcer, &ctx, actions::SETTINGS, true).await?;
+    let expected = if_match_content(&headers)?;
+    if kind == "*" {
+        let mut report = crate::domain::validation::ValidationReport::new();
+        report.violate(
+            "POLICY_DEFAULT_REQUIRED",
+            "kind",
+            "the default quorum is never deleted; set it with PUT /approval-policy",
+        );
+        return Err(DomainError::Validation(report).into());
+    }
+    if !matches!(
+        kind.as_str(),
+        KIND_SKU_PUBLISH | KIND_SKU_CHANGE | KIND_SKU_RETIRE
+    ) {
+        return Err(g::validation("kind", "unknown kind").into());
+    }
+    let reset_kind = kind.clone();
+    let policy = state
+        .db
+        .db()
+        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
+            let scope = scope.clone();
+            let ctx = ctx.clone();
+            let kind = reset_kind.clone();
+            Box::pin(async move {
+                let tenant = ctx.subject_tenant_id();
+                let current = repo::read_policy(tx, &scope, tenant)
+                    .await
+                    .map_err(TxError::Repo)?;
+                let tag = policy_tag(&ApprovalPolicyDto::from(current.clone()))
+                    .map_err(|_| TxError::Repo(RepoError::Db("the policy's content tag".into())))?;
+                if tag != expected {
+                    return Err(stale_tag());
+                }
+                if !current.overrides.contains_key(&kind)
+                    || repo::delete_policy(tx, &scope, tenant, &kind)
+                        .await
+                        .map_err(TxError::Repo)?
+                        == 0
+                {
+                    return Ok(None);
+                }
+                g::audit(
+                    tx,
+                    &scope,
+                    &ctx,
+                    "approval_policy.reset",
+                    "approval_policy",
+                    tenant,
+                    None,
+                    time::OffsetDateTime::now_utc(),
+                    repo::LifecycleMove::NONE,
+                )
+                .await?;
+                repo::read_policy(tx, &scope, tenant)
+                    .await
+                    .map(Some)
+                    .map_err(TxError::Repo)
+            })
+        })
+        .await
+        .map_err(tx_to_canonical)?;
+    policy.map_or_else(
+        || {
+            Err(
+                PolicyResource::not_found(format!("the tenant has no {kind} override"))
+                    .with_resource(kind.clone())
+                    .create(),
+            )
+        },
+        |p| answer(ApprovalPolicyDto::from(p)),
+    )
 }
 /// The policy changed since the caller's read.
 fn stale_tag() -> TxError {

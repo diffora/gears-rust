@@ -158,6 +158,7 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 | `POST /approval-units/{id}/reject` | products:approve; generation and note required; one rejection closes the unit. |
 | `POST /approval-units/{id}/withdraw` | products:submit plus submitter identity; pending only. |
 | `GET /approval-policy`, `PUT /approval-policy` | products:settings for both reads and writes; direct tenant default/per-kind quorum management. The GET answers a strong content `ETag`; the PUT requires it as `If-Match` (missing or malformed 400, stale 409 STALE_REVISION), authorization first (P-D-205). |
+| `DELETE /approval-policy/{kind}` | products:settings; removes one kind's override under the policy's `If-Match`, so the kind follows the default again; the default (`*`) is 400 POLICY_DEFAULT_REQUIRED, a kind without an override 404, a stale tag 409 STALE_REVISION; authorization first (P-D-216). |
 | `DELETE /skus/{id}` | products:author; a never-published draft only, by its author (403 NOT_DRAFT_AUTHOR), If-Match; 204 with an audit row; SKU_NOT_DRAFT, ROW_LOCKED_PENDING, SKU_REFERENCED (409). A draft is deleted, never retired (P-D-206). |
 
 Submit validation failure returns 400 with its code and no new unit (never 422, pricing D-403). Conflicts include ROW_LOCKED_PENDING,

@@ -619,6 +619,29 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::delete("/bss-pricing/v1/approval-policy/{kind}")
+        .operation_id("bss_pricing.delete_approval_policy_override")
+        .summary("Reset a kind's quorum to the default")
+        .description(
+            "Removes one kind's override (prices, plan_revision) at the policy the caller read \
+             (If-Match), so the kind follows the default quorum again (D-435); answers the policy \
+             with its new ETag. Refusals: 400 POLICY_DEFAULT_REQUIRED for the default (*), which \
+             is never deleted, or POLICY_KIND_INVALID; 404 when the kind has no override; 409 \
+             STALE_REVISION.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("kind", "Approval kind: prices or plan_revision")
+        .param(header("If-Match"))
+        .handler(delete_approval_policy)
+        .json_response_with_schema::<dto::PricingApprovalPolicyDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .register(router, openapi);
     OperationBuilder::put("/bss-pricing/v1/approval-policy")
         .operation_id("bss_pricing.put_approval_policy")
         .summary("Set an approval quorum")
@@ -1003,6 +1026,35 @@ async fn put_approval_policy(
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
         Box::pin(async move {
             approvals::put_policy(tx, &scope, &ctx, correlation, version, input).await
+        })
+    })
+    .await
+}
+async fn delete_approval_policy(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(kind): Path<String>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::CONFIG,
+        actions::SETTINGS,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, kind) = (scope.clone(), ctx.clone(), kind.clone());
+        Box::pin(async move {
+            approvals::reset_policy(tx, &scope, &ctx, correlation, version, &kind).await
         })
     })
     .await

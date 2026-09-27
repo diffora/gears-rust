@@ -48,6 +48,7 @@
 | P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -722,3 +723,20 @@ list. vhp-core's e2e reads it whole (`test_products_skus.py`, `test_products_iso
 phase 6.6.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 9; plan review M4).
+
+#### P-D-216 [M] An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435)
+
+The PUT sets an override for `sku_publish`, `sku_change` or `sku_retire`, but nothing removed one, so a kind
+once overridden never followed the default again (ask 11b). `DELETE /approval-policy/{kind}` (`products:settings`)
+removes the kind's override at the policy the caller read: `If-Match` carries the policy's content tag
+(P-D-205). The kind then follows the default quorum again, and the answer is the policy with its new `ETag`, as
+the PUT answers. The path names the default as `*` (percent-encoded or not), as the PUT's body does. The
+default is never deleted (400 `POLICY_DEFAULT_REQUIRED`): a tenant always has a quorum to fall back to, and a
+tenant that never stored one follows quorum one. The PUT changes the default and nothing removes it. The
+refusals are judged in this order: 403 without `products:settings`, before any precondition; 400 for a missing
+or malformed `If-Match`; 400 `POLICY_DEFAULT_REQUIRED`, or `VALIDATION` for an unknown kind, as the PUT
+refuses one; 409 `STALE_REVISION`; 404 when the kind has no override. The comparison and the removal run in
+one transaction. A reset writes one audit row, `approval_policy.reset`. A unit already submitted keeps the
+quorum it copied (P-D-190). Pricing has the same door for its kinds (D-435).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11b; plan review L8).

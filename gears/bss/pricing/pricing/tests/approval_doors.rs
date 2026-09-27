@@ -1358,3 +1358,168 @@ async fn an_entry_delete_honours_each_drafts_author() {
     );
     assert_eq!(g.f.call("GET", &path, json!({}), None, None).await.0, 404);
 }
+
+/// D-435: `DELETE /approval-policy/{kind}` removes a kind's override so the kind follows the
+/// default again, at the policy the caller read (If-Match). The default cannot be deleted; a kind
+/// without an override is 404; authorization is judged before the precondition.
+#[tokio::test]
+async fn an_override_is_reset_to_the_default_under_if_match() {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let read = || async {
+        f.call("GET", "/approval-policy", json!({}), None, None)
+            .await
+    };
+    let (_, _, tag) = read().await;
+    let saved = f
+        .call(
+            "PUT",
+            "/approval-policy",
+            json!({"kind":"prices","quorum":2}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(saved.0, 200, "{saved:?}");
+    let (_, _, tag) = read().await;
+    // 403 first: a caller without config settings, no If-Match.
+    let (s, _, _) = entry_support::request(
+        &f.denied,
+        &f.ctx,
+        "DELETE",
+        "/approval-policy/prices",
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 403);
+    let read_only = SecurityContext::builder()
+        .subject_id(Uuid::new_v4())
+        .subject_tenant_id(f.ctx.subject_tenant_id())
+        .subject_type("config:read")
+        .build()
+        .unwrap();
+    let (s, _, _) = f
+        .call_as(
+            &read_only,
+            "DELETE",
+            "/approval-policy/prices",
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 403, "config read does not reset");
+    // If-Match is required.
+    let (s, b, _) = f
+        .call("DELETE", "/approval-policy/prices", json!({}), None, None)
+        .await;
+    assert_eq!(s, 400, "{b}");
+    // Probed in run 6.4: the default is never deleted.
+    for default in ["*", "%2A"] {
+        let (s, b, _) = f
+            .call(
+                "DELETE",
+                &format!("/approval-policy/{default}"),
+                json!({}),
+                Some(&tag),
+                None,
+            )
+            .await;
+        assert_eq!(s, 400, "{default}: {b}");
+        assert!(code(&b).contains("POLICY_DEFAULT_REQUIRED"), "{b}");
+    }
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            "/approval-policy/promotion",
+            json!({}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(code(&b).contains("POLICY_KIND_INVALID"), "{b}");
+    // A kind without an override.
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            "/approval-policy/plan_revision",
+            json!({}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 404, "{b}");
+    // A stale tag.
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            "/approval-policy/prices",
+            json!({}),
+            Some("\"7\""),
+            None,
+        )
+        .await;
+    assert_eq!(s, 409, "{b}");
+    assert!(code(&b).contains("STALE_REVISION"), "{b}");
+    assert_eq!(
+        read().await.1["overrides"],
+        json!({"prices":2}),
+        "nothing changed"
+    );
+    // The reset answers the policy the kind now follows, with its new tag.
+    let (s, b, reset_tag) = f
+        .call(
+            "DELETE",
+            "/approval-policy/prices",
+            json!({}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b, json!({"default_quorum":1,"overrides":{}}));
+    let (_, now, now_tag) = read().await;
+    assert_eq!((now, now_tag.clone()), (b, reset_tag));
+    assert_ne!(now_tag, tag);
+    // Twice: the old tag is stale; the new one finds no override.
+    let (s, _, _) = f
+        .call(
+            "DELETE",
+            "/approval-policy/prices",
+            json!({}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 409);
+    let (s, _, _) = f
+        .call(
+            "DELETE",
+            "/approval-policy/prices",
+            json!({}),
+            Some(&now_tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 404);
+    // One audit row for the reset, on the tenant.
+    let rows = Database::connect(&f.dsn)
+        .await
+        .unwrap()
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT action FROM pricing_audit WHERE action LIKE 'approval_policy.%' \
+             ORDER BY written_at, action"
+                .to_owned(),
+        ))
+        .await
+        .unwrap();
+    let actions: Vec<String> = rows
+        .iter()
+        .map(|r| r.try_get::<String>("", "action").unwrap())
+        .collect();
+    assert_eq!(actions, ["approval_policy.write", "approval_policy.reset"]);
+}

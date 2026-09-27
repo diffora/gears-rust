@@ -271,7 +271,7 @@ Every existing-unit mutation, including decisions, refresh and withdrawal, condi
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/approval_policy.rs`.
 
-Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly with SETTINGS required for both reading and writing; the GET answers a content ETag the PUT requires as If-Match (P-D-205). Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
+Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly with SETTINGS required for both reading and writing; the GET answers a content ETag the PUT requires as If-Match (P-D-205); DELETE approval-policy/{kind} resets one kind's override to the default under the same If-Match, and the default is never deleted (P-D-216). Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
 
 ### All terminal paths record audit and decision event
 
