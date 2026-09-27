@@ -57,8 +57,9 @@
 //! the moment a call writes two records. So the value is established **once**,
 //! before any handler runs; a handler takes it with [`require_correlation`] and
 //! passes the raw `Uuid` to every writer (`support::audit(…, correlation, …)`).
-//! A rereserve op, which no request begins, mints its own when it is created,
-//! and the rows it writes carry that id (D-431).
+//! A rereserve op mints its own when it is created — the ticker or a Tx C starts
+//! it, even a Tx C a door drives inside a request — and the rows it writes carry
+//! that id (D-431).
 //!
 //! [`require_correlation`] therefore refuses to mint. A route reachable without
 //! this layer is a **wiring defect** — the authoring router applies

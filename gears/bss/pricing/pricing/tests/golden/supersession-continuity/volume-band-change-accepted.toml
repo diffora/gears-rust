@@ -23,9 +23,9 @@ provenance = ["inst-tb-supersession-units (backup)", "inst-mk-chargekind (backup
 # flip mid-window would do, which the entry key rules out (D-390), and it is the reason a
 # reader could conclude that a `volume` row must be frozen once published.
 #
-# It is not. The pair guard (D-402) draws the line at what the counter is **denominated in, derived
-# from and priced by** - the meter, the dimension, the billable unit, the window
-# and the formula - and a band set is none of those: it is the price. A guard
+# It is not. The chain guard (D-402) compares only the package size and the SKU's metering
+# (unit, usage_type_ref) in force at each price's start, and a band set is
+# neither: it is the price. A guard
 # that read "re-prices the accumulated Q" as its test would have caught this row,
 # and would have left the catalog unable to reprice a volume ladder without a
 # plan revision.
