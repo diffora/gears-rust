@@ -17,7 +17,9 @@ the SKU list carry pricing's ``usage`` through the port pricing registers in the
 (P-D-196).
 
 Phase 6: products' policy is written under If-Match (P-D-205), a never-published draft is
-deleted (P-D-206), and the usage-type picker is products' own route (P-D-207).
+deleted (P-D-206), and the usage-type picker is products' own route (P-D-207). A SKU's history
+reads the lifecycle moves its audit rows carry since migration 000008 (P-D-213), the version in
+force has its own path (P-D-214), and a category reads alone with its SKU count (P-D-215).
 """
 
 import datetime
@@ -863,3 +865,88 @@ def test_a_never_published_draft_is_deleted_and_the_picker_is_served(api):
         assert page["source"] == "usage_collector", page
         assert isinstance(page["items"], list), page
         assert "next_cursor" in page["page_info"], page
+
+
+@pytest.mark.timeout(60)
+def test_a_skus_history_its_version_in_force_and_its_category_read(api):
+    """P-D-213, P-D-214 and P-D-215 on the real binary, whose chain ran migration 000008.
+
+    A SKU published at quorum 0 reads its history oldest first with each act's lifecycle move and
+    unit, walked one entry at a time across the submit and apply that share an instant; its
+    versions are an array and the version in force has its own path; its category reads alone
+    with an ETag and a SKU count, and the category list pages on OData.
+    """
+    run = uuid.uuid4().hex[:8]
+    _products_quorum_zero(api)
+    r = api.post(
+        f"{PRODUCTS}/categories",
+        json={"code": f"e2e-hist-{run}", "name": f"E2E history {run}", "sort_order": 7},
+    )
+    assert r.status_code == 201, r.text
+    category = r.json()["id"]
+    r = api.post(
+        f"{PRODUCTS}/skus",
+        json={
+            "code": f"E2E-HIST-{run}",
+            "name": f"E2E history {run}",
+            "type": "recurring",
+            "category_id": category,
+        },
+    )
+    assert r.status_code == 201, r.text
+    sku = r.json()["id"]
+    r = api.post(f"{PRODUCTS}/skus/{sku}/submit", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["applied"] is True, r.text
+    unit = r.json()["unit"]["id"]
+
+    r = api.get(f"{PRODUCTS}/skus/{sku}/history")
+    assert r.status_code == 200, r.text
+    entries = r.json()["items"]
+    assert [
+        (e["action"], e["from_lifecycle"], e["to_lifecycle"], e["unit_id"], e["unit_kind"])
+        for e in entries
+    ] == [
+        ("sku.create", None, "draft", None, None),
+        ("approval.submit", "draft", "draft", unit, "sku_publish"),
+        ("approval.applied", "draft", "published", unit, "sku_publish"),
+    ], r.text
+    assert entries[1]["at"] == entries[2]["at"], r.text
+    walked, cursor = [], None
+    while True:
+        params = {"limit": 1} if cursor is None else {"limit": 1, "cursor": cursor}
+        r = api.get(f"{PRODUCTS}/skus/{sku}/history", params=params)
+        assert r.status_code == 200, r.text
+        walked.extend(r.json()["items"])
+        cursor = r.json()["page_info"]["next_cursor"]
+        if cursor is None:
+            break
+    assert walked == entries, walked
+    r = api.get(f"{PRODUCTS}/skus/{sku}/history", params={"$orderby": "at desc"})
+    assert r.status_code == 400, r.text
+
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    r = api.get(f"{PRODUCTS}/skus/{sku}/versions")
+    assert r.status_code == 200, r.text
+    assert [v["published_version"] for v in r.json()] == [1], r.text
+    r = api.get(f"{PRODUCTS}/skus/{sku}/versions", params={"as_of": today.isoformat()})
+    assert r.status_code == 400, r.text
+    r = api.get(f"{PRODUCTS}/skus/{sku}/versions/as-of", params={"date": today.isoformat()})
+    assert r.status_code == 200, r.text
+    assert r.json()["published_version"] == 1, r.text
+    before = (today - datetime.timedelta(days=1)).isoformat()
+    r = api.get(f"{PRODUCTS}/skus/{sku}/versions/as-of", params={"date": before})
+    assert r.status_code == 404, r.text
+    assert "NO_VERSION_IN_FORCE" in r.text, r.text
+
+    r = api.get(f"{PRODUCTS}/categories/{category}")
+    assert r.status_code == 200, r.text
+    assert r.headers["etag"] == '"1"', r.headers
+    assert (r.json()["code"], r.json()["sku_count"]) == (f"e2e-hist-{run}", 1), r.text
+    r = api.get(
+        f"{PRODUCTS}/categories", params={"$filter": f"code eq 'e2e-hist-{run}'"}
+    )
+    assert r.status_code == 200, r.text
+    assert [(c["id"], c["sku_count"]) for c in r.json()["items"]] == [(category, 1)], r.text
+    assert r.json()["page_info"]["limit"] == 200, r.text
+
