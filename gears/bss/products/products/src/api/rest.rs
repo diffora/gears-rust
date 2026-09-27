@@ -20,6 +20,7 @@ pub mod preconditions;
 pub mod references;
 mod replay;
 pub mod sku_governance;
+pub mod sku_history;
 pub mod sku_list;
 pub mod skus;
 mod usage;

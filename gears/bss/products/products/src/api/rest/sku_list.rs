@@ -56,10 +56,10 @@ const TAG: &str = "SKUs";
 struct SkuResource;
 
 /// The reason every refused query key carries: the toolkit extractor's own for a `$` option.
-const UNSUPPORTED: &str = "UNSUPPORTED_QUERY_PARAM";
+pub(super) const UNSUPPORTED: &str = "UNSUPPORTED_QUERY_PARAM";
 
 /// The query string as its raw pairs, in wire order (so every key is seen, repeats included).
-type RawQuery = Result<Query<Vec<(String, String)>>, QueryRejection>;
+pub(super) type RawQuery = Result<Query<Vec<(String, String)>>, QueryRejection>;
 
 /// The fields a list or count `$filter` names: the pager's fields without `updated_at`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -269,7 +269,7 @@ async fn read_scope(
 }
 
 /// A 400 naming each offending key.
-fn refused(keys: &[(&str, String, &'static str)]) -> Result<(), CanonicalError> {
+pub(super) fn refused(keys: &[(&str, String, &'static str)]) -> Result<(), CanonicalError> {
     let mut keys = keys.iter();
     let Some((key, detail, reason)) = keys.next() else {
         return Ok(());
@@ -303,8 +303,8 @@ const LIST_OPTIONS: &[&str] = &["$filter", "$orderby", "$top", "$skiptoken"];
 /// `dollar` is given — the only `$` options it takes (otherwise the extractor polices them).
 /// The rest is 400, every offender at once (a products copy of ledger's
 /// `reject_non_odata_list_params_allowing`). A plain key given twice is 400. An empty `q` is no
-/// search.
-fn params(
+/// search. The SKU history and the category list reuse it (P-D-213, P-D-215).
+pub(super) fn params(
     query: RawQuery,
     plain: &[&str],
     dollar: Option<&[&str]>,
@@ -397,13 +397,18 @@ fn checked_filter(filter: Option<&Expr>) -> Result<Option<sea_orm::Condition>, C
 /// The cursor's filter hash over everything that narrows the list: the extractor's hash of
 /// `$filter`, `q`, `priced` and `in_plan`.
 fn list_hash(odata: &ODataQuery, params: &ListParams) -> String {
-    let rendering = canonical_rendering(&serde_json::json!({
+    cursor_hash(&serde_json::json!({
         "filter": odata.filter_hash,
         "q": params.q,
         "priced": params.priced,
         "in_plan": params.in_plan,
-    }));
-    content_digest(&rendering)
+    }))
+}
+
+/// A cursor's filter hash over `narrowing`: the first 8 bytes of the SHA-256 of its canonical
+/// rendering, as hex. A cursor replayed under another narrowing is 400 `FILTER_MISMATCH`.
+pub(super) fn cursor_hash(narrowing: &serde_json::Value) -> String {
+    content_digest(&canonical_rendering(narrowing))
         .iter()
         .take(8)
         .fold(String::with_capacity(16), |mut hex, b| {

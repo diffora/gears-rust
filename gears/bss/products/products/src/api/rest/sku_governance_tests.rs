@@ -1062,8 +1062,9 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         (Method::DELETE, sku_path.clone(), "author"),
         (Method::GET, "/usage-types".into(), "author"),
         (Method::GET, "/skus/counts".into(), "read"),
+        (Method::GET, format!("{sku_path}/history"), "read"),
     ];
-    assert_eq!(cases.len(), 27);
+    assert_eq!(cases.len(), 28);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;

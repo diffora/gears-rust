@@ -498,6 +498,7 @@ an optional `Idempotency-Key` (spec §7.2 products row, with §2.2 amendments).
 | Usage-type picker | `GET /usage-types?q&kind&limit&cursor`, the catalog the publish gate resolves against, read as the caller (P-D-207). |
 | SKU reads | `GET /skus` on the toolkit's OData (`$filter`, `$orderby`, `$top`/`limit`, `cursor`) with `q`, `priced` and `in_plan`, `GET /skus/counts`, `GET /skus/{id}`; list/search by code, name, category (or none), type, lifecycle, in-review and pricing's usage (P-D-210, P-D-211, P-D-212); each SKU carries pricing's `usage` or `null` (P-D-197). |
 | Lifecycle | `POST /skus/{id}/submit`, `POST /skus/{id}/retire`, `POST /skus/{id}/unfence`. |
+| History | `GET /skus/{id}/history`: every act on the SKU and its approval units, oldest first, with who, when, the lifecycle it moved from and to, the unit and the note (P-D-213). |
 | Versions | `GET /skus/{id}/versions?asOf=<date>` reads the version in force; spec §7.2 spells the parameter `as_of`, while §2.2 and §4 spell it `asOf` (see §13). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |
 | Categories | `GET /categories`, `POST /categories`, `PATCH /categories/{id}`, `POST /categories/{id}/retire`. |

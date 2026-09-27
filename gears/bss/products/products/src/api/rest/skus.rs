@@ -212,6 +212,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    // The SKU's history (P-D-213).
+    let router = super::sku_history::register(router, openapi);
     let router = OperationBuilder::get(format!("{SKUS}/{{id}}/references"))
         .operation_id("bss_products.sku_references")
         .summary("Read reference details and optional released history")

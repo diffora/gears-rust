@@ -107,6 +107,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.delete_sku_draft",
         "bss_products.sku_versions",
         "bss_products.sku_references",
+        "bss_products.sku_history",
         "bss_products.submit_sku",
         "bss_products.change_sku",
         "bss_products.retire_sku",

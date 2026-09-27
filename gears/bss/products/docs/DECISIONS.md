@@ -45,7 +45,7 @@
 | P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
-| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
+| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
 
 ## Entries
 
@@ -589,7 +589,7 @@ page's `usage` on the client, so the list and the counts take `priced=true|false
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 3; plan review M3).
 
-#### P-D-213 [M] A SKU's history: every audit row on a SKU carries the lifecycle move its act made
+#### P-D-213 [M] A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them
 
 The SKUs screen shows a SKU's history (ask 7): who did what, when, and the lifecycle the act moved the SKU
 from and to. The audit log carried the act and its actor but no lifecycle, the approval rows are keyed on
@@ -644,5 +644,21 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
   actor, not an authorization subject; products still reads as the caller (P-D-207). The list's expiry
   reads the tenant's expired fences once and lifts each at the operation that holds it. A list with no
   expired fence makes one read, as before, and each fence it lifts adds its update and its row.
+- **The read.** `GET /skus/{id}/history` answers `Page<ProductsSkuHistoryEntry>`: `{ items, page_info }`,
+  each item `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`. Its source is the
+  audit rows whose subject is the SKU, and the rows whose subject is an approval unit whose `ref_id` is the
+  SKU, in the caller's tenant. `at` is the row's `written_at`, `actor` its `actor_ref`, and `note` its
+  `reason`: a decision's note, or the expiry's TTL. `unit_id` and `unit_kind` name the unit of a unit's row
+  (one read of the page's units) and are null on a SKU's own row. The order is `(written_at, audit_id)`,
+  oldest first. At quorum 0 the submit and its apply share one instant, so the id breaks the tie, and a
+  page boundary inside a tie skips and repeats nothing. `audit_id` is a UUID v7, minted in write order. The
+  toolkit's pager serves it: `$top` (alias `limit`) defaults to 50 and is clamped at 200, and `cursor`
+  (alias `$skiptoken`) comes from `page_info`. Any other key is 400, and so are `$filter`, `$orderby`,
+  `$select` and `$count`. The cursor carries a hash of the SKU id, so a cursor from another SKU's history is
+  400 `FILTER_MISMATCH`. The read is authorized as the card is (`sku × read`), runs the SKU's orphan-fence
+  expiry first, and answers 404 for a SKU the tenant does not hold and for a deleted draft. The
+  `sku.delete` row stays in the log but is never read, because its SKU is gone. On SQLite `written_at` is
+  RFC 3339 text and orders as text, as `updated_at` does in the SKU list (P-D-210). Postgres orders it as
+  a timestamp.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3).

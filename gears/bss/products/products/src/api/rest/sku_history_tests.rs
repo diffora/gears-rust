@@ -269,3 +269,271 @@ async fn a_delete_a_refresh_a_rejected_retire_and_a_reference_stamp_their_rows()
         ["sku.create - ->draft", "sku.delete - draft>-"]
     );
 }
+
+// ------------------------------------------------------------------ the read
+
+/// `GET /skus/{sku}/history` with a raw query string, as `ctx`.
+async fn history_as(f: &Fixture, ctx: &SecurityContext, sku: Uuid, query: &str) -> (u16, Value) {
+    call(
+        &f.app,
+        ctx,
+        Method::GET,
+        &format!("/skus/{sku}/history{query}"),
+        json!({}),
+        None,
+    )
+    .await
+}
+
+/// Every entry of the history, walked `limit` at a time along `page_info.next_cursor`.
+async fn walk(f: &Fixture, limit: usize) -> Vec<Value> {
+    let mut entries = Vec::new();
+    let mut query = format!("?limit={limit}");
+    loop {
+        let (status, page) = history_as(f, &f.author, f.id, &query).await;
+        assert_eq!(status, 200, "{query}: {page}");
+        let items = page["items"].as_array().unwrap();
+        assert!(items.len() <= limit, "{page}");
+        entries.extend(items.iter().cloned());
+        let Some(next) = page["page_info"]["next_cursor"].as_str() else {
+            break;
+        };
+        query = format!("?limit={limit}&cursor={next}");
+        assert!(entries.len() < 50, "the walk ends");
+    }
+    entries
+}
+
+/// The history reads every act on the SKU and on its units, oldest first: who, what, the move,
+/// the unit and its kind, the note. A quorum-0 submit and its apply share one instant, and a page
+/// boundary between them skips and repeats nothing. A row written before the audit log carried
+/// the lifecycle reads null for both. The history's own read expires an orphan fence, as the
+/// system. Acts on no SKU (the category, the policy) and on another SKU are not in it.
+#[tokio::test]
+#[allow(clippy::too_many_lines, reason = "one history, entry by entry")]
+async fn the_history_reads_every_act_with_its_actor_unit_and_note_in_order() {
+    let f = Fixture::new(1).await;
+    // A row the stand wrote before 000008, a second before now: no lifecycle columns.
+    let earlier = (time::OffsetDateTime::now_utc() - time::Duration::seconds(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    let raw = sea_orm::Database::connect(&f.dsn).await.unwrap();
+    {
+        use sea_orm::ConnectionTrait;
+        raw.execute_unprepared(&format!(
+            "INSERT INTO products_audit_log (audit_id,tenant_id,actor_ref,action,subject_kind,\
+             subject_id,written_at,seal_state) VALUES (x'{}',x'{}',x'{}','sku.legacy','sku',x'{}',\
+             '{earlier}','unsealed')",
+            Uuid::nil().simple(),
+            f.tenant.simple(),
+            f.author.subject_id().simple(),
+            f.id.simple(),
+        ))
+        .await
+        .unwrap();
+    }
+    raw.close().await.unwrap();
+    let (_, first) = f.post("/submit", json!({})).await;
+    decide(&f, &f.reviewer, &first, "reject").await;
+    f.policy(0).await;
+    let (_, second) = f.post("/submit", json!({})).await;
+    assert_eq!(second["applied"], true, "{second}");
+    orphan_fence(&f, repo::Fence::Retire, time::Duration::hours(2)).await;
+    // Another SKU's act is not in this one's history.
+    let (status, other) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"OTHER","name":"Other","type":"recurring"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{other}");
+
+    let entries = walk(&f, 200).await;
+    let author = f.author.subject_id().to_string();
+    let reviewer = f.reviewer.subject_id().to_string();
+    let system = repo::SYSTEM_ACTOR.to_string();
+    let unit_of = |u: &Value| u["unit"]["id"].clone();
+    let expected = [
+        (
+            "sku.legacy",
+            &author,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ),
+        (
+            "sku.create",
+            &author,
+            Value::Null,
+            json!("draft"),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+        ),
+        (
+            "approval.submit",
+            &author,
+            json!("draft"),
+            json!("draft"),
+            unit_of(&first),
+            json!("sku_publish"),
+            Value::Null,
+        ),
+        (
+            "approval.rejected",
+            &reviewer,
+            json!("draft"),
+            json!("draft"),
+            unit_of(&first),
+            json!("sku_publish"),
+            json!("reject note"),
+        ),
+        (
+            "approval.submit",
+            &author,
+            json!("draft"),
+            json!("draft"),
+            unit_of(&second),
+            json!("sku_publish"),
+            Value::Null,
+        ),
+        (
+            "approval.applied",
+            &author,
+            json!("draft"),
+            json!("published"),
+            unit_of(&second),
+            json!("sku_publish"),
+            Value::Null,
+        ),
+        (
+            "sku.fence_expired",
+            &system,
+            json!("retiring"),
+            json!("published"),
+            Value::Null,
+            Value::Null,
+            json!("fence_ttl_minutes=30"),
+        ),
+    ];
+    assert_eq!(entries.len(), expected.len(), "{entries:#?}");
+    for (entry, (action, actor, from, to, unit, kind, note)) in entries.iter().zip(expected) {
+        assert_eq!(
+            (
+                &entry["action"],
+                &entry["actor"],
+                &entry["from_lifecycle"],
+                &entry["to_lifecycle"],
+                &entry["unit_id"],
+                &entry["unit_kind"],
+                &entry["note"],
+            ),
+            (
+                &json!(action),
+                &json!(actor),
+                &from,
+                &to,
+                &unit,
+                &kind,
+                &note
+            ),
+            "{entry}"
+        );
+    }
+    assert_eq!(
+        entries[4]["at"], entries[5]["at"],
+        "at quorum 0 the submit and its apply share one instant"
+    );
+    for limit in [1, 2, 3] {
+        assert_eq!(walk(&f, limit).await, entries, "limit {limit}");
+    }
+}
+
+/// The history of a SKU the caller's tenant does not hold, of an unknown id and of a deleted draft
+/// is 404; the read takes `limit` and `cursor` (and their `$` spellings) only, and a cursor from
+/// another SKU's history is refused.
+#[tokio::test]
+async fn the_history_is_404_off_the_tenant_and_takes_only_its_page_keys() {
+    let f = Fixture::new(1).await;
+    let foreign = authed_ctx(Uuid::new_v4());
+    assert_eq!(history_as(&f, &foreign, f.id, "").await.0, 404);
+    assert_eq!(history_as(&f, &f.author, Uuid::new_v4(), "").await.0, 404);
+    for query in [
+        "?%24filter=action%20eq%20%27sku.create%27",
+        "?%24orderby=written_at%20desc",
+        "?%24select=action",
+        "?%24count=true",
+        "?bogus=1",
+        "?limit=0",
+        "?limit=x",
+        "?cursor=garbage",
+        "?limit=1&limit=2",
+    ] {
+        let (status, b) = history_as(&f, &f.author, f.id, query).await;
+        assert_eq!(status, 400, "{query}: {b}");
+    }
+    let (status, page) = history_as(&f, &f.author, f.id, "?%24top=1").await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert!(
+        page["page_info"]["next_cursor"].is_null(),
+        "one row: {page}"
+    );
+    // A second SKU with two rows gives a cursor; it is not this SKU's.
+    let (status, s) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"GONE","name":"Gone","type":"recurring"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{s}");
+    let gone = Uuid::parse_str(s["id"].as_str().unwrap()).unwrap();
+    let (status, _, b) = call_with(
+        &f.app,
+        &f.author,
+        Method::PATCH,
+        &format!("/skus/{gone}"),
+        json!({"description":"x"}),
+        &[("If-Match", "\"1\"".to_owned())],
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+    let (status, page) = history_as(&f, &f.author, gone, "?limit=1").await;
+    assert_eq!(status, 200, "{page}");
+    let cursor = page["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, b) = history_as(&f, &f.author, f.id, &format!("?cursor={cursor}")).await;
+    assert_eq!(
+        (status, problem_code(&b).as_str()),
+        (400, "FILTER_MISMATCH"),
+        "{b}"
+    );
+    assert_eq!(
+        history_as(&f, &f.author, gone, &format!("?cursor={cursor}"))
+            .await
+            .0,
+        200
+    );
+    // Deleted, its history is gone with it.
+    let (status, _, b) = call_with(
+        &f.app,
+        &f.author,
+        Method::DELETE,
+        &format!("/skus/{gone}"),
+        json!({}),
+        &[("If-Match", "\"2\"".to_owned())],
+    )
+    .await;
+    assert_eq!(status, 204, "{b}");
+    assert_eq!(history_as(&f, &f.author, gone, "").await.0, 404);
+}

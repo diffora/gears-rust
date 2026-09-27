@@ -298,6 +298,37 @@ impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
         }
     }
 }
+/// One act in a SKU's history (P-D-213): when (`at`, the audit row's commit instant), who (`actor`,
+/// the nil uuid for the system's orphan-fence expiry), what (`action`), the lifecycle it found and
+/// left (`null` on a row written before the audit log carried them, on a create's `from`), the
+/// approval unit it concerned and its kind, and the note it carried (a decision's note, or the
+/// expiry's TTL).
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsSkuHistoryEntry {
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    pub actor: Uuid,
+    pub action: String,
+    pub from_lifecycle: Option<String>,
+    pub to_lifecycle: Option<String>,
+    pub unit_id: Option<Uuid>,
+    pub unit_kind: Option<String>,
+    pub note: Option<String>,
+}
+impl From<crate::infra::storage::repo::SkuHistoryEntry> for ProductsSkuHistoryEntry {
+    fn from(e: crate::infra::storage::repo::SkuHistoryEntry) -> Self {
+        Self {
+            at: e.at,
+            actor: e.actor,
+            action: e.action,
+            from_lifecycle: e.from_lifecycle.map(|l| l.as_str().to_owned()),
+            to_lifecycle: e.to_lifecycle.map(|l| l.as_str().to_owned()),
+            unit_id: e.unit_id,
+            unit_kind: e.unit_kind,
+            note: e.note,
+        }
+    }
+}
 #[toolkit_macros::api_dto(request)]
 pub struct SkuRequest {
     pub code: String,
