@@ -6,8 +6,7 @@ use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, Set};
 use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use toolkit_db::secure::{
-    AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
-    SecureUpdateExt,
+    AccessScope, DBRunner, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
 /// What [`claim_idempotency_key`] found `(tenant_id, endpoint, client_key)`
@@ -56,11 +55,6 @@ pub enum IdempotencyClaim {
     InFlight {
         /// The digest the live `claimed` row was recorded against.
         payload_hash: Vec<u8>,
-        /// The composite act's parent handle, if the holding act stamped one
-        /// (P-D-79): the family clone's committed-but-unanswered claim
-        /// carries its new parent here, and the same-key retry resumes from
-        /// it. `None` for every single-entity door's claim.
-        entity_ref: Option<Uuid>,
     },
     /// This call lost the expired-key takeover race (**P-D-49**): another
     /// caller's compare-and-swap moved the row off the stamp this one read.
@@ -168,8 +162,8 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
-        // A fresh claim carries no parent handle; a composite door stamps
-        // one afterwards, in this same transaction (P-D-79).
+        // `entity_ref` is carried in the DDL (P-D-193) and always NULL: no
+        // door stamps it.
         entity_ref: Set(None),
     };
 
@@ -272,7 +266,6 @@ fn held_claim(held: idempotency::Model) -> Result<IdempotencyClaim, RepoError> {
         }
         "claimed" => Ok(IdempotencyClaim::InFlight {
             payload_hash: held.payload_hash,
-            entity_ref: held.entity_ref,
         }),
         other => Err(RepoError::CorruptRow(format!(
             "products_idempotency.state `{other}` on stored key"
@@ -326,8 +319,7 @@ async fn take_over_expired_idempotency_claim(
             Expr::value(None::<JsonValue>),
         )
         .col_expr(idempotency::Column::ExpiresAt, Expr::value(new_expires_at))
-        // The taken-over claim is a fresh act's: a stale parent handle from
-        // the crashed holder must not leak into it (P-D-79).
+        // `entity_ref` stays NULL on a taken-over claim, as on a fresh one.
         .col_expr(idempotency::Column::EntityRef, Expr::value(None::<Uuid>))
         .filter(
             idempotency_key_of(held.tenant_id, &held.endpoint, &held.client_key)
@@ -471,39 +463,6 @@ pub async fn answer_idempotency_key(
         return Ok(IdempotencyAnswer::NotHeld);
     }
     Ok(IdempotencyAnswer::Recorded)
-}
-
-/// Release a `claimed` key that will not be answered — the scheduled lane's
-/// deferral (P-D-157): a held run consumed nothing, so its claim row goes,
-/// and the next sweep claims the same `(lane, transition)` afresh. Only a
-/// `claimed` row matches; an `answered` one is a terminal record and stays.
-///
-/// # Errors
-///
-/// [`RepoError`] on a driver failure.
-pub async fn release_idempotency_claim(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    endpoint: &str,
-    client_key: &str,
-) -> Result<u64, RepoError> {
-    let result = idempotency::Entity::delete_many()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            idempotency_key_of(tenant_id, endpoint, client_key)
-                .add(idempotency::Column::State.eq("claimed")),
-        )
-        .exec(runner)
-        .await
-        .map_err(|e| {
-            driver_failure(
-                format!("release idempotency claim {tenant_id}/{endpoint}/{client_key}"),
-                e,
-            )
-        })?;
-    Ok(result.rows_affected)
 }
 
 #[cfg(test)]

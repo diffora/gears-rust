@@ -4,9 +4,8 @@
 //! One question, three answers ([`UsageTypeAnswer`]), asked **once per
 //! publish** for the SKU's one `usage_type_ref`, **before** the publish
 //! transaction opens — so a `503` leaves no claimed idempotency key and the
-//! retry is a fresh act. The judge is the domain's
-//! ([`crate::domain::recognized::judge_usage_type`]); this module is the
-//! seam that fetches the answer.
+//! retry is a fresh act. The judge is the domain's (`domain::sku`); this
+//! module is the seam that fetches the answer.
 //!
 //! # Why a trait on `ApiState`, and why not a `cfg(test)` fork
 //!

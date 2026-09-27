@@ -366,9 +366,7 @@ pub fn resolved_usage_types() -> Arc<dyn bss_products_sdk::usage_types::UsageTyp
     ))
 }
 
-/// The binding every `Resolved` stub answers with — what a probe expects to
-/// find frozen in `binding_snapshot` after a publish (`dod-binding-snapshot`).
-/// The metadata keys are deliberately unsorted here: the stored form sorts.
+/// The binding every `Resolved` stub answers with.
 #[must_use]
 pub fn probe_binding() -> crate::domain::recognized::UsageTypeBinding {
     crate::domain::recognized::UsageTypeBinding {

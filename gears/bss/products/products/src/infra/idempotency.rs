@@ -1,18 +1,10 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-idempotency-key-store:p1
-//! The idempotency phase — the claim input, the claim/answer walk and the
-//! verdicts the create and composite doors branch on (`design/01` §3.2,
-//! P-D-42). Infra-owned so the batch worker's shared create path
-//! (`crate::infra::create`) reaches it without depending on `api::rest`;
-//! the doors import it back through that module's re-exports.
+//! The replay walk — the claim input, the claim/answer walk and the
+//! verdicts the doors branch on (P-D-198).
 //!
 //! Reading the `Idempotency-Key` header and rendering a replayed response
 //! stay in `api::rest` — they are wire concerns; this module owns the
 //! store-facing walk.
-
-#![allow(
-    dead_code,
-    reason = "Restored claim/answer flow is consumed by the doors in Tasks 7-10"
-)]
 
 use axum::http::StatusCode;
 use serde_json::Value as JsonValue;
@@ -29,10 +21,7 @@ use crate::infra::storage::repo::{self, IdempotencyClaim};
 /// **retention** window, not a deadline anything waits on
 /// (`design/01-foundation.md` §3.2 `inst-fd-idem-retention`).
 ///
-/// The floor the design pins is `max(24h, max_freeze_timeout)`, and
-/// [`crate::config::ProductsConfig`]'s own field doc records that the second half has no
-/// source until the catalog-version feature exists. `retention_hours` is the
-/// **operator's** value as
+/// `retention_hours` is the **operator's** value as
 /// [`crate::config::ProductsConfig::resolved_idempotency_retention_hours`]
 /// resolved it, carried from `gear.rs`'s `ctx.config_or_default()` on
 /// `ApiState::idempotency_retention_hours` — an earlier version read
@@ -44,7 +33,7 @@ use crate::infra::storage::repo::{self, IdempotencyClaim};
 /// The clamp belongs at boot, where a bad value cannot get past it, so this
 /// function is not where the floor is decided — see
 /// `resolved_idempotency_retention_hours`. What it must still not do is
-/// **degrade**: the arithmetic can fail only for a window `chrono` cannot
+/// **degrade**: the arithmetic can fail only for a window `time` cannot
 /// add to `now`, and the previous `unwrap_or(now)` answered that with
 /// `expires_at == now`, i.e. a key that is already expired when it is
 /// written. The next request on it takes it over and re-executes the guarded
@@ -65,7 +54,7 @@ fn idempotency_expiry(now: OffsetDateTime, retention_hours: u32) -> OffsetDateTi
     );
     // The floor is hours away from `now`, so this cannot fail for any
     // instant a running process can observe; `now` is returned only for one
-    // within a day of `chrono`'s own maximum, and the error above has
+    // within a day of `time`'s own maximum, and the error above has
     // already been emitted by then.
     stamp(crate::config::IDEMPOTENCY_RETENTION_FLOOR_HOURS).unwrap_or(now)
 }
@@ -83,23 +72,18 @@ fn idempotency_expiry(now: OffsetDateTime, retention_hours: u32) -> OffsetDateTi
 /// window rather than sliding it forward.
 #[derive(Clone)]
 pub(crate) struct IdempotencyClaimInput {
-    /// The **concrete resource path**, never the route template (P-D-42):
-    /// `/bss-products/v1/products`, not a pattern with a placeholder. Three
-    /// reserved lane names — `internal:scheduled-activation`,
-    /// `internal:cascade-leg`, `internal:bulk-row` — are held for non-HTTP
-    /// callers; this phase has none, so both doors pass their own path.
+    /// The **concrete resource path**, never the route template (P-D-198):
+    /// `/bss-products/v1/skus`, not a pattern with a placeholder.
     ///
-    /// An owned [`String`], not a `&'static str`, and P-D-42 is the reason:
-    /// a create's concrete path is a constant because there is no id yet to
-    /// put in one, but **every id-bearing door's is not** — the publish and
-    /// discard doors claim under
-    /// `/bss-products/v1/products/{that id}/publish`, a value that exists
+    /// An owned [`String`], not a `&'static str`, for the same reason: a
+    /// create's concrete path is a constant because there is no id yet to
+    /// put in one, but **every id-bearing door's is not** — a submit claims
+    /// under `/bss-products/v1/skus/{that id}/submit`, a value that exists
     /// only per request. The alternatives were claiming under the route
-    /// template, which is exactly what P-D-42 forbids, and leaking a
-    /// `String` per request to manufacture a `'static` lifetime, which
-    /// trades a spec violation for an unbounded allocation. Both create
-    /// doors still pass their `&'static str` constant unchanged:
-    /// [`IdempotencyClaimInput::new`] takes `impl Into<String>`.
+    /// template, which P-D-198 forbids, and leaking a `String` per request to
+    /// manufacture a `'static` lifetime. A create door still passes its
+    /// `&'static str` constant unchanged: [`IdempotencyClaimInput::new`] takes
+    /// `impl Into<String>`.
     pub(crate) endpoint: String,
     /// The caller's own `Idempotency-Key`, as [`idempotency_key`] read it.
     pub(crate) client_key: String,
@@ -279,105 +263,9 @@ fn verdict(claim: IdempotencyClaim, input: &IdempotencyClaimInput) -> ClaimVerdi
     }
 }
 
-/// [`ClaimVerdict`] for a **composite** door (P-D-79): identical in every
-/// arm but one — a live `claimed` row whose digest matches and whose
-/// `entity_ref` is stamped is not a refusal but the resume signal.
-///
-/// The single-entity doors keep [`claim_idempotency`]'s reading: there, a
-/// visible `claimed` row can only be a concurrent duplicate, because claim
-/// and mutation commit together and the answer is recorded in the same
-/// transaction. A composite act commits its claim with the *first* entity
-/// and answers only at completion (P-D-72), so its committed-and-unanswered
-/// claim means *in progress* — and the matching retry re-enters instead of
-/// being told in flight.
-pub(crate) enum CompositeClaimVerdict {
-    /// Fresh claim: proceed with the composite's first transaction.
-    Proceed,
-    /// The act completed earlier; this is its stored answer.
-    Replay {
-        /// The stored status.
-        status: i32,
-        /// The stored body.
-        body: JsonValue,
-    },
-    /// The idempotency phase refused; nothing was written.
-    Refused(DomainError),
-    /// A committed-but-unanswered claim with a matching digest: the act is
-    /// in progress or crashed mid-composite. Resume from its parent.
-    Resume {
-        /// The stamped parent handle the re-entry scans from.
-        entity_ref: Uuid,
-    },
-}
-
-/// Take or read the claim for a composite door, classifying a matching
-/// live claim as [`CompositeClaimVerdict::Resume`] (P-D-79).
-///
-/// The same `runner`-is-the-mutation's-transaction obligation as
-/// [`claim_idempotency`]; the digest comparisons are the same ones. A
-/// matching live claim with **no** stamp is refused in flight rather than
-/// resumed: this door stamps `entity_ref` in the claim's own transaction,
-/// so a visible claim without one was written by something else and resuming
-/// from it would scan a parent this act never created.
-pub(crate) async fn claim_composite_idempotency(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    input: &IdempotencyClaimInput,
-) -> Result<CompositeClaimVerdict, RepoError> {
-    let claim = repo::claim_idempotency_key(
-        runner,
-        scope,
-        tenant_id,
-        &input.endpoint,
-        &input.client_key,
-        &input.payload_hash,
-        input.now,
-        input.expires_at,
-    )
-    .await?;
-
-    Ok(match claim {
-        IdempotencyClaim::Claimed => CompositeClaimVerdict::Proceed,
-        IdempotencyClaim::Answered {
-            payload_hash,
-            response_status,
-            response_body,
-        } => {
-            if payload_hash == input.payload_hash {
-                CompositeClaimVerdict::Replay {
-                    status: response_status,
-                    body: response_body,
-                }
-            } else {
-                CompositeClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
-                    "{} was already answered for a different payload on {}",
-                    input.client_key, input.endpoint
-                )))
-            }
-        }
-        IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != input.payload_hash => {
-            CompositeClaimVerdict::Refused(DomainError::IdempotencyConflict(format!(
-                "{} is held by an act still in flight under a different payload on {}",
-                input.client_key, input.endpoint
-            )))
-        }
-        IdempotencyClaim::InFlight {
-            entity_ref: Some(entity_ref),
-            ..
-        } => CompositeClaimVerdict::Resume { entity_ref },
-        IdempotencyClaim::InFlight { .. } | IdempotencyClaim::TakeoverRaceLost => {
-            CompositeClaimVerdict::Refused(DomainError::IdempotencyKeyInFlight(format!(
-                "{} is held by an act still in flight on {}",
-                input.client_key, input.endpoint
-            )))
-        }
-    })
-}
-
 /// Record the answer for `input`'s key **on the caller's own runner**: the
 /// status and body the door is about to return, written into the claim the
-/// same transaction took (§3.2 `inst-fd-idem-claim-write`, P-D-29).
+/// same transaction took (P-D-198).
 ///
 /// # `runner` MUST be the runner the claim and the mutation ran on
 ///

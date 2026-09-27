@@ -214,8 +214,8 @@ impl Gear for BssProductsGear {
         // the boot here rather than at the first request that happens to need
         // a field from it.
         let cfg: ProductsConfig = ctx.config_or_default()?;
-        // P-D-84 arm 6: an inverted retention clamp is refused at boot, not
-        // discovered as a panic on the first keyed request.
+        // A value that admits nothing (a zero resolver timeout) is refused at
+        // boot, not discovered on the first usage-SKU submit.
         cfg.validate()
             .map_err(|reason| anyhow::anyhow!("bss-products: invalid config: {reason}"))?;
         // The retention window is resolved once, here, and only the resolved
