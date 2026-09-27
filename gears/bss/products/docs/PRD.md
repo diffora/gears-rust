@@ -216,7 +216,8 @@ A usage SKU shall declare the meter reference and unit needed by consumers befor
 
 - Publication requires both `usage_type_ref` and `unit` (`USAGE_NEEDS_METER` when incomplete).
 - The reference must resolve through the pluggable usage-type catalog port (`USAGE_TYPE_UNRESOLVED` when it
-  cannot resolve); the catalog integration remains in force.
+  cannot resolve); the catalog integration remains in force. The catalog is read as the caller: a catalog
+  that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN` at submit and approve, never an outage (P-D-207).
 - Metering fields are usage-only; in particular, a bundle rejects them (`BUNDLE_HAS_NO_METER`).
 - Submit validates the proposed content and apply revalidates it before publication or change.
 
@@ -253,6 +254,8 @@ retirement fence and `retired` as the retirement result.
 - Pricing refuses a new price book entry or plan item on a retiring SKU (`SKU_RETIRING`); its new-plan-revision check
   refuses a deprecated SKU (`ITEM_SKU_DEPRECATED`).
 - A pending unit owns the mutation lock (`ROW_LOCKED_PENDING`, 409); rejection or withdrawal unlocks it.
+- A never-published draft is deleted by its author, never retired (P-D-206): `DELETE /skus/{id}` under
+  `If-Match` answers 204; a SKU that was ever published is `SKU_NOT_DRAFT` (409).
 
 **Rationale**: spec §3 item 35, §4 (fence and lifecycle), §5 (deprecated guard), §6, §7.2.
 
@@ -293,7 +296,7 @@ racing with approval and apply.
   `SKU_REFERENCED`; the apply transaction rolls back and the SKU stays `retiring` until the unit is withdrawn
   or rejected, restoring its pre-fence lifecycle and releasing the pending lock.
 - Retried submit on a fenced SKU with no pending unit resumes the operation by rechecking and submitting.
-- A fence older than configurable `fence_ttl_minutes`, without a unit, is reverted by the next request on that
+- A fence older than `fence_ttl_minutes` (a deployment setting, P-D-209), without a unit, is reverted by the next request on that
   SKU or by `POST /skus/{id}/unfence`. Recovery also applies to `type_change_pending` fences.
 - A live reservation cannot be ignored because its caller died; release must follow `fr-reference-registry`.
 
@@ -309,8 +312,9 @@ The registry shall maintain a flat category list with at most one category per S
 
 - Categories carry `id`, tenant-unique `code`, `name`, `is_default`, `sort_order` and `active | retired` status.
 - Category creation and edits are direct operations and require no approval unit.
-- Retirement fails with `CATEGORY_IN_USE` while any SKU points at the category. A SKU without a category
-  does not block a retirement (P-D-196).
+- Retirement fails with `CATEGORY_IN_USE` while a SKU in `draft`, `published`, `deprecated` or `retiring`
+  points at the category; retired SKUs and a SKU without a category do not block it (P-D-196, P-D-208).
+  Retiring a retired category is `CATEGORY_RETIRED` (409).
 - Category patches participate in optimistic concurrency (`STALE_REVISION` for a stale revision).
 
 **Rationale**: spec §2 decision 12, §4 (category schema and retire rule), §7.2, §14.
@@ -482,19 +486,20 @@ writer. Both storage tiers must pass at phase gates (spec §2 decision 10, §2.2
 ### 7.1 Public API Surface
 
 Routes below are relative to the Products API. Errors expose `{ code, field, message }`; stale-generation errors
-also report the current generation. PATCH uses `If-Match`; POST accepts an optional `Idempotency-Key`
-(spec §7.2 products row, with §2.2 amendments).
+also report the current generation. PATCH, the draft DELETE and the policy PUT use `If-Match`; POST accepts
+an optional `Idempotency-Key` (spec §7.2 products row, with §2.2 amendments).
 
 | Surface | Calls and behavior |
 | --- | --- |
-| SKU authoring | `POST /skus`; `PATCH /skus/{id}` for drafts; `POST /skus/{id}/changes` for published/deprecated content and/or lifecycle, with `effective_from` defaulting to today. |
+| SKU authoring | `POST /skus`; `PATCH /skus/{id}` for drafts; `DELETE /skus/{id}` for a never-published draft (P-D-206); `POST /skus/{id}/changes` for published/deprecated content and/or lifecycle, with `effective_from` defaulting to today. |
+| Usage-type picker | `GET /usage-types?q&kind&limit&cursor`, the catalog the publish gate resolves against, read as the caller (P-D-207). |
 | SKU reads | `GET /skus`, `GET /skus/{id}`; list/search by code, name, category, type and lifecycle; each SKU carries pricing's `usage` or `null` (P-D-197). |
 | Lifecycle | `POST /skus/{id}/submit`, `POST /skus/{id}/retire`, `POST /skus/{id}/unfence`. |
 | Versions | `GET /skus/{id}/versions?asOf=<date>` reads the version in force; spec §7.2 spells the parameter `as_of`, while §2.2 and §4 spell it `asOf` (see §13). |
 | References | `GET /skus/{id}/references` returns `{ owner, kind, ref_id, state }` rows and grouped counts; `POST /skus/{id}/references/reserve { owner, kind, ref_id }` returns `{ reservation_id }`; `POST /references/{id}/confirm`; `DELETE /references/{id}` releases, with `force: true` and reason for an operator. |
 | Categories | `GET /categories`, `POST /categories`, `PATCH /categories/{id}`, `POST /categories/{id}/retire`. |
 | Approvals | `GET /approval-units?state&kind&refId`, `GET /approval-units/{id}`, `POST /approval-units/{id}/approve`, `/reject`, `/withdraw`; approve/reject carry `generation`, reject requires a note. |
-| Settings | `GET /settings`, `PUT /settings`, including tenant approval policy and its optional per-kind quorum overrides. |
+| Approval policy | `GET /approval-policy` with a content `ETag`, `PUT /approval-policy` under `If-Match`: the tenant default quorum and its optional per-kind overrides (P-D-205). The fence TTL is a deployment setting, not a tenant one (P-D-209). |
 
 The `products-sdk` surface exposes `Sku`, `SkuType`, `Lifecycle`, `Category`, `SkuVersion` and
 `SkuChangedPayload`. The usage-type catalog port remains available, and the `SkuUsageV1` port, which pricing
@@ -664,10 +669,11 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 
 **AC #13. Referenced category — `fr-category-flat`**
 
-- **Given** a flat category referenced by a SKU.
+- **Given** a flat category referenced by a SKU that is not retired.
 - **When** an administrator requests category retirement.
-- **Then** retirement fails with `CATEGORY_IN_USE`; an unreferenced category can retire directly without an
-  approval unit, also when the tenant has SKUs without a category.
+- **Then** retirement fails with `CATEGORY_IN_USE`; a category no such SKU references can retire directly
+  without an approval unit, also when the tenant has SKUs without a category or its SKUs are all retired
+  (P-D-208).
 
 **AC #14. Separation of duties — `fr-approval-units`, `nfr-authz`**
 

@@ -88,7 +88,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 1. [ ] - `p1` - Create or rename a tenant category directly with products:author; category code uniqueness is tenant-local and no approval unit is created - `inst-sku-category-write`
 2. [ ] - `p1` - PATCH checks If-Match and increments version; a stale precondition returns STALE_REVISION without changing the category - `inst-sku-category-patch`
-3. [ ] - `p1` - Retire only when no tenant SKU points at the category, checking the predicate atomically with the write - `inst-sku-category-retire`
+3. [ ] - `p1` - Retire only when no tenant SKU that is not retired points at the category, checking the predicate atomically with the write (P-D-208) - `inst-sku-category-retire`
 
 ### Consumer reads the version in force
 
@@ -123,7 +123,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 1. [ ] - `p1` - Permit usage drafts to remain incomplete; publication requires both usage_type_ref and unit, otherwise USAGE_NEEDS_METER - `inst-sku-meter-required`
 2. [ ] - `p1` - Resolve using the retained UsageTypeCatalog port: registered catalog, usage-collector adapter, then configured local-development catalog or unconfigured mode, preserving provenance - `inst-sku-meter-port`
 3. [ ] - `p1` - On draft save, check a changed ref when a catalog is configured; definitive unresolved is 400 USAGE_TYPE_UNRESOLVED, while a catalog non-answer does not block the save - `inst-sku-meter-draft`
-4. [ ] - `p1` - At submit and apply, revalidate the proposed usage content and fail closed on unresolved refs; an unreachable configured catalog is 503, not acceptance - `inst-sku-meter-publish`
+4. [ ] - `p1` - At submit and apply, revalidate the proposed usage content and fail closed on unresolved refs; an unreachable configured catalog is 503, not acceptance; a catalog that refuses the caller is 403 USAGE_TYPE_FORBIDDEN (P-D-207) - `inst-sku-meter-publish`
 5. [ ] - `p1` - Refuse usage metering on non-usage types; a bundle with metering yields BUNDLE_HAS_NO_METER - `inst-sku-meter-type`
 
 ### bundle-unpriced
@@ -138,7 +138,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-sku-categories-category-retire-refused`
 
-1. [ ] - `p1` - Within the tenant transaction, refuse retirement if any SKU points to the category, regardless of its lifecycle; return 409 CATEGORY_IN_USE; a SKU without a category never counts - `inst-sku-category-count`
+1. [ ] - `p1` - Within the tenant transaction, refuse retirement while a SKU in draft, published, deprecated or retiring points to the category; return 409 CATEGORY_IN_USE; a retired SKU and a SKU without a category never count, and a retired category is 409 CATEGORY_RETIRED (P-D-208, amending P-D-186) - `inst-sku-category-count`
 2. [ ] - `p1` - Otherwise conditionally set status retired and increment version without an approval unit; category assignment and retirement must serialize their reciprocal checks so a concurrent assignment cannot bypass this rule - `inst-sku-category-retire-write`
 
 ### Versions as-of
@@ -158,7 +158,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 1. [ ] - `p1` - SKU create → draft; draft PATCH stays draft and changes revision, not published_version. A pending unit excludes direct edits.
 2. [ ] - `p1` - Published/deprecated content changes go through sku_change; no direct PATCH can bypass review. Slice 03 owns the lifecycle edges and fences.
-3. [ ] - `p1` - Category create → active; direct edits retain status; active → retired requires no referencing SKU. No category hierarchy or approval lifecycle exists.
+3. [ ] - `p1` - Category create → active; direct edits retain status; active → retired requires no referencing SKU that is not retired (P-D-208); retired → retired is refused CATEGORY_RETIRED. No category hierarchy or approval lifecycle exists.
 4. [ ] - `p1` - SKU version history grows only on publication/applied change; stored versions have no edit/delete transition.
 
 ## 5. Definitions of Done
@@ -188,7 +188,7 @@ A draft is never priced and cannot have a reservation, so its type changes freel
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/governance.rs`.
 
-Usage publication requires usage_type_ref and unit and resolves through the retained UsageTypeCatalog port at submit and apply. Draft save checks a changed ref when configured: definitive unresolved is 400 USAGE_TYPE_UNRESOLVED, while a catalog non-answer does not block saving; submit/apply fail closed, with an unreachable configured catalog returning 503. Resolution order/provenance and resolvability-only semantics remain as P-D-184 and DESIGN §3.5 specify (spec §4, §6, §15).
+Usage publication requires usage_type_ref and unit and resolves through the retained UsageTypeCatalog port at submit and apply. Draft save checks a changed ref when configured: definitive unresolved is 400 USAGE_TYPE_UNRESOLVED, while a catalog non-answer does not block saving; submit/apply fail closed, with an unreachable configured catalog returning 503 and a catalog that refuses the caller (it is read as the caller) returning 403 USAGE_TYPE_FORBIDDEN (P-D-207). Resolution order/provenance and resolvability-only semantics remain as P-D-184 and DESIGN §3.5 specify (spec §4, §6, §15).
 
 ### Bundle identity is unpriced
 
@@ -220,7 +220,7 @@ Categories expose code, name, is_default, sort_order and active/retired status, 
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/categories.rs`.
 
-Category retirement refuses any referencing SKU with CATEGORY_IN_USE, regardless of that SKU's lifecycle; a SKU without a category never counts (P-D-196). Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
+Category retirement refuses with CATEGORY_IN_USE while a SKU in draft, published, deprecated or retiring references it; a retired SKU and a SKU without a category never count (P-D-196, P-D-208, which amends P-D-186), and retiring a retired category is CATEGORY_RETIRED. Otherwise it directly retires the category and advances version; assignment and retirement serialize their reciprocal checks so a concurrent assignment cannot bypass the rule (spec §4, §7.2; DESIGN §3.1; slice 02 §3).
 
 **Owed by pricing (phase 2).** Pricing must refuse bundle price book entries and plan items and allow a bundle only as a plan’s sold_as identity.
 
@@ -235,8 +235,8 @@ obligations here and integration checks when its phase 2 caller path exists.
 | --- | --- | --- |
 | `cpt-cf-bss-products-dod-sku-create-unique` | AC #1, #4, #19, #27; `cpt-cf-bss-products-fr-sku-define`, `cpt-cf-bss-products-fr-concurrency-idempotency` | Given a tenant category and unused SKU identity, when an author creates and patches a draft with current If-Match, then the draft and new ETag persist; concurrent code/name reuse fails with SKU_CODE_TAKEN/SKU_NAME_TAKEN, stale PATCH fails with STALE_REVISION, and a locked edit fails with ROW_LOCKED_PENDING. |
 | `cpt-cf-bss-products-dod-sku-type-frozen` | AC #2, #23; `cpt-cf-bss-products-fr-sku-type-frozen` | Given an unreferenced draft, when its type changes without a fence, then target-type validation and the update succeed; given a published/deprecated SKU with a reserved or confirmed price book entry, plan_item or sold_as reference, a type-change request fails with SKU_TYPE_FROZEN without changing type or acquiring a fence. |
-| `cpt-cf-bss-products-dod-usage-type-resolves` | AC #5; `cpt-cf-bss-products-fr-sku-metering` | Given a usage draft and a resolving configured catalog, when complete metering is submitted and applied, then publication succeeds; missing fields give USAGE_NEEDS_METER, an unresolved ref gives USAGE_TYPE_UNRESOLVED, and catalog outage at submit/apply gives 503 without publication, while a draft-save non-answer remains saveable. |
+| `cpt-cf-bss-products-dod-usage-type-resolves` | AC #5; `cpt-cf-bss-products-fr-sku-metering` | Given a usage draft and a resolving configured catalog, when complete metering is submitted and applied, then publication succeeds; missing fields give USAGE_NEEDS_METER, an unresolved ref gives USAGE_TYPE_UNRESOLVED, and catalog outage at submit/apply gives 503 without publication (a catalog refusing the caller 403 USAGE_TYPE_FORBIDDEN, P-D-207), while a draft-save non-answer remains saveable. |
 | `cpt-cf-bss-products-dod-bundle-unpriced` | AC #6, #23; `cpt-cf-bss-products-fr-sku-bundle` | Given a bundle SKU, when it is read for a sold_as relationship, then its bundle identity and descriptors are available without composition; assigning usage metering fails with BUNDLE_HAS_NO_METER, and Pricing contract checks refuse pricing or plan-item use rather than treating it as another charge kind. |
 | `cpt-cf-bss-products-dod-versions-as-of` | AC #8, #9; `cpt-cf-bss-products-fr-sku-versions` | Given publication September 24 and an applied change effective October 1, when as_of is September 30, October 1 or September 23, then return the old snapshot, new snapshot or NO_VERSION_IN_FORCE respectively; September 30 proposed after the October version fails with VERSION_ORDER, while another October 1 version wins by its higher number. |
 | `cpt-cf-bss-products-dod-category-flat-crud` | AC #13, #27; `cpt-cf-bss-products-fr-category-flat`, `cpt-cf-bss-products-fr-concurrency-idempotency` | Given a tenant category, when it is created or renamed with a current ETag, then the flat record changes with no approval unit; stale PATCH returns STALE_REVISION, duplicate tenant code is refused, and cross-tenant category assignment fails. |
-| `cpt-cf-bss-products-dod-category-retire-refused` | AC #13; `cpt-cf-bss-products-fr-category-flat` | Given referenced and unreferenced categories, when retirement is requested, then the first fails with CATEGORY_IN_USE and the second retires without a unit; racing assignment and retirement cannot leave a newly assigned SKU on a category whose retirement check passed as unreferenced. |
+| `cpt-cf-bss-products-dod-category-retire-refused` | AC #13; `cpt-cf-bss-products-fr-category-flat` | Given referenced and unreferenced categories, when retirement is requested, then the first fails with CATEGORY_IN_USE and the second retires without a unit (a category whose SKUs are all retired is unreferenced, P-D-208; a retired one fails CATEGORY_RETIRED); racing assignment and retirement cannot leave a newly assigned SKU on a category whose retirement check passed as unreferenced. |

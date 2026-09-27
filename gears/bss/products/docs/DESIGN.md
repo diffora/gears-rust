@@ -144,7 +144,7 @@ Use `bss-approval` for `sku_publish`, `sku_change` and `sku_retire`, with Produc
 Tenant policy supplies quorum with per-kind overrides; a missing `'*'` row means quorum 1.
 No materiality threshold applies. Authors and submitters cannot approve their own unit even if both
 permissions are held; category and policy edits are direct operations (P-D-190; spec §6, §14).
-A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404).
+A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404). Only a never-published draft is deleted (`DELETE /skus/{id}`, P-D-206).
 
 #### No database row locks
 
@@ -163,8 +163,8 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 | --- | --- |
 | `Sku` | Tenant, id, code, name, type, optional category (null when absent, no default fallback; P-D-196), description, sellable, lifecycle, revision (the concurrency version), published_version, descriptors, billing_timing, usage_type_ref, unit, pending_unit_id and approved_by_unit_id. Code and name are separately unique per tenant. Creator attribution supplies approval-item `created_by`. |
 | `SkuType` | `recurring`, `usage`, `one_time`, `bundle`. A priced SKU's type determines charge kind. Published/deprecated type changes are fenced against live references. Drafts cannot be reserved and change type without fencing. |
-| `Lifecycle` | `draft`, `published`, `deprecated`, `retiring`, `retired`. Publish takes draft to published; change governs published/deprecated content and the published ↔ deprecated edges. Retiring is a transient fence, retired is terminal. |
-| `Category` | Tenant, id, code, name, is_default, sort_order, active/retired status and concurrency version. At most one category per SKU, no parent. Any SKU reference blocks category retirement; a SKU without a category blocks none. |
+| `Lifecycle` | `draft`, `published`, `deprecated`, `retiring`, `retired`. Publish takes draft to published; change governs published/deprecated content and the published ↔ deprecated edges. Retiring is a transient fence, retired is terminal. A never-published draft is deleted, never retired (P-D-206). |
+| `Category` | Tenant, id, code, name, is_default, sort_order, active/retired status and concurrency version. At most one category per SKU, no parent. A SKU in `draft`, `published`, `deprecated` or `retiring` blocks category retirement; a retired SKU and a SKU without a category block none (P-D-208). |
 | `SkuVersion` | Tenant, sku_id, published_version, effective_from, snapshot. Immutable history appended by publication and every applied change. |
 | `ApprovalUnit` | Shared crate type: kind, subject reference, state, quorum, generation, snapshot/hash, date, submitter, decision metadata and concurrency version. |
 | `Decision` | Shared crate type: unit, actor, generation, approve/reject, note, timestamp and stale flag. One vote per actor per generation. |
@@ -185,7 +185,8 @@ are allowed and the higher published version wins. Consumers use the dated read,
 Fence state on `Sku` comprises `type_change_pending`, `fence_prior_lifecycle`, `fenced_at` and
 `fence_op_id`. Retirement stores the prior lifecycle before setting `retiring`; type change sets
 `type_change_pending`. Both reject new reservations. Retry with a fence but no pending unit resumes
-by rechecking the local registry and submitting. An orphan older than `fence_ttl_minutes` is reverted
+by rechecking the local registry and submitting. An orphan older than `fence_ttl_minutes` (a deployment
+setting, P-D-209) is reverted
 by the next SKU request or explicit unfence; a pending unit's fence cannot be cleared this way.
 Reject/withdraw clears pending ownership and fence metadata in one conditional write guarded by unit
 id and fence operation id, restoring the prior lifecycle. Successful apply clears fence metadata and
@@ -301,7 +302,8 @@ registration and standardized errors.
 
 | Surface | Routes | Contract |
 | --- | --- | --- |
-| SKU authoring | `POST /skus`; `PATCH /skus/{id}` | Create independent draft, `category_id` optional; patch drafts only (`category_id: null` clears it); reject edits while pending. |
+| SKU authoring | `POST /skus`; `PATCH /skus/{id}`; `DELETE /skus/{id}` | Create independent draft, `category_id` optional; patch drafts only (`category_id: null` clears it); reject edits while pending. Delete only a never-published draft, by its author, under `If-Match`: 204 and an audit row; `SKU_NOT_DRAFT`, `ROW_LOCKED_PENDING`, `SKU_REFERENCED` (P-D-206). |
+| Usage-type picker | `GET /usage-types?q&kind&limit&cursor` | products:author; the `UsageTypeCatalog` the publish gate resolves against, read as the caller: `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable, 200 `[]` when empty (P-D-207). |
 | SKU reads | `GET /skus?q&type&category&lifecycle&limit&after`; `GET /skus/{id}` | Tenant-scoped list/search by code/name and filters (a category filter never matches a SKU without a category), bounded limit and exclusive code cursor (tenant-unique codes); SKU card. Each list item and the card carry `usage` { entries, currencies, prices { approved, pending, draft }, plans } from pricing's `SkuUsageV1` port, one call per page, or `null` when the port is absent, refuses or cannot answer; the read never fails for it (P-D-197). |
 | Dated versions | `GET /skus/{id}/versions?as_of=<date>` | Greatest effective_from not after date, then greatest published_version; 404 before first version. Without as_of, list history. |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
@@ -311,15 +313,14 @@ registration and standardized errors.
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
 | Confirm | `POST /references/{id}/confirm` | 200 also when already confirmed; released rows cannot reactivate. |
 | Release | `DELETE /references/{id}` | Owner after durable cancellation/deletion; operator requires `force: true` and reason, with actor attribution and event. |
-| Categories | `GET /categories`; `POST /categories`; `PATCH /categories/{id}`; `POST /categories/{id}/retire` | Direct edits without approvals; refuse retirement while any SKU points at it. |
-| Approval reads | `GET /approval-units?state&kind&ref_id`; `GET /approval-units/{id}` | Queue and detail; detail includes stored snapshot and live recomputation. |
+| Categories | `GET /categories`; `POST /categories`; `PATCH /categories/{id}`; `POST /categories/{id}/retire` | Direct edits without approvals; refuse retirement while a SKU that is not retired points at it (`CATEGORY_IN_USE`); a retired category is `CATEGORY_RETIRED` (P-D-208). |
+| Approval reads | `GET /approval-units?state&kind&ref_id`; `GET /approval-units/{id}` | Queue and detail; detail includes stored snapshot and live recomputation, `impact_live: null` once a rejected or withdrawn draft was deleted (P-D-206). |
 | Decisions | `POST /approval-units/{id}/approve`; `POST /approval-units/{id}/reject`; `POST /approval-units/{id}/withdraw` | Approve/reject carry generation; reject requires note; withdraw is submitter-only. |
-| Approval policy | `GET /approval-policy`; `PUT /approval-policy` | Tenant default quorum and optional per-kind overrides; missing default is quorum 1. |
-| Settings | `GET /settings`; `PUT /settings` | Tenant settings, including fence TTL; approval-policy door uses the same tenant policy store. |
+| Approval policy | `GET /approval-policy`; `PUT /approval-policy` | Tenant default quorum and optional per-kind overrides; missing default is quorum 1. The GET answers a strong content `ETag`; the PUT requires it as `If-Match` (missing or malformed 400, stale 409 `STALE_REVISION`), authorization first (P-D-205). The fence TTL is the deployment setting `fence_ttl_minutes`; no tenant settings door exists (P-D-209). |
 | Retained browse | `GET /bss-products/v1/browse` (absolute) | Preserve `ProductCatalogClientV1` transport until phase 2; serve Published and Deprecated with lifecycle status and deprecated flag; drafts, retiring and retired are absent. |
 
-SKU reads/writes expose `ETag` from `revision`, its concurrency version; categories use `version`. Every PATCH
-requires `If-Match`; compare-and-swap guards the write and increments the version. Stale versions return
+SKU reads/writes expose `ETag` from `revision`, its concurrency version; categories use `version`; the approval
+policy a content tag (P-D-205). Every PATCH, the draft DELETE and the policy PUT require `If-Match`; compare-and-swap guards the write and increments the version. Stale versions return
 409 `STALE_REVISION`; missing required preconditions use the toolkit precondition response. Every POST
 accepts optional `Idempotency-Key`, with replay keyed by tenant, concrete endpoint and client key and retained
 for the configured hours, 24 by default (P-D-198).
@@ -330,8 +331,8 @@ original attempt even after release. Policy PUT remains If-Match only. There is 
 idempotency column; reserve also deduplicates live logical references independently (P-D-193–194).
 
 Permissions deny by default: `products:read` covers scoped reads, `products:author` draft/category and
-reference mutations plus orphan recovery, `products:submit` lifecycle proposals and withdrawal,
-`products:approve` decisions, and `products:settings` settings/policy writes and policy reads. Reference operations also
+reference mutations, the draft delete, the usage-type picker and orphan recovery, `products:submit` lifecycle proposals and withdrawal,
+`products:approve` decisions, and `products:settings` approval-policy writes and reads. Reference operations also
 check the authenticated owner gear; operator force-release requires explicit operator authorization and
 reason. SoD and submitter checks apply in the domain regardless of grants (spec §6, §7.3).
 
@@ -339,18 +340,21 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | --- | --- |
 | `SKU_CODE_TAKEN`, `SKU_NAME_TAKEN` | 409; tenant identity conflict |
 | `SKU_TYPE_FROZEN`, `SKU_REFERENCED`, `SKU_FENCED`, `REFERENCE_RELEASED` | 409; live reference, fence or terminal reservation conflict |
-| `ROW_LOCKED_PENDING`, `STALE_REVISION`, `VERSION_ORDER`, `CATEGORY_IN_USE` | 409; pending ownership, concurrency, timeline or category reference conflict |
+| `ROW_LOCKED_PENDING`, `STALE_REVISION`, `VERSION_ORDER`, `CATEGORY_IN_USE` | 409; pending ownership, concurrency, timeline or category reference conflict (a SKU that is not retired names the category, P-D-208) |
+| `SKU_NOT_DRAFT`, `CATEGORY_RETIRED` | 409; a delete of a SKU that was ever published (P-D-206); a retirement of a retired category, or an assignment to one (P-D-196, P-D-208) |
 | `UNIT_CONTENDED`, `UNIT_ALREADY_DECIDED`, `DUPLICATE_VOTE` | 409; conditional unit write, terminal state or duplicate generation vote |
 | `CONTENDED` | 409; a transaction still contended after its bounded retries (an approval-unit door answers `UNIT_CONTENDED`) |
 | `GENERATION_MISMATCH`, `UNIT_STALE` | 400 with current/new generation; mismatch refuses vote, stale refresh commits |
-| `SOD_VIOLATION`, `NOT_SUBMITTER`, `NOT_DRAFT_AUTHOR` | 403; author/submitter approval, unauthorized withdrawal, or a SKU draft edited by anyone but its author |
+| `SOD_VIOLATION`, `NOT_SUBMITTER`, `NOT_DRAFT_AUTHOR` | 403; author/submitter approval, unauthorized withdrawal, or a SKU draft edited or deleted by anyone but its author |
+| `USAGE_TYPE_FORBIDDEN` | 403; the usage-type catalog, read as the caller, refused the caller at submit or approve (P-D-207) |
 | `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 400 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
 | `APPLY_REFUSED` | Apply failure with domain reason, including SKU_REFERENCED; transaction rolls back without success events |
 | `NO_VERSION_IN_FORCE` | 404; date precedes first version |
 | `SKU_RETIRING`, `SKU_DEPRECATED`, `ITEM_SKU_DEPRECATED` | Pricing-side adoption guards: a new price book entry refuses a retiring (`SKU_RETIRING`) or deprecated (`SKU_DEPRECATED`) SKU; in phase 3 a new plan revision refuses a deprecated SKU (`ITEM_SKU_DEPRECATED`) |
 | `REGISTRY_UNAVAILABLE` | 503 from Pricing when reserve cannot succeed; Pricing writes nothing |
 
-An unreachable configured usage-type catalog is 503 during publication validation. The usage catalog's
+An unreachable configured usage-type catalog is 503 during publication validation; a catalog that refuses the
+caller is 403 `USAGE_TYPE_FORBIDDEN` (P-D-207). The usage catalog's
 authoring behavior is defined in §3.5; these codes do not turn a catalog non-answer into a draft-save outage.
 
 ### 3.4 Internal Dependencies
@@ -386,7 +390,10 @@ order and provenance: registered catalog, usage-collector adapter, then configur
 catalog or unconfigured mode. Resolution tests resolvability only. On draft save, a changed ref's
 definitive unresolved answer is 400 `USAGE_TYPE_UNRESOLVED`; a catalog non-answer does not block save.
 Submit and apply revalidate, fail closed for unresolved refs, and return 503 for an unreachable configured
-catalog (P-D-184, carried from P-D-183 (backup); spec §4, §15).
+catalog (P-D-184, carried from P-D-183 (backup); spec §4, §15). The catalog is read as the caller: a
+catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN` at submit and approve, and does not block a
+draft save; `GET /usage-types` serves the listing half of the port under products:author, so an author
+needs usage-collector read granted with the role (P-D-207).
 
 `SkuUsageV1` is the second port in `products-sdk`, and pricing fills it (P-D-197; pricing D-428). Pricing
 registers it in `ClientHub` at its init; Products resolves it at each `GET /skus` and `GET /skus/{id}`, calls
@@ -897,4 +904,6 @@ type and retirement barriers; P-D-190 → approval policy and subjects; P-D-191 
 P-D-192 → generations and conditional writes; P-D-193 → audit/replay; P-D-194 → the reference
 registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → the SKU usage port;
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
-shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration). Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
+P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

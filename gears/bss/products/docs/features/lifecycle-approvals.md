@@ -123,7 +123,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 
 1. [ ] - `p1` - sku_publish accepts draft and installs published with a new immediate snapshot; sku_change accepts published/deprecated content and the published ↔ deprecated edges - `inst-ap-lifecycle-kind`
 2. [ ] - `p1` - For a change default the requested effective_from to today and refuse a past date at submit; apply max(requested date, apply date) and reject applied dates before the latest stored version with VERSION_ORDER; equal dates append a higher published_version - `inst-ap-lifecycle-date`
-3. [ ] - `p1` - Retirement of a draft, published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation - `inst-ap-lifecycle-retire`
+3. [ ] - `p1` - Retirement of a published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation; a never-published draft is not retired but deleted by its author (DELETE /skus/{id}, P-D-206) - `inst-ap-lifecycle-retire`
 4. [ ] - `p1` - Reject unsupported lifecycle edges, edits while pending and any return from retired; rejected/withdrawn publication or ordinary change leaves prior business content intact - `inst-ap-lifecycle-refuse`
 
 ### Atomic fence and submission
@@ -187,7 +187,7 @@ Orphan expiry cannot clear a pending unit's fence, and environment refusal canno
 | Entity | Transition and guard |
 | --- | --- |
 | SKU | draft → published through sku_publish; published ↔ deprecated and content changes through sku_change. Each successful publish/change appends a snapshot. |
-| Retirement fence | draft/published/deprecated → retiring after guarded fence commit; retiring → retired on apply; reject/withdraw or expired orphan recovery → saved prior lifecycle. |
+| Retirement fence | published/deprecated → retiring after guarded fence commit; retiring → retired on apply; reject/withdraw or expired orphan recovery → saved prior lifecycle. A draft has no retirement edge: a never-published draft is deleted (P-D-206). |
 | Type fence | type_change_pending false → true after guarded commit; pending review retains it; successful change, matching abort or expired orphan recovery clears it. |
 | Unit | submit → pending for nonzero quorum, or approved for successful quorum zero; pending → pending below quorum or after refreshed generation; pending → approved/rejected/withdrawn terminally. |
 | Ownership | pending_unit_id null → unit id conditionally; approval clears it and records approved_by_unit_id; abort clears it without approving new content. |
@@ -207,7 +207,7 @@ Design constraints: `cpt-cf-bss-products-constraint-approval-shape`, `cpt-cf-bss
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/domain/sku.rs`.
 
-The lifecycle is draft, published, deprecated, retiring or retired: sku_publish installs published, sku_change governs published/deprecated content and the reversible published/deprecated edge, and sku_retire installs retired behind a fence. Retired has no reopening transition; rejected/withdrawn publication or change preserves prior business content, and a retirement abort restores the saved lifecycle. Pending ownership prevents direct editing or a second unit, and the exposed lifecycle supports Pricing's SKU_RETIRING and ITEM_SKU_DEPRECATED adoption guards (spec §3 item 35, §4, §6, §7.2; DESIGN §3.1).
+The lifecycle is draft, published, deprecated, retiring or retired: sku_publish installs published, sku_change governs published/deprecated content and the reversible published/deprecated edge, and sku_retire installs retired behind a published or deprecated SKU's fence; a never-published draft is deleted by its author, never retired (P-D-206). Retired has no reopening transition; rejected/withdrawn publication or change preserves prior business content, and a retirement abort restores the saved lifecycle. Pending ownership prevents direct editing or a second unit, and the exposed lifecycle supports Pricing's SKU_RETIRING and ITEM_SKU_DEPRECATED adoption guards (spec §3 item 35, §4, §6, §7.2; DESIGN §3.1).
 
 ### Publication creates and applies a unit
 
@@ -271,7 +271,7 @@ Every existing-unit mutation, including decisions, refresh and withdrawal, condi
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/approval_policy.rs`.
 
-Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly with SETTINGS required for both reading and writing. Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
+Policy reads choose the tenant kind override then the default, falling back to quorum one if the default is missing; GET/PUT approval-policy changes future submissions directly with SETTINGS required for both reading and writing; the GET answers a content ETag the PUT requires as If-Match (P-D-205). Even at zero quorum, submit records the unit, items, snapshot and submission audit, acquires ownership and applies ordinary validation. Success records approved with decided_at equal to submitted_at, no decisions and the ordinary terminal audit/events; copied quorum never changes with later policy edits (spec §6, §14; DESIGN §3.2–§3.3; P-D-190).
 
 ### All terminal paths record audit and decision event
 
@@ -292,7 +292,7 @@ obligations here and integration checks when its phase 2 caller path exists.
 
 | DoD | PRD trace | Given / When / Then |
 | --- | --- | --- |
-| `cpt-cf-bss-products-dod-lifecycle-edges` | AC #7, #19; `cpt-cf-bss-products-fr-sku-lifecycle`, `cpt-cf-bss-products-fr-approval-units` | Given a draft and published/deprecated SKUs, when eligible publish/change/retire units apply, then only the declared lifecycle edges occur; locked edits fail with ROW_LOCKED_PENDING and retired cannot reopen, while Pricing contract checks refuse entry/item adoption of retiring with SKU_RETIRING and new-plan adoption of deprecated with ITEM_SKU_DEPRECATED. |
+| `cpt-cf-bss-products-dod-lifecycle-edges` | AC #7, #19; `cpt-cf-bss-products-fr-sku-lifecycle`, `cpt-cf-bss-products-fr-approval-units` | Given a draft and published/deprecated SKUs, when eligible publish/change/retire units apply, then only the declared lifecycle edges occur (a draft is deleted, never retired, P-D-206); locked edits fail with ROW_LOCKED_PENDING and retired cannot reopen, while Pricing contract checks refuse entry/item adoption of retiring with SKU_RETIRING and new-plan adoption of deprecated with ITEM_SKU_DEPRECATED. |
 | `cpt-cf-bss-products-dod-sku-publish-unit` | AC #5, #19, #20; `cpt-cf-bss-products-fr-sku-lifecycle`, `cpt-cf-bss-products-fr-approval-units`, `cpt-cf-bss-products-fr-sku-metering` | Given valid drafts under quorum one and two, when eligible reviewers approve the current generation, then one or two votes respectively publish with version/provenance and one vote leaves quorum two pending; incomplete usage content fails with USAGE_NEEDS_METER and competing submission fails with ROW_LOCKED_PENDING without an extra unit. |
 | `cpt-cf-bss-products-dod-sku-change-effective-from` | AC #3, #4, #8; `cpt-cf-bss-products-fr-sku-descriptors`, `cpt-cf-bss-products-fr-sku-versions` | Given Storage GL 4010-STOR, when independent review approves 4012-STOR effective October 1, then its dated version and SkuChanged commit and earlier bindings retain the old GL; a backwards date fails with VERSION_ORDER and direct editing of the pending proposal fails with ROW_LOCKED_PENDING. |
 | `cpt-cf-bss-products-dod-sku-retire-fenced` | AC #10, #11, #12; `cpt-cf-bss-products-fr-sku-retire-fenced` | Given a live reservation, when retire is requested, then SKU_REFERENCED leaves lifecycle unfenced and creates no unit; given a committed orphan fence, retry resumes or expired recovery restores it, but never clears a pending unit's fence; given defensive apply refusal, APPLY_REFUSED/SKU_REFERENCED preserves retiring until matching rejection/withdrawal restores the saved lifecycle. |

@@ -37,6 +37,11 @@
 | P-D-202 | L | A validation refusal lists every violation of its stage | DECIDED 2026-09-27 · Carried from P-D-33, P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | P-D-203 | M | The usage-type resolve is bounded and runs outside the transaction | DECIDED 2026-09-27 · Carried from P-D-121 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; amends P-D-184 |
 | P-D-204 | L | Authz label schemas are registered at boot | DECIDED 2026-09-27 · Carried from P-D-134 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-205 | M | The approval policy is read with a content `ETag` and written under `If-Match` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-206 | M | A never-published draft is deleted by its author, never retired | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-190 |
+| P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203 |
+| P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186 |
+| P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
 
 ## Entries
 
@@ -50,10 +55,11 @@ On draft save, a changed ref is checked when a catalog is configured: a definiti
 400 `USAGE_TYPE_UNRESOLVED`; a catalog non-answer does not block the save. This is the carried save posture,
 not a blanket 503 on authoring. Submit validates the proposed metering and `apply` revalidates before
 publication or change. Publication requires both `usage_type_ref` and `unit` and fails closed: an
-unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog is 503.
+unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog is 503. P-D-207 amends this
+entry: a catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN`, and the picker is `GET /usage-types`.
 
 **Traceability:** [PRD `fr-sku-metering`](PRD.md#fr-sku-metering); spec §4, §6 and §15
-(the usage-type catalog design remains in force).
+(the usage-type catalog design remains in force, with the picker's path and gate changed by P-D-207).
 
 #### P-D-185 [H] No Product entity
 
@@ -70,7 +76,8 @@ One category per SKU, with `code`, `name`, `is_default`, `sort_order` and `statu
 category code is unique per tenant. Creation and edits, including rename, are direct operations without
 approval. Retirement is refused while any SKU points at the category (`CATEGORY_IN_USE`). A `parent_id`
 column is a possible future addition, not part of this model. P-D-196 amends this entry: the category of a
-SKU is optional, so a SKU has at most one category.
+SKU is optional, so a SKU has at most one category. P-D-208 amends it again: only a SKU that is not retired
+keeps a category in use.
 
 **Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat); spec §2 decision 12, §4;
 ADR-0001 consequences.
@@ -104,7 +111,7 @@ serializable isolation on Postgres. Reserved and confirmed rows are live: they r
 
 The fence records `fenced_at` and `fence_op_id`. A retried submit finding a fence without a pending unit
 resumes by rechecking and submitting. An orphan fence older than configurable `fence_ttl_minutes` is
-reverted by the next request on the SKU or `POST /skus/{id}/unfence`; recovery cannot clear a pending
+reverted by the next request on the SKU or `POST /skus/{id}/unfence` (the TTL is a deployment setting, P-D-209); recovery cannot clear a pending
 unit's fence. Withdrawal or rejection clears the fence and pending lock in one statement guarded by
 the unit id and fence operation id, restoring the pre-fence state.
 
@@ -122,7 +129,7 @@ The shared `bss-approval` shape serves `sku_publish`, `sku_change` (with `effect
 `sku_retire`. Quorum comes from tenant `approval_policy`, with an optional per-kind override, and is
 copied into the unit on submit; a missing `'*'` row means quorum 1, fail-safe. There is no materiality
 threshold. The submitter and every item's author are excluded from approving (403 `SOD_VIOLATION`),
-even with both permissions; a reviewer need not have submit permission. A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404).
+even with both permissions; a reviewer need not have submit permission. A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404). The delete is P-D-206's.
 
 Submit validates and conditionally acquires `pending_unit_id` (`ROW_LOCKED_PENDING`, 409, on failure).
 Quorum zero still records an approved unit with `decided_at = submitted_at`, no decisions, and the
@@ -395,3 +402,92 @@ types-registry, so RBAC role definitions can target the gear's labels. A `TypesR
 the `ClientHub`, or any refused registration, fails the boot.
 
 **Source:** Carried from P-D-134 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-205 [M] The approval policy is read with a content `ETag` and written under `If-Match`
+
+DESIGN §3.3 already said "Policy PUT remains If-Match only"; the doors did not (validation D1: last write
+won). `GET /approval-policy` answers a strong `ETag`: the first eight bytes of the SHA-256 of the policy's
+canonical rendering (P-D-201's rendering of `{ default_quorum, overrides }`), as a quoted decimal. The policy
+is a set of `(kind, quorum)` rows with no revision column, so its tag is its content, as pricing's policy tag
+is (`policy_tag`); a write to any kind moves it. `PUT /approval-policy` requires that tag as `If-Match`: a
+missing or malformed header (the wildcard, a weak tag, a list, a non-decimal) is 400 `VALIDATION` on
+`If-Match`; a tag that no longer matches is 409 `STALE_REVISION`. The comparison reads the policy inside the
+write's transaction (serializable on Postgres), so of two writers holding one tag exactly one wins. The PUT
+answers the new policy with its new tag. Authorization is judged first: a caller without `products:settings`
+is 403 before any 400. A refused write writes no audit row.
+
+Breaking: every caller of the policy PUT sends `If-Match` (the gears-rust e2e in this run; vhp-core's
+`set_products_quorum` fixture in phase 6.6; the deploy note).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D1, plan review M4).
+
+#### P-D-206 [M] A never-published draft is deleted by its author, never retired
+
+A draft cannot be retired (the fence takes only `published` or `deprecated`, P-D-189), and slice 03 said it
+could (validation D3). A never-published draft is deleted instead: `DELETE /skus/{id}` when the SKU is
+`draft` with `published_version = 0` and no pending unit, by its author only, like the draft PATCH (403
+`NOT_DRAFT_AUTHOR`, P-D-190, pricing D-404), under `If-Match` with the SKU's revision. It answers 204 and
+writes an audit row `sku.delete` whose subject is the SKU. Refusals, in the draft PATCH's order: 409
+`SKU_NOT_DRAFT` (published once, or not a draft), 409 `ROW_LOCKED_PENDING`, 403 `NOT_DRAFT_AUTHOR`, 409
+`STALE_REVISION`; then 409 `SKU_REFERENCED` if the registry holds any row naming the SKU. None can today: a
+draft admits no reservation (`reservation_allowed`), and the guard is asserted by a test that seeds one past
+the door. The delete is one conditional statement guarded by the same predicate, so a concurrent submit or
+edit loses to it or wins against it, never both.
+
+Only the head row goes. Its audit rows stay (append-only, P-D-200). A draft owns no version rows and no
+references. A rejected or withdrawn unit that named it stays: `GET /approval-units/{id}` answers it with
+`impact_live: null` instead of 404, and the queue still lists it. The code and name are free again (P-D-187).
+A replay of the create's `Idempotency-Key` still answers the stored 201 of the deleted id (P-D-198's replay
+reads no other row); documented, not changed.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D3 and ask 5, plan review M1).
+
+#### P-D-207 [H] Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker
+
+Amends P-D-184 and P-D-203. Owner option b: products has no system actor for the usage-type catalog; it resolves
+and lists usage types with the caller's security context, as it did. A system actor would not be authorized
+on the stand (vhp-core's PDP trusts only `am.system` and `rms.system`; plan review H2).
+
+- `UsageTypeAnswer` gains `Forbidden`. The collector adapter maps the collector's `PermissionDenied` to it,
+  where it answered `Unavailable` before (validation D5); the PDP's reason stays in the operator log.
+- Submit and approve answer `Forbidden` with 403 `USAGE_TYPE_FORBIDDEN` before their transaction opens, so
+  nothing is recorded and no key is claimed; `Unavailable` stays 503 `USAGE_TYPE_UNAVAILABLE`. A publish
+  report that carries `USAGE_TYPE_FORBIDDEN` answers 403 too. A draft save keeps P-D-184's posture: only a
+  definite unresolved answer refuses it, so a denial does not block the save.
+- `GET /bss-products/v1/usage-types?q&kind&limit&cursor` mounts `UsageTypeCatalog::list` under the products
+  SKU-author grant (`sku × author`): `{ source, items [{ gts_id, kind, metadata_fields }], page_info {
+  next_cursor, prev_cursor, limit } }`, `source` being the catalog's provenance. `limit` defaults to 50 and is
+  clamped at 200; 0 or a non-integer is 400. A catalog that refuses the caller is 403, an unconfigured one 501,
+  an unreachable one 503, an empty configured one 200 with no items (the 09-22 design's §4).
+- The 09-22 catalog design named the path `/bss-products/v1/catalog/usage-types` and gated it on
+  `recognized_set × read`; that resource no longer exists, and picking a usage type is authoring a SKU, so the
+  path is `/usage-types` and the gate the author grant.
+
+Deploy note: SKU authors, submitters and approvers of usage SKUs need usage-collector read, granted with their
+role; without it submit and approve answer 403 `USAGE_TYPE_FORBIDDEN`.
+
+**Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9).
+
+#### P-D-208 [M] A retired SKU no longer keeps its category in use
+
+Amends P-D-186 (#9). Category retirement is refused (409 `CATEGORY_IN_USE`) only while a SKU in `draft`,
+`published`, `deprecated` or `retiring` names the category. A `retired` SKU no longer counts: nothing moves a
+retired SKU (`sku_change` takes only published or deprecated), so under P-D-186 a category that ever held one
+could never retire. `retiring` still counts, because a rejected or withdrawn retirement returns the SKU to its
+prior lifecycle. The check stays one conditional write with a `NOT EXISTS` over those four lifecycles, in the
+serializable transaction category assignment also runs in. A SKU without a category never counts (P-D-196).
+
+Retiring a category that is already retired is 409 `CATEGORY_RETIRED` (validation D6), the code an assignment
+to a retired category already answers; `CATEGORY_IN_USE` no longer covers it.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D6, ask 9).
+
+#### P-D-209 [L] No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes`
+
+DESIGN §3.3, PRD §7.1 and slice 03 §5 described `GET/PUT /settings` with a tenant `fence_ttl_minutes`
+(validation D2). No such door or table was built: the orphan-fence TTL is the gear's configuration
+`fence_ttl_minutes` (default 30), one value per deployment. The docs now say so, and the route leaves them;
+the approval policy stays on its own doors (P-D-190, P-D-205).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D2).
+
