@@ -16,6 +16,7 @@ use super::{
     price_book_entries::{settled, stored},
     support::{self, DoorError},
 };
+use crate::api::rest::closed_sets::PricingRevisionState;
 use crate::{
     domain::{
         plan::{MAX_ITEMS, ReferenceState, RevisionState, Treatment},
@@ -238,7 +239,7 @@ pub(super) async fn patch(
     support::audit(tx, ctx, correlation, "plan_item.patch", id, m.version).await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPlanItemDto::from(m),
+        &PricingPlanItemDto::try_from(m)?,
         Some(version + 1),
     )?)
 }
@@ -263,10 +264,13 @@ pub(super) async fn get(
     Ok(support::response(
         StatusCode::OK,
         &super::dto::PricingPlanItemReadDto {
-            item: m.into(),
+            item: m.try_into()?,
             plan_id: r.plan_id,
             rev_no: r.rev_no,
-            state: r.state,
+            state: PricingRevisionState::stored(
+                &r.state,
+                &format_args!("revision {} state", r.id),
+            )?,
         },
         Some(version),
     )?)

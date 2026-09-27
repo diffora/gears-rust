@@ -2,6 +2,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-list-search:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-card-with-references:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-create-unique:p1
+use super::closed_sets::{ProductsReferenceKind, ProductsReferenceState};
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
     dto::{ReferencesDto, SkuCard, SkuDto, SkuPatchRequest, SkuRequest, SkuVersionDto},
@@ -59,10 +60,11 @@ struct ReferenceQuery {
 #[toolkit_macros::api_dto(response)]
 struct ReferenceDto {
     id: Uuid,
+    /// The owning gear: a string, since no CHECK holds the column to a set (P-D-217).
     owner: String,
-    kind: String,
+    kind: ProductsReferenceKind,
     ref_id: Uuid,
-    state: String,
+    state: ProductsReferenceState,
     #[serde(with = "time::serde::rfc3339")]
     reserved_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -71,20 +73,27 @@ struct ReferenceDto {
     forced: bool,
     release_reason: Option<String>,
 }
-impl From<repo::SkuReference> for ReferenceDto {
-    fn from(r: repo::SkuReference) -> Self {
-        Self {
+impl TryFrom<repo::SkuReference> for ReferenceDto {
+    type Error = RepoError;
+    fn try_from(r: repo::SkuReference) -> Result<Self, RepoError> {
+        Ok(Self {
             id: r.id,
             owner: r.owner_gear,
-            kind: r.ref_kind,
+            kind: ProductsReferenceKind::stored(
+                &r.ref_kind,
+                &format_args!("reference {} ref_kind", r.id),
+            )?,
             ref_id: r.ref_id,
-            state: r.state,
+            state: ProductsReferenceState::stored(
+                &r.state,
+                &format_args!("reference {} state", r.id),
+            )?,
             reserved_at: r.reserved_at,
             released_at: r.released_at,
             released_by: r.released_by,
             forced: r.forced,
             release_reason: r.release_reason,
-        }
+        })
     }
 }
 #[toolkit_macros::api_dto(response)]
@@ -857,7 +866,11 @@ async fn sku_references(
         .map_err(|e| repo_error_to_canonical(&e))?;
     Ok(Json(ReferenceList {
         summary: summary.into(),
-        items: items.into_iter().map(Into::into).collect(),
+        items: items
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, RepoError>>()
+            .map_err(|e| repo_error_to_canonical(&e))?,
     }))
 }
 /// Commit audit attribution atomically with the draft mutation, with the lifecycle move it made

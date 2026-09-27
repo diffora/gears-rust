@@ -15,6 +15,7 @@ use super::{
     plans,
     support::{self, DoorError, approval_failure},
 };
+use crate::api::rest::closed_sets::PricingVoteOutcome;
 use crate::{
     domain::price::{self, PriceState},
     infra::{
@@ -128,7 +129,7 @@ async fn prices_of(
                 price_book_entry_repo::find(tx, &scope, store.tenant_id, m.price_book_entry_id)
                     .await?
                     .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", m.id)))?;
-            prices.push(PricingPriceDto::of(m, &entry.model));
+            prices.push(PricingPriceDto::of(m, &entry.model)?);
         }
     }
     Ok(prices)
@@ -428,7 +429,7 @@ pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response
             let receipt = PricingPlanRevisionSubmitReceipt {
                 applied: submitted.applied,
                 unit: unit_dto(tx, &cmd.store(), submitted.unit).await?,
-                revision: PricingPlanRevisionDto::of(r, items),
+                revision: PricingPlanRevisionDto::of(&r, items)?,
             };
             support::answer(
                 tx,
@@ -480,10 +481,11 @@ async fn proposals(
         let before = price::in_force_before(&prices, r)
             .and_then(|b| stored.iter().find(|m| m.id == b.id))
             .cloned()
-            .map(|b| PricingPriceDto::of(b, &entry.model));
+            .map(|b| PricingPriceDto::of(b, &entry.model))
+            .transpose()?;
         out.push(PricingProposedPrice {
-            price: PricingPriceDto::of(m.clone(), &entry.model),
-            entry: PricingPriceBookEntryDto::from(entry),
+            price: PricingPriceDto::of(m.clone(), &entry.model)?,
+            entry: PricingPriceBookEntryDto::try_from(entry)?,
             chain: r.dim_value.clone().unwrap_or_else(|| "default".into()),
             before,
             pair_partner_id: r.paired_price_id,
@@ -838,18 +840,31 @@ async fn vote_in(
             )
             .await;
         }
-        ApproveOutcome::Pending { have, need } => {
-            ("pending", "approval.vote", Some(have), Some(need))
-        }
+        ApproveOutcome::Pending { have, need } => (
+            PricingVoteOutcome::Pending,
+            "approval.vote",
+            Some(have),
+            Some(need),
+        ),
         ApproveOutcome::Applied => {
             if action == Vote::Approve {
                 published(tx, cmd, &store, &subject, id, now).await?;
             }
             decided(tx, cmd, &store, id, now).await?;
             match action {
-                Vote::Approve => ("applied", "approval.approved", None, None),
-                Vote::Reject => ("rejected", "approval.rejected", None, None),
-                Vote::Withdraw => ("withdrawn", "approval.withdrawn", None, None),
+                Vote::Approve => (PricingVoteOutcome::Applied, "approval.approved", None, None),
+                Vote::Reject => (
+                    PricingVoteOutcome::Rejected,
+                    "approval.rejected",
+                    None,
+                    None,
+                ),
+                Vote::Withdraw => (
+                    PricingVoteOutcome::Withdrawn,
+                    "approval.withdrawn",
+                    None,
+                    None,
+                ),
             }
         }
     };
@@ -858,7 +873,7 @@ async fn vote_in(
     let receipt = PricingVoteReceipt {
         have,
         need,
-        outcome: label.into(),
+        outcome: label,
         unit: unit_dto(tx, &store, unit).await?,
     };
     support::answer(

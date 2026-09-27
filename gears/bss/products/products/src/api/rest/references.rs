@@ -4,7 +4,8 @@
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
     dto::{ReferenceReceipt, ReleaseRequest, ReserveRequest},
-    governance as g, json_body, replay, require_authenticated, tx_to_canonical,
+    governance as g, json_body, replay, repo_error_to_canonical, require_authenticated,
+    tx_to_canonical,
 };
 use crate::{
     authz::actions,
@@ -176,7 +177,7 @@ async fn reserve(
                         } else {
                             StatusCode::OK
                         },
-                        &ReferenceReceipt::from(row),
+                        &ReferenceReceipt::try_from(row).map_err(TxError::Repo)?,
                     )
                     .await
                 })
@@ -242,7 +243,7 @@ async fn confirm(
                     tenant,
                     claim.as_ref(),
                     StatusCode::OK,
-                    &ReferenceReceipt::from(row),
+                    &ReferenceReceipt::try_from(row).map_err(TxError::Repo)?,
                 )
                 .await
             })
@@ -374,7 +375,8 @@ async fn release(
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(ReferenceReceipt::from(row)).into_response())
+    let receipt = ReferenceReceipt::try_from(row).map_err(|e| repo_error_to_canonical(&e))?;
+    Ok(Json(receipt).into_response())
 }
 
 // Shared transaction operations: REST adds replay envelopes, local callers add owner binding.

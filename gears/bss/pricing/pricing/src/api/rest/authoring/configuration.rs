@@ -12,6 +12,7 @@ use super::{
     },
 };
 use crate::{
+    api::rest::closed_sets::PricingBillingTiming,
     domain::{book, dimension, price_book_entry::validate_template},
     infra::storage::{
         RepoError,
@@ -39,7 +40,7 @@ pub async fn settings(
     let Some(m) = settings_repo::find(tx, scope, tenant, tenant).await? else {
         // Version 0: nothing was ever written, so nobody changed anything (D-438).
         return Ok(PricingSettingsDto {
-            default_timing: "advance".into(),
+            default_timing: PricingBillingTiming::Advance,
             default_rounding: "half_up".into(),
             default_gl: None,
             default_tax_category: None,
@@ -53,7 +54,10 @@ pub async fn settings(
     let currencies = serde_json::from_value(m.currencies)
         .map_err(|_| RepoError::CorruptRow(format!("settings of {tenant}: currencies")))?;
     Ok(PricingSettingsDto {
-        default_timing: m.default_timing,
+        default_timing: PricingBillingTiming::stored(
+            &m.default_timing,
+            &format_args!("settings of {tenant}: default_timing"),
+        )?,
         default_rounding: m.default_rounding,
         default_gl: m.default_gl,
         default_tax_category: m.default_tax_category,

@@ -282,7 +282,7 @@ async fn create_in(
         items: items
             .into_iter()
             .map(|m| PricingPriceDto::of(m, pc.model.as_str()))
-            .collect(),
+            .collect::<Result<_, _>>()?,
     };
     support::answer(
         tx,
@@ -381,7 +381,7 @@ pub async fn patch(
     support::audit(tx, ctx, correlation, "price.patch", id, next.version).await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPriceDto::of(next, pc.model.as_str()),
+        &PricingPriceDto::of(next, pc.model.as_str())?,
         Some(version + 1),
     )?)
 }

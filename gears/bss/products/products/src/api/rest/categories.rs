@@ -249,13 +249,17 @@ async fn scope(
         })
     })
 }
-fn response(status: StatusCode, c: Category) -> Response {
-    (
+/// # Errors
+/// A stored status outside the category's closed set (P-D-217): a storage failure.
+fn response(status: StatusCode, c: Category) -> Result<Response, CanonicalError> {
+    let version = c.version;
+    let body = CategoryDto::try_from(c).map_err(|e| repo_error_to_canonical(&e))?;
+    Ok((
         status,
-        [(header::ETAG, etag(InternalRevision::new(c.version)))],
-        Json(CategoryDto::from(c)),
+        [(header::ETAG, etag(InternalRevision::new(version)))],
+        Json(body),
     )
-        .into_response()
+        .into_response())
 }
 /// @cpt-cf-bss-products-fr-category-flat
 async fn create_category(
@@ -320,7 +324,7 @@ async fn create_category(
                         tenant_id,
                         claim.as_ref(),
                         StatusCode::CREATED,
-                        &CategoryDto::from(c),
+                        &CategoryDto::try_from(c).map_err(TxError::Repo)?,
                     )
                     .await
                 })
@@ -382,12 +386,13 @@ async fn list_categories(
             .into_iter()
             .map(|c| {
                 let sku_count = counts.get(&c.id).copied().unwrap_or(0);
-                ProductsCategoryItem {
-                    category: c.into(),
+                Ok(ProductsCategoryItem {
+                    category: c.try_into()?,
                     sku_count,
-                }
+                })
             })
-            .collect(),
+            .collect::<Result<_, RepoError>>()
+            .map_err(|e| repo_error_to_canonical(&e))?,
         page_info: page.page_info,
     }))
 }
@@ -418,10 +423,12 @@ async fn get_category(
         .get(&id)
         .copied()
         .unwrap_or(0);
+    let version = c.version;
+    let category = c.try_into().map_err(|e| repo_error_to_canonical(&e))?;
     Ok((
-        [(header::ETAG, etag(InternalRevision::new(c.version)))],
+        [(header::ETAG, etag(InternalRevision::new(version)))],
         Json(ProductsCategoryItem {
-            category: c.into(),
+            category,
             sku_count,
         }),
     )
@@ -491,7 +498,7 @@ async fn update_category(
         )
         .await
         .map_err(tx_to_canonical)?;
-    Ok(response(StatusCode::OK, updated))
+    response(StatusCode::OK, updated)
 }
 /// @cpt-cf-bss-products-fr-category-flat
 async fn retire_category(
@@ -571,7 +578,7 @@ async fn retire_category(
                         tenant_id,
                         claim.as_ref(),
                         StatusCode::OK,
-                        &CategoryDto::from(c),
+                        &CategoryDto::try_from(c).map_err(TxError::Repo)?,
                     )
                     .await
                 })

@@ -297,6 +297,12 @@ environment failure returns `APPLY_REFUSED` and rolls back (P-D-190, P-D-192–1
 Routes are relative to `/bss-products/v1`. Fields and query parameters use snake_case, including
 `effective_from`, `ref_id` and `reservation_id` (P-D-191 supersedes the older PRD spelling); the dated version
 read takes `date` at its own path (P-D-214).
+Every closed set on a response schema is an enum of exactly its stored tokens (P-D-217): a SKU's `type`,
+`lifecycle` and `billing_timing`, a category's `status`, the history's `from_lifecycle` and `to_lifecycle`, a
+unit's `state`, a decision, a vote's `outcome`, and a reference's `kind` and `state`. A stored token outside its
+set is a 500 (`CorruptRow`). Request fields keep `string`, so each door keeps its `VALIDATION` refusal; the
+history's `action` and `unit_kind`, a unit's `kind` and `ref_type`, a reference's `owner`, a usage type's
+`kind`, the picker's `source` and the `/browse` envelope stay `string`.
 Responses use toolkit RFC-9457 `Problem` with domain `code`, `field` and `message`; stale-generation
 responses additionally expose the current generation. All doors use authenticated OperationBuilder
 registration and standardized errors.

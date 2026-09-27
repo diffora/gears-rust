@@ -1,6 +1,13 @@
-//! Gear-local `snake_case` wire types; SDK enums are represented by their stable tokens.
+//! Gear-local `snake_case` wire types; SDK enums are represented by their stable tokens. A closed
+//! set on a response is its `enum` (P-D-217); a request keeps `string`, so its door refuses.
+use super::closed_sets::{
+    ProductsBillingTiming, ProductsCategoryStatus, ProductsDecisionKind, ProductsLifecycle,
+    ProductsReferenceKind, ProductsReferenceState, ProductsSkuType, ProductsUnitState,
+    ProductsVoteOutcome,
+};
 use crate::domain::sku::{NewSku, SkuPatch};
 use crate::domain::validation::ValidationReport;
+use crate::infra::storage::RepoError;
 use bss_products_sdk::models::{
     BillingTiming, Category, Lifecycle, Sku, SkuContent, SkuType, SkuVersion,
 };
@@ -17,21 +24,25 @@ pub struct CategoryDto {
     pub name: String,
     pub is_default: bool,
     pub sort_order: i32,
-    pub status: String,
+    pub status: ProductsCategoryStatus,
     pub version: i64,
 }
-impl From<Category> for CategoryDto {
-    fn from(value: Category) -> Self {
-        Self {
+impl TryFrom<Category> for CategoryDto {
+    type Error = RepoError;
+    fn try_from(value: Category) -> Result<Self, RepoError> {
+        Ok(Self {
             id: value.id,
             tenant_id: value.tenant_id,
             code: value.code,
             name: value.name,
             is_default: value.is_default,
             sort_order: value.sort_order,
-            status: value.status,
+            status: ProductsCategoryStatus::stored(
+                &value.status,
+                &format_args!("category {} status", value.id),
+            )?,
             version: value.version,
-        }
+        })
     }
 }
 /// Wire representation of the registry Sku.
@@ -42,18 +53,18 @@ pub struct SkuDto {
     pub code: String,
     pub name: String,
     #[serde(rename = "type")]
-    pub r#type: String,
+    pub r#type: ProductsSkuType,
     /// `null`: the SKU has no category (P-D-196).
     pub category_id: Option<Uuid>,
     pub description: String,
     pub sellable: bool,
-    pub lifecycle: String,
+    pub lifecycle: ProductsLifecycle,
     pub revision: i64,
     pub published_version: i64,
     pub gl_code: Option<String>,
     pub tax_category: Option<String>,
     pub invoice_line_template: Option<String>,
-    pub billing_timing: Option<String>,
+    pub billing_timing: Option<ProductsBillingTiming>,
     pub usage_type_ref: Option<String>,
     pub unit: Option<String>,
     pub type_change_pending: bool,
@@ -72,19 +83,17 @@ impl From<Sku> for SkuDto {
             tenant_id: value.tenant_id,
             code: value.code,
             name: value.name,
-            r#type: value.r#type.as_str().to_owned(),
+            r#type: value.r#type.into(),
             category_id: value.category_id,
             description: value.description,
             sellable: value.sellable,
-            lifecycle: value.lifecycle.as_str().to_owned(),
+            lifecycle: value.lifecycle.into(),
             revision: value.revision,
             published_version: value.published_version,
             gl_code: value.gl_code,
             tax_category: value.tax_category,
             invoice_line_template: value.invoice_line_template,
-            billing_timing: value
-                .billing_timing
-                .map(|v| billing_timing_token(v).to_owned()),
+            billing_timing: value.billing_timing.map(Into::into),
             usage_type_ref: value.usage_type_ref,
             unit: value.unit,
             type_change_pending: value.type_change_pending,
@@ -102,7 +111,7 @@ pub struct SkuContentDto {
     pub code: String,
     pub name: String,
     #[serde(rename = "type")]
-    pub r#type: String,
+    pub r#type: ProductsSkuType,
     /// `null`: the SKU has no category (P-D-196).
     pub category_id: Option<Uuid>,
     pub description: String,
@@ -110,7 +119,7 @@ pub struct SkuContentDto {
     pub gl_code: Option<String>,
     pub tax_category: Option<String>,
     pub invoice_line_template: Option<String>,
-    pub billing_timing: Option<String>,
+    pub billing_timing: Option<ProductsBillingTiming>,
     pub usage_type_ref: Option<String>,
     pub unit: Option<String>,
 }
@@ -119,16 +128,14 @@ impl From<SkuContent> for SkuContentDto {
         Self {
             code: value.code,
             name: value.name,
-            r#type: value.r#type.as_str().to_owned(),
+            r#type: value.r#type.into(),
             category_id: value.category_id,
             description: value.description,
             sellable: value.sellable,
             gl_code: value.gl_code,
             tax_category: value.tax_category,
             invoice_line_template: value.invoice_line_template,
-            billing_timing: value
-                .billing_timing
-                .map(|v| billing_timing_token(v).to_owned()),
+            billing_timing: value.billing_timing.map(Into::into),
             usage_type_ref: value.usage_type_ref,
             unit: value.unit,
         }
@@ -157,13 +164,6 @@ impl From<SkuVersion> for SkuVersionDto {
     }
 }
 
-/// Stable billing token (the SDK enum has no `as_str` method).
-pub(crate) const fn billing_timing_token(value: BillingTiming) -> &'static str {
-    match value {
-        BillingTiming::Advance => "advance",
-        BillingTiming::Arrears => "arrears",
-    }
-}
 fn parse_billing(value: &str) -> Option<BillingTiming> {
     match value {
         "advance" => Some(BillingTiming::Advance),
@@ -313,9 +313,10 @@ pub struct ProductsSkuHistoryEntry {
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
     pub actor: Uuid,
+    /// The audit row's action: a string, since no CHECK holds the column to a set (P-D-217).
     pub action: String,
-    pub from_lifecycle: Option<String>,
-    pub to_lifecycle: Option<String>,
+    pub from_lifecycle: Option<ProductsLifecycle>,
+    pub to_lifecycle: Option<ProductsLifecycle>,
     pub unit_id: Option<Uuid>,
     pub unit_kind: Option<String>,
     pub note: Option<String>,
@@ -326,8 +327,8 @@ impl From<crate::infra::storage::repo::SkuHistoryEntry> for ProductsSkuHistoryEn
             at: e.at,
             actor: e.actor,
             action: e.action,
-            from_lifecycle: e.from_lifecycle.map(|l| l.as_str().to_owned()),
-            to_lifecycle: e.to_lifecycle.map(|l| l.as_str().to_owned()),
+            from_lifecycle: e.from_lifecycle.map(Into::into),
+            to_lifecycle: e.to_lifecycle.map(Into::into),
             unit_id: e.unit_id,
             unit_kind: e.unit_kind,
             note: e.note,
@@ -468,7 +469,7 @@ pub struct UnitDto {
     pub kind: String,
     pub ref_type: String,
     pub ref_id: Uuid,
-    pub state: String,
+    pub state: ProductsUnitState,
     pub generation: i32,
     pub quorum_required: u32,
     #[serde(with = "crate::infra::serde_date::option")]
@@ -487,7 +488,7 @@ pub struct UnitDto {
 pub struct DecisionDto {
     pub actor: Uuid,
     pub generation: i32,
-    pub decision: String,
+    pub decision: ProductsDecisionKind,
     pub note: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub at: OffsetDateTime,
@@ -512,7 +513,7 @@ pub struct SubmitReceipt {
 pub struct VoteReceipt {
     pub have: Option<u32>,
     pub need: Option<u32>,
-    pub outcome: String,
+    pub outcome: ProductsVoteOutcome,
     pub unit: UnitDto,
 }
 #[toolkit_macros::api_dto(request)]
@@ -543,7 +544,7 @@ impl From<bss_approval::Unit> for UnitDto {
             kind: u.kind,
             ref_type: u.ref_type,
             ref_id: u.ref_id,
-            state: u.state.as_str().into(),
+            state: u.state.into(),
             generation: u.generation,
             quorum_required: u.quorum_required,
             common_effective_date: u.common_effective_date,
@@ -562,7 +563,7 @@ impl From<bss_approval::Decision> for DecisionDto {
         Self {
             actor: d.actor,
             generation: d.generation,
-            decision: d.verdict.as_str().into(),
+            decision: d.verdict.into(),
             note: d.note,
             at: d.at,
             stale: d.stale,
@@ -594,21 +595,28 @@ pub struct ReferenceReceipt {
     pub reservation_id: Uuid,
     pub sku_id: Uuid,
     pub owner: String,
-    pub kind: String,
+    pub kind: ProductsReferenceKind,
     pub ref_id: Uuid,
-    pub state: String,
+    pub state: ProductsReferenceState,
     pub forced: bool,
 }
-impl From<crate::infra::storage::repo::SkuReference> for ReferenceReceipt {
-    fn from(r: crate::infra::storage::repo::SkuReference) -> Self {
-        Self {
+impl TryFrom<crate::infra::storage::repo::SkuReference> for ReferenceReceipt {
+    type Error = RepoError;
+    fn try_from(r: crate::infra::storage::repo::SkuReference) -> Result<Self, RepoError> {
+        Ok(Self {
             reservation_id: r.id,
             sku_id: r.sku_id,
             owner: r.owner_gear,
-            kind: r.ref_kind,
+            kind: ProductsReferenceKind::stored(
+                &r.ref_kind,
+                &format_args!("reference {} ref_kind", r.id),
+            )?,
             ref_id: r.ref_id,
-            state: r.state,
+            state: ProductsReferenceState::stored(
+                &r.state,
+                &format_args!("reference {} state", r.id),
+            )?,
             forced: r.forced,
-        }
+        })
     }
 }

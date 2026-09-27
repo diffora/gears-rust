@@ -1405,7 +1405,7 @@ async fn list_entries(
                         let counted = usage.remove(&m.id).unwrap_or_default();
                         dto::PricingPriceBookEntryReadDto::of(m, counted)
                     })
-                    .collect(),
+                    .collect::<Result<_, _>>()?,
             };
             Ok(response(StatusCode::OK, &body, None)?)
         })
@@ -1702,7 +1702,7 @@ async fn get_entry(
                 .unwrap_or_default();
             Ok(response(
                 StatusCode::OK,
-                &dto::PricingPriceBookEntryReadDto::of(m, usage),
+                &dto::PricingPriceBookEntryReadDto::of(m, usage)?,
                 Some(version),
             )?)
         })
@@ -1815,7 +1815,10 @@ async fn list_reference_ops(
             Ok(response(
                 StatusCode::OK,
                 &dto::PricingReferenceOpPage {
-                    items: items.into_iter().map(Into::into).collect(),
+                    items: items
+                        .into_iter()
+                        .map(TryInto::try_into)
+                        .collect::<Result<_, _>>()?,
                     next_cursor,
                 },
                 None,

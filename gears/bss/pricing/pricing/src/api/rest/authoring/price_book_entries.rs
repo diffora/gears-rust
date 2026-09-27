@@ -301,7 +301,7 @@ pub(super) async fn patch(
     .await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPriceBookEntryDto::from(m),
+        &PricingPriceBookEntryDto::try_from(m)?,
         Some(version + 1),
     )?)
 }
@@ -483,10 +483,11 @@ pub(super) async fn for_sku(
         })?;
         let current_price = current
             .remove(&e.id)
-            .map(|p| super::dto::PricingPriceDto::of(p, &e.model));
+            .map(|p| super::dto::PricingPriceDto::of(p, &e.model))
+            .transpose()?;
         let entry_usage = usage.remove(&e.id).unwrap_or_default().into();
         items.push(super::dto::PricingSkuEntryDto {
-            entry: e.into(),
+            entry: e.try_into()?,
             book_code: book.code.clone(),
             book_name: book.name.clone(),
             currency: book.currency.clone(),
@@ -494,21 +495,21 @@ pub(super) async fn for_sku(
             current_price,
         });
     }
-    items.sort_by(|a, b| {
-        (
-            &a.book_code,
-            &a.entry.charge_kind,
-            a.entry.period.as_deref().unwrap_or(""),
-            &a.entry.model,
-            a.entry.id,
-        )
-            .cmp(&(
-                &b.book_code,
-                &b.entry.charge_kind,
-                b.entry.period.as_deref().unwrap_or(""),
-                &b.entry.model,
-                b.entry.id,
-            ))
-    });
+    items.sort_by(|a, b| sku_entry_order(a).cmp(&sku_entry_order(b)));
     Ok(super::dto::PricingSkuEntryList { items })
+}
+/// The order of a SKU's entries (D-434): book code, then the stored tokens of charge kind, period
+/// and model, then id.
+fn sku_entry_order(
+    i: &super::dto::PricingSkuEntryDto,
+) -> (&str, &'static str, &'static str, &'static str, Uuid) {
+    (
+        &i.book_code,
+        i.entry.charge_kind.as_str(),
+        i.entry
+            .period
+            .map_or("", crate::api::rest::closed_sets::PricingPeriod::as_str),
+        i.entry.model.as_str(),
+        i.entry.id,
+    )
 }

@@ -364,3 +364,240 @@ async fn registered_products_client_reads_drafts_and_hides_foreign_rows() {
         Err(toolkit_canonical_errors::CanonicalError::NotFound { .. })
     ));
 }
+
+// ------------------------------------------------------------------ P-D-217: closed sets
+
+const SKU_TYPE: &[&str] = &["recurring", "usage", "one_time", "bundle"];
+const LIFECYCLE: &[&str] = &["draft", "published", "deprecated", "retiring", "retired"];
+const TIMING: &[&str] = &["advance", "arrears"];
+const CATEGORY_STATUS: &[&str] = &["active", "retired"];
+const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];
+const DECISION: &[&str] = &["approve", "reject"];
+const VOTE_OUTCOME: &[&str] = &["pending", "applied", "rejected", "withdrawn"];
+const REFERENCE_KIND: &[&str] = &["price_book_entry", "plan_item", "sold_as"];
+const REFERENCE_STATE: &[&str] = &["reserved", "confirmed", "released"];
+
+/// P-D-217: (schema, field, the exact values in order, nullable).
+type Closed = (&'static str, &'static str, &'static [&'static str], bool);
+const CLOSED: &[Closed] = &[
+    ("SkuDto", "type", SKU_TYPE, false),
+    ("SkuDto", "lifecycle", LIFECYCLE, false),
+    ("SkuDto", "billing_timing", TIMING, true),
+    ("SkuContentDto", "type", SKU_TYPE, false),
+    ("SkuContentDto", "billing_timing", TIMING, true),
+    ("CategoryDto", "status", CATEGORY_STATUS, false),
+    ("ProductsSkuHistoryEntry", "from_lifecycle", LIFECYCLE, true),
+    ("ProductsSkuHistoryEntry", "to_lifecycle", LIFECYCLE, true),
+    ("UnitDto", "state", UNIT_STATE, false),
+    ("DecisionDto", "decision", DECISION, false),
+    ("VoteReceipt", "outcome", VOTE_OUTCOME, false),
+    ("ReferenceDto", "kind", REFERENCE_KIND, false),
+    ("ReferenceDto", "state", REFERENCE_STATE, false),
+    ("ReferenceReceipt", "kind", REFERENCE_KIND, false),
+    ("ReferenceReceipt", "state", REFERENCE_STATE, false),
+];
+
+/// P-D-217: response fields that stay `string`. No CHECK guards the stored set (the audit
+/// `action`, the approval unit's `kind` and `ref_type`, a reference's `owner`), the value is not
+/// this gear's (a usage type's `kind`, the collector's), it names the wired catalog (`source`), or
+/// the kept `/browse` envelope carries the catalog port's vocabulary verbatim (`CatalogSku`: "not
+/// an enum").
+const KEPT_STRING: &[(&str, &str)] = &[
+    ("ProductsSkuHistoryEntry", "action"),
+    ("ProductsSkuHistoryEntry", "unit_kind"),
+    ("UnitDto", "kind"),
+    ("UnitDto", "ref_type"),
+    ("ReferenceDto", "owner"),
+    ("ReferenceReceipt", "owner"),
+    ("ProductsUsageTypeDto", "kind"),
+    ("ProductsUsageTypeList", "source"),
+    ("SkuRow", "lifecycle_state"),
+    ("SkuRow", "sku_type"),
+];
+
+/// Request fields over the same sets: `string`, so the door's own code refuses a bad value.
+const REQUEST_STRING: &[(&str, &str)] = &[
+    ("SkuRequest", "type"),
+    ("SkuRequest", "billing_timing"),
+    ("SkuPatchRequest", "type"),
+    ("SkuPatchRequest", "lifecycle"),
+    ("SkuPatchRequest", "billing_timing"),
+    ("ReserveRequest", "kind"),
+    ("ApprovalPolicyRequest", "kind"),
+];
+
+async fn served_spec() -> anyhow::Result<serde_json::Value> {
+    use toolkit::api::{OpenApiInfo, OpenApiRegistryImpl};
+    let (gear, ctx) = skeleton_harness().await?;
+    let openapi = OpenApiRegistryImpl::new();
+    let _router = gear.register_rest(&ctx, Router::new(), &openapi)?;
+    Ok(serde_json::to_value(
+        openapi.build_openapi(&OpenApiInfo::default())?,
+    )?)
+}
+fn component<'a>(api: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    &api["components"]["schemas"][name]
+}
+/// The property `field` of component `schema`: its own, or an inline `allOf` part's (a flatten).
+fn property<'a>(
+    api: &'a serde_json::Value,
+    schema: &str,
+    field: &str,
+) -> Option<&'a serde_json::Value> {
+    let s = component(api, schema);
+    std::iter::once(s)
+        .chain(s["allOf"].as_array().into_iter().flatten())
+        .find_map(|part| part["properties"].get(field))
+}
+fn referenced<'a>(
+    api: &'a serde_json::Value,
+    node: &'a serde_json::Value,
+) -> &'a serde_json::Value {
+    node["$ref"]
+        .as_str()
+        .and_then(|r| r.strip_prefix("#/components/schemas/"))
+        .map_or(node, |name| component(api, name))
+}
+/// The values of the `enum` a property names (inline, by `$ref`, or by `allOf`/`oneOf`/`anyOf`
+/// beside `null`) and whether it admits `null`; an error names what the property is instead.
+fn enum_of(api: &serde_json::Value, p: &serde_json::Value) -> Result<(Vec<String>, bool), String> {
+    let mut nullable = p["type"]
+        .as_array()
+        .is_some_and(|t| t.iter().any(|t| t == "null"));
+    let mut target = None;
+    for key in ["oneOf", "anyOf", "allOf"] {
+        for branch in p[key].as_array().into_iter().flatten() {
+            if branch["type"] == "null" {
+                nullable = true;
+            } else {
+                target = Some(referenced(api, branch));
+            }
+        }
+    }
+    let target = target.unwrap_or_else(|| referenced(api, p));
+    let values = target["enum"]
+        .as_array()
+        .ok_or_else(|| format!("no enum: {p}"))?;
+    let string = target["type"] == "string"
+        || target["type"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t == "string"));
+    if !string {
+        return Err(format!("the enum is not a string: {target}"));
+    }
+    Ok((
+        values
+            .iter()
+            .map(|v| v.as_str().unwrap_or("<not a string>").to_owned())
+            .collect(),
+        nullable,
+    ))
+}
+/// A plain `string` property: no `enum` and no reference, only `string` (and `null`).
+fn plain_string(p: &serde_json::Value) -> bool {
+    let string = p["type"] == "string"
+        || p["type"].as_array().is_some_and(|t| {
+            t.iter().any(|t| t == "string") && t.iter().all(|t| t == "string" || t == "null")
+        });
+    string && p.get("enum").is_none() && p.get("$ref").is_none()
+}
+fn schema_refs(node: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+    match node {
+        serde_json::Value::Object(map) => {
+            if let Some(r) = map.get("$ref").and_then(serde_json::Value::as_str) {
+                out.insert(r.trim_start_matches("#/components/schemas/").to_owned());
+            }
+            map.values().for_each(|v| schema_refs(v, out));
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| schema_refs(v, out)),
+        _ => {}
+    }
+}
+fn has_enum(node: &serde_json::Value) -> bool {
+    match node {
+        serde_json::Value::Object(map) => map.contains_key("enum") || map.values().any(has_enum),
+        serde_json::Value::Array(items) => items.iter().any(has_enum),
+        _ => false,
+    }
+}
+
+/// P-D-217: every closed set on a RESPONSE schema is an `enum` holding exactly the stored tokens.
+#[tokio::test]
+async fn every_closed_set_on_a_response_schema_is_an_enum_of_its_stored_tokens()
+-> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let mut wrong = Vec::new();
+    for &(schema, field, values, nullable) in CLOSED {
+        let Some(p) = property(&api, schema, field) else {
+            wrong.push(format!("{schema}.{field}: no such property"));
+            continue;
+        };
+        match enum_of(&api, p) {
+            Ok((served, served_nullable)) => {
+                if served != values || served_nullable != nullable {
+                    wrong.push(format!(
+                        "{schema}.{field}: {served:?} (nullable {served_nullable}), want \
+                         {values:?} (nullable {nullable})"
+                    ));
+                }
+            }
+            Err(why) => wrong.push(format!("{schema}.{field}: {why}")),
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {} closed sets are not their enum:\n{}",
+        wrong.len(),
+        CLOSED.len(),
+        wrong.join("\n")
+    );
+    Ok(())
+}
+
+/// P-D-217: the fields no CHECK guards, and the values that are not this gear's, stay strings.
+#[tokio::test]
+async fn the_fields_no_check_guards_stay_strings_on_the_responses() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    for &(schema, field) in KEPT_STRING {
+        let p = property(&api, schema, field).unwrap_or_else(|| panic!("{schema}.{field}"));
+        assert!(plain_string(p), "{schema}.{field}: {p}");
+    }
+    Ok(())
+}
+
+/// P-D-217: no request body reaches an `enum`, so each door keeps its own refusal code.
+#[tokio::test]
+async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let mut todo = std::collections::BTreeSet::new();
+    for op in api["paths"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|ops| ops.as_object().unwrap().values())
+    {
+        schema_refs(&op["requestBody"], &mut todo);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(name) = todo.pop_first() {
+        if seen.insert(name.clone()) {
+            let mut next = std::collections::BTreeSet::new();
+            schema_refs(component(&api, &name), &mut next);
+            todo.extend(next.difference(&seen).cloned());
+        }
+    }
+    let enums: Vec<_> = seen
+        .iter()
+        .filter(|name| has_enum(component(&api, name)))
+        .collect();
+    assert!(
+        enums.is_empty(),
+        "a request body reaches an enum: {enums:?}"
+    );
+    for &(schema, field) in REQUEST_STRING {
+        assert!(seen.contains(schema), "{schema} is a request body");
+        let p = property(&api, schema, field).unwrap_or_else(|| panic!("{schema}.{field}"));
+        assert!(plain_string(p), "{schema}.{field}: {p}");
+    }
+    Ok(())
+}

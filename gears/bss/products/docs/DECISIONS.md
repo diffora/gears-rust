@@ -49,6 +49,7 @@
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -740,3 +741,40 @@ one transaction. A reset writes one audit row, `approval_policy.reset`. A unit a
 quorum it copied (P-D-190). Pricing has the same door for its kinds (D-435).
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11b; plan review L8).
+
+#### P-D-217 [M] Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439)
+
+Every closed set a response schema carries is an enum in the served OpenAPI (ask 12). It holds exactly the
+tokens that the column stores and that the wire always carried, so the wire does not change. The sets: a SKU's
+`type` (`recurring`, `usage`, `one_time`, `bundle`), `lifecycle` (`draft`, `published`, `deprecated`,
+`retiring`, `retired`) and `billing_timing` (`advance`, `arrears`), on the SKU and on a version's content; a
+category's `status` (`active`, `retired`); the history's `from_lifecycle` and `to_lifecycle` (P-D-213); a unit's
+`state`, a decision (`approve`, `reject`) and a vote's `outcome` (`pending`, `applied`, `rejected`,
+`withdrawn`); a reference's `kind` (`price_book_entry`, `plan_item`, `sold_as`) and `state` (`reserved`,
+`confirmed`, `released`), on the reference list and on the reservation receipt. Each set is one schema component
+with the `Products` prefix (`api/rest/closed_sets.rs`). A set that the SDK or the approval engine already types
+maps to and from that enum, so a value added on one side only does not compile.
+
+A database CHECK holds each stored set on both dialects: the SKU's `type`, `lifecycle` and `billing_timing`,
+the category's `status`, the reference's `ref_kind` and `state`, the audit log's lifecycle columns, and the
+unit's state and the decision (`bss_approval::ddl`). The SKU's columns and the lifecycle columns already read
+back fallibly in the repositories. A category's status and a reference's kind and state are read here. Only a
+writer that goes around the CHECK can store a token outside its set, and the read answers it with `CorruptRow`,
+which names the row: a 500, never a panic and never a value that the enum does not hold.
+
+Requests keep `string`: `type`, `lifecycle` and `billing_timing` on the SKU writes, a reservation's `kind`, and
+the policy's `kind`. Each door keeps its own refusal, 400 `VALIDATION` on the field. A request enum would fail
+at deserialization, before the door, with a 400 that has no field and no code.
+
+Response fields that stay `string`: the history's `action` and `unit_kind`, a unit's `kind` and `ref_type`,
+and a reference's `owner`. No CHECK holds those columns (`m20260925_000004` records the audit vocabulary as an
+owed debt), and a CHECK on an existing SQLite column needs a table rebuild, which the phase's ADD COLUMN
+migrations do not allow. A usage type's `kind` is the collector's vocabulary, not this gear's. The picker's
+`source` names the catalog that the deployment wired (P-D-207), not a stored value. The kept `/browse` envelope
+carries the catalog port's vocabulary verbatim.
+
+The census test in `gear_tests.rs` reads the served spec: every listed field has its enum with the exact values
+and its nullability, no request body reaches an enum, and the fields above stay plain strings. A category row
+poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).

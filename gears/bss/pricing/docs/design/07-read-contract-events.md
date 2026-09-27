@@ -127,6 +127,8 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | binding | ends_on | Where the binding ends for its holder (D-425): temporary_until for a temporary price, the stored end of an explicitly closed price, null when it has none. A consumer slices a period at ends_on, never at effective_to. |
 | binding | keep_for_bound | Whether the price is kept for pinned subscriptions (the predecessor of a new price). |
 
+In the served OpenAPI, the revision's state, treatment, charge_kind, period, model, each input's source and eligibility are enums of exactly the tokens above; rounding_policy stays a string, because no CHECK guards default_rounding (D-439). The pinned price read's charge_kind, period, model and eligibility are the same enums.
+
 The pinned price read returns one approved price's stored facts with its entry's SKU, charge kind, period, model (D-427), book and currency (D-422). Pricing prices are read forever; consumer pins persist outside this gear. Events use toolkit outbox envelopes, not a second pricing schema.
 
 Tenant-scoped parent validation is required even where foreign keys use entity ids. Never substitute a

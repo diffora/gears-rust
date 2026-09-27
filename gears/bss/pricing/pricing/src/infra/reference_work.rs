@@ -179,8 +179,10 @@ impl Receipt {
         let etag = Some(format!("\"{}\"", model.version));
         Ok(Self {
             status: 201,
-            body: serde_json::to_string(&PricingPriceBookEntryDto::from(model))
-                .map_err(|_| corrupt())?,
+            body: serde_json::to_string(
+                &PricingPriceBookEntryDto::try_from(model).map_err(stored_failure)?,
+            )
+            .map_err(|_| corrupt())?,
             etag,
         })
     }
@@ -190,7 +192,8 @@ impl Receipt {
         Ok(Self {
             status: 201,
             body: serde_json::to_string(
-                &crate::api::rest::authoring::dto::PricingPlanItemDto::from(model),
+                &crate::api::rest::authoring::dto::PricingPlanItemDto::try_from(model)
+                    .map_err(stored_failure)?,
             )
             .map_err(|_| corrupt())?,
             etag,
@@ -199,6 +202,10 @@ impl Receipt {
 }
 fn corrupt() -> CanonicalError {
     CanonicalError::internal("invalid durable pricing reference work").create()
+}
+/// A stored token outside its closed set in the answer being written (D-439): a storage failure.
+fn stored_failure(error: crate::infra::storage::RepoError) -> CanonicalError {
+    crate::api::rest::authoring::support::DoorError::from(error).into()
 }
 impl Work {
     /// Decode persisted recovery input.

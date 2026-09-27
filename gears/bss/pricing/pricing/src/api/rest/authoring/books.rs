@@ -225,11 +225,11 @@ pub async fn export(
         // Every price echoes its entry's model (D-427).
         let model = p.model.clone();
         result.push(PricingExportEntry {
-            entry: p.into(),
+            entry: p.try_into()?,
             prices: prices
                 .into_iter()
                 .map(|m| PricingPriceDto::of(m, &model))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         });
     }
     Ok(PriceBookExport {

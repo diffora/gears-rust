@@ -14,6 +14,7 @@ pub mod approval_policy;
 pub mod approval_units;
 pub mod browse;
 pub mod categories;
+pub mod closed_sets;
 pub mod dto;
 pub(crate) mod governance;
 pub mod preconditions;

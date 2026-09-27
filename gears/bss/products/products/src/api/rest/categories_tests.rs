@@ -713,3 +713,54 @@ async fn category_reads_count_skus_in_fixed_statements_for_10_and_100_categories
     assert_eq!(a.len(), 2, "one read and one grouped count: {a:#?}");
     assert_eq!(a, b);
 }
+
+/// P-D-217: a stored status outside the category's closed set (a row written around the gear, with
+/// its CHECK bypassed) is `CorruptRow`: the read answers 500 — never a panic, never the token
+/// under an `enum` that does not hold it — and the gear goes on serving.
+#[tokio::test]
+async fn a_stored_status_outside_its_closed_set_is_a_500_never_a_panic() {
+    use crate::test_support::id_matches;
+    use sea_orm::{ConnectionTrait, Database};
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let poisoned = new_category(&app, tenant, "poisoned", 1).await;
+    let healthy = new_category(&app, tenant, "healthy", 2).await;
+    let raw = Database::connect(&dsn).await.unwrap();
+    // The premise: the CHECK holds the column to its set, so only a writer around it can.
+    let refused = raw
+        .execute_unprepared(&format!(
+            "UPDATE products_category SET status = 'archived' WHERE {}",
+            id_matches("id", poisoned)
+        ))
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("CHECK"), "{refused}");
+    raw.execute_unprepared("PRAGMA ignore_check_constraints = ON")
+        .await
+        .unwrap();
+    let written = raw
+        .execute_unprepared(&format!(
+            "UPDATE products_category SET status = 'archived' WHERE {}",
+            id_matches("id", poisoned)
+        ))
+        .await
+        .unwrap();
+    assert_eq!(written.rows_affected(), 1);
+    raw.close().await.unwrap();
+    let r = get(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{poisoned}"),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let b = body_json(r).await;
+    assert!(!b.to_string().contains("archived"), "{b}");
+    let r = get(
+        &app,
+        tenant,
+        &format!("/bss-products/v1/categories/{healthy}"),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK, "the gear still serves");
+}

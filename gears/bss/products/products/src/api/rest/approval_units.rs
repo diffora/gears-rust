@@ -3,7 +3,9 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-sod-excludes-authors:p1
 //! Approval queue and generation-bound decisions on the caller's transaction.
 use super::{
-    ApiState, TxError, category_tx_config, contention_db_err,
+    ApiState, TxError, category_tx_config,
+    closed_sets::ProductsVoteOutcome,
+    contention_db_err,
     dto::{UnitDto, UnitList, VoteReceipt, VoteRequest},
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
     unit_tx_to_canonical,
@@ -624,18 +626,20 @@ async fn vote(
                         )
                         .await;
                     }
-                    ApproveOutcome::Pending { have, need } => ("pending", Some(have), Some(need)),
+                    ApproveOutcome::Pending { have, need } => {
+                        (ProductsVoteOutcome::Pending, Some(have), Some(need))
+                    }
                     ApproveOutcome::Applied => (
                         match action {
-                            Vote::Approve => "applied",
-                            Vote::Reject => "rejected",
-                            Vote::Withdraw => "withdrawn",
+                            Vote::Approve => ProductsVoteOutcome::Applied,
+                            Vote::Reject => ProductsVoteOutcome::Rejected,
+                            Vote::Withdraw => ProductsVoteOutcome::Withdrawn,
                         },
                         None,
                         None,
                     ),
                 };
-                decision_audit(tx, &scope, &ctx, label, &unit, found, note, now).await?;
+                decision_audit(tx, &scope, &ctx, label.as_str(), &unit, found, note, now).await?;
                 if matches!(outcome, ApproveOutcome::Applied) {
                     unit = load(tx, &store, id).await?;
                     g::decided(&state, tx, &store, &unit, ctx.subject_id()).await?;
@@ -643,7 +647,7 @@ async fn vote(
                 let receipt = VoteReceipt {
                     have,
                     need,
-                    outcome: label.into(),
+                    outcome: label,
                     unit: with_decisions(tx, &store, unit).await?,
                 };
                 replay::finish(

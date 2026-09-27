@@ -213,8 +213,9 @@ async fn fence(
     if !live.is_empty() {
         let rows = live
             .into_iter()
-            .map(super::dto::ReferenceReceipt::from)
-            .collect::<Vec<_>>();
+            .map(super::dto::ReferenceReceipt::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(TxError::Repo)?;
         let rows = serde_json::to_value(rows)
             .map_err(|e| TxError::Repo(crate::infra::storage::RepoError::Db(e.to_string())))?;
         return Err(TxError::FencedReferences {

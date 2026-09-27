@@ -1,5 +1,13 @@
-//! Pricing authoring wire contracts, with unique `OpenAPI` names and `snake_case` fields.
-use crate::infra::storage::entity;
+//! Pricing authoring wire contracts, with unique `OpenAPI` names and `snake_case` fields. A closed
+//! set on a response is its `enum` (D-439); a request keeps `string`, so its door's code refuses.
+use crate::api::rest::closed_sets::{
+    PricingBillingTiming, PricingChargeKind, PricingDecisionKind, PricingEligibility,
+    PricingEntryReferenceState, PricingItemReferenceState, PricingModel, PricingPeriod,
+    PricingPriceState, PricingPriceStatus, PricingReferenceOpKind, PricingReferenceOpRefKind,
+    PricingReferenceOpState, PricingRevisionState, PricingTreatment, PricingUnitState,
+    PricingVoteOutcome,
+};
+use crate::infra::storage::{RepoError, entity};
 use uuid::Uuid;
 #[toolkit_macros::api_dto(response)]
 pub struct PriceBookDto {
@@ -38,39 +46,50 @@ pub struct PricingPriceBookEntryDto {
     pub tenant_id: Uuid,
     pub book_id: Uuid,
     pub sku_id: Uuid,
-    pub charge_kind: String,
-    pub period: Option<String>,
-    /// The entry's model (D-427), fixed for its life and part of its key: `flat`, `per_unit`,
-    /// `graduated`, `volume` or `package`.
-    pub model: String,
+    pub charge_kind: PricingChargeKind,
+    pub period: Option<PricingPeriod>,
+    /// The entry's model (D-427), fixed for its life and part of its key.
+    pub model: PricingModel,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
     pub reservation_id: Uuid,
-    pub reference_state: String,
+    pub reference_state: PricingEntryReferenceState,
     pub version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl From<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
-    fn from(m: entity::price_book_entry::Model) -> Self {
-        Self {
-            id: m.id,
+impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
+    type Error = RepoError;
+    fn try_from(m: entity::price_book_entry::Model) -> Result<Self, RepoError> {
+        let id = m.id;
+        Ok(Self {
+            id,
             tenant_id: m.tenant_id,
             book_id: m.book_id,
             sku_id: m.sku_id,
-            charge_kind: m.charge_kind,
-            period: m.period,
-            model: m.model,
+            charge_kind: PricingChargeKind::stored(
+                &m.charge_kind,
+                &format_args!("entry {id} charge_kind"),
+            )?,
+            period: m
+                .period
+                .as_deref()
+                .map(|p| PricingPeriod::stored(p, &format_args!("entry {id} period")))
+                .transpose()?,
+            model: PricingModel::stored(&m.model, &format_args!("entry {id} model"))?,
             dimension_key: m.dimension_key,
             invoice_line_override: m.invoice_line_override,
             reservation_id: m.reservation_id,
-            reference_state: m.reference_state,
+            reference_state: PricingEntryReferenceState::stored(
+                &m.reference_state,
+                &format_args!("entry {id} reference_state"),
+            )?,
             version: m.version,
             created_at: m.created_at,
             updated_at: m.updated_at,
-        }
+        })
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428).
@@ -112,12 +131,16 @@ pub struct PricingPriceBookEntryReadDto {
     pub usage: PricingEntryUsage,
 }
 impl PricingPriceBookEntryReadDto {
-    #[must_use]
-    pub fn of(m: entity::price_book_entry::Model, usage: crate::infra::usage::EntryUsage) -> Self {
-        Self {
-            entry: m.into(),
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set (D-439).
+    pub fn of(
+        m: entity::price_book_entry::Model,
+        usage: crate::infra::usage::EntryUsage,
+    ) -> Result<Self, RepoError> {
+        Ok(Self {
+            entry: m.try_into()?,
             usage: usage.into(),
-        }
+        })
     }
 }
 /// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its
@@ -153,10 +176,10 @@ pub struct PricingPriceDto {
     pub version_no: i32,
     pub dim_value: Option<String>,
     /// The entry's model, read-only (D-427): a price has no model of its own.
-    pub model: String,
+    pub model: PricingModel,
     pub price_json: serde_json::Value,
     pub min_fee: Option<String>,
-    pub eligibility: String,
+    pub eligibility: PricingEligibility,
     pub effective_from: String,
     pub effective_to: Option<String>,
     pub keep_for_bound: bool,
@@ -164,9 +187,9 @@ pub struct PricingPriceDto {
     pub temporary_until: Option<String>,
     pub paired_price_id: Option<Uuid>,
     pub return_of_price_id: Option<Uuid>,
-    pub state: String,
-    /// Display state of matrix row 10: draft, pending, rejected, scheduled, active or superseded.
-    pub status: String,
+    pub state: PricingPriceState,
+    /// Display state of matrix row 10: an approved price shows where its window stands today.
+    pub status: PricingPriceStatus,
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub note: Option<String>,
@@ -181,33 +204,31 @@ pub struct PricingPriceDto {
 }
 impl PricingPriceDto {
     /// A stored price with its entry's model (D-427).
-    #[must_use]
-    pub fn of(m: entity::price::Model, model: &str) -> Self {
-        let status = m
-            .state
-            .parse::<crate::domain::price::PriceState>()
-            .map_or_else(
-                |_| m.state.clone(),
-                |state| {
-                    crate::domain::price::window_status(
-                        state,
-                        m.effective_from,
-                        m.effective_to,
-                        time::OffsetDateTime::now_utc().date(),
-                    )
-                    .to_owned()
-                },
-            );
-        Self {
-            id: m.id,
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set (D-439).
+    pub fn of(m: entity::price::Model, model: &str) -> Result<Self, RepoError> {
+        let id = m.id;
+        let state = PricingPriceState::stored(&m.state, &format_args!("price {id} state"))?;
+        let status = crate::domain::price::window_display(
+            state.into(),
+            m.effective_from,
+            m.effective_to,
+            time::OffsetDateTime::now_utc().date(),
+        )
+        .into();
+        Ok(Self {
+            id,
             tenant_id: m.tenant_id,
             price_book_entry_id: m.price_book_entry_id,
             version_no: m.version_no,
             dim_value: m.dim_value,
-            model: model.to_owned(),
+            model: PricingModel::stored(model, &format_args!("price {id} model"))?,
             price_json: m.price_json,
             min_fee: m.min_fee,
-            eligibility: m.eligibility,
+            eligibility: PricingEligibility::stored(
+                &m.eligibility,
+                &format_args!("price {id} eligibility"),
+            )?,
             effective_from: m.effective_from.to_string(),
             effective_to: m.effective_to.map(|v| v.to_string()),
             keep_for_bound: m.keep_for_bound,
@@ -215,7 +236,7 @@ impl PricingPriceDto {
             temporary_until: m.temporary_until.map(|v| v.to_string()),
             paired_price_id: m.paired_price_id,
             return_of_price_id: m.return_of_price_id,
-            state: m.state,
+            state,
             status,
             pending_unit_id: m.pending_unit_id,
             approved_by_unit_id: m.approved_by_unit_id,
@@ -225,7 +246,7 @@ impl PricingPriceDto {
             version: m.version,
             created_at: m.created_at,
             updated_at: m.updated_at,
-        }
+        })
     }
 }
 
@@ -345,7 +366,9 @@ pub struct PricingSettingsPut {
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSettingsDto {
-    pub default_timing: String,
+    pub default_timing: PricingBillingTiming,
+    /// One of the five modes (D-437) once written through the door; a string, not an enum: no
+    /// CHECK guards the column, and a legacy value reads back as stored (D-439).
     pub default_rounding: String,
     pub default_gl: Option<String>,
     pub default_tax_category: Option<String>,
@@ -407,12 +430,12 @@ pub struct PricingPlanItemDto {
     pub revision_id: Uuid,
     pub sku_id: Uuid,
     pub price_book_entry_id: Option<Uuid>,
-    pub treatment: String,
+    pub treatment: PricingTreatment,
     pub included_qty: Option<String>,
     pub qty_min: Option<i32>,
     /// None until a reserve answers: a copied item attaches after its write (D-413).
     pub reservation_id: Option<Uuid>,
-    pub reference_state: String,
+    pub reference_state: PricingItemReferenceState,
     pub version: i64,
     pub created_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
@@ -420,24 +443,32 @@ pub struct PricingPlanItemDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
 }
-impl From<entity::plan_item::Model> for PricingPlanItemDto {
-    fn from(m: entity::plan_item::Model) -> Self {
-        Self {
-            id: m.id,
+impl TryFrom<entity::plan_item::Model> for PricingPlanItemDto {
+    type Error = RepoError;
+    fn try_from(m: entity::plan_item::Model) -> Result<Self, RepoError> {
+        let id = m.id;
+        Ok(Self {
+            id,
             tenant_id: m.tenant_id,
             revision_id: m.revision_id,
             sku_id: m.sku_id,
             price_book_entry_id: m.price_book_entry_id,
-            treatment: m.treatment,
+            treatment: PricingTreatment::stored(
+                &m.treatment,
+                &format_args!("plan item {id} treatment"),
+            )?,
             included_qty: m.included_qty,
             qty_min: m.qty_min,
             reservation_id: m.reservation_id,
-            reference_state: m.reference_state,
+            reference_state: PricingItemReferenceState::stored(
+                &m.reference_state,
+                &format_args!("plan item {id} reference_state"),
+            )?,
             version: m.version,
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
-        }
+        })
     }
 }
 /// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan.
@@ -447,8 +478,8 @@ pub struct PricingPlanItemReadDto {
     pub item: PricingPlanItemDto,
     pub plan_id: Uuid,
     pub rev_no: i32,
-    /// The revision's state: `draft`, `pending`, `published` or `superseded`.
-    pub state: String,
+    /// The revision's state.
+    pub state: PricingRevisionState,
 }
 /// The query of `GET /plans`: an optional `sku_id` (D-434).
 #[derive(Default, serde::Deserialize)]
@@ -487,21 +518,25 @@ pub struct PricingPlanRevisionHeader {
     pub id: Uuid,
     pub rev_no: i32,
     pub book_id: Uuid,
-    pub state: String,
+    pub state: PricingRevisionState,
     pub available_from: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub published_at: Option<time::OffsetDateTime>,
 }
-impl From<&entity::plan_revision::Model> for PricingPlanRevisionHeader {
-    fn from(m: &entity::plan_revision::Model) -> Self {
-        Self {
+impl TryFrom<&entity::plan_revision::Model> for PricingPlanRevisionHeader {
+    type Error = RepoError;
+    fn try_from(m: &entity::plan_revision::Model) -> Result<Self, RepoError> {
+        Ok(Self {
             id: m.id,
             rev_no: m.rev_no,
             book_id: m.book_id,
-            state: m.state.clone(),
+            state: PricingRevisionState::stored(
+                &m.state,
+                &format_args!("revision {} state", m.id),
+            )?,
             available_from: m.available_from.map(|d| d.to_string()),
             published_at: m.published_at,
-        }
+        })
     }
 }
 /// A plan with the headers of its revisions in revision order.
@@ -522,9 +557,13 @@ pub struct PricingPlanDto {
     pub revisions: Vec<PricingPlanRevisionHeader>,
 }
 impl PricingPlanDto {
-    #[must_use]
-    pub fn of(m: entity::plan::Model, revisions: &[entity::plan_revision::Model]) -> Self {
-        Self {
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set (D-439).
+    pub fn of(
+        m: entity::plan::Model,
+        revisions: &[entity::plan_revision::Model],
+    ) -> Result<Self, RepoError> {
+        Ok(Self {
             id: m.id,
             tenant_id: m.tenant_id,
             code: m.code,
@@ -534,8 +573,11 @@ impl PricingPlanDto {
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
-            revisions: revisions.iter().map(Into::into).collect(),
-        }
+            revisions: revisions
+                .iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 #[toolkit_macros::api_dto(response)]
@@ -550,8 +592,7 @@ pub struct PricingPlanRevisionDto {
     pub plan_id: Uuid,
     pub rev_no: i32,
     pub book_id: Uuid,
-    /// `draft`, `pending`, `published` or `superseded`.
-    pub state: String,
+    pub state: PricingRevisionState,
     /// The sale date; null means "at publish".
     pub available_from: Option<String>,
     pub pending_unit_id: Option<Uuid>,
@@ -568,15 +609,22 @@ pub struct PricingPlanRevisionDto {
     pub items: Vec<PricingPlanItemDto>,
 }
 impl PricingPlanRevisionDto {
-    #[must_use]
-    pub fn of(m: entity::plan_revision::Model, items: Vec<entity::plan_item::Model>) -> Self {
-        Self {
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set (D-439).
+    pub fn of(
+        m: &entity::plan_revision::Model,
+        items: Vec<entity::plan_item::Model>,
+    ) -> Result<Self, RepoError> {
+        Ok(Self {
             id: m.id,
             tenant_id: m.tenant_id,
             plan_id: m.plan_id,
             rev_no: m.rev_no,
             book_id: m.book_id,
-            state: m.state,
+            state: PricingRevisionState::stored(
+                &m.state,
+                &format_args!("revision {} state", m.id),
+            )?,
             available_from: m.available_from.map(|d| d.to_string()),
             pending_unit_id: m.pending_unit_id,
             approved_by_unit_id: m.approved_by_unit_id,
@@ -585,8 +633,11 @@ impl PricingPlanRevisionDto {
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
-            items: items.into_iter().map(Into::into).collect(),
-        }
+            items: items
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 /// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list
@@ -666,10 +717,10 @@ pub struct PricingPlanChecksDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingReferenceOpDto {
     pub op_id: Uuid,
-    pub kind: String,
-    pub state: String,
-    /// The reference the op works for: `price_book_entry` or `plan_item` (D-407).
-    pub ref_kind: String,
+    pub kind: PricingReferenceOpKind,
+    pub state: PricingReferenceOpState,
+    /// The reference the op works for (D-407).
+    pub ref_kind: PricingReferenceOpRefKind,
     pub ref_id: Uuid,
     pub sku_id: Uuid,
     pub reservation_id: Option<Uuid>,
@@ -678,20 +729,25 @@ pub struct PricingReferenceOpDto {
     pub next_attempt_at: time::OffsetDateTime,
     pub last_error: Option<String>,
 }
-impl From<entity::reference_op::Model> for PricingReferenceOpDto {
-    fn from(op: entity::reference_op::Model) -> Self {
-        Self {
-            op_id: op.op_id,
-            kind: op.kind,
-            state: op.state,
-            ref_kind: op.ref_kind,
+impl TryFrom<entity::reference_op::Model> for PricingReferenceOpDto {
+    type Error = RepoError;
+    fn try_from(op: entity::reference_op::Model) -> Result<Self, RepoError> {
+        let id = op.op_id;
+        Ok(Self {
+            op_id: id,
+            kind: PricingReferenceOpKind::stored(&op.kind, &format_args!("op {id} kind"))?,
+            state: PricingReferenceOpState::stored(&op.state, &format_args!("op {id} state"))?,
+            ref_kind: PricingReferenceOpRefKind::stored(
+                &op.ref_kind,
+                &format_args!("op {id} ref_kind"),
+            )?,
             ref_id: op.ref_id,
             sku_id: op.sku_id,
             reservation_id: op.reservation_id,
             attempts: op.attempts,
             next_attempt_at: op.next_attempt_at,
             last_error: op.last_error,
-        }
+        })
     }
 }
 #[toolkit_macros::api_dto(response)]
@@ -749,7 +805,7 @@ pub struct PricingPriceCreated {
 pub struct PricingDecisionDto {
     pub actor: Uuid,
     pub generation: i32,
-    pub decision: String,
+    pub decision: PricingDecisionKind,
     pub note: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub at: time::OffsetDateTime,
@@ -760,7 +816,7 @@ impl From<bss_approval::Decision> for PricingDecisionDto {
         Self {
             actor: d.actor,
             generation: d.generation,
-            decision: d.verdict.as_str().into(),
+            decision: d.verdict.into(),
             note: d.note,
             at: d.at,
             stale: d.stale,
@@ -774,7 +830,7 @@ pub struct PricingApprovalUnitDto {
     pub kind: String,
     pub ref_type: String,
     pub ref_id: Uuid,
-    pub state: String,
+    pub state: PricingUnitState,
     pub generation: i32,
     pub quorum_required: u32,
     pub common_effective_date: Option<String>,
@@ -795,7 +851,7 @@ impl From<bss_approval::Unit> for PricingApprovalUnitDto {
             kind: u.kind,
             ref_type: u.ref_type,
             ref_id: u.ref_id,
-            state: u.state.as_str().into(),
+            state: u.state.into(),
             generation: u.generation,
             quorum_required: u.quorum_required,
             common_effective_date: u.common_effective_date.map(|d| d.to_string()),
@@ -825,7 +881,7 @@ pub struct PricingVoteRequest {
 pub struct PricingVoteReceipt {
     pub have: Option<u32>,
     pub need: Option<u32>,
-    pub outcome: String,
+    pub outcome: PricingVoteOutcome,
     pub unit: PricingApprovalUnitDto,
 }
 /// The unit a submission recorded and its prices after the transaction.

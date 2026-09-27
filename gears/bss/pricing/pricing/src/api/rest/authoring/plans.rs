@@ -98,7 +98,7 @@ async fn plan_body(
 ) -> Result<PricingPlanDto, DoorError> {
     let revisions =
         plan_revision_repo::for_plan(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanDto::of(m, &revisions))
+    Ok(PricingPlanDto::of(m, &revisions)?)
 }
 async fn revision_body(
     tx: &impl DBRunner,
@@ -107,7 +107,7 @@ async fn revision_body(
 ) -> Result<PricingPlanRevisionDto, DoorError> {
     let items =
         plan_item_repo::for_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanRevisionDto::of(m, items))
+    Ok(PricingPlanRevisionDto::of(&m, items)?)
 }
 fn etag(version: i64) -> Result<u64, CanonicalError> {
     Ok(
@@ -191,7 +191,7 @@ pub(super) async fn create(
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r]);
+    let body = PricingPlanDto::of(p, &[r])?;
     support::answer(
         tx,
         tenant,
@@ -234,7 +234,7 @@ pub(super) async fn list(
                 let own = revisions.remove(&p.id).unwrap_or_default();
                 PricingPlanDto::of(p, &own)
             })
-            .collect(),
+            .collect::<Result<_, _>>()?,
     })
 }
 /// `GET /plans/{id}`: the plan and its version.
@@ -376,7 +376,7 @@ async fn copy_in(
     let (items, ops) = copy_items(tx, &children, ctx, correlation, source.id, r.id, now).await?;
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan_revision.copy", r.id, 1).await?;
-    let body = PricingPlanRevisionDto::of(r, items);
+    let body = PricingPlanRevisionDto::of(&r, items)?;
     let response = support::answer(
         tx,
         tenant,
@@ -553,7 +553,7 @@ async fn clone_in(
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     support::audit(tx, ctx, correlation, "plan.clone", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r]);
+    let body = PricingPlanDto::of(p, &[r])?;
     let response = support::answer(
         tx,
         tenant,
@@ -637,7 +637,7 @@ pub(super) async fn patch_revision(
     .await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPlanRevisionDto::of(next, items),
+        &PricingPlanRevisionDto::of(&next, items)?,
         Some(version + 1),
     )?)
 }
