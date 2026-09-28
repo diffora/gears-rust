@@ -90,10 +90,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              `limit` defaults to 50 and is clamped at 200. Over the usage collector, `q` searches \
              at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` \
              and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses \
-             the caller; 400 for a malformed query, or a cursor of another query; 501 when no \
-             catalog is configured; 503 when the configured one does not answer, or \
-             `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A \
-             configured catalog with no types answers 200 with no items.",
+             the caller; 400 for a malformed query, or a search cursor (one cut with `q`) \
+             replayed with another `q` or `kind` (a cursor cut without `q` carries no such \
+             binding); 501 when no catalog is configured; 503 when the configured one does not \
+             answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 \
+             types. A configured catalog with no types answers 200 with no items.",
         )
         .tag("SKUs")
         .authenticated()
