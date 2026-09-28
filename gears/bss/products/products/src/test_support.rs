@@ -612,6 +612,372 @@ pub fn denying_collector_catalog() -> Arc<dyn bss_products_sdk::usage_types::Usa
     ))
 }
 
+/// The usage collector's usage-type catalog as its real storage plugin serves it
+/// (`timescaledb-usage-collector-plugin`, `catalog_store::list` and `query/translate.rs`), for the
+/// picker's walk (P-D-207).
+///
+/// **It refuses what the plugin refuses, with the plugin's words.** The plugin translates the
+/// whole `$filter` before it reads a row, and its translator takes comparison operators only:
+/// `contains`, `startswith` and `endswith` are `Internal("unsupported operator: …")`, which a
+/// deployed picker answered as 503 `internal error: unsupported operator: Contains`. The collector SDK's
+/// own field doc says `gts_id` supports them; the plugin does not, and a double written from the
+/// SDK doc is how the picker's `q` shipped green. The rest mirrors the plugin too: order by
+/// `gts_id` ascending whatever `$orderby` says, a page size floored at 1 and clamped at the
+/// plugin's `MAX_PAGE_SIZE` (1000, or a lower `ceiling`), a forward-only keyset cursor over
+/// `gts_id` whose filter hash must equal the query's, and a look-ahead row for `next_cursor`.
+///
+/// Every other method refuses: the picker has no business reaching them.
+pub struct PluginLikeCollector {
+    /// Sorted by `gts_id`, as the plugin's `ORDER BY gts_id ASC` reads it.
+    catalog: Vec<usage_collector_sdk::UsageType>,
+    ceiling: u64,
+    failing_from: Option<usize>,
+    asked: std::sync::Mutex<Vec<toolkit_odata::ODataQuery>>,
+}
+
+impl PluginLikeCollector {
+    /// The plugin's own page ceiling (`query::MAX_PAGE_SIZE`).
+    pub const PLUGIN_MAX_PAGE_SIZE: u64 = 1000;
+
+    /// A catalog of `(gts_id, kind)`; each type declares one metadata field, `region`.
+    /// # Panics
+    /// Panics if an id is not a valid GTS id.
+    #[must_use]
+    pub fn new<'a>(
+        types: impl IntoIterator<Item = (&'a str, usage_collector_sdk::UsageKind)>,
+    ) -> Self {
+        let mut catalog: Vec<_> = types
+            .into_iter()
+            .map(|(id, kind)| usage_collector_sdk::UsageType {
+                gts_id: usage_collector_sdk::UsageTypeGtsId::new(id).expect("a valid GTS id"),
+                kind,
+                metadata_fields: std::iter::once(
+                    usage_collector_sdk::MetadataKey::new("region").expect("a valid key"),
+                )
+                .collect(),
+            })
+            .collect();
+        catalog.sort_by(|a, b| a.gts_id.as_ref().cmp(b.gts_id.as_ref()));
+        Self {
+            catalog,
+            ceiling: Self::PLUGIN_MAX_PAGE_SIZE,
+            failing_from: None,
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A catalog whose page ceiling is lower than the plugin's, so a walk crosses pages.
+    #[must_use]
+    pub const fn with_ceiling(mut self, ceiling: u64) -> Self {
+        self.ceiling = ceiling;
+        self
+    }
+
+    /// A catalog whose store goes down at the `call`-th list (0-based) and stays down: the
+    /// collector's `ServiceUnavailable`.
+    #[must_use]
+    pub const fn failing_from(mut self, call: usize) -> Self {
+        self.failing_from = Some(call);
+        self
+    }
+
+    /// Every query the catalog was asked, in order.
+    /// # Panics
+    /// Panics if the record's lock is poisoned.
+    #[must_use]
+    pub fn asked(&self) -> Vec<toolkit_odata::ODataQuery> {
+        self.asked.lock().unwrap().clone()
+    }
+
+    fn column(
+        field: usage_collector_sdk::UsageTypeFilterField,
+        row: &usage_collector_sdk::UsageType,
+    ) -> Result<String, usage_collector_sdk::UsageCollectorError> {
+        use toolkit_odata::filter::FilterField as _;
+        match field.name() {
+            "gts_id" => Ok(row.gts_id.to_string()),
+            "kind" => Ok(match row.kind {
+                usage_collector_sdk::UsageKind::Counter => "counter",
+                usage_collector_sdk::UsageKind::Gauge => "gauge",
+            }
+            .to_owned()),
+            other => Err(usage_collector_sdk::UsageCollectorError::internal(format!(
+                "field not allowlisted: {other}"
+            ))),
+        }
+    }
+
+    /// The plugin's translator, as a pass over the whole tree before any row is read.
+    fn translate(
+        node: &toolkit_odata::filter::FilterNode<usage_collector_sdk::UsageTypeFilterField>,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        use toolkit_odata::filter::{FilterNode, FilterOp};
+        match node {
+            FilterNode::Binary { op, .. } => match op {
+                FilterOp::Eq
+                | FilterOp::Ne
+                | FilterOp::Gt
+                | FilterOp::Ge
+                | FilterOp::Lt
+                | FilterOp::Le => Ok(()),
+                other => Err(plugin_internal(format!("unsupported operator: {other:?}"))),
+            },
+            FilterNode::InList { values, .. } if values.is_empty() => {
+                Err(plugin_internal("IN list must not be empty"))
+            }
+            FilterNode::InList { .. } => Ok(()),
+            FilterNode::Composite { op, children } => match op {
+                FilterOp::And | FilterOp::Or => children.iter().try_for_each(Self::translate),
+                other => Err(plugin_internal(format!(
+                    "invalid composite operator: {other:?}"
+                ))),
+            },
+            FilterNode::Not(inner) => Self::translate(inner),
+        }
+    }
+
+    fn holds(
+        node: &toolkit_odata::filter::FilterNode<usage_collector_sdk::UsageTypeFilterField>,
+        row: &usage_collector_sdk::UsageType,
+    ) -> Result<bool, usage_collector_sdk::UsageCollectorError> {
+        use toolkit_odata::filter::{FilterNode, FilterOp, ODataValue};
+        let text = |value: &ODataValue| match value {
+            ODataValue::String(s) => Ok(s.clone()),
+            other => Err(usage_collector_sdk::UsageCollectorError::internal(format!(
+                "unsupported bind: {other:?}"
+            ))),
+        };
+        Ok(match node {
+            FilterNode::Binary { field, op, value } => {
+                let order = Self::column(*field, row)?.cmp(&text(value)?);
+                match op {
+                    FilterOp::Eq => order.is_eq(),
+                    FilterOp::Ne => order.is_ne(),
+                    FilterOp::Gt => order.is_gt(),
+                    FilterOp::Ge => order.is_ge(),
+                    FilterOp::Lt => order.is_lt(),
+                    _ => order.is_le(),
+                }
+            }
+            FilterNode::InList { field, values } => {
+                let column = Self::column(*field, row)?;
+                let mut hit = false;
+                for value in values {
+                    hit |= column == text(value)?;
+                }
+                hit
+            }
+            FilterNode::Composite { op, children } => {
+                let mut all = true;
+                let mut any = false;
+                for child in children {
+                    let holds = Self::holds(child, row)?;
+                    all &= holds;
+                    any |= holds;
+                }
+                if *op == FilterOp::And { all } else { any }
+            }
+            FilterNode::Not(inner) => !Self::holds(inner, row)?,
+        })
+    }
+}
+
+#[async_trait]
+impl usage_collector_sdk::UsageCollectorClientV1 for PluginLikeCollector {
+    async fn create_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::CreateUsageRecord,
+    ) -> Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn create_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: Vec<usage_collector_sdk::CreateUsageRecord>,
+    ) -> Result<
+        Vec<Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError>>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn get_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn query_aggregated_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+        _: &toolkit_odata::ODataQuery,
+        _: &[usage_collector_sdk::MetadataFilter],
+        _: usage_collector_sdk::AggregationSpec,
+    ) -> Result<usage_collector_sdk::AggregationResult, usage_collector_sdk::UsageCollectorError>
+    {
+        Err(collector_denial())
+    }
+    async fn list_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+        _: &toolkit_odata::ODataQuery,
+        _: &[usage_collector_sdk::MetadataFilter],
+    ) -> Result<
+        toolkit_odata::Page<usage_collector_sdk::UsageRecord>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn deactivate_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn create_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageType,
+    ) -> Result<usage_collector_sdk::UsageType, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn get_usage_type(
+        &self,
+        _: &SecurityContext,
+        gts_id: usage_collector_sdk::UsageTypeGtsId,
+    ) -> Result<usage_collector_sdk::UsageType, usage_collector_sdk::UsageCollectorError> {
+        self.catalog
+            .iter()
+            .find(|t| t.gts_id == gts_id)
+            .cloned()
+            .ok_or_else(|| {
+                usage_collector_sdk::UsageCollectorError::internal("not in this double's catalog")
+            })
+    }
+    async fn list_usage_types(
+        &self,
+        _: &SecurityContext,
+        query: &toolkit_odata::ODataQuery,
+    ) -> Result<
+        toolkit_odata::Page<usage_collector_sdk::UsageType>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        let call = {
+            let mut asked = self.asked.lock().unwrap();
+            asked.push(query.clone());
+            asked.len() - 1
+        };
+        if self.failing_from.is_some_and(|from| call >= from) {
+            return Err(
+                usage_collector_sdk::UsageCollectorError::service_unavailable(
+                    "the probe's catalog store is down",
+                    None,
+                ),
+            );
+        }
+        let limit = query.limit.unwrap_or(100).clamp(1, self.ceiling);
+        let page_rows = usize::try_from(limit).unwrap();
+        let node = query
+            .filter()
+            .map(|expr| {
+                toolkit_odata::filter::convert_expr_to_filter_node::<
+                    usage_collector_sdk::UsageTypeFilterField,
+                >(expr)
+                .map_err(|e| plugin_internal(format!("invalid filter: {e}")))
+            })
+            .transpose()?;
+        if let Some(node) = &node {
+            Self::translate(node)?;
+        }
+        let after = match &query.cursor {
+            None => None,
+            Some(cursor) => {
+                if cursor.d != "fwd" {
+                    return Err(plugin_internal(format!(
+                        "unsupported cursor direction `{}`: only forward paging is supported",
+                        cursor.d
+                    )));
+                }
+                if cursor.f.as_deref() != query.filter_hash.as_deref() {
+                    return Err(plugin_internal("cursor filter hash mismatch"));
+                }
+                Some(cursor.k.first().cloned().unwrap_or_default())
+            }
+        };
+        let mut rows = Vec::new();
+        for row in &self.catalog {
+            if after
+                .as_deref()
+                .is_some_and(|after| row.gts_id.as_ref() <= after)
+            {
+                continue;
+            }
+            if let Some(node) = &node
+                && !Self::holds(node, row)?
+            {
+                continue;
+            }
+            rows.push(row.clone());
+            if rows.len() > page_rows {
+                break;
+            }
+        }
+        let has_next = rows.len() > page_rows;
+        rows.truncate(page_rows);
+        let next_cursor = if has_next {
+            let last = rows.last().expect("a page with a next page has a tail");
+            Some(
+                toolkit_odata::CursorV1 {
+                    k: vec![last.gts_id.to_string()],
+                    o: toolkit_odata::SortDir::Asc,
+                    s: "+gts_id".to_owned(),
+                    f: query.filter_hash.clone(),
+                    d: "fwd".to_owned(),
+                }
+                .encode()
+                .unwrap(),
+            )
+        } else {
+            None
+        };
+        Ok(toolkit_odata::Page::new(
+            rows,
+            toolkit_odata::PageInfo {
+                next_cursor,
+                prev_cursor: None,
+                limit,
+            },
+        ))
+    }
+    async fn delete_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+}
+
+/// The plugin's `UsageCollectorPluginError::internal`, as the host lifts it to the SDK error.
+fn plugin_internal(detail: impl Into<String>) -> usage_collector_sdk::UsageCollectorError {
+    usage_collector_sdk::UsageCollectorError::internal(detail)
+}
+
+/// The production collector adapter over a [`PluginLikeCollector`].
+#[must_use]
+pub fn plugin_like_catalog(
+    collector: Arc<PluginLikeCollector>,
+) -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
+    Arc::new(crate::infra::usage_types::CollectorUsageTypes::new(
+        collector,
+        std::time::Duration::from_secs(2),
+    ))
+}
+
 /// A PDP that refuses every request, for the "authorization is judged first" probes.
 struct DenyingResolver;
 

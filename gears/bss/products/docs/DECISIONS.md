@@ -473,6 +473,14 @@ on the stand (vhp-core's PDP trusts only `am.system` and `rms.system`; plan revi
   next_cursor, prev_cursor, limit } }`, `source` being the catalog's provenance. `limit` defaults to 50 and is
   clamped at 200; 0 or a non-integer is 400. A catalog that refuses the caller is 403, an unconfigured one 501,
   an unreachable one 503, an empty configured one 200 with no items (the 09-22 design's §4).
+- `q` is a case-insensitive substring of `gts_id`. Over the usage collector products applies it itself, because
+  the collector's storage plugin translates comparison operators only and refuses `contains` as an internal
+  error (a 503 for the caller). The collector is asked with `kind eq` at most. Without `q` the page and its
+  cursor are the collector's, uncapped. With `q` products walks the collector's pages for the asked `kind` up
+  to 1000 usage types (`USAGE_TYPE_SEARCH_CAP`), keeps the ids that hold `q`, orders them by id and pages them
+  with a cursor of its own, bound to `q` and `kind`: a cursor replayed with other values, or without `q`, is
+  400. Past 1000 the search is 503 with `USAGE_TYPE_CATALOG_TOO_LARGE` in its detail, never a page of the part
+  it read; the whole walk runs under the one `usage_type_resolver_timeout_ms` deadline.
 - The 09-22 catalog design named the path `/bss-products/v1/catalog/usage-types` and gated it on
   `recognized_set × read`; that resource no longer exists, and picking a usage type is authoring a SKU, so the
   path is `/usage-types` and the gate the author grant.
@@ -480,7 +488,8 @@ on the stand (vhp-core's PDP trusts only `am.system` and `rms.system`; plan revi
 Deploy note: SKU authors, submitters and approvers of usage SKUs need usage-collector read, granted with their
 role; without it submit and approve answer 403 `USAGE_TYPE_FORBIDDEN`.
 
-**Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9).
+**Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9);
+the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
 
 #### P-D-208 [M] A retired SKU no longer keeps its category in use
 

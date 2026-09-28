@@ -176,9 +176,9 @@ pub trait UsageTypeCatalog: Send + Sync + 'static {
 
     /// The authoring pick-list, paged.
     ///
-    /// `q` narrows by substring of the id, `kind` by equality. An
-    /// implementation that cannot narrow may ignore either, but must not
-    /// answer a page it did not narrow as though it had.
+    /// `q` narrows by case-insensitive substring of the id, `kind` by
+    /// equality. An implementation that cannot narrow may ignore either, but
+    /// must not answer a page it did not narrow as though it had.
     ///
     /// # Errors
     ///

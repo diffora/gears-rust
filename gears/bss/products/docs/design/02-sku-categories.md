@@ -120,7 +120,7 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 | `POST /skus` | products:author; 201 draft with id and ETag; `category_id` is optional and an omitted one is null; code/name conflicts are 409. |
 | `PATCH /skus/{id}` | products:author; draft only, If-Match required; `category_id: null` clears the category; pending ownership returns ROW_LOCKED_PENDING; stale version returns STALE_REVISION. |
 | `DELETE /skus/{id}` | products:author; a never-published draft only, by its author (403 NOT_DRAFT_AUTHOR), If-Match required; 204 with an audit row; SKU_NOT_DRAFT, ROW_LOCKED_PENDING, SKU_REFERENCED or STALE_REVISION (409). A draft is deleted, never retired (P-D-206). |
-| `GET /usage-types?q&kind&limit&cursor` | products:author; the usage-type catalog read as the caller, `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable (P-D-207). |
+| `GET /usage-types?q&kind&limit&cursor` | products:author; the usage-type catalog read as the caller, `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable. `q` (case-insensitive substring of the id) is products' own search over the collector: `kind eq` only is sent, at most 1000 types are walked, the cursor is bound to `q` and `kind`; past 1000, 503 `USAGE_TYPE_CATALOG_TOO_LARGE` (P-D-207). |
 | `GET /skus` | products:read; scoped current heads. Slice 04 owns search, filters and pagination. |
 | `GET /skus/{id}` | products:read; current SKU and ETag. Current applied content may be future-effective; use versions for dated truth. |
 | `GET /skus/{id}/versions` | products:read; the history, always an array, oldest first; any query key is 400 (P-D-214). |
