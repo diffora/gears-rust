@@ -117,7 +117,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .description(
             "One page of the tenant's price books (D-442), each with its stats (D-441): its \
              entries and their distinct SKUs, the distinct plans with a draft, pending or \
-             published revision on it, its prices by state (the approved ones also as scheduled, \
+             published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, \
              active and superseded today), its prices units in review and its last change. OData \
              `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on \
              that side); `$orderby` over code and name (tie-break id; default code); `$top` \
