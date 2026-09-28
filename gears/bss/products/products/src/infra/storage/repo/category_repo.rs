@@ -177,6 +177,33 @@ pub async fn clear_default_category(
         .map(|rows| rows.into_iter().map(category_of).collect())
         .map_err(|e| driver_failure("clear the default category".into(), e))
 }
+/// Clear `id`'s default flag when it holds the tenant's default (P-D-220): retiring the default
+/// clears it first, as a category write of its own (`version` + 1, `updated_at`), so the tenant is
+/// left without a default. `None` when the category is not the default.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn clear_default_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<Option<Category>, RepoError> {
+    category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(category::Column::IsDefault, Expr::value(false))
+        .col_expr(
+            category::Column::Version,
+            Expr::col(category::Column::Version).add(1_i64),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(key(tenant_id, id).add(category::Column::IsDefault.eq(true)))
+        .exec_with_returning(runner)
+        .await
+        .map(|rows| rows.into_iter().next().map(category_of))
+        .map_err(|e| driver_failure("clear the retired default".into(), e))
+}
 async fn category_written(
     runner: &impl DBRunner,
     scope: &AccessScope,

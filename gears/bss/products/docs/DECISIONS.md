@@ -50,8 +50,9 @@
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28 |
+| P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
+| P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 
 ## Entries
 
@@ -833,6 +834,9 @@ unmapped, and PATCH `{is_default: true}` and POST with `is_default: true` answer
 
 **Source:** Owner, 2026-09-28 (backend asks, 9b).
 
+**Amended by P-D-220 (2026-09-28).** A retired category is never the default: `is_default: true` on one is 409
+`CATEGORY_RETIRED`, and retiring the default clears it first.
+
 #### P-D-219 [M] The submitter's note travels with the approval unit (twin of pricing D-445)
 
 The Approvals screen shows why a unit was submitted (ask 4b). Until now a change's note (P-D-213) stood only on
@@ -867,3 +871,30 @@ the submit's audit row, and `POST /skus/{id}/submit` and `/retire` took no body 
   carries it on its unit reads; its submit doors take no note (D-445).
 
 **Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3, L6).
+
+#### P-D-220 [M] A retired category is never the default; retiring the default clears it
+
+P-D-218 said nothing about a retired category. PATCH `{is_default: true}` on a retired category moved the default
+to it, and retiring the default left it the default. A tenant could then hold a retired default, which a SKU
+cannot be given (409 `CATEGORY_RETIRED`, P-D-196). The phase 6 fix run 2 review (LOW-2) found the gap, and the
+owner chose to close it.
+
+- **PATCH on a retired category.** `is_default: true` is 409 `CATEGORY_RETIRED`, and nothing moves: the tenant's
+  default keeps its flag and version, and no row is written. The door judges If-Match first, as on every PATCH, so
+  a stale tag is 409 `STALE_REVISION`. The other edits of a retired category still pass, `is_default: false`
+  included. POST always creates an active category, so the rule has no POST case.
+- **Retiring the default.** `POST /categories/{id}/retire` on the tenant's default clears the default first. The
+  clear is a category write of its own: `version` + 1, `updated_at`, and a `category.update` audit row, as a
+  cleared holder has under P-D-218. Then the retirement writes (`version` + 1 and its `category.retire` row), and
+  it answers the category retired and not default. Both writes are in the retirement's one transaction, so a
+  refused retirement (`CATEGORY_IN_USE`, `CATEGORY_RETIRED`) clears nothing. The tenant has no default after,
+  which P-D-196 allows: nothing falls back to a default. Retiring a category that is not the default writes the
+  one retirement, as before.
+- **Races.** A concurrent retirement bumps the category's version, so a default move that read the category
+  active fails its version-conditional write (409 `STALE_REVISION`) and its clear of the old default rolls back.
+  The retirement runs serializable on Postgres: a move that commits between its reads and its write is a
+  serialization failure, and the retry finds the new default and clears it.
+- **A retired default stored before this decision** stays as it is. `PATCH {is_default: false}` clears it, and
+  so does making another category the default. The deploy notes give the query that finds such rows.
+
+**Source:** Owner, 2026-09-28 (a yes; phase 7 plan rev 2, added to run 7.3); phase 6 fix run 2 review (LOW-2).
