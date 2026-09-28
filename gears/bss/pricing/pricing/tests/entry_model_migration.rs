@@ -289,6 +289,7 @@ impl Lite {
                 currency: "EUR".into(),
                 valid_from: None,
                 valid_until: None,
+                description: None,
                 version: 1,
                 created_at: at,
                 updated_at: at,

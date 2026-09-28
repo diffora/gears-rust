@@ -63,6 +63,7 @@ pub async fn stored_book(f: &Fixture, code: &str, updated: time::OffsetDateTime)
             currency: "EUR".into(),
             valid_from: None,
             valid_until: None,
+            description: None,
             version: 1,
             created_at: updated,
             updated_at: updated,

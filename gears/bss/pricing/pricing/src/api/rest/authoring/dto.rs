@@ -18,6 +18,8 @@ pub struct PriceBookDto {
     pub currency: String,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
+    /// Free text, at most 2000 characters, or `null` (D-444).
+    pub description: Option<String>,
     pub version: i64,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
@@ -34,6 +36,7 @@ impl From<entity::price_book::Model> for PriceBookDto {
             currency: m.currency,
             valid_from: m.valid_from.map(|v| v.to_string()),
             valid_until: m.valid_until.map(|v| v.to_string()),
+            description: m.description,
             version: m.version,
             created_at: m.created_at,
             updated_at: m.updated_at,
@@ -350,6 +353,8 @@ pub struct PriceBookCreate {
     pub currency: String,
     pub valid_from: Option<String>,
     pub valid_until: Option<String>,
+    /// Free text, at most 2000 characters (D-444).
+    pub description: Option<String>,
 }
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
@@ -364,6 +369,9 @@ pub struct PriceBookPatch {
     pub valid_from: Option<Option<String>>,
     #[serde(default, deserialize_with = "nullable_date")]
     pub valid_until: Option<Option<String>>,
+    /// Omitted keeps the description, `null` clears it; at most 2000 characters (D-444).
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub description: Option<Option<String>>,
 }
 #[allow(
     clippy::option_option,

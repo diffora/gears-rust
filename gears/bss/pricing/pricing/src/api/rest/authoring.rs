@@ -113,11 +113,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.create_book")
         .summary("Create a price book")
         .description(
-            "Creates a price book of the tenant with a code, a name, one currency and an optional \
-             validity window; the Idempotency-Key replays the first answer. The currency must be \
-             one the tenant settings offer, when they offer any (D-438). Refusals: 400 \
-             BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID or \
-             BOOK_VALIDITY_INVALID; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
+            "Creates a price book of the tenant with a code, a name, one currency, an optional \
+             validity window and an optional description of at most 2000 characters (D-444); the \
+             Idempotency-Key replays the first answer. The currency must be one the tenant \
+             settings offer, when they offer any (D-438). Refusals: 400 BOOK_CODE_REQUIRED, \
+             BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID or \
+             BOOK_DESCRIPTION_TOO_LONG; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
              IDEMPOTENCY_CONFLICT.",
         )
         .tag("Pricing")
@@ -149,11 +150,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.patch_book")
-        .summary("Rename or re-date a price book")
+        .summary("Rename, re-date or describe a price book")
         .description(
-            "Changes a book's name or validity window at the version the caller read (If-Match). \
-             Refusals: 400 BOOK_NAME_REQUIRED or BOOK_VALIDITY_INVALID; 404 for an unknown book; \
-             409 STALE_REVISION.",
+            "Changes a book's name, validity window or description at the version the caller read \
+             (If-Match); an omitted description is kept and null clears it (D-444). Refusals: 400 \
+             BOOK_NAME_REQUIRED, BOOK_VALIDITY_INVALID or BOOK_DESCRIPTION_TOO_LONG; 404 for an \
+             unknown book; 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -163,6 +165,29 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(patch_book)
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::delete("/bss-pricing/v1/price-books/{id}")
+        .operation_id("bss_pricing.delete_book")
+        .summary("Delete an unused price book")
+        .description(
+            "Deletes a book no entry and no plan revision names, at the version the caller read \
+             (If-Match), with an audit row (D-444). Units that named it stay readable, their cards \
+             without the book; the create's Idempotency-Key still replays its answer for a day. \
+             Refusals, in order: 403 without the book write grant; 400 for a missing or malformed \
+             If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 \
+             BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, \
+             pending or published revision on the book, as stats.plans counts it, D-441); 409 \
+             BOOK_IN_PLAN_HISTORY (only superseded revisions name it). A row added by a \
+             concurrent writer is the same 409.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book id")
+        .param(header("If-Match"))
+        .handler(delete_book)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/entries")
@@ -1371,6 +1396,36 @@ async fn patch_book(
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(
             async move { books::patch(tx, &scope, &ctx, correlation, id, version, body).await },
+        )
+    })
+    .await
+}
+async fn delete_book(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let backend = state.db.db().backend();
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), ctx.clone());
+        Box::pin(
+            async move { books::delete(tx, &scope, &ctx, correlation, backend, id, version).await },
         )
     })
     .await

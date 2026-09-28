@@ -182,6 +182,7 @@ impl Harness {
             ("GET", "/bss-pricing/v1/price-books"),
             ("GET", "/bss-pricing/v1/price-books/{id}"),
             ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+            ("DELETE", "/bss-pricing/v1/price-books/{id}"),
             ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
             ("GET", "/bss-pricing/v1/price-books/{id}/export"),
             ("GET", "/bss-pricing/v1/settings"),

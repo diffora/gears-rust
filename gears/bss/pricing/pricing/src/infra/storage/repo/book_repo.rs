@@ -34,6 +34,7 @@ pub async fn insert(
         currency: Set(m.currency),
         valid_from: Set(m.valid_from),
         valid_until: Set(m.valid_until),
+        description: Set(m.description),
         version: Set(m.version),
         created_at: Set(m.created_at),
         updated_at: Set(m.updated_at),
@@ -120,12 +121,54 @@ pub async fn update(
         .col_expr(e::Column::Name, Expr::value(m.name))
         .col_expr(e::Column::ValidFrom, Expr::value(m.valid_from))
         .col_expr(e::Column::ValidUntil, Expr::value(m.valid_until))
+        .col_expr(e::Column::Description, Expr::value(m.description))
         .col_expr(e::Column::UpdatedAt, Expr::value(m.updated_at))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(predicate)
         .exec(runner)
         .await
         .map_err(|e| map_unique("update price_book".into(), e))?;
+    matched(result.rows_affected, "STALE_REVISION")
+}
+/// The book's foreign keys, by the name Postgres gives them, and the conflict a delete that meets
+/// each one is (D-444): an entry's is `BOOK_HAS_ENTRIES`, a plan revision's `BOOK_IN_PLAN`.
+const REFERENCED_BY: [(&str, &str); 2] = [
+    ("pricing_price_book_entry_book_id_fkey", "BOOK_HAS_ENTRIES"),
+    ("pricing_plan_revision_book_id_fkey", "BOOK_IN_PLAN"),
+];
+/// Delete a book at the version the caller read (D-444), in the caller's transaction. The door
+/// judges first that no entry and no plan revision names it; a row that a concurrent writer adds
+/// after those reads meets the book's foreign key here, and the conflict it names is the door's
+/// 409, never a 500: Postgres waits for the writer and fails the delete on the key it names
+/// (`postgres_book_writes.rs` measures it). `SQLite` names no key, and there one writer holds the
+/// database for the whole transaction, so the door's own reads saw every row: its foreign-key
+/// failure stays a storage failure.
+/// # Errors
+/// `STALE_REVISION` when no row matched (another version, or gone); `BOOK_HAS_ENTRIES` or
+/// `BOOK_IN_PLAN` for a named foreign key; database failures keep their type.
+pub async fn delete(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    version: i64,
+) -> Result<(), RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    let result = e::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(key(tenant, id).add(e::Column::Version.eq(version)))
+        .exec(runner)
+        .await
+        .map_err(|error| {
+            if error.is_foreign_key_violation() {
+                let message = error.to_string();
+                if let Some((_, code)) = REFERENCED_BY.iter().find(|(k, _)| message.contains(k)) {
+                    return RepoError::Conflict { code };
+                }
+            }
+            driver_failure("delete price_book".into(), error)
+        })?;
     matched(result.rows_affected, "STALE_REVISION")
 }
 

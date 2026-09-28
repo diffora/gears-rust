@@ -1,5 +1,6 @@
-//! Book writes share one transaction with their audit and POST receipt; the book reads carry
-//! their stats (D-441) and the list pages on the toolkit's `OData` pager (D-442).
+//! Book writes share one transaction with their audit and POST receipt; a book carries an
+//! optional description and an unused one is deleted (D-444); the book reads carry their stats
+//! (D-441) and the list pages on the toolkit's `OData` pager (D-442).
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-currency-validity:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-export:p1
@@ -14,7 +15,10 @@ use crate::{
     domain::book,
     infra::storage::{
         entity::price_book,
-        repo::{book_repo, idempotency_repo as idem, price_book_entry_repo, price_repo},
+        repo::{
+            book_repo, idempotency_repo as idem, plan_revision_repo, price_book_entry_repo,
+            price_repo,
+        },
     },
 };
 use axum::{http::StatusCode, response::Response};
@@ -45,7 +49,7 @@ fn validate(m: &price_book::Model) -> Result<(), CanonicalError> {
     if let Some(e) = errors.first() {
         return Err(invalid("book", e.code));
     }
-    Ok(())
+    book::validate_description(m.description.as_deref()).map_err(|e| invalid("description", e.code))
 }
 #[allow(
     clippy::too_many_arguments,
@@ -115,6 +119,7 @@ pub async fn create(
         currency: body.currency,
         valid_from: date(body.valid_from, "valid_from")?,
         valid_until: date(body.valid_until, "valid_until")?,
+        description: body.description,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -168,6 +173,9 @@ pub async fn patch(
     if let Some(until) = body.valid_until {
         m.valid_until = date(until, "valid_until")?;
     }
+    if let Some(description) = body.description {
+        m.description = description;
+    }
     validate(&m)?;
     m.updated_at = time::OffsetDateTime::now_utc();
     book_repo::update(tx, scope, m.clone()).await?;
@@ -178,6 +186,53 @@ pub async fn patch(
         &PriceBookDto::from(m),
         Some(version + 1),
     )?)
+}
+/// `DELETE /price-books/{id}` (D-444): an unused book at the version the caller read, with an
+/// audit row. Refused in this order, after the door's authorization and If-Match: 404 for a book
+/// the tenant does not hold; 409 `STALE_REVISION`; 409 `BOOK_HAS_ENTRIES` for an entry of any
+/// reference state; 409 `BOOK_IN_PLAN` for a plan with a draft, pending or published revision on
+/// it (`plan_revision_repo::plans_on_books`, the read `stats.plans` counts, D-441); 409
+/// `BOOK_IN_PLAN_HISTORY` when only superseded revisions name it (their history keeps the book,
+/// and `stats.plans` is 0). No unit can be pending on a book without entries (a pending price
+/// keeps its entry), so there is no refusal of its own for one. A row a concurrent writer adds
+/// after these reads is the same 409, from the book's foreign key (`book_repo::delete`). Units
+/// that named the book stay, and their cards answer without it.
+/// # Errors
+/// The refusals above; storage failures.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Conditional resource identity and audit context are explicit"
+)]
+pub async fn delete(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    backend: sea_orm::DbBackend,
+    id: Uuid,
+    version: u64,
+) -> Result<Response, DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    let m = find(tx, scope, tenant, id).await?;
+    check_version(version, m.version)?;
+    let entries = price_book_entry_repo::count_by_book(tx, tenant, backend, &[id]).await?;
+    if !entries.is_empty() {
+        return Err(conflict("BOOK_HAS_ENTRIES").into());
+    }
+    if !plan_revision_repo::plans_on_books(tx, tenant, &[id])
+        .await?
+        .is_empty()
+    {
+        return Err(conflict("BOOK_IN_PLAN").into());
+    }
+    if plan_revision_repo::names_book(tx, tenant, id).await? {
+        return Err(conflict("BOOK_IN_PLAN_HISTORY").into());
+    }
+    book_repo::delete(tx, scope, tenant, id, m.version).await?;
+    audit(tx, ctx, correlation, "price_book.delete", id, m.version).await?;
+    Ok(axum::response::IntoResponse::into_response(
+        StatusCode::NO_CONTENT,
+    ))
 }
 /// Each of the tenant's `books` with its stats dated on `today` (D-441), in their order: four
 /// grouped statements whatever their number.

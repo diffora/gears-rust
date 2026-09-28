@@ -220,6 +220,29 @@ pub async fn plans_on_books(
         .await
         .map_err(|e| driver_failure("count the plans on books".into(), e))
 }
+/// Whether a revision of any state names `book` (D-444): what keeps a book whose plans
+/// [`plans_on_books`] does not count — revisions that are all superseded — from its delete
+/// (`BOOK_IN_PLAN_HISTORY`); their `book_id` is a foreign key the history keeps. ONE statement.
+/// # Errors
+/// Returns typed database failures.
+pub async fn names_book(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<bool, RepoError> {
+    e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::BookId.eq(book)),
+        )
+        .one(runner)
+        .await
+        .map(|found| found.is_some())
+        .map_err(|e| driver_failure("find a revision naming a book".into(), e))
+}
 /// A plan's revisions by revision number.
 /// # Errors
 /// Returns typed database failures.

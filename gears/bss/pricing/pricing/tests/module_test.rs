@@ -17,6 +17,7 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/price-books"),
         ("GET", "/bss-pricing/v1/price-books/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        ("DELETE", "/bss-pricing/v1/price-books/{id}"),
         ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
         ("GET", "/bss-pricing/v1/price-books/{id}/export"),
         ("GET", "/bss-pricing/v1/settings"),
@@ -66,6 +67,7 @@ fn if_match_routes() -> Routes {
     [
         ("PATCH", "/bss-pricing/v1/price-book-entries/{id}"),
         ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        ("DELETE", "/bss-pricing/v1/price-books/{id}"),
         ("PUT", "/bss-pricing/v1/settings"),
         ("PUT", "/bss-pricing/v1/dimension-keys"),
         ("PATCH", "/bss-pricing/v1/prices/{id}"),
@@ -116,7 +118,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 49);
+    assert_eq!(registered.len(), 50);
     assert!(router.has_routes());
 }
 
@@ -175,7 +177,7 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         idempotency_key_routes()
     );
     for (needle, control, production) in [
-        ("preconditions::if_match(", 1, 12),
+        ("preconditions::if_match(", 1, 13),
         ("preconditions::idempotency_key(", 1, 13),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
@@ -188,8 +190,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // reset and the dimension PATCH, each registration and each 200 answer (the PATCH has two:
         // an empty patch answers without a write); + 2: run 7.1's entry prices (D-440), its
         // registration and its 200 answer; + 1: run 7.2's price PATCH answers a temporary
-        // draft's new dates from their own function (D-443).
-        ("StatusCode::", 2, 100),
+        // draft's new dates from their own function (D-443); + 2: run 7.2's book delete (D-444),
+        // its registration and its 204 answer.
+        ("StatusCode::", 2, 102),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -270,7 +273,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 49);
+    assert_eq!(described, 50);
 }
 
 /// Every read that answers an `ETag` declares the header on its 200 response, and nothing else

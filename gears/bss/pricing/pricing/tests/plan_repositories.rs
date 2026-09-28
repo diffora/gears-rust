@@ -32,6 +32,7 @@ fn book(tenant: Uuid) -> price_book::Model {
         currency: "EUR".into(),
         valid_from: None,
         valid_until: None,
+        description: None,
         version: 1,
         created_at: at(9),
         updated_at: at(9),

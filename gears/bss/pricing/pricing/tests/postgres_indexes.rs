@@ -147,6 +147,7 @@ async fn postgres_one_approved_start_per_chain_and_only_among_approved_prices() 
             currency: "EUR".into(),
             valid_from: None,
             valid_until: None,
+            description: None,
             version: 1,
             created_at: now,
             updated_at: now,

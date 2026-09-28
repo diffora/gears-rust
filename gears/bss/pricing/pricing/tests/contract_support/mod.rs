@@ -356,6 +356,7 @@ impl Writer<'_> {
                 currency: "EUR".into(),
                 valid_from: None,
                 valid_until: None,
+                description: None,
                 version: 1,
                 created_at: created(),
                 updated_at: created(),

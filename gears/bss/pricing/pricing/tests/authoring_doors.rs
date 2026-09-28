@@ -381,6 +381,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("GET", "/reference-ops".into()),
         ("GET", format!("/price-books/{id}")),
         ("PATCH", format!("/price-books/{id}")),
+        ("DELETE", format!("/price-books/{id}")),
         ("GET", format!("/price-books/{id}/entries")),
         ("GET", format!("/price-books/{id}/export")),
         ("GET", "/settings".into()),
@@ -446,6 +447,7 @@ fn book(tenant: Uuid) -> price_book::Model {
         currency: "EUR".into(),
         valid_from: None,
         valid_until: None,
+        description: None,
         version: 1,
         created_at: at(9),
         updated_at: at(9),
@@ -653,6 +655,12 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "author",
         ),
         (
+            "DELETE",
+            format!("/price-books/{id}"),
+            "price_book",
+            "author",
+        ),
+        (
             "GET",
             format!("/price-books/{id}/entries"),
             "price_book_entry",
@@ -784,7 +792,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 49);
+    assert_eq!(table.len(), 50);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

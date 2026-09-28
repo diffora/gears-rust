@@ -80,6 +80,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
+| D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 
 ## Entries
 
@@ -610,3 +611,18 @@ The Price Books screen edits a temporary draft's dates (ask 21). PATCH /prices/{
 - **An edited return.** A return's money stays editable, and a move of its pair copies the money again from the restored price. Submit would refuse the edited return as PAIR_RETURN_STALE anyway (D-391), so the copy loses nothing that submit would keep.
 
 **Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 21; plan review H2, L5). Amends D-391.
+
+#### D-444 [M] A book has a description, and an unused book can be deleted
+
+**Status:** DECIDED 2026-09-28.
+
+The Price Books screen shows a book's description and deletes a book that nothing uses (ask 16). A book had no free text, and no door removed a book.
+
+- **The description.** Migration m20260928_000015_book_description adds pricing_price_book.description, a nullable text column, by ADD COLUMN on both dialects (a book written before it reads null). POST /price-books takes an optional description; PATCH /price-books/{id} keeps it when the field is omitted, replaces it with a value and clears it with null. It holds at most 2000 characters (Unicode scalar values), judged at the door: 400 BOOK_DESCRIPTION_TOO_LONG; there is no CHECK. It is stored as sent. Every book answer carries it: PriceBookDto (the write answers, the stored receipt, the export, publish-changes) and the book reads, which flatten it (D-441). A stored POST receipt younger than a day replays the answer it recorded, without the field.
+- **The delete.** DELETE /bss-pricing/v1/price-books/{id} under the book write grant (price_book author) and If-Match answers 204 and writes a price_book.delete audit row. The refusals come in this order: 403 without the grant (authorization first); 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_HAS_ENTRIES for an entry of the book in any reference state; 409 BOOK_IN_PLAN for a plan with a draft, pending or published revision on the book, which is plan_revision_repo::plans_on_books, the read D-441's stats.plans counts, so plans = 0 and BOOK_IN_PLAN never disagree; 409 BOOK_IN_PLAN_HISTORY when only superseded revisions name the book.
+- **Superseded revisions keep the book.** A revision's book_id is a foreign key, and a revision may name a book without any entry of it (a revision moved to another book, or one with only included items). A book that only superseded revisions name has stats.plans = 0, and its delete is still refused: the history of those revisions keeps it. That refusal has its own code, BOOK_IN_PLAN_HISTORY, so BOOK_IN_PLAN keeps D-441's meaning.
+- **No refusal for a pending unit.** A prices unit in review holds pending prices; a pending price keeps its entry (ENTRY_PRICES_IN_USE), and BOOK_HAS_ENTRIES is judged first. A plan-revision unit names its revision, which is not superseded while it is pending (BOOK_IN_PLAN). So no unit can be pending on a book without entries, and the plan's BOOK_LOCKED_PENDING is not a refusal (plan review L1).
+- **A lost race.** A row that a concurrent writer adds after the door's reads meets the book's foreign key: Postgres waits for that writer and fails the delete on the key it names, and the entry's key is 409 BOOK_HAS_ENTRIES, a revision's 409 BOOK_IN_PLAN, never a 500. On SQLite one writer holds the database for the whole transaction, so the door's reads see every row. An entry create in flight loses cleanly the other way: its Tx B finds no book (BOOK_NOT_FOUND), which cancels the op and releases the reservation.
+- **What stays.** The book's audit rows stay. A decided unit (rejected or withdrawn) that named the book stays readable: its card and the unit list answer with its ref_id, its decisions and the impact of its stored items, without the book. An approved unit's prices keep their entries, so its book is never deleted. Like a deleted draft SKU's create (P-D-206), the book create's Idempotency-Key still replays its 201 for a day, naming the deleted book; the code is free again.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 16; plan review L1, L8).

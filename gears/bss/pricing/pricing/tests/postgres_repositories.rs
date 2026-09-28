@@ -26,6 +26,7 @@ async fn postgres_unique_codes_and_price_decimal_roundtrip() {
         currency: "EUR".into(),
         valid_from: None,
         valid_until: None,
+        description: None,
         version: 1,
         created_at: now,
         updated_at: now,
