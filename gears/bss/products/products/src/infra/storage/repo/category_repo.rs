@@ -39,7 +39,8 @@ fn key(tenant: Uuid, id: Uuid) -> Condition {
 }
 /// Insert an active category.
 /// # Errors
-/// Returns category-code conflicts or scoped storage failures.
+/// Returns category-code conflicts, `CATEGORY_DEFAULT_TAKEN` when another category is the default
+/// (the door clears it first, P-D-218; this is a lost race), or scoped storage failures.
 pub async fn insert_category(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -107,7 +108,8 @@ pub async fn list_categories(
 }
 /// Patch a category only at the revision the caller saw.
 /// # Errors
-/// Returns scoped storage failures.
+/// Returns `CATEGORY_DEFAULT_TAKEN` when `is_default: true` meets another default (the door
+/// clears it first, P-D-218; this is a lost race), or scoped storage failures.
 pub async fn update_category(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -138,8 +140,42 @@ pub async fn update_category(
         .filter(key(tenant_id, id).add(category::Column::Version.eq(expected_version)))
         .exec(runner)
         .await
-        .map_err(|e| driver_failure("update category".into(), e))?;
+        .map_err(|e| map_unique("update category".into(), e))?;
     category_written(runner, scope, tenant_id, id, r.rows_affected).await
+}
+/// Clear the tenant's default when a category other than `keep` holds it (P-D-218): a move of the
+/// default is this, then the write that sets it, in one transaction. Each cleared row gets a new
+/// version, like any category write, and is returned for its audit row; the partial unique index
+/// allows at most one. A default a concurrent move already cleared is not matched again.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn clear_default_category(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    keep: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<Vec<Category>, RepoError> {
+    let mut held = Condition::all()
+        .add(category::Column::TenantId.eq(tenant_id))
+        .add(category::Column::IsDefault.eq(true));
+    if let Some(keep) = keep {
+        held = held.add(category::Column::Id.ne(keep));
+    }
+    category::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(category::Column::IsDefault, Expr::value(false))
+        .col_expr(
+            category::Column::Version,
+            Expr::col(category::Column::Version).add(1_i64),
+        )
+        .col_expr(category::Column::UpdatedAt, Expr::value(now))
+        .filter(held)
+        .exec_with_returning(runner)
+        .await
+        .map(|rows| rows.into_iter().map(category_of).collect())
+        .map_err(|e| driver_failure("clear the default category".into(), e))
 }
 async fn category_written(
     runner: &impl DBRunner,

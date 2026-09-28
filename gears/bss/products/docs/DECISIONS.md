@@ -50,6 +50,7 @@
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28 |
 
 ## Entries
 
@@ -807,3 +808,23 @@ and its nullability, no request body reaches an enum, and the fields above stay 
 poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).
+
+#### P-D-218 [M] Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN`
+
+A tenant has at most one default category: the partial unique index `uq_products_category_default` on
+`(tenant_id) WHERE is_default`, on both dialects since `m20260925_000001`. A second default used to reach it
+unmapped, and PATCH `{is_default: true}` and POST with `is_default: true` answered 500.
+
+- `is_default: true` on PATCH `/categories/{id}` or on POST `/categories` moves the default. In the door's
+  one transaction, the tenant's previous default (any category but the target) is cleared first, then the
+  target is written. The cleared row is a category write like any other: `version` + 1, `updated_at`, and its
+  own `category.update` audit row. The target keeps its own audit row (`category.update` or `category.create`).
+  Setting the default on the category that already holds it clears nothing.
+- A clash that remains is a concurrent move that took the default between the clear and the set. It is 409
+  `CATEGORY_DEFAULT_TAKEN` on both doors, and the refused act writes nothing. The index maps by name on
+  Postgres and by its column (`products_category.tenant_id`, after the code index's pair) on SQLite. The doors
+  run read committed on Postgres: the second of two concurrent moves waits on the first's lock on the old
+  default, finds it cleared, and its set meets the winner's default.
+- `is_default: false` clears only the target; a tenant may have no default (P-D-196: nothing falls back to it).
+
+**Source:** Owner, 2026-09-28 (backend asks, 9b).
