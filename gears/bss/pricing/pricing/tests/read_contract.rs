@@ -1037,7 +1037,7 @@ async fn a_sku_products_does_not_know_resolves_with_a_null_sku_version() {
     settings(
         &f,
         json!({"default_timing":"arrears","default_rounding":"half_even","default_gl":"9000",
-               "default_tax_category":"std","invoice_line_templates":{"recurring":"{sku} per {period}"}}),
+               "default_tax_category":"std","invoice_line_templates":{"recurring":"{sku} per {period}"},"currencies":[]}),
     )
     .await;
     let (s, b) = resolve(&f, &format!("plan_revision_id={revision}&date=2026-10-05")).await;
@@ -1084,7 +1084,7 @@ async fn september_binds_sku_version_one_and_october_version_two() {
     settings(
         &f,
         json!({"default_timing":"arrears","default_rounding":"half_up","default_gl":"9000",
-               "default_tax_category":"std","invoice_line_templates":{"usage":"{sku} usage"}}),
+               "default_tax_category":"std","invoice_line_templates":{"usage":"{sku} usage"},"currencies":[]}),
     )
     .await;
     let entry = entry_of(&f, eur, sku, "usage", (None, None, None)).await;
@@ -1384,6 +1384,7 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
             "approval-units" => unit.to_string(),
             "plans" => w.plan.to_string(),
             "plan-revisions" => w.revision.to_string(),
+            "plan-items" => w.item.to_string(),
             "prices" => w.price.to_string(),
             _ => String::new(),
         };
@@ -1391,12 +1392,16 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
         if path == "/resolve" {
             path = format!("/resolve?plan_revision_id={}&date=2026-10-05", w.revision);
         }
+        // D-434: the SKU's entries need the SKU.
+        if path == "/price-book-entries" {
+            path = format!("/price-book-entries?sku_id={}", w.sku);
+        }
         let (s, b, tag) = w.f.call("GET", &path, json!({}), None, None).await;
         assert_eq!(s, 200, "{path}: {b}");
         assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
         measured += 1;
     }
-    assert_eq!(measured, 18, "every GET operation is measured");
+    assert_eq!(measured, 20, "every GET operation is measured");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused

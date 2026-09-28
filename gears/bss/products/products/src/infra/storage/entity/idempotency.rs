@@ -4,18 +4,19 @@
 //! client_key)`.
 //!
 //! This entity lays down the storage shape only. The claim `INSERT` itself is
-//! the concurrency gate (**P-D-42**) and lives in
+//! the concurrency gate (P-D-198) and lives in
 //! [`crate::infra::storage::repo`], not here — see that module's
 //! `claim_idempotency_key` for the mechanism this table exists to support.
 //!
 //! `response_status` and `response_body` are nullable together: `claimed`
 //! means both `NULL`, `answered` means both `NOT NULL`, enforced by
-//! `chk_products_idempotency_response_group` on both backends. A refusal
-//! stores nothing (**P-D-38**), so nothing here ever reads a `claimed` row
-//! with a partial response as anything but a violation of that `CHECK`.
+//! `chk_products_idempotency_response_group` on both backends. An answer is
+//! stored only when its transaction commits (P-D-198), so nothing here ever
+//! reads a `claimed` row with a partial response as anything but a violation of
+//! that `CHECK`.
 //!
 //! `expires_at` is stamped at the claim `INSERT` and does double duty: it is
-//! the retention deadline and it is **P-D-49**'s claim stamp — the operand
+//! the retention deadline and it is the claim stamp (P-D-198) — the operand
 //! the expired-key takeover's compare-and-swap reads before it writes, so
 //! that two duplicates racing to take over the same expired row cannot both
 //! succeed. See the migration's own module doc for the full argument.
@@ -39,8 +40,7 @@ pub struct Model {
     pub tenant_id: Uuid,
     /// Composite primary key with `tenant_id` and `client_key`. The concrete
     /// resource path a wire caller resolved, never the route template it
-    /// matched — three reserved `internal:` lane names occupy this column
-    /// for non-HTTP callers.
+    /// matched (P-D-198).
     #[sea_orm(primary_key, auto_increment = false)]
     pub endpoint: String,
     /// Composite primary key with `tenant_id` and `endpoint`. The caller's
@@ -60,17 +60,15 @@ pub struct Model {
     /// `NOT NULL` once `answered`, together with `response_body`.
     pub response_status: Option<i32>,
     /// The body the original caller was told, self-contained so a replay
-    /// never needs to dereference another row (**P-D-29**). `NULL` while
+    /// never needs to dereference another row (P-D-198). `NULL` while
     /// `claimed`, `NOT NULL` once `answered`, together with
     /// `response_status`.
     pub response_body: Option<JsonValue>,
     /// The retention deadline, stamped at the claim `INSERT`, and also the
     /// compare-and-swap operand the expired-key takeover reads before it
-    /// writes (**P-D-49**).
+    /// writes (P-D-198).
     pub expires_at: TimeDateTimeWithTimeZone,
-    /// The composite act's parent handle (P-D-79): `NULL` for every
-    /// single-entity door; the family clone stamps the new parent's id here
-    /// in the parent's own transaction and reads it back to resume.
+    /// Carried in the DDL (P-D-193) and always `NULL`: no door stamps it.
     pub entity_ref: Option<Uuid>,
 }
 

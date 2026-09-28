@@ -24,7 +24,8 @@ use axum::{
 };
 use dto::{
     PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookList, PriceBookPatch,
-    PricingDimensions, PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
+    PricingDimensionKeyPatch, PricingDimensionRegistry, PricingDimensions,
+    PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
@@ -115,9 +116,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Create a price book")
         .description(
             "Creates a price book of the tenant with a code, a name, one currency and an optional \
-             validity window; the Idempotency-Key replays the first answer. Refusals: 400 \
+             validity window; the Idempotency-Key replays the first answer. The currency must be \
+             one the tenant settings offer, when they offer any (D-438). Refusals: 400 \
              BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID or \
-             BOOK_VALIDITY_INVALID; 409 BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
+             BOOK_VALIDITY_INVALID; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
+             IDEMPOTENCY_CONFLICT.",
         )
         .tag("Pricing")
         .authenticated()
@@ -213,9 +216,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_settings")
         .summary("Read the tenant settings")
         .description(
-            "Returns the tenant's billing defaults (timing, rounding, GL code, tax category) and \
-             invoice-line templates by SKU type, its version as the ETag; the defaults apply until \
-             the settings are first written.",
+            "Returns the tenant's billing defaults (timing, rounding, GL code, tax category), \
+             invoice-line templates by SKU type and the currencies a new book may take (empty: \
+             any), with who wrote them last and when, and its version as the ETag; the defaults \
+             apply, with no writer, until the settings are first written.",
         )
         .tag("Pricing")
         .authenticated()
@@ -229,9 +233,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.put_settings")
         .summary("Write the tenant settings")
         .description(
-            "Replaces the tenant settings at the version the caller read (If-Match). Refusals: 400 \
-             TIMING_INVALID, ROUNDING_REQUIRED, SKU_TYPE_INVALID or an invalid line template \
-             (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
+            "Replaces the tenant settings at the version the caller read (If-Match), currencies \
+             included (required; [] offers any currency, D-438), and records the caller and the \
+             time. Rounding is half_up, half_even, half_down, up or down (D-437). Refusals: 400 \
+             TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, \
+             CURRENCY_INVALID or an invalid line template (LINE_TEMPLATE_EMPTY, \
+             LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -246,14 +253,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_dimensions")
         .summary("Read the dimension registry")
         .description(
-            "Returns the tenant's dimension keys with their values, and a content ETag a following \
-             PUT sends back as If-Match. Only a caller without config read is refused (403).",
+            "Returns the tenant's dimension keys with their values, each value with the prices \
+             of any state that use it (D-436), and a content ETag a following PUT or PATCH sends \
+             back as If-Match. Only a caller without config read is refused (403).",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .handler(get_dimensions)
-        .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
+        .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
@@ -264,7 +272,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Replaces the tenant's dimension keys and values at the content the caller read \
              (If-Match). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID or \
              DIM_KEY_DUPLICATE; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry \
-             names or a value a price uses; 409 STALE_REVISION.",
+             names or a value a price uses (naming it); 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -272,7 +280,26 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_request::<PricingDimensions>(openapi, "Request")
         .param(header("If-Match"))
         .handler(put_dimensions)
-        .json_response_with_schema::<PricingDimensions>(openapi, StatusCode::OK, "Response")
+        .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::patch("/bss-pricing/v1/dimension-keys")
+        .operation_id("bss_pricing.patch_dimension_values")
+        .summary("Add or remove values of one dimension key")
+        .description(
+            "Adds and removes values of one declared key (stored, or the seed key while nothing \
+             is stored) at the content the caller read (If-Match); keys themselves are added and \
+             removed by the PUT (D-436). Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, \
+             DIM_VALUE_UNKNOWN, DIM_VALUE_INVALID or DIM_VALUES_FEW; 409 DIM_VALUE_IN_USE naming \
+             the value a price uses, or STALE_REVISION.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .json_request::<PricingDimensionKeyPatch>(openapi, "Request")
+        .param(header("If-Match"))
+        .handler(patch_dimensions)
+        .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/entries")
@@ -300,6 +327,24 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             StatusCode::CREATED,
             "Response",
         )
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries")
+        .operation_id("bss_pricing.list_sku_entries")
+        .summary("Where a SKU is priced")
+        .description(
+            "Lists the tenant's price book entries of one SKU across its books (D-434), each with \
+             its book's code, name and currency, its usage (D-428) and current_price: the default \
+             chain's approved price in force today, shown to a caller who also holds price_book \
+             read (the export's grant) and null otherwise. Refusals: 400 QUERY_INVALID without \
+             exactly one well-formed sku_id, or with any other key.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .query_param("sku_id", true, "The SKU whose entries are listed")
+        .handler(list_sku_entries)
+        .json_response_with_schema::<dto::PricingSkuEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}")
@@ -599,6 +644,29 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .response_header(etag())
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::delete("/bss-pricing/v1/approval-policy/{kind}")
+        .operation_id("bss_pricing.delete_approval_policy_override")
+        .summary("Reset a kind's quorum to the default")
+        .description(
+            "Removes one kind's override (prices, plan_revision) at the policy the caller read \
+             (If-Match), so the kind follows the default quorum again (D-435); answers the policy \
+             with its new ETag. Refusals: 400 POLICY_DEFAULT_REQUIRED for the default (*), which \
+             is never deleted, or POLICY_KIND_INVALID; 404 when the kind has no override; 409 \
+             STALE_REVISION.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("kind", "Approval kind: prices or plan_revision")
+        .param(header("If-Match"))
+        .handler(delete_approval_policy)
+        .json_response_with_schema::<dto::PricingApprovalPolicyDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
     OperationBuilder::put("/bss-pricing/v1/approval-policy")
@@ -989,6 +1057,35 @@ async fn put_approval_policy(
     })
     .await
 }
+async fn delete_approval_policy(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(kind): Path<String>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::CONFIG,
+        actions::SETTINGS,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, kind) = (scope.clone(), ctx.clone(), kind.clone());
+        Box::pin(async move {
+            approvals::reset_policy(tx, &scope, &ctx, correlation, version, &kind).await
+        })
+    })
+    .await
+}
 /// Draft price authoring: create, patch and delete.
 fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post("/bss-pricing/v1/price-book-entries/{id}/prices")
@@ -1308,7 +1405,7 @@ async fn list_entries(
                         let counted = usage.remove(&m.id).unwrap_or_default();
                         dto::PricingPriceBookEntryReadDto::of(m, counted)
                     })
-                    .collect(),
+                    .collect::<Result<_, _>>()?,
             };
             Ok(response(StatusCode::OK, &body, None)?)
         })
@@ -1460,6 +1557,91 @@ async fn put_dimensions(
     })
     .await
 }
+async fn patch_dimensions(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::CONFIG,
+        actions::SETTINGS,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let body: PricingDimensionKeyPatch = preconditions::parse_body(&body)?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
+        Box::pin(async move {
+            configuration::patch_dimensions(tx, &scope, &ctx, correlation, version, body).await
+        })
+    })
+    .await
+}
+async fn list_sku_entries(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    uri: axum::http::Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK_ENTRY,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<dto::PricingSkuEntryQuery>::try_from_uri(&uri)
+            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    let sku = query
+        .sku_id
+        .ok_or_else(|| support::invalid("sku_id", "QUERY_INVALID"))?;
+    // D-434: the money is the export's — price_book read. Without it the entries still list, each
+    // with a null current_price; only an unavailable policy fails the read.
+    let books = match authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(books) => Some(books),
+        Err(authz::AuthzError::Denied(_)) => None,
+        Err(unavailable) => return Err(authz_failure(unavailable)),
+    };
+    transaction(&state.db.db(), move |tx| {
+        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+        Box::pin(async move {
+            let body = price_book_entries::for_sku(
+                tx,
+                &scope,
+                books.as_ref(),
+                ctx.subject_tenant_id(),
+                sku,
+            )
+            .await?;
+            Ok(response(StatusCode::OK, &body, None)?)
+        })
+    })
+    .await
+}
 
 async fn create_entry(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1520,7 +1702,7 @@ async fn get_entry(
                 .unwrap_or_default();
             Ok(response(
                 StatusCode::OK,
-                &dto::PricingPriceBookEntryReadDto::of(m, usage),
+                &dto::PricingPriceBookEntryReadDto::of(m, usage)?,
                 Some(version),
             )?)
         })
@@ -1633,7 +1815,10 @@ async fn list_reference_ops(
             Ok(response(
                 StatusCode::OK,
                 &dto::PricingReferenceOpPage {
-                    items: items.into_iter().map(Into::into).collect(),
+                    items: items
+                        .into_iter()
+                        .map(TryInto::try_into)
+                        .collect::<Result<_, _>>()?,
                     next_cursor,
                 },
                 None,

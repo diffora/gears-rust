@@ -119,11 +119,22 @@ pub async fn create(
         updated_at: now,
     };
     validate(&model)?;
+    // D-438: a new book takes a currency the tenant offers (any, while it offers none).
+    super::configuration::offer_currency(tx, tenant, &model.currency).await?;
     let model = book_repo::insert(tx, scope, model).await?;
     audit(tx, ctx, correlation, "price_book.create", model.id, 1).await?;
     let body = value(&PriceBookDto::from(model))?;
-    if idem::answer_idempotency_key(tx, &receipt_scope, tenant, endpoint, key, 201, body.clone())
-        .await?
+    if idem::answer_idempotency_key(
+        tx,
+        &receipt_scope,
+        tenant,
+        endpoint,
+        key,
+        201,
+        body.clone(),
+        None,
+    )
+    .await?
         != idem::IdempotencyAnswer::Recorded
     {
         return Err(CanonicalError::internal("idempotency claim lost")
@@ -214,11 +225,11 @@ pub async fn export(
         // Every price echoes its entry's model (D-427).
         let model = p.model.clone();
         result.push(PricingExportEntry {
-            entry: p.into(),
+            entry: p.try_into()?,
             prices: prices
                 .into_iter()
                 .map(|m| PricingPriceDto::of(m, &model))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         });
     }
     Ok(PriceBookExport {

@@ -2,15 +2,15 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-list-search:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-card-with-references:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-create-unique:p1
+use super::closed_sets::{ProductsReferenceKind, ProductsReferenceState};
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
-    dto::{
-        ReferencesDto, SkuCard, SkuDto, SkuList, SkuListItem, SkuPatchRequest, SkuRequest,
-        SkuVersionDto, parse_token,
-    },
+    dto::{ReferencesDto, SkuCard, SkuDto, SkuPatchRequest, SkuRequest, SkuVersionDto},
     json_body,
     preconditions::{etag, if_match, if_match_param},
-    replay, repo_error_to_canonical, require_authenticated, tx_to_canonical,
+    replay, repo_error_to_canonical, require_authenticated,
+    sku_list::{RawQuery, UNSUPPORTED, refused},
+    tx_to_canonical,
 };
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -34,7 +34,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use bss_products_sdk::models::{Lifecycle, Sku, SkuContent, SkuType};
+use bss_products_sdk::models::{Lifecycle, Sku, SkuContent};
 use std::sync::Arc;
 use time::{Date, OffsetDateTime};
 use toolkit::api::{
@@ -43,6 +43,7 @@ use toolkit::api::{
     operation_builder::OperationBuilder,
 };
 use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_odata::errors::OdataError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -51,28 +52,6 @@ const TAG: &str = "SKUs";
 #[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
 struct SkuResource;
 
-/// List query vocabulary mirrors the repository's scoped filters.
-#[toolkit_macros::api_dto(request)]
-struct ListQuery {
-    q: Option<String>,
-    r#type: Option<String>,
-    category: Option<Uuid>,
-    lifecycle: Option<String>,
-    limit: Option<u32>,
-    after: Option<String>,
-}
-#[toolkit_macros::api_dto(request)]
-struct VersionQuery {
-    #[serde(default, with = "crate::infra::serde_date::option")]
-    as_of: Option<Date>,
-}
-/// History is an array; `as_of` selects a single version.
-#[toolkit_macros::api_dto(response)]
-#[serde(untagged)]
-enum VersionsResponse {
-    History(Vec<SkuVersionDto>),
-    AsOf(Box<SkuVersionDto>),
-}
 #[toolkit_macros::api_dto(request)]
 struct ReferenceQuery {
     #[serde(default)]
@@ -81,10 +60,11 @@ struct ReferenceQuery {
 #[toolkit_macros::api_dto(response)]
 struct ReferenceDto {
     id: Uuid,
+    /// The owning gear: a string, since no CHECK holds the column to a set (P-D-217).
     owner: String,
-    kind: String,
+    kind: ProductsReferenceKind,
     ref_id: Uuid,
-    state: String,
+    state: ProductsReferenceState,
     #[serde(with = "time::serde::rfc3339")]
     reserved_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
@@ -93,20 +73,27 @@ struct ReferenceDto {
     forced: bool,
     release_reason: Option<String>,
 }
-impl From<repo::SkuReference> for ReferenceDto {
-    fn from(r: repo::SkuReference) -> Self {
-        Self {
+impl TryFrom<repo::SkuReference> for ReferenceDto {
+    type Error = RepoError;
+    fn try_from(r: repo::SkuReference) -> Result<Self, RepoError> {
+        Ok(Self {
             id: r.id,
             owner: r.owner_gear,
-            kind: r.ref_kind,
+            kind: ProductsReferenceKind::stored(
+                &r.ref_kind,
+                &format_args!("reference {} ref_kind", r.id),
+            )?,
             ref_id: r.ref_id,
-            state: r.state,
+            state: ProductsReferenceState::stored(
+                &r.state,
+                &format_args!("reference {} state", r.id),
+            )?,
             reserved_at: r.reserved_at,
             released_at: r.released_at,
             released_by: r.released_by,
             forced: r.forced,
             release_reason: r.release_reason,
-        }
+        })
     }
 }
 #[toolkit_macros::api_dto(response)]
@@ -115,7 +102,7 @@ struct ReferenceList {
     items: Vec<ReferenceDto>,
 }
 
-/// Register the six SKU operations and their concrete response schemas.
+/// Register the seven SKU operations and their concrete response schemas.
 #[allow(clippy::too_many_lines)] // Keep each operation's complete contract together.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(SKUS)
@@ -136,27 +123,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(Router::new(), openapi);
-    let router = OperationBuilder::get(SKUS)
-        .operation_id("bss_products.list_skus")
-        .summary("List and search SKUs")
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .query_param("q", false, "q")
-        .query_param("type", false, "type")
-        .query_param("category", false, "category")
-        .query_param("lifecycle", false, "lifecycle")
-        .query_param("limit", false, "limit")
-        .query_param("after", false, "after")
-        .handler(list_skus)
-        .json_response_with_schema::<SkuList>(openapi, StatusCode::OK, "List and search SKUs.")
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    // The list and its counts (P-D-210, P-D-211).
+    let router = super::sku_list::register(router, openapi);
     let router = OperationBuilder::get(format!("{SKUS}/{{id}}"))
         .operation_id("bss_products.get_sku")
         .summary("Read a SKU card")
@@ -192,19 +160,50 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get(format!("{SKUS}/{{id}}/versions"))
-        .operation_id("bss_products.sku_versions")
-        .summary("Read version history or the version in force")
+    let router = OperationBuilder::delete(format!("{SKUS}/{{id}}"))
+        .operation_id("bss_products.delete_sku_draft")
+        .summary("Delete a never-published draft SKU")
+        .description(
+            "Deletes a draft that was never published, at the revision the caller read \
+             (If-Match); only its author may (P-D-206). A draft is deleted, never retired. The \
+             SKU's audit rows stay, and a rejected or withdrawn unit that named it stays readable. \
+             Refusals: 403 NOT_DRAFT_AUTHOR; 400 for a missing or malformed If-Match; 404; 409 \
+             SKU_NOT_DRAFT (published once, or not a draft), ROW_LOCKED_PENDING, SKU_REFERENCED \
+             or STALE_REVISION.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
-        .query_param("as_of", false, "as_of")
+        .param(if_match_param())
+        .handler(delete_sku_draft)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    // P-D-214: the history is always an array; the version in force on a date has its own path.
+    let router = OperationBuilder::get(format!("{SKUS}/{{id}}/versions"))
+        .operation_id("bss_products.sku_versions")
+        .summary("Read a SKU's version history")
+        .description(
+            "Every published version of the SKU, oldest first, as an array (empty before the \
+             first publication). The version in force on a date is \
+             `GET /skus/{id}/versions/as-of?date=` (P-D-214); any query key here is 400.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "SKU id")
         .handler(sku_versions)
-        .json_response_with_schema::<VersionsResponse>(
+        .json_array_response_with_schema::<SkuVersionDto>(
             openapi,
             StatusCode::OK,
-            "Read version history or the version in force.",
+            "The SKU's versions, oldest first.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -213,6 +212,39 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::get(format!("{SKUS}/{{id}}/versions/as-of"))
+        .operation_id("bss_products.sku_version_as_of")
+        .summary("Read the SKU version in force on a date")
+        .description(
+            "The version with the greatest effective_from not after `date`, then the greatest \
+             published_version (P-D-191, P-D-214). 404 with reason NO_VERSION_IN_FORCE before the \
+             first version; a missing or malformed `date`, or any other key, is 400.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "SKU id")
+        .query_param_typed(
+            "date",
+            true,
+            "The date (YYYY-MM-DD) the version is in force on",
+            "string",
+        )
+        .handler(sku_version_as_of)
+        .json_response_with_schema::<SkuVersionDto>(
+            openapi,
+            StatusCode::OK,
+            "The version in force on the date.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    // The SKU's history (P-D-213).
+    let router = super::sku_history::register(router, openapi);
     let router = OperationBuilder::get(format!("{SKUS}/{{id}}/references"))
         .operation_id("bss_products.sku_references")
         .summary("Read reference details and optional released history")
@@ -220,10 +252,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
-        .query_param(
+        .query_param_typed(
             "include_released",
             false,
             "Include released reference history (default false)",
+            "boolean",
         )
         .handler(sku_references)
         .json_response_with_schema::<ReferenceList>(
@@ -307,7 +340,9 @@ fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
         other => TxError::Repo(other),
     }
 }
-/// P-D-184: a configured catalog's definite unknown refuses; silence allows draft save.
+/// P-D-184: a configured catalog's definite unknown refuses; silence allows draft save. A catalog
+/// that refuses the caller (P-D-207) is not a verdict on the ref either, so the save proceeds; the
+/// submit and the approve answer it 403 `USAGE_TYPE_FORBIDDEN`.
 async fn resolve_draft_ref(
     state: &ApiState,
     ctx: &SecurityContext,
@@ -383,7 +418,11 @@ async fn create_sku(
                     let s = repo::insert_sku(tx, &scope, tenant_id, new, actor, now)
                         .await
                         .map_err(|e| write_error(e, category))?;
-                    audit(tx, &scope, tenant_id, actor, "sku.create", &s, now).await?;
+                    let created = repo::LifecycleMove {
+                        from: None,
+                        to: Some(s.lifecycle),
+                    };
+                    audit(tx, &scope, tenant_id, actor, "sku.create", &s, now, created).await?;
                     replay::finish(
                         tx,
                         tenant_id,
@@ -512,7 +551,18 @@ async fn update_sku_draft(
                             }));
                         }
                     };
-                    audit(tx, &scope, tenant_id, actor, "sku.draft_update", &s, now).await?;
+                    let moved = repo::LifecycleMove::between(current.lifecycle, s.lifecycle);
+                    audit(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        actor,
+                        "sku.draft_update",
+                        &s,
+                        now,
+                        moved,
+                    )
+                    .await?;
                     Ok(s)
                 })
             },
@@ -520,6 +570,114 @@ async fn update_sku_draft(
         .await
         .map_err(tx_to_canonical)?;
     Ok(response(StatusCode::OK, updated))
+}
+/// P-D-206: only a never-published draft is deleted, as only it is edited: by its author, unlocked,
+/// at the revision the caller read. The refusals come in the draft PATCH's order.
+fn deletable(s: &Sku, expected: i64, actor: Uuid) -> Result<(), TxError> {
+    if s.lifecycle != Lifecycle::Draft || s.published_version != 0 {
+        return Err(TxError::Refused(DomainError::Conflict {
+            code: "SKU_NOT_DRAFT",
+            detail: "only a never-published draft is deleted; retire a published SKU".into(),
+        }));
+    }
+    if s.pending_unit_id.is_some() {
+        return Err(TxError::Refused(DomainError::Conflict {
+            code: "ROW_LOCKED_PENDING",
+            detail: "a pending approval unit locks this draft".into(),
+        }));
+    }
+    if s.created_by != actor {
+        return Err(TxError::Refused(DomainError::Forbidden {
+            code: "NOT_DRAFT_AUTHOR",
+            detail: "only the draft's author deletes it".into(),
+        }));
+    }
+    if s.revision != expected {
+        return Err(TxError::Refused(DomainError::StaleRevision {
+            expected,
+            found: s.revision,
+        }));
+    }
+    Ok(())
+}
+/// @cpt-cf-bss-products-fr-sku-lifecycle
+async fn delete_sku_draft(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let actor = ctx.subject_id();
+    // Authorization first, then the precondition (as the draft PATCH).
+    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let expected = if_match(&headers)?.get();
+    let now = OffsetDateTime::now_utc();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<(), TxError, _, _>(
+            category_tx_config(&state),
+            contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                Box::pin(async move {
+                    let current = find(tx, &scope, tenant_id, id).await?;
+                    deletable(&current, expected, actor)?;
+                    // A draft admits no reservation, so no registry row can name it; were one to,
+                    // its row would keep the SKU's key, and the delete is refused rather than
+                    // dropping it.
+                    if !repo::list_references(
+                        tx,
+                        &AccessScope::for_tenant(tenant_id),
+                        tenant_id,
+                        id,
+                        true,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?
+                    .is_empty()
+                    {
+                        return Err(TxError::Refused(DomainError::Conflict {
+                            code: "SKU_REFERENCED",
+                            detail: "the reference registry holds a row naming this SKU".into(),
+                        }));
+                    }
+                    if !repo::delete_draft_sku(tx, &scope, tenant_id, id, expected)
+                        .await
+                        .map_err(TxError::Repo)?
+                    {
+                        // Lost to a concurrent writer after the read: say what it left.
+                        let latest = find(tx, &scope, tenant_id, id).await?;
+                        deletable(&latest, expected, actor)?;
+                        return Err(TxError::Refused(DomainError::StaleRevision {
+                            expected,
+                            found: latest.revision,
+                        }));
+                    }
+                    let deleted = repo::LifecycleMove {
+                        from: Some(current.lifecycle),
+                        to: None,
+                    };
+                    audit(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        actor,
+                        "sku.delete",
+                        &current,
+                        now,
+                        deleted,
+                    )
+                    .await
+                })
+            },
+        )
+        .await
+        .map_err(tx_to_canonical)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 /// Read a SKU and live reference counts from this gear's registry.
 async fn get_sku(
@@ -559,90 +717,75 @@ fn query<T>(q: Result<Query<T>, QueryRejection>) -> Result<T, CanonicalError> {
         DomainError::Validation(r).into()
     })
 }
-/// List by an exclusive code cursor, returning the last delivered code as continuation.
-async fn list_skus(
-    Extension(state): Extension<Arc<ApiState>>,
-    Extension(enforcer): Extension<PolicyEnforcer>,
-    extension_ctx: Option<Extension<SecurityContext>>,
-    q: Result<Query<ListQuery>, QueryRejection>,
-) -> Result<Json<SkuList>, CanonicalError> {
-    let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
-    let q = query(q)?;
-    let limit = q.limit.unwrap_or(50).min(200);
-    if limit == 0 {
-        let mut r = ValidationReport::new();
-        r.violate("VALIDATION", "limit", "limit must be at least one");
-        return Err(DomainError::Validation(r).into());
-    }
-    let q = repo::SkuQuery {
-        catalog_filter: None,
-        text: q.q,
-        r#type: q
-            .r#type
-            .as_deref()
-            .map(|s| parse_token(s, "type", SkuType::parse))
-            .transpose()
-            .map_err(DomainError::Validation)?,
-        category_id: q.category,
-        lifecycle: q
-            .lifecycle
-            .as_deref()
-            .map(|s| parse_token(s, "lifecycle", Lifecycle::parse))
-            .transpose()
-            .map_err(DomainError::Validation)?,
-        limit: u64::from(limit),
-        after_code: q.after,
-    };
-    let tenant = ctx.subject_tenant_id();
-    let ttl = state.fence_ttl_minutes;
-    let mut items = state
-        .db
-        .db()
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let scope = scope.clone();
-            let q = q.clone();
-            Box::pin(async move {
-                repo::expire_orphan_fences(
-                    tx,
-                    &scope,
-                    tenant,
-                    OffsetDateTime::now_utc() - time::Duration::minutes(i64::from(ttl)),
-                )
-                .await
-                .map_err(TxError::Repo)?;
-                repo::list_skus(tx, &scope, tenant, &q)
-                    .await
-                    .map_err(TxError::Repo)
-            })
+/// The date `GET /skus/{id}/versions/as-of` reads: `date`, given once, `YYYY-MM-DD`; no other key
+/// (P-D-214). A missing, repeated or malformed `date` and any other key are 400, every offender
+/// named.
+fn as_of_date(query: RawQuery) -> Result<Date, CanonicalError> {
+    const KEY: &str = "date";
+    let Query(pairs) = query.map_err(|e| {
+        OdataError::invalid_argument()
+            .with_field_violation("query", e.body_text(), "INVALID_QUERY_PARAMS")
+            .create()
+    })?;
+    let mut offenders: Vec<(&str, String, &'static str)> = pairs
+        .iter()
+        .filter(|(k, _)| k != KEY)
+        .map(|(k, _)| {
+            (
+                k.as_str(),
+                format!("`{k}` is not a parameter of this read; it takes `{KEY}`"),
+                UNSUPPORTED,
+            )
         })
-        .await
-        .map_err(tx_to_canonical)?;
-    let limit =
-        usize::try_from(limit).map_err(|e| CanonicalError::internal(e.to_string()).create())?;
-    let more = items.len() > limit;
-    items.truncate(limit);
-    let next = if more {
-        items.last().map(|s| s.code.clone())
-    } else {
-        None
+        .collect();
+    let dates: Vec<&str> = pairs
+        .iter()
+        .filter(|(k, _)| k == KEY)
+        .map(|(_, v)| v.as_str())
+        .collect();
+    let date = match dates.as_slice() {
+        [one] => {
+            let format = time::format_description::parse_borrowed::<1>("[year]-[month]-[day]")
+                .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+            Date::parse(one, &format).ok()
+        }
+        _ => None,
     };
-    // P-D-197: one call of pricing's usage port for the page, after the page's transaction.
-    let ids: Vec<Uuid> = items.iter().map(|s| s.id).collect();
-    let mut usage = super::usage::of(&state, &ctx, &ids).await;
-    Ok(Json(SkuList {
-        items: items
-            .into_iter()
-            .map(|s| {
-                let counted = usage.remove(&s.id);
-                SkuListItem {
-                    sku: s.into(),
-                    usage: counted,
-                }
-            })
-            .collect(),
-        next,
-    }))
+    if date.is_none() {
+        offenders.push((
+            KEY,
+            match dates.len() {
+                0 => format!("`{KEY}` (YYYY-MM-DD) is required"),
+                1 => format!("`{KEY}` is a date YYYY-MM-DD, not `{}`", dates[0]),
+                _ => format!("`{KEY}` is given more than once"),
+            },
+            "INVALID_QUERY_PARAMS",
+        ));
+    }
+    refused(&offenders)?;
+    date.ok_or_else(|| CanonicalError::internal("a checked date is present").create())
+}
+/// The version history takes no query key: `as_of` moved to its own path (P-D-214).
+fn no_query(query: RawQuery) -> Result<(), CanonicalError> {
+    let Query(pairs) = query.map_err(|e| {
+        OdataError::invalid_argument()
+            .with_field_violation("query", e.body_text(), "INVALID_QUERY_PARAMS")
+            .create()
+    })?;
+    let offenders: Vec<(&str, String, &'static str)> = pairs
+        .iter()
+        .map(|(k, _)| {
+            (
+                k.as_str(),
+                format!(
+                    "`{k}` is not a parameter of the version history; the version in force on a \
+                     date is GET /skus/{{id}}/versions/as-of?date=YYYY-MM-DD"
+                ),
+                UNSUPPORTED,
+            )
+        })
+        .collect();
+    refused(&offenders)
 }
 /// @cpt-cf-bss-products-fr-sku-versions
 async fn sku_versions(
@@ -650,40 +793,52 @@ async fn sku_versions(
     Extension(enforcer): Extension<PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
-    q: Result<Query<VersionQuery>, QueryRejection>,
-) -> Result<Response, CanonicalError> {
+    query: RawQuery,
+) -> Result<Json<Vec<SkuVersionDto>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = scope(&enforcer, &ctx, false).await?;
-    let q = query(q)?;
+    no_query(query)?;
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     find(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(tx_to_canonical)?;
-    if let Some(as_of) = q.as_of {
-        let version = repo::version_as_of(&conn, &scope, ctx.subject_tenant_id(), id, as_of)
-            .await
-            .map_err(|e| repo_error_to_canonical(&e))?;
-        let Some(version) = version else {
-            // The toolkit's NotFound context is empty, so attach this door's specified
-            // discriminator to its canonical Problem without changing the 404 family.
-            let error = SkuResource::not_found(format!("no SKU version is in force on {as_of}"))
-                .with_resource(id.to_string())
-                .create();
-            let mut problem = toolkit_canonical_errors::Problem::from_error(&error)
-                .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
-            problem.context["reason"] = serde_json::json!("NO_VERSION_IN_FORCE");
-            return Ok(problem.into_response());
-        };
-        return Ok(Json(VersionsResponse::AsOf(Box::new(version.into()))).into_response());
-    }
     let versions = repo::versions(&conn, &scope, ctx.subject_tenant_id(), id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
-    Ok(Json(VersionsResponse::History(
-        versions.into_iter().map(Into::into).collect(),
-    ))
-    .into_response())
+    Ok(Json(versions.into_iter().map(Into::into).collect()))
+}
+/// @cpt-cf-bss-products-fr-sku-versions
+async fn sku_version_as_of(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    query: RawQuery,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = scope(&enforcer, &ctx, false).await?;
+    let as_of = as_of_date(query)?;
+    super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    find(&conn, &scope, ctx.subject_tenant_id(), id)
+        .await
+        .map_err(tx_to_canonical)?;
+    let version = repo::version_as_of(&conn, &scope, ctx.subject_tenant_id(), id, as_of)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some(version) = version else {
+        // The toolkit's NotFound context is empty, so attach this door's specified
+        // discriminator to its canonical Problem without changing the 404 family.
+        let error = SkuResource::not_found(format!("no SKU version is in force on {as_of}"))
+            .with_resource(id.to_string())
+            .create();
+        let mut problem = toolkit_canonical_errors::Problem::from_error(&error)
+            .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+        problem.context["reason"] = serde_json::json!("NO_VERSION_IN_FORCE");
+        return Ok(problem.into_response());
+    };
+    Ok(Json(SkuVersionDto::from(version)).into_response())
 }
 /// @cpt-cf-bss-products-fr-reference-registry
 async fn sku_references(
@@ -711,10 +866,19 @@ async fn sku_references(
         .map_err(|e| repo_error_to_canonical(&e))?;
     Ok(Json(ReferenceList {
         summary: summary.into(),
-        items: items.into_iter().map(Into::into).collect(),
+        items: items
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, RepoError>>()
+            .map_err(|e| repo_error_to_canonical(&e))?,
     }))
 }
-/// Commit audit attribution atomically with the draft mutation.
+/// Commit audit attribution atomically with the draft mutation, with the lifecycle move it made
+/// (P-D-213).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The audit row's actor, subject and move stay explicit at each draft door"
+)]
 async fn audit(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -723,6 +887,7 @@ async fn audit(
     action: &str,
     s: &Sku,
     written_at: OffsetDateTime,
+    lifecycle: repo::LifecycleMove,
 ) -> Result<(), TxError> {
     repo::write_eventless_act_audit(
         tx,
@@ -736,6 +901,7 @@ async fn audit(
             reason: None,
             correlation_id: None,
             written_at,
+            lifecycle,
         },
         s.id,
         Some(s.revision),

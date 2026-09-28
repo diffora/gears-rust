@@ -30,7 +30,7 @@ fn billing_token(b: BillingTiming) -> &'static str {
         BillingTiming::Arrears => "arrears",
     }
 }
-fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
+pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
     Ok(Sku {
         id: m.id,
         tenant_id: m.tenant_id,
@@ -148,19 +148,17 @@ pub async fn find_sku(
         .map(sku_of)
         .transpose()
 }
-/// Filters and an exclusive code cursor; one extra row signals another page.
+/// The browse catalog's filters and its exclusive code cursor; one extra row signals another
+/// page. The operator's SKU list pages through [`super::page_skus`] (P-D-210).
 #[derive(Debug, Clone)]
 pub struct SkuQuery {
     /// Additional validated catalog predicate, composed inside the tenant scope.
     pub catalog_filter: Option<Condition>,
-    pub text: Option<String>,
-    pub r#type: Option<SkuType>,
-    pub category_id: Option<Uuid>,
     pub lifecycle: Option<Lifecycle>,
     pub limit: u64,
     pub after_code: Option<String>,
 }
-/// List matching SKUs in stable code order.
+/// List matching SKUs in stable code order (the browse catalog's read).
 /// # Errors
 /// Returns scoped storage or corrupt-row errors.
 pub async fn list_skus(
@@ -172,19 +170,6 @@ pub async fn list_skus(
     let mut c = Condition::all().add(sku::Column::TenantId.eq(tenant_id));
     if let Some(filter) = &q.catalog_filter {
         c = c.add(filter.clone());
-    }
-    if let Some(v) = &q.text {
-        c = c.add(
-            Condition::any()
-                .add(sku::Column::Code.contains(v))
-                .add(sku::Column::Name.contains(v)),
-        );
-    }
-    if let Some(v) = q.r#type {
-        c = c.add(sku::Column::Type.eq(v.as_str()));
-    }
-    if let Some(v) = q.category_id {
-        c = c.add(sku::Column::CategoryId.eq(v));
     }
     if let Some(v) = q.lifecycle {
         c = c.add(sku::Column::Lifecycle.eq(v.as_str()));
@@ -516,7 +501,8 @@ pub async fn unlock_sku(
         .map_err(|e| driver_failure("unlock SKU".into(), e))?;
     written(runner, scope, tenant_id, id, result.rows_affected).await
 }
-/// Count all heads that keep a category in use, including retired heads. A SKU without a category
+/// Count every head that names a category, retired heads included. Since P-D-208 a retired head no
+/// longer keeps a category in use (`retire_category_if_unused`); a SKU without a category
 /// (P-D-196) never matches `category_id = <id>`.
 /// # Errors
 /// Returns scoped storage failures.
@@ -537,6 +523,36 @@ pub async fn count_skus_in_category(
         .count(runner)
         .await
         .map_err(|e| driver_failure("count category SKUs".into(), e))
+}
+/// Delete a never-published, unlocked draft at the revision the caller read (P-D-206), in the
+/// caller's transaction. Only the head row goes: its audit rows are append-only and stay, and a
+/// draft owns no version row (`published_version = 0`) and admits no reservation. The door checks
+/// the registry for a row naming the SKU in the same transaction.
+/// # Errors
+/// Returns scoped storage failures. `false` when no row matched: absent, foreign, no longer a
+/// never-published draft, locked or at another revision; the door re-reads to say which.
+pub async fn delete_draft_sku(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    expected_revision: i64,
+) -> Result<bool, RepoError> {
+    use toolkit_db::secure::SecureDeleteExt;
+    let r = sku::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            key(tenant_id, id)
+                .add(sku::Column::Lifecycle.eq("draft"))
+                .add(sku::Column::PublishedVersion.eq(0_i64))
+                .add(sku::Column::PendingUnitId.is_null())
+                .add(sku::Column::Revision.eq(expected_revision)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete draft SKU".into(), e))?;
+    Ok(r.rows_affected == 1)
 }
 #[cfg(test)]
 #[path = "sku_repo_tests.rs"]
@@ -560,25 +576,118 @@ pub async fn find_sku_fence(
         .map_err(|e| driver_failure("find SKU fence".into(), e))
 }
 
-/// Recover tenant-scoped orphan fences before applying list filters.
-/// Pending units cannot be released, even when their fences are old.
+/// An orphan fence the maintenance expiry lifted (P-D-189): the SKU, the lifecycle it had while
+/// fenced, the one it returned to, and its revision — what the expiry's audit row records
+/// (P-D-213).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpiredFence {
+    pub id: Uuid,
+    pub from: Lifecycle,
+    pub to: Lifecycle,
+    pub revision: i64,
+}
+/// Lift one orphan fence at the operation that holds it, reporting the move when it lifted one.
+async fn lift(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    fenced: &sku::Model,
+) -> Result<Option<ExpiredFence>, RepoError> {
+    let from = Lifecycle::parse(&fenced.lifecycle)
+        .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", fenced.lifecycle)))?;
+    Ok(
+        match unfence_sku(runner, scope, tenant, fenced.id, fenced.fence_op_id).await? {
+            HeadWrite::Written(s) => Some(ExpiredFence {
+                id: s.id,
+                from,
+                to: s.lifecycle,
+                revision: s.revision,
+            }),
+            HeadWrite::Unmatched => None,
+        },
+    )
+}
+/// Expire one SKU's orphan fence once it is older than `ttl_minutes`: never a fence a pending unit
+/// holds, and only at the operation observed (P-D-189). The caller writes the audit row.
 /// # Errors
-/// Returns scoped storage failures.
+/// Returns scoped storage failures and a stored lifecycle outside the five.
+pub async fn expire_orphan_fence(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    cutoff: OffsetDateTime,
+) -> Result<Option<ExpiredFence>, RepoError> {
+    match find_sku_fence(runner, scope, tenant, id).await? {
+        Some(row)
+            if row.pending_unit_id.is_none() && row.fenced_at.is_some_and(|at| at <= cutoff) =>
+        {
+            lift(runner, scope, tenant, &row).await
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Recover tenant-scoped orphan fences before applying list filters, set-based whatever their
+/// number (P-D-211): one read of the tenant's fences older than `cutoff` (the lifecycle each had
+/// while fenced, which the lift overwrites), then ONE `UPDATE … RETURNING` lifting them all. Both
+/// run in the caller's transaction on the same predicate, so the lift writes exactly the fences
+/// read, each at the operation observed (P-D-189). Pending units cannot be released, even when
+/// their fences are old. Answers what it lifted, for the caller's audit rows (P-D-213); when it
+/// finds none, the read is its only statement.
+/// # Errors
+/// Returns scoped storage failures and a stored lifecycle outside the five.
 pub async fn expire_orphan_fences(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
     cutoff: OffsetDateTime,
-) -> Result<(), RepoError> {
-    clear_fence(scope, false)
-        .filter(
-            Condition::all()
-                .add(sku::Column::TenantId.eq(tenant))
-                .add(sku::Column::PendingUnitId.is_null())
-                .add(sku::Column::FencedAt.lte(cutoff)),
-        )
-        .exec(runner)
+) -> Result<Vec<ExpiredFence>, RepoError> {
+    let orphan = || {
+        Condition::all()
+            .add(sku::Column::TenantId.eq(tenant))
+            .add(sku::Column::PendingUnitId.is_null())
+            .add(sku::Column::FencedAt.lte(cutoff))
+    };
+    let fenced = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(orphan())
+        .all(runner)
         .await
-        .map_err(|e| driver_failure("expire orphan SKU fences".into(), e))?;
-    Ok(())
+        .map_err(|e| driver_failure("find orphan SKU fences".into(), e))?;
+    if fenced.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut found = std::collections::HashMap::with_capacity(fenced.len());
+    for row in &fenced {
+        let from = Lifecycle::parse(&row.lifecycle)
+            .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
+        found.insert(row.id, from);
+    }
+    let mut lifted = clear_fence(scope, false)
+        .filter(orphan())
+        .exec_with_returning(runner)
+        .await
+        .map_err(|e| driver_failure("lift orphan SKU fences".into(), e))?;
+    lifted.sort_by_key(|row| row.id);
+    lifted
+        .into_iter()
+        .map(|row| {
+            let from = found.get(&row.id).copied().ok_or_else(|| {
+                RepoError::Db(format!(
+                    "orphan fence {} lifted without being read in its transaction",
+                    row.id
+                ))
+            })?;
+            let to = Lifecycle::parse(&row.lifecycle)
+                .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
+            Ok(ExpiredFence {
+                id: row.id,
+                from,
+                to,
+                revision: row.revision,
+            })
+        })
+        .collect()
 }

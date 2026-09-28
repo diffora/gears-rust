@@ -65,7 +65,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 05](../design/05-approvals.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-428; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -159,7 +159,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-quorum-policy`
 
-Policy resolves kind override then tenant default, failing safe to one if absent. A unit snapshots quorum; zero records an approved unit and terminal audit/event without decision rows (spec §6).
+Policy resolves kind override then tenant default, failing safe to one if absent. A unit snapshots quorum; zero records an approved unit and terminal audit/event without decision rows (spec §6). An override is removed with DELETE /approval-policy/{kind} under If-Match, and the kind follows the default again; the default itself is never deleted (D-435).
 
 Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 

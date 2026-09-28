@@ -6,8 +6,7 @@ use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, Set};
 use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use toolkit_db::secure::{
-    AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
-    SecureUpdateExt,
+    AccessScope, DBRunner, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
 /// What [`claim_idempotency_key`] found `(tenant_id, endpoint, client_key)`
@@ -33,7 +32,7 @@ pub enum IdempotencyClaim {
     /// (`inst-fd-idem-conflict`), a comparison this repository does not make
     /// because it was never handed the incoming request to compare.
     /// `response_status`/`response_body` are the replay itself, and it is
-    /// self-contained (**P-D-29**): nothing else needs to be read to serve
+    /// self-contained (P-D-198): nothing else needs to be read to serve
     /// it.
     Answered {
         /// The digest the stored answer was recorded against.
@@ -56,20 +55,15 @@ pub enum IdempotencyClaim {
     InFlight {
         /// The digest the live `claimed` row was recorded against.
         payload_hash: Vec<u8>,
-        /// The composite act's parent handle, if the holding act stamped one
-        /// (P-D-79): the family clone's committed-but-unanswered claim
-        /// carries its new parent here, and the same-key retry resumes from
-        /// it. `None` for every single-entity door's claim.
-        entity_ref: Option<Uuid>,
     },
-    /// This call lost the expired-key takeover race (**P-D-49**): another
+    /// This call lost the expired-key takeover race (P-D-198): another
     /// caller's compare-and-swap moved the row off the stamp this one read.
     ///
     /// Distinct from [`InFlight`](Self::InFlight) because **no digest
     /// comparison is owed here and none is possible**. The loser "may even
     /// carry a different payload from the winner, and is still refused
-    /// in-flight rather than for the mismatch, since this transaction never
-    /// compared the two" (§3.2 `inst-fd-idem-retention`, **P-D-49**): the
+    /// in-flight rather than for the mismatch, since its transaction never
+    /// compared the two" (P-D-198): the
     /// row this call read was the *expired* holder's, and the payload now
     /// under the key is the winner's, which this transaction never saw.
     /// Answering `IDEMPOTENCY_CONFLICT` from a hash this call never read
@@ -89,13 +83,12 @@ fn idempotency_key_of(tenant_id: Uuid, endpoint: &str, client_key: &str) -> Cond
 }
 
 /// Claim `(tenant_id, endpoint, client_key)` for `payload_hash`, or report
-/// why it could not be claimed (`design/01-foundation.md` §3.2,
-/// `dod-idempotency-store`; **P-D-42**, **P-D-49**, **P-D-38**).
+/// why it could not be claimed (`dod-idempotency-store`; P-D-198).
 ///
 /// # This function opens no transaction — `runner` MUST already be the
 /// # guarded mutation's own
 ///
-/// **The claim `INSERT` is the gate, not a lookup** (**P-D-42**): this
+/// **The claim `INSERT` is the gate, not a lookup** (P-D-198): this
 /// function writes the claim row with an `INSERT ... ON CONFLICT DO NOTHING`
 /// and reads back only when the conflict actually fired, so between the
 /// attempt and the read nothing is ever left free for a second caller to
@@ -113,7 +106,7 @@ fn idempotency_key_of(tenant_id: Uuid, endpoint: &str, client_key: &str) -> Cond
 /// clock but the one its caller hands it.
 ///
 /// # The expired-key takeover is a compare-and-swap on `expires_at` itself
-/// # (**P-D-49**)
+/// # (P-D-198)
 ///
 /// Nothing holds an expired row between this function's own conflict check
 /// and its takeover `UPDATE`, so two duplicates racing on one expired key can
@@ -168,8 +161,8 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
-        // A fresh claim carries no parent handle; a composite door stamps
-        // one afterwards, in this same transaction (P-D-79).
+        // `entity_ref` is carried in the DDL (P-D-198) and always NULL: no
+        // door stamps it.
         entity_ref: Set(None),
     };
 
@@ -272,7 +265,6 @@ fn held_claim(held: idempotency::Model) -> Result<IdempotencyClaim, RepoError> {
         }
         "claimed" => Ok(IdempotencyClaim::InFlight {
             payload_hash: held.payload_hash,
-            entity_ref: held.entity_ref,
         }),
         other => Err(RepoError::CorruptRow(format!(
             "products_idempotency.state `{other}` on stored key"
@@ -282,7 +274,7 @@ fn held_claim(held: idempotency::Model) -> Result<IdempotencyClaim, RepoError> {
 
 /// Take an expired claim over: `payload_hash`, no response, and a fresh
 /// `expires_at`, under a predicate matching the row's own claim stamp as
-/// [`claim_idempotency_key`] read it (**P-D-49**).
+/// [`claim_idempotency_key`] read it (P-D-198).
 ///
 /// That predicate is the whole of the race protection this function
 /// provides: nothing holds an expired row between the caller's conflict
@@ -326,8 +318,7 @@ async fn take_over_expired_idempotency_claim(
             Expr::value(None::<JsonValue>),
         )
         .col_expr(idempotency::Column::ExpiresAt, Expr::value(new_expires_at))
-        // The taken-over claim is a fresh act's: a stale parent handle from
-        // the crashed holder must not leak into it (P-D-79).
+        // `entity_ref` stays NULL on a taken-over claim, as on a fresh one.
         .col_expr(idempotency::Column::EntityRef, Expr::value(None::<Uuid>))
         .filter(
             idempotency_key_of(held.tenant_id, &held.endpoint, &held.client_key)
@@ -352,7 +343,7 @@ async fn take_over_expired_idempotency_claim(
     // would tell two callers they both hold a key only one of them does.
     // It is not `InFlight` either: that outcome carries the held digest for
     // the caller to compare, and the digest now under the key is the
-    // winner's, which this transaction never read (P-D-49).
+    // winner's, which this transaction never read (P-D-198).
     if result.rows_affected == 0 {
         return Ok(IdempotencyClaim::TakeoverRaceLost);
     }
@@ -369,7 +360,7 @@ async fn take_over_expired_idempotency_claim(
 /// [`NotHeld`](Self::NotHeld) only if the store contradicts itself, and must
 /// fail its mutation over it; a future lane answering a claim taken
 /// elsewhere may legitimately find the key expired out from under it and
-/// taken over by another caller (**P-D-49**), which is not a fault at all.
+/// taken over by another caller (P-D-198), which is not a fault at all.
 /// Raising a [`RepoError`] here would force the second reading into the
 /// first, and a `Result<(), _>` that swallowed the zero-row case would be
 /// exactly the silent success the claim's own compare-and-swap exists to
@@ -388,7 +379,7 @@ pub enum IdempotencyAnswer {
 /// Answer a held claim: move `(tenant_id, endpoint, client_key)` from
 /// `claimed` to `answered`, recording the status and body the caller is
 /// about to return (`design/01-foundation.md` §3.2
-/// `inst-fd-idem-claim-write`, **P-D-29**; `dod-idempotency-store`).
+/// `inst-fd-idem-claim-write`, P-D-198; `dod-idempotency-store`).
 ///
 /// # This function opens no transaction — `runner` MUST be the same one the
 /// # claim and the mutation ran on
@@ -398,7 +389,7 @@ pub enum IdempotencyAnswer {
 /// caller's runner like every other function in this module, and that runner
 /// MUST be the very transaction [`claim_idempotency_key`] and the guarded
 /// mutation already ran on. Answering on a runner of its own would reopen
-/// the gap P-D-42 closed from the other side: an answer that committed while
+/// the gap P-D-198 closed from the other side: an answer that committed while
 /// the mutation rolled back would replay a `201` for an act that never
 /// happened, and a mutation that committed while the answer failed would
 /// leave the key `claimed` over a committed act — the very defect this
@@ -410,7 +401,7 @@ pub enum IdempotencyAnswer {
 /// `response_status` **and** `response_body` non-null, so the state and both
 /// columns move in a single `UPDATE`; a two-statement version could not
 /// exist, since either half alone violates the `CHECK` at write time. The
-/// stored pair is the whole of a replay (**P-D-29**): a bare reference to
+/// stored pair is the whole of a replay (P-D-198): a bare reference to
 /// the created entity could not reproduce the original status, and a refusal
 /// has no entity to reference at all.
 ///
@@ -471,39 +462,6 @@ pub async fn answer_idempotency_key(
         return Ok(IdempotencyAnswer::NotHeld);
     }
     Ok(IdempotencyAnswer::Recorded)
-}
-
-/// Release a `claimed` key that will not be answered — the scheduled lane's
-/// deferral (P-D-157): a held run consumed nothing, so its claim row goes,
-/// and the next sweep claims the same `(lane, transition)` afresh. Only a
-/// `claimed` row matches; an `answered` one is a terminal record and stays.
-///
-/// # Errors
-///
-/// [`RepoError`] on a driver failure.
-pub async fn release_idempotency_claim(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    endpoint: &str,
-    client_key: &str,
-) -> Result<u64, RepoError> {
-    let result = idempotency::Entity::delete_many()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            idempotency_key_of(tenant_id, endpoint, client_key)
-                .add(idempotency::Column::State.eq("claimed")),
-        )
-        .exec(runner)
-        .await
-        .map_err(|e| {
-            driver_failure(
-                format!("release idempotency claim {tenant_id}/{endpoint}/{client_key}"),
-                e,
-            )
-        })?;
-    Ok(result.rows_affected)
 }
 
 #[cfg(test)]

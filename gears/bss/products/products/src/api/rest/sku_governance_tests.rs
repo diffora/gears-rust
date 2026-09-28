@@ -23,7 +23,8 @@ fn routes(s: Arc<crate::api::rest::ApiState>, o: &dyn toolkit::api::OpenApiRegis
         .merge(crate::api::rest::sku_governance::router(s.clone(), o))
         .merge(crate::api::rest::approval_units::router(s.clone(), o))
         .merge(crate::api::rest::approval_policy::router(s.clone(), o))
-        .merge(crate::api::rest::references::router(s, o))
+        .merge(crate::api::rest::references::router(s.clone(), o))
+        .merge(crate::api::rest::usage_types::router(s, o))
 }
 struct Fixture {
     state: Arc<crate::api::rest::ApiState>,
@@ -58,6 +59,41 @@ async fn call(
         .unwrap();
     let status = r.status().as_u16();
     (status, body_json(r).await)
+}
+/// [`call`] with arbitrary request headers, answering the response headers too; an empty body
+/// (a 204) reads as `null`.
+async fn call_with(
+    app: &Router,
+    ctx: &SecurityContext,
+    method: Method,
+    path: &str,
+    body: Value,
+    headers: &[(&str, String)],
+) -> (u16, axum::http::HeaderMap, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(format!("/bss-products/v1{path}"))
+        .extension(ctx.clone())
+        .header("Content-Type", "application/json");
+    for (name, value) in headers {
+        request = request.header(*name, value);
+    }
+    let r = app
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let response_headers = r.headers().clone();
+    let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, response_headers, body)
 }
 impl Fixture {
     async fn new(quorum: u32) -> Self {
@@ -98,17 +134,59 @@ impl Fixture {
         f.policy(quorum).await;
         f
     }
+    /// P-D-205: the policy is written at the tag its read answered.
     async fn policy(&self, quorum: u32) {
-        let (status, b) = call(
+        let (status, headers, b) = call_with(
+            &self.app,
+            &self.author,
+            Method::GET,
+            "/approval-policy",
+            json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, 200, "{b}");
+        let tag = headers["etag"].to_str().unwrap().to_owned();
+        let (status, _, b) = call_with(
             &self.app,
             &self.author,
             Method::PUT,
             "/approval-policy",
             json!({"quorum":quorum}),
-            None,
+            &[("If-Match", tag)],
         )
         .await;
         assert_eq!(status, 200, "{b}");
+    }
+    /// The SKU's current `ETag`, as its card answers it.
+    async fn etag(&self) -> String {
+        let (status, headers, b) = call_with(
+            &self.app,
+            &self.author,
+            Method::GET,
+            &format!("/skus/{}", self.id),
+            json!({}),
+            &[],
+        )
+        .await;
+        assert_eq!(status, 200, "{b}");
+        headers["etag"].to_str().unwrap().to_owned()
+    }
+    /// `DELETE /skus/{id}` as `ctx`, with an optional `If-Match`.
+    async fn delete(&self, ctx: &SecurityContext, tag: Option<&str>) -> (u16, Value) {
+        let headers: Vec<(&str, String)> = tag
+            .map(|t| vec![("If-Match", t.to_owned())])
+            .unwrap_or_default();
+        let (status, _, b) = call_with(
+            &self.app,
+            ctx,
+            Method::DELETE,
+            &format!("/skus/{}", self.id),
+            json!({}),
+            &headers,
+        )
+        .await;
+        (status, b)
     }
     async fn post(&self, suffix: &str, body: Value) -> (u16, Value) {
         call(
@@ -287,7 +365,7 @@ async fn a_change_unit_applies_from_its_effective_date_and_emits_the_field_list(
             &f.app,
             &f.author,
             Method::GET,
-            &format!("/skus/{}/versions?as_of={as_of}", f.id),
+            &format!("/skus/{}/versions/as-of?date={as_of}", f.id),
             json!({}),
             None,
         )
@@ -971,6 +1049,11 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         (Method::GET, "/approval-policy".into(), "settings"),
         (Method::PUT, "/approval-policy".into(), "settings"),
         (
+            Method::DELETE,
+            "/approval-policy/sku_publish".into(),
+            "settings",
+        ),
+        (
             Method::POST,
             format!("{sku_path}/references/reserve"),
             "reference",
@@ -981,8 +1064,18 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
             "reference",
         ),
         (Method::DELETE, reference_path, "submit"),
+        (Method::DELETE, sku_path.clone(), "author"),
+        (Method::GET, "/usage-types".into(), "author"),
+        (Method::GET, "/skus/counts".into(), "read"),
+        (Method::GET, format!("{sku_path}/history"), "read"),
+        (
+            Method::GET,
+            format!("{sku_path}/versions/as-of?date=2026-09-27"),
+            "read",
+        ),
+        (Method::GET, category_path.clone(), "read"),
     ];
-    assert_eq!(cases.len(), 24);
+    assert_eq!(cases.len(), 31);
     for (method, path, action) in cases {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;
@@ -1177,7 +1270,7 @@ async fn list_recovers_an_expired_orphan_before_filtering_and_submit_accepts_no_
         &f.app,
         &f.author,
         Method::GET,
-        "/skus?lifecycle=published",
+        "/skus?%24filter=lifecycle%20eq%20%27published%27",
         json!({}),
         None,
     )
@@ -1298,7 +1391,7 @@ async fn equal_version_dates_work_and_backwards_changes_roll_back_the_head() {
         &f.app,
         &f.author,
         Method::GET,
-        &format!("/skus/{}/versions?as_of={date}", f.id),
+        &format!("/skus/{}/versions/as-of?date={date}", f.id),
         json!({}),
         None,
     )
@@ -2241,7 +2334,7 @@ async fn a_sku_without_a_category_publishes_and_a_change_sets_and_clears_it() {
             &f.app,
             &f.author,
             Method::GET,
-            &format!("/skus/{}/versions?as_of={today}", f.id),
+            &format!("/skus/{}/versions/as-of?date={today}", f.id),
             json!({}),
             None,
         )
@@ -2397,3 +2490,302 @@ async fn a_change_to_an_unknown_category_is_refused_at_submit_and_at_approve_at_
     assert_eq!(problem_code(&b), "CATEGORY_RETIRED");
     assert_eq!(f.card().await["published_version"], 1);
 }
+
+/// P-D-206: a never-published draft is deleted by its author under `If-Match`: 204, an audit row
+/// whose subject is the SKU, the row gone (a second DELETE is 404) and its code free again.
+#[tokio::test]
+async fn a_never_published_draft_is_deleted_by_its_author() {
+    let f = Fixture::new(1).await;
+    let tag = f.etag().await;
+    let (status, b) = f.delete(&f.author, None).await;
+    assert_eq!(status, 400, "{b}");
+    assert!(violation_for(&b, "If-Match").is_some(), "{b}");
+    let (status, b) = f.delete(&f.author, Some("\"99\"")).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "STALE_REVISION");
+    let (status, b) = f.delete(&f.reviewer, Some(&tag)).await;
+    assert_eq!(status, 403, "{b}");
+    assert_eq!(problem_code(&b), "NOT_DRAFT_AUTHOR");
+    let (status, b) = f.delete(&f.author, Some(&tag)).await;
+    assert_eq!(status, 204, "{b}");
+    assert_eq!(b, Value::Null, "a 204 carries no body");
+    let (status, _) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+    assert_eq!(f.delete(&f.author, Some(&tag)).await.0, 404);
+    assert_eq!(
+        raw_i64(
+            &f.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = 'sku.delete' \
+                 AND subject_kind = 'sku' AND {} AND {}",
+                id_matches("subject_id", f.id),
+                id_matches("actor_ref", f.author.subject_id()),
+            ),
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        raw_i64(
+            &f.dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = 'sku.create'"
+        )
+        .await,
+        1,
+        "the draft's earlier audit rows stay"
+    );
+    let (status, b) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"SKU","name":"SKU","type":"recurring"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "the code and name are free again: {b}");
+}
+
+/// P-D-206: a SKU that was ever published, or whose draft a pending unit locks, is not deleted.
+#[tokio::test]
+async fn a_published_or_locked_sku_is_not_deleted() {
+    let f = Fixture::new(1).await;
+    let (status, u) = f.post("/submit", json!({})).await;
+    assert_eq!(status, 200, "{u}");
+    let (status, b) = f.delete(&f.author, Some(&f.etag().await)).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "ROW_LOCKED_PENDING");
+    let (status, b) = f.vote(&u, "approve", 1).await;
+    assert_eq!(status, 200, "{b}");
+    let (status, b) = f.delete(&f.author, Some(&f.etag().await)).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "SKU_NOT_DRAFT");
+    assert_eq!(f.card().await["lifecycle"], "published");
+    // A draft row that says it was published once is not a never-published draft.
+    let (status, s) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"ONCE","name":"Once","type":"recurring"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{s}");
+    let once = Uuid::parse_str(s["id"].as_str().unwrap()).unwrap();
+    {
+        use sea_orm::{ConnectionTrait, Database};
+        let raw = Database::connect(&f.dsn).await.unwrap();
+        raw.execute_unprepared(&format!(
+            "UPDATE products_sku SET published_version = 1 WHERE {}",
+            id_matches("id", once)
+        ))
+        .await
+        .unwrap();
+        raw.close().await.unwrap();
+    }
+    let (status, _, b) = call_with(
+        &f.app,
+        &f.author,
+        Method::DELETE,
+        &format!("/skus/{once}"),
+        json!({}),
+        &[(
+            "If-Match",
+            format!("\"{}\"", s["revision"].as_i64().unwrap()),
+        )],
+    )
+    .await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "SKU_NOT_DRAFT");
+}
+
+/// P-D-206: the rejected unit that named a deleted draft stays readable; its card answers
+/// `impact_live: null` instead of 404.
+#[tokio::test]
+async fn the_unit_card_of_a_deleted_draft_answers_impact_live_null() {
+    let f = Fixture::new(1).await;
+    let (status, u) = f.post("/submit", json!({})).await;
+    assert_eq!(status, 200, "{u}");
+    let (status, b) = f.vote(&u, "reject", 1).await;
+    assert_eq!(status, 200, "{b}");
+    let (status, b) = f.delete(&f.author, Some(&f.etag().await)).await;
+    assert_eq!(status, 204, "{b}");
+    let unit = u["unit"]["id"].as_str().unwrap();
+    let (status, card) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/approval-units/{unit}"),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{card}");
+    assert_eq!(card["state"], "rejected");
+    assert_eq!(card["impact_live"], Value::Null);
+    assert!(card["snapshot"].is_object(), "{card}");
+    let (status, list) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/approval-units?ref_id={}", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+}
+
+/// P-D-206: a draft cannot be reserved, so no registry row can name a never-published draft; were
+/// one to exist, the delete is refused `SKU_REFERENCED` rather than dropping it.
+#[tokio::test]
+async fn a_draft_holding_a_registry_row_is_not_deleted() {
+    let f = Fixture::new(1).await;
+    let (status, b) = f.reserve(Uuid::new_v4()).await;
+    assert_eq!(status, 409, "a draft admits no reservation: {b}");
+    let (db, scope) = repo_connection(&f.dsn, f.tenant).await;
+    repo::reserve_reference(
+        &db.conn().unwrap(),
+        &scope,
+        f.tenant,
+        f.id,
+        "pricing",
+        crate::domain::references::RefKind::PriceBookEntry,
+        Uuid::new_v4(),
+        f.tenant,
+        at(9),
+    )
+    .await
+    .unwrap();
+    let (status, b) = f.delete(&f.author, Some(&f.etag().await)).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "SKU_REFERENCED");
+    assert_eq!(f.card().await["lifecycle"], "draft");
+}
+
+/// P-D-206, documented rather than changed: a replay of the create's Idempotency-Key answers the
+/// stored 201 of the deleted id.
+#[tokio::test]
+async fn a_replayed_create_answers_the_deleted_draft() {
+    let f = Fixture::new(1).await;
+    let body = json!({"code":"KEYED","name":"Keyed","type":"recurring"});
+    let (status, s) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        body.clone(),
+        Some("k1"),
+    )
+    .await;
+    assert_eq!(status, 201, "{s}");
+    let id = s["id"].as_str().unwrap().to_owned();
+    let (status, _, b) = call_with(
+        &f.app,
+        &f.author,
+        Method::DELETE,
+        &format!("/skus/{id}"),
+        json!({}),
+        &[(
+            "If-Match",
+            format!("\"{}\"", s["revision"].as_i64().unwrap()),
+        )],
+    )
+    .await;
+    assert_eq!(status, 204, "{b}");
+    let (status, replay) = call(&f.app, &f.author, Method::POST, "/skus", body, Some("k1")).await;
+    assert_eq!(status, 201);
+    assert_eq!(replay["id"], id);
+    let (status, _) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{id}"),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 404);
+}
+
+/// P-D-207 (owner option b): usage types are read as the caller. A collector that refuses the caller is
+/// 403 `USAGE_TYPE_FORBIDDEN` at submit and at approve, never the 503 of an outage; nothing is
+/// recorded and no key is claimed.
+#[tokio::test]
+async fn a_collector_denial_is_403_at_submit_and_at_approve() {
+    let f = Fixture::new(1).await;
+    // A ref the collector adapter would ask about: a well-formed usage-record GTS id.
+    let (status, s) = call(
+        &f.app,
+        &f.author,
+        Method::POST,
+        "/skus",
+        json!({"code":"METERED","name":"Metered","type":"usage","unit":"GB",
+               "usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.e2e.pricebook.storage.v1"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{s}");
+    let submit = format!("/skus/{}/submit", s["id"].as_str().unwrap());
+    let denied = second_app(&f, denying_collector_catalog()).await;
+    let (status, b) = call(
+        &denied,
+        &f.author,
+        Method::POST,
+        &submit,
+        json!({}),
+        Some("denied-submit"),
+    )
+    .await;
+    assert_eq!(status, 403, "{b}");
+    assert_eq!(problem_code(&b), "USAGE_TYPE_FORBIDDEN");
+    assert_eq!(
+        raw_i64(&f.dsn, "SELECT count(*) AS v FROM products_approval_unit").await,
+        0
+    );
+    assert_eq!(idempotency_rows_for(&f.dsn, "denied-submit").await, 0);
+    let (status, u) = call(&f.app, &f.author, Method::POST, &submit, json!({}), None).await;
+    assert_eq!(status, 200, "{u}");
+    let approve = format!(
+        "/approval-units/{}/approve",
+        u["unit"]["id"].as_str().unwrap()
+    );
+    let (status, b) = call(
+        &denied,
+        &f.reviewer,
+        Method::POST,
+        &approve,
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "{b}");
+    assert_eq!(problem_code(&b), "USAGE_TYPE_FORBIDDEN");
+    let (status, b) = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &approve,
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "a reviewer the collector admits still decides: {b}"
+    );
+    assert_eq!(b["outcome"], "applied", "{b}");
+}
+
+#[path = "sku_history_tests.rs"]
+mod sku_history_tests;

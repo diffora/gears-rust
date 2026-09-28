@@ -1,32 +1,35 @@
 //! The usage-type collector as the publish door sees it
-//! (`dod-usage-type-resolution`; **P-D-131**, **P-D-141**).
+//! (`dod-usage-type-resolution`; P-D-184, P-D-203).
 //!
-//! One question, three answers ([`UsageTypeAnswer`]), asked **once per
+//! One question, four answers ([`UsageTypeAnswer`]), asked **once per
 //! publish** for the SKU's one `usage_type_ref`, **before** the publish
-//! transaction opens — so a `503` leaves no claimed idempotency key and the
-//! retry is a fresh act. The judge is the domain's
-//! ([`crate::domain::recognized::judge_usage_type`]); this module is the
-//! seam that fetches the answer.
+//! transaction opens — so a `503` or a `403` leaves no claimed idempotency key
+//! and the retry is a fresh act. The judge is the domain's (`domain::sku`);
+//! this module is the seam that fetches the answer.
 //!
 //! # Why a trait on `ApiState`, and why not a `cfg(test)` fork
 //!
 //! The first cut of this seam was a function that answered `Resolved` in the
 //! test binary and `Unavailable` in production. That is two programs: every
 //! probe exercised a path production never ran, and the production path — a
-//! constant refusal — was exercised by nothing. `PiiDetector` had already
-//! taken the shape that fixes it (P-D-136): the door reads a trait object off
-//! `ApiState`, `gear.rs` installs the real one, tests inject a stub per
-//! outcome, and no `cfg(test)` sits in the path.
+//! constant refusal — was exercised by nothing. So the door reads the catalog
+//! as a trait object off `ApiState`, `gear.rs` installs the resolved one
+//! (P-D-184), tests inject a stub per outcome, and no `cfg(test)` sits in the
+//! path.
 //!
-//! # The three answers, and how the collector's errors become them
+//! # The four answers, and how the collector's errors become them
 //!
 //! - `Resolved` — the collector returned the type.
 //! - `Unresolved` — the collector answered `NotFound`, **or the ref is not a
 //!   valid GTS id** (an id that cannot name anything cannot resolve anywhere;
 //!   asking the collector would only rephrase the same `400`).
+//! - `Forbidden` — the collector answered `PermissionDenied`: the catalog is
+//!   read **as the caller** (P-D-207, owner option b), so a caller without collector
+//!   read is told so with a 403 `USAGE_TYPE_FORBIDDEN`, never the 503 of an
+//!   outage it could retry forever.
 //! - `Unavailable` — every other error, and a call that outlives
 //!   `usage_type_resolver_timeout_ms`: fail-closed, the gear's `503` channel,
-//!   for usage SKUs only (P-D-131 — a latency coupling, not a lock).
+//!   for usage SKUs only (P-D-184, P-D-203 — a latency coupling, not a lock).
 //!
 //! [`UnconfiguredUsageTypes`] is what a deployment with no catalog at all gets:
 //! `Unavailable` from `resolve`, always, and a **501** from `list` — never an
@@ -57,7 +60,7 @@ use bss_products_sdk::usage_types::{
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_odata::{CursorV1, ODataQuery, parse_filter_string};
 
-/// No catalog is wired: `resolve` is `Unavailable`, fail-closed (P-D-131), and
+/// No catalog is wired: `resolve` is `Unavailable`, fail-closed (P-D-184), and
 /// `list` is a **501**. Installed by `gear.rs` when nothing answers, with a
 /// boot-time warning naming this type.
 #[derive(Debug, Default, Clone, Copy)]
@@ -93,7 +96,7 @@ pub struct CollectorUsageTypes {
 
 impl CollectorUsageTypes {
     /// `timeout` is `ProductsConfig::usage_type_resolver_timeout()` — read,
-    /// never inlined (P-D-107, P-D-121 row 12).
+    /// never inlined (P-D-203).
     #[must_use]
     pub fn new(client: Arc<dyn UsageCollectorClientV1>, timeout: Duration) -> Self {
         Self { client, timeout }
@@ -109,6 +112,11 @@ impl UsageTypeCatalog for CollectorUsageTypes {
         match tokio::time::timeout(self.timeout, self.client.get_usage_type(ctx, gts_id)).await {
             Ok(Ok(usage_type)) => UsageTypeAnswer::Resolved(binding_of(&usage_type)),
             Ok(Err(UsageCollectorError::NotFound { .. })) => UsageTypeAnswer::Unresolved,
+            // The PDP's reason is for operator logs only, as `list` below keeps it.
+            Ok(Err(error @ UsageCollectorError::PermissionDenied { .. })) => {
+                tracing::warn!(%error, usage_type_ref, "bss-products: usage-type collector refused the caller");
+                UsageTypeAnswer::Forbidden
+            }
             Ok(Err(error)) => {
                 tracing::warn!(%error, usage_type_ref, "bss-products: usage-type collector failed");
                 UsageTypeAnswer::Unavailable

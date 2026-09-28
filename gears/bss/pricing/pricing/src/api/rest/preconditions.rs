@@ -122,9 +122,9 @@ pub fn etag(version: RowVersion) -> String {
 pub fn if_match(headers: &HeaderMap) -> Result<RowVersion, DomainError> {
     let Some(raw) = headers.get(IF_MATCH) else {
         return Err(DomainError::InvalidRequest(
-            "If-Match is required on this verb: a mutation of a draft price \
-             asserts the version it was authored against (D-141), and an \
-             unconditional write would overwrite a concurrent editor's work"
+            "If-Match is required on this verb: the write asserts the version \
+             it was read at (D-432), and an unconditional write would \
+             overwrite a concurrent editor's work"
                 .to_owned(),
         ));
     };

@@ -17,8 +17,7 @@ pub struct Model {
     pub tenant_id: Uuid,
     /// Composite primary key with `tenant_id` and `client_key`. The concrete
     /// resource path a wire caller resolved, never the route template it
-    /// matched — three reserved `internal:` lane names occupy this column
-    /// for non-HTTP callers.
+    /// matched (D-429).
     #[sea_orm(primary_key, auto_increment = false)]
     pub endpoint: String,
     /// Composite primary key with `tenant_id` and `endpoint`. The caller's
@@ -38,17 +37,16 @@ pub struct Model {
     /// `NOT NULL` once `answered`, together with `response_body`.
     pub response_status: Option<i32>,
     /// The body the original caller was told, self-contained so a replay
-    /// never needs to dereference another row (**P-D-29**). `NULL` while
+    /// never needs to dereference another row (D-429). `NULL` while
     /// `claimed`, `NOT NULL` once `answered`, together with
     /// `response_status`.
     pub response_body: Option<JsonValue>,
     /// The retention deadline, stamped at the claim `INSERT`, and also the
     /// compare-and-swap operand the expired-key takeover reads before it
-    /// writes (**P-D-49**).
+    /// writes (D-429).
     pub expires_at: TimeDateTimeWithTimeZone,
-    /// The composite act's parent handle (P-D-79): `NULL` for every
-    /// single-entity door; the family clone stamps the new parent's id here
-    /// in the parent's own transaction and reads it back to resume.
+    /// The durable op an unanswered claim is bound to (`bind_op`: POST entry, POST plan item); a bound
+    /// `claimed` row is never taken over on expiry (D-429). `NULL` for every other door.
     pub entity_ref: Option<Uuid>,
 }
 

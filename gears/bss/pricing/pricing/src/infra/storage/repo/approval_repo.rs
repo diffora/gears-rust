@@ -363,6 +363,30 @@ pub async fn write_policy(
         .map_err(|e| driver_failure("write policy".into(), e))?;
     Ok(())
 }
+/// Remove one kind's override so the kind follows the default again (D-435); the default row
+/// (`*`) is the door's refusal, never removed here.
+/// # Errors
+/// Returns scoped storage failures; the number of rows removed (0 when the kind has none).
+pub async fn delete_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    kind: &str,
+) -> Result<u64, RepoError> {
+    Ok(approval_policy::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_policy::Column::TenantId.eq(tenant_id))
+                .add(approval_policy::Column::Kind.eq(kind))
+                .add(approval_policy::Column::Kind.ne("*")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("delete policy".into(), e))?
+        .rows_affected)
+}
 /// List units.
 /// # Errors
 /// Returns scoped storage failures, preserving database errors for retry.

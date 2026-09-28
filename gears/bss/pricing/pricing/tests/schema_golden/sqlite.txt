@@ -328,6 +328,7 @@ TABLE pricing_reference_op
   COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
 TABLE pricing_settings
   COLUMN created_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN currencies TEXT NOT NULL DEFAULT '[]' PK 0
   COLUMN default_gl TEXT NULL DEFAULT - PK 0
   COLUMN default_rounding TEXT NOT NULL DEFAULT - PK 0
   COLUMN default_tax_category TEXT NULL DEFAULT - PK 0
@@ -335,6 +336,7 @@ TABLE pricing_settings
   COLUMN invoice_line_templates TEXT NOT NULL DEFAULT - PK 0
   COLUMN tenant_id TEXT NULL DEFAULT - PK 1
   COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
+  COLUMN updated_by TEXT NULL DEFAULT - PK 0
   COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
 TRIGGER trg_pricing_audit_no_delete
   ON pricing_audit

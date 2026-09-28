@@ -1,5 +1,5 @@
 //! The usage-type catalog as this registry sees it — one narrow port for one
-//! external dependency (**P-D-05**).
+//! external dependency (P-D-184).
 //!
 //! # Why the port is here and not bound to the collector's own client
 //!
@@ -103,7 +103,7 @@ pub fn usage_type_catalog_unreachable(detail: impl Into<String>) -> CanonicalErr
 
 /// One usage type, in the three fields this registry reads.
 ///
-/// Nothing else the catalog knows is carried: **P-D-05 is resolvability
+/// Nothing else the catalog knows is carried: **P-D-184 is resolvability
 /// only**, so a lifecycle state or a dimension set would be a fact this gear
 /// promises to judge and does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,10 +119,12 @@ pub struct UsageTypeBinding {
 
 /// What the catalog answers about one id.
 ///
-/// **Three values, not two**, and the third is the point: a catalog that says
-/// *no* and a catalog that says *nothing* are different facts, and the publish
-/// gate treats them differently — the first is a refusal the author can fix,
-/// the second is fail-closed and retryable.
+/// **Four values, not two**: a catalog that says *no*, a catalog that says
+/// *nothing* and a catalog that refuses *the caller* are different facts, and
+/// the publish gate treats them differently — the first is a refusal the
+/// author can fix, the second is fail-closed and retryable, the third is a
+/// permission the caller lacks (P-D-207: the catalog is read as the caller, so
+/// a denial is an honest 403, never an outage).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageTypeAnswer {
     /// The catalog knows this id.
@@ -134,6 +136,10 @@ pub enum UsageTypeAnswer {
     /// The catalog did not answer: absent, unreachable, or past the caller's
     /// deadline.
     Unavailable,
+    /// The catalog refused the caller: it answered, and the answer is that
+    /// this caller may not read usage types. Retrying does not help; a grant
+    /// does.
+    Forbidden,
 }
 
 /// One page of the authoring pick-list.
@@ -161,7 +167,7 @@ pub struct UsageTypePage {
 pub trait UsageTypeCatalog: Send + Sync + 'static {
     /// Does this id name a usage type?
     ///
-    /// **Resolvability and nothing else** (P-D-05): no lifecycle check, no
+    /// **Resolvability and nothing else** (P-D-184): no lifecycle check, no
     /// dimension check. An implementation that cannot answer must say
     /// [`UsageTypeAnswer::Unavailable`] rather than guess, because the publish
     /// gate fails closed on it and would otherwise freeze a meter nobody

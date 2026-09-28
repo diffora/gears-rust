@@ -1,24 +1,7 @@
 //! Usage-type and meter checks.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-use super::{UsageTypeAnswer, judge_usage_type, meter_pair_complete};
+use super::meter_pair_complete;
 use crate::domain::error::DomainError;
-
-#[test]
-fn the_usage_type_resolver_has_three_answers() {
-    let binding = crate::test_support::probe_binding();
-    assert_eq!(
-        judge_usage_type(UsageTypeAnswer::Resolved(binding.clone()), "usage:ok")
-            .expect("resolved admits"),
-        binding,
-        "the binding rides through to the freeze (dod-binding-snapshot)"
-    );
-    let unknown = judge_usage_type(UsageTypeAnswer::Unresolved, "usage:gone")
-        .expect_err("unknown is USAGE_TYPE_UNRESOLVED");
-    assert_eq!(unknown.code(), "USAGE_TYPE_UNRESOLVED");
-    let down = judge_usage_type(UsageTypeAnswer::Unavailable, "usage:x")
-        .expect_err("unreachable is USAGE_TYPE_UNAVAILABLE");
-    assert_eq!(down.code(), "USAGE_TYPE_UNAVAILABLE");
-}
 
 #[test]
 fn the_meter_pair_travels_together_or_not_at_all() {
@@ -36,14 +19,5 @@ fn the_meter_pair_travels_together_or_not_at_all() {
     assert!(
         matches!(missing_unit, DomainError::MeterDeclarationIncomplete(ref d) if d.contains("without metering_unit")),
         "got {missing_unit}"
-    );
-}
-
-#[test]
-fn a_binding_snapshot_renders_sorted_and_flat() {
-    let binding = crate::test_support::probe_binding();
-    assert_eq!(
-        crate::domain::recognized::binding_snapshot_json(&binding),
-        r#"{"gts_id":"usage:storage","kind":"counter","metadata_fields":["region","zone"]}"#
     );
 }

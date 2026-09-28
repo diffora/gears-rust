@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 string_enum!(Eligibility {All=>"all", New=>"new"});
 string_enum!(PriceState {Draft=>"draft", Pending=>"pending", Approved=>"approved", Rejected=>"rejected"});
+// Matrix row 10's display state: a draft, pending or rejected price shows its state; an approved
+// one shows where its window stands today.
+string_enum!(DisplayStatus {Draft=>"draft", Pending=>"pending", Rejected=>"rejected", Scheduled=>"scheduled", Active=>"active", Superseded=>"superseded"});
 
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,15 +103,23 @@ pub fn status(price: &Price, today: Date) -> &'static str {
 /// The same display state from the stored columns alone.
 #[must_use]
 pub fn window_status(state: PriceState, from: Date, to: Option<Date>, today: Date) -> &'static str {
-    if state != PriceState::Approved {
-        return state.as_str();
-    }
-    if to.is_some_and(|end| end <= today) {
-        "superseded"
-    } else if from > today {
-        "scheduled"
-    } else {
-        "active"
+    window_display(state, from, to, today).as_str()
+}
+/// [`window_status`] as its closed set (D-439).
+#[must_use]
+pub fn window_display(
+    state: PriceState,
+    from: Date,
+    to: Option<Date>,
+    today: Date,
+) -> DisplayStatus {
+    match state {
+        PriceState::Draft => DisplayStatus::Draft,
+        PriceState::Pending => DisplayStatus::Pending,
+        PriceState::Rejected => DisplayStatus::Rejected,
+        PriceState::Approved if to.is_some_and(|end| end <= today) => DisplayStatus::Superseded,
+        PriceState::Approved if from > today => DisplayStatus::Scheduled,
+        PriceState::Approved => DisplayStatus::Active,
     }
 }
 /// Approved prices of exactly one chain, ordered by start and version.

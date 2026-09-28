@@ -570,6 +570,11 @@ async fn prune_stale_databases(port: u16) {
 /// *live* process can be sharing this pid. `IF EXISTS` so the ordinary case —
 /// no leftover — costs one statement and no error.
 async fn create_fresh_database(port: u16, database: &str) {
+    create_database_as(port, database, "").await;
+}
+
+/// [`create_fresh_database`] with `options` appended to the `CREATE DATABASE`.
+async fn create_database_as(port: u16, database: &str, options: &str) {
     let admin = Database::connect(small_pool(&url(port, "postgres", false)))
         .await
         .expect("connect to the maintenance database");
@@ -583,7 +588,7 @@ async fn create_fresh_database(port: u16, database: &str) {
     admin
         .execute_raw(Statement::from_string(
             sea_orm::DatabaseBackend::Postgres,
-            format!("CREATE DATABASE {database}"),
+            format!("CREATE DATABASE {database}{options}"),
         ))
         .await
         .unwrap_or_else(|e| panic!("create database {database}: {e}"));
@@ -610,6 +615,27 @@ impl Pg {
 
         create_fresh_database(port, &database).await;
 
+        let this = Self { port, database };
+        let db = this.db().await;
+        run_migrations_for_testing(&db, Migrator::migrations())
+            .await
+            .expect("apply the chain");
+        drop(db);
+        this
+    }
+
+    /// [`Pg::applied`] on a database whose locale is `C` (`LC_COLLATE` and
+    /// `LC_CTYPE`), the shape `initdb --locale=C` and `CloudNativePG` give a
+    /// cluster: there the database's `lower()` folds ASCII only.
+    pub async fn applied_in_c_locale() -> Self {
+        let port = server_port();
+        let database = next_database();
+        create_database_as(
+            port,
+            &database,
+            " TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'",
+        )
+        .await;
         let this = Self { port, database };
         let db = this.db().await;
         run_migrations_for_testing(&db, Migrator::migrations())

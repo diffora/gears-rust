@@ -73,6 +73,61 @@ pub async fn list(
         .await
         .map_err(|e| driver_failure("list plans".into(), e))
 }
+/// The tenant's plans, by code, that have a draft, pending or published revision whose items
+/// name an entry of `sku` — the plans the SKU's usage counts (D-428, D-434) — in ONE statement
+/// whatever their number. An included item without an entry names no entry and does not count.
+/// The revisions, items and entries are read tenant-scoped.
+/// # Errors
+/// Returns typed database failures.
+pub async fn naming_sku(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    sku: Uuid,
+) -> Result<Vec<e::Model>, RepoError> {
+    use crate::domain::plan::RevisionState;
+    use crate::infra::storage::entity::{
+        plan_item as item, plan_revision as revision, price_book_entry as entry,
+    };
+    let naming = sea_orm::sea_query::Query::select()
+        .expr(Expr::val(1))
+        .from(revision::Entity)
+        .inner_join(
+            item::Entity,
+            Expr::col((item::Entity, item::Column::RevisionId))
+                .equals((revision::Entity, revision::Column::Id)),
+        )
+        .inner_join(
+            entry::Entity,
+            Expr::col((entry::Entity, entry::Column::Id))
+                .equals((item::Entity, item::Column::PriceBookEntryId)),
+        )
+        .and_where(
+            Expr::col((revision::Entity, revision::Column::PlanId))
+                .equals((e::Entity, e::Column::Id)),
+        )
+        .and_where(Expr::col((revision::Entity, revision::Column::TenantId)).eq(tenant))
+        .and_where(
+            Expr::col((revision::Entity, revision::Column::State))
+                .ne(RevisionState::Superseded.as_str()),
+        )
+        .and_where(Expr::col((item::Entity, item::Column::TenantId)).eq(tenant))
+        .and_where(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
+        .and_where(Expr::col((entry::Entity, entry::Column::SkuId)).eq(sku))
+        .to_owned();
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(Expr::exists(naming)),
+        )
+        .order_by(e::Column::Code, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list the plans naming a SKU".into(), e))
+}
 /// Rename at the version the caller read.
 /// # Errors
 /// A concurrent change is `STALE_REVISION`; database failures keep their type.

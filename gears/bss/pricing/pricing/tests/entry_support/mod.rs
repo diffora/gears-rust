@@ -984,7 +984,7 @@ impl Target {
                 .await
                 .unwrap()
                 .unwrap();
-                serde_json::to_value(dto::PricingPlanItemDto::from(item)).unwrap()
+                serde_json::to_value(dto::PricingPlanItemDto::try_from(item).unwrap()).unwrap()
             }
         }
     }

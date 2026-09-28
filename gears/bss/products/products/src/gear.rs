@@ -11,7 +11,7 @@ use toolkit::api::OpenApiRegistry;
 use toolkit::contracts::RestApiCapability;
 use toolkit::{Gear, GearCtx};
 
-/// `source` on the pick-list: a supplier another module registered.
+/// `source` on the pick-list (`GET /usage-types`, P-D-207): a supplier another module registered.
 pub const USAGE_TYPE_SOURCE_REGISTRY: &str = "registry";
 /// `source`: this crate's adapter over the usage collector's own client.
 pub const USAGE_TYPE_SOURCE_COLLECTOR: &str = "usage_collector";
@@ -105,11 +105,8 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
         let mut migrations = crate::infra::storage::migrations::Migrator::migrations();
 
         // The outbox's own tables are migrated by the facility, not by this
-        // chain (P-D-22's consequences: "C1's 'one migration per table,
-        // guards defined once' does not reach these tables — they are
-        // migrated by `outbox_migrations()`, and the schema oracle must
-        // therefore golden them as imported rather than as gear-authored").
-        // Appended, never declared: no `CreateProductsOutbox`-shaped
+        // chain (P-D-199): they come from `outbox_migrations()`, imported
+        // rather than gear-authored. Appended, never declared: no `CreateProductsOutbox`-shaped
         // migration exists anywhere in `crate::infra::storage::migrations`.
         #[allow(clippy::expect_used)]
         let outbox_migrations =
@@ -134,8 +131,7 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
     }
 }
 
-/// `03`'s usage-type catalog and where it came from (**P-D-141**, and the
-/// plugin seam of 2026-09-22).
+/// The usage-type catalog and where it came from (P-D-184).
 ///
 /// Extracted from `init` rather than inlined, for the reason pricing's
 /// `resolve_product_catalog` was: the two are the same shape and together they
@@ -147,7 +143,7 @@ fn resolve_usage_type_catalog(
     Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
     &'static str,
 ) {
-    // `03`'s usage-type catalog (P-D-141): one narrow port, four steps, and
+    // The usage-type catalog (P-D-184): one narrow port, four steps, and
     // the provenance decided here rather than at a call site.
     //
     // **A registered catalog always wins over a config mode**, and the
@@ -196,7 +192,7 @@ fn resolve_usage_type_catalog(
                 tracing::warn!(
                     "bss-products: no usage-type catalog registered and no mode configured; \
                      the pick-list answers 501 and every usage-SKU publish fails closed \
-                     (P-D-131)"
+                     (P-D-184)"
                 );
                 (
                     Arc::new(crate::infra::usage_types::UnconfiguredUsageTypes),
@@ -214,8 +210,8 @@ impl Gear for BssProductsGear {
         // the boot here rather than at the first request that happens to need
         // a field from it.
         let cfg: ProductsConfig = ctx.config_or_default()?;
-        // P-D-84 arm 6: an inverted retention clamp is refused at boot, not
-        // discovered as a panic on the first keyed request.
+        // A value that admits nothing (a zero resolver timeout) is refused at
+        // boot, not discovered on the first usage-SKU submit.
         cfg.validate()
             .map_err(|reason| anyhow::anyhow!("bss-products: invalid config: {reason}"))?;
         // The retention window is resolved once, here, and only the resolved
@@ -264,8 +260,7 @@ impl Gear for BssProductsGear {
         // them no custom catalog role can be defined, and the labels sit
         // outside `gts.cf.resources.*` where no built-in role covers them — a
         // silent skip would leave the authoring surface ungrantable.
-        // `authz_label_type_schemas()` had no production caller until
-        // **P-D-134** (2026-09-04) named that a defect of this slice.
+        // A refused registration fails the boot (P-D-204).
         let types_registry = ctx
             .client_hub()
             .get::<dyn types_registry_sdk::TypesRegistryClient>()
@@ -286,7 +281,7 @@ impl Gear for BssProductsGear {
             }
         }
 
-        // Transactional outbox (P-D-22). The registry enqueues through the
+        // Transactional outbox (P-D-199). The registry enqueues through the
         // platform's own `toolkit_db::outbox` pipeline rather than a
         // gear-authored `products_outbox` table — see this module's doc for
         // why. The gear's own database is required for the outbox exactly as
@@ -298,13 +293,10 @@ impl Gear for BssProductsGear {
         let outbox_db = db_provider.db();
         // The queue is declared here because `enqueue` refuses an
         // unregistered one (`OutboxError::QueueNotRegistered`), and the
-        // create door enqueues inside its own transaction. Its processor is
-        // a holding one: P-D-47 puts the real processor — the broker SDK's
-        // `DbProducer` — in Phase 8's `dod-outbox-eventing`, so until then
-        // rows accumulate undelivered rather than being discarded. See
-        // `crate::infra::events::PendingBrokerProducer` for why it must not
-        // answer `Ok`.
-        // **P-D-47, with the owner's fallback.** The processor is the broker
+        // create door enqueues inside its own transaction. See
+        // `crate::infra::events::PendingBrokerProducer` for why the holding
+        // processor must not answer `Ok`.
+        // **P-D-199.** The processor is the broker
         // SDK's own producer where a broker is reachable, and the holding
         // processor where none is. Absence of an `EventBrokerApi` in the
         // `ClientHub` is the whole condition — no config key of this gear's —
@@ -419,6 +411,10 @@ impl RestApiCapability for BssProductsGear {
                     openapi,
                 ))
                 .merge(crate::api::rest::browse::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
+                .merge(crate::api::rest::usage_types::router(
                     Arc::clone(&rt.api_state),
                     openapi,
                 ))

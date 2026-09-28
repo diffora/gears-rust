@@ -25,6 +25,10 @@ use super::authoring::{
     AuthoringState, configuration,
     support::{self, DoorError, authz_failure, require_authenticated},
 };
+use super::closed_sets::{
+    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod,
+    PricingResolvedRevisionState,
+};
 use crate::{
     authz::{self, ResourceRef, actions, resource_types},
     domain::{
@@ -252,20 +256,31 @@ async fn pinned_price(
     let book = book_repo::find(tx, &children, tenant, entry.book_id)
         .await?
         .ok_or_else(|| corrupt(format!("entry {} has no book", entry.id)))?;
+    let e = entry.id;
     Ok(PricingPinnedPriceDto {
         price_id: row.id,
         price_book_entry_id: entry.id,
         sku_id: entry.sku_id,
-        charge_kind: entry.charge_kind,
-        period: entry.period,
+        charge_kind: PricingChargeKind::stored(
+            &entry.charge_kind,
+            &format_args!("entry {e} charge_kind"),
+        )?,
+        period: entry
+            .period
+            .as_deref()
+            .map(|p| PricingPeriod::stored(p, &format_args!("entry {e} period")))
+            .transpose()?,
         book_id: book.id,
         currency: book.currency,
         version_no: row.version_no,
         dim_value: row.dim_value,
-        model: entry.model,
+        model: PricingModel::stored(&entry.model, &format_args!("entry {e} model"))?,
         price: row.price_json,
         min_fee: row.min_fee,
-        eligibility: row.eligibility,
+        eligibility: PricingEligibility::stored(
+            &row.eligibility,
+            &format_args!("price {id} eligibility"),
+        )?,
         effective_from: row.effective_from.to_string(),
         effective_to: row.effective_to.map(|d| d.to_string()),
         temporary_until: row.temporary_until.map(|d| d.to_string()),
@@ -499,7 +514,7 @@ async fn read_stored(
         },
         rows: prices,
         defaults: TenantDefaults {
-            default_timing: settings.default_timing,
+            default_timing: settings.default_timing.as_str().to_owned(),
             default_gl: settings.default_gl,
             default_tax_category: settings.default_tax_category,
             invoice_line_templates,
@@ -546,8 +561,12 @@ async fn versions_as_of(
 fn input(resolved: Resolved) -> PricingResolveInputDto {
     PricingResolveInputDto {
         value: resolved.value,
-        source: resolved.source.map(|s| s.as_str().to_owned()),
+        source: resolved.source.map(Into::into),
     }
+}
+/// A stored token outside its closed set, in a door that answers `CanonicalError` (D-439).
+fn stored_failure(error: RepoError) -> CanonicalError {
+    DoorError::from(error).into()
 }
 /// The response, field by field as slice 07 §6 lists it.
 fn render(
@@ -583,7 +602,11 @@ fn render(
                         pinned_from: b.pinned_from,
                         price: row.price_json.clone(),
                         min_fee: row.min_fee.clone(),
-                        eligibility: row.eligibility.clone(),
+                        eligibility: PricingEligibility::stored(
+                            &row.eligibility,
+                            &format_args!("price {} eligibility", row.id),
+                        )
+                        .map_err(stored_failure)?,
                         effective_from: row.effective_from.to_string(),
                         effective_to: row.effective_to.map(|d| d.to_string()),
                         temporary_until: row.temporary_until.map(|d| d.to_string()),
@@ -601,13 +624,18 @@ fn render(
         items.push(PricingResolveItemDto {
             item_id: r.item_id,
             sku_id: r.sku_id,
-            treatment: r.treatment.as_str().to_owned(),
+            treatment: r.treatment.into(),
             included_qty: r.included_qty.map(|q| q.to_string()),
             qty_min: r.qty_min,
             price_book_entry_id: r.price_book_entry_id,
-            charge_kind: r.charge_kind.map(|k| k.as_str().to_owned()),
-            period: r.period,
-            model: r.model.map(|m| m.as_str().to_owned()),
+            charge_kind: r.charge_kind.map(Into::into),
+            period: r
+                .period
+                .as_deref()
+                .map(|p| PricingPeriod::stored(p, &format_args!("plan item {} period", r.item_id)))
+                .transpose()
+                .map_err(stored_failure)?,
+            model: r.model.map(Into::into),
             sku_version: version.map(|v| PricingResolveSkuVersionDto {
                 published_version: v.published_version,
                 effective_from: v.effective_from.to_string(),
@@ -627,7 +655,11 @@ fn render(
         plan_revision_id: stored.revision.id,
         plan_id: stored.revision.plan_id,
         rev_no: stored.revision.rev_no,
-        state: stored.revision.state.clone(),
+        state: PricingResolvedRevisionState::stored(
+            &stored.revision.state,
+            &format_args!("revision {} state", stored.revision.id),
+        )
+        .map_err(stored_failure)?,
         book_id: stored.revision.book_id,
         currency: stored.currency.clone(),
         currency_minor_digits: book::minor_digits(&stored.currency),

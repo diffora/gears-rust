@@ -55,7 +55,7 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 
 1. [ ] - `p1` - Create or rename a tenant category directly with products:author; category code uniqueness is tenant-local and no approval unit is created - `inst-sku-category-write`
 2. [ ] - `p1` - PATCH checks If-Match and increments version; a stale precondition returns STALE_REVISION without changing the category - `inst-sku-category-patch`
-3. [ ] - `p1` - Retire only when no tenant SKU points at the category, checking the predicate atomically with the write - `inst-sku-category-retire`
+3. [ ] - `p1` - Retire only when no tenant SKU that is not retired points at the category, checking the predicate atomically with the write (P-D-208) - `inst-sku-category-retire`
 
 ### Consumer reads the version in force
 
@@ -82,7 +82,7 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 1. [ ] - `p1` - Permit usage drafts to remain incomplete; publication requires both usage_type_ref and unit, otherwise USAGE_NEEDS_METER - `inst-sku-meter-required`
 2. [ ] - `p1` - Resolve using the retained UsageTypeCatalog port: registered catalog, usage-collector adapter, then configured local-development catalog or unconfigured mode, preserving provenance - `inst-sku-meter-port`
 3. [ ] - `p1` - On draft save, check a changed ref when a catalog is configured; definitive unresolved is 400 USAGE_TYPE_UNRESOLVED, while a catalog non-answer does not block the save - `inst-sku-meter-draft`
-4. [ ] - `p1` - At submit and apply, revalidate the proposed usage content and fail closed on unresolved refs; an unreachable configured catalog is 503, not acceptance - `inst-sku-meter-publish`
+4. [ ] - `p1` - At submit and apply, revalidate the proposed usage content and fail closed on unresolved refs; an unreachable configured catalog is 503, not acceptance; a catalog that refuses the caller is 403 USAGE_TYPE_FORBIDDEN (P-D-207) - `inst-sku-meter-publish`
 5. [ ] - `p1` - Refuse usage metering on non-usage types; a bundle with metering yields BUNDLE_HAS_NO_METER - `inst-sku-meter-type`
 
 ### bundle-unpriced
@@ -93,7 +93,7 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 
 ### category-retire-refused
 
-1. [ ] - `p1` - Within the tenant transaction, refuse retirement if any SKU points to the category, regardless of its lifecycle; return 409 CATEGORY_IN_USE; a SKU without a category never counts - `inst-sku-category-count`
+1. [ ] - `p1` - Within the tenant transaction, refuse retirement while a SKU in draft, published, deprecated or retiring points to the category; return 409 CATEGORY_IN_USE; a retired SKU and a SKU without a category never count, and a retired category is 409 CATEGORY_RETIRED (P-D-208, amending P-D-186) - `inst-sku-category-count`
 2. [ ] - `p1` - Otherwise conditionally set status retired and increment version without an approval unit; category assignment and retirement must serialize their reciprocal checks so a concurrent assignment cannot bypass this rule - `inst-sku-category-retire-write`
 
 ### versions-as-of
@@ -101,13 +101,13 @@ Spec §2.2 and §4 are the content authority, with §6 for submit/apply validati
 1. [ ] - `p1` - On publish or applied change, validate effective_from against the latest version date; an earlier date yields 409 VERSION_ORDER, equal dates are allowed - `inst-sku-version-order`
 2. [ ] - `p1` - Increment published_version and append the complete business snapshot in the apply transaction; publication is effective immediately, changes use effective_from defaulting to today - `inst-sku-version-append`
 3. [ ] - `p1` - For a dated read filter effective_from <= as_of, order by effective_from DESC, published_version DESC and select one; before the first version return 404 NO_VERSION_IN_FORCE - `inst-sku-version-select`
-4. [ ] - `p1` - Without as_of return the durable history; never substitute the current SKU row for a version-in-force read or update an old snapshot - `inst-sku-version-history`
+4. [ ] - `p1` - The history read returns the durable history as an array, and the dated read one version at its own path (P-D-214); never substitute the current SKU row for a version-in-force read or update an old snapshot - `inst-sku-version-history`
 
 ## 4. States (CDSL)
 
 1. [ ] - `p1` - SKU create → draft; draft PATCH stays draft and changes revision, not published_version. A pending unit excludes direct edits.
 2. [ ] - `p1` - Published/deprecated content changes go through sku_change; no direct PATCH can bypass review. Slice 03 owns the lifecycle edges and fences.
-3. [ ] - `p1` - Category create → active; direct edits retain status; active → retired requires no referencing SKU. No category hierarchy or approval lifecycle exists.
+3. [ ] - `p1` - Category create → active; direct edits retain status; active → retired requires no referencing SKU that is not retired (P-D-208); retired → retired is refused CATEGORY_RETIRED. No category hierarchy or approval lifecycle exists.
 4. [ ] - `p1` - SKU version history grows only on publication/applied change; stored versions have no edit/delete transition.
 
 ## 5. API Surface
@@ -119,13 +119,17 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 | --- | --- |
 | `POST /skus` | products:author; 201 draft with id and ETag; `category_id` is optional and an omitted one is null; code/name conflicts are 409. |
 | `PATCH /skus/{id}` | products:author; draft only, If-Match required; `category_id: null` clears the category; pending ownership returns ROW_LOCKED_PENDING; stale version returns STALE_REVISION. |
+| `DELETE /skus/{id}` | products:author; a never-published draft only, by its author (403 NOT_DRAFT_AUTHOR), If-Match required; 204 with an audit row; SKU_NOT_DRAFT, ROW_LOCKED_PENDING, SKU_REFERENCED or STALE_REVISION (409). A draft is deleted, never retired (P-D-206). |
+| `GET /usage-types?q&kind&limit&cursor` | products:author; the usage-type catalog read as the caller, `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable (P-D-207). |
 | `GET /skus` | products:read; scoped current heads. Slice 04 owns search, filters and pagination. |
 | `GET /skus/{id}` | products:read; current SKU and ETag. Current applied content may be future-effective; use versions for dated truth. |
-| `GET /skus/{id}/versions?as_of=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE. Without as_of, return history. |
-| `GET /categories` | products:read; scoped flat categories. |
+| `GET /skus/{id}/versions` | products:read; the history, always an array, oldest first; any query key is 400 (P-D-214). |
+| `GET /skus/{id}/versions/as-of?date=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE; a missing or malformed `date` is 400 (P-D-214). |
+| `GET /categories?$filter&$orderby&$top&cursor` | products:read; one page of the tenant's categories on the toolkit's OData: `$filter` over id, code, name, status, is_default and sort_order; `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top`/`limit` 200, clamped at 200; each item with `sku_count`, from one grouped count (P-D-215). |
+| `GET /categories/{id}` | products:read; one category with its ETag and `sku_count`; 404 off the tenant (P-D-215). |
 | `POST /categories` | products:author; create directly with tenant-unique code. |
 | `PATCH /categories/{id}` | products:author; direct edit under If-Match; return the new ETag. |
-| `POST /categories/{id}/retire` | products:author; retire only without referencing SKUs, otherwise CATEGORY_IN_USE. |
+| `POST /categories/{id}/retire` | products:author; retire only while no SKU that is not retired references it, otherwise CATEGORY_IN_USE; a retired category is CATEGORY_RETIRED (P-D-208). |
 
 Submit-time subject validation failures are 400 with their code and no unit created (never 422, pricing D-403); apply-time environment refusal
 rolls back through slice 03's APPLY_REFUSED path. P-D-184's draft-save behavior remains distinct.
@@ -178,7 +182,7 @@ Numbered criteria refer to [PRD §9](../PRD.md#9-acceptance-criteria).
 | `cpt-cf-bss-products-fr-sku-metering`; AC #5 | Given missing or unresolved usage metering, when publication is submitted, then USAGE_NEEDS_METER or USAGE_TYPE_UNRESOLVED prevents a unit/version; apply revalidates if the catalog changes. A draft-save catalog non-answer remains saveable per P-D-184. |
 | `cpt-cf-bss-products-fr-sku-bundle`; AC #6 | Given a bundle, when usage metering is assigned, then BUNDLE_HAS_NO_METER refuses it; the exposed type supports sold_as and prevents Pricing treating it as a priced SKU or item. |
 | `cpt-cf-bss-products-fr-sku-versions`; AC #8–9 | Given publication on September 24 and a change effective October 1, when reading September 30/October 1/September 23, then return old/new/NO_VERSION_IN_FORCE. Earlier-date changes fail VERSION_ORDER; equal dates retain both versions and select the larger number. |
-| `cpt-cf-bss-products-fr-category-flat`; AC #13, #27 | Given a flat category, when created/renamed it needs no approval; when referenced retirement fails CATEGORY_IN_USE; stale PATCH fails STALE_REVISION. An unreferenced category retires directly, also beside SKUs without a category. |
+| `cpt-cf-bss-products-fr-category-flat`; AC #13, #27 | Given a flat category, when created/renamed it needs no approval; when referenced by a SKU that is not retired retirement fails CATEGORY_IN_USE; stale PATCH fails STALE_REVISION. An unreferenced category retires directly, also beside SKUs without a category or with only retired SKUs; a retired one fails CATEGORY_RETIRED (P-D-208). |
 | `cpt-cf-bss-products-fr-sku-define`, `cpt-cf-bss-products-fr-sku-descriptors`; AC #4, #19 | Given pending ownership, when direct edit or second submission is attempted, then ROW_LOCKED_PENDING preserves the reviewed content. |
 
 ## 10. Non-Functional Considerations

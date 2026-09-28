@@ -97,11 +97,9 @@ fn a_differing_field_hashes_differently() {
 }
 
 /// An **omitted** field and one sent explicitly as `null` hash differently
-/// (**P-D-34**).
+/// (P-D-201).
 ///
-/// §4.3's "absent values written `null`" clause addresses a complete field
-/// set — a version row's columns — and P-D-34 narrows it for a request: a
-/// parsed request's named field set is the fields the request *carries*. The
+/// A parsed request's named field set is the fields the request *carries*. The
 /// distinction is what a `PATCH` means by omitting a field versus clearing
 /// it, and a digest that collapsed the two would let one of those replay the
 /// other's answer.
@@ -140,7 +138,7 @@ fn a_number_renders_with_no_trailing_zeroes_so_one_and_one_point_zero_agree() {
 }
 
 /// Folding a precondition into the operand **would** change the digest —
-/// which is why no door on this surface does (**P-D-34**).
+/// which is why no door on this surface does (P-D-201).
 ///
 /// The exclusion itself is structural: [`super::payload_digest`] is handed a
 /// value built from the parsed body's own fields and can see no header at

@@ -11,7 +11,7 @@ use bss_pricing::infra::storage::{
     repo::{book_repo, plan_revision_repo, price_book_entry_repo, price_repo},
 };
 use bss_products_sdk::models::SkuType;
-use bss_products_sdk::sku_usage::{PriceCounts, SkuUsage, SkuUsageV1};
+use bss_products_sdk::sku_usage::{PriceCounts, SkuUsage, SkuUsageSets, SkuUsageV1};
 use plan_support::{
     Catalog, Fixture, book, entry, entry_in, entry_support, holding, id_of, item, lock, plan,
     publish, scope, setup,
@@ -497,4 +497,182 @@ async fn a_caller_without_entry_read_is_refused_with_403() {
         .await
         .unwrap();
     assert_eq!(granted[0].entries, 1);
+}
+
+// ------------------------------------------------------------------ the usage sets (P-D-212)
+
+/// P-D-212: the sets are exactly the SKUs whose usage counts an entry (`priced`) and a plan
+/// (`in_plan`), on the same data. A plan that names a SKU only through a superseded revision,
+/// and an `included` item that names a SKU without an entry, do not put it in plan; another
+/// tenant's entries are not this tenant's.
+#[tokio::test]
+async fn the_usage_sets_are_the_skus_whose_usage_counts_entries_and_plans() {
+    let (f, catalog) = setup().await;
+    let tenant = f.ctx.subject_tenant_id();
+    let eur = book(&f, "eur").await;
+    let unpriced = catalog.sku(SkuType::Usage);
+    let priced = catalog.sku(SkuType::Usage);
+    entry(&f, eur, priced, "usage", None).await;
+    let live = catalog.sku(SkuType::Usage);
+    let e_live = entry(&f, eur, live, "usage", None).await;
+    let old = catalog.sku(SkuType::Usage);
+    let e_old = entry(&f, eur, old, "usage", None).await;
+    let included = catalog.sku(SkuType::Usage);
+    // A draft revision names `live` through its entry, and `included` with no entry at all.
+    let (_, draft) = plan(&f, "pro", eur).await;
+    item(&f, draft, live, Some(e_live), "paid").await;
+    item(&f, draft, included, None, "included").await;
+    // Plan old names `old` only through a superseded revision.
+    let (old_plan, o1) = plan(&f, "old", eur).await;
+    let old_plan = id_of(&old_plan["id"]);
+    item(&f, o1, old, Some(e_old), "paid").await;
+    publish(&f, old_plan, o1).await;
+    let o2 = bare_revision(&f, old_plan, 2, eur).await;
+    publish(&f, old_plan, o2).await;
+    // Another tenant prices a SKU of its own.
+    let other = Uuid::new_v4();
+    let foreign = catalog.sku(SkuType::Usage);
+    let (conn, theirs) = (f.db.conn().unwrap(), AccessScope::for_tenant(other));
+    let now = time::OffsetDateTime::now_utc();
+    let their_book = book_repo::insert(
+        &conn,
+        &theirs,
+        price_book::Model {
+            id: Uuid::now_v7(),
+            tenant_id: other,
+            code: "eur".into(),
+            name: "eur".into(),
+            currency: "EUR".into(),
+            valid_from: None,
+            valid_until: None,
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap();
+    price_book_entry_repo::insert(
+        &conn,
+        &theirs,
+        price_book_entry::Model {
+            id: Uuid::now_v7(),
+            tenant_id: other,
+            book_id: their_book.id,
+            sku_id: foreign,
+            charge_kind: "usage".into(),
+            period: None,
+            model: "per_unit".into(),
+            dimension_key: None,
+            invoice_line_override: None,
+            reservation_id: Uuid::new_v4(),
+            reference_state: "confirmed".into(),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap();
+
+    let all = [unpriced, priced, live, old, included, foreign];
+    let usage = port(&f).usage(&f.ctx, tenant, &all).await.unwrap();
+    let sets = port(&f).usage_sets(&f.ctx, tenant).await.unwrap();
+    assert_eq!(usage.len(), all.len());
+    for u in &usage {
+        assert_eq!(
+            sets.priced.contains(&u.sku_id),
+            u.entries > 0,
+            "priced iff entries > 0: {u:?}"
+        );
+        assert_eq!(
+            sets.in_plan.contains(&u.sku_id),
+            u.plans > 0,
+            "in_plan iff plans > 0: {u:?}"
+        );
+    }
+    let mut expected = vec![priced, live, old];
+    expected.sort_unstable();
+    assert_eq!(
+        sets,
+        SkuUsageSets {
+            priced: expected,
+            in_plan: vec![live],
+        },
+        "sorted and distinct; the included item and the superseded-only plan count neither"
+    );
+    // The other tenant's own reader has its SKU in its own set.
+    let theirs = PricingSkuUsage::new(f.state.clone(), entry_support::enforcer_for(other));
+    let reader = entry_support::user_of(other);
+    assert_eq!(
+        theirs.usage_sets(&reader, other).await.unwrap().priced,
+        vec![foreign]
+    );
+    // Naming the other tenant does not widen this caller's reach.
+    assert_eq!(
+        port(&f).usage_sets(&f.ctx, other).await.unwrap(),
+        SkuUsageSets::default()
+    );
+}
+
+/// P-D-212: the sets are refused to a caller without `price_book_entry:read`, as the usage is.
+#[tokio::test]
+async fn the_usage_sets_refuse_a_caller_without_entry_read_with_403() {
+    let (f, catalog) = setup().await;
+    let tenant = f.ctx.subject_tenant_id();
+    let eur = book(&f, "eur").await;
+    let sku = catalog.sku(SkuType::Usage);
+    entry(&f, eur, sku, "usage", None).await;
+    let refused = port(&f)
+        .usage_sets(&holding(&f, "price_book:read"), tenant)
+        .await
+        .unwrap_err();
+    let (status, body, _) = entry_support::answer(Err(refused)).await;
+    assert_eq!(status, 403, "{body}");
+    let granted = port(&f)
+        .usage_sets(&holding(&f, "price_book_entry:read"), tenant)
+        .await
+        .unwrap();
+    assert_eq!(granted.priced, vec![sku]);
+}
+
+/// The statements on pricing's tables one call of `usage_sets` makes.
+async fn set_statements(
+    f: &Fixture,
+    recorder: &toolkit_db::test_support::QueryRecorder,
+    n: usize,
+) -> Vec<(String, usize)> {
+    recorder.clear();
+    let sets = port(f)
+        .usage_sets(&f.ctx, f.ctx.subject_tenant_id())
+        .await
+        .unwrap();
+    assert_eq!((sets.priced.len(), sets.in_plan.len()), (n, n));
+    recorder
+        .events()
+        .into_iter()
+        .filter(|q| {
+            q.table
+                .as_deref()
+                .is_some_and(|t| t.starts_with("pricing_"))
+        })
+        .map(|q| (q.sql, q.param_count))
+        .collect()
+}
+
+/// P-D-212: the sets are two statements, with the same binds, for 10 and for 100 SKUs.
+#[tokio::test]
+async fn the_usage_sets_read_in_two_statements_for_10_and_100_skus() {
+    let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
+    let catalog = Arc::new(Catalog::default());
+    let f = Fixture::on(db, tenant, dsn, catalog.clone()).await;
+    seeded_book(&f, &catalog, "small", 10).await;
+    let ten = set_statements(&f, &recorder, 10).await;
+    seeded_book(&f, &catalog, "large", 90).await;
+    let hundred = set_statements(&f, &recorder, 100).await;
+    for (i, (sql, binds)) in hundred.iter().enumerate() {
+        eprintln!("statement {i} ({binds} binds): {sql}");
+    }
+    assert_eq!(ten.len(), 2, "one read per set: {ten:#?}");
+    assert_eq!(ten, hundred, "the same statements, whatever the size");
 }

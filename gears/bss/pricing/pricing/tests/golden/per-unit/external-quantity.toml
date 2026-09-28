@@ -1,7 +1,7 @@
 family     = "per-unit"
 id         = "external-quantity"
 kind       = "evaluation"
-provenance = ["AC#60", "PRD §17.2"]
+provenance = ["AC#60 (backup)", "PRD §17.2 (backup)"]
 
 [snapshot]
 model_kind      = "per_unit"

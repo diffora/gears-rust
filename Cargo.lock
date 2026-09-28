@@ -1650,6 +1650,7 @@ dependencies = [
  "cf-gears-authz-resolver-sdk",
  "cf-gears-resource-group",
  "cf-gears-resource-group-sdk",
+ "cf-gears-static-idp-plugin",
  "cf-gears-tenant-resolver",
  "cf-gears-tenant-resolver-sdk",
  "cf-gears-test-containers",

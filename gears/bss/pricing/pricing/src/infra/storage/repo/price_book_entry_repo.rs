@@ -182,6 +182,126 @@ pub async fn for_skus(
         .await
         .map_err(|e| driver_failure("list price book entries of SKUs".into(), e))
 }
+/// One dimension key an entry names.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct KeyRow {
+    dimension_key: String,
+}
+/// The distinct dimension keys the tenant's entries name, in any reference state, sorted, in ONE
+/// statement whatever the number of entries (D-436): a key one names is not removed
+/// (`DIMENSION_KEY_IN_USE`).
+/// # Errors
+/// Returns typed database failures.
+pub async fn named_keys(runner: &impl DBRunner, tenant: Uuid) -> Result<Vec<String>, RepoError> {
+    use sea_orm::{QueryOrder, QuerySelect};
+    Ok(e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::DimensionKey.is_not_null()),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::DimensionKey)
+                .distinct()
+                .order_by(e::Column::DimensionKey, Order::Asc)
+                .into_model::<KeyRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("list the dimension keys price book entries name".into(), e))?
+        .into_iter()
+        .map(|r| r.dimension_key)
+        .collect())
+}
+/// One SKU id of a set read.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct SkuIdRow {
+    sku_id: Uuid,
+}
+/// The distinct SKU ids of the tenant's entries under `scope`, narrowed by `condition`, sorted,
+/// in ONE statement.
+async fn distinct_skus(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    condition: Condition,
+    context: &str,
+) -> Result<Vec<Uuid>, RepoError> {
+    use sea_orm::{QueryOrder, QuerySelect};
+    Ok(e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(condition),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::SkuId)
+                .distinct()
+                .order_by(e::Column::SkuId, Order::Asc)
+                .into_model::<SkuIdRow>()
+        })
+        .await
+        .map_err(|e| driver_failure(context.into(), e))?
+        .into_iter()
+        .map(|r| r.sku_id)
+        .collect())
+}
+/// The SKUs with an entry in any book of the tenant, in any reference state, under `scope`: the
+/// SKUs whose usage counts an entry (D-428), in ONE statement (P-D-212).
+/// # Errors
+/// Returns typed database failures.
+pub async fn priced_skus(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
+    distinct_skus(runner, scope, tenant, Condition::all(), "list priced SKUs").await
+}
+/// The SKUs whose entries (under `scope`) a plan item of a draft, pending or published revision
+/// names: the SKUs whose usage counts a plan (D-428), in ONE statement (P-D-212). The items and
+/// revisions are read tenant-scoped, as the usage count reads them.
+/// # Errors
+/// Returns typed database failures.
+pub async fn in_plan_skus(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
+    use crate::domain::plan::RevisionState;
+    use crate::infra::storage::entity::{plan_item as item, plan_revision as revision};
+    let live_item = sea_orm::sea_query::Query::select()
+        .expr(Expr::val(1))
+        .from(item::Entity)
+        .inner_join(
+            revision::Entity,
+            Expr::col((revision::Entity, revision::Column::Id))
+                .equals((item::Entity, item::Column::RevisionId)),
+        )
+        .and_where(Expr::col((item::Entity, item::Column::TenantId)).eq(tenant))
+        .and_where(
+            Expr::col((item::Entity, item::Column::PriceBookEntryId))
+                .equals((e::Entity, e::Column::Id)),
+        )
+        .and_where(Expr::col((revision::Entity, revision::Column::TenantId)).eq(tenant))
+        .and_where(
+            Expr::col((revision::Entity, revision::Column::State))
+                .ne(RevisionState::Superseded.as_str()),
+        )
+        .to_owned();
+    distinct_skus(
+        runner,
+        scope,
+        tenant,
+        Condition::all().add(Expr::exists(live_item)),
+        "list in-plan SKUs",
+    )
+    .await
+}
 /// Change the reference receipt/state at the observed version.
 /// # Errors
 /// Returns a version conflict or a typed database failure.

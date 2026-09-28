@@ -23,7 +23,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{Engine, SubmitRequest};
-use bss_products_sdk::models::SkuContent;
+use bss_products_sdk::models::{Lifecycle, SkuContent};
 use serde_json::Value;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -213,8 +213,9 @@ async fn fence(
     if !live.is_empty() {
         let rows = live
             .into_iter()
-            .map(super::dto::ReferenceReceipt::from)
-            .collect::<Vec<_>>();
+            .map(super::dto::ReferenceReceipt::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(TxError::Repo)?;
         let rows = serde_json::to_value(rows)
             .map_err(|e| TxError::Repo(crate::infra::storage::RepoError::Db(e.to_string())))?;
         return Err(TxError::FencedReferences {
@@ -264,7 +265,9 @@ async fn run(
     let payload = json_body(body)?;
     let now = OffsetDateTime::now_utc();
     let tenant = ctx.subject_tenant_id();
-    let (patch, date) = if matches!(kind, SubmitKind::Change) {
+    // A change's `note` is its submitter's reason: the submit's audit row carries it, and the
+    // history shows it (P-D-213).
+    let (patch, date, note) = if matches!(kind, SubmitKind::Change) {
         let parsed: SkuChangeRequest = serde_json::from_value(payload.clone())
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
         (
@@ -272,11 +275,12 @@ async fn run(
                 CanonicalError::from(crate::domain::error::DomainError::Validation(r))
             })?,
             Some(parsed.effective_from.unwrap_or(now.date())),
+            parsed.note,
         )
     } else {
         let _: EmptyRequest = serde_json::from_value(payload.clone())
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
-        (SkuPatch::default(), None)
+        (SkuPatch::default(), None, None)
     };
     let claim = replay::input(
         &state,
@@ -294,7 +298,7 @@ async fn run(
     {
         return Ok(response);
     }
-    execute(state, scope, ctx, id, kind, patch, date, now, claim).await
+    execute(state, scope, ctx, id, kind, patch, date, note, now, claim).await
 }
 #[allow(
     clippy::too_many_arguments,
@@ -308,6 +312,7 @@ async fn execute(
     kind: SubmitKind,
     patch: SkuPatch,
     date: Option<time::Date>,
+    note: Option<String>,
     now: OffsetDateTime,
     claim: Option<IdempotencyClaimInput>,
 ) -> Result<Response, CanonicalError> {
@@ -336,6 +341,7 @@ async fn execute(
             let usage = usage.clone();
             let proposed = proposed.clone();
             let claim = claim.clone();
+            let note = note.clone();
             Box::pin(async move {
                 g::find(tx, &scope, tenant, id).await?;
                 if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
@@ -365,6 +371,15 @@ async fn execute(
                         "resume the type change or unfence it first",
                     ));
                 }
+                // P-D-213: the lifecycle the submit found, and the one it leaves before any apply:
+                // only a retire moves it, by its fence (a fence taken now, or the orphan resumed,
+                // is `retiring` either way); a type-change fence moves none.
+                let found = current.lifecycle;
+                let fenced = if matches!(kind, SubmitKind::Retire) {
+                    Lifecycle::Retiring
+                } else {
+                    found
+                };
                 let base = SkuPublish {
                     scope: scope.clone(),
                     tenant_id: tenant,
@@ -426,10 +441,12 @@ async fn execute(
                     "approval.submit",
                     "approval_unit",
                     submitted.unit.id,
-                    None,
+                    note,
                     now,
+                    repo::LifecycleMove::between(found, fenced),
                 )
                 .await?;
+                let after = g::find(tx, &scope, tenant, id).await?;
                 if submitted.applied {
                     g::audit(
                         tx,
@@ -440,6 +457,7 @@ async fn execute(
                         submitted.unit.id,
                         None,
                         now,
+                        repo::LifecycleMove::between(fenced, after.lifecycle),
                     )
                     .await?;
                     g::decided(&state, tx, &store, &submitted.unit, ctx.subject_id()).await?;
@@ -447,7 +465,7 @@ async fn execute(
                 let receipt = SubmitReceipt {
                     applied: submitted.applied,
                     unit: submitted.unit.into(),
-                    sku: g::find(tx, &scope, tenant, id).await?.into(),
+                    sku: after.into(),
                 };
                 replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await
             })
@@ -491,7 +509,9 @@ async fn unfence(
             let ctx = ctx.clone();
             let claim = claim.clone();
             Box::pin(async move {
-                g::find(tx, &scope, ctx.subject_tenant_id(), id).await?;
+                let found = g::find(tx, &scope, ctx.subject_tenant_id(), id)
+                    .await?
+                    .lifecycle;
                 if let Some(response) =
                     replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
                 {
@@ -515,6 +535,7 @@ async fn unfence(
                     id,
                     None,
                     OffsetDateTime::now_utc(),
+                    repo::LifecycleMove::between(found, sku.lifecycle),
                 )
                 .await?;
                 replay::finish(
