@@ -290,6 +290,7 @@ async fn record(
             actor: cmd.ctx.subject_id(),
             policy: &policy,
             common_effective_date: submission.common_effective_date,
+            note: None,
             now: submission.now,
         },
     )

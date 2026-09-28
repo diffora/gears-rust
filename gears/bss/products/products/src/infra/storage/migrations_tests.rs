@@ -33,7 +33,7 @@ fn vec_order_matches_name_order() {
 }
 
 #[test]
-fn the_chain_is_the_guard_coord_then_the_eight_pricebook_migrations() {
+fn the_chain_is_the_guard_coord_then_the_nine_pricebook_migrations() {
     let names: Vec<String> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
@@ -50,7 +50,8 @@ fn the_chain_is_the_guard_coord_then_the_eight_pricebook_migrations() {
             "m20260925_000005_create_products_idempotency",
             "m20260925_000006_create_products_sku_reference",
             "m20260925_000007_sku_category_optional",
-            "m20260927_000008_audit_lifecycle_move"
+            "m20260927_000008_audit_lifecycle_move",
+            "m20260928_000009_unit_submit_note"
         ]
     );
 }

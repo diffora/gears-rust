@@ -1,5 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-use bss_approval::ddl::{apply_down, apply_up, up};
+use bss_approval::ddl::{
+    add_submit_note, apply_add_submit_note, apply_down, apply_drop_submit_note, apply_up,
+    drop_submit_note, up,
+};
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use sea_orm_migration::SchemaManager;
 
@@ -82,4 +85,92 @@ fn the_postgres_template_carries_the_schema_and_the_queue_index() {
     assert!(pg.contains("CREATE INDEX IF NOT EXISTS ix_pricing_approval_unit_queue ON bss.pricing_approval_unit USING btree (tenant_id, state, kind, submitted_at)"));
     assert!(pg.contains("CHECK (state IN ('pending','approved','rejected','withdrawn'))"));
     assert!(pg.contains("PRIMARY KEY (unit_id, actor, generation)"));
+}
+
+/// The unit table's columns, in order, on `SQLite`.
+async fn unit_columns(db: &sea_orm::DatabaseConnection) -> Vec<String> {
+    db.query_all_raw(Statement::from_string(
+        DbBackend::Sqlite,
+        "SELECT name FROM pragma_table_info('pricing_approval_unit') ORDER BY cid".to_owned(),
+    ))
+    .await
+    .unwrap()
+    .iter()
+    .map(|r| r.try_get::<String>("", "name").unwrap())
+    .collect()
+}
+
+/// Products P-D-219, pricing D-445: `submit_note` is a separate step a gear's forward migration
+/// runs. The shipped template does not name it (it is the body of deployed migrations); the step
+/// appends the column, replays as a no-op, and its reverse drops it and replays too.
+#[tokio::test]
+async fn the_submit_note_step_appends_the_column_replays_and_reverses_on_sqlite() {
+    for backend in [DbBackend::Sqlite, DbBackend::Postgres] {
+        assert!(
+            !up("pricing_", Some("bss"), backend)
+                .join("\n")
+                .contains("submit_note"),
+            "the deployed template stays as it shipped ({backend:?})"
+        );
+    }
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = SchemaManager::new(&db);
+    apply_up(&manager, "pricing_", Some("bss")).await.unwrap();
+    let before = unit_columns(&db).await;
+    assert_eq!(before.last().map(String::as_str), Some("version"));
+    apply_add_submit_note(&manager, "pricing_", Some("bss"))
+        .await
+        .unwrap();
+    apply_add_submit_note(&manager, "pricing_", Some("bss"))
+        .await
+        .unwrap();
+    let after = unit_columns(&db).await;
+    assert_eq!(
+        after[..before.len()],
+        before[..],
+        "the old columns keep their places"
+    );
+    assert_eq!(after[before.len()..], ["submit_note"]);
+    let unit = "INSERT INTO pricing_approval_unit (id, tenant_id, kind, ref_type, ref_id, state, quorum_required, generation, submitted_by, submitted_at, snapshot, snapshot_hash, version) VALUES ('u1','t1','prices','book','b1','pending',1,1,'a0','2026-09-24T10:00:00Z','{}','h',1)";
+    db.execute_raw(Statement::from_string(DbBackend::Sqlite, unit.to_owned()))
+        .await
+        .unwrap();
+    let note: Option<String> = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT submit_note AS v FROM pricing_approval_unit".to_owned(),
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get("", "v")
+        .unwrap();
+    assert_eq!(note, None, "a unit written without a note reads null");
+    apply_drop_submit_note(&manager, "pricing_", Some("bss"))
+        .await
+        .unwrap();
+    apply_drop_submit_note(&manager, "pricing_", Some("bss"))
+        .await
+        .unwrap();
+    assert_eq!(unit_columns(&db).await, before);
+}
+
+#[test]
+fn the_submit_note_step_is_qualified_on_postgres_and_guarded_there_by_if_not_exists() {
+    assert_eq!(
+        add_submit_note("products_", Some("bss"), DbBackend::Postgres),
+        "ALTER TABLE bss.products_approval_unit ADD COLUMN IF NOT EXISTS submit_note text"
+    );
+    assert_eq!(
+        drop_submit_note("products_", Some("bss"), DbBackend::Postgres),
+        "ALTER TABLE bss.products_approval_unit DROP COLUMN IF EXISTS submit_note"
+    );
+    assert_eq!(
+        add_submit_note("products_", Some("bss"), DbBackend::Sqlite),
+        "ALTER TABLE products_approval_unit ADD COLUMN submit_note text"
+    );
+    assert_eq!(
+        drop_submit_note("products_", Some("bss"), DbBackend::Sqlite),
+        "ALTER TABLE products_approval_unit DROP COLUMN submit_note"
+    );
 }

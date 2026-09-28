@@ -3,15 +3,18 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-type-change-fenced:p1
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
-    dto::{EmptyRequest, SkuChangeRequest, SkuDto, SubmitReceipt},
+    dto::{ProductsSkuSubmitRequest, SkuChangeRequest, SkuDto, SubmitReceipt},
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
     unit_tx_to_canonical,
 };
 use crate::{
     authz::actions,
     domain::{
-        approvals::{Subject, change::SkuChange, publish::SkuPublish, retire::SkuRetire},
+        approvals::{
+            Subject, change::SkuChange, check_note, publish::SkuPublish, retire::SkuRetire,
+        },
         sku::{SkuPatch, apply_patch},
+        validation::ValidationReport,
     },
     infra::{idempotency::IdempotencyClaimInput, storage::repo},
 };
@@ -60,6 +63,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
+        .json_request::<ProductsSkuSubmitRequest>(
+            openapi,
+            "Optional: the submitter's note, at most 2000 characters (400 NOTE_TOO_LONG); stored \
+             on the unit as submit_note and on the submit's history row (P-D-219)",
+        )
+        .request_optional()
         .param(replay::param())
         .handler(submit)
         .json_response_with_schema::<SubmitReceipt>(openapi, StatusCode::OK, "Receipt")
@@ -97,6 +106,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "SKU id")
+        .json_request::<ProductsSkuSubmitRequest>(
+            openapi,
+            "Optional: the submitter's note, at most 2000 characters (400 NOTE_TOO_LONG); stored \
+             on the unit as submit_note and on the submit's history row (P-D-219)",
+        )
+        .request_optional()
         .param(replay::param())
         .handler(retire)
         .json_response_with_schema::<SubmitReceipt>(openapi, StatusCode::OK, "Receipt")
@@ -265,22 +280,34 @@ async fn run(
     let payload = json_body(body)?;
     let now = OffsetDateTime::now_utc();
     let tenant = ctx.subject_tenant_id();
-    // A change's `note` is its submitter's reason: the submit's audit row carries it, and the
-    // history shows it (P-D-213).
+    // The submitter's `note`, on each of the three doors: stored on the unit (`submit_note`,
+    // P-D-219) and on the submit's audit row, which the history shows (P-D-213). The body's other
+    // violations and the note's length are one stage (P-D-202).
     let (patch, date, note) = if matches!(kind, SubmitKind::Change) {
         let parsed: SkuChangeRequest = serde_json::from_value(payload.clone())
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
+        let (patch, mut report) = match SkuPatch::try_from(parsed.patch) {
+            Ok(patch) => (patch, ValidationReport::new()),
+            Err(report) => (SkuPatch::default(), report),
+        };
+        check_note(parsed.note.as_deref(), &mut report);
+        if !report.is_empty() {
+            return Err(crate::domain::error::DomainError::Validation(report).into());
+        }
         (
-            SkuPatch::try_from(parsed.patch).map_err(|r| {
-                CanonicalError::from(crate::domain::error::DomainError::Validation(r))
-            })?,
+            patch,
             Some(parsed.effective_from.unwrap_or(now.date())),
             parsed.note,
         )
     } else {
-        let _: EmptyRequest = serde_json::from_value(payload.clone())
+        let parsed: ProductsSkuSubmitRequest = serde_json::from_value(payload.clone())
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
-        (SkuPatch::default(), None, None)
+        let mut report = ValidationReport::new();
+        check_note(parsed.note.as_deref(), &mut report);
+        if !report.is_empty() {
+            return Err(crate::domain::error::DomainError::Validation(report).into());
+        }
+        (SkuPatch::default(), None, parsed.note)
     };
     let claim = replay::input(
         &state,
@@ -430,6 +457,7 @@ async fn execute(
                         actor: ctx.subject_id(),
                         policy: &policy,
                         common_effective_date: date,
+                        note: note.as_deref(),
                         now,
                     },
                 )

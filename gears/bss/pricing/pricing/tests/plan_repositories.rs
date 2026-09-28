@@ -135,6 +135,7 @@ async fn unit(db: &DBProvider<DbError>, scope: &AccessScope, tenant: Uuid, kind:
                     generation: 1,
                     submitted_by: Uuid::new_v4(),
                     submitted_at: at(9),
+                    submit_note: None,
                     decided_at: None,
                     decided_note: None,
                     snapshot: serde_json::json!({}),

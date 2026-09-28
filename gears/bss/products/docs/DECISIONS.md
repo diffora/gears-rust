@@ -45,12 +45,13 @@
 | P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
-| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
+| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200; amended by P-D-219 |
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28 |
+| P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
 
 ## Entries
 
@@ -697,6 +698,9 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3); phase 6 review (behaviour B-1: the
 change's note; B-2: the order by `audit_id`).
 
+**Amended by P-D-219 (2026-09-28).** The `approval.submit` row's `reason` is the note of any of the three submit
+doors: a publish's or a retire's `note` as well as a change's. The same note is stored on the unit as `submit_note`.
+
 #### P-D-214 [L] SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=`
 
 `GET /skus/{id}/versions` answered an array, or one object when `as_of` was given: one path, two schemas, and a
@@ -828,3 +832,38 @@ unmapped, and PATCH `{is_default: true}` and POST with `is_default: true` answer
 - `is_default: false` clears only the target; a tenant may have no default (P-D-196: nothing falls back to it).
 
 **Source:** Owner, 2026-09-28 (backend asks, 9b).
+
+#### P-D-219 [M] The submitter's note travels with the approval unit (twin of pricing D-445)
+
+The Approvals screen shows why a unit was submitted (ask 4b). Until now a change's note (P-D-213) stood only on
+the submit's audit row, and `POST /skus/{id}/submit` and `/retire` took no body at all.
+
+- **The doors.** `POST /skus/{id}/submit` and `POST /skus/{id}/retire` take an optional body `{ note }`
+  (`ProductsSkuSubmitRequest`). No body, `{}` and `note: null` carry no note, and any other field is 400, as the
+  empty body was. `POST /skus/{id}/changes` keeps its `note` (P-D-213). The three doors share one limit: at most
+  2000 characters, counted as Unicode scalar values, as pricing counts a book's description (D-444). Before this
+  decision the change's note had no limit. The door judges the limit with the body's other violations (P-D-202):
+  400 `NOTE_TOO_LONG` on `note`, and nothing is written. The note is stored as sent: it is not trimmed, and a
+  blank note is kept.
+- **Stored on the unit.** The note is `submit_note` on `products_approval_unit`. The submit writes it once and
+  nothing rewrites it: a stale refresh keeps it, and a decision leaves it. It also stays on the submit's
+  `approval.submit` audit row as its `reason`, which the history reads (P-D-213). That row now carries the note
+  of each of the three doors, not only a change's.
+- **Not content.** The note is not part of the unit's snapshot or its fingerprint (`snapshot_hash`). Two submits
+  of the same content that differ only by their note have the same hash, so a note never makes a unit stale.
+- **The reads.** `GET /approval-units`, `GET /approval-units/{id}` and every receipt that carries a unit (submit,
+  changes, retire, the votes) carry `submit_note`: the note as sent, or null.
+- **The column.** The shared approval DDL `bss_approval::ddl::up()` is the body of deployed migrations (products
+  `000003`, pricing `000002`), so it is not edited. If it were, a fresh chain would create the column at `000003`
+  and an upgraded one at the new migration: the column order would differ, and the upgrade would never be tested
+  against the stand's shape (plan review H3). The library has a separate step instead, `ddl::add_submit_note`:
+  `ALTER TABLE … ADD COLUMN submit_note text`, nullable, no default, no CHECK. On Postgres it says `IF NOT EXISTS`;
+  on SQLite `ddl::apply_add_submit_note` reads the catalog first. The forward migration
+  `m20260928_000009_unit_submit_note` runs it, so it replays. Its `down` drops the column the same way; the audit
+  rows keep every note for the history.
+- **Units submitted before the migration** read `submit_note: null`. This includes a change unit whose history
+  row shows its note: nothing is backfilled from the audit log (plan review L6).
+- **Pricing.** The column belongs to the one unit shape the gears share. Pricing adds it by its own migration and
+  carries it on its unit reads; its submit doors take no note (D-445).
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3, L6).

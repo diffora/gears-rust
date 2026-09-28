@@ -2789,3 +2789,5 @@ async fn a_collector_denial_is_403_at_submit_and_at_approve() {
 
 #[path = "sku_history_tests.rs"]
 mod sku_history_tests;
+#[path = "submit_note_tests.rs"]
+mod submit_note_tests;

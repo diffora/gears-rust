@@ -314,15 +314,15 @@ registration and standardized errors.
 | SKU reads | `GET /skus?$filter&$orderby&$top&cursor&q&priced&in_plan`; `GET /skus/counts?$filter&q&priced&in_plan`; `GET /skus/{id}` | Tenant-scoped list on the toolkit's OData (P-D-210): `$filter` over id, code, name, lifecycle, type, category_id (`eq null`: none) and pending_unit_id (`ne null`: in review); `$orderby` code, name or updated_at, tie-break id; `$top`/`limit` 50, clamped at 200; `cursor` from `page_info`; `q` a literal case-insensitive substring of code, name, unit, usage type and GL code; `priced` and `in_plan` keep or drop pricing's sets from the port's `usage_sets`, 403 `USAGE_FORBIDDEN` or 503 `USAGE_UNAVAILABLE` when it cannot answer (P-D-212). Other keys, `$select` and `$count` are 400. The tab counts `{ all, draft, published, deprecated, retiring, retired, in_review }` narrow alike, without `$filter`'s top-level `lifecycle` terms (P-D-211). SKU card. Each list item and the card carry `usage` { entries, currencies, prices { approved, pending, draft }, plans } from pricing's `SkuUsageV1` port, one call per page, or `null` when the port is absent, refuses or cannot answer; the read never fails for it (P-D-197). |
 | SKU history | `GET /skus/{id}/history?$top&cursor` | products:read; the SKU's audit rows and its approval units' rows, in the order the acts wrote them (`audit_id`, a UUID v7 minted in the act's transaction), as `Page<ProductsSkuHistoryEntry>`: `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`; `$top`/`limit` 50, clamped at 200; other keys 400; 404 for a foreign SKU or a deleted draft (P-D-213). |
 | Versions | `GET /skus/{id}/versions`; `GET /skus/{id}/versions/as-of?date=<date>` | The history is always an array, oldest first (empty before the first publication); any query key is 400. The dated read answers one version: greatest effective_from not after `date`, then greatest published_version; 404 `NO_VERSION_IN_FORCE` before the first version; a missing or malformed `date` is 400 (P-D-214). |
-| Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. |
-| Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`. |
-| Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction; unfence only expired orphans. |
+| Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. An optional body `{ note }` carries the submitter's note (P-D-219). |
+| Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`; an optional `note` (P-D-213, P-D-219). |
+| Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction, with an optional body `{ note }` (P-D-219); unfence only expired orphans. |
 | Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
 | Confirm | `POST /references/{id}/confirm` | 200 also when already confirmed; released rows cannot reactivate. |
 | Release | `DELETE /references/{id}` | Owner after durable cancellation/deletion; operator requires `force: true` and reason, with actor attribution and event. |
 | Categories | `GET /categories?$filter&$orderby&$top&cursor`; `GET /categories/{id}`; `POST /categories`; `PATCH /categories/{id}`; `POST /categories/{id}/retire` | The reads answer `sku_count`, the SKUs that are not retired naming the category, from one grouped count; the list pages on the toolkit's OData in `sort_order`, then `code`, 200 to a page (P-D-215). Direct edits without approvals; refuse retirement while a SKU that is not retired points at it (`CATEGORY_IN_USE`); a retired category is `CATEGORY_RETIRED` (P-D-208). `is_default: true` on POST or PATCH moves the tenant's one default in the same write: the previous holder is cleared and audited; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` (P-D-218). |
-| Approval reads | `GET /approval-units?state&kind&ref_id`; `GET /approval-units/{id}` | Queue and detail; detail includes stored snapshot and live recomputation, `impact_live: null` once a rejected or withdrawn draft was deleted (P-D-206). |
+| Approval reads | `GET /approval-units?state&kind&ref_id`; `GET /approval-units/{id}` | Queue and detail; detail includes stored snapshot and live recomputation, `impact_live: null` once a rejected or withdrawn draft was deleted (P-D-206). Every unit carries `submit_note`: the note its submit, change or retire sent, or null (P-D-219). |
 | Decisions | `POST /approval-units/{id}/approve`; `POST /approval-units/{id}/reject`; `POST /approval-units/{id}/withdraw` | Approve/reject carry generation; reject requires note; withdraw is submitter-only. |
 | Approval policy | `GET /approval-policy`; `PUT /approval-policy`; `DELETE /approval-policy/{kind}` | Tenant default quorum and optional per-kind overrides; missing default is quorum 1. The GET answers a strong content `ETag`; the PUT requires it as `If-Match` (missing or malformed 400, stale 409 `STALE_REVISION`), authorization first (P-D-205). The DELETE removes one kind's override under the same `If-Match`, so the kind follows the default again; the default itself is 400 `POLICY_DEFAULT_REQUIRED`, and a kind without an override is 404 (P-D-216). The fence TTL is the deployment setting `fence_ttl_minutes`; no tenant settings door exists (P-D-209). |
 | Retained browse | `GET /bss-products/v1/browse` (absolute) | Preserve `ProductCatalogClientV1` transport until phase 2; serve Published and Deprecated with lifecycle status and deprecated flag; drafts, retiring and retired are absent. |
@@ -348,6 +348,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | --- | --- |
 | `SKU_CODE_TAKEN`, `SKU_NAME_TAKEN` | 409; tenant identity conflict |
 | `CATEGORY_DEFAULT_TAKEN` | 409; a concurrent write made another category the default between this move's clear and its set (P-D-218) |
+| `NOTE_TOO_LONG` | 400; a submitter's note over 2000 characters on submit, changes or retire; nothing is written (P-D-219) |
 | `SKU_TYPE_FROZEN`, `SKU_REFERENCED`, `SKU_FENCED`, `REFERENCE_RELEASED` | 409; live reference, fence or terminal reservation conflict |
 | `ROW_LOCKED_PENDING`, `STALE_REVISION`, `VERSION_ORDER`, `CATEGORY_IN_USE` | 409; pending ownership, concurrency, timeline or category reference conflict (a SKU that is not retired names the category, P-D-208) |
 | `SKU_NOT_DRAFT`, `CATEGORY_RETIRED` | 409; a delete of a SKU that was ever published (P-D-206); a retirement of a retired category, or an assignment to one (P-D-196, P-D-208) |
@@ -633,6 +634,8 @@ CREATE TABLE bss.products_approval_unit (
     snapshot jsonb NOT NULL,
     snapshot_hash text NOT NULL,
     version bigint NOT NULL DEFAULT 1,
+    -- m20260928_000009 (P-D-219): the submitter's note, ADD COLUMN, null before it.
+    submit_note text,
     UNIQUE (tenant_id, id)
 );
 CREATE INDEX products_approval_queue
@@ -929,4 +932,4 @@ registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → th
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
 shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
 P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
-picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

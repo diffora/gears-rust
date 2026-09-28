@@ -937,6 +937,9 @@ pub struct PricingApprovalUnitDto {
     pub submitted_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: time::OffsetDateTime,
+    /// The submitter's note (D-445). Pricing's submit doors take none, so it is null on every
+    /// pricing unit; the field keeps the unit shape products shares (P-D-219).
+    pub submit_note: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub decided_at: Option<time::OffsetDateTime>,
     pub decided_note: Option<String>,
@@ -957,6 +960,7 @@ impl From<bss_approval::Unit> for PricingApprovalUnitDto {
             common_effective_date: u.common_effective_date.map(|d| d.to_string()),
             submitted_by: u.submitted_by,
             submitted_at: u.submitted_at,
+            submit_note: u.submit_note,
             decided_at: u.decided_at,
             decided_note: u.decided_note,
             snapshot: u.snapshot,

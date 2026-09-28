@@ -196,6 +196,7 @@ pub async fn unit_on(
                     generation: 1,
                     submitted_by: Uuid::new_v4(),
                     submitted_at: submitted,
+                    submit_note: None,
                     decided_at: decided,
                     decided_note: None,
                     snapshot: json!({}),

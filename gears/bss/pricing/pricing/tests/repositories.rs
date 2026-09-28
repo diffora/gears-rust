@@ -937,6 +937,7 @@ async fn price_pending_ownership_is_a_conditional_versioned_write() {
                         generation: 1,
                         submitted_by: Uuid::new_v4(),
                         submitted_at: at(9),
+                        submit_note: None,
                         decided_at: None,
                         decided_note: None,
                         snapshot: serde_json::json!({}),

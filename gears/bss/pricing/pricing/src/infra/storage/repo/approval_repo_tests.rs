@@ -54,6 +54,8 @@ fn fixture(tenant: Uuid) -> (Unit, Vec<ItemRef>) {
         generation: 1,
         submitted_by: Uuid::new_v4(),
         submitted_at: crate::test_support::at(9),
+        // D-445: pricing's doors send no note, but the store keeps what the unit carries.
+        submit_note: Some("why the prices move".into()),
         decided_at: None,
         decided_note: None,
         snapshot: serde_json::json!({"items":items}),
@@ -161,6 +163,11 @@ async fn store_round_trip_cas_duplicate_refresh_and_terminal_state() {
             assert_eq!(got.version, 2);
             assert_eq!(got.snapshot_hash, "new hash");
             assert_eq!(got.decided_note.as_deref(), Some("approved"));
+            assert_eq!(
+                got.submit_note.as_deref(),
+                Some("why the prices move"),
+                "a refresh and a decision keep the submitter's note"
+            );
             Ok(())
         })
     })

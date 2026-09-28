@@ -31,6 +31,7 @@ async fn unit(runner: &impl DBRunner, id: Uuid, tenant: Uuid, sku: Uuid, kind: &
         snapshot: Set(serde_json::json!({})),
         snapshot_hash: Set("h".to_owned()),
         version: Set(1),
+        submit_note: Set(None),
     };
     approval_unit::Entity::insert(model.clone())
         .secure()

@@ -81,6 +81,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
 | D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 
 ## Entries
 
@@ -626,3 +627,16 @@ The Price Books screen shows a book's description and deletes a book that nothin
 - **What stays.** The book's audit rows stay. A decided unit (rejected or withdrawn) that named the book stays readable: its card and the unit list answer with its ref_id, its decisions and the impact of its stored items, without the book. An approved unit's prices keep their entries, so its book is never deleted. Like a deleted draft SKU's create (P-D-206), the book create's Idempotency-Key still replays its 201 for a day, naming the deleted book; the code is free again.
 
 **Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 16; plan review L1, L8).
+
+#### D-445 [L] An approval unit carries its submitter's note (twin of products P-D-219)
+
+**Status:** DECIDED 2026-09-28.
+
+The approval library's unit now carries `submit_note`, the submitter's own words, which products' submit doors take (P-D-219, ask 4b). Pricing shares the unit shape and the approval DDL, so it gets the column too.
+
+- **The column.** Migration m20260928_000016_unit_submit_note adds pricing_approval_unit.submit_note, a nullable text column without a default or a CHECK. It uses the library's separate step, bss_approval::ddl::apply_add_submit_note: ADD COLUMN with IF NOT EXISTS on Postgres, and a catalog check first on SQLite, so it replays. The library's ddl::up() is the body of m20260926_000002 and stays as it shipped (plan review H3). down drops the column the same way. A unit written before the migration reads null.
+- **The reads.** GET /approval-units, GET /approval-units/{id} and every answer that carries a unit (the submit, vote and publish-changes receipts) carry submit_note.
+- **No note from pricing's doors.** POST /prices/{id}/submit, POST /price-books/{id}/publish-changes and POST /plan-revisions/{id}/submit take no note, and their bodies are unchanged. So submit_note is null on every pricing unit. A door that takes a note later passes it through the library's SubmitRequest.note.
+- **Not content.** The note is not part of the snapshot or of snapshot_hash, and a stale refresh keeps it.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3).

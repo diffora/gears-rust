@@ -221,6 +221,7 @@ async fn unit(s: &Seed, kind: &str) -> Uuid {
                     generation: 1,
                     submitted_by: Uuid::new_v4(),
                     submitted_at: now(),
+                    submit_note: None,
                     decided_at: None,
                     decided_note: None,
                     snapshot: serde_json::json!({}),
