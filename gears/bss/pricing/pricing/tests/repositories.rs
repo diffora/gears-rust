@@ -101,7 +101,7 @@ fn op(tenant: Uuid, state: OpState, when: OffsetDateTime) -> reference_op::Model
 }
 #[tokio::test]
 async fn matrix_2_book_code_unique_names_are_not() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book(tenant);
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
@@ -139,7 +139,7 @@ async fn matrix_2_book_code_unique_names_are_not() {
 }
 #[tokio::test]
 async fn matrix_4_entry_key_coalesces_null_period() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
@@ -167,7 +167,7 @@ async fn matrix_4_entry_key_coalesces_null_period() {
 }
 #[tokio::test]
 async fn tenant_scope_and_parent_ownership_are_enforced() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
@@ -207,7 +207,7 @@ async fn tenant_scope_and_parent_ownership_are_enforced() {
 }
 #[tokio::test]
 async fn version_guard_and_price_roundtrip() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
@@ -263,7 +263,7 @@ async fn version_guard_and_price_roundtrip() {
 }
 #[tokio::test]
 async fn approved_start_unique_per_chain_and_approved_money_cannot_edit() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
@@ -298,7 +298,7 @@ async fn approved_start_unique_per_chain_and_approved_money_cannot_edit() {
 }
 #[tokio::test]
 async fn reference_op_due_is_scoped_ordered_bounded_and_survives_absent_entry() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let a = op(tenant, OpState::Reserving, at(8));
     let b = op(tenant, OpState::Written, at(9));
@@ -333,7 +333,7 @@ async fn reference_op_due_is_scoped_ordered_bounded_and_survives_absent_entry() 
 }
 #[tokio::test]
 async fn reference_op_transition_is_conditional_and_persists_retry_fields() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let m = op(tenant, OpState::Reserving, at(9));
     reference_op_repo::insert(&conn, &scope, m.clone())
@@ -385,7 +385,7 @@ async fn reference_op_transition_is_conditional_and_persists_retry_fields() {
 /// and the one-open-op guard is keyed by the reference's kind as well as its id.
 #[tokio::test]
 async fn reference_op_names_its_reference_by_kind_and_id() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     for (kind, ref_kind) in [
         ("create_entry", "price_book_entry"),
@@ -542,7 +542,7 @@ async fn two_real_writers_one_sqlite_file_only_one_transition_wins() {
 }
 #[tokio::test]
 async fn op_and_entry_writes_roll_back_atomically() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let m = op(tenant, OpState::Reserving, at(9));
     let id = m.op_id;
     let txscope = scope.clone();
@@ -618,7 +618,7 @@ async fn settings_and_dimensions_roundtrip_and_version_guards() {
         entity::{dimension_key, settings},
         repo::{dimension_repo, settings_repo},
     };
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let s = settings::Model {
         tenant_id: tenant,
@@ -690,7 +690,7 @@ async fn audit_and_idempotency_roll_back_with_mutation() {
         audit_repo::{AuditCommon, write_eventless_act_audit},
         idempotency_repo::{claim_idempotency_key, lookup_idempotency_key},
     };
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let txscope = scope.clone();
     let b = book(tenant);
     let id = b.id;
@@ -758,7 +758,7 @@ async fn audit_and_idempotency_roll_back_with_mutation() {
 #[tokio::test]
 async fn idempotency_lookup_and_release_contract() {
     use bss_pricing::infra::storage::repo::idempotency_repo::*;
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     assert!(
         lookup_idempotency_key(&conn, &scope, tenant, "/prices", "k", at(9))
@@ -823,7 +823,7 @@ async fn idempotency_lookup_and_release_contract() {
 }
 #[tokio::test]
 async fn entry_receipt_updates_and_deletion_are_version_guarded() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
@@ -903,7 +903,7 @@ async fn entry_receipt_updates_and_deletion_are_version_guarded() {
 async fn price_pending_ownership_is_a_conditional_versioned_write() {
     use bss_approval::{Store, Unit, UnitState};
     use bss_pricing::infra::storage::repo::approval_repo::PricingApprovalStore;
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book_repo::insert(&conn, &scope, book(tenant))
         .await
@@ -993,7 +993,7 @@ async fn price_pending_ownership_is_a_conditional_versioned_write() {
 async fn min_fee_round_trips_exactly_on_sqlite() {
     // sea-orm decodes every SQLite Decimal through f64: an authored "30.00" came back
     // as "30", and digits past f64's precision were lost. A fee is money: exact text.
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book(tenant);
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();
@@ -1026,7 +1026,7 @@ async fn min_fee_round_trips_exactly_on_sqlite() {
 }
 #[tokio::test]
 async fn min_fee_column_refuses_anything_but_an_unsigned_plain_decimal() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let b = book(tenant);
     book_repo::insert(&conn, &scope, b.clone()).await.unwrap();

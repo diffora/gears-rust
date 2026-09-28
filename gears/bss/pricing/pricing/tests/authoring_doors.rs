@@ -58,10 +58,12 @@ struct Fixture {
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
     /// Every `(method, path)` the production router registers.
     registered: std::collections::BTreeSet<(String, String)>,
+    /// Holds the database's temporary directory for the fixture's life.
+    _dsn: storage_support::TestDsn,
 }
 impl Fixture {
     async fn new() -> Self {
-        let (db, _, tenant, _) = storage_support::test_db().await;
+        let (db, _, tenant, dsn) = storage_support::test_db().await;
         let state = Arc::new(
             bss_pricing::api::rest::authoring::AuthoringState::new(
                 db.clone(),
@@ -103,6 +105,7 @@ impl Fixture {
             ctx,
             db,
             registered,
+            _dsn: dsn,
         }
     }
     async fn call(

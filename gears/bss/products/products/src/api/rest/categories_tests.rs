@@ -598,12 +598,7 @@ async fn recorded_categories(
     toolkit_db::test_support::QueryRecorder,
 ) {
     use sea_orm_migration::MigratorTrait;
-    let dsn = format!(
-        "sqlite://{}?mode=rwc",
-        std::env::temp_dir()
-            .join(format!("products-categories-{}.sqlite3", Uuid::new_v4()))
-            .display()
-    );
+    let dsn = crate::test_support::TestDsn::new("products-categories-");
     let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
         &dsn,
         toolkit_db::ConnectOpts {
@@ -647,7 +642,8 @@ async fn recorded_categories(
         skus_in(&dsn, tenant, id, &format!("S{i:03}-"), &["published"]).await;
     }
     recorder.clear();
-    (app, tenant, first, recorder)
+    // The router holds the database's temporary directory.
+    (app.layer(axum::Extension(dsn)), tenant, first, recorder)
 }
 
 /// The statements on the gear's tables one read makes, with their bind counts.

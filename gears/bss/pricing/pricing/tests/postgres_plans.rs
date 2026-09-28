@@ -582,7 +582,7 @@ async fn pool(pg: &pg_support::Pg, registry: Arc<Gated>, ctx: &SecurityContext) 
     let state = state_on(db.clone(), registry).await;
     let app = app_for(state.clone(), ctx.subject_tenant_id());
     Fixture {
-        dsn: pg.url(true),
+        dsn: plan_support::entry_support::TestDsn::of(pg.url(true)),
         state,
         app: app.clone(),
         denied: app,

@@ -22,7 +22,13 @@ use uuid::Uuid;
 async fn fixture(pg: &pg_support::Pg) -> (Fixture, Arc<Catalog>) {
     let catalog = Arc::new(Catalog::default());
     let db = DBProvider::<DbError>::new(pg.db().await);
-    let f = Fixture::on(db, Uuid::new_v4(), pg.url(true), catalog.clone()).await;
+    let f = Fixture::on(
+        db,
+        Uuid::new_v4(),
+        plan_support::entry_support::TestDsn::of(pg.url(true)),
+        catalog.clone(),
+    )
+    .await;
     (f, catalog)
 }
 

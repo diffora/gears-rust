@@ -17,7 +17,6 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statemen
 use toolkit::contracts::DatabaseCapability;
 use toolkit_db::migration_runner::{MigrationError, MigrationResult, run_migrations_for_testing};
 use toolkit_db::{ConnectOpts, connect_db};
-use uuid::Uuid;
 
 const MIGRATION: &str = "m20260925_000007_sku_category_optional";
 const GUARD: &str = "m0000_products_refuse_a_legacy_or_stale_schema";
@@ -30,17 +29,20 @@ const FAMILY: [&str; 3] = [
 
 /// A file database, so the runner's pool and a raw connection see the same schema.
 struct Lite {
+    /// The database's own temporary directory, removed with the `Lite` (the file, its `-wal` and
+    /// its `-shm`).
+    _dir: tempfile::TempDir,
     path: std::path::PathBuf,
 }
 
 impl Lite {
     fn new() -> Self {
-        Self {
-            path: std::env::temp_dir().join(format!(
-                "products-category-migration-{}.sqlite3",
-                Uuid::new_v4()
-            )),
-        }
+        let dir = tempfile::Builder::new()
+            .prefix("products-category-migration-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("db.sqlite3");
+        Self { _dir: dir, path }
     }
 
     fn dsn(&self) -> String {
@@ -182,12 +184,6 @@ impl Lite {
             ledger[0]
         )])
         .await;
-    }
-}
-
-impl Drop for Lite {
-    fn drop(&mut self) {
-        drop(std::fs::remove_file(&self.path));
     }
 }
 

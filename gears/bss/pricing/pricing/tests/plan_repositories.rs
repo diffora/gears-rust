@@ -229,7 +229,8 @@ struct World {
     db: DBProvider<DbError>,
     scope: AccessScope,
     tenant: Uuid,
-    dsn: String,
+    /// Held for the test's life: its temporary directory holds the database.
+    dsn: storage_support::TestDsn,
     book: price_book::Model,
     entry: price_book_entry::Model,
     plan: plan_e::Model,

@@ -5,8 +5,10 @@ use serde_json::json;
 use toolkit_db::{DBProvider, DbError};
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
-async fn harness() -> DBProvider<DbError> {
-    crate::test_support::test_db().await.0
+/// A migrated database and its DSN, which the test holds for its life (the directory goes with it).
+async fn harness() -> (DBProvider<DbError>, crate::test_support::TestDsn) {
+    let (db, _, _, dsn) = crate::test_support::test_db().await;
+    (db, dsn)
 }
 /// Read one `products_idempotency` row by its composite key, for the tests
 /// below.
@@ -75,7 +77,7 @@ async fn answer_idempotency_row(
 /// there is nothing left to conflict with.
 #[tokio::test]
 async fn a_first_claim_on_a_fresh_key_succeeds_and_persists_an_unanswered_claimed_row() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -119,7 +121,7 @@ async fn a_first_claim_on_a_fresh_key_succeeds_and_persists_an_unanswered_claime
 /// `IDEMPOTENCY_CONFLICT` — the sibling case below is that one, retargeted.
 #[tokio::test]
 async fn a_second_claim_on_a_live_unexpired_key_answers_in_flight_and_writes_nothing() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -189,7 +191,7 @@ async fn a_second_claim_on_a_live_unexpired_key_answers_in_flight_and_writes_not
 /// as for an `answered` row.
 #[tokio::test]
 async fn a_second_claim_under_a_different_payload_reports_the_held_digest_unchanged() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -251,7 +253,7 @@ async fn a_second_claim_under_a_different_payload_reports_the_held_digest_unchan
 /// being read this way.
 #[tokio::test]
 async fn a_claim_against_an_answered_row_returns_the_stored_response_and_does_not_overwrite_it() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -321,7 +323,7 @@ async fn a_claim_against_an_answered_row_returns_the_stored_response_and_does_no
 /// the sibling case below, not this one.
 #[tokio::test]
 async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -387,7 +389,7 @@ async fn a_claim_against_an_expired_row_takes_it_over_and_reports_claimed() {
 /// transaction never saw.
 #[tokio::test]
 async fn the_expired_key_takeover_race_admits_exactly_one_winner() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -446,7 +448,7 @@ async fn the_expired_key_takeover_race_admits_exactly_one_winner() {
 /// it never held.
 #[tokio::test]
 async fn the_same_endpoint_and_client_key_in_two_tenants_both_claim() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
     let other_scope = AccessScope::for_tenant(OTHER_TENANT);
@@ -490,7 +492,7 @@ async fn the_same_endpoint_and_client_key_in_two_tenants_both_claim() {
 /// has no access to.
 #[tokio::test]
 async fn a_claim_under_a_foreign_scope_does_not_see_another_tenants_row() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let owner_scope = AccessScope::for_tenant(TENANT);
     let foreign_scope = AccessScope::for_tenant(OTHER_TENANT);
@@ -539,7 +541,7 @@ async fn a_claim_under_a_foreign_scope_does_not_see_another_tenants_row() {
 /// function merely returned `Ok`.
 #[tokio::test]
 async fn the_answer_write_moves_the_row_to_answered_and_fills_both_response_columns() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -597,7 +599,7 @@ async fn the_answer_write_moves_the_row_to_answered_and_fills_both_response_colu
 /// door.
 #[tokio::test]
 async fn a_claim_after_the_answer_write_replays_the_recorded_response() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -660,7 +662,7 @@ async fn a_claim_after_the_answer_write_replays_the_recorded_response() {
 /// answer was never stored.
 #[tokio::test]
 async fn an_answer_write_on_a_row_that_is_not_claimed_reports_not_held_and_writes_nothing() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -749,7 +751,7 @@ async fn an_answer_write_on_a_row_that_is_not_claimed_reports_not_held_and_write
 /// for an act whose transaction rolled back.
 #[tokio::test]
 async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
     let scope_for_mutation = scope.clone();
 

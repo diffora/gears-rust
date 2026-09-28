@@ -84,7 +84,7 @@ fn decision(id: Uuid) -> Decision {
 }
 #[tokio::test]
 async fn policy_defaults_to_one_and_zero_is_an_explicit_override() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     assert_eq!(
         read_policy(&conn, &scope, tenant)
@@ -113,7 +113,7 @@ async fn policy_defaults_to_one_and_zero_is_an_explicit_override() {
 }
 #[tokio::test]
 async fn store_round_trip_cas_duplicate_refresh_and_terminal_state() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let (unit, items) = fixture(tenant);
     let id = unit.id;
     in_tx(&db.db(), move |tx| {
@@ -183,7 +183,7 @@ async fn store_round_trip_cas_duplicate_refresh_and_terminal_state() {
 }
 #[tokio::test]
 async fn a_decision_and_version_bump_roll_back_on_error() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let (unit, items) = fixture(tenant);
     let id = unit.id;
     let seed_scope = scope.clone();

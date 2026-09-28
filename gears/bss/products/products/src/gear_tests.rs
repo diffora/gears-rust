@@ -333,7 +333,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
 async fn registered_products_client_reads_drafts_and_hides_foreign_rows() {
     use crate::infra::storage::repo;
     use crate::test_support::*;
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = repo::insert_category(
         &conn,

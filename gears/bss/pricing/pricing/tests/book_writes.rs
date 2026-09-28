@@ -584,13 +584,19 @@ const DATED: Uuid = Uuid::from_u128(0xb00c_0002);
 
 /// A file database, so the runner's pool, the repositories and a raw connection see one schema.
 struct Lite {
+    /// The database's own temporary directory, removed with the `Lite` (the file, its `-wal` and
+    /// its `-shm`).
+    _dir: tempfile::TempDir,
     path: std::path::PathBuf,
 }
 impl Lite {
     fn new() -> Self {
-        Self {
-            path: std::env::temp_dir().join(format!("pricing-book-{}.sqlite3", Uuid::new_v4())),
-        }
+        let dir = tempfile::Builder::new()
+            .prefix("pricing-book-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("db.sqlite3");
+        Self { _dir: dir, path }
     }
     fn dsn(&self) -> String {
         format!("sqlite://{}?mode=rwc", self.path.display())

@@ -22,7 +22,7 @@ async fn check(golden: &str) {
     let state = state_on(db.clone(), catalog.clone()).await;
     let app = app_for(state.clone(), ctx.subject_tenant_id());
     let f = Fixture {
-        dsn: pg.url(true),
+        dsn: plan_support::entry_support::TestDsn::of(pg.url(true)),
         state,
         app: app.clone(),
         denied: app,
