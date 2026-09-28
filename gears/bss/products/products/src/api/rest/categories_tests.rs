@@ -764,3 +764,249 @@ async fn a_stored_status_outside_its_closed_set_is_a_500_never_a_panic() {
     .await;
     assert_eq!(r.status(), StatusCode::OK, "the gear still serves");
 }
+
+// ------------------------------------------------------------------ P-D-218: moving the default
+
+const CATEGORIES: &str = "/bss-products/v1/categories";
+
+/// A category by the door: its id and `ETag`.
+async fn default_candidate(
+    app: &axum::Router,
+    tenant: Uuid,
+    code: &str,
+    is_default: bool,
+) -> (Uuid, String) {
+    let r = post(
+        app,
+        tenant,
+        CATEGORIES,
+        json!({"code":code,"name":format!("Name {code}"),"is_default":is_default}),
+    )
+    .await;
+    let status = r.status();
+    let etag = r
+        .headers()
+        .get("etag")
+        .map(|v| v.to_str().unwrap().to_owned());
+    let body = body_json(r).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    (
+        serde_json::from_value(body["id"].clone()).unwrap(),
+        etag.unwrap(),
+    )
+}
+
+/// The ids of the tenant's default categories, by the list's own filter.
+async fn defaults(app: &axum::Router, tenant: Uuid) -> Vec<String> {
+    let body = body_json(
+        get(
+            app,
+            tenant,
+            &format!("{CATEGORIES}?%24filter=is_default%20eq%20true"),
+        )
+        .await,
+    )
+    .await;
+    body["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a page: {body}"))
+        .iter()
+        .map(|c| c["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// **Making a second category the default moves the default** (P-D-218), on PATCH and on POST:
+/// the previous holder is cleared in the same transaction, both rows are written and audited as
+/// category writes are, and the tenant has one default after. It was a 500: the partial unique
+/// index `uq_products_category_default` refused the second default and nothing mapped it.
+#[tokio::test]
+async fn a_second_default_moves_the_default_on_patch_and_on_post() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let (first, first_tag) = default_candidate(&app, tenant, "first", true).await;
+    let (second, second_tag) = default_candidate(&app, tenant, "second", false).await;
+
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{second}"),
+        json!({"is_default":true}),
+        Some(&second_tag),
+    )
+    .await;
+    let status = r.status();
+    let body = body_json(r).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["is_default"], true, "{body}");
+    let old = body_json(get(&app, tenant, &format!("{CATEGORIES}/{first}")).await).await;
+    assert_eq!(
+        (old["is_default"].clone(), old["version"].clone()),
+        (json!(false), json!(2)),
+        "{old}"
+    );
+    assert_eq!(defaults(&app, tenant).await, vec![second.to_string()]);
+    // The move wrote the old holder: its old ETag is stale now.
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{first}"),
+        json!({"name":"First"}),
+        Some(&first_tag),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "STALE_REVISION");
+
+    let (third, _) = default_candidate(&app, tenant, "third", true).await;
+    assert_eq!(defaults(&app, tenant).await, vec![third.to_string()]);
+    let old = body_json(get(&app, tenant, &format!("{CATEGORIES}/{second}")).await).await;
+    assert_eq!(old["is_default"], false, "{old}");
+
+    // Three creates; the PATCH move wrote two updates (the old holder and the new one), the POST
+    // move one (the old holder) beside its create.
+    assert_eq!(
+        raw_i64(
+            &dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = 'category.update'"
+        )
+        .await,
+        3
+    );
+    assert_eq!(
+        raw_i64(
+            &dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = 'category.create'"
+        )
+        .await,
+        3
+    );
+    // Making the default the default again moves nothing.
+    let tag = get(&app, tenant, &format!("{CATEGORIES}/{third}"))
+        .await
+        .headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{third}"),
+        json!({"is_default":true}),
+        Some(&tag),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(defaults(&app, tenant).await, vec![third.to_string()]);
+}
+
+/// **A default another writer takes between the clear and the set is 409
+/// `CATEGORY_DEFAULT_TAKEN`, never a 500** (P-D-218), on PATCH and on POST, and the refused act
+/// writes nothing. The racer is a trigger that makes another category the default inside the
+/// door's own write, which is the window a concurrent move lands in.
+#[tokio::test]
+async fn a_default_taken_by_a_racing_writer_is_409_never_500() {
+    use sea_orm::{ConnectionTrait, Database};
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let (first, _) = default_candidate(&app, tenant, "first", true).await;
+    let (second, second_tag) = default_candidate(&app, tenant, "second", false).await;
+    let racer = "INSERT INTO products_category (id, tenant_id, code, name, is_default, sort_order, \
+                 status, version, created_at, updated_at) VALUES (randomblob(16), NEW.tenant_id, \
+                 'racer-' || hex(randomblob(4)), 'Racer', 1, 0, 'active', 1, NEW.created_at, \
+                 NEW.updated_at);";
+    let raw = Database::connect(&dsn).await.unwrap();
+    raw.execute_unprepared(&format!(
+        "CREATE TRIGGER race_the_patch BEFORE UPDATE OF is_default ON products_category \
+         WHEN NEW.is_default = 1 BEGIN {racer} END"
+    ))
+    .await
+    .unwrap();
+    raw.execute_unprepared(&format!(
+        "CREATE TRIGGER race_the_post BEFORE INSERT ON products_category \
+         WHEN NEW.is_default = 1 AND NEW.code = 'third' BEGIN {racer} END"
+    ))
+    .await
+    .unwrap();
+    raw.close().await.unwrap();
+    let audits = raw_i64(&dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{second}"),
+        json!({"is_default":true}),
+        Some(&second_tag),
+    )
+    .await;
+    let status = r.status();
+    let body = body_json(r).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(problem_code(&body), "CATEGORY_DEFAULT_TAKEN", "{body}");
+
+    let r = post(
+        &app,
+        tenant,
+        CATEGORIES,
+        json!({"code":"third","name":"Third","is_default":true}),
+    )
+    .await;
+    let status = r.status();
+    let body = body_json(r).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(problem_code(&body), "CATEGORY_DEFAULT_TAKEN", "{body}");
+
+    assert_eq!(
+        defaults(&app, tenant).await,
+        vec![first.to_string()],
+        "nothing moved"
+    );
+    assert_eq!(
+        raw_i64(&dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await,
+        audits,
+        "a refused move writes no audit row"
+    );
+}
+
+/// Two moves at once leave one default and no 500: each is 200 (the later one moved it again)
+/// or 409 `CATEGORY_DEFAULT_TAKEN`.
+#[tokio::test]
+async fn two_concurrent_moves_leave_one_default_and_no_500() {
+    let tenant = Uuid::new_v4();
+    let (app, _) = rest_app(tenant, router).await;
+    default_candidate(&app, tenant, "first", true).await;
+    let (b, b_tag) = default_candidate(&app, tenant, "b", false).await;
+    let (c, c_tag) = default_candidate(&app, tenant, "c", false).await;
+    let (b_uri, c_uri) = (format!("{CATEGORIES}/{b}"), format!("{CATEGORIES}/{c}"));
+    let (rb, rc) = tokio::join!(
+        patch(
+            &app,
+            tenant,
+            &b_uri,
+            json!({"is_default":true}),
+            Some(&b_tag)
+        ),
+        patch(
+            &app,
+            tenant,
+            &c_uri,
+            json!({"is_default":true}),
+            Some(&c_tag)
+        ),
+    );
+    for r in [rb, rc] {
+        let status = r.status();
+        let body = body_json(r).await;
+        assert!(
+            status == StatusCode::OK
+                || (status == StatusCode::CONFLICT
+                    && problem_code(&body) == "CATEGORY_DEFAULT_TAKEN"),
+            "{status}: {body}"
+        );
+    }
+    let now = defaults(&app, tenant).await;
+    assert_eq!(now.len(), 1, "{now:?}");
+    assert!(
+        now[0] == b.to_string() || now[0] == c.to_string(),
+        "{now:?}"
+    );
+}

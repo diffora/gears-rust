@@ -73,7 +73,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| D-437 | M | The default rounding is one of five modes | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
@@ -509,13 +509,13 @@ The Settings screen edits one key's values and shows which values are in use (as
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11c; plan review M6).
 
-#### D-437 [M] The default rounding is one of five modes
+#### D-437 [M] The default rounding is one of five modes; a tenant with no settings rounds half_even
 
 **Status:** DECIDED 2026-09-27.
 
-default_rounding is one of half_up, half_even, half_down, up and down. PUT /bss-pricing/v1/settings refuses any other value with 400 ROUNDING_INVALID; a blank value stays 400 ROUNDING_REQUIRED. No database CHECK is added. A stored value outside the set reads back as stored, and resolve carries it as rounding_policy. The tenant cannot save its settings again until it chooses one of the five, so the deployment has a hard pre-flight gate: `SELECT DISTINCT default_rounding FROM bss.pricing_settings` must return values inside the set, or a normalizing migration ships first. The default of a tenant that never wrote its settings stays half_up. A flag for the owner, not changed here: the ledger PRD's platform default is banker's half_even.
+default_rounding is one of half_up, half_even, half_down, up and down. PUT /bss-pricing/v1/settings refuses any other value with 400 ROUNDING_INVALID; a blank value stays 400 ROUNDING_REQUIRED. No database CHECK is added. A stored value outside the set reads back as stored, and resolve carries it as rounding_policy. The tenant cannot save its settings again until it chooses one of the five, so the deployment has a hard pre-flight gate: `SELECT DISTINCT default_rounding FROM bss.pricing_settings` must return values inside the set, or a normalizing migration ships first. The default of a tenant that never wrote its settings is half_even, banker's rounding: it is aligned with the ledger PRD's platform default, so a tenant that sets nothing rounds its prices as the ledger rounds its postings. It was half_up until 2026-09-28. A revision drafted before the tenant's first settings write carries the default, and resolve reports it as rounding_policy. Explicit PUT bodies that name half_up stay valid.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11d; plan review M5).
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11d; plan review M5). The half_even default: Owner, 2026-09-28.
 
 #### D-438 [M] The settings offer currencies and say who changed them
 

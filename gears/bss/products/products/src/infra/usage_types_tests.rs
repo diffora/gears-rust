@@ -108,4 +108,9 @@ async fn a_collector_denial_is_forbidden_not_unavailable() {
         .await
         .expect_err("a refused caller has no page");
     assert_eq!(error.title(), "Permission Denied", "{error:?}");
+    let error = catalog
+        .list(&ctx(), Some("storage"), None, 50, None)
+        .await
+        .expect_err("a refused caller has no search either");
+    assert_eq!(error.title(), "Permission Denied", "{error:?}");
 }
