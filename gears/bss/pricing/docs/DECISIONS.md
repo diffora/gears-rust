@@ -27,7 +27,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5 |
 | D-389 | H | Descriptors bind from durable SKU versions | DECIDED 2026-09-25 · §2 decision 14; §2.2; §7.1 |
 | D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5 |
-| D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs |
+| D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs; amended by D-443 |
 | D-392 | H | Publish changes is a selected book batch | DECIDED 2026-09-25 · §2 decision 7; §6; §8 |
 | D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6 |
 | D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8 |
@@ -79,6 +79,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
 
 ## Entries
 
@@ -127,6 +128,8 @@ On approval, sort approved prices within each (price_book_entry_id, dim_value), 
 #### D-391 [H] Temporary changes keep pair identity or resume fallback
 
 On an existing chain, temporary_until creates a promo price and a return price in one unit. The return copies the money versionAt would apply at the end and inherits dim_value. Common-date shifts preserve duration; a shift that would carry a temporary price across the start of another price of its chain, where apply would cut it short, is refused TEMPORARY_SPANS_A_CHANGE (D-406). A return to an explicitly closed price (a temporary nested in a value's closed price) ends explicitly at that price's end, which a common-date shift does not move, so the value falls back to the default after it. Submit and apply re-derive that copy from the approved chain as it stands, on the shifted end: a return that no longer names the price in force there, or no longer carries its price and min_fee (the model is the entry's, D-427), and a single closed price whose own chain now has a price in force on its end, are refused PAIR_RETURN_STALE (400 at submit, APPLY_REFUSED at apply); the author re-drafts. When the price in force on that end is itself a price of the same unit, the return is right only if that price is another pair's return naming the same restored price with the same price and min_fee (two pairs on one chain, both drafted against it); any other price of the unit there makes it stale. A value with no own chain gets one closed price and no synthetic return copy of default. A temporary that ends exactly where the chain's next approved price starts is the promo price alone: that price already ends it. Pair edits, selection and submission cannot orphan a companion.
+
+Amended by D-443: the temporary half of a draft takes new dates, and the PATCH builds its pair again over them in the same transaction — the return re-derived in place, deleted or created as the new end calls for — so a moved pair is never left for submit to refuse as stale.
 
 **Source:** §5 temporary pairs.
 
@@ -591,3 +594,19 @@ GET /price-books took no parameter and answered every book (ask 15). It now page
 Breaking: the list pages, where it was unlimited, so a tenant with more than 200 books reads the rest through next_cursor; and an unknown key, which was ignored, is 400. items keeps its place and page_info is added. The deploy notes name both.
 
 **Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 15; plan review M2, M6, L3).
+
+#### D-443 [M] A temporary draft's dates move, and its pair follows
+
+**Status:** DECIDED 2026-09-28.
+
+The Price Books screen edits a temporary draft's dates (ask 21). PATCH /prices/{id} refused every date of a temporary price with TEMPORARY_PRICE_FIXED, so the author deleted the pair and drafted it again.
+
+- **The door.** PATCH /bss-pricing/v1/prices/{id} of the temporary half of an unlocked draft (the price that carries temporary_until) takes effective_from and temporary_until, by its author and under If-Match, as before. A PATCH that sends either date runs the pair builder (domain::price::temporary) again over the new dates, in the same transaction.
+- **The shapes.** The builder makes a pair when a price of the chain is in force on the end (the return restores it); the promo alone when the chain's next approved price starts exactly on the end; and one explicitly closed price when nothing of the chain is in force there. Every move between them is reconciled. Pair → pair: the return is derived again in place (its id, version_no and author stay; its start is the new end; its money and min_fee are copied again from the price it restores, and its end from that price's own end). Pair → one price: the return is deleted. One price → pair: a return is created. One price → one price: the promo's end and closed_explicitly are written again.
+- **The write order.** The pair references are foreign keys. Pair → pair: the promo at its version, then the return at its own version. Pair → one price: the promo first, its paired_price_id cleared, then the return is deleted at its version, with a price.delete audit row. One price → pair: the return first, naming the promo (which exists), then the promo names it; the return has a price.create audit row. A new return takes the entry's next version_no (the highest of all the entry's prices, plus one), never promo.version_no + 1, which another price may hold (the unique (price_book_entry_id, version_no) index). A concurrent writer that takes the number first makes the PATCH try again, as the create does.
+- **The judgement.** Both halves are judged as the create judges them: each price's own rules (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST, WINDOW_OVERLAP) and D-406 against the approved prices and the pair itself (PRICE_INSIDE_TEMPORARY, TEMPORARY_SPANS_A_CHANGE). A refusal writes nothing.
+- **The answer.** 200 with the edited price: its paired_price_id names its partner now, or null, and the ETag is its new version. A kept return's version moves too, so a client reads it again before it edits the return.
+- **What stays fixed.** TEMPORARY_PRICE_FIXED (400) is narrowed to: a return's own dates (the author edits the temporary half); the chain (dim_value) of either half; temporary_until on a price that is not the temporary half; and a null temporary_until. No PATCH makes a price temporary or ends its temporariness. A pair whose other half is not an unlocked draft is 409 PRICE_NOT_DRAFT, and another author's is 403 NOT_DRAFT_AUTHOR, as the delete judges them.
+- **An edited return.** A return's money stays editable, and a move of its pair copies the money again from the restored price. Submit would refuse the edited return as PAIR_RETURN_STALE anyway (D-391), so the copy loses nothing that submit would keep.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 21; plan review H2, L5). Amends D-391.

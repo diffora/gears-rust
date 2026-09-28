@@ -296,8 +296,49 @@ async fn create_in(
     .await
 }
 
-/// Change business fields of an unlocked draft at the version the caller read.
-/// A temporary price keeps its start and value: its window belongs to its pair or closure.
+/// Change business fields of an unlocked draft at the version the caller read, under the
+/// create's bounded retry: a return the new dates call for takes the entry's next `version_no`,
+/// which a concurrent writer may take first.
+/// # Errors
+/// Returns the canonical refusal of the last attempt.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Conditional resource identity and audit context are explicit"
+)]
+pub async fn patch(
+    db: &toolkit_db::Db,
+    scope: AccessScope,
+    ctx: SecurityContext,
+    correlation: Uuid,
+    id: Uuid,
+    version: u64,
+    input: PricingPricePatch,
+) -> Result<Response, CanonicalError> {
+    let mut attempt = 1;
+    loop {
+        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+        let result = support::transaction_door(db, move |tx| {
+            let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+            Box::pin(
+                async move { patch_in(tx, &scope, &ctx, correlation, id, version, input).await },
+            )
+        })
+        .await;
+        match result {
+            Err(DoorError::Repo(RepoError::Conflict {
+                code: "PRICE_VERSION_TAKEN",
+            })) if attempt < VERSION_ATTEMPTS => attempt += 1,
+            other => return other.map_err(Into::into),
+        }
+    }
+}
+/// A price the author may still change: a draft no unit locks.
+fn unlocked_draft(m: &entity::price::Model) -> bool {
+    m.state == PriceState::Draft.as_str() && m.pending_unit_id.is_none()
+}
+/// One draft's PATCH. A temporary pair keeps its chain; its return keeps its own dates (its start
+/// is its pair's end); a price's temporariness is fixed. The temporary half's dates move: a PATCH
+/// that sends `effective_from` or `temporary_until` to it re-derives the pair ([`redate`], D-443).
 /// # Errors
 /// Returns `PRICE_NOT_DRAFT`, `NOT_DRAFT_AUTHOR`, `STALE_REVISION`, `TEMPORARY_PRICE_FIXED` or a
 /// pure-rule refusal.
@@ -305,7 +346,7 @@ async fn create_in(
     clippy::too_many_arguments,
     reason = "Conditional resource identity and audit context are explicit"
 )]
-pub async fn patch(
+async fn patch_in(
     tx: &impl DBRunner,
     scope: &AccessScope,
     ctx: &SecurityContext,
@@ -318,7 +359,7 @@ pub async fn patch(
     let m = price_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("price"))?;
-    if m.state != PriceState::Draft.as_str() || m.pending_unit_id.is_some() {
+    if !unlocked_draft(&m) {
         return Err(support::conflict("PRICE_NOT_DRAFT").into());
     }
     own_draft(&m, ctx)?;
@@ -331,19 +372,28 @@ pub async fn patch(
     )
     .await?;
     let mut r = price_repo::to_domain(&m, pc.model)?;
-    let temporary = m.temporary_until.is_some() || m.paired_price_id.is_some();
+    // The temporary half carries the end; its return names its partner and the price it restores.
+    let promo = m.temporary_until.is_some();
+    let temporary = promo || m.paired_price_id.is_some() || m.return_of_price_id.is_some();
     let fixed =
-        || -> DoorError { support::invalid("effective_from", "TEMPORARY_PRICE_FIXED").into() };
+        |field: &str| -> DoorError { support::invalid(field, "TEMPORARY_PRICE_FIXED").into() };
     if let Some(value) = input.dim_value {
         if temporary && value != r.dim_value {
-            return Err(fixed());
+            return Err(fixed("dim_value"));
         }
         r.dim_value = value;
     }
+    // Only the temporary half takes an end, and never `null`: no price becomes or stops being
+    // temporary by a PATCH (D-443).
+    let until = match input.temporary_until {
+        None => None,
+        Some(Some(text)) if promo => Some(text),
+        Some(_) => return Err(fixed("temporary_until")),
+    };
     if let Some(start) = input.effective_from.as_deref() {
         let start = price::parse_start(start).map_err(refuse)?;
-        if temporary && start != r.effective_from {
-            return Err(fixed());
+        if temporary && !promo && start != r.effective_from {
+            return Err(fixed("effective_from"));
         }
         r.effective_from = start;
     }
@@ -358,6 +408,20 @@ pub async fn patch(
     }
     let now = OffsetDateTime::now_utc();
     let siblings = pc.domain_prices()?;
+    let mut next = m.clone();
+    if let Some(note) = input.note {
+        next.note = note;
+    }
+    next.updated_at = now;
+    if promo && (input.effective_from.is_some() || until.is_some()) {
+        let dates = Redate {
+            pc: &pc,
+            siblings: &siblings,
+            until: until.as_deref(),
+            now,
+        };
+        return redate(tx, ctx, correlation, dates, r, next, version).await;
+    }
     if let Some(error) = pc.first_refusal(&r, &siblings, now.date()) {
         return Err(refuse(error));
     }
@@ -366,16 +430,7 @@ pub async fn patch(
     if price::temporary_holding(&r, &approved_of(&siblings)).is_some() {
         return Err(refuse(RuleError::new("PRICE_INSIDE_TEMPORARY")));
     }
-    let mut next = m.clone();
-    next.dim_value = r.dim_value.clone();
-    next.price_json = price_json(&r)?;
-    next.min_fee = r.min_fee.map(|fee| fee.to_string());
-    next.eligibility = r.eligibility.as_str().into();
-    next.effective_from = r.effective_from;
-    if let Some(note) = input.note {
-        next.note = note;
-    }
-    next.updated_at = now;
+    shaped(&mut next, &r)?;
     price_repo::update_draft(tx, &children, next.clone()).await?;
     next.version += 1;
     support::audit(tx, ctx, correlation, "price.patch", id, next.version).await?;
@@ -384,6 +439,188 @@ pub async fn patch(
         &PricingPriceDto::of(next, pc.model.as_str())?,
         Some(version + 1),
     )?)
+}
+/// Copy a price's business fields and pair columns onto its stored row.
+fn shaped(row: &mut entity::price::Model, r: &Price) -> Result<(), DoorError> {
+    row.dim_value.clone_from(&r.dim_value);
+    row.price_json = price_json(r)?;
+    row.min_fee = r.min_fee.map(|fee| fee.to_string());
+    row.eligibility = r.eligibility.as_str().into();
+    row.effective_from = r.effective_from;
+    row.effective_to = r.effective_to;
+    row.closed_explicitly = r.closed_explicitly;
+    row.temporary_until = r.temporary_until;
+    row.paired_price_id = r.paired_price_id;
+    row.return_of_price_id = r.return_of_price_id;
+    Ok(())
+}
+/// What a temporary draft's new dates are judged against: its entry, the entry's prices, the end
+/// the PATCH sent (else the stored one) and the request's instant.
+struct Redate<'a> {
+    pc: &'a PriceBookEntryContext,
+    siblings: &'a [Price],
+    until: Option<&'a str>,
+    now: OffsetDateTime,
+}
+/// D-443: re-run the pair builder over a temporary draft's new dates and reconcile the shape it
+/// makes with the stored one in the request's transaction. The builder makes a pair (the return
+/// restores the chain's price in force on the end), the promo alone (the chain's next approved
+/// price starts exactly on the end) or one explicitly closed price (nothing of the chain is in
+/// force there). Both halves are judged as the create judges them. The writes, in order:
+/// - pair → pair: the promo at its version, then its return in place at the return's version
+///   (the same id, number and author; start = the new end, money copied again from the restored
+///   price — an edited return would be stale at submit anyway, D-391);
+/// - pair → one price: the promo first, its link cleared, then the return is deleted
+///   (`price.delete`);
+/// - one price → pair: the return first, naming the promo and numbered after every price of the
+///   entry (the unique `(entry, version_no)` index; never `promo.version_no + 1`), then the
+///   promo, naming it (`price.create`, then `price.patch`);
+/// - one price → one price: the promo.
+///
+/// The answer is the promo, its `paired_price_id` naming its partner now, or `null`.
+async fn redate(
+    tx: &impl DBRunner,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    dates: Redate<'_>,
+    promo: Price,
+    mut next: entity::price::Model,
+    version: u64,
+) -> Result<Response, DoorError> {
+    let end = match dates.until {
+        Some(text) => {
+            price::parse_start(text).map_err(|_| refuse(RuleError::new("WINDOW_END_INVALID")))?
+        }
+        None => next.temporary_until.ok_or_else(|| {
+            RepoError::CorruptRow(format!("temporary price {} has no end", next.id))
+        })?,
+    };
+    let partner = partner_of(tx, ctx, &next).await?;
+    let shape = judged_shape(&dates, promo, end, partner.as_ref())?;
+    shaped(&mut next, &shape[0])?;
+    let written = Written {
+        ctx,
+        correlation,
+        now: dates.now,
+    };
+    next.version = reconcile(tx, &written, &next, partner, shape.get(1)).await?;
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingPriceDto::of(next, dates.pc.model.as_str())?,
+        Some(version + 1),
+    )?)
+}
+/// The stored partner of a temporary draft: the pair moves whole, so its return must be an
+/// unlocked draft of the same author (409 `PRICE_NOT_DRAFT`, 403 `NOT_DRAFT_AUTHOR`).
+async fn partner_of(
+    tx: &impl DBRunner,
+    ctx: &SecurityContext,
+    promo: &entity::price::Model,
+) -> Result<Option<entity::price::Model>, DoorError> {
+    let Some(id) = promo.paired_price_id else {
+        return Ok(None);
+    };
+    let tenant = ctx.subject_tenant_id();
+    let p = price_repo::find(tx, &AccessScope::for_tenant(tenant), tenant, id)
+        .await?
+        .ok_or_else(|| {
+            RepoError::CorruptRow(format!("price {} lost its partner {id}", promo.id))
+        })?;
+    if !unlocked_draft(&p) {
+        return Err(support::conflict("PRICE_NOT_DRAFT").into());
+    }
+    own_draft(&p, ctx)?;
+    Ok(Some(p))
+}
+/// The shape the builder makes of the promo on its new dates, its return (if any) numbered — a
+/// kept return keeps its own number, a new one takes the entry's next — and both halves judged as
+/// the create judges them.
+fn judged_shape(
+    dates: &Redate<'_>,
+    promo: Price,
+    end: time::Date,
+    partner: Option<&entity::price::Model>,
+) -> Result<Vec<Price>, DoorError> {
+    let return_id = partner.map_or_else(Uuid::now_v7, |p| p.id);
+    let mut shape = price::temporary(dates.siblings, promo, end, return_id).map_err(refuse)?;
+    if let Some(returned) = shape.get_mut(1) {
+        returned.version_no = match partner {
+            Some(p) => p.version_no,
+            None => next_version(&dates.pc.prices)?,
+        };
+    }
+    for r in &shape {
+        if let Some(error) = dates.pc.first_refusal(r, dates.siblings, dates.now.date()) {
+            return Err(refuse(error));
+        }
+    }
+    // D-406, as the create judges it: against the approved prices and the pair itself.
+    let mut around = approved_of(dates.siblings);
+    around.extend(shape.iter().cloned());
+    for r in &shape {
+        if let Some(error) = price::window_crossing(r, &around) {
+            return Err(refuse(error));
+        }
+    }
+    Ok(shape)
+}
+/// Who writes, under which correlation, at which instant.
+struct Written<'a> {
+    ctx: &'a SecurityContext,
+    correlation: Uuid,
+    now: OffsetDateTime,
+}
+/// Write the promo's new shape and reconcile its partner, in [`redate`]'s order, each write with
+/// its audit row. Returns the promo's new version.
+async fn reconcile(
+    tx: &impl DBRunner,
+    w: &Written<'_>,
+    next: &entity::price::Model,
+    partner: Option<entity::price::Model>,
+    returned: Option<&Price>,
+) -> Result<i64, DoorError> {
+    let tenant = w.ctx.subject_tenant_id();
+    let children = AccessScope::for_tenant(tenant);
+    let promo = (next.id, next.version + 1);
+    let audit = |action: &'static str, (id, version): (Uuid, i64)| {
+        support::audit(tx, w.ctx, w.correlation, action, id, version)
+    };
+    match (partner, returned) {
+        (Some(p), Some(returned)) => {
+            price_repo::update_draft(tx, &children, next.clone()).await?;
+            audit("price.patch", promo).await?;
+            let mut kept = p.clone();
+            shaped(&mut kept, returned)?;
+            kept.updated_at = w.now;
+            price_repo::update_draft(tx, &children, kept).await?;
+            audit("price.patch", (p.id, p.version + 1)).await?;
+        }
+        (Some(p), None) => {
+            price_repo::update_draft(tx, &children, next.clone()).await?;
+            audit("price.patch", promo).await?;
+            price_repo::delete_drafts(tx, &children, tenant, &[(p.id, p.version)]).await?;
+            audit("price.delete", (p.id, p.version)).await?;
+        }
+        (None, Some(returned)) => {
+            let mut m = stored(
+                tenant,
+                returned,
+                next.note.clone(),
+                w.ctx.subject_id(),
+                w.now,
+            )?;
+            m.paired_price_id = returned.paired_price_id;
+            let m = price_repo::insert(tx, &children, m).await?;
+            audit("price.create", (m.id, m.version)).await?;
+            price_repo::update_draft(tx, &children, next.clone()).await?;
+            audit("price.patch", promo).await?;
+        }
+        (None, None) => {
+            price_repo::update_draft(tx, &children, next.clone()).await?;
+            audit("price.patch", promo).await?;
+        }
+    }
+    Ok(promo.1)
 }
 
 /// Delete an unlocked draft at its version; a pair half takes its partner with it.
@@ -401,10 +638,7 @@ pub async fn delete(
     let m = price_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("price"))?;
-    let draft = |r: &entity::price::Model| {
-        r.state == PriceState::Draft.as_str() && r.pending_unit_id.is_none()
-    };
-    if !draft(&m) {
+    if !unlocked_draft(&m) {
         return Err(support::conflict("PRICE_NOT_DRAFT").into());
     }
     own_draft(&m, ctx)?;
@@ -414,7 +648,7 @@ pub async fn delete(
     if let Some(partner) = m.paired_price_id
         && let Some(p) = price_repo::find(tx, &children, tenant, partner).await?
     {
-        if !draft(&p) {
+        if !unlocked_draft(&p) {
             return Err(support::conflict("PRICE_NOT_DRAFT").into());
         }
         own_draft(&p, ctx)?;

@@ -877,7 +877,12 @@ pub struct PricingPricePatch {
     #[serde(default, deserialize_with = "nullable_date")]
     pub min_fee: Option<Option<String>>,
     pub eligibility: Option<String>,
+    /// A temporary draft's start moves with its end; a return's start is its pair's end.
     pub effective_from: Option<String>,
+    /// The end of the temporary half of a draft; its pair is re-derived over the new dates. Any
+    /// other price, and `null`, is 400 `TEMPORARY_PRICE_FIXED`.
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub temporary_until: Option<Option<String>>,
     #[serde(default, deserialize_with = "nullable_date")]
     pub note: Option<Option<String>>,
 }

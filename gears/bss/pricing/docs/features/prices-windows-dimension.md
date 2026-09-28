@@ -67,7 +67,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 03](../design/03-prices-windows-dimension.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-443; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -179,7 +179,7 @@ Requirement: `cpt-cf-bss-pricing-fr-min-fee`; PRD AC #7.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-temporary-pair`
 
-A temporary price and return are created, edited and submitted atomically. Return money comes from versionAt at the end, inherits dim_value and shifts with preserved duration (spec §5); no price starts inside its window and it spans no other start of its chain (D-406).
+A temporary price and return are created, edited and submitted atomically. Return money comes from versionAt at the end, inherits dim_value and shifts with preserved duration (spec §5); no price starts inside its window and it spans no other start of its chain (D-406). The temporary half of a draft takes new dates, and its pair is built again over them in the same transaction: the return kept and derived again, deleted or created (D-443).
 
 Requirement: `cpt-cf-bss-pricing-fr-temporary-pair`; PRD AC #8.
 

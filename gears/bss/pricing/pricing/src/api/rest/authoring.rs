@@ -1146,8 +1146,17 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Change a draft price")
         .description(
             "Changes an unlocked draft price of its author at the version the author read \
-             (If-Match). Refusals: 400 for a rule the change breaks, or TEMPORARY_PRICE_FIXED; 403 \
-             NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT or STALE_REVISION.",
+             (If-Match). The temporary half of a draft takes effective_from and temporary_until: \
+             its pair is built again over the new dates in the same transaction (D-443) - its \
+             return re-derived in place, deleted when the chain's next price starts on the new \
+             end or nothing of the chain is in force there, or created when a price is to be \
+             returned to - and both halves are judged as the create judges them; the answer is \
+             the edited price, its paired_price_id naming its partner now, or null. A return's \
+             own dates, a temporary price's chain (dim_value), an end on any other price and a \
+             null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks \
+             (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or \
+             TEMPORARY_SPANS_A_CHANGE); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
+             its partner) or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1236,13 +1245,7 @@ async fn patch_price(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
-        Box::pin(
-            async move { prices::patch(tx, &scope, &ctx, correlation, id, version, input).await },
-        )
-    })
-    .await
+    prices::patch(&state.db.db(), scope, ctx, correlation, id, version, input).await
 }
 async fn delete_price(
     Extension(state): Extension<Arc<AuthoringState>>,

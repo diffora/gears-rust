@@ -187,8 +187,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // 6.4's four doors (D-434 to D-436) — the SKU's entries, the plan item read, the policy
         // reset and the dimension PATCH, each registration and each 200 answer (the PATCH has two:
         // an empty patch answers without a write); + 2: run 7.1's entry prices (D-440), its
-        // registration and its 200 answer.
-        ("StatusCode::", 2, 99),
+        // registration and its 200 answer; + 1: run 7.2's price PATCH answers a temporary
+        // draft's new dates from their own function (D-443).
+        ("StatusCode::", 2, 100),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
