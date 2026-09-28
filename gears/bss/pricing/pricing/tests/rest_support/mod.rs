@@ -221,6 +221,7 @@ impl Harness {
             ("GET", "/bss-pricing/v1/plan-items/{id}"),
             ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
             ("PATCH", "/bss-pricing/v1/dimension-keys"),
+            ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))

@@ -10,7 +10,9 @@
 //! fixed calendar. Nothing here reads `now()`. Every response is read through the two consumer
 //! doors, `GET /resolve` and `GET /prices/{id}`, and normalised by [`normalise`] alone: each id
 //! becomes the fixture name it was minted under, and each timestamp — every one the fixture sets
-//! itself — is kept as its canonical UTC RFC 3339 value, never masked.
+//! itself — is kept as its canonical UTC RFC 3339 value, never masked. The entry reads' values of
+//! today (D-440: `current_price` and the approved prices by date) are left out by [`undated`]
+//! before that: a frozen document holds nothing computed from the day it is read.
 //!
 //! The calendar (tenant settings: timing `arrears`, rounding `half_even`, GL `9000`, tax `std`,
 //! invoice-line templates for `recurring` and `usage`; dimension `region` = eu, us, apac, latam —
@@ -1914,7 +1916,8 @@ pub async fn document(w: &World, golden: &str) -> Value {
             Caller::Tenant => (&w.f.ctx, "the tenant"),
             Caller::OtherTenant => (&w.stranger, "another tenant"),
         };
-        let (status, body, _) = w.f.call_as(ctx, "GET", &path, json!({}), None, None).await;
+        let (status, mut body, _) = w.f.call_as(ctx, "GET", &path, json!({}), None, None).await;
+        undated(&mut body);
         exchanges.push(json!({
             "case": a.case,
             "caller": caller,
@@ -1924,6 +1927,28 @@ pub async fn document(w: &World, golden: &str) -> Value {
         }));
     }
     json!({ "golden": golden, "proves": proves, "exchanges": exchanges })
+}
+
+/// Drop what an authoring read computes from today (D-440): the entry reads' `current_price` and
+/// their approved prices by date (`scheduled`, `active`, `superseded`). The calendar is fixed and
+/// a frozen document holds no value of today; `tests/book_reads.rs` pins those fields.
+fn undated(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            fields.remove("current_price");
+            if let Some(Value::Object(prices)) = fields
+                .get_mut("usage")
+                .and_then(|usage| usage.get_mut("prices"))
+            {
+                for dated in ["scheduled", "active", "superseded"] {
+                    prices.remove(dated);
+                }
+            }
+            fields.values_mut().for_each(undated);
+        }
+        Value::Array(items) => items.iter_mut().for_each(undated),
+        _ => {}
+    }
 }
 
 fn golden_path(golden: &str) -> String {

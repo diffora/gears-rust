@@ -86,9 +86,25 @@ async fn sku_entries(f: &Fixture, sku: Uuid) -> Vec<Value> {
     assert_eq!(s, 200, "{b}");
     b["items"].as_array().unwrap().clone()
 }
-fn usage(approved: u64, pending: u64, draft: u64, plans: u64, superseded_only: u64) -> Value {
+/// An entry's usage (D-428): its approved prices as `(scheduled, active, superseded)` today, whose
+/// sum is `approved` (D-440), its pending and draft prices, and its plans.
+fn usage(
+    approved: (u64, u64, u64),
+    pending: u64,
+    draft: u64,
+    plans: u64,
+    superseded_only: u64,
+) -> Value {
+    let (scheduled, active, superseded) = approved;
     json!({
-        "prices": {"approved": approved, "pending": pending, "draft": draft},
+        "prices": {
+            "approved": scheduled + active + superseded,
+            "pending": pending,
+            "draft": draft,
+            "scheduled": scheduled,
+            "active": active,
+            "superseded": superseded,
+        },
         "plans": plans,
         "plans_superseded_only": superseded_only,
     })
@@ -191,7 +207,7 @@ async fn a_skus_entries_are_listed_across_books_with_their_usage_and_the_price_i
     assert_eq!(first["model"], "per_unit");
     assert_eq!(first["reference_state"], "confirmed");
     assert!(first["period"].is_null());
-    assert_eq!(first["usage"], usage(1, 0, 1, 0, 0));
+    assert_eq!(first["usage"], usage((0, 1, 0), 0, 1, 0, 0));
     assert!(
         first["current_price"].is_null(),
         "no default-chain price in force: {first}"
@@ -199,7 +215,7 @@ async fn a_skus_entries_are_listed_across_books_with_their_usage_and_the_price_i
     assert_eq!(second["id"], e_eur.to_string());
     assert_eq!(second["book_name"], "b-eur");
     assert_eq!(second["currency"], "EUR");
-    assert_eq!(second["usage"], usage(4, 1, 0, 1, 0));
+    assert_eq!(second["usage"], usage((1, 2, 1), 1, 0, 1, 0));
     assert_eq!(second["current_price"]["id"], current.id.to_string());
     assert_eq!(
         second["current_price"]["price_json"],
@@ -261,7 +277,7 @@ async fn the_price_in_force_is_shown_only_to_a_holder_of_price_book_read() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(b["items"][0]["id"], e.to_string());
     assert_eq!(b["items"][0]["currency"], "EUR");
-    assert_eq!(b["items"][0]["usage"], usage(1, 0, 0, 0, 0));
+    assert_eq!(b["items"][0]["usage"], usage((0, 1, 0), 0, 0, 0, 0));
     assert!(
         b["items"][0]
             .as_object()

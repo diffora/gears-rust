@@ -1,11 +1,12 @@
-//! Book writes share one transaction with their audit and POST receipt.
+//! Book writes share one transaction with their audit and POST receipt; the book reads carry
+//! their stats (D-441) and the list pages on the toolkit's `OData` pager (D-442).
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-currency-validity:p1
 //! @cpt-dod:cpt-cf-bss-pricing-dod-book-export:p1
 use super::{
     dto::{
         PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingExportEntry,
-        PricingPriceDto,
+        PricingPriceBookReadDto, PricingPriceDto,
     },
     support::{DoorError, audit, check_version, conflict, date, invalid, missing, response, value},
 };
@@ -177,6 +178,63 @@ pub async fn patch(
         &PriceBookDto::from(m),
         Some(version + 1),
     )?)
+}
+/// Each of the tenant's `books` with its stats dated on `today` (D-441), in their order: four
+/// grouped statements whatever their number.
+/// # Errors
+/// Storage failures and corrupt rows.
+pub async fn with_stats(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    books: Vec<price_book::Model>,
+    today: time::Date,
+) -> Result<Vec<PricingPriceBookReadDto>, DoorError> {
+    let mut stats = crate::infra::book_stats::book_stats(
+        tx,
+        tenant,
+        backend,
+        &books.iter().collect::<Vec<_>>(),
+        today,
+    )
+    .await?;
+    books
+        .into_iter()
+        .map(|b| {
+            let counted = stats.remove(&b.id).ok_or_else(|| {
+                CanonicalError::internal(format!("no stats for book {}", b.id)).create()
+            })?;
+            Ok(PricingPriceBookReadDto {
+                book: b.into(),
+                stats: counted.into(),
+            })
+        })
+        .collect()
+}
+/// `GET /price-books` (D-442): one page of the tenant's books under the caller's `scope`,
+/// narrowed by `filter` and the query, each with its stats (D-441): the page's statement and the
+/// stats' four.
+/// # Errors
+/// 400 for a query the pager refuses; storage failures and corrupt rows.
+pub async fn page(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    filter: &book_repo::BookListFilter,
+    query: &toolkit_odata::ODataQuery,
+    today: time::Date,
+) -> Result<toolkit_odata::Page<PricingPriceBookReadDto>, DoorError> {
+    let page = book_repo::page(tx, scope, tenant, backend, filter, query)
+        .await
+        .map_err(|e| match e {
+            book_repo::BookListError::Query(e) => DoorError::Api(e.into()),
+            book_repo::BookListError::Repo(e) => DoorError::Repo(e),
+        })?;
+    Ok(toolkit_odata::Page {
+        items: with_stats(tx, tenant, backend, page.items, today).await?,
+        page_info: page.page_info,
+    })
 }
 pub async fn entries(
     tx: &impl DBRunner,

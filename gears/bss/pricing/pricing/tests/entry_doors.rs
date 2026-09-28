@@ -60,10 +60,22 @@ async fn create_replay_current_kind_unique_key_and_delete() {
     assert_eq!(
         read.as_object_mut().unwrap().remove("usage"),
         Some(json!({
-            "prices": {"approved": 0, "pending": 0, "draft": 0},
+            "prices": {
+                "approved": 0,
+                "pending": 0,
+                "draft": 0,
+                "scheduled": 0,
+                "active": 0,
+                "superseded": 0,
+            },
             "plans": 0,
             "plans_superseded_only": 0,
         }))
+    );
+    // No price is in force (D-440).
+    assert_eq!(
+        read.as_object_mut().unwrap().remove("current_price"),
+        Some(Value::Null)
     );
     assert_eq!(read, first.1);
     assert_eq!(

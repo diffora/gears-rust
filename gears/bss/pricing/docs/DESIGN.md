@@ -253,8 +253,8 @@ unit and rejects any unit.
 
 | Area | Phase | Operations below the authoring base |
 | --- | --- | --- |
-| Books | 2 | POST/GET /price-books (a new book takes a currency the tenant settings offer, when they offer any: 409 CURRENCY_NOT_OFFERED, D-438); GET/PATCH /price-books/{id}; GET /price-books/{id}/entries (each entry with its usage, D-428); GET /price-books/{id}/export |
-| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override? (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, period, model) in the book; the PATCH does not carry model); GET /price-book-entries/{id} reads one entry with its ETag and its usage (price_book_entry read, D-428); GET /price-book-entries?sku_id= lists one SKU's entries across the tenant's books, each with its book's code, name and currency, its usage and current_price, the default chain's approved price in force today, shown only to a caller who also holds price_book read (D-434); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
+| Books | 2 | POST/GET /price-books (a new book takes a currency the tenant settings offer, when they offer any: 409 CURRENCY_NOT_OFFERED, D-438); GET /price-books pages on the toolkit's OData pager: $filter over code, name, currency, valid_from and valid_until, $orderby code or name, $top 200 by default and at most 500, the cursor, q over the code and the name (ICU case folding on Postgres) and sku_id; any other key is 400 QUERY_INVALID and a cursor under another narrowing 400 FILTER_MISMATCH (D-442); GET/PATCH /price-books/{id}; both book reads carry each book's stats (D-441); GET /price-books/{id}/entries (each entry with its usage, D-428, and its current_price, D-440); GET /price-books/{id}/export |
+| Entries | 2 | POST /price-books/{id}/entries with sku_id, model, period?, dimension_key?, invoice_line_override? (model is required and fixed for the entry's life, D-427: 400 MODEL_INVALID for an unknown model, 400 MODEL_KIND_CHARGEKIND_MISMATCH for one the charge kind does not allow, judged at the door and again in Tx B; 409 ENTRY_KEY_TAKEN for a taken (SKU, charge kind, period, model) in the book; the PATCH does not carry model); GET /price-book-entries/{id} reads one entry with its ETag, its usage and its current_price (price_book_entry read, D-428, D-440); GET /price-book-entries/{id}/prices lists every price of the entry with its status today, the default chain first, filtered by status=, under price_book_entry read and price_book read on its book (403 PRICE_BOOK_READ_REQUIRED, D-440); GET /price-book-entries?sku_id= lists one SKU's entries across the tenant's books, each with its book's code, name and currency, its usage and current_price, the default chain's approved price in force today, shown only to a caller who also holds price_book read (D-434); PATCH /price-book-entries/{id} for invoice_line_override (locked with 409 INVOICE_LINE_LOCKED once the entry has an approved or pending price, D-426) and permitted dimension_key changes; DELETE /price-book-entries/{id} answers 204 once removed, deleting its draft and rejected prices with it; approved or pending prices refuse 409 ENTRY_PRICES_IN_USE, and another author's draft 403 NOT_DRAFT_AUTHOR (D-404); from phase 3 an entry a plan item names, in a revision of any state, refuses 409 ENTRY_IN_USE, judged in the delete's transaction (D-408) |
 | Prices | 2 | POST /price-book-entries/{id}/prices; PATCH/DELETE /prices/{id} draft only, by its author (D-404); neither carries model: a price's money is in its entry's model, and a shape that does not match it is 400 PRICE_MISSING; every price read carries model read-only, copied from the entry (D-427); POST /prices/{id}/submit; POST /price-books/{id}/publish-changes with price_ids? and common_effective_date? |
 | Approval units | 2 | GET /approval-units?state&kind&ref_id; GET /approval-units/{id}; POST /approval-units/{id}/approve or /reject with generation, /withdraw by submitter. Every unit door dispatches on the unit's stored kind (phase 3): its subject, the domain event its apply writes and the impact its card shows; a stored kind pricing does not record is a corrupt row (500), never judged as `prices` |
 | Policy/settings | 2 | GET/PUT /approval-policy, /settings, /dimension-keys; PUT /approval-policy sets the default (`*`) or one kind's quorum, `prices` or `plan_revision` (phase 3); any other kind is 400 POLICY_KIND_INVALID; DELETE /approval-policy/{kind} (If-Match) removes a kind's override so it follows the default again, and the default itself is 400 POLICY_DEFAULT_REQUIRED (D-435); PATCH /dimension-keys (If-Match) adds and removes the values of one declared key, and every registry answer carries each value's usage { prices } (D-436); the settings answer carries currencies, updated_at and updated_by, and PUT /settings requires currencies and a rounding of half_up, half_even, half_down, up or down (D-437, D-438) |
@@ -266,12 +266,26 @@ unit and rejects any unit.
 | Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
 
 The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, answer
-PricingPriceBookEntryReadDto: the fields of the entry and usage { prices { approved, pending, draft }, plans,
-plans_superseded_only } (D-428). prices counts the entry's prices by state, a rejected price excluded; plans counts
-the distinct plans with a draft, pending or published revision whose items name the entry; plans_superseded_only
-counts the distinct plans that name it only through superseded revisions. The counts are read tenant-scoped, under
-price_book_entry read alone, with a fixed number of set-based reads per request. The POST and PATCH answers, the
-stored Tx B receipt, the export and the publish-changes listing keep PricingPriceBookEntryDto, without usage.
+PricingPriceBookEntryReadDto: the fields of the entry, usage { prices { approved, pending, draft, scheduled, active,
+superseded }, plans, plans_superseded_only } (D-428) and current_price (D-440). prices counts the entry's prices by
+state, a rejected price excluded, and the approved ones by where their window stands today, so approved = scheduled +
+active + superseded; plans counts the distinct plans with a draft, pending or published revision whose items name the
+entry; plans_superseded_only counts the distinct plans that name it only through superseded revisions. The counts
+are read tenant-scoped, under price_book_entry read alone, with a fixed number of set-based reads per request.
+current_price is the default chain's approved price in force today, shown only when the caller's price_book read
+admits the entry's book, as D-434 shows it; otherwise it is null. The POST and PATCH answers, the stored Tx B receipt,
+the export and the publish-changes listing keep PricingPriceBookEntryDto, without usage or current_price.
+GET /price-book-entries/{id}/prices answers PricingEntryPriceList { items: [PricingPriceDto] }: every price in every
+state, each with its display status today; the default chain first, then each value's chain in ascending order, each
+by effective_from then version_no (D-440).
+
+The two book reads, GET /price-books and GET /price-books/{id}, answer PricingPriceBookReadDto: the fields of the
+book and stats { entries, skus, plans, prices { draft, pending, approved, scheduled, active, superseded, rejected },
+pending_units, last_change_at } (D-441). plans counts the distinct plans with a non-superseded revision on the book,
+the same read by which the book delete judges BOOK_IN_PLAN; last_change_at is the latest instant of the book, its
+entries, their prices and its prices units' submissions and decisions. Four grouped statements per page or book,
+one per source. The list answers `Page<PricingPriceBookReadDto>` { items, page_info } (D-442). The write answers,
+the export and publish-changes keep PriceBookDto.
 
 The consumer surface named by spec §7.1, `GET /pricing/v1/resolve` and `GET /pricing/v1/prices/{id}`, is
 `GET /bss-pricing/v1/resolve` and `GET /bss-pricing/v1/prices/{id}` below the gear's base (D-419, D-422; the Read contract
@@ -302,6 +316,8 @@ rounding_policy, a unit's kind and ref_type, a check's code and a proposal's cha
 | Removing a registry key an entry names / a value a price uses | 409 DIMENSION_KEY_IN_USE / DIM_VALUE_IN_USE, naming the key or the value (D-436) |
 | A settings rounding outside the five modes; a malformed or repeated offered currency | 400 ROUNDING_INVALID (D-437); 400 CURRENCY_INVALID (D-438) |
 | A new book in a currency the tenant settings do not offer | 409 CURRENCY_NOT_OFFERED (D-438) |
+| An entry's prices read without price_book read on its book (the entry itself readable); an unknown status | 403 PRICE_BOOK_READ_REQUIRED; 400 QUERY_INVALID (D-440) |
+| The book list: an unknown, repeated or malformed plain key; a cursor under another $filter, q or sku_id; $select or $count | 400 QUERY_INVALID; 400 FILTER_MISMATCH; 400 UNSUPPORTED_QUERY_PARAM (D-442) |
 | Deleting the default quorum | 400 POLICY_DEFAULT_REQUIRED (D-435) |
 | Changing an entry's invoice_line_override once it has an approved or pending price | 409 INVOICE_LINE_LOCKED (D-426) |
 | Edit or delete of a price that is not an unlocked draft (a pending price included) | 409 PRICE_NOT_DRAFT |

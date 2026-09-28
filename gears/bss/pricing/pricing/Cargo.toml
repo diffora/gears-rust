@@ -34,6 +34,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 toolkit = { workspace = true, features = ["db"] }
 toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
+# The book list pages on the toolkit's OData pager (D-442): its filter and order vocabulary and
+# the served `Page` envelope.
+toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
 sea-orm-migration = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros", "rt"] }

@@ -209,14 +209,19 @@ async fn books_positive_preconditions_validation_and_post_replay() {
         400
     );
     let path = format!("/price-books/{}", b["id"].as_str().unwrap());
-    assert_eq!(
-        f.call("GET", "/price-books", json!({}), None, None).await.1["items"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(f.call("GET", &path, json!({}), None, None).await.1, b);
+    // The list pages (D-442): the book is found by its code, and the page is the whole list.
+    let listed = f
+        .call("GET", "/price-books?q=standard", json!({}), None, None)
+        .await
+        .1;
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1, "{listed}");
+    assert!(listed["page_info"]["next_cursor"].is_null(), "{listed}");
+    // The read is the created book with its stats (D-441); the write answers carry none.
+    let mut read = f.call("GET", &path, json!({}), None, None).await.1;
+    let stats = read.as_object_mut().unwrap().remove("stats").unwrap();
+    assert_eq!(read, b);
+    assert_eq!(stats["entries"], 0, "{stats}");
+    assert_eq!(stats["last_change_at"], b["updated_at"], "{stats}");
     assert_eq!(
         f.call("PATCH", &path, json!({"name":"Changed"}), None, None)
             .await
@@ -415,6 +420,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("GET", format!("/plan-items/{id}")),
         ("DELETE", "/approval-policy/prices".into()),
         ("PATCH", "/dimension-keys".into()),
+        ("GET", format!("/price-book-entries/{id}/prices")),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -755,6 +761,14 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "settings",
         ),
         ("PATCH", "/dimension-keys".into(), "config", "settings"),
+        // D-440: entry read reaches the entry; its money is judged a second time (price_book
+        // read on the entry's book), after the entry is found — the book's id here is no entry.
+        (
+            "GET",
+            format!("/price-book-entries/{id}/prices"),
+            "price_book_entry",
+            "read",
+        ),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -770,7 +784,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 48);
+    assert_eq!(table.len(), 49);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,
@@ -847,6 +861,10 @@ async fn a_nul_character_in_free_text_is_refused_before_any_write() {
     let (status, list, _) = f.call("GET", "/price-books", json!({}), None, None).await;
     assert_eq!(status, 200, "{list}");
     assert_eq!(list["items"], json!([]), "no book was written");
+    assert!(
+        list["page_info"]["next_cursor"].is_null(),
+        "one page is the whole list: {list}"
+    );
     let (_, _, tag) = f.call("GET", "/settings", json!({}), None, None).await;
     let (status, b, _) = f
         .call(

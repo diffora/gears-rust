@@ -2,9 +2,10 @@
 //! usage port answers Products (P-D-197).
 //!
 //! Every read here is set-based, so a request makes the same number of statements whatever the
-//! number of entries or SKUs: one grouped count of the entries' prices, one read of the plan items
-//! naming them, one read of those items' revisions — and, for SKUs, one read of their entries and
-//! one of those entries' books before that.
+//! number of entries or SKUs: one grouped count of the entries' prices (by state, and the approved
+//! ones by where their window stands today, D-440), one read of the plan items naming them, one
+//! read of those items' revisions — and, for SKUs, one read of their entries and one of those
+//! entries' books before that.
 use crate::domain::{plan::RevisionState, price::PriceState};
 use crate::infra::storage::{
     RepoError,
@@ -15,11 +16,35 @@ use std::collections::{BTreeMap, BTreeSet};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use uuid::Uuid;
 
+/// An entry's prices by state, a rejected price not counted (D-428), and its approved prices by
+/// where their window stands on the day asked (D-440): `approved` is always `scheduled + active +
+/// superseded`. Pricing's own: the SKU usage port answers products-sdk's `PriceCounts`, unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EntryPriceCounts {
+    pub approved: u64,
+    pub pending: u64,
+    pub draft: u64,
+    /// Approved, starting after the day.
+    pub scheduled: u64,
+    /// Approved, in force on the day.
+    pub active: u64,
+    /// Approved, ended on or before the day.
+    pub superseded: u64,
+}
+impl From<EntryPriceCounts> for PriceCounts {
+    fn from(c: EntryPriceCounts) -> Self {
+        Self {
+            approved: c.approved,
+            pending: c.pending,
+            draft: c.draft,
+        }
+    }
+}
 /// An entry's usage (D-428).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EntryUsage {
-    /// The entry's prices by state; a rejected price is not counted.
-    pub prices: PriceCounts,
+    /// The entry's prices by state, and its approved ones by date.
+    pub prices: EntryPriceCounts,
     /// The distinct plans with a draft, pending or published revision whose items name the entry.
     pub plans: u64,
     /// The distinct plans that name the entry only through superseded revisions.
@@ -28,7 +53,7 @@ pub struct EntryUsage {
 /// What one entry is counted from.
 #[derive(Default)]
 struct Tally {
-    prices: PriceCounts,
+    prices: EntryPriceCounts,
     /// Plans with a draft, pending or published revision naming the entry.
     live: BTreeSet<Uuid>,
     /// Plans with a superseded revision naming the entry.
@@ -37,18 +62,24 @@ struct Tally {
 fn size<T>(set: impl Iterator<Item = T>) -> u64 {
     u64::try_from(set.count()).unwrap_or(u64::MAX)
 }
+/// A grouped count as a `u64`.
+/// # Errors
+/// `CorruptRow` for a negative count.
+pub fn count(n: i64) -> Result<u64, RepoError> {
+    u64::try_from(n).map_err(|_| RepoError::CorruptRow(format!("a negative count {n}")))
+}
 /// The prices and the plans of each entry, read tenant-scoped: the counts are facts of an entry
 /// the caller may read, and need no price or plan read of their own.
 async fn tallies(
     runner: &impl DBRunner,
     tenant: Uuid,
     entries: &[Uuid],
+    today: time::Date,
 ) -> Result<BTreeMap<Uuid, Tally>, RepoError> {
     let scope = AccessScope::for_tenant(tenant);
     let mut out: BTreeMap<Uuid, Tally> = entries.iter().map(|id| (*id, Tally::default())).collect();
-    for row in price_repo::count_by_entry_and_state(runner, &scope, tenant, entries).await? {
-        let count = u64::try_from(row.count)
-            .map_err(|_| RepoError::CorruptRow(format!("a negative price count {}", row.count)))?;
+    for row in price_repo::count_by_entry_and_state(runner, &scope, tenant, entries, today).await? {
+        let n = count(row.count)?;
         let state: PriceState = row
             .state
             .parse()
@@ -57,9 +88,20 @@ async fn tallies(
             continue;
         };
         match state {
-            PriceState::Approved => tally.prices.approved += count,
-            PriceState::Pending => tally.prices.pending += count,
-            PriceState::Draft => tally.prices.draft += count,
+            PriceState::Approved => {
+                let (ended, future) = (count(row.ended)?, count(row.future)?);
+                let active = n.checked_sub(ended + future).ok_or_else(|| {
+                    RepoError::CorruptRow(format!(
+                        "{ended} ended and {future} future of {n} prices"
+                    ))
+                })?;
+                tally.prices.approved += n;
+                tally.prices.superseded += ended;
+                tally.prices.scheduled += future;
+                tally.prices.active += active;
+            }
+            PriceState::Pending => tally.prices.pending += n,
+            PriceState::Draft => tally.prices.draft += n,
             PriceState::Rejected => {}
         }
     }
@@ -98,8 +140,8 @@ async fn tallies(
     }
     Ok(out)
 }
-/// The usage of each of the tenant's `entries` (D-428), in a fixed number of statements; an entry
-/// nothing uses reads zeros.
+/// The usage of each of the tenant's `entries` (D-428), its approved prices dated on `today`
+/// (D-440), in a fixed number of statements; an entry nothing uses reads zeros.
 /// # Errors
 /// Storage failures; a stored state pricing does not know, or an item whose revision is gone, is a
 /// corrupt row.
@@ -107,8 +149,9 @@ pub async fn entry_usage(
     runner: &impl DBRunner,
     tenant: Uuid,
     entries: &[Uuid],
+    today: time::Date,
 ) -> Result<BTreeMap<Uuid, EntryUsage>, RepoError> {
-    Ok(tallies(runner, tenant, entries)
+    Ok(tallies(runner, tenant, entries, today)
         .await?
         .into_iter()
         .map(|(id, t)| {
@@ -158,7 +201,7 @@ pub async fn sku_usage(
             .map(|b| (b.id, b.currency))
             .collect();
     let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
-    let tallies = tallies(runner, tenant, &ids).await?;
+    let tallies = tallies(runner, tenant, &ids, time::OffsetDateTime::now_utc().date()).await?;
     let mut by_sku: BTreeMap<Uuid, SkuTally> = BTreeMap::new();
     for e in &entries {
         let currency = currencies.get(&e.book_id).ok_or_else(|| {

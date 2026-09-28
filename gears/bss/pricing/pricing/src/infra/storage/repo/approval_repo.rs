@@ -387,6 +387,64 @@ pub async fn delete_policy(
         .map_err(|e| driver_failure("delete policy".into(), e))?
         .rows_affected)
 }
+/// How many of one book's `prices` units are pending, and the latest of their submissions and
+/// decisions: a row of [`prices_units_by_book`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct BookUnitCount {
+    pub ref_id: Uuid,
+    pub pending: i64,
+    /// [`super::latest`] of each unit's `decided_at`, or its `submitted_at` while undecided (a
+    /// decision never precedes its submission).
+    pub latest: Option<String>,
+}
+/// The `prices` units of the tenant's `books` (a prices unit's `ref_id` is its book), in every
+/// state, grouped by book in ONE statement whatever the number of books and units (D-441). A
+/// book without units has no row; another kind's unit is never counted.
+/// # Errors
+/// Returns typed database failures.
+pub async fn prices_units_by_book(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    books: &[Uuid],
+) -> Result<Vec<BookUnitCount>, RepoError> {
+    use sea_orm::QuerySelect;
+    use sea_orm::sea_query::Func;
+    if books.is_empty() {
+        return Ok(Vec::new());
+    }
+    let col = |c: approval_unit::Column| Expr::col((approval_unit::Entity, c));
+    let pending = Func::sum(
+        Expr::case(
+            col(approval_unit::Column::State).eq(UnitState::Pending.as_str()),
+            Expr::cust("1"),
+        )
+        .finally(Expr::cust("0")),
+    );
+    let last = Func::coalesce([
+        col(approval_unit::Column::DecidedAt),
+        col(approval_unit::Column::SubmittedAt),
+    ]);
+    approval_unit::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(approval_unit::Column::TenantId.eq(tenant))
+                .add(approval_unit::Column::Kind.eq(crate::infra::prices::KIND_PRICES))
+                .add(approval_unit::Column::RefId.is_in(books.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(approval_unit::Column::RefId)
+                .column_as(Expr::from(pending), "pending")
+                .column_as(super::latest(backend, last.into()), "latest")
+                .group_by(approval_unit::Column::RefId)
+                .into_model::<BookUnitCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count prices units by book".into(), e))
+}
 /// List units.
 /// # Errors
 /// Returns scoped storage failures, preserving database errors for retry.

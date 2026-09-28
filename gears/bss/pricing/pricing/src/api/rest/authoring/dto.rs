@@ -92,12 +92,20 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
         })
     }
 }
-/// An entry's prices by state; a rejected price is not counted (D-428).
+/// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
+/// also counted by where their window stands today (D-440): `approved` = `scheduled + active +
+/// superseded`.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceCounts {
     pub approved: u64,
     pub pending: u64,
     pub draft: u64,
+    /// Approved prices that start after today.
+    pub scheduled: u64,
+    /// Approved prices in force today.
+    pub active: u64,
+    /// Approved prices whose window ended on or before today.
+    pub superseded: u64,
 }
 /// An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,
 /// pending or published revision whose items name it; `plans_superseded_only`, the distinct plans
@@ -115,20 +123,26 @@ impl From<crate::infra::usage::EntryUsage> for PricingEntryUsage {
                 approved: u.prices.approved,
                 pending: u.prices.pending,
                 draft: u.prices.draft,
+                scheduled: u.prices.scheduled,
+                active: u.prices.active,
+                superseded: u.prices.superseded,
             },
             plans: u.plans,
             plans_superseded_only: u.plans_superseded_only,
         }
     }
 }
-/// What the two entry reads answer (D-428): the entry's fields and its `usage`. Every other answer
-/// that carries an entry (POST, PATCH, the stored receipt, the export, publish-changes) keeps
-/// [`PricingPriceBookEntryDto`].
+/// What the two entry reads answer (D-428): the entry's fields, its `usage` and its
+/// `current_price` (D-440): the default chain's approved price in force today, as D-434 chooses
+/// and shows it — `null` when none is, or when the caller does not hold `price_book` read on the
+/// entry's book. Every other answer that carries an entry (POST, PATCH, the stored receipt, the
+/// export, publish-changes) keeps [`PricingPriceBookEntryDto`].
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryReadDto {
     #[serde(flatten)]
     pub entry: PricingPriceBookEntryDto,
     pub usage: PricingEntryUsage,
+    pub current_price: Option<PricingPriceDto>,
 }
 impl PricingPriceBookEntryReadDto {
     /// # Errors
@@ -136,12 +150,82 @@ impl PricingPriceBookEntryReadDto {
     pub fn of(
         m: entity::price_book_entry::Model,
         usage: crate::infra::usage::EntryUsage,
+        current_price: Option<PricingPriceDto>,
     ) -> Result<Self, RepoError> {
         Ok(Self {
             entry: m.try_into()?,
             usage: usage.into(),
+            current_price,
         })
     }
+}
+/// `GET /price-book-entries/{id}/prices` (D-440): every price of the entry in every state, the
+/// default chain first, then each dimension value's chain in ascending order; each chain by
+/// `effective_from`, then `version_no`.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingEntryPriceList {
+    pub items: Vec<PricingPriceDto>,
+}
+/// The query of `GET /price-book-entries/{id}/prices`: an optional `status`, one display status
+/// or several comma-separated.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingEntryPricesQuery {
+    pub status: Option<String>,
+}
+/// A book's prices by state — a rejected price included — and its approved prices by where their
+/// window stands today: `approved` = `scheduled + active + superseded` (D-441).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingBookPriceCounts {
+    pub draft: u64,
+    pub pending: u64,
+    pub approved: u64,
+    pub scheduled: u64,
+    pub active: u64,
+    pub superseded: u64,
+    pub rejected: u64,
+}
+/// A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,
+/// pending or published revision on the book; its prices by state; its `prices` units in review;
+/// and the latest change of the book, its entries, their prices and its units.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPriceBookStats {
+    pub entries: u64,
+    pub skus: u64,
+    pub plans: u64,
+    pub prices: PricingBookPriceCounts,
+    pub pending_units: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_change_at: time::OffsetDateTime,
+}
+impl From<crate::infra::book_stats::BookStats> for PricingPriceBookStats {
+    fn from(s: crate::infra::book_stats::BookStats) -> Self {
+        let p = s.prices;
+        Self {
+            entries: s.entries,
+            skus: s.skus,
+            plans: s.plans,
+            prices: PricingBookPriceCounts {
+                draft: p.draft,
+                pending: p.pending,
+                approved: p.approved,
+                scheduled: p.scheduled,
+                active: p.active,
+                superseded: p.superseded,
+                rejected: p.rejected,
+            },
+            pending_units: s.pending_units,
+            last_change_at: s.last_change_at,
+        }
+    }
+}
+/// What the two book reads answer (D-441): the book's fields and its `stats`. The write answers
+/// (POST, PATCH, the stored receipt), the export and publish-changes keep [`PriceBookDto`].
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPriceBookReadDto {
+    #[serde(flatten)]
+    pub book: PriceBookDto,
+    pub stats: PricingPriceBookStats,
 }
 /// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its
 /// book's code, name and currency, its usage (D-428), and the default chain's price in force
@@ -207,13 +291,20 @@ impl PricingPriceDto {
     /// # Errors
     /// `CorruptRow` for a stored token outside its closed set (D-439).
     pub fn of(m: entity::price::Model, model: &str) -> Result<Self, RepoError> {
+        Self::at(m, model, time::OffsetDateTime::now_utc().date())
+    }
+    /// [`Self::of`] with its display status on `today`, the one day a whole read is dated on
+    /// (D-440).
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set (D-439).
+    pub fn at(m: entity::price::Model, model: &str, today: time::Date) -> Result<Self, RepoError> {
         let id = m.id;
         let state = PricingPriceState::stored(&m.state, &format_args!("price {id} state"))?;
         let status = crate::domain::price::window_display(
             state.into(),
             m.effective_from,
             m.effective_to,
-            time::OffsetDateTime::now_utc().date(),
+            today,
         )
         .into();
         Ok(Self {
@@ -282,10 +373,6 @@ fn nullable_date<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<Option<String>>, D::Error> {
     <Option<String> as serde::Deserialize>::deserialize(d).map(Some)
-}
-#[toolkit_macros::api_dto(response)]
-pub struct PriceBookList {
-    pub items: Vec<PriceBookDto>,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryList {

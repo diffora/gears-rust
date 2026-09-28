@@ -15,6 +15,45 @@ pub mod price_book_entry_repo;
 pub mod price_repo;
 pub mod reference_op_repo;
 pub mod settings_repo;
+/// The latest of `instant` over a group, as text [`latest_instant`] reads back (D-441): on
+/// Postgres the `timestamptz` maximum rendered in UTC to the microsecond it keeps; on `SQLite`,
+/// where an instant is RFC 3339 text whose fraction has as many digits as it needs (so `…00Z`
+/// sorts after `…00.5Z`, and `…00.41868Z` after `…00.418681Z`, P-D-213), the maximum of a
+/// fixed-width key that pads the fraction to nine digits, so the text sorts as time. Pricing
+/// writes every instant in UTC (`Z`); `NULL` stays out of the maximum.
+#[must_use]
+pub fn latest(
+    backend: sea_orm::DbBackend,
+    instant: sea_orm::sea_query::Expr,
+) -> sea_orm::sea_query::Expr {
+    use sea_orm::sea_query::Expr;
+    if backend == sea_orm::DbBackend::Postgres {
+        Expr::cust_with_expr(
+            r#"to_char(MAX($1) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')"#,
+            instant,
+        )
+    } else {
+        Expr::cust_with_exprs(
+            "MAX(substr(?, 1, 19) || substr(CASE WHEN substr(?, 20, 1) = '.' \
+             THEN rtrim(substr(?, 20), 'Z') ELSE '.' END || '000000000', 1, 10))",
+            [instant.clone(), instant.clone(), instant],
+        )
+    }
+}
+/// The instant [`latest`] rendered, in UTC.
+/// # Errors
+/// `CorruptRow` for text that is not such an instant (a stored instant pricing did not write).
+pub fn latest_instant(text: Option<&str>) -> Result<Option<time::OffsetDateTime>, RepoError> {
+    let format = time::macros::format_description!(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond]"
+    );
+    text.map(|t| {
+        time::PrimitiveDateTime::parse(t, &format)
+            .map(time::PrimitiveDateTime::assume_utc)
+            .map_err(|e| RepoError::CorruptRow(format!("the latest instant {t:?}: {e}")))
+    })
+    .transpose()
+}
 /// Preserve the driver's variant for serializable retries.
 #[must_use]
 pub fn driver_failure(context: String, error: ScopeError) -> RepoError {

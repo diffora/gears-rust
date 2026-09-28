@@ -370,6 +370,9 @@ Phase 6 adds the operator reads and edits: where a SKU is priced and sold (a SKU
 that name it, one plan item, D-434), the reset of a kind's quorum override (D-435), the one-key edit of dimension
 values with each value's use (D-436), and settings that offer currencies and say who changed them, with a closed set
 of rounding modes (D-437, D-438).
+Phase 7 adds the Price Books screen's reads: an entry's prices with their status today, its price in force and its
+approved prices by date (D-440), every book read's stats (D-441), and a book list that pages on the toolkit's OData
+pager and is searched by q and sku_id (D-442).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose

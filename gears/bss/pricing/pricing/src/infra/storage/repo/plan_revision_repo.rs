@@ -170,6 +170,56 @@ pub async fn for_plans(
         .await
         .map_err(|e| driver_failure("list the revisions of plans".into(), e))
 }
+/// How many distinct plans have a non-superseded revision on one book: a row of
+/// [`plans_on_books`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct BookPlanCount {
+    pub book_id: Uuid,
+    pub plans: i64,
+}
+/// The plans a book is in (D-441): for each of the tenant's `books`, the distinct plans with a
+/// draft, pending or published revision whose `book_id` is that book — a plan whose only
+/// revisions on it are superseded is not in it, and two revisions of one plan count once. ONE
+/// grouped statement whatever the number of books and revisions; a book no plan is in has no row.
+/// The book delete's `BOOK_IN_PLAN` (phase 7, run 7.2) judges a book by this same read, so a book
+/// whose `stats.plans` is 0 is never refused for a plan.
+/// # Errors
+/// Returns typed database failures.
+pub async fn plans_on_books(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+    books: &[Uuid],
+) -> Result<Vec<BookPlanCount>, RepoError> {
+    use sea_orm::QuerySelect;
+    use sea_orm::sea_query::Func;
+    if books.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::BookId.is_in(books.iter().copied()))
+                .add(e::Column::State.ne(RevisionState::Superseded.as_str())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::BookId)
+                .column_as(
+                    Expr::from(Func::count_distinct(Expr::col((
+                        e::Entity,
+                        e::Column::PlanId,
+                    )))),
+                    "plans",
+                )
+                .group_by(e::Column::BookId)
+                .into_model::<BookPlanCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count the plans on books".into(), e))
+}
 /// A plan's revisions by revision number.
 /// # Errors
 /// Returns typed database failures.

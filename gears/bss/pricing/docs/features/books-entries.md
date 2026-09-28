@@ -63,7 +63,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 02](../design/02-books-entries.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-442; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -123,7 +123,7 @@ Every DoD below is required for this feature's delivery phase. Constraints: `cpt
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-currency-validity`
 
-Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384).
+Books have tenant-unique codes, one immutable currency and optional nonempty validity. Versioned metadata edits preserve money identity (spec §5, D-384). Every book read carries the book's stats from four grouped statements, one per source (D-441), and the book list pages on the toolkit's OData pager, searched by q and sku_id (D-442).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
@@ -163,7 +163,7 @@ Requirement: `cpt-cf-bss-pricing-fr-settings`; PRD AC #13.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-export`
 
-Export returns the book and all its scoped entries/prices as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16).
+Export returns the book and all its scoped entries/prices as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16). One entry's prices read alone, each with its status today, in the export's chain order, under price_book read on the entry's book as well as entry read; the entry reads carry the price in force and the approved prices by date (D-440).
 
 Requirement: `cpt-cf-bss-pricing-fr-book-export`; PRD AC #12.
 

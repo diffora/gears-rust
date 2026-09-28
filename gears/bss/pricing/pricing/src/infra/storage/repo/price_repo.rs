@@ -161,15 +161,40 @@ pub async fn for_entry(
         .await
         .map_err(|e| driver_failure("list parent rows".into(), e))
 }
-/// How many prices of one entry are in one state: a row of [`count_by_entry_and_state`].
+/// How many prices of one entry are in one state, and of those how many have ended and how many
+/// have not yet started on the day asked: a row of [`count_by_entry_and_state`].
 #[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
 pub struct EntryStateCount {
     pub price_book_entry_id: Uuid,
     pub state: String,
     pub count: i64,
+    /// Of `count`, the prices whose window ends on or before the day: an approved one is
+    /// `superseded` (D-440).
+    pub ended: i64,
+    /// Of `count`, the prices not ended that start after the day: an approved one is `scheduled`;
+    /// the rest of the approved are `active` (D-440).
+    pub future: i64,
+}
+/// `SUM(CASE WHEN … THEN 1 ELSE 0 END)` of the prices whose window has ended on `today`, and of
+/// those not ended that start after it: `domain::price::window_display`'s order, superseded first.
+fn dated_sums(today: time::Date) -> (Expr, Expr) {
+    use sea_orm::sea_query::Func;
+    let to = || Expr::col((e::Entity, e::Column::EffectiveTo));
+    let ended = to().is_not_null().and(to().lte(today));
+    let future = to()
+        .is_null()
+        .or(to().gt(today))
+        .and(Expr::col((e::Entity, e::Column::EffectiveFrom)).gt(today));
+    let sum = |condition: Expr| {
+        Expr::from(Func::sum(
+            Expr::case(condition, Expr::cust("1")).finally(Expr::cust("0")),
+        ))
+    };
+    (sum(ended), sum(future))
 }
 /// The prices of the entries, counted by entry and state in ONE grouped statement, whatever the
-/// number of entries (D-428). An entry without prices has no row.
+/// number of entries (D-428), with the ended and the future ones of each group on `today` (D-440).
+/// An entry without prices has no row.
 /// # Errors
 /// Returns typed database failures.
 pub async fn count_by_entry_and_state(
@@ -177,10 +202,12 @@ pub async fn count_by_entry_and_state(
     scope: &AccessScope,
     tenant: Uuid,
     entries: &[Uuid],
+    today: time::Date,
 ) -> Result<Vec<EntryStateCount>, RepoError> {
     if entries.is_empty() {
         return Ok(Vec::new());
     }
+    let (ended, future) = dated_sums(today);
     e::Entity::find()
         .secure()
         .scope_with(scope)
@@ -194,12 +221,76 @@ pub async fn count_by_entry_and_state(
                 .column(e::Column::PriceBookEntryId)
                 .column(e::Column::State)
                 .column_as(Expr::col(e::Column::Id).count(), "count")
+                .column_as(ended, "ended")
+                .column_as(future, "future")
                 .group_by(e::Column::PriceBookEntryId)
                 .group_by(e::Column::State)
                 .into_model::<EntryStateCount>()
         })
         .await
         .map_err(|e| driver_failure("count prices by entry and state".into(), e))
+}
+/// How many prices of one book's entries are in one state, the ended and future ones among them,
+/// and their latest `updated_at`: a row of [`count_by_book_and_state`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct BookStateCount {
+    pub book_id: Uuid,
+    pub state: String,
+    pub count: i64,
+    pub ended: i64,
+    pub future: i64,
+    /// [`super::latest`] of the group's `updated_at`.
+    pub latest: Option<String>,
+}
+/// The prices of the books' entries, counted by book and state in ONE grouped statement whatever
+/// the number of books, entries and prices (D-441): each price joined to its one entry, so no row
+/// is counted twice. A book without prices has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn count_by_book_and_state(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    books: &[Uuid],
+    today: time::Date,
+) -> Result<Vec<BookStateCount>, RepoError> {
+    use crate::infra::storage::entity::price_book_entry as entry;
+    use sea_orm::JoinType;
+    if books.is_empty() {
+        return Ok(Vec::new());
+    }
+    let on_entry: sea_orm::RelationDef = e::Entity::belongs_to(entry::Entity)
+        .from(e::Column::PriceBookEntryId)
+        .to(entry::Column::Id)
+        .into();
+    let (ended, future) = dated_sums(today);
+    let latest = super::latest(backend, Expr::col((e::Entity, e::Column::UpdatedAt)));
+    e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
+                .add(
+                    Expr::col((entry::Entity, entry::Column::BookId)).is_in(books.iter().copied()),
+                ),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .join(JoinType::InnerJoin, on_entry)
+                .column_as(Expr::col((entry::Entity, entry::Column::BookId)), "book_id")
+                .column(e::Column::State)
+                .column_as(Expr::col((e::Entity, e::Column::Id)).count(), "count")
+                .column_as(ended, "ended")
+                .column_as(future, "future")
+                .column_as(latest, "latest")
+                .group_by(Expr::col((entry::Entity, entry::Column::BookId)))
+                .group_by(e::Column::State)
+                .into_model::<BookStateCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count prices by book and state".into(), e))
 }
 /// How many prices of any state carry one value of one dimension key: a row of
 /// [`count_by_key_and_value`].
