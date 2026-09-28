@@ -57,8 +57,8 @@ pub struct AuditCommon {
     /// The request's correlation, a `text` column (P-D-200). Products writes
     /// `None` on every row: this gear establishes no request correlation.
     pub correlation_id: Option<String>,
-    /// The commit instant, taken as a parameter rather than read from
-    /// `OffsetDateTime::now_utc()`.
+    /// The act's instant, taken by the writer and passed in rather than read from
+    /// `OffsetDateTime::now_utc()` here; not the commit (P-D-213).
     pub written_at: OffsetDateTime,
     /// The SKU lifecycle move the act made (P-D-213); [`LifecycleMove::NONE`] when it concerns no
     /// SKU.

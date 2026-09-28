@@ -47,7 +47,8 @@ pub struct Model {
     /// The request's correlation, as `text` (P-D-200). Products writes `None`
     /// on every row: this gear establishes no request correlation.
     pub correlation_id: Option<String>,
-    /// The commit instant.
+    /// The act's instant as its writer took it (before the transaction or inside the attempt; never the
+    /// commit) — P-D-213. The history orders by `audit_id`, not by this.
     pub written_at: TimeDateTimeWithTimeZone,
     /// Carried in the DDL; no writer sets it, so it is always `NULL`.
     pub session_id: Option<Uuid>,

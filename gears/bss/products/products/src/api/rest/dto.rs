@@ -303,9 +303,9 @@ impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
         }
     }
 }
-/// One act in a SKU's history (P-D-213): when (`at`, the instant the act began — taken before its
-/// transaction and kept across a retry, so not its commit; the history is in commit order, by the
-/// audit row's id), who (`actor`, the nil uuid for the system's orphan-fence expiry), what
+/// One act in a SKU's history (P-D-213): when (`at`, the row's `written_at`: the submit, change and
+/// draft doors take it before their transaction and keep it across a retry, the other writers inside
+/// the attempt — never the commit; the history is in the order the acts wrote, by the audit row's id), who (`actor`, the nil uuid for the system's orphan-fence expiry), what
 /// (`action`), the lifecycle it found and left (`null` on a row written before the audit log
 /// carried them, on a create's `from`), the approval unit it concerned and its kind, and the note
 /// it carried (a change's note, a decision's note, or the expiry's TTL).

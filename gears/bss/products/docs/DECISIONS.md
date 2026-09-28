@@ -661,12 +661,13 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
   context, which no principal carries (`require_authenticated` refuses a nil subject). This is an audit
   actor, not an authorization subject; products still reads as the caller (P-D-207). The list's and the
   counts' expiry is set-based (P-D-211): it reads the tenant's expired fences once, lifts them all in one
-  UPDATE, and writes all their rows in one INSERT; with no expired fence it is the one read.
+  UPDATE, and writes their rows in one INSERT per 1000 rows (P-D-211); with no expired fence it is the one read.
 - **The read.** `GET /skus/{id}/history` answers `Page<ProductsSkuHistoryEntry>`: `{ items, page_info }`,
   each item `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`. Its source is the
   audit rows whose subject is the SKU, and the rows whose subject is an approval unit whose `ref_id` is the
-  SKU, in the caller's tenant. `at` is the row's `written_at`: the instant the act began, taken before its
-  transaction and kept across a retry, so not its commit. `actor` is its `actor_ref`, and `note` its
+  SKU, in the caller's tenant. `at` is the row's `written_at`: the submit, change and draft doors take it before
+  their transaction and keep it across a retry; decisions, unfence, the fence expiry and a forced release take
+  it inside the attempt. It is never the commit. `actor` is its `actor_ref`, and `note` its
   `reason`: a change's `note` (the change request's own field, on its `approval.submit` row), a decision's
   note, or the expiry's TTL. `unit_id` and `unit_kind` name the unit of a unit's row (one read of the page's
   units) and are null on a SKU's own row. The order is `audit_id` alone, the order the acts wrote: every
