@@ -76,8 +76,10 @@ fn updated_at_orders_and_never_filters() {
     assert!(SkuListMapping::is_orderable(SkuListField::UpdatedAt));
 }
 
-/// `q` folds both sides with the database's `lower()` and escapes its pattern, on both
-/// dialects: `LOWER(col) LIKE LOWER(?) ESCAPE '\'` for each of the five columns.
+/// `q` folds both sides the same way and escapes its pattern, on both dialects, for each of the
+/// five columns: `LOWER(col) LIKE LOWER(?) ESCAPE '\'` on `SQLite`, and on Postgres through the
+/// ICU root collation, `lower(col COLLATE "und-x-icu") LIKE lower(? COLLATE "und-x-icu")`, so the
+/// database's locale does not decide the fold.
 #[test]
 fn the_text_search_lowers_both_sides_and_escapes_on_both_dialects() {
     use sea_orm::{EntityTrait, QueryFilter, QueryTrait};
@@ -91,10 +93,14 @@ fn the_text_search_lowers_both_sides_and_escapes_on_both_dialects() {
             .build(backend)
             .to_string();
         for column in ["code", "name", "unit", "usage_type_ref", "gl_code"] {
-            assert!(
-                sql.contains(&format!(r#"LOWER("products_sku"."{column}") LIKE LOWER("#)),
-                "{backend:?} {column}: {sql}"
-            );
+            let folded = if backend == DbBackend::Postgres {
+                format!(
+                    r#"(lower("products_sku"."{column}" COLLATE "und-x-icu")) LIKE (lower(E'%50\\%\\_Off%' COLLATE "und-x-icu"))"#
+                )
+            } else {
+                format!(r#"LOWER("products_sku"."{column}") LIKE LOWER("#)
+            };
+            assert!(sql.contains(&folded), "{backend:?} {column}: {sql}");
         }
         assert_eq!(sql.matches(" ESCAPE ").count(), 5, "{backend:?}: {sql}");
         // The escaped pattern, as each dialect spells a backslash in a literal (Postgres

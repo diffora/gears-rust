@@ -523,11 +523,16 @@ own `type`, `category`, `lifecycle` and `after` parameters go.
   `$skiptoken`) comes from `page_info`. The answer is `Page<SkuListItem>`: `{ items, page_info { next_cursor,
   prev_cursor, limit } }`, each item the SKU's fields and its `usage` from one port call per page (P-D-197).
 - **`q`** is `lower(column) LIKE lower(?) ESCAPE '\'` over `code`, `name`, `unit`, `usage_type_ref` and
-  `gl_code`, the caller's `%`, `_` and `\` escaped. `lower()` folds ASCII only on SQLite and Unicode on
-  Postgres, so a non-ASCII letter matches another case of itself on Postgres only; the two backends differ
-  there (`nfr-two-backends`), and both are pinned by tests. An empty `q` is no search. The toolkit's
-  `contains` in `$filter` follows the backend's `LIKE` (case-sensitive on Postgres); `q` is the
-  case-insensitive search.
+  `gl_code`, the caller's `%`, `_` and `\` escaped. On Postgres both sides fold through the ICU root
+  collation, `lower(column COLLATE "und-x-icu") LIKE lower(? COLLATE "und-x-icu") ESCAPE '\'`, so Unicode
+  case folds whatever the database's locale: a database's own `lower()` folds ASCII only when its
+  `LC_CTYPE` is `C` (`initdb --locale=C`, CloudNativePG's default; Benidorm's `app` database). SQLite's
+  `lower()` folds ASCII only, so a non-ASCII letter matches another case of itself on Postgres only; the
+  two backends differ there (`nfr-two-backends`), and both are pinned by tests, Postgres on a `C`-locale
+  database too. An empty `q` is no search. The toolkit's `contains` in `$filter` follows the backend's
+  `LIKE` (case-sensitive on Postgres); `q` is the case-insensitive search.
+  Deployment note: the Postgres server must be built with ICU (the `und-x-icu` collation exists; the
+  official images and CloudNativePG's have it); without it the list and the counts fail on any `q`.
 - **Refusals.** Any key besides `limit`, `cursor`, `q`, P-D-212's `priced` and `in_plan`, and the OData
   options is 400 `UNSUPPORTED_QUERY_PARAM`, every offender named (a products copy of ledger's
   `reject_non_odata_list_params_allowing`); a plain key given twice is 400. `$select` and `$count` are 400.
@@ -552,7 +557,7 @@ Breaking: the list's parameters and its envelope (`next` is `page_info.next_curs
 follows in this run; vhp-core's e2e in phase 6.6.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (owner decision 1; asks 1, 2 and 4; validation D4, D7; plan
-review H1, L1–L5, L10).
+review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per field; F3: the ICU fold).
 
 #### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
 

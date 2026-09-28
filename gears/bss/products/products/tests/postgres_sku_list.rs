@@ -1,7 +1,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
-//! The SKU list and its counts on `PostgreSQL` (P-D-210, P-D-211): the text search folds case
-//! with Postgres's Unicode `lower()` and takes wildcards literally, the null filters and the
-//! cursor order hold on the engine production runs, and the counts group in one statement.
+//! The SKU list and its counts on `PostgreSQL` (P-D-210, P-D-211): the text search folds Unicode
+//! case through the ICU root collation — on a `C`-locale database too — and takes wildcards
+//! literally, the null filters and the cursor order hold on the engine production runs, and the
+//! counts group in one statement.
 mod pg_support;
 
 use bss_products::{
@@ -23,7 +24,13 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> (Pg, Self) {
-        let pg = Pg::applied().await;
+        Self::on(Pg::applied().await).await
+    }
+    /// A fixture on a `C`-locale database, where the database's own `lower()` folds ASCII only.
+    async fn in_c_locale() -> (Pg, Self) {
+        Self::on(Pg::applied_in_c_locale().await).await
+    }
+    async fn on(pg: Pg) -> (Pg, Self) {
         let db = pg.db().await;
         let tenant = Uuid::new_v4();
         let f = Self {
@@ -168,6 +175,66 @@ async fn q_folds_unicode_case_and_takes_wildcards_literally_on_postgres() {
         // `lower()` folds ASCII only; the SQLite door test pins the difference).
         ("\u{431}\u{435}\u{442}\u{430}", vec!["CYR"]),
         ("\u{411}\u{415}\u{422}\u{410}", vec!["CYR"]),
+    ] {
+        assert_eq!(f.codes(Some(q), None).await, sorted(expected), "q={q}");
+    }
+}
+
+/// P-D-210 on a `C`-locale database — Benidorm's `app` database, `initdb --locale=C`,
+/// `CloudNativePG`'s default — where `lower()` folds ASCII only: `q` still folds Unicode case,
+/// because both sides fold through the ICU root collation (`und-x-icu`), whatever the database's
+/// locale.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn q_folds_unicode_case_on_a_c_locale_database() {
+    use sea_orm::{ConnectionTrait, Statement};
+    let (pg, f) = Fixture::in_c_locale().await;
+    // The database is `C`, and there its own `lower()` does not fold Cyrillic.
+    let raw = pg.raw().await;
+    let row = raw
+        .query_one_raw(Statement::from_string(
+            DbBackend::Postgres,
+            "SELECT datctype, lower('\u{411}\u{415}\u{422}\u{410}') = '\u{431}\u{435}\u{442}\u{430}' AS folds \
+             FROM pg_database WHERE datname = current_database()",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            row.try_get::<String>("", "datctype").unwrap(),
+            row.try_get::<bool>("", "folds").unwrap()
+        ),
+        ("C".to_owned(), false),
+        "the database's lower() folds ASCII only"
+    );
+    raw.close().await.unwrap();
+    // Beta, in capital Cyrillic, as the code and the name; a Latin SKU beside it.
+    f.sku(
+        "\u{411}\u{415}\u{422}\u{410}",
+        "\u{411}\u{415}\u{422}\u{410}",
+        None,
+        Lifecycle::Draft,
+        None,
+    )
+    .await;
+    f.sku("STOR", "Storage", None, Lifecycle::Draft, Some("GiB"))
+        .await;
+    for (q, expected) in [
+        (
+            "\u{431}\u{435}\u{442}\u{430}",
+            vec!["\u{411}\u{415}\u{422}\u{410}"],
+        ),
+        (
+            "\u{411}\u{435}\u{442}",
+            vec!["\u{411}\u{415}\u{422}\u{410}"],
+        ),
+        (
+            "\u{411}\u{415}\u{422}\u{410}",
+            vec!["\u{411}\u{415}\u{422}\u{410}"],
+        ),
+        ("stor", vec!["STOR"]),
+        ("gib", vec!["STOR"]),
     ] {
         assert_eq!(f.codes(Some(q), None).await, sorted(expected), "q={q}");
     }

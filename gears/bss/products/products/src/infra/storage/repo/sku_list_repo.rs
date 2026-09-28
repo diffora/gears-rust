@@ -203,11 +203,26 @@ fn set_condition(backend: DbBackend, set: &SetFilter) -> Condition {
     if set.member { inside } else { inside.not() }
 }
 
+/// The collation `q` folds case through on Postgres: ICU's root locale, which folds Unicode
+/// whatever the database's own locale is (a `C` database's `lower()` folds ASCII only). A
+/// deployment's Postgres must be built with ICU (P-D-210).
+pub const PG_FOLD_COLLATION: &str = "und-x-icu";
+
+/// `lower(expr)`, folded through [`PG_FOLD_COLLATION`] on Postgres and through the database's own
+/// `lower()` (ASCII only) on `SQLite`.
+fn folded(backend: DbBackend, expr: Expr) -> Expr {
+    if backend == DbBackend::Postgres {
+        Expr::cust_with_expr(format!(r#"lower($1 COLLATE "{PG_FOLD_COLLATION}")"#), expr)
+    } else {
+        Expr::expr(Func::lower(expr))
+    }
+}
+
 /// `q` over the five text columns: `lower(column) LIKE lower(pattern) ESCAPE '\'`, the caller's
-/// text matched literally (`%`, `_` and `\` escaped). Both sides go through the database's
-/// `lower()`, which folds ASCII only on `SQLite` and Unicode on Postgres (P-D-210). An unset
-/// column never matches.
-fn text_condition(text: &str) -> Condition {
+/// text matched literally (`%`, `_` and `\` escaped). Both sides fold case the same way: through
+/// the ICU root collation on Postgres, so Unicode case folds whatever the database's locale, and
+/// through `SQLite`'s `lower()`, ASCII only (P-D-210). An unset column never matches.
+fn text_condition(text: &str, backend: DbBackend) -> Condition {
     let pattern = format!("%{}%", escape_like(text));
     [
         sku::Column::Code,
@@ -220,14 +235,11 @@ fn text_condition(text: &str) -> Condition {
     .fold(Condition::any(), |any, column| {
         // `LikeExpr` binds its pattern as it is; the pattern here goes through `lower()` too,
         // so the `LIKE … ESCAPE` is spelled as the nested binary `LikeExpr` itself builds.
-        let lowered = Expr::expr(Func::lower(Expr::val(pattern.clone()))).binary(
+        let lowered = folded(backend, Expr::val(pattern.clone())).binary(
             BinOper::Escape,
             Expr::Constant(sea_orm::Value::Char(Some('\\'))),
         );
-        any.add(
-            Expr::expr(Func::lower(Expr::col((sku::Entity, column))))
-                .binary(BinOper::Like, lowered),
-        )
+        any.add(folded(backend, Expr::col((sku::Entity, column))).binary(BinOper::Like, lowered))
     })
 }
 
@@ -236,7 +248,7 @@ fn text_condition(text: &str) -> Condition {
 pub fn list_condition(tenant: Uuid, filter: &SkuListFilter, backend: DbBackend) -> Condition {
     let mut c = Condition::all().add(sku::Column::TenantId.eq(tenant));
     if let Some(text) = filter.text.as_deref() {
-        c = c.add(text_condition(text));
+        c = c.add(text_condition(text, backend));
     }
     for set in [&filter.priced, &filter.in_plan].into_iter().flatten() {
         c = c.add(set_condition(backend, set));
