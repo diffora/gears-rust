@@ -1,7 +1,7 @@
 family     = "flat"
 id         = "quantity-independent"
 kind       = "evaluation"
-provenance = ["AC#60", "PRD 17.2", "PRD 6.2"]
+provenance = ["AC#60 (backup)", "PRD 17.2 (backup)", "PRD 6.2 (backup)"]
 
 # `flat` is valid on non-usage rows only; `flat` on a usage row fails publish
 # with MODEL_KIND_CHARGEKIND_MISMATCH, because the plain untiered metered rate is

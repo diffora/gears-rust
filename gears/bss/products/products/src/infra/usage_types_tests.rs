@@ -32,7 +32,7 @@ async fn an_unconfigured_catalog_refuses_the_list_rather_than_answering_empty() 
     );
 }
 
-/// And its `resolve` stays fail-closed, which is P-D-131 unchanged.
+/// And its `resolve` stays fail-closed (P-D-184).
 #[tokio::test]
 async fn an_unconfigured_catalog_resolves_nothing_and_says_unavailable() {
     assert_eq!(
@@ -83,4 +83,29 @@ async fn the_local_dev_catalog_lists_narrows_and_resolves_its_own_ids() {
         UsageTypeAnswer::Unresolved,
         "and it says no to an id it does not carry, rather than Unavailable"
     );
+}
+
+/// P-D-207 (owner option b): the collector is asked as the caller, and its `PermissionDenied` is
+/// `Forbidden` at resolve (the door's 403 `USAGE_TYPE_FORBIDDEN`), never `Unavailable` (a 503).
+/// The picker's list refuses the same caller with a 403 as well.
+#[tokio::test]
+async fn a_collector_denial_is_forbidden_not_unavailable() {
+    let catalog = super::CollectorUsageTypes::new(
+        std::sync::Arc::new(crate::test_support::DenyingCollector),
+        std::time::Duration::from_secs(2),
+    );
+    assert_eq!(
+        catalog
+            .resolve(
+                &ctx(),
+                "gts.cf.core.uc.usage_record.v1~cf.e2e.pricebook.storage.v1"
+            )
+            .await,
+        UsageTypeAnswer::Forbidden
+    );
+    let error = catalog
+        .list(&ctx(), None, None, 50, None)
+        .await
+        .expect_err("a refused caller has no page");
+    assert_eq!(error.title(), "Permission Denied", "{error:?}");
 }

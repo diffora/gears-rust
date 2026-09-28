@@ -116,6 +116,7 @@ The fresh migration allocation is:
 | `000005` | Replay table and response-state guards. |
 | `000006` | Reference registry and live-reference indexes. |
 | `000007` | A SKU's category becomes optional (P-D-196): Postgres drops the NOT NULL; SQLite rebuilds `products_sku` with its two child tables inside the runner's transaction, without PRAGMA. `down()` is irreversible. |
+| `000008` | The audit row carries the SKU lifecycle move its act made (P-D-213): `ADD COLUMN` `from_lifecycle`, `to_lifecycle` (nullable, CHECKed to the five lifecycles), and the append-only guard redefined so the seal keeps both unchanged too. `down()` is irreversible. |
 
 Before `000001` runs the guard `m0000_products_refuse_a_legacy_or_stale_schema` ([P-D-195](../DECISIONS.md)).
 Its name sorts it before every other migration of the gear, and it creates nothing. It refuses a database
@@ -139,16 +140,19 @@ all checks and tenant keys. SKU details are in slice 02 and approval mutations i
 | `products_category`, `products_sku` | Tenant-qualified uniqueness and category links; use revision as SKU concurrency version and published_version as its snapshot counter. |
 | `products_sku_version` | Key `(sku_id, published_version)` with tenant-scoped access; immutable inserts; effective dates need not be unique. |
 | Four `products_approval_*` tables | Unit version CAS; item author provenance; decision key `(unit_id, actor, generation)`; policy `'*'` default, absent means quorum 1; no unit replay key. |
-| `products_audit` | Append-only record with tenant/time, subject and actor indexes; only reserved sealing metadata may change as defined in DESIGN. |
+| `products_audit_log` | Append-only record with tenant/time, subject and actor indexes; only reserved sealing metadata may change as defined in DESIGN. |
 | `products_idempotency` | Primary key `(tenant_id, endpoint, client_key)` and tenant/expiry index; response-group check ties nullable response columns to claimed/answered state. |
 
 Audit columns are carried from backup migration `m20260829_000004_create_products_audit_log.rs`,
-with the table renamed to `products_audit` as in DESIGN. Required columns are `audit_id uuid`,
+with the table's name `products_audit_log` kept, as in DESIGN. Required columns are `audit_id uuid`,
 `tenant_id uuid`, `actor_ref uuid`, `action text`, `subject_kind text`, `written_at timestamptz` and
 `seal_state text`. Nullable columns are `subject_id uuid`, `subject_revision bigint`, `error_code text`,
 `attempted_key text`, `reason text`, `correlation_id text`, `session_id uuid`, `ceremony_ref uuid`,
 `chain_id uuid`, `seq bigint`, `prev_hash bytea` and `row_hash bytea`. Keep the subject-reference,
 seal-group and nonnegative-sequence checks. Reserved columns do not reinstate removed workflows.
+Migration `000008` adds the nullable `from_lifecycle text` and `to_lifecycle text`, each CHECKed to the five
+lifecycles: the SKU lifecycle an act found and left (P-D-213). The seal keeps them unchanged, as it keeps every
+record column.
 
 Replay columns are carried from backup migration `m20260829_000006_create_products_idempotency.rs`:
 required `tenant_id uuid`, `endpoint text`, `client_key text`, `state text`, `payload_hash bytea`,

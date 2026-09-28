@@ -1,9 +1,10 @@
 family     = "supersession-continuity"
 id         = "kind-flip-rejected"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "D-98"]
+provenance = ["inst-tb-supersession-units (backup)", "D-98 (backup)", "D-390"]
 
-# `model_kind` joined the preserved set as D-98. A graduated to volume flip
+# The model never changes on a chain: it is the entry's (D-390, D-427), and the
+# runner asserts this case by the entry key. A graduated to volume flip
 # mid-window re-prices the *already accumulated* window total under new math:
 # Variant A applies the selected band's single rate to the whole Q, including
 # units already rated marginally under the predecessor.

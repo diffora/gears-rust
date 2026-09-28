@@ -881,3 +881,43 @@ async fn every_op_of_an_entry_carries_its_model() {
         assert_eq!(input["model"], "volume", "{kind}: {input}");
     }
 }
+
+/// D-439: a stored token outside its closed set (a row written around the gear, with its CHECK
+/// bypassed) is `CorruptRow`: the read answers 500 — never a panic, never the token under an
+/// `enum` that does not hold it — and the gear goes on serving.
+#[tokio::test]
+async fn a_stored_token_outside_its_closed_set_is_a_500_never_a_panic() {
+    use sea_orm::{ConnectionTrait, Database};
+    let (f, _, path, input) = setup(0).await;
+    let created = f.call("POST", &path, input, None, Some("one")).await;
+    assert_eq!(created.0, 201, "{created:?}");
+    let id: Uuid = serde_json::from_value(created.1["id"].clone()).unwrap();
+    let raw = Database::connect(&f.dsn).await.unwrap();
+    let hex = id.simple().to_string().to_uppercase();
+    let row = format!("WHERE id = '{id}' OR hex(id) = '{hex}'");
+    // The premise: the CHECK holds both columns to their sets, so only a writer around it can.
+    for set in ["charge_kind = 'weekly'", "period = 'week'"] {
+        let refused = raw
+            .execute_unprepared(&format!("UPDATE pricing_price_book_entry SET {set} {row}"))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains("CHECK"), "{set}: {refused}");
+    }
+    raw.execute_unprepared("PRAGMA ignore_check_constraints = ON")
+        .await
+        .unwrap();
+    let poisoned = raw
+        .execute_unprepared(&format!(
+            "UPDATE pricing_price_book_entry SET charge_kind = 'weekly' {row}"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(poisoned.rows_affected(), 1);
+    raw.close().await.unwrap();
+    let entry = format!("/price-book-entries/{id}");
+    let read = f.call("GET", &entry, json!({}), None, None).await;
+    assert_eq!(read.0, 500, "{read:?}");
+    assert!(!read.1.to_string().contains("weekly"), "{read:?}");
+    let books = f.call("GET", "/price-books", json!({}), None, None).await;
+    assert_eq!(books.0, 200, "the gear still serves: {books:?}");
+}

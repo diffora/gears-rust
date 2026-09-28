@@ -16,6 +16,7 @@ use super::{
     price_book_entries::{settled, stored},
     support::{self, DoorError},
 };
+use crate::api::rest::closed_sets::PricingRevisionState;
 use crate::{
     domain::{
         plan::{MAX_ITEMS, ReferenceState, RevisionState, Treatment},
@@ -238,8 +239,40 @@ pub(super) async fn patch(
     support::audit(tx, ctx, correlation, "plan_item.patch", id, m.version).await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPlanItemDto::from(m),
+        &PricingPlanItemDto::try_from(m)?,
         Some(version + 1),
+    )?)
+}
+/// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan,
+/// its version as the `ETag` a following PATCH sends back as If-Match.
+/// # Errors
+/// 404 for an item the tenant does not hold.
+pub(super) async fn get(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Response, DoorError> {
+    let m = plan_item_repo::find(tx, scope, tenant, id)
+        .await?
+        .ok_or_else(|| support::missing_what("plan_item"))?;
+    let r =
+        plans::find_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.revision_id).await?;
+    let version = crate::api::rest::preconditions::RowVersion::from_stored(m.version)
+        .map_err(CanonicalError::from)?
+        .get();
+    Ok(support::response(
+        StatusCode::OK,
+        &super::dto::PricingPlanItemReadDto {
+            item: m.try_into()?,
+            plan_id: r.plan_id,
+            rev_no: r.rev_no,
+            state: PricingRevisionState::stored(
+                &r.state,
+                &format_args!("revision {} state", r.id),
+            )?,
+        },
+        Some(version),
     )?)
 }
 enum Begun {

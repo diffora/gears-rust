@@ -1,9 +1,9 @@
 family     = "tier-boundary"
 id         = "graduated-band-edge"
 kind       = "evaluation"
-provenance = ["AC#60", "PRD §17.2", "D-17"]
+provenance = ["AC#60 (backup)", "PRD §17.2 (backup)", "D-17 (backup)", "D-430"]
 
-# `graduated` is legal on `usage` rows only (`inst-mk-chargekind`, D-18), so
+# `graduated` is legal on `usage` rows only (D-386), so
 # `usage` is the only honest chargeKind here.
 #
 # CLOSED (was OPEN, for the corpus owner). The row named no `meter`, and a usage

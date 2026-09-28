@@ -10,7 +10,7 @@ use crate::infra::storage::{
     RepoError,
     repo::{book_repo, plan_item_repo, plan_revision_repo, price_book_entry_repo, price_repo},
 };
-use bss_products_sdk::sku_usage::{PriceCounts, SkuUsage};
+use bss_products_sdk::sku_usage::{PriceCounts, SkuUsage, SkuUsageSets};
 use std::collections::{BTreeMap, BTreeSet};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use uuid::Uuid;
@@ -187,4 +187,19 @@ pub async fn sku_usage(
             }
         })
         .collect())
+}
+/// The tenant's priced and in-plan SKUs (P-D-212): the SKUs whose [`sku_usage`] counts an entry,
+/// and those whose [`sku_usage`] counts a plan, under the same `scope` — in two statements
+/// whatever the number of SKUs.
+/// # Errors
+/// Storage failures.
+pub async fn sku_usage_sets(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+) -> Result<SkuUsageSets, RepoError> {
+    Ok(SkuUsageSets {
+        priced: price_book_entry_repo::priced_skus(runner, scope, tenant).await?,
+        in_plan: price_book_entry_repo::in_plan_skus(runner, scope, tenant).await?,
+    })
 }

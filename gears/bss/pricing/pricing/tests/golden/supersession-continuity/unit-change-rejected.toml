@@ -1,12 +1,11 @@
 family     = "supersession-continuity"
 id         = "unit-change-rejected"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "D-82", "D-77"]
+provenance = ["inst-tb-supersession-units (backup)", "D-82 (backup)", "D-77 (backup)", "D-402"]
 
 # The ×24 band-edge class. The tier counter continues across supersession, so an
 # hours-denominated Q applied to day-denominated bands re-prices the window under
-# a unit it was never counted in. This is the door D-82 closed; the same class
-# has since been found at four more (D-98, D-89, D-113, D-127).
+# a unit it was never counted in. This is the door the pair guard closes (D-402).
 
 [predecessor]
 model_kind              = "graduated"

@@ -63,7 +63,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [PRD](../PRD.md), especially the numbered acceptance criteria referenced below.
 - [DESIGN](../DESIGN.md), §3 model, API contracts, transaction sequences and DDL.
 - [Slice 02](../design/02-books-entries.md), including API, data and event obligations.
-- [DECISIONS](../DECISIONS.md), D-384–D-428; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
+- [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
 ## 2. Actor Flows (CDSL)
@@ -147,7 +147,7 @@ Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-dimension-registry`
 
-Keys and values are tenant-owned and validated with the four DIM errors. The registry starts seeded with region, declared with no values; the first entry naming it stores the seed. A referenced value cannot be removed even when its price is historical, and registry edits require no approval (spec §5, §14).
+Keys and values are tenant-owned and validated with the four DIM errors. The registry starts seeded with region, declared with no values; the first entry naming it stores the seed. A referenced value cannot be removed even when its price is historical, and registry edits require no approval (spec §5, §14). Every registry answer shows each value's use, the prices of any state that carry it, from one grouped count; PATCH /dimension-keys adds and removes one declared key's values, and a used value's refusal names it (D-436).
 
 Requirement: `cpt-cf-bss-pricing-fr-dimension-registry`; PRD AC #1.
 
@@ -155,7 +155,7 @@ Requirement: `cpt-cf-bss-pricing-fr-dimension-registry`; PRD AC #1.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-settings-defaults`
 
-Tenant timing, rounding, GL, tax and per-type invoice templates are stored and exposed. SKU timing overrides tenant timing at binding; settings permissions and optimistic versioning apply (spec §5).
+Tenant timing, rounding, GL, tax and per-type invoice templates are stored and exposed. SKU timing overrides tenant timing at binding; settings permissions and optimistic versioning apply (spec §5). The rounding is one of five modes (D-437); the settings offer the currencies a new book may take and say who wrote them last and when (D-438).
 
 Requirement: `cpt-cf-bss-pricing-fr-settings`; PRD AC #13.
 

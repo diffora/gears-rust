@@ -104,14 +104,15 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag("SKUs")
         .authenticated()
         .no_license_required()
-        .query_param("kind", true, "sku or tax_category")
-        .query_param(
+        .query_param_typed("kind", true, "sku or tax_category", "string")
+        .query_param_typed(
             "$filter",
             false,
             "OData over entity_id/sku_id, entity_code/sku_code and name",
+            "string",
         )
-        .query_param("limit", false, "Page size, 1 to 200; default 50")
-        .query_param("cursor", false, "Exclusive SKU code continuation")
+        .query_param_typed("limit", false, "Page size, 1 to 200; default 50", "integer")
+        .query_param_typed("cursor", false, "Exclusive SKU code continuation", "string")
         .handler(browse)
         .json_response_with_schema::<BrowsePage>(
             openapi,

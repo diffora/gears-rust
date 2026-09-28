@@ -41,7 +41,8 @@ and type change cannot ship before both sides of that barrier are integrated.
 The authority is spec §2.2, §4, §6, §7.2 and §13, meaning
 `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 [DECISIONS](../DECISIONS.md) P-D-189–194 settle durable fences, policy, generations and events.
-Categories and settings remain direct edits. No materiality calculation or cross-gear approval unit exists.
+Categories and the approval policy remain direct edits; the fence TTL is the deployment setting
+`fence_ttl_minutes`, not a tenant setting (P-D-209). No materiality calculation or cross-gear approval unit exists.
 
 ## 2. Actor Flows (CDSL)
 
@@ -81,7 +82,7 @@ Categories and settings remain direct edits. No materiality calculation or cross
 
 1. [ ] - `p1` - sku_publish accepts draft and installs published with a new immediate snapshot; sku_change accepts published/deprecated content and the published ↔ deprecated edges - `inst-ap-lifecycle-kind`
 2. [ ] - `p1` - For a change default the requested effective_from to today and refuse a past date at submit; apply max(requested date, apply date) and reject applied dates before the latest stored version with VERSION_ORDER; equal dates append a higher published_version - `inst-ap-lifecycle-date`
-3. [ ] - `p1` - Retirement of a draft, published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation - `inst-ap-lifecycle-retire`
+3. [ ] - `p1` - Retirement of a published or deprecated SKU first saves its prior lifecycle and installs retiring, then sku_retire installs retired only after approval and environment validation; a never-published draft is not retired but deleted by its author (DELETE /skus/{id}, P-D-206) - `inst-ap-lifecycle-retire`
 4. [ ] - `p1` - Reject unsupported lifecycle edges, edits while pending and any return from retired; rejected/withdrawn publication or ordinary change leaves prior business content intact - `inst-ap-lifecycle-refuse`
 
 ### Atomic fence and submission
@@ -131,7 +132,7 @@ Orphan expiry cannot clear a pending unit's fence, and environment refusal canno
 | Entity | Transition and guard |
 | --- | --- |
 | SKU | draft → published through sku_publish; published ↔ deprecated and content changes through sku_change. Each successful publish/change appends a snapshot. |
-| Retirement fence | draft/published/deprecated → retiring after guarded fence commit; retiring → retired on apply; reject/withdraw or expired orphan recovery → saved prior lifecycle. |
+| Retirement fence | published/deprecated → retiring after guarded fence commit; retiring → retired on apply; reject/withdraw or expired orphan recovery → saved prior lifecycle. A draft has no retirement edge: a never-published draft is deleted (P-D-206). |
 | Type fence | type_change_pending false → true after guarded commit; pending review retains it; successful change, matching abort or expired orphan recovery clears it. |
 | Unit | submit → pending for nonzero quorum, or approved for successful quorum zero; pending → pending below quorum or after refreshed generation; pending → approved/rejected/withdrawn terminally. |
 | Ownership | pending_unit_id null → unit id conditionally; approval clears it and records approved_by_unit_id; abort clears it without approving new content. |
@@ -152,16 +153,18 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 | `POST /skus/{id}/retire` | products:submit; commit guarded fence then submit/resume sku_retire. |
 | `POST /skus/{id}/unfence` | products:author; explicit recovery of an expired orphan only, never a pending unit's barrier. |
 | `GET /approval-units?state&kind&ref_id` | products:read; tenant queue, ordered by submitted_at with a stable id tie-break. |
-| `GET /approval-units/{id}` | products:read; stored snapshot, generation, decisions (including stale) and live recomputation; a GET does not replace or refresh the stored snapshot. |
+| `GET /approval-units/{id}` | products:read; stored snapshot, generation, decisions (including stale) and live recomputation; a GET does not replace or refresh the stored snapshot. A unit whose draft was deleted after its rejection or withdrawal answers `impact_live: null` (P-D-206). |
 | `POST /approval-units/{id}/approve` | products:approve; generation required, SoD enforced. |
 | `POST /approval-units/{id}/reject` | products:approve; generation and note required; one rejection closes the unit. |
 | `POST /approval-units/{id}/withdraw` | products:submit plus submitter identity; pending only. |
-| `GET /approval-policy`, `PUT /approval-policy` | products:settings for both reads and writes; direct tenant default/per-kind quorum management. |
-| `GET /settings`, `PUT /settings` | products:read/settings respectively; includes fence_ttl_minutes; policy uses the same tenant settings source. |
+| `GET /approval-policy`, `PUT /approval-policy` | products:settings for both reads and writes; direct tenant default/per-kind quorum management. The GET answers a strong content `ETag`; the PUT requires it as `If-Match` (missing or malformed 400, stale 409 STALE_REVISION), authorization first (P-D-205). |
+| `DELETE /approval-policy/{kind}` | products:settings; removes one kind's override under the policy's `If-Match`, so the kind follows the default again; the default (`*`) is 400 POLICY_DEFAULT_REQUIRED, a kind without an override 404, a stale tag 409 STALE_REVISION; authorization first (P-D-216). |
+| `DELETE /skus/{id}` | products:author; a never-published draft only, by its author (403 NOT_DRAFT_AUTHOR), If-Match; 204 with an audit row; SKU_NOT_DRAFT, ROW_LOCKED_PENDING, SKU_REFERENCED (409). A draft is deleted, never retired (P-D-206). |
 
 Submit validation failure returns 400 with its code and no new unit (never 422, pricing D-403). Conflicts include ROW_LOCKED_PENDING,
 VERSION_ORDER, SKU_REFERENCED, SKU_TYPE_FROZEN, UNIT_CONTENDED and UNIT_ALREADY_DECIDED (409).
-SOD_VIOLATION and NOT_SUBMITTER are 403. UNIT_STALE and GENERATION_MISMATCH are 400 with generation.
+SOD_VIOLATION, NOT_SUBMITTER and USAGE_TYPE_FORBIDDEN (the usage-type catalog, read as the caller, refused
+the caller at submit or approve; P-D-207) are 403. UNIT_STALE and GENERATION_MISMATCH are 400 with generation.
 An apply environment error is APPLY_REFUSED with the underlying domain reason and no success outcome.
 
 ## 6. Data Model
@@ -171,7 +174,7 @@ migrates them. This slice owns their domain writes:
 
 | Table/columns | Mutation semantics |
 | --- | --- |
-| `products_approval_policy (tenant_id, kind, quorum)` | Nonnegative quorum; '*' default plus sku_publish/sku_change/sku_retire overrides; settings edits affect future submissions, not already copied quorum. |
+| `products_approval_policy (tenant_id, kind, quorum)` | Nonnegative quorum; '*' default plus sku_publish/sku_change/sku_retire overrides; policy edits affect future submissions, not already copied quorum. |
 | `products_approval_unit` | kind/ref_type/ref_id, state, common_effective_date, quorum_required, generation, submitted_by/at, decided_at/note, snapshot/hash, version, tenant/id. common_effective_date holds effective_from; generation/version start at 1 and serve different purposes. |
 | `products_approval_unit_item` | unit_id, item_type/id, created_by, before and after. Before is nullable for creation; after is proposed business content. Snapshot/hash use content and date, not storage locks. |
 | `products_approval_decision` | unit_id, actor, generation, decision, note, at, stale; key is unit/actor/generation. Refresh marks existing decisions stale instead of deleting them. |

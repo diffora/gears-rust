@@ -82,13 +82,8 @@ impl AuthZResolverApi for FlatInResolver {
 
 /// A fixture instant: `2026-09-02` at `hour`, UTC.
 ///
-/// # Four copies, three epochs, and `at(9)` meant three different things
-///
-/// **P-D-110** arm 1 hoisted this. `repo_tests` had it on `2026-08-29`,
-/// `repo/governance_tests` and `repo/taxonomy_tests` on `2026-09-02`, and
-/// `repo/retention_tests` arrived on `2026-09-03` — a new module bringing a
-/// new epoch, which is how the drift was accelerating. Two other modules had
-/// no `at()` at all.
+/// One fixture epoch for every suite: a second epoch makes `at(9)` mean two
+/// instants.
 ///
 /// **The count was never the trigger.** `harness()` is copied five times too
 /// and stays copied: its forms differ only in an `.expect()` message, so
@@ -99,7 +94,7 @@ impl AuthZResolverApi for FlatInResolver {
 /// already used and the only one that says what it is asserting: that the
 /// One UTC instant from its civil components — the fixture spelling that
 /// replaced `chrono`'s `crate::test_support::utc(..)` when the gear
-/// moved to `time` (P-D-167).
+/// moved to `time`.
 ///
 /// A helper rather than seventy-two inline conversions: `time` builds an
 /// instant through a `Date` and a civil time, so the inline form is four
@@ -358,7 +353,7 @@ pub async fn audit_error_code(dsn: &str) -> Option<String> {
 /// A usage-type resolver that answers `Resolved` for every ref — what a test
 /// `ApiState` carries unless a probe injects [`StubUsageTypes`] to script the
 /// other two answers. Production never sees it: `gear.rs` installs the
-/// collector's client or `NoCollector` (P-D-141).
+/// resolved catalog (P-D-184).
 #[must_use]
 pub fn resolved_usage_types() -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
     Arc::new(StubUsageTypes::always(
@@ -366,9 +361,7 @@ pub fn resolved_usage_types() -> Arc<dyn bss_products_sdk::usage_types::UsageTyp
     ))
 }
 
-/// The binding every `Resolved` stub answers with — what a probe expects to
-/// find frozen in `binding_snapshot` after a publish (`dod-binding-snapshot`).
-/// The metadata keys are deliberately unsorted here: the stored form sorts.
+/// The binding every `Resolved` stub answers with.
 #[must_use]
 pub fn probe_binding() -> crate::domain::recognized::UsageTypeBinding {
     crate::domain::recognized::UsageTypeBinding {
@@ -507,6 +500,142 @@ impl bss_products_sdk::usage_types::UsageTypeCatalog for UnreachableUsageTypes {
             ),
         )
     }
+}
+
+/// The usage collector refusing every caller with its own `PermissionDenied`, as the platform PDP
+/// answers an author without collector read (P-D-207). Every method refuses, so a case that reaches
+/// a method it did not mean to is still told no rather than handed a fabricated answer.
+pub struct DenyingCollector;
+
+fn collector_denial() -> usage_collector_sdk::UsageCollectorError {
+    usage_collector_sdk::UsageCollectorError::permission_denied(
+        "the probe's PDP refuses this caller",
+    )
+}
+
+#[async_trait]
+impl usage_collector_sdk::UsageCollectorClientV1 for DenyingCollector {
+    async fn create_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::CreateUsageRecord,
+    ) -> Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn create_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: Vec<usage_collector_sdk::CreateUsageRecord>,
+    ) -> Result<
+        Vec<Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError>>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn get_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<usage_collector_sdk::UsageRecord, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn query_aggregated_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+        _: &toolkit_odata::ODataQuery,
+        _: &[usage_collector_sdk::MetadataFilter],
+        _: usage_collector_sdk::AggregationSpec,
+    ) -> Result<usage_collector_sdk::AggregationResult, usage_collector_sdk::UsageCollectorError>
+    {
+        Err(collector_denial())
+    }
+    async fn list_usage_records(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+        _: &toolkit_odata::ODataQuery,
+        _: &[usage_collector_sdk::MetadataFilter],
+    ) -> Result<
+        toolkit_odata::Page<usage_collector_sdk::UsageRecord>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn deactivate_usage_record(
+        &self,
+        _: &SecurityContext,
+        _: Uuid,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn create_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageType,
+    ) -> Result<usage_collector_sdk::UsageType, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn get_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+    ) -> Result<usage_collector_sdk::UsageType, usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+    async fn list_usage_types(
+        &self,
+        _: &SecurityContext,
+        _: &toolkit_odata::ODataQuery,
+    ) -> Result<
+        toolkit_odata::Page<usage_collector_sdk::UsageType>,
+        usage_collector_sdk::UsageCollectorError,
+    > {
+        Err(collector_denial())
+    }
+    async fn delete_usage_type(
+        &self,
+        _: &SecurityContext,
+        _: usage_collector_sdk::UsageTypeGtsId,
+    ) -> Result<(), usage_collector_sdk::UsageCollectorError> {
+        Err(collector_denial())
+    }
+}
+
+/// The production collector adapter over [`DenyingCollector`]: the catalog an author without
+/// collector read meets.
+#[must_use]
+pub fn denying_collector_catalog() -> Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog> {
+    Arc::new(crate::infra::usage_types::CollectorUsageTypes::new(
+        Arc::new(DenyingCollector),
+        std::time::Duration::from_secs(2),
+    ))
+}
+
+/// A PDP that refuses every request, for the "authorization is judged first" probes.
+struct DenyingResolver;
+
+#[async_trait]
+impl AuthZResolverApi for DenyingResolver {
+    async fn evaluate(
+        &self,
+        _ctx: PlatformSecurityContext,
+        _req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        Ok(EvaluationResponse {
+            decision: false,
+            context: EvaluationResponseContext {
+                constraints: Vec::new(),
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// A [`PolicyEnforcer`] over a PDP that refuses everything.
+#[must_use]
+pub fn denying_enforcer() -> PolicyEnforcer {
+    PolicyEnforcer::new(Arc::new(DenyingResolver))
 }
 
 /// File-backed database with the production migration chains and a PDP-derived scope.

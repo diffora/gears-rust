@@ -30,6 +30,26 @@
 | P-D-195 | H | The chain refuses a legacy or stale products schema at boot | DECIDED 2026-09-26 · pricing D-423; phase 4 plan rev 2 (Run 4.1) |
 | P-D-196 | M | A SKU's category is optional; an omitted category stays null, with no default fallback | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
 | P-D-197 | M | SKU reads carry pricing's usage through a port that pricing fills; the usage is information and never a fence input | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; pricing D-428 |
+| P-D-198 | M | The replay store's mechanics (twin of pricing D-429) | DECIDED 2026-09-27 · Carried from P-D-29, P-D-30, P-D-38, P-D-42, P-D-49 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; amends P-D-193 |
+| P-D-199 | M | Events ride the toolkit outbox and the broker SDK producer | DECIDED 2026-09-27 · Carried from P-D-01, P-D-22, P-D-47 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-200 | M | The audit log is append-only with a reserved sealing seam (twin of pricing D-433) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-201 | M | The request digest | DECIDED 2026-09-27 · Carried from P-D-29, P-D-34 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-202 | L | A validation refusal lists every violation of its stage | DECIDED 2026-09-27 · Carried from P-D-33, P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-203 | M | The usage-type resolve is bounded and runs outside the transaction | DECIDED 2026-09-27 · Carried from P-D-121 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; amends P-D-184 |
+| P-D-204 | L | Authz label schemas are registered at boot | DECIDED 2026-09-27 · Carried from P-D-134 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| P-D-205 | M | The approval policy is read with a content `ETag` and written under `If-Match` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-206 | M | A never-published draft is deleted by its author, never retired | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-190 |
+| P-D-207 | H | Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 (owner option b); amends P-D-184, P-D-203 |
+| P-D-208 | M | A retired SKU no longer keeps its category in use; retiring a retired category is `CATEGORY_RETIRED` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-186 |
+| P-D-209 | L | No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189 |
+| P-D-210 | M | The SKU list pages on the toolkit's OData, with a literal case-insensitive `q` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-211 | M | The SKU list's tab counts: `GET /skus/counts` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-212 | M | The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets; a filter pricing cannot answer fails the read | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-197 |
+| P-D-213 | M | A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amends P-D-189, P-D-200 |
+| P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -43,10 +63,11 @@ On draft save, a changed ref is checked when a catalog is configured: a definiti
 400 `USAGE_TYPE_UNRESOLVED`; a catalog non-answer does not block the save. This is the carried save posture,
 not a blanket 503 on authoring. Submit validates the proposed metering and `apply` revalidates before
 publication or change. Publication requires both `usage_type_ref` and `unit` and fails closed: an
-unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog is 503.
+unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog is 503. P-D-207 amends this
+entry: a catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN`, and the picker is `GET /usage-types`.
 
 **Traceability:** [PRD `fr-sku-metering`](PRD.md#fr-sku-metering); spec §4, §6 and §15
-(the usage-type catalog design remains in force).
+(the usage-type catalog design remains in force, with the picker's path and gate changed by P-D-207).
 
 #### P-D-185 [H] No Product entity
 
@@ -63,7 +84,8 @@ One category per SKU, with `code`, `name`, `is_default`, `sort_order` and `statu
 category code is unique per tenant. Creation and edits, including rename, are direct operations without
 approval. Retirement is refused while any SKU points at the category (`CATEGORY_IN_USE`). A `parent_id`
 column is a possible future addition, not part of this model. P-D-196 amends this entry: the category of a
-SKU is optional, so a SKU has at most one category.
+SKU is optional, so a SKU has at most one category. P-D-208 amends it again: only a SKU that is not retired
+keeps a category in use.
 
 **Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat); spec §2 decision 12, §4;
 ADR-0001 consequences.
@@ -97,9 +119,10 @@ serializable isolation on Postgres. Reserved and confirmed rows are live: they r
 
 The fence records `fenced_at` and `fence_op_id`. A retried submit finding a fence without a pending unit
 resumes by rechecking and submitting. An orphan fence older than configurable `fence_ttl_minutes` is
-reverted by the next request on the SKU or `POST /skus/{id}/unfence`; recovery cannot clear a pending
+reverted by the next request on the SKU or `POST /skus/{id}/unfence` (the TTL is a deployment setting, P-D-209); recovery cannot clear a pending
 unit's fence. Withdrawal or rejection clears the fence and pending lock in one statement guarded by
-the unit id and fence operation id, restoring the pre-fence state.
+the unit id and fence operation id, restoring the pre-fence state. P-D-213 amends this entry: an orphan fence
+the maintenance reverts is the system's act, with its own audit row `sku.fence_expired`.
 
 Apply revalidates the reference environment. A failed retirement check is `APPLY_REFUSED` with reason
 `SKU_REFERENCED`; the apply transaction rolls back and the SKU stays `retiring` until withdrawal or
@@ -115,7 +138,7 @@ The shared `bss-approval` shape serves `sku_publish`, `sku_change` (with `effect
 `sku_retire`. Quorum comes from tenant `approval_policy`, with an optional per-kind override, and is
 copied into the unit on submit; a missing `'*'` row means quorum 1, fail-safe. There is no materiality
 threshold. The submitter and every item's author are excluded from approving (403 `SOD_VIOLATION`),
-even with both permissions; a reviewer need not have submit permission. A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404).
+even with both permissions; a reviewer need not have submit permission. A draft belongs to its author: only its creator edits or deletes it (403 `NOT_DRAFT_AUTHOR` for anyone else), so every item's author is the one who wrote its content (pricing D-404). The delete is P-D-206's.
 
 Submit validates and conditionally acquires `pending_unit_id` (`ROW_LOCKED_PENDING`, 409, on failure).
 Quorum zero still records an approved unit with `decided_at = submitted_at`, no decisions, and the
@@ -267,8 +290,8 @@ The chain is deployed, so the change is the forward migration `m20260925_000007_
 
 Products has no schema golden. The proof is a structural comparison on both dialects, through the real
 runner, from a database migrated by the chain before this migration, with SKUs, versions and references
-seeded: only `category_id`'s NOT NULL changes, and every row survives. Owed: a `category=none` browse
-filter.
+seeded: only `category_id`'s NOT NULL changes, and every row survives. The `category=none` browse filter
+this entry owed is the list's `$filter=category_id eq null` (P-D-210).
 
 **Traceability:** [PRD `fr-category-flat`](PRD.md#fr-category-flat), [`fr-sku-define`](PRD.md#fr-sku-define);
 DESIGN §3.1, §3.7; slice 01 §5, slice 02; phase 5 plan rev 2 (Run 5.1); plan review H1, M8, L9 and L13.
@@ -297,5 +320,481 @@ bundle shows "by plan" from its type. It never takes part in a fence, a retireme
 on the local registry (P-D-188, P-D-194), and no remote count sits on a fence. The card's `references` stay
 the local registry's counts.
 
+P-D-212 amends this entry for one case: the list filters on the same facts (`priced`, `in_plan`) through the
+port's `usage_sets`, and there a port that refuses or cannot answer fails the read instead of leaving `null`.
+
 **Source:** Owner, 2026-09-26 (option 1: the counts on the entry and on the SKU); phase 5 plan rev 2; pricing
 D-428.
+
+#### P-D-198 [M] The replay store's mechanics
+
+Amends P-D-193: the retention is configured, no longer a fixed 24 hours. A key's row in `products_idempotency`
+is `claimed` or `answered`, and a CHECK ties the response pair to the state. The claim INSERT, on the
+transaction that writes the act, is the at-most-once gate; `endpoint` is the concrete resource path, never the
+route template; no in-flight deadline exists. A door authorizes before it looks up or claims a key, so a
+denied caller consumes none. The answered row stores the status and body the caller was told, so a replay
+reads no other row. An answer is stored only when its transaction commits: a refusal that rolls back takes the
+claim with it and frees the key, and a committed refusal (the 400 `UNIT_STALE` after a refresh, P-D-192) is
+stored and replays. Expiry is judged at claim time: an expired row is taken over by a compare-and-swap on the
+`expires_at` that was read, and the loser answers `IDEMPOTENCY_KEY_IN_FLIGHT` having executed nothing. The
+loser may even carry a different payload from the winner, and is still refused in-flight rather than for the
+mismatch, since its transaction never compared the two: it read the expired holder's digest, never the
+winner's. Apart from that loser, a matching live `claimed` row is `IDEMPOTENCY_KEY_IN_FLIGHT`, and a digest
+mismatch is `IDEMPOTENCY_CONFLICT` in either state. The retention is `idempotency_retention_hours` (default
+24), clamped to at least 24 hours and at most ten years. `entity_ref` is carried in the DDL and always NULL:
+no products door binds an op. Pricing runs the same store (pricing D-429), with two differences: pricing binds
+POST entry's and POST plan item's claim to its durable reference op, never takes over a bound claim and keeps
+the op's late answer 24 hours from the answer; and pricing's retention is a fixed 24 hours.
+
+**Source:** Carried from P-D-29, P-D-30, P-D-38, P-D-42, P-D-49 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-199 [M] Events ride the toolkit outbox and the broker SDK producer
+
+Products' events are broker `TypedEvent`s in the broker-native envelope, not CloudEvents. They are enqueued
+into the toolkit outbox (prefix `bss_products_outbox`, queue `bss_products_events`, 8 partitions) on the
+transaction of the state change, and the facility's own migrations create its tables. `Gear::init` binds the
+event-broker SDK's outbox producer when an `EventBrokerApi` is registered; a broker that is present but refuses
+fails the boot. Without one, a holding processor keeps every message queued, and `require_broker = true` turns
+that fallback into a boot failure. Each event carries the ambient W3C traceparent when a span has one.
+
+**Source:** Carried from P-D-01, P-D-22, P-D-47 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-200 [M] The audit log is append-only with a reserved sealing seam
+
+`products_audit_log` refuses every DELETE by trigger and admits one UPDATE: `unsealed` to `sealed`, supplying
+`chain_id`, `seq` and `row_hash` (`prev_hash` NULL only on a segment head) with every record column unchanged.
+The gear writes `seal_state = unsealed` with the four seal columns NULL on every row and never seals, chains
+or verifies: sealing is a platform capability the columns are reserved for. The key is a surrogate `audit_id`,
+because `seq` is NULL until a row is sealed. No `REVOKE UPDATE, DELETE` is issued (a deployment role the
+migration does not own; SQLite has none). `correlation_id` is `text`: products writes NULL on every row,
+because this gear establishes no request correlation; pricing writes its edge id, or on a rereserve op's rows
+the id the op minted, and never NULL (pricing D-431). `error_code`, `attempted_key`, `session_id` and
+`ceremony_ref` are carried in the DDL and written NULL. Pricing has the same table shape (pricing D-433).
+P-D-213 amends this entry: the rows carry `from_lifecycle` and `to_lifecycle`, and the seal keeps both unchanged
+as well.
+
+**Source:** Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-201 [M] The request digest
+
+A key's payload hash is SHA-256 (`aws-lc-rs`) over the canonical rendering of the parsed request body: object
+keys sorted at every depth, no insignificant whitespace, numbers without trailing zeroes (`1` and `1.0` hash
+alike), strings carried verbatim, arrays in the order received. A member the request omits is omitted, so an
+omitted field and an explicit `null` hash differently. Headers, `If-Match` included, are outside the hash.
+Pricing's hash is pricing D-396's.
+
+**Source:** Carried from P-D-29, P-D-34 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-202 [L] A validation refusal lists every violation of its stage
+
+Validation is staged, and the first stage that fails answers; a later stage does not run. The shape parse
+refuses first: the body's deserialization, and on `POST /skus` `NewSku::try_from`, which stops at the first
+unknown token (`type`, then `billing_timing`). Then the door's checks (`validate_new` on `POST /skus`) collect
+every violation of their stage into one report, and the refusal is one 400 that carries all of them, each with
+its subject, detail and code, the first collected first. On the SKU draft doors the usage-type resolve
+(P-D-184) runs last. So `POST /skus` with an unknown `type` and a blank `code` is told only of the `type`. A
+report that holds `USAGE_TYPE_UNAVAILABLE` answers 503 instead, because an outage is retryable. Refusals write
+no audit row.
+
+**Source:** Carried from P-D-33 (backup `3a38f0b28`: the pipeline stops at the first failing phase and
+collects violations within it) and P-D-37 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-203 [M] The usage-type resolve is bounded and runs outside the transaction
+
+Amends P-D-184. The usage-collector adapter bounds each resolve by `usage_type_resolver_timeout_ms`
+(configuration, default 2000); a call that outlives it is `Unavailable`, and a zero value is refused at
+boot. Submit and apply resolve the SKU's `usage_type_ref` before their transaction opens, so their 503 holds
+no lock and claims no key; a draft save asks too, and only a definite unresolved answer refuses it
+(P-D-184). The bound is read from configuration, never inlined.
+
+**Source:** Carried from P-D-121 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-204 [L] Authz label schemas are registered at boot
+
+`Gear::init` registers a stub type-schema for every authz label (`authz_label_type_schemas`) with the
+types-registry, so RBAC role definitions can target the gear's labels. A `TypesRegistryClient` missing from
+the `ClientHub`, or any refused registration, fails the boot.
+
+**Source:** Carried from P-D-134 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### P-D-205 [M] The approval policy is read with a content `ETag` and written under `If-Match`
+
+DESIGN §3.3 already said "Policy PUT remains If-Match only"; the doors did not (validation D1: last write
+won). `GET /approval-policy` answers a strong `ETag`: the first eight bytes of the SHA-256 of the policy's
+canonical rendering (P-D-201's rendering of `{ default_quorum, overrides }`), as a quoted decimal. The policy
+is a set of `(kind, quorum)` rows with no revision column, so its tag is its content, as pricing's policy tag
+is (`policy_tag`); a write to any kind moves it. `PUT /approval-policy` requires that tag as `If-Match`: a
+missing or malformed header (the wildcard, a weak tag, a list, a non-decimal) is 400 `VALIDATION` on
+`If-Match`; a tag that no longer matches is 409 `STALE_REVISION`. The comparison reads the policy inside the
+write's transaction (serializable on Postgres), so of two writers holding one tag exactly one wins. The PUT
+answers the new policy with its new tag. Authorization is judged first: a caller without `products:settings`
+is 403 before any 400. A refused write writes no audit row.
+
+Breaking: every caller of the policy PUT sends `If-Match` (the gears-rust e2e in this run; vhp-core's
+`set_products_quorum` fixture in phase 6.6; the deploy note).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D1, plan review M4).
+
+#### P-D-206 [M] A never-published draft is deleted by its author, never retired
+
+A draft cannot be retired (the fence takes only `published` or `deprecated`, P-D-189), and slice 03 said it
+could (validation D3). A never-published draft is deleted instead: `DELETE /skus/{id}` when the SKU is
+`draft` with `published_version = 0` and no pending unit, by its author only, like the draft PATCH (403
+`NOT_DRAFT_AUTHOR`, P-D-190, pricing D-404), under `If-Match` with the SKU's revision. It answers 204 and
+writes an audit row `sku.delete` whose subject is the SKU. Refusals, in the draft PATCH's order: 409
+`SKU_NOT_DRAFT` (published once, or not a draft), 409 `ROW_LOCKED_PENDING`, 403 `NOT_DRAFT_AUTHOR`, 409
+`STALE_REVISION`; then 409 `SKU_REFERENCED` if the registry holds any row naming the SKU. None can today: a
+draft admits no reservation (`reservation_allowed`), and the guard is asserted by a test that seeds one past
+the door. The delete is one conditional statement guarded by the same predicate, so a concurrent submit or
+edit loses to it or wins against it, never both.
+
+Only the head row goes. Its audit rows stay (append-only, P-D-200). A draft owns no version rows and no
+references. A rejected or withdrawn unit that named it stays: `GET /approval-units/{id}` answers it with
+`impact_live: null` instead of 404, and the queue still lists it. The code and name are free again (P-D-187).
+A replay of the create's `Idempotency-Key` still answers the stored 201 of the deleted id (P-D-198's replay
+reads no other row); documented, not changed.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D3 and ask 5, plan review M1).
+
+#### P-D-207 [H] Usage types are read as the caller: a denial is 403 `USAGE_TYPE_FORBIDDEN`, and products serves the picker
+
+Amends P-D-184 and P-D-203. Owner option b: products has no system actor for the usage-type catalog; it resolves
+and lists usage types with the caller's security context, as it did. A system actor would not be authorized
+on the stand (vhp-core's PDP trusts only `am.system` and `rms.system`; plan review H2).
+
+- `UsageTypeAnswer` gains `Forbidden`. The collector adapter maps the collector's `PermissionDenied` to it,
+  where it answered `Unavailable` before (validation D5); the PDP's reason stays in the operator log.
+- Submit and approve answer `Forbidden` with 403 `USAGE_TYPE_FORBIDDEN` before their transaction opens, so
+  nothing is recorded and no key is claimed; `Unavailable` stays 503 `USAGE_TYPE_UNAVAILABLE`. A publish
+  report that carries `USAGE_TYPE_FORBIDDEN` answers 403 too. A draft save keeps P-D-184's posture: only a
+  definite unresolved answer refuses it, so a denial does not block the save.
+- `GET /bss-products/v1/usage-types?q&kind&limit&cursor` mounts `UsageTypeCatalog::list` under the products
+  SKU-author grant (`sku × author`): `{ source, items [{ gts_id, kind, metadata_fields }], page_info {
+  next_cursor, prev_cursor, limit } }`, `source` being the catalog's provenance. `limit` defaults to 50 and is
+  clamped at 200; 0 or a non-integer is 400. A catalog that refuses the caller is 403, an unconfigured one 501,
+  an unreachable one 503, an empty configured one 200 with no items (the 09-22 design's §4).
+- The 09-22 catalog design named the path `/bss-products/v1/catalog/usage-types` and gated it on
+  `recognized_set × read`; that resource no longer exists, and picking a usage type is authoring a SKU, so the
+  path is `/usage-types` and the gate the author grant.
+
+Deploy note: SKU authors, submitters and approvers of usage SKUs need usage-collector read, granted with their
+role; without it submit and approve answer 403 `USAGE_TYPE_FORBIDDEN`.
+
+**Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9).
+
+#### P-D-208 [M] A retired SKU no longer keeps its category in use
+
+Amends P-D-186 (#9). Category retirement is refused (409 `CATEGORY_IN_USE`) only while a SKU in `draft`,
+`published`, `deprecated` or `retiring` names the category. A `retired` SKU no longer counts: nothing moves a
+retired SKU (`sku_change` takes only published or deprecated), so under P-D-186 a category that ever held one
+could never retire. `retiring` still counts, because a rejected or withdrawn retirement returns the SKU to its
+prior lifecycle. The check stays one conditional write with a `NOT EXISTS` over those four lifecycles, in the
+serializable transaction category assignment also runs in. A SKU without a category never counts (P-D-196).
+
+Retiring a category that is already retired is 409 `CATEGORY_RETIRED` (validation D6), the code an assignment
+to a retired category already answers; `CATEGORY_IN_USE` no longer covers it.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D6, ask 9).
+
+#### P-D-209 [L] No tenant settings door: the fence TTL is the deployment setting `fence_ttl_minutes`
+
+DESIGN §3.3, PRD §7.1 and slice 03 §5 described `GET/PUT /settings` with a tenant `fence_ttl_minutes`
+(validation D2). No such door or table was built: the orphan-fence TTL is the gear's configuration
+`fence_ttl_minutes` (default 30), one value per deployment. The docs now say so, and the route leaves them;
+the approval policy stays on its own doors (P-D-190, P-D-205).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation D2).
+
+#### P-D-210 [M] The SKU list pages on the toolkit's OData, with a literal case-insensitive `q`
+
+Owner decision 1 of the phase 6 plan: `GET /skus` moves to the toolkit's OData, as ledger's lists do. Its
+own `type`, `category`, `lifecycle` and `after` parameters go.
+
+- **`$filter`** names `id`, `code`, `name` (the toolkit's operators for their kinds), `lifecycle` and `type`
+  (`eq`, `ne` or `in` with one of their values, another value being 400 `INVALID_FILTER`; the text functions
+  as on any text field, since the served contract publishes them for every text field), `category_id` and
+  `pending_unit_id` (`eq`, `ne`, `in`, and `eq null` / `ne null`: no category, in review).
+  Only those two compare with `null`. `updated_at` orders and never filters: on SQLite a `$filter` would bind
+  chrono's `+00:00` against the stored RFC 3339 `Z`, and a text comparison lies at the boundary.
+- **`$orderby`** names `code`, `name` or `updated_at` (a narrower order vocabulary, ledger's
+  `ExceptionOrderField` pattern); every order ends with the tie-break `id`, and the default is `code`. A
+  nullable or filter-only field never keys an order: the cursor's comparison has no answer for a null key.
+- **Paging** is the toolkit's: `$top` (alias `limit`) defaults to 50 and is clamped at 200; `cursor` (alias
+  `$skiptoken`) comes from `page_info`. The answer is `Page<SkuListItem>`: `{ items, page_info { next_cursor,
+  prev_cursor, limit } }`, each item the SKU's fields and its `usage` from one port call per page (P-D-197).
+- **`q`** is `lower(column) LIKE lower(?) ESCAPE '\'` over `code`, `name`, `unit`, `usage_type_ref` and
+  `gl_code`, the caller's `%`, `_` and `\` escaped. On Postgres both sides fold through the ICU root
+  collation, `lower(column COLLATE "und-x-icu") LIKE lower(? COLLATE "und-x-icu") ESCAPE '\'`, so Unicode
+  case folds whatever the database's locale: a database's own `lower()` folds ASCII only when its
+  `LC_CTYPE` is `C` (`initdb --locale=C`, CloudNativePG's default; Benidorm's `app` database). SQLite's
+  `lower()` folds ASCII only, so a non-ASCII letter matches another case of itself on Postgres only; the
+  two backends differ there (`nfr-two-backends`), and both are pinned by tests, Postgres on a `C`-locale
+  database too. An empty `q` is no search. The toolkit's `contains` in `$filter` follows the backend's
+  `LIKE` (case-sensitive on Postgres); `q` is the case-insensitive search.
+  Deployment note: the Postgres server must be built with ICU (the `und-x-icu` collation exists; the
+  official images and CloudNativePG's have it); without it the list and the counts fail on any `q`.
+- **Refusals.** Any key besides `limit`, `cursor`, `q`, P-D-212's `priced` and `in_plan`, and the OData
+  options is 400 `UNSUPPORTED_QUERY_PARAM`, every offender named (a products copy of ledger's
+  `reject_non_odata_list_params_allowing`); a plain key given twice is 400. `$select` and `$count` are 400.
+  The cursor carries a hash of `$filter`, `q`, `priced` and `in_plan`: a cursor replayed with other values is
+  400 `FILTER_MISMATCH`. Authorization is judged first (`sku × read`).
+- **The transaction.** As before, the list recovers the tenant's orphan fences and reads its page in one
+  transaction (P-D-189).
+
+The toolkit change this rests on is recorded in the toolkit's own docs
+(`docs/web-docs/build-with-gears/add-pagination-odata.md`, `libs/toolkit-db/src/odata/README.md`): its typed
+`$filter` path admits `null` with `eq` and `ne` on a field that declares itself nullable
+(`FilterField::nullable`, opt-in; here `category_id` and `pending_unit_id`), of any kind, and still refuses it
+inside `in` and with an ordering; on every other field, in every gear, `null` stays a type mismatch (400), as
+before. `contains`, `startswith` and `endswith` emit `LIKE … ESCAPE '\'` with the pattern escaped. SQLite has no
+default escape character, so the browse search (`search_skus`, a `startswith` on the name) matched nothing
+for a name holding `%`, `_` or `\` until then. P-D-196's owed `category=none` browse is `category_id eq null`.
+
+Every products query parameter is declared with its type in the served contract (`limit` integer,
+`include_released` boolean, the rest string; validation D4).
+
+Breaking: the list's parameters and its envelope (`next` is `page_info.next_cursor`). The gears-rust e2e
+follows in this run; vhp-core's e2e in phase 6.6.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (owner decision 1; asks 1, 2 and 4; validation D4, D7; plan
+review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per field; F3: the ICU fold).
+
+#### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
+
+`GET /skus/counts` answers `{ all, draft, published, deprecated, retiring, retired, in_review }` for the tabs
+of the SKUs screen: every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
+(`pending_unit_id` set, in any lifecycle). It narrows as the list does, by `q`, P-D-212's `priced` and `in_plan`, and `$filter`, except that `$filter`'s `lifecycle` terms are dropped, because the counts count every
+lifecycle. Only a term that is a top-level `and` conjunct is dropped; a `lifecycle` term under `or` or `not`
+cannot go without changing what the rest means, so it is 400 `INVALID_FILTER`. The whole filter is checked as
+the list reads it before the terms go. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are
+400 `UNSUPPORTED_QUERY_PARAM`. It recovers the tenant's orphan fences in its own transaction, as the list
+does, so its `retiring` agrees with the list, and it counts in one grouped statement whatever the number of
+SKUs. Authorization is `sku × read`.
+
+The fence recovery the list and the counts run first is set-based too: one read of the tenant's expired
+fences (the lifecycle each had while fenced, which the lift overwrites), one `UPDATE … RETURNING` lifting them
+all on the same predicate in the same transaction, and one multi-row INSERT of their audit rows (P-D-213; one
+INSERT per 1000 rows, under both backends' bind limits). A read that finds one expired fence makes the same
+statements as a read that finds fifty; a read that finds none makes the one read.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2); phase 6 review (queries F2: the
+set-based fence recovery).
+
+#### P-D-212 [M] The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets
+
+Amends P-D-197. The SKUs screen filters on what the usage shows, and a list that pages cannot filter a
+page's `usage` on the client, so the list and the counts take `priced=true|false` and `in_plan=true|false`.
+
+- **The definitions are the usage's own** (pricing D-428): `priced` keeps the SKUs whose `usage.entries` is
+  above zero (an entry in any book of the tenant, in any reference state), `in_plan` those whose `usage.plans`
+  is above zero (a draft, pending or published revision names one of the SKU's entries). A plan item that
+  names a SKU without an entry (an `included` item) does not count, as it does not in `plans`: the owner's open
+  question from phase 5 stays open. `false` keeps the other SKUs. Tests pin `priced` ⇔ `entries > 0` and
+  `in_plan` ⇔ `plans > 0` on the same data.
+- **The port gains a method.** `SkuUsageV1::usage_sets(ctx, tenant) -> SkuUsageSets { priced, in_plan }`,
+  each sorted and distinct. Pricing reads them under the same rule as `usage` (`price_book_entry:read`, the
+  entries under that scope, the items and revisions tenant-scoped) in two set-based statements, the same
+  whatever the number of SKUs.
+- **One bind.** Products filters by a set with ONE bound value whatever its size: a JSON array read by
+  `json_each` on SQLite (`unhex`, because a UUID is 16 bytes there), a `uuid[]` with `= ANY` on Postgres.
+- **One call of each method per request.** A read with a usage filter asks `usage_sets` once, after the query
+  is found valid and before its transaction; the list still asks `usage` once for its page (none for an empty
+  page). The call is bounded like `usage`: two seconds on a task of its own, aborted when the read ends first.
+- **Never an unfiltered page.** A port that refuses the caller is 403 `USAGE_FORBIDDEN`; no registered port,
+  an error, a broken call and a call past the bound are 503 `USAGE_UNAVAILABLE`. A read without a usage filter
+  is unchanged: its `usage` is `null` in those cases (P-D-197).
+- The cursor's hash covers both filters (P-D-210); the counts take them as the list does (P-D-211).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 3; plan review M3).
+
+#### P-D-213 [M] A SKU's history: every audit row on a SKU carries the lifecycle move its act made, and `GET /skus/{id}/history` reads them
+
+The SKUs screen shows a SKU's history (ask 7): who did what, when, and the lifecycle the act moved the SKU
+from and to. The audit log carried the act and its actor but no lifecycle, the approval rows are keyed on
+the unit rather than the SKU, the retire's prior lifecycle lives only in `fence_prior_lifecycle` (cleared
+when the fence goes), and the orphan-fence expiry wrote no row at all (plan review H3).
+
+- **Two columns.** The migration `m20260927_000008_audit_lifecycle_move` adds `from_lifecycle` and
+  `to_lifecycle` to `products_audit_log`: nullable `text`, each held to the five lifecycles by a named CHECK
+  (`chk_products_audit_log_from_lifecycle`, `chk_products_audit_log_to_lifecycle`). It redefines the
+  append-only guard, so the platform's one-way seal (P-D-200) still requires every record column unchanged,
+  the two new ones included: the SQLite trigger `trg_products_audit_log_seal_unchanged`, and the Postgres
+  function `bss.products_audit_log_append_only()` (the trigger that calls it is unchanged). Every other
+  UPDATE and every DELETE stays refused. It is a forward migration, because the chain is deployed. On
+  SQLite, `up` adds a column only when the table lacks it, so it replays. `down()` is irreversible: dropping
+  the columns would erase recorded moves from an append-only record. A row written before the migration
+  reads null for both, and nothing is backfilled.
+- **Who stamps.** Every row whose act concerns a SKU carries the lifecycle the act found and the one it
+  left, whether the row's subject is the SKU (`subject_kind` `sku`) or one of its approval units
+  (`approval_unit`, whose `ref_id` is the SKU). Both values come from the act's own transaction, so a row
+  says what its act did, not what a later act made of it. An act that moves nothing stamps the same
+  lifecycle twice. A create has no `from` (the SKU did not exist), and a draft delete has no `to` (it no
+  longer does). A row on no SKU (a category, reference or policy act) carries null for both.
+- **The derivation table.** L is `published` or `deprecated`: the SKU's lifecycle when the act found it.
+  At quorum 0, the submit and its apply are two rows at one instant, and the submit's `to` is the apply's
+  `from`. Tests drive every row of the table through the doors, and they check that each row's `to` is the
+  next row's `from` wherever no other writer came between them.
+
+| action | unit kind | from | to |
+|---|---|---|---|
+| `sku.create` | none | null | `draft` |
+| `sku.draft_update` | none | `draft` | `draft` |
+| `sku.delete` | none | `draft` | null |
+| `approval.submit` | `sku_publish` | `draft` | `draft` |
+| `approval.submit` | `sku_change` | L | L (a type-change fence moves no lifecycle) |
+| `approval.submit` | `sku_retire` | L, or `retiring` when an orphan fence is resumed | `retiring` |
+| `approval.vote`, `approval.refreshed` | any | the lifecycle found | the same |
+| `approval.applied` (the apply at submit, quorum 0), `approval.approved` | `sku_publish` | `draft` | `published` |
+| `approval.applied`, `approval.approved` | `sku_change` | L | the proposed lifecycle, or L |
+| `approval.applied`, `approval.approved` | `sku_retire` | `retiring` | `retired` |
+| `approval.rejected`, `approval.withdrawn` | `sku_publish` | `draft` | `draft` |
+| `approval.rejected`, `approval.withdrawn` | `sku_change` | L | L |
+| `approval.rejected`, `approval.withdrawn` | `sku_retire` | `retiring` | the lifecycle before the fence |
+| `sku.unfence` | none | `retiring` (retire fence) or L (type-change fence) | the lifecycle before the fence, or L |
+| `sku.fence_expired` | none | as `sku.unfence` | as `sku.unfence` |
+
+- **The orphan-fence expiry is audited** (amends P-D-189). Every SKU read runs the expiry: the list, the
+  counts, the card, the versions, the references, the unit card, and the submit and reference doors. It
+  lifted a fence without writing a row. It now writes `sku.fence_expired` on the SKU for each fence it
+  lifts, with the move, the SKU's revision and the reason `fence_ttl_minutes=<n>`, in the read's own
+  transaction. Its actor is the system: `actor_ref` is the nil uuid, the subject of the platform's system
+  context, which no principal carries (`require_authenticated` refuses a nil subject). This is an audit
+  actor, not an authorization subject; products still reads as the caller (P-D-207). The list's and the
+  counts' expiry is set-based (P-D-211): it reads the tenant's expired fences once, lifts them all in one
+  UPDATE, and writes their rows in one INSERT per 1000 rows (P-D-211); with no expired fence it is the one read.
+- **The read.** `GET /skus/{id}/history` answers `Page<ProductsSkuHistoryEntry>`: `{ items, page_info }`,
+  each item `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`. Its source is the
+  audit rows whose subject is the SKU, and the rows whose subject is an approval unit whose `ref_id` is the
+  SKU, in the caller's tenant. `at` is the row's `written_at`: the submit, change and draft doors take it before
+  their transaction and keep it across a retry; decisions, unfence, the fence expiry and a forced release take
+  it inside the attempt. It is never the commit. `actor` is its `actor_ref`, and `note` its
+  `reason`: a change's `note` (the change request's own field, on its `approval.submit` row), a decision's
+  note, or the expiry's TTL. `unit_id` and `unit_kind` name the unit of a unit's row (one read of the page's
+  units) and are null on a SKU's own row. The order is `audit_id` alone, the order the acts wrote: every
+  writer mints it as a UUID v7 inside the act's transaction (per attempt), ordered within the process, and
+  both backends compare it in time order (16 bytes on SQLite, `uuid` on Postgres); across replicas it is
+  accurate to the millisecond. `written_at` does not order it: an act that began first can commit second (a
+  slow usage-type resolution, a lost serialization race), and on SQLite its RFC 3339 text does not sort as
+  time within one second (`…21.41868Z` after `…21.418681Z`). At quorum 0 the submit and its apply share one
+  instant and read in the order they were written. The toolkit's pager serves it: `$top` (alias `limit`) defaults to 50 and is clamped at 200, and `cursor`
+  (alias `$skiptoken`) comes from `page_info`. Any other key is 400, and so are `$filter`, `$orderby`,
+  `$select` and `$count`. The cursor carries a hash of the SKU id, so a cursor from another SKU's history is
+  400 `FILTER_MISMATCH`, and a cursor minted when the history ordered by `written_at` is 400. The read is
+  authorized as the card is (`sku × read`), runs the SKU's orphan-fence expiry first, and answers 404 for a
+  SKU the tenant does not hold and for a deleted draft. The `sku.delete` row stays in the log but is never
+  read, because its SKU is gone.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3); phase 6 review (behaviour B-1: the
+change's note; B-2: the order by `audit_id`).
+
+#### P-D-214 [L] SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=`
+
+`GET /skus/{id}/versions` answered an array, or one object when `as_of` was given: one path, two schemas, and a
+client could not know the shape without reading the query (validation L10). Breaking changes are allowed in this
+phase, so the shapes split.
+
+- `GET /skus/{id}/versions` always answers an array of `SkuVersionDto`, oldest first. The array is empty before
+  the first publication. Any query key is 400 `UNSUPPORTED_QUERY_PARAM`. The old `as_of` is refused, never
+  answered with the history, and the detail names the new path.
+- `GET /skus/{id}/versions/as-of?date=YYYY-MM-DD` answers one `SkuVersionDto`: the greatest `effective_from`
+  not after the date, then the greatest `published_version` (P-D-191). Before the first version it is 404 with
+  reason `NO_VERSION_IN_FORCE`, as before. A missing, repeated or malformed `date` is 400
+  `INVALID_QUERY_PARAMS`, and any other key is 400 `UNSUPPORTED_QUERY_PARAM`, every offender named. The
+  parameter is `date`, as pricing's `/resolve` spells it. This settles the PRD's `asOf`/`as_of` question
+  (PRD §13).
+- Both reads are authorized as the card is (`sku × read`), run the SKU's orphan-fence expiry first, and answer
+  404 for a SKU of another tenant. `VersionsResponse` (untagged, array or object) is gone from the contract.
+
+Pricing reads versions through the in-process registry port (`sku_version_as_of`, pricing D-424), not over REST,
+so it is untouched. The gears-rust e2e reads no versions. vhp-core's e2e reads `versions?as_of=`
+(`test_products_skus.py`) and follows in phase 6.6.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (validation L10; plan review L10).
+
+#### P-D-215 [M] Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData
+
+The Settings screen lists the categories with how many SKUs each holds, and opens one to edit it (ask 9). The
+gear served the whole list only, with no count and no single read.
+
+- **`GET /categories/{id}`** answers one category as `ProductsCategoryItem`: the category's fields and
+  `sku_count`. The `ETag` is its version, the value the category PATCH takes as `If-Match`. A category the
+  tenant does not hold is 404.
+- **`sku_count`** counts the SKUs that are not retired and name the category: `draft`, `published`,
+  `deprecated` and `retiring`. These are the SKUs that keep a category in use (P-D-208), so an active category
+  with `sku_count` 0 may be retired. Both reads take it from ONE grouped read (`COUNT` grouped by
+  `category_id`, over the tenant's SKUs), never one count per category. Tests pin the list and the single
+  read at two statements each for 10 and for 100 categories. A category that no counted SKU names reads 0. The
+  count is an aggregate of the tenant's SKUs, served under the category read grant (`category × read`),
+  without the SKU read grant. It is the same fact the retire refusal `CATEGORY_IN_USE` already discloses to a
+  category author. The write doors (create, PATCH, retire) answer the category without the count, as before.
+- **The list** (`GET /categories`) pages on the toolkit's OData, the SKU list's pattern (P-D-210).
+  `$filter` names `id`, `code`, `name`, `status` (`active` or `retired` with `eq`, `ne` and `in`, another
+  value being 400), `is_default` and `sort_order`. `null` is refused, because no field is nullable.
+  `$orderby` names `sort_order`, `code` or `name`, and every order ends with the tie-break `id`. The default
+  order is kept: `sort_order`, then `code`. `status` and `is_default` filter only. `$top` (alias `limit`)
+  defaults to 200, a generous page for a flat list (plan review M4), and is clamped at 200. `cursor` (alias
+  `$skiptoken`) comes from `page_info`, and it carries a hash of the `$filter` it was cut under, none
+  included: a cursor replayed under another `$filter` is 400 `FILTER_MISMATCH`. Any other key, `$select`
+  and `$count` are 400. The answer is `Page<ProductsCategoryItem>`, and `CategoryList` is gone. Authorization
+  is judged first (`category × read`).
+
+Breaking: the list's envelope (`page_info`) and its page size. A tenant with more than 200 categories now
+pages, so a client that reads the list whole must follow `next_cursor`. The gears-rust e2e reads no category
+list. vhp-core's e2e reads it whole (`test_products_skus.py`, `test_products_isolation.py`) and follows in
+phase 6.6.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 9; plan review M4).
+
+#### P-D-216 [M] An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435)
+
+The PUT sets an override for `sku_publish`, `sku_change` or `sku_retire`, but nothing removed one, so a kind
+once overridden never followed the default again (ask 11b). `DELETE /approval-policy/{kind}` (`products:settings`)
+removes the kind's override at the policy the caller read: `If-Match` carries the policy's content tag
+(P-D-205). The kind then follows the default quorum again, and the answer is the policy with its new `ETag`, as
+the PUT answers. The path names the default as `*` (percent-encoded or not), as the PUT's body does. The
+default is never deleted (400 `POLICY_DEFAULT_REQUIRED`): a tenant always has a quorum to fall back to, and a
+tenant that never stored one follows quorum one. The PUT changes the default and nothing removes it. The
+refusals are judged in this order: 403 without `products:settings`, before any precondition; 400 for a missing
+or malformed `If-Match`; 400 `POLICY_DEFAULT_REQUIRED`, or `VALIDATION` for an unknown kind, as the PUT
+refuses one; 409 `STALE_REVISION`; 404 when the kind has no override. The comparison and the removal run in
+one transaction. A reset writes one audit row, `approval_policy.reset`. A unit already submitted keeps the
+quorum it copied (P-D-190). Pricing has the same door for its kinds (D-435).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11b; plan review L8).
+
+#### P-D-217 [M] Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439)
+
+Every closed set a response schema carries is an enum in the served OpenAPI (ask 12). It holds exactly the
+tokens that the column stores and that the wire always carried, so the wire does not change. The sets: a SKU's
+`type` (`recurring`, `usage`, `one_time`, `bundle`), `lifecycle` (`draft`, `published`, `deprecated`,
+`retiring`, `retired`) and `billing_timing` (`advance`, `arrears`), on the SKU and on a version's content; a
+category's `status` (`active`, `retired`); the history's `from_lifecycle` and `to_lifecycle` (P-D-213); a unit's
+`state`, a decision (`approve`, `reject`) and a vote's `outcome` (`pending`, `applied`, `rejected`,
+`withdrawn`); a reference's `kind` (`price_book_entry`, `plan_item`, `sold_as`) and `state` (`reserved`,
+`confirmed`, `released`), on the reference list and on the reservation receipt. Each set is one schema component
+with the `Products` prefix (`api/rest/closed_sets.rs`). A set that the SDK or the approval engine already types
+maps to and from that enum, so a value added on one side only does not compile.
+
+A database CHECK holds each stored set on both dialects: the SKU's `type`, `lifecycle` and `billing_timing`,
+the category's `status`, the reference's `ref_kind` and `state`, the audit log's lifecycle columns, and the
+unit's state and the decision (`bss_approval::ddl`). The SKU's columns and the lifecycle columns already read
+back fallibly in the repositories. A category's status and a reference's kind and state are read here. Only a
+writer that goes around the CHECK can store a token outside its set, and the read answers it with `CorruptRow`,
+which names the row: a 500, never a panic and never a value that the enum does not hold.
+
+Requests keep `string`: `type`, `lifecycle` and `billing_timing` on the SKU writes, a reservation's `kind`, and
+the policy's `kind`. Each door keeps its own refusal, 400 `VALIDATION` on the field. A request enum would fail
+at deserialization, before the door, with a 400 that has no field and no code.
+
+Response fields that stay `string`: the history's `action` and `unit_kind`, a unit's `kind` and `ref_type`,
+and a reference's `owner`. No CHECK holds those columns (`m20260925_000004` records the audit vocabulary as an
+owed debt), and a CHECK on an existing SQLite column needs a table rebuild, which the phase's ADD COLUMN
+migrations do not allow. A usage type's `kind` is the collector's vocabulary, not this gear's. The picker's
+`source` names the catalog that the deployment wired (P-D-207), not a stored value. The kept `/browse` envelope
+carries the catalog port's vocabulary verbatim.
+
+The census test in `gear_tests.rs` reads the served spec: every listed field has its enum with the exact values
+and its nullability, no request body reaches an enum, and the fields above stay plain strings. A category row
+poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).

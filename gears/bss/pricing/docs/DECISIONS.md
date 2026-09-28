@@ -65,6 +65,17 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-426 | H | An entry's invoice line is locked once the entry carries money | DECIDED 2026-09-26 · Owner, 2026-09-26 (option 1 of three); amends D-421 |
 | D-427 | H | The model belongs to the entry, fixed for its life, and is part of its key | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; closes D-412; amends D-386, D-390, D-391, D-401, D-402 |
 | D-428 | H | Entries and SKUs report their usage | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
+| D-429 | M | The replay store's mechanics (twin of products P-D-198) | DECIDED 2026-09-27 · Carried from D-142 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-430 | M | A tier ladder's top band is open | DECIDED 2026-09-27 · Carried from D-17 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
+| D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
+| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-437 | M | The default rounding is one of five modes | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 
 ## Entries
 
@@ -421,4 +432,111 @@ The two entry reads carry the entry's usage, for the SKUs screen and the book vi
 
 Pricing also fills the SKU usage port of Products (P-D-197): products-sdk SkuUsageV1, which pricing registers in the ClientHub at its init as dyn SkuUsageV1. For the SKU ids of one tenant it answers each distinct id once, as { sku_id, entries, currencies, prices { approved, pending, draft }, plans }. entries counts the SKU's entries in every book of the tenant, in every reference state. currencies are the distinct currencies of their books, sorted. prices adds up the counts of those entries. plans counts the distinct plans across all the SKU's entries, with the entry rule above: a plan that names two entries of the SKU counts once, where a sum of the entry counts would count it twice. An unknown id, the SKU of another tenant and a bundle SKU (it has no entry, D-386) answer zeros. The caller must hold price_book_entry read; otherwise the port answers 403, and Products shows no usage. Pricing reads only the SKU ids that it is given, and no Products data flows back into pricing.
 
+Products P-D-212 adds the port's usage_sets(ctx, tenant): the tenant's priced SKUs (an entry in any book, in any reference state: entries above zero) and its in-plan SKUs (an entry named by a plan item of a draft, pending or published revision: plans above zero), each sorted and distinct, under the same rule and scope, in two set-based statements whatever the number of SKUs. They are what the Products SKU list's priced and in_plan filters keep or drop.
+
 **Source:** Owner, 2026-09-26; phase 5 plan rev 2 (the counts on the entry and on the SKU, option 1; the semantics confirmed by the owner; plan review M6, M7, L10).
+
+#### D-429 [M] The replay store's mechanics (twin of products P-D-198)
+
+**Status:** DECIDED 2026-09-27.
+
+A key's row in pricing_idempotency is claimed or answered, and a CHECK ties the response pair to the state. The claim INSERT is the at-most-once gate: a door claims on the transaction that writes its act (D-396), and a reference-work door claims in Tx A with its op (D-401), so the claim commits before the reserve; when that create is cancelled before its write, the cancellation deletes the claim and frees the key. The endpoint is the concrete resource path, never the route template, and no in-flight deadline exists. The answered row stores the status and body the caller was told, so a replay reads no other row. An answer is stored only when its transaction commits: a refusal that rolls back takes the claim with it, and a committed refusal (Tx B's 400 receipt, D-401 and D-427) is stored and replays. Expiry is judged at claim time: an expired row is taken over by a compare-and-swap on the expires_at that was read, and the loser answers IDEMPOTENCY_KEY_IN_FLIGHT having executed nothing. The loser may even carry a different payload from the winner, and is still refused in-flight rather than for the mismatch, since its transaction never compared the two: it read the expired holder's digest, never the winner's. Apart from that loser, a matching live claimed row is IDEMPOTENCY_KEY_IN_FLIGHT, and a digest mismatch is IDEMPOTENCY_CONFLICT in either state. POST entry and POST plan item bind their claim to the durable reference op in Tx A (bind_op), and entity_ref holds that op's id. A bound claimed row is never taken over on expiry: a matching retry is IDEMPOTENCY_KEY_IN_FLIGHT until the op answers the key. The op's answer is kept a full 24 hours from the moment it is written, however late, so a retry after a late answer replays it. Every other door leaves entity_ref NULL. Products runs the same store (P-D-198), with two differences: products binds no op, so its entity_ref is always NULL; and its retention is configurable (24 hours to ten years), where pricing's is a fixed 24 hours.
+
+**Source:** Carried from D-142 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-430 [M] A tier ladder's top band is open
+
+**Status:** DECIDED 2026-09-27.
+
+A graduated or volume price has at least one band (TIER_BAND_EMPTY), strictly ascending bounds below the top (TIER_BANDS_ORDER), and an open top band: a closed top band is TIER_TOP_CLOSED. No quantity above a last bound is left unrated; capping usage is not a price. The band edges themselves are D-387's.
+
+**Source:** Carried from D-17 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-431 [M] The request's correlation id is minted at the authoring edge
+
+**Status:** DECIDED 2026-09-27.
+
+The authoring router mounts correlation::establish: each request gets one UUID v7 before any handler runs, and an inbound traceparent is not consumed. Every audit row the request writes carries it as correlation_id, so the rows of one call join. It is not the Idempotency-Key and is not derived from the payload. A handler reached without the layer answers 500 and never mints its own. A rereserve op is the exception: the reference ticker starts it, or the Tx C of a create, an attach or another rereserve op does when the reservation was released before its confirm — a Tx C the door's own drive may run inside a request — and it mints its own UUID v7 when it is created. The confirm and reference-lost audit rows its completion writes carry that id, which matches no request. Pricing never writes a NULL correlation_id. The read-contract router (resolve, the pinned price read) writes nothing and mounts none; events carry no correlation id. Products establishes no correlation and writes NULL (P-D-200).
+
+**Source:** Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-432 [M] If-Match on every write to a versioned row, and on a draft price's DELETE
+
+**Status:** DECIDED 2026-09-27.
+
+PATCH of books, entries, plans, plan revisions and plan items, PATCH /prices/{id} and DELETE /prices/{id} of a draft price, and PUT of settings, dimension keys and the approval policy require If-Match with the row's strong version: a missing or malformed header is 400, a stale one 409 STALE_REVISION. The DELETEs of an entry, a plan revision and a plan item take none, as built. This extends D-396's "If-Match protects PATCH/PUT".
+
+**Source:** Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27. Extends D-396.
+
+#### D-433 [M] The audit log is append-only with a reserved sealing seam (twin of products P-D-200)
+
+**Status:** DECIDED 2026-09-27.
+
+pricing_audit refuses every DELETE by trigger and admits one UPDATE: unsealed to sealed, supplying chain_id, seq and row_hash (prev_hash NULL only on a segment head) with every record column unchanged. The gear writes seal_state = unsealed with the four seal columns NULL on every row and never seals, chains or verifies: sealing is a platform capability the columns are reserved for. The key is a surrogate audit_id, because seq is NULL until a row is sealed. No REVOKE UPDATE, DELETE is issued (a deployment role the migration does not own; SQLite has none). correlation_id is text: pricing writes its edge id (D-431), or on a rereserve op's rows the id the op minted, and never NULL; products writes NULL (P-D-200). error_code, attempted_key, session_id and ceremony_ref are carried in the DDL and written NULL. Products has the same table shape (P-D-200).
+
+**Source:** Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27.
+
+#### D-434 [M] Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item
+
+**Status:** DECIDED 2026-09-27.
+
+The SKUs screen shows, for one SKU, where it is priced and where it is sold (ask 8). The gear had the counts only (D-428).
+
+- GET /bss-pricing/v1/price-book-entries?sku_id= (price_book_entry read) lists the tenant's entries of the SKU in every book and every reference state, read under the caller's entry scope, ordered by book code, charge kind, period, model and id. Each item is PricingSkuEntryDto: the entry's own fields, book_code, book_name and currency, usage (D-428) and current_price. current_price is the default chain's approved price in force today: no dimension value, effective_from on or before today and effective_to after it, chosen as resolve chooses a price in force (the latest start, then the latest version). It is null when no such price exists. A value chain's price is not the entry's current price. The money is shown only to a caller who also holds price_book read, the export's grant, judged a second time in the same request. Without that grant the entries are still listed, each with current_price null. A denial of that second judgement refuses nothing, and an unavailable policy fails the read with 503. When the grant's scope admits some books only, only their entries show money. sku_id is required: without exactly one well-formed sku_id, or with any other key, the answer is 400 QUERY_INVALID. An unknown SKU, or another tenant's, is an empty list, because pricing does not know which SKUs exist. The read makes seven statements whatever the number of entries: the entries, their books, the three usage reads, the books the grant admits and those books' default-chain approved prices. The QueryRecorder shows the same statements for 10 and for 100 entries.
+- GET /bss-pricing/v1/plans?sku_id= (plan read) lists the plans that have a draft, pending or published revision whose items name an entry of the SKU. This is the usage's plans definition (D-428; products P-D-212's in_plan): a plan that names the SKU only through superseded revisions does not count, and an included item without an entry does not count. The answer has the same schema as GET /plans (PricingPlanList, each plan with all its revision headers). The revisions, items and entries are read tenant-scoped. GET /plans itself becomes set-based: two statements whatever the number of plans (the plans, then all their revisions), where it made one revision read per plan. A malformed sku_id, or any other key, is 400 QUERY_INVALID. Before, the route took no query and ignored any key.
+- GET /bss-pricing/v1/plan-items/{id} (plan read) answers PricingPlanItemReadDto: the item's fields (PricingPlanItemDto), plan_id, rev_no and state, which is its revision's state. The ETag is the item's version, the value its PATCH takes as If-Match. An item the tenant does not hold is 404.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11).
+
+#### D-435 [M] An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216)
+
+**Status:** DECIDED 2026-09-27.
+
+The PUT sets an override but nothing removed one, so a kind once overridden never followed the default again (ask 11b). DELETE /bss-pricing/v1/approval-policy/{kind} (config settings) removes the kind's override at the policy the caller read. If-Match carries the policy's content tag, the tag the policy PUT takes (D-432). The kind then follows the default quorum again. The answer is 200 with the policy and its new tag, as the PUT answers. The path names the default as `*` (percent-encoded or not), as the PUT's body does. The default is never deleted (400 POLICY_DEFAULT_REQUIRED): a tenant always has a quorum to fall back to, and a tenant that never stored one follows the fail-safe one. PUT changes the default and nothing removes it. The refusals are judged in this order: 403 without config settings, before any precondition; 400 for a missing or malformed If-Match; 400 POLICY_DEFAULT_REQUIRED, or POLICY_KIND_INVALID for a kind other than prices and plan_revision; 409 STALE_REVISION; 404 when the kind has no override. A reset writes one audit row, approval_policy.reset. A unit already submitted keeps the quorum it copied (D-393). Products has the same door for its kinds (P-D-216).
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11b; plan review L8).
+
+#### D-436 [M] Dimension values edit one at a time and show their use
+
+**Status:** DECIDED 2026-09-27.
+
+The Settings screen edits one key's values and shows which values are in use (ask 11c).
+
+- The request and response shapes are split. PricingDimensions and PricingDimensionEntry stay the PUT's body only. PricingDimensionKeyPatch is the PATCH's body. Both refuse unknown fields. GET, PUT and PATCH /dimension-keys answer PricingDimensionRegistry: { items: [ { key, values: [ { value, usage: { prices } } ] } ] }. Breaking: each value is an object now, not a string, and a GET answer is no longer a PUT body.
+- usage.prices counts the prices of any state whose entry names the key and whose chain is the value: draft, pending, approved and rejected. This differs from D-428's entry counts, which leave a rejected price out, because this count is the removal rule: a rejected or pending price still carries its value. It comes from ONE grouped count (the prices joined to their entries, grouped by the entry's key and the price's value). So GET makes two statements whatever the number of entries and prices (the registry, then the count). The content tag covers the stored registry only: a price written since does not move it.
+- PATCH /bss-pricing/v1/dimension-keys { key, add, remove } (config settings, If-Match: the content tag the PUT takes) edits the values of one declared key: a stored key, or the seed key region while the tenant stores no registry. Keys are added and removed by the PUT only. Values are trimmed and empty ones dropped. The result keeps the key's values in their order without the removed ones, then the added ones in the order sent, and it is judged by the PUT's rule for a key. The refusals, in order: 403 without config settings; 400 for a missing or malformed If-Match; 409 STALE_REVISION; 400 DIM_NOT_DECLARED for another key; 400 DIM_VALUE_DUPLICATE for a value named twice across add and remove, or added while the key holds it; 400 DIM_VALUE_UNKNOWN for removing a value the key does not hold; 400 DIM_VALUE_INVALID or DIM_VALUES_FEW for the result; 409 DIM_VALUE_IN_USE for removing a value a price uses. The 409 names the value, for example "DIM_VALUE_IN_USE: region=us is used by 1 price". An empty patch writes nothing and answers the registry. A PATCH writes one audit row, dimension_keys.patch.
+- The PUT judges its removals from the same grouped count and from one DISTINCT read of the keys that entries name, where it read every entry's prices one entry at a time. Its DIM_VALUE_IN_USE names the value and its DIMENSION_KEY_IN_USE names the key. Tests pin GET, PUT and PATCH at the same statements for 10 and for 100 entries; each key a write stores is still one write.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11c; plan review M6).
+
+#### D-437 [M] The default rounding is one of five modes
+
+**Status:** DECIDED 2026-09-27.
+
+default_rounding is one of half_up, half_even, half_down, up and down. PUT /bss-pricing/v1/settings refuses any other value with 400 ROUNDING_INVALID; a blank value stays 400 ROUNDING_REQUIRED. No database CHECK is added. A stored value outside the set reads back as stored, and resolve carries it as rounding_policy. The tenant cannot save its settings again until it chooses one of the five, so the deployment has a hard pre-flight gate: `SELECT DISTINCT default_rounding FROM bss.pricing_settings` must return values inside the set, or a normalizing migration ships first. The default of a tenant that never wrote its settings stays half_up. A flag for the owner, not changed here: the ledger PRD's platform default is banker's half_even.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 11d; plan review M5).
+
+#### D-438 [M] The settings offer currencies and say who changed them
+
+**Status:** DECIDED 2026-09-27.
+
+- **The migration.** m20260927_000014_settings_currencies_and_author runs in the runner's transaction on both dialects and only adds columns. currencies is declared as invoice_line_templates is (jsonb NOT NULL DEFAULT '[]' on Postgres, text NOT NULL DEFAULT '[]' on SQLite, the entity's Json): every existing row offers any currency, so no tenant or book changes behaviour. updated_by is nullable and declared as the dialect's other uuid columns are (uuid on Postgres, text on SQLite, where the application stores a 16-byte blob). Its up skips a column that is already there, and its down drops the two columns. The upgrade tests run the gear's list without 000014, seed a settings row, apply 000014 alone and prove exactly two added columns on both dialects; the row survives, and the application reads and writes it again. The schema goldens gain exactly these two columns. m20260926_000013's upgrade tests pass with 000014 in their before state.
+- **currencies.** PUT /bss-pricing/v1/settings requires currencies, a full replace; [] offers any currency, and a body without the field is 400, as any missing field is. Each code is spelled as a book's currency is (three uppercase ASCII letters; the workspace holds no ISO 4217 list, domain::book::currency_code) and appears once, else 400 CURRENCY_INVALID. The list is stored in the order sent. POST /bss-pricing/v1/price-books with a currency outside a non-empty list is 409 CURRENCY_NOT_OFFERED, judged after the book's own 400s. The settings are read tenant-scoped, so the book author needs no config grant. Existing books are untouched: the list restricts new books only.
+- **Who and when.** The settings answer carries currencies, updated_at and updated_by. At version 0 (nothing written) both updated_at and updated_by are null. updated_by is also null on a row written before 000014. Every PUT stamps both: the time of the write and the caller's subject id.
+
+Breaking: the PUT's body (currencies required), and a GET answer is a PUT body only without version, updated_at and updated_by.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (asks 11f, 11g; plan review L6, L7).
+
+#### D-439 [M] Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217)
+
+**Status:** DECIDED 2026-09-27.
+
+- **Responses.** Every closed set a response schema carries is an enum in the served OpenAPI. It holds exactly the tokens that the column stores and that the wire always carried, so the wire does not change and the golden contracts are not recorded again. The sets: an entry's charge_kind (recurring, usage, one_time), period (month, year), model (flat, per_unit, graduated, volume, package) and reference_state (confirmation_pending, confirmed, lost); a price's model, eligibility (all, new), state (draft, pending, approved, rejected) and display status (draft, pending, rejected, scheduled, active, superseded); an item's treatment (paid, optional, included) and reference_state (unreserved, confirmation_pending, confirmed, lost); a revision's state (draft, pending, published, superseded), and the resolved revision's (published, superseded); a reference op's kind, state and ref_kind; a unit's state, a decision (approve, reject) and a vote's outcome (pending, applied, rejected, withdrawn); the settings' default_timing (advance, arrears); a resolved input's source (entry, sku, tenant). The same sets appear in resolve (DESIGN §3.3, slice 07 §6) and in the pinned price read. Each set is one schema component with the Pricing prefix (api/rest/closed_sets.rs). A set with a domain enum maps to and from it, so a value added on one side only does not compile.
+- **Stored values.** A database CHECK holds each stored set on both dialects: charge_kind, period (the entry's CHECK: month or year for a recurring entry, null for the others), model, the reference states, eligibility, the price's state, treatment, the revision's state, the reference op's three columns, the unit's state, the decision and default_timing. The read is fallible. Only a writer that goes around the CHECK can store a token outside its set, and the read answers it with CorruptRow, which names the row and the token: a 500 with the detail logged, never a panic and never a value that the enum does not hold. The display status, the vote's outcome and the source are computed from typed values.
+- **Requests keep string.** A request field over the same set stays string in its schema, and its door judges it, so each field keeps its refusal code (D-403): MODEL_INVALID, ENTRY_PERIOD_INVALID, ELIGIBILITY_INVALID, TREATMENT_INVALID, TIMING_INVALID and ROUNDING_INVALID. A request enum would fail at deserialization, before the door, with a 400 that has no code. vhp-core asserts MODEL_INVALID, and spec-check P3 would find codes that are declared and never raised.
+- **Response fields that stay string.** default_rounding and resolve's rounding_policy: no CHECK guards the column (D-437), and a legacy value reads back as stored. A normalizing migration with a CHECK is not made here: the phase takes only ADD COLUMN migrations, a CHECK on an existing SQLite column needs a table rebuild, and the deployment pre-flight (D-437) is the gate. A unit's kind and ref_type: the shared approval tables (bss_approval::ddl) have no CHECK on them, for the same reason. A check's code is a code vocabulary that the check builders write as literals, and a proposal's chain is a dimension value or default; neither is a closed set of stored values.
+- **Proof.** tests/response_enums.rs reads the served spec: every listed field has its enum with the exact values in order and its nullability, no request body reaches an enum, and the fields above stay plain strings. An entry row poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500, and the gear goes on serving. Unit tests pin each set's schema, wire and stored tokens as one list.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).

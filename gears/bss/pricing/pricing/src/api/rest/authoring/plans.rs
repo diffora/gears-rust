@@ -98,7 +98,7 @@ async fn plan_body(
 ) -> Result<PricingPlanDto, DoorError> {
     let revisions =
         plan_revision_repo::for_plan(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanDto::of(m, &revisions))
+    Ok(PricingPlanDto::of(m, &revisions)?)
 }
 async fn revision_body(
     tx: &impl DBRunner,
@@ -107,7 +107,7 @@ async fn revision_body(
 ) -> Result<PricingPlanRevisionDto, DoorError> {
     let items =
         plan_item_repo::for_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanRevisionDto::of(m, items))
+    Ok(PricingPlanRevisionDto::of(&m, items)?)
 }
 fn etag(version: i64) -> Result<u64, CanonicalError> {
     Ok(
@@ -191,7 +191,7 @@ pub(super) async fn create(
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r]);
+    let body = PricingPlanDto::of(p, &[r])?;
     support::answer(
         tx,
         tenant,
@@ -203,19 +203,39 @@ pub(super) async fn create(
     )
     .await
 }
-/// `GET /plans`: the tenant's plans by code, each with its revision headers.
+/// `GET /plans`: the tenant's plans by code, each with its revision headers; with `sku`, only
+/// the plans that have a draft, pending or published revision naming the SKU through an entry
+/// (D-434, the SKU usage's `plans`). Two set-based statements whatever the number of plans: the
+/// plans, then all their revisions.
 /// # Errors
 /// Storage failures.
 pub(super) async fn list(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
+    sku: Option<Uuid>,
 ) -> Result<PricingPlanList, DoorError> {
-    let mut items = Vec::new();
-    for p in plan_repo::list(tx, scope, tenant).await? {
-        items.push(plan_body(tx, tenant, p).await?);
+    let plans = match sku {
+        Some(sku) => plan_repo::naming_sku(tx, scope, tenant, sku).await?,
+        None => plan_repo::list(tx, scope, tenant).await?,
+    };
+    let ids: Vec<Uuid> = plans.iter().map(|p| p.id).collect();
+    let mut revisions: std::collections::BTreeMap<Uuid, Vec<plan_revision::Model>> =
+        std::collections::BTreeMap::new();
+    for r in
+        plan_revision_repo::for_plans(tx, &AccessScope::for_tenant(tenant), tenant, &ids).await?
+    {
+        revisions.entry(r.plan_id).or_default().push(r);
     }
-    Ok(PricingPlanList { items })
+    Ok(PricingPlanList {
+        items: plans
+            .into_iter()
+            .map(|p| {
+                let own = revisions.remove(&p.id).unwrap_or_default();
+                PricingPlanDto::of(p, &own)
+            })
+            .collect::<Result<_, _>>()?,
+    })
 }
 /// `GET /plans/{id}`: the plan and its version.
 /// # Errors
@@ -356,7 +376,7 @@ async fn copy_in(
     let (items, ops) = copy_items(tx, &children, ctx, correlation, source.id, r.id, now).await?;
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan_revision.copy", r.id, 1).await?;
-    let body = PricingPlanRevisionDto::of(r, items);
+    let body = PricingPlanRevisionDto::of(&r, items)?;
     let response = support::answer(
         tx,
         tenant,
@@ -533,7 +553,7 @@ async fn clone_in(
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     support::audit(tx, ctx, correlation, "plan.clone", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r]);
+    let body = PricingPlanDto::of(p, &[r])?;
     let response = support::answer(
         tx,
         tenant,
@@ -617,7 +637,7 @@ pub(super) async fn patch_revision(
     .await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPlanRevisionDto::of(next, items),
+        &PricingPlanRevisionDto::of(&next, items)?,
         Some(version + 1),
     )?)
 }

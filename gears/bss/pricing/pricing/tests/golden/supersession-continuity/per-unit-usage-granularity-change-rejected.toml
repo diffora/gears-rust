@@ -1,14 +1,14 @@
 family     = "supersession-continuity"
 id         = "per-unit-usage-granularity-change-rejected"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "inst-tb-units", "inst-mk-chargekind", "D-77", "D-82"]
+provenance = ["inst-tb-supersession-units (backup)", "inst-tb-units (backup)", "inst-mk-chargekind (backup)", "D-77 (backup)", "D-82 (backup)", "D-402"]
 
 # The other side of the same boundary, on the same kind, one field apart from the
 # accepted case.
 #
 # `unit-change-rejected` already pins `billingGranularity` on a **tiered** row,
 # where the harm is visible at the band edge: a `per_hour` counter read against
-# `per_day` band bounds is the D-77 factor-of-24 class. This case says the rule
+# `per_day` band bounds is the factor-of-24 class. This case says the rule
 # is not about bands. `per_unit` has no bands at all - the price is a single
 # `amount_minor` per billable unit - and the same change is just as wrong for a
 # simpler reason: `billingGranularity` is what one billable unit **is**
@@ -21,7 +21,7 @@ provenance = ["inst-tb-supersession-units", "inst-tb-units", "inst-mk-chargekind
 # The unit price is deliberately **unchanged** here. If it moved, a subject that
 # rejected for the wrong reason would still look right, and the case would stop
 # separating "the unit moved" from "the price moved" - which is the entire
-# distinction D-82 draws.
+# distinction the pair guard draws (D-402).
 
 [predecessor]
 model_kind          = "per_unit"

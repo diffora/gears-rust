@@ -179,8 +179,10 @@ impl Receipt {
         let etag = Some(format!("\"{}\"", model.version));
         Ok(Self {
             status: 201,
-            body: serde_json::to_string(&PricingPriceBookEntryDto::from(model))
-                .map_err(|_| corrupt())?,
+            body: serde_json::to_string(
+                &PricingPriceBookEntryDto::try_from(model).map_err(stored_failure)?,
+            )
+            .map_err(|_| corrupt())?,
             etag,
         })
     }
@@ -190,7 +192,8 @@ impl Receipt {
         Ok(Self {
             status: 201,
             body: serde_json::to_string(
-                &crate::api::rest::authoring::dto::PricingPlanItemDto::from(model),
+                &crate::api::rest::authoring::dto::PricingPlanItemDto::try_from(model)
+                    .map_err(stored_failure)?,
             )
             .map_err(|_| corrupt())?,
             etag,
@@ -199,6 +202,10 @@ impl Receipt {
 }
 fn corrupt() -> CanonicalError {
     CanonicalError::internal("invalid durable pricing reference work").create()
+}
+/// A stored token outside its closed set in the answer being written (D-439): a storage failure.
+fn stored_failure(error: crate::infra::storage::RepoError) -> CanonicalError {
+    crate::api::rest::authoring::support::DoorError::from(error).into()
 }
 impl Work {
     /// Decode persisted recovery input.
@@ -463,6 +470,9 @@ async fn answer_key(
         key,
         i32::from(receipt.status),
         support::value(receipt)?,
+        // A durable op may answer long after its claim: the answer is kept a full retention from
+        // now, or the next same-key retry would find it expired and take the key over (D-429).
+        Some(OffsetDateTime::now_utc() + time::Duration::hours(24)),
     )
     .await?
         != idem::IdempotencyAnswer::Recorded

@@ -1,5 +1,10 @@
 //! The consumer read contract's wire shapes (D-419…D-422): `snake_case`, money and quantities as
-//! exact decimal text, dates as `YYYY-MM-DD`. The consumer goldens freeze them.
+//! exact decimal text, dates as `YYYY-MM-DD`. The consumer goldens freeze them. A closed set is
+//! its `enum` (D-439), with the tokens the goldens carry.
+use crate::api::rest::closed_sets::{
+    PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingResolveSource,
+    PricingResolvedRevisionState, PricingTreatment,
+};
 use uuid::Uuid;
 
 /// `GET /resolve`: one plan revision resolved on one date with the caller's pins (D-419). It
@@ -9,15 +14,16 @@ pub struct PricingResolveDto {
     pub plan_revision_id: Uuid,
     pub plan_id: Uuid,
     pub rev_no: i32,
-    /// `published` or `superseded`: no other revision resolves.
-    pub state: String,
+    /// No other revision resolves.
+    pub state: PricingResolvedRevisionState,
     /// The revision's book.
     pub book_id: Uuid,
     /// The book's currency.
     pub currency: String,
     /// The currency's scale: the number of minor digits money carries.
     pub currency_minor_digits: u32,
-    /// The tenant's `default_rounding`.
+    /// The tenant's `default_rounding`, as stored: a string, since no CHECK guards the column
+    /// (D-437, D-439).
     pub rounding_policy: String,
     /// The date resolved, `YYYY-MM-DD`.
     pub date: String,
@@ -30,19 +36,17 @@ pub struct PricingResolveDto {
 pub struct PricingResolveItemDto {
     pub item_id: Uuid,
     pub sku_id: Uuid,
-    /// `paid`, `optional` or `included`.
-    pub treatment: String,
+    pub treatment: PricingTreatment,
     /// Exact decimal text.
     pub included_qty: Option<String>,
     pub qty_min: Option<i32>,
     /// Null for an included item without an entry, which has no chains.
     pub price_book_entry_id: Option<Uuid>,
-    /// `recurring`, `usage` or `one_time`; null without an entry.
-    pub charge_kind: Option<String>,
-    pub period: Option<String>,
-    /// The entry's model (D-427): `flat`, `per_unit`, `graduated`, `volume` or `package`, the
-    /// model of every binding's money; null without an entry.
-    pub model: Option<String>,
+    /// Null without an entry.
+    pub charge_kind: Option<PricingChargeKind>,
+    pub period: Option<PricingPeriod>,
+    /// The entry's model (D-427), the model of every binding's money; null without an entry.
+    pub model: Option<PricingModel>,
     /// The SKU version in force on the date; null when Products has no version on that date or
     /// does not know the SKU.
     pub sku_version: Option<PricingResolveSkuVersionDto>,
@@ -72,8 +76,7 @@ pub struct PricingResolveSkuVersionDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingResolveInputDto {
     pub value: Option<String>,
-    /// `entry`, `sku` or `tenant`.
-    pub source: Option<String>,
+    pub source: Option<PricingResolveSource>,
 }
 /// The meter of the SKU version in force on the date.
 #[toolkit_macros::api_dto(response)]
@@ -102,8 +105,7 @@ pub struct PricingResolveBindingDto {
     pub price: serde_json::Value,
     /// Exact decimal text.
     pub min_fee: Option<String>,
-    /// `all` or `new`.
-    pub eligibility: String,
+    pub eligibility: PricingEligibility,
     pub effective_from: String,
     /// The stored window's end, for information: a successor's start sets it, including a `new`
     /// successor a pinned subscription does not take, so it is not an end for the binding.
@@ -124,23 +126,21 @@ pub struct PricingPinnedPriceDto {
     pub price_id: Uuid,
     pub price_book_entry_id: Uuid,
     pub sku_id: Uuid,
-    /// `recurring`, `usage` or `one_time`.
-    pub charge_kind: String,
-    pub period: Option<String>,
+    pub charge_kind: PricingChargeKind,
+    pub period: Option<PricingPeriod>,
     pub book_id: Uuid,
     pub currency: String,
     /// The price's place in its entry's order of prices.
     pub version_no: i32,
     /// The value's chain; null for the default chain.
     pub dim_value: Option<String>,
-    /// Its entry's model (D-427): `flat`, `per_unit`, `graduated`, `volume` or `package`.
-    pub model: String,
+    /// Its entry's model (D-427).
+    pub model: PricingModel,
     /// The price's money as stored, amounts as exact decimal text.
     pub price: serde_json::Value,
     /// Exact decimal text.
     pub min_fee: Option<String>,
-    /// `all` or `new`.
-    pub eligibility: String,
+    pub eligibility: PricingEligibility,
     pub effective_from: String,
     pub effective_to: Option<String>,
     pub temporary_until: Option<String>,

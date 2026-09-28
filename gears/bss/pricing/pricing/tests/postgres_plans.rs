@@ -1003,3 +1003,298 @@ async fn postgres_an_item_create_and_a_copied_items_attach_round_trip_through_th
     );
     assert_eq!(p.catalog.releases(), 0, "nothing was released");
 }
+
+/// A plan item of `revision` naming `sku`, through `entry` or (an included item) through none.
+fn usage_item(
+    s: &Seed,
+    revision: Uuid,
+    sku: Uuid,
+    entry: Option<Uuid>,
+    treatment: &str,
+) -> plan_item::Model {
+    plan_item::Model {
+        id: Uuid::new_v4(),
+        tenant_id: s.tenant,
+        revision_id: revision,
+        sku_id: sku,
+        price_book_entry_id: entry,
+        treatment: treatment.into(),
+        included_qty: None,
+        qty_min: None,
+        reservation_id: Some(Uuid::new_v4()),
+        reference_state: "confirmed".into(),
+        version: 1,
+        created_by: Uuid::new_v4(),
+        created_at: now(),
+        updated_at: now(),
+    }
+}
+
+/// P-D-212 on Postgres: the priced and in-plan sets are two set-based reads — the `DISTINCT`
+/// and the correlated `EXISTS` over items and revisions — with the usage count's definitions: a
+/// superseded revision and an item without an entry do not put a SKU in plan.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_pricing_usage_sets_read_set_based() {
+    use bss_pricing::infra::usage::sku_usage_sets;
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let entry_for = |sku: Uuid| price_book_entry::Model {
+        id: Uuid::new_v4(),
+        sku_id: sku,
+        reservation_id: Uuid::new_v4(),
+        ..s.entry.clone()
+    };
+    // The seed's entry is named by its draft revision: priced and in plan.
+    let live = s.entry.sku_id;
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, s.revision.id, live, Some(s.entry.id), "paid"),
+    )
+    .await
+    .unwrap();
+    // Priced, in no plan.
+    let priced = Uuid::new_v4();
+    price_book_entry_repo::insert(&conn, &s.scope, entry_for(priced))
+        .await
+        .unwrap();
+    // Named only through a superseded revision: priced, not in plan.
+    let old = Uuid::new_v4();
+    let old_entry = price_book_entry_repo::insert(&conn, &s.scope, entry_for(old))
+        .await
+        .unwrap();
+    let old_plan = plan_repo::insert(&conn, &s.scope, plan(s.tenant, "old"))
+        .await
+        .unwrap();
+    let superseded = plan_revision_repo::insert(&conn, &s.scope, revision(&old_plan, &s.book, 1))
+        .await
+        .unwrap();
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, superseded.id, old, Some(old_entry.id), "paid"),
+    )
+    .await
+    .unwrap();
+    let u = unit(&s, "plan_revision").await;
+    assert!(
+        plan_revision_repo::try_lock(&conn, &s.scope, s.tenant, superseded.id, u, 1)
+            .await
+            .unwrap()
+    );
+    plan_revision_repo::publish(&conn, &s.scope, s.tenant, superseded.id, u, now())
+        .await
+        .unwrap();
+    plan_revision_repo::supersede(&conn, &s.scope, s.tenant, superseded.id, 3, now())
+        .await
+        .unwrap();
+    // Named by an included item with no entry: neither.
+    let included = Uuid::new_v4();
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, s.revision.id, included, None, "included"),
+    )
+    .await
+    .unwrap();
+    let sets = sku_usage_sets(&conn, &s.scope, s.tenant).await.unwrap();
+    let mut expected = vec![live, priced, old];
+    expected.sort_unstable();
+    assert_eq!(sets.priced, expected);
+    assert_eq!(sets.in_plan, vec![live]);
+    // Another tenant reads nothing of this one.
+    let other = Uuid::new_v4();
+    let theirs = sku_usage_sets(&conn, &AccessScope::for_tenant(other), other)
+        .await
+        .unwrap();
+    assert!(theirs.priced.is_empty() && theirs.in_plan.is_empty());
+}
+
+/// D-434 and D-436 on Postgres: the new set-based reads — the plans naming a SKU through an entry
+/// (a correlated `EXISTS` over revisions, items and entries), the revisions of many plans, the
+/// approved default-chain prices of many entries, the dimension keys entries name (`DISTINCT`) and
+/// the prices counted by the entry's key and their own value (an `INNER JOIN` grouped) — with the
+/// definitions the `SQLite` suites pin.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
+    use bss_pricing::infra::storage::{entity::dimension_key, entity::price, repo::dimension_repo};
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let sku = s.entry.sku_id;
+    // The seed's draft revision names the seed's entry: the plan "pro" sells the SKU.
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, s.revision.id, sku, Some(s.entry.id), "paid"),
+    )
+    .await
+    .unwrap();
+    // "gone" named it only through a revision that is superseded now; "free" through an included
+    // item without an entry.
+    let gone = plan_repo::insert(&conn, &s.scope, plan(s.tenant, "gone"))
+        .await
+        .unwrap();
+    let old = plan_revision_repo::insert(&conn, &s.scope, revision(&gone, &s.book, 1))
+        .await
+        .unwrap();
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, old.id, sku, Some(s.entry.id), "paid"),
+    )
+    .await
+    .unwrap();
+    let u = unit(&s, "plan_revision").await;
+    assert!(
+        plan_revision_repo::try_lock(&conn, &s.scope, s.tenant, old.id, u, 1)
+            .await
+            .unwrap()
+    );
+    plan_revision_repo::publish(&conn, &s.scope, s.tenant, old.id, u, now())
+        .await
+        .unwrap();
+    plan_revision_repo::supersede(&conn, &s.scope, s.tenant, old.id, 3, now())
+        .await
+        .unwrap();
+    let free = plan_repo::insert(&conn, &s.scope, plan(s.tenant, "free"))
+        .await
+        .unwrap();
+    let f1 = plan_revision_repo::insert(&conn, &s.scope, revision(&free, &s.book, 1))
+        .await
+        .unwrap();
+    plan_item_repo::insert(
+        &conn,
+        &s.scope,
+        usage_item(&s, f1.id, sku, None, "included"),
+    )
+    .await
+    .unwrap();
+    let naming = plan_repo::naming_sku(&conn, &s.scope, s.tenant, sku)
+        .await
+        .unwrap();
+    assert_eq!(
+        naming.iter().map(|p| p.code.as_str()).collect::<Vec<_>>(),
+        ["pro"]
+    );
+    assert!(
+        plan_repo::naming_sku(
+            &conn,
+            &AccessScope::for_tenant(Uuid::new_v4()),
+            s.tenant,
+            sku
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "another tenant's scope reads nothing"
+    );
+    let revisions =
+        plan_revision_repo::for_plans(&conn, &s.scope, s.tenant, &[s.plan.id, gone.id, free.id])
+            .await
+            .unwrap();
+    assert_eq!(revisions.len(), 3);
+    // A registry key with two values, an entry naming it, prices of several states and chains.
+    dimension_repo::insert(
+        &conn,
+        &s.scope,
+        dimension_key::Model {
+            tenant_id: s.tenant,
+            key: "region".into(),
+            values: serde_json::json!(["eu", "us"]),
+            version: 1,
+        },
+    )
+    .await
+    .unwrap();
+    let keyed = price_book_entry_repo::insert(
+        &conn,
+        &s.scope,
+        price_book_entry::Model {
+            id: Uuid::new_v4(),
+            sku_id: Uuid::new_v4(),
+            dimension_key: Some("region".into()),
+            reservation_id: Uuid::new_v4(),
+            ..s.entry.clone()
+        },
+    )
+    .await
+    .unwrap();
+    let mut n = 0;
+    let mut price_of = |entry: Uuid, state: &str, dim: Option<&str>| {
+        n += 1;
+        price::Model {
+            id: Uuid::new_v4(),
+            tenant_id: s.tenant,
+            price_book_entry_id: entry,
+            version_no: n,
+            dim_value: dim.map(str::to_owned),
+            price_json: serde_json::json!({"rate":"0.1"}),
+            min_fee: None,
+            eligibility: "all".into(),
+            effective_from: date("2031-01-01") + time::Duration::days(i64::from(n)),
+            effective_to: None,
+            keep_for_bound: false,
+            closed_explicitly: false,
+            temporary_until: None,
+            paired_price_id: None,
+            return_of_price_id: None,
+            state: state.into(),
+            pending_unit_id: None,
+            approved_by_unit_id: None,
+            note: None,
+            created_by: Uuid::new_v4(),
+            approved_at: None,
+            version: 1,
+            created_at: now(),
+            updated_at: now(),
+        }
+    };
+    let default_approved = price_of(s.entry.id, "approved", None);
+    let rows = [
+        default_approved.clone(),
+        price_of(s.entry.id, "draft", None),
+        price_of(keyed.id, "approved", Some("eu")),
+        price_of(keyed.id, "rejected", Some("eu")),
+        price_of(keyed.id, "pending", Some("us")),
+    ];
+    for p in rows {
+        price_repo::insert(&conn, &s.scope, p).await.unwrap();
+    }
+    let chain =
+        price_repo::approved_default_chain(&conn, &s.scope, s.tenant, &[s.entry.id, keyed.id])
+            .await
+            .unwrap();
+    assert_eq!(
+        chain.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [default_approved.id]
+    );
+    assert_eq!(
+        price_book_entry_repo::named_keys(&conn, s.tenant)
+            .await
+            .unwrap(),
+        ["region"]
+    );
+    let mut counts: Vec<(String, String, i64)> =
+        price_repo::count_by_key_and_value(&conn, s.tenant)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.dimension_key, c.dim_value, c.count))
+            .collect();
+    counts.sort();
+    assert_eq!(
+        counts,
+        [
+            ("region".to_owned(), "eu".to_owned(), 2),
+            ("region".to_owned(), "us".to_owned(), 1),
+        ]
+    );
+    assert!(
+        price_repo::count_by_key_and_value(&conn, Uuid::new_v4())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

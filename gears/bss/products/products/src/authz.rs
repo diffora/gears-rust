@@ -36,15 +36,11 @@ pub mod resource_types {
 /// Error from the registry's PEP gate.
 ///
 /// Deliberately **not** folded into [`crate::domain::error::DomainError`]:
-/// neither of that enum's authorization-adjacent variants is the right home.
-/// `ScopeNotContained` names a business rule over restriction containment
-/// (P-D-39, a child scope proven against its parent's), and `ApprovalRequired`
-/// names governance's approval-record presence (P-D-23) — both are domain
-/// judgements a door reaches *after* it is authorized. A PDP deny or an
-/// unreachable PDP happens *before* the domain is consulted at all, so it
-/// answers with its own two-way split (403 vs 503), the same way the ledger
-/// gear's `AuthzError` does, rather than borrowing a `DomainError` code that
-/// would misdescribe why the door refused.
+/// that enum holds judgements a door reaches *after* it is authorized. A PDP
+/// deny or an unreachable PDP happens *before* the domain is consulted at all,
+/// so it answers with its own two-way split (403 vs 503), the same way the
+/// ledger gear's `AuthzError` does, rather than borrowing a `DomainError` code
+/// that would misdescribe why the door refused.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthzError {
     /// The PDP explicitly denied access, or returned constraints this PEP
@@ -146,7 +142,7 @@ fn authz_type_schema_json(gts_id: &str, title: &str) -> serde_json::Value {
 /// types-registry, so registering these lets a custom catalog role target
 /// this gear's authz labels.
 ///
-/// **Registered from `Gear::init`** (P-D-134, 2026-09-04): a refused
+/// **Registered from `Gear::init`** (P-D-204): a refused
 /// registration fails the boot, as in the sibling pricing gear.
 #[must_use]
 pub fn authz_label_type_schemas() -> Vec<serde_json::Value> {

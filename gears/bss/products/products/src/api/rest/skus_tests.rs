@@ -355,8 +355,10 @@ async fn card_and_reference_details_read_the_live_registry() {
     assert_eq!(live["items"].as_array().unwrap().len(), 3);
 }
 
+/// P-D-214: the versions answer one shape each — the history always an array, the version in force
+/// on a date one object at its own path.
 #[tokio::test]
-async fn version_dates_resolve_as_of_and_before_the_first_is_named_404() {
+async fn versions_answer_an_array_and_as_of_answers_the_one_in_force() {
     let tenant = Uuid::new_v4();
     let (app, dsn) = rest_app(tenant, doors).await;
     let cat = category(&app, tenant).await;
@@ -380,37 +382,63 @@ async fn version_dates_resolve_as_of_and_before_the_first_is_named_404() {
         .unwrap();
     }
     let url = format!("/bss-products/v1/skus/{}/versions", s.id);
-    let r = get(&app, tenant, &format!("{url}?as_of=2026-09-15")).await;
+    let r = get(&app, tenant, &format!("{url}/as-of?date=2026-09-15")).await;
     assert_eq!(r.status(), StatusCode::OK);
     let v = body_json(r).await;
     assert_eq!(v["published_version"], 1);
     assert_eq!(v["effective_from"], "2026-09-02");
     assert_eq!(v["content"]["gl_code"], "401");
     assert_eq!(
-        body_json(get(&app, tenant, &format!("{url}?as_of=2026-09-20")).await).await["published_version"],
+        body_json(get(&app, tenant, &format!("{url}/as-of?date=2026-09-20")).await).await["published_version"],
         3
     );
+    let history = body_json(get(&app, tenant, &url).await).await;
+    let versions: Vec<&Value> = history.as_array().unwrap().iter().collect();
     assert_eq!(
-        body_json(get(&app, tenant, &url).await)
-            .await
-            .as_array()
-            .unwrap()
-            .len(),
-        3
+        versions
+            .iter()
+            .map(|v| &v["published_version"])
+            .collect::<Vec<_>>(),
+        [1, 2, 3],
+        "{history}"
     );
-    let r = get(&app, tenant, &format!("{url}?as_of=2026-09-01")).await;
+    let r = get(&app, tenant, &format!("{url}/as-of?date=2026-09-01")).await;
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
     assert_eq!(problem_code(&body_json(r).await), "NO_VERSION_IN_FORCE");
-    assert_eq!(
-        get(&app, tenant, &format!("{url}?as_of=bad"))
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        get(&app, Uuid::new_v4(), &url).await.status(),
-        StatusCode::NOT_FOUND
-    );
+    for query in [
+        "/as-of?date=bad",
+        "/as-of",
+        "/as-of?date=",
+        "/as-of?date=2026-09-15&as_of=2026-09-15",
+        "/as-of?date=2026-09-15&date=2026-09-16",
+        // The old spelling is refused, never answered with the history's array.
+        "?as_of=2026-09-15",
+        "?limit=1",
+    ] {
+        let r = get(&app, tenant, &format!("{url}{query}")).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+    for query in ["", "/as-of?date=2026-09-15"] {
+        assert_eq!(
+            get(&app, Uuid::new_v4(), &format!("{url}{query}"))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND,
+            "another tenant: {query}"
+        );
+    }
+    // A SKU never published has no version: the history is an empty array, never an object.
+    let draft = crate::test_support::seed_rest_sku(&conn, &scope, tenant, cat, "B").await;
+    let empty = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus/{}/versions", draft.id),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(empty, serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -434,18 +462,28 @@ async fn filtered_code_cursor_never_skips_the_first_row_of_the_next_page() {
         .await
         .unwrap();
     }
-    let query = format!(
-        "/bss-products/v1/skus?q=stor&type=usage&lifecycle=published&category={cat}&limit=2"
+    // P-D-210: the filters are OData now; the cursor is the pager's, and carries the filter.
+    let filter = format!(
+        "type%20eq%20%27usage%27%20and%20lifecycle%20eq%20%27published%27%20and%20category_id%20eq%20{cat}"
     );
+    let query = format!("/bss-products/v1/skus?q=stor&%24filter={filter}&limit=2");
     let page = body_json(get(&app, tenant, &query).await).await;
     assert_eq!(page["items"].as_array().unwrap().len(), 2);
     assert_eq!(page["items"][0]["code"], "stor-a");
     assert_eq!(page["items"][1]["code"], "stor-b");
-    let next = page["next"].as_str().unwrap();
-    let page = body_json(get(&app, tenant, &format!("{query}&after={next}")).await).await;
-    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    let next = page["page_info"]["next_cursor"].as_str().unwrap();
+    let page = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus?q=stor&%24filter={filter}&limit=2&cursor={next}"),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 1, "{page}");
     assert_eq!(page["items"][0]["code"], "stor-c");
-    assert_eq!(page["next"], Value::Null);
+    assert_eq!(page["page_info"]["next_cursor"], Value::Null);
 }
 
 #[tokio::test]
@@ -528,9 +566,13 @@ async fn invalid_enum_fields_and_lifecycle_edits_are_400_and_audit_failure_rolls
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     assert!(violation_for(&body_json(r).await, "lifecycle").is_some());
     assert_eq!(
-        get(&app, tenant, "/bss-products/v1/skus?type=bad")
-            .await
-            .status(),
+        get(
+            &app,
+            tenant,
+            "/bss-products/v1/skus?%24filter=type%20eq%20%27bad%27"
+        )
+        .await
+        .status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -814,12 +856,23 @@ async fn browse_by_a_category_excludes_skus_without_one_and_the_unfiltered_list_
         get(
             &app,
             tenant,
-            &format!("/bss-products/v1/skus?category={cat}"),
+            &format!("/bss-products/v1/skus?%24filter=category_id%20eq%20{cat}"),
         )
         .await,
     )
     .await;
     assert_eq!(codes(by_category), ["A"]);
+    // P-D-196's owed `category=none` browse is `category_id eq null` (P-D-210).
+    let without = body_json(
+        get(
+            &app,
+            tenant,
+            "/bss-products/v1/skus?%24filter=category_id%20eq%20null",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(codes(without), ["B"]);
     let all = body_json(get(&app, tenant, "/bss-products/v1/skus").await).await;
     assert_eq!(codes(all), ["A", "B"]);
 }
@@ -903,6 +956,17 @@ impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
             }
         }
     }
+    /// The SKU reads here never filter by usage: a call is a defect of the read.
+    async fn usage_sets(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        _tenant: Uuid,
+    ) -> Result<
+        bss_products_sdk::sku_usage::SkuUsageSets,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        panic!("a SKU read without a usage filter asked for the usage sets")
+    }
 }
 /// A router and its state over a fresh database, with no usage port registered.
 async fn usage_app(tenant: Uuid) -> (Router, Arc<ApiState>) {
@@ -977,14 +1041,25 @@ async fn the_sku_reads_carry_pricing_usage_with_one_port_call_per_list_page() {
     assert_eq!(port.calls(), vec![(tenant, vec![a])]);
     let page = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2").await).await;
     let items = page["items"].as_array().unwrap();
-    assert_eq!(page["next"], "B");
+    let next = page["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["code"], "A", "the SKU's own fields stay flat");
     assert_eq!(items[0]["usage"]["entries"], 2);
     assert_eq!(items[1]["code"], "B");
     assert_eq!(items[1]["usage"]["entries"], 5);
     assert_eq!(items[1]["usage"]["plans"], 3);
-    let rest = body_json(get(&app, tenant, "/bss-products/v1/skus?limit=2&after=B").await).await;
+    let rest = body_json(
+        get(
+            &app,
+            tenant,
+            &format!("/bss-products/v1/skus?limit=2&cursor={next}"),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(
         rest["items"][0]["usage"],
         json!({

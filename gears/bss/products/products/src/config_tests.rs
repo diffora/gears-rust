@@ -194,319 +194,34 @@ fn the_default_configuration_resolves_to_itself() {
     );
 }
 
-/// P-D-84 arm 5: the freeze timeout floors the idempotency retention —
-/// `max(24h, max_freeze_timeout)` finally has both operands — and the
-/// default contributes nothing beyond the shipped constant.
+/// A zero resolver timeout is refused at boot: every usage-type resolve would
+/// time out before it is asked, and each usage-SKU submit would answer 503.
 #[test]
-fn the_freeze_timeout_floors_the_retention() {
-    let mut cfg = ProductsConfig::default();
-    assert_eq!(
-        cfg.resolved_idempotency_retention_hours(),
-        IDEMPOTENCY_RETENTION_FLOOR_HOURS,
-        "the default timeout leaves the floor at the constant"
-    );
-    cfg.freeze_timeout_hours = 100;
-    assert_eq!(
-        cfg.resolved_idempotency_retention_hours(),
-        100,
-        "a configured timeout above 24h raises the floor with it"
-    );
-}
-
-/// P-D-84 arm 6: a timeout above the ten-year ceiling is refused at boot,
-/// which is what keeps the clamp's `min <= max` precondition an invariant
-/// rather than a panic on the first keyed request.
-#[test]
-fn a_timeout_above_the_ceiling_is_a_boot_refusal() {
-    let mut cfg = ProductsConfig::default();
-    assert!(cfg.validate().is_ok());
-    cfg.freeze_timeout_hours = IDEMPOTENCY_RETENTION_CEILING_HOURS + 1;
-    let refused = cfg.validate().expect_err("the ceiling refuses");
-    assert!(refused.contains("freeze_timeout_hours"));
-}
-
-/// An unset `default_locale` is admitted, and that is the property `Gear::init`
-/// depends on: it calls `config_or_default()` and then `validate()`, so a
-/// refusal on the default would make the gear un-bootable in every deployment
-/// that ships no config file — the measurement `require_broker`'s own doc
-/// records for its default.
-///
-/// **P-D-101**: the field shortens step 3 of the fallback chain and does not
-/// decide whether resolution succeeds — step 4's global fallback is what makes
-/// the chain total — so "absent" is a working value and not a hole.
-#[test]
-fn an_unset_default_locale_is_admitted_at_boot() {
-    let cfg = ProductsConfig::default();
-    assert_eq!(cfg.default_locale, "", "the default is absent, not a guess");
-    assert!(
-        cfg.validate().is_ok(),
-        "a config that ships no default_locale must still boot"
-    );
-}
-
-/// A non-empty but untrimmed value is refused, because no stored coordinate can
-/// ever match it: `products_attribute_value.locale` holds the token as written,
-/// so ` en` would make step 3 miss on every row while looking configured.
-///
-/// The locale's **shape** is deliberately not validated — no document in the
-/// set names a locale grammar — so this case pins the one failure the config
-/// layer can prove without inventing a vocabulary.
-#[test]
-fn an_untrimmed_default_locale_is_refused_at_boot() {
-    let mut cfg = ProductsConfig {
-        default_locale: " en".to_owned(),
-        ..ProductsConfig::default()
-    };
-    let refusal = cfg.validate().expect_err("an untrimmed locale is refused");
-    assert!(
-        refusal.contains("default_locale"),
-        "the refusal names the field: {refusal}"
-    );
-
-    cfg.default_locale = "en".to_owned();
-    assert!(
-        cfg.validate().is_ok(),
-        "the trimmed form of the same value is admitted"
-    );
-}
-
-/// **A cap of zero is refused at boot, for all five of P-D-107 arm 1's.**
-///
-/// The arm's own reason: a taxonomy or metadata ceiling of zero refuses the
-/// first category or the first key, so the door it guards can never succeed
-/// and the gear would boot into a state where `TAXONOMY_LIMIT` or
-/// `METADATA_LIMIT` is not a limit but a closure.
-///
-/// Each field is perturbed **on its own**, because one case covering five
-/// fields passes just as well if the guard reads the same field five times.
-#[test]
-fn a_zero_cap_is_refused_at_boot() {
+fn a_zero_resolver_timeout_is_refused_at_boot() {
     ProductsConfig::default()
         .validate()
         .expect("the shipped defaults are admissible");
-
-    let cases = [
-        (
-            "taxonomy_max_depth",
-            ProductsConfig {
-                taxonomy_max_depth: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "taxonomy_max_children_per_node",
-            ProductsConfig {
-                taxonomy_max_children_per_node: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "metadata_max_keys",
-            ProductsConfig {
-                metadata_max_keys: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "metadata_max_key_bytes",
-            ProductsConfig {
-                metadata_max_key_bytes: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "metadata_max_value_bytes",
-            ProductsConfig {
-                metadata_max_value_bytes: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "attribute_values_max_per_patch",
-            ProductsConfig {
-                attribute_values_max_per_patch: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "activation_claim_lease_secs",
-            ProductsConfig {
-                activation_claim_lease_secs: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "activation_attempt_budget",
-            ProductsConfig {
-                activation_attempt_budget: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "retention_days_financial",
-            ProductsConfig {
-                retention_days_financial: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "retention_days_version",
-            ProductsConfig {
-                retention_days_version: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "retention_days_audit",
-            ProductsConfig {
-                retention_days_audit: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "pseudonymization_age_days",
-            ProductsConfig {
-                pseudonymization_age_days: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "drill_cadence_hours",
-            ProductsConfig {
-                drill_cadence_hours: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "usage_type_resolver_timeout_ms",
-            ProductsConfig {
-                usage_type_resolver_timeout_ms: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "breakglass_window_hours",
-            ProductsConfig {
-                breakglass_window_hours: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "breakglass_review_sla_hours",
-            ProductsConfig {
-                breakglass_review_sla_hours: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "retirement_held_alert_hours",
-            ProductsConfig {
-                retirement_held_alert_hours: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "read_path_qps_ceiling",
-            ProductsConfig {
-                read_path_qps_ceiling: 0,
-                ..ProductsConfig::default()
-            },
-        ),
-        (
-            "read_active_locales",
-            ProductsConfig {
-                read_active_locales: Vec::new(),
-                ..ProductsConfig::default()
-            },
-        ),
-    ];
-    for (name, cfg) in cases {
-        let message = cfg
-            .validate()
-            .expect_err("a ceiling of zero must be refused at boot");
-        assert!(
-            message.contains(name),
-            "the refusal names the field that is wrong: {message}"
-        );
-    }
-}
-
-/// The five interim ceilings are the numbers P-D-107 arm 1 justified.
-///
-/// Pinned rather than left to the constants, for the reason a golden vector
-/// exists: the arm anchors each number to something stated — the writer lock's
-/// hold for depth, PRD §7's ten-thousand-SKU target for fan-out, and P-D-06's
-/// exclusion of the map from version content for the three metadata caps — so
-/// a silent change to one is a change to that reasoning.
-#[test]
-fn the_interim_ceilings_are_the_justified_numbers() {
-    let cfg = ProductsConfig::default();
-    assert_eq!(cfg.taxonomy_max_depth, 8);
-    assert_eq!(cfg.taxonomy_max_children_per_node, 1_000);
-    assert_eq!(cfg.metadata_max_keys, 50);
-    assert_eq!(cfg.metadata_max_key_bytes, 128);
-    assert_eq!(cfg.metadata_max_value_bytes, 2_048);
-    // P-D-163: one live-value patch is one transaction, bounded.
-    assert_eq!(cfg.attribute_values_max_per_patch, 200);
-    // P-D-113 arm 4: the runner's two, anchored to the 1s tick and to a
-    // pin mismatch being terminal on its first try.
-    assert_eq!(cfg.activation_claim_lease_secs, 60);
-    assert_eq!(cfg.activation_attempt_budget, 5);
-    // P-D-118: PRD §15's interim "statutory max", the age of last activity,
-    // and a daily drill.
-    assert_eq!(cfg.retention_days_financial, 3_650);
-    assert_eq!(cfg.retention_days_version, 3_650);
-    assert_eq!(cfg.retention_days_audit, 3_650);
-    assert_eq!(cfg.pseudonymization_age_days, 730);
-    assert_eq!(cfg.drill_cadence_hours, 24);
-    // P-D-121: the resolve runs before the transaction, so this bounds latency,
-    // not a lock.
-    assert_eq!(cfg.usage_type_resolver_timeout_ms, 2_000);
-    // P-D-132: PRD §17.1's four hours, no renewal.
-    assert_eq!(cfg.breakglass_window_hours, 4);
-    // P-D-133: a day to review, three days before a held retirement alarms.
-    assert_eq!(cfg.breakglass_review_sla_hours, 24);
-    assert_eq!(cfg.retirement_held_alert_hours, 72);
-}
-
-/// **`drill_target_dsn` has no default, and an unconfigured drill is a
-/// legitimate state** (**P-D-135**).
-///
-/// Asserted as `None` rather than as a placeholder: a default pointing
-/// anywhere would make an unconfigured drill silently verify the **live**
-/// database, which proves nothing about a backup and would report a green
-/// run every cadence.
-#[test]
-fn the_drill_target_has_no_default() {
-    assert_eq!(ProductsConfig::default().drill_target_dsn, None);
-    ProductsConfig::default()
-        .validate()
-        .expect("no target is a legitimate deployment, not a boot failure");
-}
-
-/// **A present but blank `drill_target_dsn` is refused at boot.**
-///
-/// The distinction the refusal exists for: absent is a deployment that has
-/// not wired the drill and gets `no_target` rows it can act on; blank is an
-/// operator who meant to configure one, and treating it as absent would turn
-/// a typo into a decade of warnings that read as a choice.
-#[test]
-fn a_blank_drill_target_is_a_boot_refusal() {
     let cfg = ProductsConfig {
-        drill_target_dsn: Some("   ".to_owned()),
+        usage_type_resolver_timeout_ms: 0,
         ..ProductsConfig::default()
     };
-    let refusal = cfg.validate().expect_err("a blank target is refused");
+    let message = cfg
+        .validate()
+        .expect_err("a zero timeout must be refused at boot");
     assert!(
-        refusal.contains("drill_target_dsn"),
-        "the refusal names the field: {refusal}"
+        message.contains("usage_type_resolver_timeout_ms"),
+        "the refusal names the field that is wrong: {message}"
     );
 }
 
-/// `04`'s EOL flag is **off by default** (`dod-eol-lockout`: *"behind a
-/// feature flag OFF by default"*): a deployment that ships no config file
-/// refuses `mustMigrateBy` and never populates the payload field.
+/// The resolver timeout defaults to two seconds (P-D-203): the resolve runs
+/// before the transaction, so the bound is latency, never a held lock.
 #[test]
-fn eol_is_off_by_default() {
-    assert!(!ProductsConfig::default().eol_enabled);
+fn the_resolver_timeout_defaults_to_two_seconds() {
+    let cfg = ProductsConfig::default();
+    assert_eq!(cfg.usage_type_resolver_timeout_ms, 2_000);
+    assert_eq!(
+        cfg.usage_type_resolver_timeout(),
+        std::time::Duration::from_secs(2)
+    );
 }

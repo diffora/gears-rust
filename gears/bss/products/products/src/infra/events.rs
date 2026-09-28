@@ -21,7 +21,7 @@ impl toolkit_db::outbox::LeasedMessageHandler for PendingBrokerProducer {
         tracing::debug!(
             queue = QUEUE_NAME,
             payload_type = %msg.payload_type,
-            "bss-products: no EventBrokerApi was present at boot, so P-D-47's SDK producer \
+            "bss-products: no EventBrokerApi was present at boot, so the SDK producer \
              was not bound; holding the message in the queue"
         );
         toolkit_db::outbox::MessageResult::Retry

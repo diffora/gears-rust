@@ -143,6 +143,33 @@ pub async fn find_many(
         .await
         .map_err(|e| driver_failure("list plan revisions by id".into(), e))
 }
+/// The revisions of the tenant's `plans`, by plan and revision number, in ONE statement whatever
+/// the number of plans (D-434).
+/// # Errors
+/// Returns typed database failures.
+pub async fn for_plans(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plans: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if plans.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PlanId.is_in(plans.iter().copied())),
+        )
+        .order_by(e::Column::PlanId, Order::Asc)
+        .order_by(e::Column::RevNo, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list the revisions of plans".into(), e))
+}
 /// A plan's revisions by revision number.
 /// # Errors
 /// Returns typed database failures.

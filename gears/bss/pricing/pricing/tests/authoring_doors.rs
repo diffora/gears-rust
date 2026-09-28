@@ -270,7 +270,10 @@ async fn settings_positive_preconditions_and_matrix_8_templates() {
     let (s, mut body, tag) = f.call("GET", "/settings", json!({}), None, None).await;
     assert_eq!(s, 200);
     assert_eq!(tag, "\"0\"");
-    body.as_object_mut().unwrap().remove("version");
+    // What the read adds to what the PUT takes (D-438): the version and who changed it when.
+    for field in ["version", "updated_at", "updated_by"] {
+        body.as_object_mut().unwrap().remove(field);
+    }
     body["invoice_line_templates"] = json!({"usage":"{sku}"});
     assert_eq!(
         f.call("PUT", "/settings", body.clone(), None, None).await.0,
@@ -324,7 +327,14 @@ async fn dimension_registry_positive_preconditions_and_matrix_11() {
         .await;
     assert_eq!(saved.0, 200, "{saved:?}");
     assert_eq!(saved.1["items"][0]["key"], "region");
-    assert_eq!(saved.1["items"][0]["values"], json!(["eu", "us"]));
+    // D-436: the answer carries each value with its use.
+    assert_eq!(
+        saved.1["items"][0]["values"],
+        json!([
+            {"value": "eu", "usage": {"prices": 0}},
+            {"value": "us", "usage": {"prices": 0}},
+        ])
+    );
     assert_eq!(
         f.call("PUT", "/dimension-keys", input, Some(&tag), None)
             .await
@@ -401,6 +411,10 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("POST", format!("/plans/{id}/clone")),
         ("GET", "/resolve".into()),
         ("GET", format!("/prices/{id}")),
+        ("GET", "/price-book-entries".into()),
+        ("GET", format!("/plan-items/{id}")),
+        ("DELETE", "/approval-policy/prices".into()),
+        ("PATCH", "/dimension-keys".into()),
     ] {
         assert_eq!(
             request(&f.denied, &f.ctx, method, &path, json!({}), None, None)
@@ -566,15 +580,33 @@ async fn export_contains_all_states_in_order_and_used_dimension_cannot_be_remove
         assert_eq!(refused.0, 409);
         assert!(refused.1.to_string().contains("DIM_VALUE_IN_USE"));
     }
+    // Nothing was removed: the registry's content tag is the one the PUT answered (its `usage`
+    // now counts the prices written since, D-436).
+    let (_, now, tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    assert_eq!(tag, saved.2);
     assert_eq!(
-        f.call("GET", "/dimension-keys", json!({}), None, None)
-            .await
-            .1,
-        saved.1
+        now["items"][0]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].clone())
+            .collect::<Vec<_>>(),
+        saved.1["items"][0]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].clone())
+            .collect::<Vec<_>>()
     );
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the label table is a route census: one row per route, in one place"
+)]
 async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
     let f = Fixture::new().await;
     let (b, _) = f.book().await;
@@ -709,6 +741,20 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         ("POST", format!("/plans/{id}/clone"), "plan", "author"),
         ("GET", "/resolve".into(), "plan", "read"),
         ("GET", format!("/prices/{id}"), "price", "read"),
+        (
+            "GET",
+            "/price-book-entries".into(),
+            "price_book_entry",
+            "read",
+        ),
+        ("GET", format!("/plan-items/{id}"), "plan", "read"),
+        (
+            "DELETE",
+            "/approval-policy/prices".into(),
+            "config",
+            "settings",
+        ),
+        ("PATCH", "/dimension-keys".into(), "config", "settings"),
     ];
     // The label table is a route census: exactly the routes the router registers, one row each.
     let rows: std::collections::BTreeSet<(String, String)> = table
@@ -716,11 +762,15 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
         .map(|(method, path, _, _): &(&str, String, &str, &str)| {
             (
                 (*method).to_owned(),
-                format!("/bss-pricing/v1{}", path.replace(id, "{id}")),
+                format!(
+                    "/bss-pricing/v1{}",
+                    path.replace(id, "{id}")
+                        .replace("/approval-policy/prices", "/approval-policy/{kind}")
+                ),
             )
         })
         .collect();
-    assert_eq!(table.len(), 44);
+    assert_eq!(table.len(), 48);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,

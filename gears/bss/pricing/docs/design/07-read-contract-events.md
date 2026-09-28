@@ -33,7 +33,7 @@ Deliver reproducible resolution matrices, pinned-price reads and Studio quote, p
 Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read`, `cpt-cf-bss-pricing-fr-quote`, `cpt-cf-bss-pricing-fr-events`. Architecture: `cpt-cf-bss-pricing-component-read-contract`, `cpt-cf-bss-pricing-component-events`, `cpt-cf-bss-pricing-component-prices`, `cpt-cf-bss-pricing-principle-book-money-independent`, `cpt-cf-bss-pricing-constraint-two-backends`.
 [FEATURE](../features/read-contract-events.md) owns the executable flow/algorithm/DoD identifiers; this slice defines no duplicate DoDs.
 Dependencies: `cpt-cf-bss-pricing-feature-plans`, `cpt-cf-bss-pricing-feature-promotions-migrations`, `cpt-cf-bss-pricing-feature-approvals`.
-Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-428.
+Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-433.
 
 ## 2. Actor Flows (CDSL)
 
@@ -103,7 +103,7 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | --- | --- | --- |
 | revision | plan_revision_id, plan_id, rev_no, state | The revision resolved; state is published or superseded. |
 | revision | book_id, currency, currency_minor_digits | The revision's book, its currency and that currency's scale (domain::book::minor_digits). |
-| revision | rounding_policy | The tenant default_rounding. |
+| revision | rounding_policy | The tenant default_rounding: half_up, half_even, half_down, up or down since D-437; a value stored before it reads as stored. |
 | revision | date | The date resolved (YYYY-MM-DD). |
 | revision | items | One per item of the revision, or the one item_id names. |
 | item | item_id, sku_id, treatment, included_qty, qty_min | The item as stored; included_qty is exact decimal text or null. |
@@ -126,6 +126,8 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | binding | effective_from, effective_to, temporary_until | The stored window and the temporary end, if any. effective_to is for information: a successor's start sets it, including a new successor that a pinned subscription does not take. |
 | binding | ends_on | Where the binding ends for its holder (D-425): temporary_until for a temporary price, the stored end of an explicitly closed price, null when it has none. A consumer slices a period at ends_on, never at effective_to. |
 | binding | keep_for_bound | Whether the price is kept for pinned subscriptions (the predecessor of a new price). |
+
+In the served OpenAPI, the revision's state, treatment, charge_kind, period, model, each input's source and eligibility are enums of exactly the tokens above; rounding_policy stays a string, because no CHECK guards default_rounding (D-439). The pinned price read's charge_kind, period, model and eligibility are the same enums.
 
 The pinned price read returns one approved price's stored facts with its entry's SKU, charge kind, period, model (D-427), book and currency (D-422). Pricing prices are read forever; consumer pins persist outside this gear. Events use toolkit outbox envelopes, not a second pricing schema.
 

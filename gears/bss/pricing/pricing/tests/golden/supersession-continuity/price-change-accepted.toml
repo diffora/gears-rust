@@ -1,7 +1,7 @@
 family     = "supersession-continuity"
 id         = "price-change-accepted"
 kind       = "publish"
-provenance = ["inst-tb-supersession-units", "D-82"]
+provenance = ["inst-tb-supersession-units (backup)", "D-82 (backup)", "D-402"]
 
 # The positive case, and the one that keeps the guard honest. Supersession *is*
 # a price change on one key: new amounts, new bands. A guard that rejected this

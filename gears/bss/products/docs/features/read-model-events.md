@@ -161,7 +161,7 @@ approve or settings permission and tenant scope; holding multiple grants never b
 2. [ ] - `p1` - Serve Published and Deprecated SKUs with lifecycle status and deprecated flag; exclude draft, retiring and retired entries - `inst-read-browse-map`
 3. [ ] - `p1` - Preserve the transport's existing response contract until phase 2 without recreating Product parents, CatalogVersion freezes or a second catalog authority - `inst-read-browse-contract`
 
-Browse is the current published catalog surface; historical period binding always uses versions?as_of=.
+Browse is the current published catalog surface; historical period binding always uses versions/as-of?date=.
 Authoring list/card may show other lifecycle states in the authorized tenant and must not inherit the
 Published/Deprecated predicate by accident.
 
@@ -188,7 +188,7 @@ Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/skus.rs`.
 
-GET skus searches code/name and intersects type, category and lifecycle filters under tenant scope, with bounded limit and an exclusive code cursor in after (codes are unique per tenant). It reads current heads using the DESIGN §3.7 read indexes and exposes authorized lifecycle states; dated truth comes from versions rather than a future-effective head (spec §4, §7.2; DESIGN §3.3; slice 04 §5).
+GET skus pages on the toolkit's OData under tenant scope: `$filter` over id, code, name, type, lifecycle, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review), `$orderby` code, name or updated_at with the tie-break id, `$top`/`limit` 50 clamped at 200 and an opaque cursor whose hash covers `$filter`, `q`, `priced` and `in_plan`; `q` is a literal case-insensitive substring of code, name, unit, usage type and GL code; `priced` and `in_plan` filter on pricing's usage sets and fail the read when pricing cannot answer (P-D-212). GET skus/counts answers the tab counts narrowed alike (P-D-210, P-D-211). It reads current heads using the DESIGN §3.7 read indexes and exposes authorized lifecycle states; dated truth comes from versions rather than a future-effective head (spec §4, §7.2; DESIGN §3.3; slice 04 §5).
 
 ### SKU card shows local reference facts
 
@@ -196,7 +196,7 @@ GET skus searches code/name and intersects type, category and lifecycle filters 
 
 Verified at `b74e8783b49b03fa827f1052a99cf6553683f4aa`; implementation marker in `products/src/api/rest/skus.rs`.
 
-The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat price_book_entries/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read; the card's `usage` from pricing's `SkuUsageV1` port is information beside them, never a reference count (P-D-197) (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3).
+The SKU card and GET references return local registry rows and live counts grouped by owner and kind, including abandoned reserved rows for inspection. Reserved and confirmed both count until release; GET references?include_released=true includes released_at, released_by, forced and release_reason without counting released rows; flat price_book_entries/plans/reserved totals remain alongside by_owner maps, and no remote Pricing count substitutes for the local read; the card's `usage` from pricing's `SkuUsageV1` port is information beside them, never a reference count (P-D-197) (spec §2 decision 17, §4, §13; DESIGN §3.2–§3.3). GET skus/{id}/history reads the SKU's audit rows and its units' rows, oldest first, each with its actor, its lifecycle move, its unit and its note, under the card's scope (P-D-213).
 
 ### Durable reference identity and release
 
@@ -249,7 +249,7 @@ obligations here and integration checks when its phase 2 caller path exists.
 
 | DoD | PRD trace | Given / When / Then |
 | --- | --- | --- |
-| `cpt-cf-bss-products-dod-list-search` | AC #22, #28; `cpt-cf-bss-products-fr-read-model`, `cpt-cf-bss-products-nfr-tenant-isolation` | Given two tenants with matching names and varied types/categories/lifecycles, when search filters and limit/after pages are read, then only scoped matching heads appear in stable order; another tenant's cursor or absent read permission discloses no protected data. |
+| `cpt-cf-bss-products-dod-list-search` | AC #22, #28; `cpt-cf-bss-products-fr-read-model`, `cpt-cf-bss-products-nfr-tenant-isolation` | Given two tenants with matching names and varied types/categories/lifecycles, when `$filter`, `q` and cursor pages are read, then only scoped matching heads appear in stable order and the counts agree with the list; another tenant's cursor or absent read permission discloses no protected data. |
 | `cpt-cf-bss-products-dod-card-with-references` | AC #10, #22, #26; `cpt-cf-bss-products-fr-read-model`, `cpt-cf-bss-products-fr-reference-registry` | Given a SKU with reserved, confirmed and released attempts, when its scoped card and references are read, then both live states count by owner/kind and abandoned reservations remain visible; elapsed time cannot hide a reservation, released history is excluded from live counts and cross-tenant reads reveal nothing. |
 | `cpt-cf-bss-products-dod-reference-registry` | AC #24, #25, #26; `cpt-cf-bss-products-fr-reference-registry`, `cpt-cf-bss-products-nfr-audit` | Given a live logical reference, when reserve and confirm repeat, then they return the same ID and success; after legitimate release a new attempt gets a fresh ID, old confirm fails with REFERENCE_RELEASED and history remains; force-release without authorization/force/reason is refused, and post-commit confirmation timeout leaves the reservation live for durable retry. |
 | `cpt-cf-bss-products-dod-reserve-refused-when-fenced` | AC #2, #10, #23, #29; `cpt-cf-bss-products-fr-reference-registry`, `cpt-cf-bss-products-fr-sku-retire-fenced`, `cpt-cf-bss-products-fr-sku-type-frozen` | Given concurrent reserve and retire/type-fence attempts on either backend, when they run, then a winning reservation causes SKU_REFERENCED/SKU_TYPE_FROZEN or a winning fence causes SKU_FENCED, never both successes; retired SKUs admit no new references and unconfirmed reservations keep blocking fences indefinitely. |

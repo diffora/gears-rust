@@ -24,7 +24,7 @@ pub enum IdempotencyClaim {
     /// (`inst-fd-idem-conflict`), a comparison this repository does not make
     /// because it was never handed the incoming request to compare.
     /// `response_status`/`response_body` are the replay itself, and it is
-    /// self-contained (**P-D-29**): nothing else needs to be read to serve
+    /// self-contained (D-429): nothing else needs to be read to serve
     /// it.
     Answered {
         /// The digest the stored answer was recorded against.
@@ -47,20 +47,15 @@ pub enum IdempotencyClaim {
     InFlight {
         /// The digest the live `claimed` row was recorded against.
         payload_hash: Vec<u8>,
-        /// The composite act's parent handle, if the holding act stamped one
-        /// (P-D-79): the family clone's committed-but-unanswered claim
-        /// carries its new parent here, and the same-key retry resumes from
-        /// it. `None` for every single-entity door's claim.
-        entity_ref: Option<Uuid>,
     },
-    /// This call lost the expired-key takeover race (**P-D-49**): another
+    /// This call lost the expired-key takeover race (D-429): another
     /// caller's compare-and-swap moved the row off the stamp this one read.
     ///
     /// Distinct from [`InFlight`](Self::InFlight) because **no digest
     /// comparison is owed here and none is possible**. The loser "may even
     /// carry a different payload from the winner, and is still refused
-    /// in-flight rather than for the mismatch, since this transaction never
-    /// compared the two" (§3.2 `inst-fd-idem-retention`, **P-D-49**): the
+    /// in-flight rather than for the mismatch, since its transaction never
+    /// compared the two" (D-429): the
     /// row this call read was the *expired* holder's, and the payload now
     /// under the key is the winner's, which this transaction never saw.
     /// Answering `IDEMPOTENCY_CONFLICT` from a hash this call never read
@@ -106,8 +101,8 @@ pub async fn claim_idempotency_key(
         response_status: Set(None),
         response_body: Set(None),
         expires_at: Set(expires_at),
-        // A fresh claim carries no parent handle; a composite door stamps
-        // one afterwards, in this same transaction (P-D-79).
+        // A fresh claim is bound to no op; a door that begins a durable op
+        // binds it afterwards, in this same transaction ([`bind_op`]).
         entity_ref: Set(None),
     };
 
@@ -162,6 +157,8 @@ pub async fn claim_idempotency_key(
             ))
         })?;
 
+    // A claim bound to its durable op is never taken over, however old: the op may still be retrying,
+    // and a takeover would mint a second op under the same key (D-401, D-429).
     if now > held.expires_at && !(held.state == "claimed" && held.entity_ref.is_some()) {
         return take_over_expired_idempotency_claim(runner, scope, &held, payload_hash, expires_at)
             .await;
@@ -210,7 +207,6 @@ fn held_claim(held: idempotency::Model) -> Result<IdempotencyClaim, RepoError> {
         }
         "claimed" => Ok(IdempotencyClaim::InFlight {
             payload_hash: held.payload_hash,
-            entity_ref: held.entity_ref,
         }),
         other => Err(RepoError::CorruptRow(format!(
             "pricing_idempotency.state `{other}` on stored key"
@@ -245,8 +241,8 @@ async fn take_over_expired_idempotency_claim(
             Expr::value(None::<JsonValue>),
         )
         .col_expr(idempotency::Column::ExpiresAt, Expr::value(new_expires_at))
-        // The taken-over claim is a fresh act's: a stale parent handle from
-        // the crashed holder must not leak into it (P-D-79).
+        // A taken-over claim is a fresh act's: the expired holder's op binding
+        // (an answered row may still carry one) does not carry over.
         .col_expr(idempotency::Column::EntityRef, Expr::value(None::<Uuid>))
         .filter(
             idempotency_key_of(held.tenant_id, &held.endpoint, &held.client_key)
@@ -271,7 +267,7 @@ async fn take_over_expired_idempotency_claim(
     // would tell two callers they both hold a key only one of them does.
     // It is not `InFlight` either: that outcome carries the held digest for
     // the caller to compare, and the digest now under the key is the
-    // winner's, which this transaction never read (P-D-49).
+    // winner's, which this transaction never read (D-429).
     if result.rows_affected == 0 {
         return Ok(IdempotencyClaim::TakeoverRaceLost);
     }
@@ -292,6 +288,11 @@ pub enum IdempotencyAnswer {
 /// Answer idempotency key.
 /// # Errors
 /// Returns scoped storage failures, preserving database errors for retry.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the composite key is three columns and the answer needs the status, the body and \
+              the late answer's retention beside them, like the claim above"
+)]
 pub async fn answer_idempotency_key(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -300,14 +301,21 @@ pub async fn answer_idempotency_key(
     client_key: &str,
     response_status: i32,
     response_body: JsonValue,
+    retain_until: Option<OffsetDateTime>,
 ) -> Result<IdempotencyAnswer, RepoError> {
-    let result = idempotency::Entity::update_many()
+    let mut update = idempotency::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
             idempotency::Column::State,
             Expr::value("answered".to_owned()),
-        )
+        );
+    // A durable op may answer long after its claim; its answer is kept a full retention from the
+    // answer, or the next same-key retry would find the row expired and take the key over (D-429).
+    if let Some(retain_until) = retain_until {
+        update = update.col_expr(idempotency::Column::ExpiresAt, Expr::value(retain_until));
+    }
+    let result = update
         .col_expr(
             idempotency::Column::ResponseStatus,
             Expr::value(Some(response_status)),

@@ -1,115 +1,51 @@
-//! Create `bss.products_audit_log` — the append-only trail for every act that
-//! emits no broker event (`design/01-foundation.md` §4.4): a refusal, a read
-//! under elevation, and a committed act the design declares eventless.
+//! Create `bss.products_audit_log` — the append-only audit trail (P-D-193,
+//! P-D-200). Every row the gear writes today is a door's act on a subject:
+//! submission and every terminal unit transition, category and SKU acts.
 //!
-//! It also carries the **reserved platform-sealing seam** (P-D-08) from this
-//! first migration and never seals it here: `seal_state`, `chain_id`, `seq`,
-//! `prev_hash` and `row_hash`. `seal_state` is written `unsealed` at INSERT,
-//! always, so the unproven era is queryable rather than inferred from a
-//! deployment date. This gear computes no hash and runs no verification job —
-//! that is the platform capability's job, subject to P-D-08 S1–S9.
+//! It also carries the **reserved platform-sealing seam** (P-D-200) and never
+//! seals it here: `seal_state`, `chain_id`, `seq`, `prev_hash` and `row_hash`.
+//! `seal_state` is written `unsealed` at INSERT, always, so the unproven era is
+//! queryable rather than inferred from a deployment date. This gear computes no
+//! hash and runs no verification job — that is the platform capability's job.
 //!
 //! # `audit_id` is a surrogate uuid primary key, not `(tenant_id, chain_id, seq)`
 //!
-//! The sibling pricing gear's audit log keys on `(tenant_id, chain_id, seq)`,
-//! because every row it ever writes already has all three. This table cannot
-//! do that: the sealing seam's one-way `UPDATE` has to address a row that is
-//! **not yet sealed**, and `seq` is null until it is (owner's call,
-//! 2026-08-27, **P-D-28**). A key built from a column that is null on every
-//! unsealed row cannot address that row, so the key has to be independent of
-//! the chain's ordering altogether. This is the single largest departure from
-//! the donor.
+//! The sealing seam's one-way `UPDATE` has to address a row that is **not yet
+//! sealed**, and `seq` is null until it is (P-D-200). A key built from a column
+//! that is null on every unsealed row cannot address that row, so the key is
+//! independent of the chain's ordering altogether. Pricing's `pricing_audit`
+//! keys the same way (pricing D-433).
 //!
-//! # `actor_ref` is `uuid`, for the donor's own stated reason
+//! # `actor_ref` is `uuid`
 //!
 //! Pseudonymous by construction, never a display name or an email address,
 //! typed `uuid` rather than `text` so that constraint is physical: a `text`
 //! column retained for years would eventually be handed directly-identifying
-//! operator PII. The identity-reference map that resolves it to a human is
-//! slice 10's `products_identity_ref`, built in a later slice — this
-//! migration writes no foreign key to it.
+//! operator PII.
 //!
 //! # `subject_id` and `subject_revision` are nullable
 //!
-//! A refusal raised before the mint has no id to carry — it carries
-//! `attempted_key` (the attempted `name`, `sku_code` or `product_code`)
-//! instead. An audit row must never name an id that identifies nothing.
 //! `chk_products_audit_log_subject_ref` is the "every row is identifiable by
 //! something" rule: a row carries a `subject_id`, an `attempted_key`, or a
-//! `session_id`. The third arm is not decoration — v1 elevation is
-//! audit-export only (`design/01-foundation.md` §4.4), so an elevated read
-//! routinely names **no** subject at all, and a two-arm constraint refused
-//! every such row outright. The constraint is this file's own invention
-//! rather than the design set's: §4.4 makes `subject_id`, `attempted_key`
-//! and `session_id` each independently nullable and never requires one of
-//! them, so the rule is a floor this migration adds, and its arms must cover
-//! every class the gear actually writes.
-//!
-//! A refusal raised before the mint carries the attempted key and no id; a
-//! refusal after it carries the id. The gear's own writer never populates
-//! both on one row — `RefusalSubject` is a sum type with no both-variant —
-//! so the disjunction is wider than any current writer needs and is left
-//! that way deliberately: a later door that resolves an id *after* raising
-//! on the attempted key would otherwise need this migration edited.
-//!
-//! `error_code` is a column rather than free text because §3.1 makes the code
-//! the attribution channel; it is null on the classes that are not refusals.
-//! `written_at` is the operand slice 10's `RetentionClock` reads.
-//! `session_id` is present on the elevation class only.
+//! `session_id`. The gear writes `subject_id` on every row; `error_code`,
+//! `attempted_key`, `session_id` and `ceremony_ref` are carried in the DDL and
+//! written `NULL` (P-D-200).
 //!
 //! # No vocabulary `CHECK` on `action` or `subject_kind` — an owed debt
 //!
-//! The donor (`pricing_audit_log`) constrains both columns against its
-//! `domain::audit::AuditSubjectKind` and `domain::audit::AuditAction` enums,
-//! and argues at length in its own module doc that the constraint should be
-//! physical even though the only writer is typed: a hash-chained record
-//! retained for years, immutable by trigger, is the last place a token should
-//! arrive unspelled and the one place a wrong one cannot be corrected
-//! afterwards. Products has no such domain enum yet, and the design set does
-//! not enumerate a products roster for either column — inventing one here
-//! would put a guessed token into exactly the table the donor's argument says
-//! must never hold one. This is recorded as an explicit, owed debt: the two
-//! vocabulary `CHECK`s (`chk_products_audit_log_action` and
-//! `chk_products_audit_log_subject_kind`, mirroring the donor's names) are to
-//! be added **to this migration file in place**, once the domain vocabulary
-//! exists — this chain edits migrations in place and takes no follow-up
-//! tightening migration.
+//! The two columns are free tokens written by the doors. A vocabulary `CHECK`
+//! on each is owed once the domain names a closed roster for them; it arrives
+//! as a new migration, since the chain is deployed.
 //!
-//! # `correlation_id` is `text`, and `ceremony_ref` rides beside `session_id`
+//! # `correlation_id` is `text`
 //!
-//! Two in-place edits of 2026-09-04, one decision each. **P-D-118** (item
-//! 16): the value `infra::events::correlation_id` supplies is the W3C trace
-//! id — 32 hex characters, rendered that way to stay grep-equal to the access
-//! log, the span and the error envelope — so the `uuid` type this column
-//! shipped with could hold none of them and every writer passed `NULL`. The
-//! column is `text` on both engines and the door writers now fill it; a
-//! background act (the GC, the runner) still writes `NULL`, because it has no
-//! request — a fact about the act, not a hole. **P-D-129** (rows 34–36): the
-//! audit side of `07`'s ceremony join is a nullable `ceremony_ref` `uuid`, the
-//! same value `06`'s freeze ledger stores under `not_frozen(forced_at,
-//! ceremony_ref)`, written only by the break-glass and correction doors when
-//! they land and `NULL` on every other class. Both are **record** columns:
-//! the sealing arm below holds them unchanged like the rest, and the Postgres
-//! allow-list probe (`tests/postgres_frozen_guards.rs`) names them.
+//! The column holds a request's correlation (P-D-200). Products writes `NULL`
+//! on every row: this gear establishes no request correlation. Pricing's twin
+//! column carries its edge id (pricing D-431).
 //!
 //! # The append-only trigger guard
 //!
-//! **DELETE is refused unconditionally on both engines**, as the donor's is.
-//! Design §4.4 / P-D-34 describes a retention DELETE arm as a row-image
-//! predicate — a row whose `written_at` is older than its class's retention
-//! window — but that window is Legal/Finance's call and `PRD` §15 currently
-//! leaves it undecided. A trigger cannot read configuration, so there is no
-//! predicate to write here — and **P-D-118** (2026-09-03) rules that there
-//! never will be: the window is **configuration** (`retention_days_audit`,
-//! interim 3650 days, Legal and Finance's to narrow per jurisdiction), and a
-//! DDL constant could not be set per jurisdiction as `PRD` §15 says it must.
-//! So this trigger and the window are **two different guards** the earlier
-//! text ran together. The trigger's job is to refuse **unauthorised**
-//! deletion — anything that is not the GC. The window is the GC's own
-//! predicate, read from configuration, and the GC is the only authorised
-//! deleter. No `OLD.written_at < <cutoff>` arm is written in this file; when
-//! slice 10's `inst-rt-gc` lands, the DELETE arm this trigger admits is the
-//! GC's identity, not a date.
+//! **DELETE is refused unconditionally on both engines.**
 //!
 //! **UPDATE admits exactly one transition**: `unsealed` to `sealed`, one-way,
 //! supplying `chain_id`, `seq`, `prev_hash` and `row_hash` together in the same
@@ -123,17 +59,16 @@
 //! and the chain could never link — which is the whole of what a hash chain
 //! is. Nothing can rewrite it afterwards either: an already-`sealed` row
 //! matches no admitted transition, since the arm requires `OLD.seal_state` to
-//! be `unsealed`. Without this arm P-D-08's
-//! sealing capability computes the seal asynchronously over rows already
-//! immutable by trigger, and a whitelist that admitted no column at all would
-//! refuse that write — precisely the migration the reserved seam exists to
-//! avoid. The sealer's identity is an application and grant guarantee, not
-//! something the trigger reads: the session variable that would carry it
-//! exists on Postgres and not on `SQLite`, so neither trigger reads one.
+//! be `unsealed`. Without this arm the platform's sealing capability, which
+//! computes the seal asynchronously over rows already immutable by trigger,
+//! would be refused by a whitelist that admitted no column at all — precisely
+//! the migration the reserved seam exists to avoid. The sealer's identity is an
+//! application and grant guarantee, not something the trigger reads: the
+//! session variable that would carry it exists on Postgres and not on
+//! `SQLite`, so neither trigger reads one.
 //!
-//! `REVOKE UPDATE, DELETE` is not issued, as the donor declines it in both
-//! engine tiers: P-D-46 withdrew that arm, it names a deployment role this
-//! migration does not own, and `SQLite` has no `GRANT`/`REVOKE`.
+//! `REVOKE UPDATE, DELETE` is not issued (P-D-200): it names a deployment role
+//! this migration does not own, and `SQLite` has no `GRANT`/`REVOKE`.
 //!
 //! # Backend differences
 //!

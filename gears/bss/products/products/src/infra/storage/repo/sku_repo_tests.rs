@@ -691,18 +691,17 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
     .await
     .unwrap();
     let q = SkuQuery {
-        catalog_filter: None,
-        text: None,
-        r#type: Some(SkuType::Usage),
-        category_id: Some(cat),
+        catalog_filter: Some(
+            Condition::all()
+                .add(sku::Column::Type.eq(SkuType::Usage.as_str()))
+                .add(sku::Column::CategoryId.eq(cat)),
+        ),
         lifecycle: Some(Lifecycle::Draft),
         limit: 1,
         after_code: None,
     };
     assert_eq!(list_skus(&conn, &scope, tenant, &q).await.unwrap().len(), 2);
     let q = SkuQuery {
-        catalog_filter: None,
-        text: Some("Bet".into()),
         after_code: Some("A".into()),
         ..q
     };

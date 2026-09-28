@@ -50,6 +50,10 @@ fn census() -> census::Routes {
         ("POST", "/bss-pricing/v1/plans/{id}/clone"),
         ("GET", "/bss-pricing/v1/resolve"),
         ("GET", "/bss-pricing/v1/prices/{id}"),
+        ("GET", "/bss-pricing/v1/price-book-entries"),
+        ("GET", "/bss-pricing/v1/plan-items/{id}"),
+        ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
+        ("PATCH", "/bss-pricing/v1/dimension-keys"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -72,7 +76,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 44);
+    assert_eq!(registered.len(), 48);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 6);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -83,12 +87,13 @@ async fn the_census_covers_every_route_the_routers_register() {
 
 #[test]
 fn the_authentication_and_authz_parsers_have_positive_controls() {
-    for needle in ["require_authenticated(", "authz::access_scope("] {
+    // One per route (48), and more: `require_authenticated(` is also its own definition;
+    // `authz::access_scope(` is also the SKU usage port, which authorizes the Products caller it
+    // serves (D-428), and the SKU's entry list's second judgement, price_book read, which shows
+    // the price in force or hides it (D-434).
+    for (needle, more) in [("require_authenticated(", 1), ("authz::access_scope(", 2)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        // One per route (44), and one more each: `require_authenticated(` is also its own
-        // definition; `authz::access_scope(` is also the SKU usage port, which authorizes the
-        // Products caller it serves (D-428).
-        assert_eq!(census::production_count(needle), 44 + 1, "{needle}");
+        assert_eq!(census::production_count(needle), 48 + more, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(
@@ -98,7 +103,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 44);
+    assert_eq!(census::source_routes().len(), 48);
 }
 
 #[test]
@@ -189,3 +194,9 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
 // GET /prices/{id} price:read false false
+
+// Run 6.4 (D-434 to D-436): method | path | resource:action | If-Match | Idempotency-Key
+// GET /price-book-entries price_book_entry:read false false
+// GET /plan-items/{id} plan:read false false
+// DELETE /approval-policy/{kind} config:settings true false
+// PATCH /dimension-keys config:settings true false

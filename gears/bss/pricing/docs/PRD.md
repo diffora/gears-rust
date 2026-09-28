@@ -366,6 +366,10 @@ All pricing POSTs require Idempotency-Key; PATCH/PUT require If-Match. Replay us
 
 Authoring routes mount at `/bss-pricing/v1`: books and export, entries, prices, publish-changes, approval-units,
 approval-policy, settings and dimension-keys. Later routes add plans/revisions/checks; promotions (D-409) and migrations (D-410) are deferred.
+Phase 6 adds the operator reads and edits: where a SKU is priced and sold (a SKU's entries across books, the plans
+that name it, one plan item, D-434), the reset of a kind's quorum override (D-435), the one-key edit of dimension
+values with each value's use (D-436), and settings that offer currencies and say who changed them, with a closed set
+of rounding modes (D-437, D-438).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose
@@ -378,7 +382,8 @@ Reserve is idempotent for a live logical reference, confirm on a confirmed recei
 never reactivate. Rating and Subscriptions receive golden responses and adapt in separate plans. The retained
 ProductCatalogClientV1 transport exists for compatibility until later demolition; it does not replace this protocol.
 Pricing fills Products' SkuUsageV1 port, which gives each SKU read its count of entries, their currencies, prices
-by state and distinct plans (D-428, Products P-D-197).
+by state and distinct plans (D-428, Products P-D-197), and the priced and in-plan SKU sets the Products list
+filters by (Products P-D-212).
 
 ## 8. Use Cases
 

@@ -84,9 +84,6 @@ impl BrowseCatalogProvider {
         }
         let query = repo::SkuQuery {
             catalog_filter: Some(condition),
-            text: None,
-            r#type: None,
-            category_id: None,
             lifecycle: None,
             limit: u64::from(limit),
             after_code: cursor.filter(|s| !s.is_empty()).map(str::to_owned),
@@ -227,9 +224,6 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
             .map_err(|e| catalog_unreachable(e.to_string()))?;
         let mut query = repo::SkuQuery {
             catalog_filter: None,
-            text: None,
-            r#type: None,
-            category_id: None,
             lifecycle: Some(Lifecycle::Published),
             limit: 200,
             after_code: None,

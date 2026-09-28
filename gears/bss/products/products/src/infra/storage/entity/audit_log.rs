@@ -1,11 +1,10 @@
-//! `SeaORM` entity for `bss.products_audit_log` — the append-only trail for
-//! every act that emits no broker event: a refusal, a read under elevation,
-//! and a committed act the design declares eventless.
+//! `SeaORM` entity for `bss.products_audit_log` — the append-only audit trail
+//! (P-D-193, P-D-200).
 //!
 //! # The reserved platform-sealing seam
 //!
 //! `seal_state`, `chain_id`, `seq`, `prev_hash` and `row_hash` exist so the
-//! platform sealing capability (P-D-08) can activate without a migration.
+//! platform sealing capability (P-D-200) can activate without a migration.
 //! `seal_state` is written `unsealed` at INSERT, always; this gear computes
 //! no hash and runs no verification job — that is the platform capability's
 //! job. The one admitted `UPDATE`, the one-way `unsealed -> sealed`
@@ -29,36 +28,31 @@ pub struct Model {
     /// The audit action token (`design/01-foundation.md` §4.4). No
     /// vocabulary `CHECK` yet — an owed debt the migration's own doc names.
     pub action: String,
-    /// The kind of thing `subject_id`/`attempted_key` names. Same owed debt
-    /// as `action`.
+    /// The kind of thing `subject_id` names. Same owed debt as `action`.
     pub subject_kind: String,
-    /// The subject's id, when one was minted. Nullable: a refusal raised
-    /// before the mint has no id to carry.
+    /// The subject's id. Nullable in the DDL; the one writer,
+    /// `write_eventless_act_audit`, sets it on every row.
     pub subject_id: Option<Uuid>,
-    /// The subject's revision at the time of the act. Nullable for the same
-    /// reason as `subject_id`.
+    /// The subject's revision at the time of the act, where the caller passes
+    /// one: the rows `governance::audit` writes (approval policy, approval
+    /// unit, reference and unfence acts) carry `NULL`.
     pub subject_revision: Option<i64>,
-    /// The refusal's error code. Null on every class that is not a refusal.
+    /// Carried in the DDL and always `NULL`: no door writes a refusal row
+    /// (P-D-200).
     pub error_code: Option<String>,
-    /// The attempted `name`, `sku_code` or `product_code` a pre-mint refusal
-    /// carries instead of a `subject_id`.
+    /// Carried in the DDL and always `NULL` (P-D-200).
     pub attempted_key: Option<String>,
     /// A free-text reason, where the door supplies one.
     pub reason: Option<String>,
-    /// Ties related rows together across a single request, where one exists:
-    /// the W3C trace id `infra::events::correlation_id` renders, 32 hex
-    /// characters, **`text`** since P-D-118 (the column shipped `uuid` and
-    /// could hold none of them). `None` on a background act, which has no
-    /// request.
+    /// The request's correlation, as `text` (P-D-200). Products writes `None`
+    /// on every row: this gear establishes no request correlation.
     pub correlation_id: Option<String>,
-    /// The operand `10-retention-erasure`'s `RetentionClock` reads.
+    /// The act's instant as its writer took it (before the transaction or inside the attempt; never the
+    /// commit) — P-D-213. The history orders by `audit_id`, not by this.
     pub written_at: TimeDateTimeWithTimeZone,
-    /// Present on the elevation class only.
+    /// Carried in the DDL; no writer sets it, so it is always `NULL`.
     pub session_id: Option<Uuid>,
-    /// The audit side of `07`'s ceremony join (P-D-129): the same value `06`'s
-    /// freeze ledger stores under `not_frozen(forced_at, ceremony_ref)`.
-    /// Written by the break-glass and correction doors when they land; `None`
-    /// on every other class.
+    /// Carried in the DDL (P-D-193); no writer sets it, so it is always `NULL`.
     pub ceremony_ref: Option<Uuid>,
     /// `unsealed | sealed`. Written `unsealed` at INSERT, always; this gear
     /// never advances it.
@@ -72,6 +66,13 @@ pub struct Model {
     pub prev_hash: Option<Vec<u8>>,
     /// Reserved for the platform sealing capability. `NULL` until sealed.
     pub row_hash: Option<Vec<u8>>,
+    /// The SKU lifecycle the act found (P-D-213, `m20260927_000008`): one of the five, held by a
+    /// named `CHECK`. `NULL` on a row whose act concerns no SKU, on a create (the SKU did not exist)
+    /// and on every row written before the migration.
+    pub from_lifecycle: Option<String>,
+    /// The SKU lifecycle the act left (P-D-213). `NULL` on a row whose act concerns no SKU, on a
+    /// draft delete (the SKU no longer exists) and on every row written before the migration.
+    pub to_lifecycle: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
