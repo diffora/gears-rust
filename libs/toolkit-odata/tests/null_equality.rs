@@ -1,11 +1,16 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-//! `null` compares with `eq` and `ne` on a field of any kind, and nowhere else.
+//! `null` compares with `eq` and `ne` on a field that declares itself nullable, of any kind, and
+//! nowhere else.
 //!
 //! `field eq null` asks for the rows where the field is absent and `field ne null` for the rows
 //! where it is present, whatever the field's kind: absence is not a value of the kind, so the
 //! value check does not apply to it. An ordering comparison with `null` has no answer, and an
 //! `in` list is a set of values, so `null` stays refused in both.
+//!
+//! Null admission is opt-in (`FilterField::nullable`, `false` by default): on a field that does
+//! not declare it, `null` is a value outside the field's kind and is refused as a type mismatch,
+//! as it always was.
 
 use toolkit_odata::filter::{
     FieldKind, FilterError, FilterField, FilterNode, FilterOp, ODataValue, parse_odata_filter,
@@ -63,6 +68,10 @@ impl FilterField for Field {
             Self::Clock => FieldKind::Time,
             Self::Amount => FieldKind::Decimal,
         }
+    }
+
+    fn nullable(&self) -> bool {
+        true
     }
 }
 
@@ -141,4 +150,62 @@ fn a_value_of_another_kind_is_still_a_type_mismatch() {
             "{filter}: {error:?}"
         );
     }
+}
+
+/// A field that does not declare itself nullable — every field a consumer wrote before null
+/// equality existed, and every field `ODataFilterable` derives — always has a value: `null` is
+/// refused on it as a value outside its kind, exactly as before null equality existed, with every
+/// operator and inside `in`. Its consumers (an `IdP` plugin matching users, say) never see `null`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Plain {
+    Name,
+    Id,
+    Count,
+}
+
+impl FilterField for Plain {
+    const FIELDS: &'static [Self] = &[Self::Name, Self::Id, Self::Count];
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Id => "id",
+            Self::Count => "count",
+        }
+    }
+
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Name => FieldKind::String,
+            Self::Id => FieldKind::Uuid,
+            Self::Count => FieldKind::I64,
+        }
+    }
+}
+
+#[test]
+fn a_field_that_always_has_a_value_refuses_null_as_a_type_mismatch() {
+    for field in Plain::FIELDS {
+        for filter in [
+            format!("{} eq null", field.name()),
+            format!("{} ne null", field.name()),
+            format!("not ({} eq null)", field.name()),
+            format!("{} in (null)", field.name()),
+        ] {
+            let error = parse_odata_filter::<Plain>(&filter).expect_err(&filter);
+            assert!(
+                matches!(
+                    error,
+                    FilterError::TypeMismatch { field: ref f, ref got, .. }
+                        if f == field.name() && got == "null"
+                ),
+                "{filter}: {error:?}"
+            );
+        }
+    }
+    let error = parse_odata_filter::<Plain>("count gt null").expect_err("count gt null");
+    assert!(
+        matches!(error, FilterError::TypeMismatch { .. }),
+        "an ordering with null on a field that always has a value: {error:?}"
+    );
 }

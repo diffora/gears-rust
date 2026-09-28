@@ -71,17 +71,17 @@ impl FilterField for SkuListField {
             Self::UpdatedAt => FieldKind::DateTimeUtc,
         }
     }
+    /// Whether the column can hold no value: only these compare with `null` (`eq null`: no
+    /// category; `ne null`: in review). The toolkit's parser refuses `null` on every other field.
+    fn nullable(&self) -> bool {
+        matches!(self, Self::CategoryId | Self::PendingUnitId)
+    }
     /// Exact names only: the list has no property paths.
     fn from_name(name: &str) -> Option<Self> {
         Self::FIELDS.iter().copied().find(|f| f.name() == name)
     }
 }
 impl SkuListField {
-    /// Whether the column can hold no value: only these compare with `null`.
-    #[must_use]
-    pub const fn nullable(self) -> bool {
-        matches!(self, Self::CategoryId | Self::PendingUnitId)
-    }
     /// Whether the field may key an order and a cursor: never a nullable field (the cursor's
     /// comparison has no answer for a null key) and never a filter-only one.
     #[must_use]
@@ -109,7 +109,8 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
     /// the stored RFC 3339 `Z`, and a text comparison lies at the boundary. `lifecycle` and
     /// `type` compare (`eq`, `ne`, `in`) with one of their closed values only; the text
     /// functions take any text there, as on every text field, since the served contract
-    /// publishes them for every text field. `null` compares only with a nullable field.
+    /// publishes them for every text field. `null` reaches here only on a nullable field: the
+    /// toolkit's parser refuses it on the others ([`FilterField::nullable`]).
     fn map_value(
         field: SkuListField,
         op: FilterOp,
@@ -117,17 +118,6 @@ impl FieldToColumn<SkuListField> for SkuListMapping {
     ) -> Result<ODataValue, String> {
         if field == SkuListField::UpdatedAt {
             return Err("`updated_at` orders the list and is not a filter field".to_owned());
-        }
-        if matches!(value, ODataValue::Null) {
-            return if field.nullable() {
-                Ok(ODataValue::Null)
-            } else {
-                Err(format!(
-                    "`{}` always has a value; only `category_id` and `pending_unit_id` compare \
-                     with null",
-                    field.name()
-                ))
-            };
         }
         let closed: Option<fn(&str) -> bool> = match field {
             SkuListField::Lifecycle => Some(|v| Lifecycle::parse(v).is_some()),

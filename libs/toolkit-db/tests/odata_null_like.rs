@@ -2,8 +2,10 @@
 
 //! Two `$filter` shapes, compiled and executed on both dialects.
 //!
-//! **Null equality.** `field eq null` / `field ne null` become `IS NULL` / `IS NOT NULL` on the
-//! typed path (`paginate_odata`), as they always did on the legacy `FieldMap` path.
+//! **Null equality.** On a field that declares itself nullable (`FilterField::nullable`),
+//! `field eq null` / `field ne null` become `IS NULL` / `IS NOT NULL` on the typed path
+//! (`paginate_odata`), as they always did on the legacy `FieldMap` path. The typed parser refuses
+//! `null` on every other field.
 //!
 //! **String functions.** `contains`, `startswith` and `endswith` escape `%`, `_` and `\` in the
 //! caller's text and say so: the `LIKE` carries `ESCAPE '\'`. `SQLite` has no default escape
@@ -95,6 +97,11 @@ impl FilterField for Field {
             Self::Parent => FieldKind::Uuid,
         }
     }
+
+    /// Only `parent` can be absent.
+    fn nullable(&self) -> bool {
+        matches!(self, Self::Parent)
+    }
 }
 
 struct Mapper;
@@ -164,11 +171,19 @@ fn null_equality_renders_is_null_and_is_not_null() {
         assert!(eq.contains(r#""parent" IS NULL"#), "{backend:?}: {eq}");
         let ne = typed_sql("parent ne null", backend);
         assert!(ne.contains(r#""parent" IS NOT NULL"#), "{backend:?}: {ne}");
-        let both = typed_sql("name ne null and parent eq null", backend);
+        let both = typed_sql("startswith(name,'a') and parent eq null", backend);
         assert!(
-            both.contains(r#""name" IS NOT NULL"#) && both.contains(r#""parent" IS NULL"#),
+            both.contains(r#""name" LIKE"#) && both.contains(r#""parent" IS NULL"#),
             "{backend:?}: {both}"
         );
+    }
+    // `name` and `id` always have a value: the typed parser refuses `null` on them.
+    for raw in [
+        "name ne null",
+        "id eq null",
+        "parent eq null or name eq null",
+    ] {
+        assert!(parse_odata_filter::<Field>(raw).is_err(), "{raw}");
     }
 }
 

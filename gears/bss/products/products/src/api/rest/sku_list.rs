@@ -101,6 +101,10 @@ impl FilterField for SkuFilterField {
     fn kind(&self) -> FieldKind {
         self.field().kind()
     }
+    /// `category_id` and `pending_unit_id` (P-D-210).
+    fn nullable(&self) -> bool {
+        self.field().nullable()
+    }
     fn from_name(name: &str) -> Option<Self> {
         Self::FIELDS.iter().copied().find(|f| f.name() == name)
     }
@@ -378,9 +382,9 @@ pub(super) fn params(
     })
 }
 
-/// The `$filter`, checked the way the pager will read it: only [`SkuFilterField`]s, and each
-/// value through the mapping (a closed value, `null` only on a nullable field). The condition
-/// it becomes, for a count.
+/// The `$filter`, checked the way the pager will read it: only [`SkuFilterField`]s (`null` only
+/// on a nullable one), and each value through the mapping (a closed value). The condition it
+/// becomes, for a count.
 fn checked_filter(filter: Option<&Expr>) -> Result<Option<sea_orm::Condition>, CanonicalError> {
     let Some(expr) = filter else {
         return Ok(None);

@@ -538,8 +538,10 @@ own `type`, `category`, `lifecycle` and `after` parameters go.
 
 The toolkit change this rests on is recorded in the toolkit's own docs
 (`docs/web-docs/build-with-gears/add-pagination-odata.md`, `libs/toolkit-db/src/odata/README.md`): its typed
-`$filter` path admits `null` with `eq` and `ne` on any field kind (and still refuses it inside `in`), and
-`contains`, `startswith` and `endswith` emit `LIKE … ESCAPE '\'` with the pattern escaped. SQLite has no
+`$filter` path admits `null` with `eq` and `ne` on a field that declares itself nullable
+(`FilterField::nullable`, opt-in; here `category_id` and `pending_unit_id`), of any kind, and still refuses it
+inside `in` and with an ordering; on every other field, in every gear, `null` stays a type mismatch (400), as
+before. `contains`, `startswith` and `endswith` emit `LIKE … ESCAPE '\'` with the pattern escaped. SQLite has no
 default escape character, so the browse search (`search_skus`, a `startswith` on the name) matched nothing
 for a name holding `%`, `_` or `\` until then. P-D-196's owed `category=none` browse is `category_id eq null`.
 

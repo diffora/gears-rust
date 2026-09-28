@@ -276,18 +276,13 @@ impl FieldToColumn<CategoryListField> for CategoryListMapping {
             CategoryListField::SortOrder => category::Column::SortOrder,
         }
     }
-    /// No field is nullable; `status` compares (`eq`, `ne`, `in`) with `active` or `retired` only.
+    /// No field is nullable (the toolkit's parser refuses `null` on each); `status` compares
+    /// (`eq`, `ne`, `in`) with `active` or `retired` only.
     fn map_value(
         field: CategoryListField,
         op: FilterOp,
         value: &ODataValue,
     ) -> Result<ODataValue, String> {
-        if matches!(value, ODataValue::Null) {
-            return Err(format!(
-                "`{}` always has a value; it never compares with null",
-                field.name()
-            ));
-        }
         if field == CategoryListField::Status
             && matches!(op, FilterOp::Eq | FilterOp::Ne | FilterOp::In)
             && !matches!(value, ODataValue::String(v) if v == "active" || v == "retired")

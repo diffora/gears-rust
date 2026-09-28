@@ -18,15 +18,19 @@ fn only_the_four_non_nullable_keys_order_and_only_the_two_nullable_fields_compar
             !(field.nullable() && orderable),
             "{field:?}: a nullable key breaks the cursor"
         );
-        let null = SkuListMapping::map_value(*field, FilterOp::Eq, &ODataValue::Null);
-        assert_eq!(
-            null.is_ok(),
-            matches!(
-                field,
-                SkuListField::CategoryId | SkuListField::PendingUnitId
-            ),
-            "{field:?}: {null:?}"
+        let nullable = matches!(
+            field,
+            SkuListField::CategoryId | SkuListField::PendingUnitId
         );
+        assert_eq!(field.nullable(), nullable, "{field:?}");
+        // The toolkit's parser holds the line: `null` on any other field is a type mismatch.
+        for op in ["eq", "ne"] {
+            let parsed = toolkit_odata::filter::parse_odata_filter::<SkuListField>(&format!(
+                "{} {op} null",
+                field.name()
+            ));
+            assert_eq!(parsed.is_ok(), nullable, "{field:?} {op} null: {parsed:?}");
+        }
     }
 }
 

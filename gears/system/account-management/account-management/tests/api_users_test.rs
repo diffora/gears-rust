@@ -440,6 +440,89 @@ async fn list_users_http_with_string_value_on_uuid_field_returns_400() {
     );
 }
 
+/// No `IdpUserFilterField` declares itself nullable, so `null` is a value
+/// outside every field's kind: `$filter=<field> eq null` (or `ne null`) is
+/// the same 400 as any other mistyped value, and the plugin never sees a
+/// `null` it has no answer for.
+#[tokio::test]
+async fn list_users_http_with_null_equality_returns_400() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let router = build_users_router(&h);
+
+    for filter in [
+        "id%20eq%20null",
+        "email%20eq%20null",
+        "id%20ne%20null",
+        "username%20eq%20%27alice%27%20or%20email%20eq%20null",
+    ] {
+        let req = json_request(
+            "GET",
+            &format!("/account-management/v1/tenants/{root}/users?%24filter={filter}"),
+            None,
+            ctx_for(root),
+        );
+        let resp = router.clone().oneshot(req).await.expect("router");
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{filter}: null is not a value of any user field"
+        );
+    }
+}
+
+/// The same refusal with the real static `IdP` plugin behind the route: a
+/// `null` that reached it would hit its "the REST parser rejects every
+/// other `ODataValue`" arm and panic on the first user it matched.
+#[tokio::test]
+async fn list_users_http_with_null_equality_is_400_before_the_static_plugin() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let services = build_services_full(
+        &h,
+        std::sync::Arc::new(static_idp_plugin::domain::Service::new()),
+        empty_metadata_registry(),
+        types_registry_for_users(),
+    );
+    let router = build_test_router(&services);
+
+    let req = json_request(
+        "POST",
+        &format!("/account-management/v1/tenants/{root}/users"),
+        Some(serde_json::json!({"username": "alice", "email": "alice@example.com"})),
+        ctx_for(root),
+    );
+    let resp = router.clone().oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    for filter in ["email%20eq%20null", "id%20eq%20null", "email%20ne%20null"] {
+        let req = json_request(
+            "GET",
+            &format!("/account-management/v1/tenants/{root}/users?%24filter={filter}"),
+            None,
+            ctx_for(root),
+        );
+        let resp = router.clone().oneshot(req).await.expect("router");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{filter}");
+    }
+    // The plugin still answers a filter it can evaluate.
+    let req = json_request(
+        "GET",
+        &format!(
+            "/account-management/v1/tenants/{root}/users\
+             ?%24filter=email%20eq%20%27alice%40example.com%27"
+        ),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = response_body(resp).await;
+    assert_eq!(body["items"][0]["username"], "alice", "{body}");
+}
+
 #[tokio::test]
 async fn list_users_http_with_contains_first_name_returns_200() {
     // Wire-shape pin: case-insensitive `contains(first_name, 'ali')`
