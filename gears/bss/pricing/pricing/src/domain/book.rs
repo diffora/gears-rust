@@ -32,6 +32,18 @@ pub fn validate(book: &Book) -> Vec<RuleError> {
 pub fn currency_code(text: &str) -> bool {
     text.len() == 3 && text.bytes().all(|b| b.is_ascii_uppercase())
 }
+/// The most characters a book's description holds (D-444).
+pub const DESCRIPTION_MAX_CHARS: usize = 2000;
+/// A book's description: at most [`DESCRIPTION_MAX_CHARS`] characters (Unicode scalar values).
+/// # Errors
+/// `BOOK_DESCRIPTION_TOO_LONG` for a longer one.
+pub fn validate_description(text: Option<&str>) -> Result<(), RuleError> {
+    if text.is_some_and(|t| t.chars().count() > DESCRIPTION_MAX_CHARS) {
+        Err(RuleError::new("BOOK_DESCRIPTION_TOO_LONG"))
+    } else {
+        Ok(())
+    }
+}
 /// Whether sales from this book are allowed on a date.
 #[must_use]
 pub fn valid_on(book: &Book, date: Date) -> bool {

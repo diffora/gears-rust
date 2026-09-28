@@ -16,7 +16,7 @@ fn contexts(source: &str) -> Vec<&str> {
 #[test]
 fn every_storage_context_names_the_price_book_entry() {
     let found = contexts(include_str!("price_book_entry_repo.rs"));
-    assert_eq!(found.len(), 11, "{found:?}");
+    assert_eq!(found.len(), 12, "{found:?}");
     for context in found {
         assert!(context.contains("price book entr"), "{context}");
     }

@@ -529,14 +529,16 @@ async fn a_pair_is_deleted_whole_and_its_window_is_fixed() {
     assert_eq!(created.0, 201, "{created:?}");
     let promo = created.1["items"][0]["id"].as_str().unwrap().to_owned();
     let ret = created.1["items"][1]["id"].as_str().unwrap().to_owned();
-    for patch in [
-        json!({"effective_from":"2031-03-02"}),
-        json!({"dim_value":"eu"}),
+    // The temporary half's dates move (run 7.2, `temporary_dates.rs`); its chain and the return's
+    // own dates do not.
+    for (id, patch) in [
+        (&ret, json!({"effective_from":"2031-03-12"})),
+        (&promo, json!({"dim_value":"eu"})),
     ] {
         let refused = f
             .call(
                 "PATCH",
-                &format!("/prices/{promo}"),
+                &format!("/prices/{id}"),
                 patch,
                 Some("\"1\""),
                 None,

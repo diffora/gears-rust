@@ -1,5 +1,6 @@
 //! Books, entries, prices, approvals, plans, dimension keys and settings REST doors.
 mod approvals;
+mod book_list;
 mod books;
 pub(crate) mod configuration;
 pub mod dto;
@@ -10,10 +11,7 @@ mod price_book_entries;
 pub(crate) mod prices;
 pub(crate) mod support;
 use super::{correlation, preconditions};
-use crate::{
-    authz::{self, OwnerTenant, ResourceRef, actions, resource_types},
-    infra::storage::repo::book_repo,
-};
+use crate::authz::{self, OwnerTenant, ResourceRef, actions, resource_types};
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
     Extension, Router,
@@ -23,9 +21,9 @@ use axum::{
     response::Response,
 };
 use dto::{
-    PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookList, PriceBookPatch,
-    PricingDimensionKeyPatch, PricingDimensionRegistry, PricingDimensions,
-    PricingPriceBookEntryList, PricingSettingsDto, PricingSettingsPut,
+    PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingDimensionKeyPatch,
+    PricingDimensionRegistry, PricingDimensions, PricingPriceBookEntryList,
+    PricingPriceBookReadDto, PricingSettingsDto, PricingSettingsPut,
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
@@ -115,11 +113,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.create_book")
         .summary("Create a price book")
         .description(
-            "Creates a price book of the tenant with a code, a name, one currency and an optional \
-             validity window; the Idempotency-Key replays the first answer. The currency must be \
-             one the tenant settings offer, when they offer any (D-438). Refusals: 400 \
-             BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID or \
-             BOOK_VALIDITY_INVALID; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
+            "Creates a price book of the tenant with a code, a name, one currency, an optional \
+             validity window and an optional description of at most 2000 characters (D-444); the \
+             Idempotency-Key replays the first answer. The currency must be one the tenant \
+             settings offer, when they offer any (D-438). Refusals: 400 BOOK_CODE_REQUIRED, \
+             BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID or \
+             BOOK_DESCRIPTION_TOO_LONG; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
              IDEMPOTENCY_CONFLICT.",
         )
         .tag("Pricing")
@@ -131,43 +130,32 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::CREATED, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get("/bss-pricing/v1/price-books")
-        .operation_id("bss_pricing.list_books")
-        .summary("List the price books")
-        .description(
-            "Lists the tenant's price books. Only a caller without price_book read is refused \
-             (403).",
-        )
-        .tag("Pricing")
-        .authenticated()
-        .no_license_required()
-        .handler(list_books)
-        .json_response_with_schema::<PriceBookList>(openapi, StatusCode::OK, "Response")
-        .standard_errors(openapi)
-        .register(router, openapi);
+    let router = book_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.get_book")
         .summary("Read a price book")
         .description(
-            "Returns one price book of the tenant, its version as the ETag a following PATCH sends \
-             back as If-Match. Refusals: 404 for a book the tenant does not hold.",
+            "Returns one price book of the tenant with its stats (D-441), as the list answers \
+             it, and its version as the ETag a following PATCH sends back as If-Match. \
+             Refusals: 404 for a book the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Price book id")
         .handler(get_book)
-        .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
+        .json_response_with_schema::<PricingPriceBookReadDto>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.patch_book")
-        .summary("Rename or re-date a price book")
+        .summary("Rename, re-date or describe a price book")
         .description(
-            "Changes a book's name or validity window at the version the caller read (If-Match). \
-             Refusals: 400 BOOK_NAME_REQUIRED or BOOK_VALIDITY_INVALID; 404 for an unknown book; \
-             409 STALE_REVISION.",
+            "Changes a book's name, validity window or description at the version the caller read \
+             (If-Match); an omitted description is kept and null clears it (D-444). Refusals: 400 \
+             BOOK_NAME_REQUIRED, BOOK_VALIDITY_INVALID or BOOK_DESCRIPTION_TOO_LONG; 404 for an \
+             unknown book; 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -179,15 +167,41 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::delete("/bss-pricing/v1/price-books/{id}")
+        .operation_id("bss_pricing.delete_book")
+        .summary("Delete an unused price book")
+        .description(
+            "Deletes a book no entry and no plan revision names, at the version the caller read \
+             (If-Match), with an audit row (D-444). Units that named it stay readable, their cards \
+             without the book; the create's Idempotency-Key still replays its answer for a day. \
+             Refusals, in order: 403 without the book write grant; 400 for a missing or malformed \
+             If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 \
+             BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, \
+             pending or published revision on the book, as stats.plans counts it, D-441); 409 \
+             BOOK_IN_PLAN_HISTORY (only superseded revisions name it). A row added by a \
+             concurrent writer is the same 409.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book id")
+        .param(header("If-Match"))
+        .handler(delete_book)
+        .no_content_response(StatusCode::NO_CONTENT, "Deleted")
+        .standard_errors(openapi)
+        .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/entries")
         .operation_id("bss_pricing.list_entries")
         .summary("List a book's entries")
         .description(
             "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
              and period, each with its usage (D-428): its prices by state (a rejected price is not \
-             counted), the distinct plans whose draft, pending or published revisions name it, \
-             and the distinct plans that name it only through superseded revisions. Refusals: 404 \
-             for a book the tenant does not hold.",
+             counted; the approved ones also as scheduled, active and superseded today, D-440), \
+             the distinct plans whose draft, pending or published revisions name it, and the \
+             distinct plans that name it only through superseded revisions; and its \
+             current_price, the default chain's approved price in force today, shown to a caller \
+             who also holds price_book read on the book and null otherwise (D-434, D-440). \
+             Refusals: 404 for a book the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -352,10 +366,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Read a price book entry")
         .description(
             "Returns one price book entry of the tenant, its version as the ETag a following PATCH \
-             sends back as If-Match, and its usage (D-428): its prices by state (a rejected price \
-             is not counted), the distinct plans whose draft, pending or published revisions name \
-             it, and the distinct plans that name it only through superseded revisions. Refusals: \
-             404 ENTRY_NOT_FOUND.",
+             sends back as If-Match, its usage (D-428): its prices by state (a rejected price is \
+             not counted; the approved ones also as scheduled, active and superseded today, \
+             D-440), the distinct plans whose draft, pending or published revisions name it, and \
+             the distinct plans that name it only through superseded revisions; and its \
+             current_price, the default chain's approved price in force today, shown to a caller \
+             who also holds price_book read on its book and null otherwise (D-434, D-440). \
+             Refusals: 404 ENTRY_NOT_FOUND.",
         )
         .tag("Pricing")
         .authenticated()
@@ -368,6 +385,38 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Response",
         )
         .response_header(etag())
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}/prices")
+        .operation_id("bss_pricing.list_entry_prices")
+        .summary("List an entry's prices")
+        .description(
+            "Lists every price of one entry of the tenant in every state (D-440), each with its \
+             status today (draft, pending, rejected, or an approved price's scheduled, active or \
+             superseded): the default chain first, then each dimension value's chain in \
+             ascending order, each chain by effective_from, then version_no. status keeps one \
+             status or several, comma-separated. The prices are money: the caller reaches the \
+             entry with price_book_entry read and needs price_book read on its book as well, \
+             judged a second time (D-434). Refusals: 400 QUERY_INVALID for an unknown status or \
+             any other key; 404 ENTRY_NOT_FOUND; 403 PRICE_BOOK_READ_REQUIRED without price_book \
+             read on the entry's book; 503 when the policy cannot judge it.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Price book entry id")
+        .query_param(
+            "status",
+            false,
+            "Display statuses to keep, comma-separated: draft, pending, rejected, scheduled, \
+             active, superseded",
+        )
+        .handler(list_entry_prices)
+        .json_response_with_schema::<dto::PricingEntryPriceList>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
         .standard_errors(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-book-entries/{id}")
@@ -1122,8 +1171,17 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Change a draft price")
         .description(
             "Changes an unlocked draft price of its author at the version the author read \
-             (If-Match). Refusals: 400 for a rule the change breaks, or TEMPORARY_PRICE_FIXED; 403 \
-             NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT or STALE_REVISION.",
+             (If-Match). The temporary half of a draft takes effective_from and temporary_until: \
+             its pair is built again over the new dates in the same transaction (D-443) - its \
+             return re-derived in place, deleted when the chain's next price starts on the new \
+             end or nothing of the chain is in force there, or created when a price is to be \
+             returned to - and both halves are judged as the create judges them; the answer is \
+             the edited price, its paired_price_id naming its partner now, or null. A return's \
+             own dates, a temporary price's chain (dim_value), an end on any other price and a \
+             null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks \
+             (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or \
+             TEMPORARY_SPANS_A_CHANGE); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
+             its partner) or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1212,13 +1270,7 @@ async fn patch_price(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
-        Box::pin(
-            async move { prices::patch(tx, &scope, &ctx, correlation, id, version, input).await },
-        )
-    })
-    .await
+    prices::patch(&state.db.db(), scope, ctx, correlation, id, version, input).await
 }
 async fn delete_price(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1280,38 +1332,6 @@ async fn create_book(
     })
     .await
 }
-async fn list_books(
-    Extension(state): Extension<Arc<AuthoringState>>,
-    Extension(enforcer): Extension<PolicyEnforcer>,
-    ctx: Option<Extension<SecurityContext>>,
-) -> Result<Response, CanonicalError> {
-    let ctx = require_authenticated(ctx)?;
-    let scope = authz::access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::PRICE_BOOK,
-        actions::READ,
-        None,
-        None,
-    )
-    .await
-    .map_err(authz_failure)?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            let tenant = ctx.subject_tenant_id();
-            let body = PriceBookList {
-                items: book_repo::list(tx, &scope, tenant)
-                    .await?
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
-            };
-            Ok(response(StatusCode::OK, &body, None)?)
-        })
-    })
-    .await
-}
 async fn get_book(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -1329,6 +1349,8 @@ async fn get_book(
     )
     .await
     .map_err(authz_failure)?;
+    let backend = state.db.db().backend();
+    let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
         Box::pin(async move {
@@ -1337,11 +1359,12 @@ async fn get_book(
             let version = preconditions::RowVersion::from_stored(m.version)
                 .map_err(CanonicalError::from)?
                 .get();
-            Ok(response(
-                StatusCode::OK,
-                &PriceBookDto::from(m),
-                Some(version),
-            )?)
+            // D-441: the book with its stats, as the list answers it.
+            let body = books::with_stats(tx, tenant, backend, vec![m], today)
+                .await?
+                .pop()
+                .ok_or_else(|| CanonicalError::internal("the read book is gone").create())?;
+            Ok(response(StatusCode::OK, &body, Some(version))?)
         })
     })
     .await
@@ -1377,6 +1400,36 @@ async fn patch_book(
     })
     .await
 }
+async fn delete_book(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK,
+        actions::AUTHOR,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let version = preconditions::if_match(&headers)?.get();
+    let backend = state.db.db().backend();
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx) = (scope.clone(), ctx.clone());
+        Box::pin(
+            async move { books::delete(tx, &scope, &ctx, correlation, backend, id, version).await },
+        )
+    })
+    .await
+}
 async fn list_entries(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -1394,22 +1447,18 @@ async fn list_entries(
     )
     .await
     .map_err(authz_failure)?;
+    // D-440: the money is shown as D-434 shows it — price_book read, judged a second time.
+    let books = money_scope(&enforcer, &ctx).await?;
+    let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let entries = books::entries(tx, &scope, tenant, id).await?;
-            let ids: Vec<Uuid> = entries.iter().map(|m| m.id).collect();
-            // D-428: every entry's usage in a fixed number of set-based reads.
-            let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids).await?;
+            // D-428, D-440: every entry's usage and price in force in a fixed number of reads.
+            let shown = price_book_entries::shows_money(tx, books.as_ref(), tenant, id).await?;
             let body = PricingPriceBookEntryList {
-                items: entries
-                    .into_iter()
-                    .map(|m| {
-                        let counted = usage.remove(&m.id).unwrap_or_default();
-                        dto::PricingPriceBookEntryReadDto::of(m, counted)
-                    })
-                    .collect::<Result<_, _>>()?,
+                items: price_book_entries::read(tx, tenant, entries, shown, today).await?,
             };
             Ok(response(StatusCode::OK, &body, None)?)
         })
@@ -1616,20 +1665,8 @@ async fn list_sku_entries(
         .ok_or_else(|| support::invalid("sku_id", "QUERY_INVALID"))?;
     // D-434: the money is the export's — price_book read. Without it the entries still list, each
     // with a null current_price; only an unavailable policy fails the read.
-    let books = match authz::access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::PRICE_BOOK,
-        actions::READ,
-        None,
-        None,
-    )
-    .await
-    {
-        Ok(books) => Some(books),
-        Err(authz::AuthzError::Denied(_)) => None,
-        Err(unavailable) => return Err(authz_failure(unavailable)),
-    };
+    let books = money_scope(&enforcer, &ctx).await?;
+    let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
         let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
         Box::pin(async move {
@@ -1639,6 +1676,7 @@ async fn list_sku_entries(
                 books.as_ref(),
                 ctx.subject_tenant_id(),
                 sku,
+                today,
             )
             .await?;
             Ok(response(StatusCode::OK, &body, None)?)
@@ -1692,23 +1730,114 @@ async fn get_entry(
     )
     .await
     .map_err(authz_failure)?;
+    // D-440: the money is shown as D-434 shows it — price_book read, judged a second time.
+    let books = money_scope(&enforcer, &ctx).await?;
+    let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
+        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let m = price_book_entries::find(tx, &scope, tenant, id).await?;
             let version = preconditions::RowVersion::from_stored(m.version)
                 .map_err(CanonicalError::from)?
                 .get();
-            let usage = crate::infra::usage::entry_usage(tx, tenant, &[m.id])
+            let shown =
+                price_book_entries::shows_money(tx, books.as_ref(), tenant, m.book_id).await?;
+            let body = price_book_entries::read(tx, tenant, vec![m], shown, today)
                 .await?
-                .remove(&m.id)
-                .unwrap_or_default();
-            Ok(response(
-                StatusCode::OK,
-                &dto::PricingPriceBookEntryReadDto::of(m, usage)?,
-                Some(version),
-            )?)
+                .pop()
+                .ok_or_else(|| CanonicalError::internal("the read entry is gone").create())?;
+            Ok(response(StatusCode::OK, &body, Some(version))?)
+        })
+    })
+    .await
+}
+
+/// D-434: the money's grant, `price_book` read, judged a second time in the request: its scope
+/// when held, `None` when denied; a policy that cannot judge fails the read (503).
+async fn money_scope(
+    enforcer: &PolicyEnforcer,
+    ctx: &SecurityContext,
+) -> Result<Option<toolkit_db::secure::AccessScope>, CanonicalError> {
+    match authz::access_scope(
+        enforcer,
+        ctx,
+        &resource_types::PRICE_BOOK,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(books) => Ok(Some(books)),
+        Err(authz::AuthzError::Denied(_)) => Ok(None),
+        Err(unavailable) => Err(authz_failure(unavailable)),
+    }
+}
+
+/// The `status` of `GET /price-book-entries/{id}/prices` (D-440): absent, or one display status
+/// or several, comma-separated. An unknown or empty status, a repeated `status` and any other key
+/// are 400 `QUERY_INVALID`.
+fn wanted_statuses(
+    uri: &axum::http::Uri,
+) -> Result<Option<Vec<crate::api::rest::closed_sets::PricingPriceStatus>>, CanonicalError> {
+    let axum::extract::Query(query) =
+        axum::extract::Query::<dto::PricingEntryPricesQuery>::try_from_uri(uri)
+            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    query
+        .status
+        .map(|raw| {
+            raw.split(',')
+                .map(|token| {
+                    token
+                        .parse::<crate::domain::price::DisplayStatus>()
+                        .map(Into::into)
+                        .map_err(|_| support::invalid("status", "QUERY_INVALID"))
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+async fn list_entry_prices(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    uri: axum::http::Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PRICE_BOOK_ENTRY,
+        actions::READ,
+        None,
+        Some(ResourceRef(id)),
+    )
+    .await
+    .map_err(authz_failure)?;
+    // D-440: every price is money — price_book read on the entry's book, judged a second time
+    // (D-434); here a denial refuses the read (403, after the entry is found), since the whole
+    // answer is money.
+    let books = money_scope(&enforcer, &ctx).await?;
+    let wanted = wanted_statuses(&uri)?;
+    let today = time::OffsetDateTime::now_utc().date();
+    transaction(&state.db.db(), move |tx| {
+        let (scope, books, ctx, wanted) =
+            (scope.clone(), books.clone(), ctx.clone(), wanted.clone());
+        Box::pin(async move {
+            let body = price_book_entries::prices(
+                tx,
+                &scope,
+                books.as_ref(),
+                ctx.subject_tenant_id(),
+                id,
+                wanted.as_deref(),
+                today,
+            )
+            .await?;
+            Ok(response(StatusCode::OK, &body, None)?)
         })
     })
     .await

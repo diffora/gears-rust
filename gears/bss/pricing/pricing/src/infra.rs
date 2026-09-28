@@ -1,6 +1,7 @@
 //! Runtime persistence and error plumbing.
 
 pub mod approval_kinds;
+pub mod book_stats;
 pub mod broker;
 pub mod error_mapping;
 pub mod events;

@@ -675,6 +675,34 @@ impl Pg {
         this
     }
 
+    /// [`Pg::applied`] on a database whose locale is `C` (`LC_COLLATE` and
+    /// `LC_CTYPE`), the shape `initdb --locale=C` and `CloudNativePG` give a
+    /// cluster: there the database's own `lower()` folds ASCII only (D-442).
+    pub async fn applied_in_c_locale() -> Self {
+        let port = server_port();
+        let database = next_database();
+        let admin = Database::connect(small_pool(&url(port, "postgres", false)))
+            .await
+            .expect("connect to the maintenance database");
+        admin
+            .execute_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Postgres,
+                format!(
+                    "CREATE DATABASE {database} TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'"
+                ),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("create database {database}: {e}"));
+        drop(admin);
+        let this = Self { port, database };
+        let db = this.db().await;
+        run_migrations_for_testing(&db, BssPricingGear::default().migrations())
+            .await
+            .expect("apply the chain");
+        drop(db);
+        this
+    }
+
     /// A fresh database with **no** chain applied — for the suites that apply or
     /// roll back the chain themselves.
     pub async fn empty() -> Self {

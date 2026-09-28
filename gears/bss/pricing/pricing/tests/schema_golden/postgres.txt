@@ -132,6 +132,7 @@ COLUMN bss.pricing_price version_no integer NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book code text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book created_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book currency character(3) NOT NULL DEFAULT -
+COLUMN bss.pricing_price_book description text NULL DEFAULT -
 COLUMN bss.pricing_price_book id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book name text NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book tenant_id uuid NOT NULL DEFAULT -

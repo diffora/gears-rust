@@ -215,6 +215,71 @@ pub async fn named_keys(runner: &impl DBRunner, tenant: Uuid) -> Result<Vec<Stri
         .map(|r| r.dimension_key)
         .collect())
 }
+/// How many entries one book holds, over how many distinct SKUs, and their latest `updated_at`: a
+/// row of [`count_by_book`].
+#[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct BookEntryCount {
+    pub book_id: Uuid,
+    pub entries: i64,
+    pub skus: i64,
+    /// [`super::latest`] of the book's entries' `updated_at`.
+    pub latest: Option<String>,
+}
+/// The entries of the tenant's `books`, in every reference state, counted by book in ONE grouped
+/// statement whatever the number of books and entries (D-441). A book without entries has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn count_by_book(
+    runner: &impl DBRunner,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    books: &[Uuid],
+) -> Result<Vec<BookEntryCount>, RepoError> {
+    use sea_orm::QuerySelect;
+    use sea_orm::sea_query::Func;
+    if books.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::BookId.is_in(books.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::BookId)
+                .column_as(Expr::col((e::Entity, e::Column::Id)).count(), "entries")
+                .column_as(
+                    Expr::from(Func::count_distinct(Expr::col((
+                        e::Entity,
+                        e::Column::SkuId,
+                    )))),
+                    "skus",
+                )
+                .column_as(
+                    super::latest(backend, Expr::col((e::Entity, e::Column::UpdatedAt))),
+                    "latest",
+                )
+                .group_by(e::Column::BookId)
+                .into_model::<BookEntryCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count price book entries by book".into(), e))
+}
+/// The tenant's books with an entry of `sku`, in any reference state (D-442): `id IN (SELECT
+/// book_id …)`, a condition on the book list's statement, never a statement of its own.
+#[must_use]
+pub fn books_pricing(tenant: Uuid, sku: Uuid) -> sea_orm::sea_query::SelectStatement {
+    sea_orm::sea_query::Query::select()
+        .column((e::Entity, e::Column::BookId))
+        .from(e::Entity)
+        .and_where(Expr::col((e::Entity, e::Column::TenantId)).eq(tenant))
+        .and_where(Expr::col((e::Entity, e::Column::SkuId)).eq(sku))
+        .to_owned()
+}
 /// One SKU id of a set read.
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct SkuIdRow {

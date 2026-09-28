@@ -157,12 +157,12 @@ async fn m20260926_000013_applies_once_and_refuses_to_revert() {
 }
 
 #[test]
-fn gear_chain_is_the_guard_coord_then_fourteen_ordered_unique_migrations() {
+fn gear_chain_is_the_guard_coord_then_fifteen_ordered_unique_migrations() {
     let names: Vec<_> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 16);
+    assert_eq!(names.len(), 17);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
@@ -175,6 +175,48 @@ fn gear_chain_is_the_guard_coord_then_fourteen_ordered_unique_migrations() {
     assert_eq!(names[13], "m20260926_000012_create_pricing_plan_item");
     assert_eq!(names[14], "m20260926_000013_model_on_the_entry");
     assert_eq!(names[15], "m20260927_000014_settings_currencies_and_author");
+    assert_eq!(names[16], "m20260928_000015_book_description");
+}
+
+/// Run 7.2: 000015 adds `pricing_price_book.description` and nothing else. It re-applies without
+/// effect and reverses on its own: its down drops the column, twice without effect.
+#[tokio::test]
+async fn m20260928_000015_adds_and_drops_the_book_description() {
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = SchemaManager::new(&db);
+    let chain = Migrator::migrations();
+    let at = chain
+        .iter()
+        .position(|m| m.name() == "m20260928_000015_book_description")
+        .unwrap();
+    for prior in &chain[..at] {
+        prior.up(&manager).await.unwrap();
+    }
+    let columns = || async {
+        let mut names: Vec<String> = db
+            .query_all_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                "SELECT name FROM pragma_table_info('pricing_price_book')".to_owned(),
+            ))
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.try_get::<String>("", "name").unwrap())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = columns().await;
+    let step = &chain[at];
+    step.up(&manager).await.unwrap();
+    step.up(&manager).await.unwrap();
+    let mut expected = before.clone();
+    expected.push("description".to_owned());
+    expected.sort();
+    assert_eq!(columns().await, expected);
+    step.down(&manager).await.unwrap();
+    step.down(&manager).await.unwrap();
+    assert_eq!(columns().await, before);
 }
 
 /// D-438: 000014 adds two columns to `pricing_settings` and nothing else. It re-applies without

@@ -182,6 +182,7 @@ impl Harness {
             ("GET", "/bss-pricing/v1/price-books"),
             ("GET", "/bss-pricing/v1/price-books/{id}"),
             ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+            ("DELETE", "/bss-pricing/v1/price-books/{id}"),
             ("GET", "/bss-pricing/v1/price-books/{id}/entries"),
             ("GET", "/bss-pricing/v1/price-books/{id}/export"),
             ("GET", "/bss-pricing/v1/settings"),
@@ -221,6 +222,7 @@ impl Harness {
             ("GET", "/bss-pricing/v1/plan-items/{id}"),
             ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
             ("PATCH", "/bss-pricing/v1/dimension-keys"),
+            ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))

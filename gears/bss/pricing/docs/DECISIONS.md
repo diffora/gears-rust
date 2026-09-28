@@ -27,7 +27,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5 |
 | D-389 | H | Descriptors bind from durable SKU versions | DECIDED 2026-09-25 · §2 decision 14; §2.2; §7.1 |
 | D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5 |
-| D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs |
+| D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs; amended by D-443 |
 | D-392 | H | Publish changes is a selected book batch | DECIDED 2026-09-25 · §2 decision 7; §6; §8 |
 | D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6 |
 | D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8 |
@@ -64,18 +64,23 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-425 | H | The binding says where it ends for its holder | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (contract C-1, docs M2); amends D-420 |
 | D-426 | H | An entry's invoice line is locked once the entry carries money | DECIDED 2026-09-26 · Owner, 2026-09-26 (option 1 of three); amends D-421 |
 | D-427 | H | The model belongs to the entry, fixed for its life, and is part of its key | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; closes D-412; amends D-386, D-390, D-391, D-401, D-402 |
-| D-428 | H | Entries and SKUs report their usage | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2 |
+| D-428 | H | Entries and SKUs report their usage | DECIDED 2026-09-26 · Owner, 2026-09-26; phase 5 plan rev 2; amended by D-440 |
 | D-429 | M | The replay store's mechanics (twin of products P-D-198) | DECIDED 2026-09-27 · Carried from D-142 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-430 | M | A tier ladder's top band is open | DECIDED 2026-09-27 · Carried from D-17 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
 | D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440 |
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434 |
+| D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
+| D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 
 ## Entries
 
@@ -124,6 +129,8 @@ On approval, sort approved prices within each (price_book_entry_id, dim_value), 
 #### D-391 [H] Temporary changes keep pair identity or resume fallback
 
 On an existing chain, temporary_until creates a promo price and a return price in one unit. The return copies the money versionAt would apply at the end and inherits dim_value. Common-date shifts preserve duration; a shift that would carry a temporary price across the start of another price of its chain, where apply would cut it short, is refused TEMPORARY_SPANS_A_CHANGE (D-406). A return to an explicitly closed price (a temporary nested in a value's closed price) ends explicitly at that price's end, which a common-date shift does not move, so the value falls back to the default after it. Submit and apply re-derive that copy from the approved chain as it stands, on the shifted end: a return that no longer names the price in force there, or no longer carries its price and min_fee (the model is the entry's, D-427), and a single closed price whose own chain now has a price in force on its end, are refused PAIR_RETURN_STALE (400 at submit, APPLY_REFUSED at apply); the author re-drafts. When the price in force on that end is itself a price of the same unit, the return is right only if that price is another pair's return naming the same restored price with the same price and min_fee (two pairs on one chain, both drafted against it); any other price of the unit there makes it stale. A value with no own chain gets one closed price and no synthetic return copy of default. A temporary that ends exactly where the chain's next approved price starts is the promo price alone: that price already ends it. Pair edits, selection and submission cannot orphan a companion.
+
+Amended by D-443: the temporary half of a draft takes new dates, and the PATCH builds its pair again over them in the same transaction — the return re-derived in place, deleted or created as the new end calls for — so a moved pair is never left for submit to refuse as stale.
 
 **Source:** §5 temporary pairs.
 
@@ -434,7 +441,9 @@ Pricing also fills the SKU usage port of Products (P-D-197): products-sdk SkuUsa
 
 Products P-D-212 adds the port's usage_sets(ctx, tenant): the tenant's priced SKUs (an entry in any book, in any reference state: entries above zero) and its in-plan SKUs (an entry named by a plan item of a draft, pending or published revision: plans above zero), each sorted and distinct, under the same rule and scope, in two set-based statements whatever the number of SKUs. They are what the Products SKU list's priced and in_plan filters keep or drop.
 
-**Source:** Owner, 2026-09-26; phase 5 plan rev 2 (the counts on the entry and on the SKU, option 1; the semantics confirmed by the owner; plan review M6, M7, L10).
+D-440 amends the entry reads: usage.prices also counts the approved prices by where their window stands today (scheduled, active, superseded; approved is their sum), from the same grouped count, and each entry read carries current_price. The SKU usage port keeps products-sdk's PriceCounts unchanged.
+
+**Source:** Owner, 2026-09-26; phase 5 plan rev 2 (the counts on the entry and on the SKU, option 1; the semantics confirmed by the owner; plan review M6, M7, L10). Amended by D-440.
 
 #### D-429 [M] The replay store's mechanics (twin of products P-D-198)
 
@@ -486,7 +495,9 @@ The SKUs screen shows, for one SKU, where it is priced and where it is sold (ask
 - GET /bss-pricing/v1/plans?sku_id= (plan read) lists the plans that have a draft, pending or published revision whose items name an entry of the SKU. This is the usage's plans definition (D-428; products P-D-212's in_plan): a plan that names the SKU only through superseded revisions does not count, and an included item without an entry does not count. The answer has the same schema as GET /plans (PricingPlanList, each plan with all its revision headers). The revisions, items and entries are read tenant-scoped. GET /plans itself becomes set-based: two statements whatever the number of plans (the plans, then all their revisions), where it made one revision read per plan. A malformed sku_id, or any other key, is 400 QUERY_INVALID. Before, the route took no query and ignored any key.
 - GET /bss-pricing/v1/plan-items/{id} (plan read) answers PricingPlanItemReadDto: the item's fields (PricingPlanItemDto), plan_id, rev_no and state, which is its revision's state. The ETag is the item's version, the value its PATCH takes as If-Match. An item the tenant does not hold is 404.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11).
+D-440 amends this entry: the two entry reads carry the same current_price, chosen and shown by the same functions (in_force; money_scope, the one second judgement of price_book read), and usage carries the approved prices by date from the same grouped count, so the SKU's entry list still makes seven statements.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440.
 
 #### D-435 [M] An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216)
 
@@ -540,3 +551,78 @@ Breaking: the PUT's body (currencies required), and a GET answer is a PUT body o
 - **Proof.** tests/response_enums.rs reads the served spec: every listed field has its enum with the exact values in order and its nullability, no request body reaches an enum, and the fields above stay plain strings. An entry row poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500, and the gear goes on serving. Unit tests pin each set's schema, wire and stored tokens as one list.
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).
+
+#### D-440 [M] An entry's prices, its price in force and its approved prices by date
+
+**Status:** DECIDED 2026-09-28.
+
+The Price Books screen opens a drawer per entry with its dated prices (ask 18). The only source was the whole-book export, and usage.prices.approved lumped the active, scheduled and superseded prices together.
+
+- **The entry's prices.** GET /bss-pricing/v1/price-book-entries/{id}/prices answers PricingEntryPriceList { items }, each item a PricingPriceDto: every price of the entry in every state, each with its display status on the day of the request (domain::price::window_display: draft, pending or rejected as stored; an approved price is superseded when its window ended on or before today, scheduled when it starts after today, and active otherwise). The order is the default chain first, then each dimension value's chain in ascending order of the value; each chain by effective_from, then version_no, then id, as the export orders it. status keeps one status or several, comma-separated (status=draft,scheduled). An unknown or empty value, a repeated status and any other key are 400 QUERY_INVALID.
+- **The grant.** The whole answer is money, so the grant is judged twice (plan review H1). price_book_entry read reaches the entry: 403 without it, and 404 ENTRY_NOT_FOUND for an entry the tenant does not hold, judged before the money. Then price_book read, judged a second time as D-434 judges it, must admit the entry's book: 403 PRICE_BOOK_READ_REQUIRED without the grant, or when its scope does not admit that book; 503 when the policy cannot judge. The order: 403 for entry read, 503 for the money's policy, 400 for the query, 404, then 403 for the money. The read makes three statements whatever the number of prices: the entry, its book under the grant, and its prices. The QueryRecorder shows the same statements for 10 and for 100 prices.
+- **The price in force.** The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, carry current_price with D-434's value, shape and grant rule: the default chain's approved price in force today (a PricingPriceDto), or null when none is in force or when the caller's price_book read does not admit the entry's book. An unavailable policy fails the read with 503. The list judges its one book once. D-434's list and these reads share one function that chooses the price (in_force) and one that judges the grant (money_scope).
+- **The approved prices by date.** usage.prices gains scheduled, active and superseded beside approved, pending and draft, so approved = scheduled + active + superseded for every entry. The tests prove it over value chains, a temporary price in force with its scheduled return, an ended gap and a price that ends today. The split comes from the same ONE grouped count that D-428 reads: per entry and state, it also sums the prices whose window ended on or before today and those not ended that start after it, in window_display's order (superseded first), with a UTC today bound once per request. So no usage read makes a statement more, and D-434's SKU entry list still makes seven. Every price the same request answers takes the same day. The split is pricing's own: products-sdk's PriceCounts, the SKU usage port, the SKU card and the SKU list are unchanged (plan review M1). The SKU's entry list (D-434) carries the same usage.
+- **The frozen contract.** The golden price_book_entry_usage leaves out the three dated counts and current_price, because a frozen document holds no value of today. tests/book_reads.rs pins them.
+
+Breaking for a consumer that compares usage as a closed object: it gains three fields, and the entry reads gain current_price. The gears-rust e2e is adapted in run 7.1; the vhp-core suite follows in run 7.4.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434.
+
+#### D-441 [M] Every book read carries its stats
+
+**Status:** DECIDED 2026-09-28.
+
+The Price Books screen lists books with their prices, SKUs, plans, pending changes and last change (ask 14). One request per book could not give distinct plans or a last change.
+
+- **The shape.** GET /bss-pricing/v1/price-books and GET /bss-pricing/v1/price-books/{id} answer PricingPriceBookReadDto: the book's fields (PriceBookDto, flattened) and stats { entries, skus, plans, prices { draft, pending, approved, scheduled, active, superseded, rejected }, pending_units, last_change_at }. The write answers (POST, PATCH, the stored receipt), the export and publish-changes keep PriceBookDto (plan review L8). The ETag of GET /price-books/{id} is unchanged.
+- **The counts.** entries counts the book's entries in every reference state, and skus their distinct SKUs. plans counts the distinct plans with a draft, pending or published revision whose book_id is the book. A plan whose revisions on the book are all superseded is not counted, and two revisions of one plan count once. This is plan_revision_repo::plans_on_books, the one read by which the book delete's BOOK_IN_PLAN (run 7.2) judges a book, so plans = 0 and BOOK_IN_PLAN never disagree (plan review M5). prices counts the prices of the book's entries by state. Unlike D-428's entry counts, a rejected price is counted, and the approved ones are also split as D-440 splits them. pending_units counts the book's prices units in review; a prices unit's ref_id is its book, and a unit of another kind is never counted.
+- **The last change.** last_change_at is the latest of the book's updated_at, its entries' and their prices' updated_at, and its prices units' submitted_at and decided_at (plan review M4). A submit, a withdraw or a reject writes no updated_at, so it moves the last change through its unit. A deleted draft or entry leaves no row, so its deletion does not move it. The instants are compared as instants. On Postgres the maximum of a timestamptz is rendered in UTC to the microsecond that Postgres keeps. On SQLite, where RFC 3339 text does not sort as time within one second (P-D-213: …00Z after …00.5Z), the maximum is taken over a fixed-width key that pads the fraction to nine digits. Pricing writes every instant in UTC.
+- **The statements.** A fixed number of grouped statements, one per source and none multiplying another (plan review M3): the entries (count, distinct SKUs, latest); the prices, each joined to its one entry (by book and state, with the dated sums and the latest); the live plans; and the prices units (pending, latest). A page makes its own statement and these four, and one book's read makes the book's statement and these four. The QueryRecorder shows the same five statements for 10 and for 100 books ($top=200). Every source is read tenant-scoped: the counts are facts of a book the caller may read (price_book read), as D-428 reads an entry's usage.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 14; plan review M3, M4, M5, L8).
+
+#### D-442 [M] The book list pages on the toolkit's OData pager, searched by q and sku_id
+
+**Status:** DECIDED 2026-09-28.
+
+GET /price-books took no parameter and answered every book (ask 15). It now pages on the toolkit's OData pager, as the Products SKU list does (P-D-210).
+
+- **The query.** $filter reads code, name, currency, valid_from and valid_until. The two dates are nullable: eq null is a book open on that side, and they filter only, never order. $orderby reads code and name, tie-broken by id, and the default order is the code. $top (alias limit) defaults to 200 and is clamped at 500, the categories' page, so a tenant's books stay on one page (plan review M2). cursor (alias $skiptoken) comes from page_info.
+- **q and sku_id.** q is a case-insensitive substring of the code or the name, matched literally (%, _ and \ are escaped). On Postgres both sides fold through the ICU root collation und-x-icu, whatever the database's locale: a C database's own lower() folds ASCII only. The deployment's Postgres must be built with ICU, as P-D-210 says. On SQLite both sides fold through lower(), ASCII only. An empty q is no search. sku_id keeps the books with an entry of that SKU, in any reference state; it is a sub-select condition of the page's own statement. The cursor carries a hash of $filter, q and sku_id, so a cursor replayed under another narrowing is 400 FILTER_MISMATCH.
+- **Refusals.** Authorization is judged first (price_book read). Any other plain key, a repeated key and a malformed sku_id are 400 QUERY_INVALID, the code pricing's other reads give a key (plan review M2 left the choice). The toolkit refuses $select, $count and every other option it does not take with UNSUPPORTED_QUERY_PARAM, and a filter or an order it cannot read with INVALID_FILTER or INVALID_ORDERBY_FIELD.
+- **The answer.** The list answers `Page<PricingPriceBookReadDto>`: { items, page_info { next_cursor, prev_cursor, limit } }, each item with its stats (D-441). There is no total: the toolkit Page carries none, and the stats are the pattern for counts (plan review M6). Pricing takes the toolkit-odata dependency.
+
+Breaking: the list pages, where it was unlimited, so a tenant with more than 200 books reads the rest through next_cursor; and an unknown key, which was ignored, is 400. items keeps its place and page_info is added. The deploy notes name both.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 15; plan review M2, M6, L3).
+
+#### D-443 [M] A temporary draft's dates move, and its pair follows
+
+**Status:** DECIDED 2026-09-28.
+
+The Price Books screen edits a temporary draft's dates (ask 21). PATCH /prices/{id} refused every date of a temporary price with TEMPORARY_PRICE_FIXED, so the author deleted the pair and drafted it again.
+
+- **The door.** PATCH /bss-pricing/v1/prices/{id} of the temporary half of an unlocked draft (the price that carries temporary_until) takes effective_from and temporary_until, by its author and under If-Match, as before. A PATCH that sends either date runs the pair builder (domain::price::temporary) again over the new dates, in the same transaction.
+- **The shapes.** The builder makes a pair when a price of the chain is in force on the end (the return restores it); the promo alone when the chain's next approved price starts exactly on the end; and one explicitly closed price when nothing of the chain is in force there. Every move between them is reconciled. Pair → pair: the return is derived again in place (its id, version_no and author stay; its start is the new end; its money and min_fee are copied again from the price it restores, and its end from that price's own end). Pair → one price: the return is deleted. One price → pair: a return is created. One price → one price: the promo's end and closed_explicitly are written again.
+- **The write order.** The pair references are foreign keys. Pair → pair: the promo at its version, then the return at its own version. Pair → one price: the promo first, its paired_price_id cleared, then the return is deleted at its version, with a price.delete audit row. One price → pair: the return first, naming the promo (which exists), then the promo names it; the return has a price.create audit row. A new return takes the entry's next version_no (the highest of all the entry's prices, plus one), never promo.version_no + 1, which another price may hold (the unique (price_book_entry_id, version_no) index). A concurrent writer that takes the number first makes the PATCH try again, as the create does.
+- **The judgement.** Both halves are judged as the create judges them: each price's own rules (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST, WINDOW_OVERLAP) and D-406 against the approved prices and the pair itself (PRICE_INSIDE_TEMPORARY, TEMPORARY_SPANS_A_CHANGE). A refusal writes nothing.
+- **The answer.** 200 with the edited price: its paired_price_id names its partner now, or null, and the ETag is its new version. A kept return's version moves too, so a client reads it again before it edits the return.
+- **What stays fixed.** TEMPORARY_PRICE_FIXED (400) is narrowed to: a return's own dates (the author edits the temporary half); the chain (dim_value) of either half; temporary_until on a price that is not the temporary half; and a null temporary_until. No PATCH makes a price temporary or ends its temporariness. A pair whose other half is not an unlocked draft is 409 PRICE_NOT_DRAFT, and another author's is 403 NOT_DRAFT_AUTHOR, as the delete judges them.
+- **An edited return.** A return's money stays editable, and a move of its pair copies the money again from the restored price. Submit would refuse the edited return as PAIR_RETURN_STALE anyway (D-391), so the copy loses nothing that submit would keep.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 21; plan review H2, L5). Amends D-391.
+
+#### D-444 [M] A book has a description, and an unused book can be deleted
+
+**Status:** DECIDED 2026-09-28.
+
+The Price Books screen shows a book's description and deletes a book that nothing uses (ask 16). A book had no free text, and no door removed a book.
+
+- **The description.** Migration m20260928_000015_book_description adds pricing_price_book.description, a nullable text column, by ADD COLUMN on both dialects (a book written before it reads null). POST /price-books takes an optional description; PATCH /price-books/{id} keeps it when the field is omitted, replaces it with a value and clears it with null. It holds at most 2000 characters (Unicode scalar values), judged at the door: 400 BOOK_DESCRIPTION_TOO_LONG; there is no CHECK. It is stored as sent. Every book answer carries it: PriceBookDto (the write answers, the stored receipt, the export, publish-changes) and the book reads, which flatten it (D-441). A stored POST receipt younger than a day replays the answer it recorded, without the field.
+- **The delete.** DELETE /bss-pricing/v1/price-books/{id} under the book write grant (price_book author) and If-Match answers 204 and writes a price_book.delete audit row. The refusals come in this order: 403 without the grant (authorization first); 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_HAS_ENTRIES for an entry of the book in any reference state; 409 BOOK_IN_PLAN for a plan with a draft, pending or published revision on the book, which is plan_revision_repo::plans_on_books, the read D-441's stats.plans counts, so plans = 0 and BOOK_IN_PLAN never disagree; 409 BOOK_IN_PLAN_HISTORY when only superseded revisions name the book.
+- **Superseded revisions keep the book.** A revision's book_id is a foreign key, and a revision may name a book without any entry of it (a revision moved to another book, or one with only included items). A book that only superseded revisions name has stats.plans = 0, and its delete is still refused: the history of those revisions keeps it. That refusal has its own code, BOOK_IN_PLAN_HISTORY, so BOOK_IN_PLAN keeps D-441's meaning.
+- **No refusal for a pending unit.** A prices unit in review holds pending prices; a pending price keeps its entry (ENTRY_PRICES_IN_USE), and BOOK_HAS_ENTRIES is judged first. A plan-revision unit names its revision, which is not superseded while it is pending (BOOK_IN_PLAN). So no unit can be pending on a book without entries, and the plan's BOOK_LOCKED_PENDING is not a refusal (plan review L1).
+- **A lost race.** A row that a concurrent writer adds after the door's reads meets the book's foreign key: Postgres waits for that writer and fails the delete on the key it names, and the entry's key is 409 BOOK_HAS_ENTRIES, a revision's 409 BOOK_IN_PLAN, never a 500. On SQLite one writer holds the database for the whole transaction, so the door's reads see every row. An entry create in flight loses cleanly the other way: its Tx B finds no book (BOOK_NOT_FOUND), which cancels the op and releases the reservation.
+- **What stays.** The book's audit rows stay. A decided unit (rejected or withdrawn) that named the book stays readable: its card and the unit list answer with its ref_id, its decisions and the impact of its stored items, without the book. An approved unit's prices keep their entries, so its book is never deleted. Like a deleted draft SKU's create (P-D-206), the book create's Idempotency-Key still replays its 201 for a day, naming the deleted book; the code is free again.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 16; plan review L1, L8).
