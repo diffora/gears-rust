@@ -373,7 +373,8 @@ of rounding modes (D-437, D-438).
 Phase 7 adds the Price Books screen's reads: an entry's prices with their status today, its price in force and its
 approved prices by date (D-440), every book read's stats (D-441), and a book list that pages on the toolkit's OData
 pager and is searched by q and sku_id (D-442); and its writes: the dates of a temporary draft, whose pair follows
-them (D-443), and a book's description and the delete of a book nothing uses (D-444).
+them (D-443), and a book's description and the delete of a book nothing uses (D-444). An approval unit carries its
+submitter's note, `submit_note`, the unit shape products shares; pricing's doors send none (D-445).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose

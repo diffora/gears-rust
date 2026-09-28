@@ -587,6 +587,7 @@ pub async fn unit_of_kind(f: &Fixture, kind: &str) -> Uuid {
                     generation: 1,
                     submitted_by: Uuid::new_v4(),
                     submitted_at: time::OffsetDateTime::now_utc(),
+                    submit_note: None,
                     decided_at: None,
                     decided_note: None,
                     snapshot: json!({}),

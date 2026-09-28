@@ -29,7 +29,8 @@ fn routes(s: Arc<crate::api::rest::ApiState>, o: &dyn toolkit::api::OpenApiRegis
 struct Fixture {
     state: Arc<crate::api::rest::ApiState>,
     app: Router,
-    dsn: String,
+    /// Held for the test's life: its temporary directory holds the database.
+    dsn: TestDsn,
     tenant: Uuid,
     author: SecurityContext,
     reviewer: SecurityContext,
@@ -2207,12 +2208,8 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
     let f = Fixture::new(0).await;
     f.publish().await;
     f.policy(1).await;
-    let dsn = format!(
-        "sqlite://{}?mode=rwc",
-        std::env::temp_dir()
-            .join(format!("pricing-cross-gear-{}.sqlite3", Uuid::new_v4()))
-            .display()
-    );
+    // Held for the test's life: pricing's database in its own temporary directory.
+    let dsn = TestDsn::new("pricing-cross-gear-");
     let db = toolkit_db::connect_db(
         &dsn,
         toolkit_db::ConnectOpts {
@@ -2789,3 +2786,5 @@ async fn a_collector_denial_is_403_at_submit_and_at_approve() {
 
 #[path = "sku_history_tests.rs"]
 mod sku_history_tests;
+#[path = "submit_note_tests.rs"]
+mod submit_note_tests;

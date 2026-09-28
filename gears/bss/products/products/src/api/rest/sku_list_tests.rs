@@ -49,16 +49,19 @@ struct Door {
     state: Arc<ApiState>,
     tenant: Uuid,
     scope: AccessScope,
+    /// Holds the database's temporary directory for the door's life.
+    _dsn: crate::test_support::TestDsn,
 }
 impl Door {
     async fn new() -> Self {
-        let (db, scope, tenant, _) = crate::test_support::test_db().await;
+        let (db, scope, tenant, dsn) = crate::test_support::test_db().await;
         let (app, state) = rest_app_on_db(tenant, doors, resolved_usage_types(), "test", db).await;
         Self {
             app,
             state,
             tenant,
             scope,
+            _dsn: dsn,
         }
     }
     async fn category(&self, code: &str) -> Uuid {
@@ -727,12 +730,7 @@ async fn the_counts_and_the_list_expire_orphan_fences_alike() {
 /// A door over a database whose statements are recorded.
 async fn recorded_door(n: usize) -> (Door, toolkit_db::test_support::QueryRecorder) {
     use sea_orm_migration::MigratorTrait;
-    let dsn = format!(
-        "sqlite://{}?mode=rwc",
-        std::env::temp_dir()
-            .join(format!("products-recorded-{}.sqlite3", Uuid::new_v4()))
-            .display()
-    );
+    let dsn = crate::test_support::TestDsn::new("products-recorded-");
     let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
         &dsn,
         toolkit_db::ConnectOpts {
@@ -773,6 +771,7 @@ async fn recorded_door(n: usize) -> (Door, toolkit_db::test_support::QueryRecord
         state,
         tenant,
         scope,
+        _dsn: dsn,
     };
     for i in 0..n {
         d.sku(Seed {

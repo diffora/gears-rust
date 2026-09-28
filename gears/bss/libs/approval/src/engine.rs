@@ -20,6 +20,8 @@ pub struct SubmitRequest<'a> {
     pub actor: Uuid,
     pub policy: &'a Policy,
     pub common_effective_date: Option<Date>,
+    /// The submitter's note, stored on the unit as [`Unit::submit_note`]; not a fingerprint input.
+    pub note: Option<&'a str>,
     pub now: OffsetDateTime,
 }
 
@@ -70,6 +72,7 @@ impl Engine {
             generation: 1,
             submitted_by: req.actor,
             submitted_at: req.now,
+            submit_note: req.note.map(str::to_owned),
             decided_at: None,
             decided_note: None,
             snapshot: subject.snapshot(&items, req.common_effective_date),

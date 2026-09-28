@@ -970,15 +970,17 @@ impl bss_products_sdk::sku_usage::SkuUsageV1 for UsagePort {
 }
 /// A router and its state over a fresh database, with no usage port registered.
 async fn usage_app(tenant: Uuid) -> (Router, Arc<ApiState>) {
-    let (db, _, _, _) = crate::test_support::test_db().await;
-    crate::test_support::rest_app_on_db(
+    let (db, _, _, dsn) = crate::test_support::test_db().await;
+    let (app, state) = crate::test_support::rest_app_on_db(
         tenant,
         doors,
         crate::test_support::resolved_usage_types(),
         "test",
         db,
     )
-    .await
+    .await;
+    // The router holds the database's temporary directory.
+    (app.layer(axum::Extension(dsn)), state)
 }
 /// A category-less draft SKU through the door (P-D-196): its id.
 async fn sku_named(app: &Router, tenant: Uuid, code: &str) -> Uuid {

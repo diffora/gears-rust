@@ -58,6 +58,7 @@ mod m20260926_000012_create_pricing_plan_item;
 mod m20260926_000013_model_on_the_entry;
 mod m20260927_000014_settings_currencies_and_author;
 mod m20260928_000015_book_description;
+mod m20260928_000016_unit_submit_note;
 
 /// Coordination followed by pricing-owned migrations.
 pub struct Migrator;
@@ -82,6 +83,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260926_000013_model_on_the_entry::Migration),
             Box::new(m20260927_000014_settings_currencies_and_author::Migration),
             Box::new(m20260928_000015_book_description::Migration),
+            Box::new(m20260928_000016_unit_submit_note::Migration),
         ]
     }
 }

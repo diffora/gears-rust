@@ -19,18 +19,23 @@ use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statemen
 use toolkit::contracts::DatabaseCapability;
 use toolkit_db::migration_runner::{MigrationError, MigrationResult, run_migrations_for_testing};
 use toolkit_db::{ConnectOpts, connect_db};
-use uuid::Uuid;
 
 /// A file database, so the runner's pool and a raw connection see the same schema.
 struct Lite {
+    /// The database's own temporary directory, removed with the `Lite` (the file, its `-wal` and
+    /// its `-shm`).
+    _dir: tempfile::TempDir,
     path: std::path::PathBuf,
 }
 
 impl Lite {
     fn new() -> Self {
-        Self {
-            path: std::env::temp_dir().join(format!("pricing-guard-{}.sqlite3", Uuid::new_v4())),
-        }
+        let dir = tempfile::Builder::new()
+            .prefix("pricing-guard-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("db.sqlite3");
+        Self { _dir: dir, path }
     }
 
     fn dsn(&self) -> String {
@@ -122,12 +127,6 @@ impl Lite {
             )])
             .await;
         }
-    }
-}
-
-impl Drop for Lite {
-    fn drop(&mut self) {
-        drop(std::fs::remove_file(&self.path));
     }
 }
 

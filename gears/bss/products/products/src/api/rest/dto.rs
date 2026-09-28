@@ -462,6 +462,18 @@ pub struct SkuChangeRequest {
     pub patch: SkuPatchRequest,
     #[serde(default, with = "crate::infra::serde_date::option")]
     pub effective_from: Option<Date>,
+    /// The submitter's reason: at most 2000 characters (400 `NOTE_TOO_LONG`), stored on the unit
+    /// as `submit_note` and on the submit's history row, as sent (P-D-213, P-D-219).
+    pub note: Option<String>,
+}
+/// The optional body of `POST /skus/{id}/submit` and `/retire` (P-D-219): the submitter's note,
+/// at most 2000 characters (400 `NOTE_TOO_LONG`), stored on the unit as `submit_note` and on the
+/// submit's history row, as sent. No body, `{}` and `note: null` carry none; any other field is a
+/// 400.
+#[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
+pub struct ProductsSkuSubmitRequest {
+    #[serde(default)]
     pub note: Option<String>,
 }
 #[toolkit_macros::api_dto(response)]
@@ -478,6 +490,10 @@ pub struct UnitDto {
     pub submitted_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: OffsetDateTime,
+    /// The submitter's note, as sent to the submit, change or retire door; null when none was
+    /// sent, and on every unit submitted before the note was stored (P-D-219). Not content: the
+    /// snapshot and its fingerprint do not carry it.
+    pub submit_note: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub decided_at: Option<OffsetDateTime>,
     pub decided_note: Option<String>,
@@ -531,13 +547,6 @@ pub struct ApprovalPolicyDto {
 #[path = "dto_tests.rs"]
 mod dto_tests;
 
-#[toolkit_macros::api_dto(request)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::empty_structs_with_brackets,
-    reason = "Serde must accept an empty JSON object, not null"
-)]
-pub struct EmptyRequest {}
 impl From<bss_approval::Unit> for UnitDto {
     fn from(u: bss_approval::Unit) -> Self {
         Self {
@@ -551,6 +560,7 @@ impl From<bss_approval::Unit> for UnitDto {
             common_effective_date: u.common_effective_date,
             submitted_by: u.submitted_by,
             submitted_at: u.submitted_at,
+            submit_note: u.submit_note,
             decided_at: u.decided_at,
             decided_note: u.decided_note,
             snapshot: u.snapshot,

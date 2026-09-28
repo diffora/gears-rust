@@ -265,6 +265,7 @@ async fn postgres_the_approved_start_index_refuses_an_apply_onto_a_taken_start()
         generation: 1,
         submitted_by: Uuid::new_v4(),
         submitted_at: time::OffsetDateTime::now_utc(),
+        submit_note: None,
         decided_at: None,
         decided_note: None,
         snapshot: json!({}),

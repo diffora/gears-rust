@@ -170,19 +170,23 @@ pub async fn for_plans(
         .await
         .map_err(|e| driver_failure("list the revisions of plans".into(), e))
 }
-/// How many distinct plans have a non-superseded revision on one book: a row of
-/// [`plans_on_books`].
+/// The plans that name one book, a row of [`plans_on_books`]: `plans`, the distinct plans with a
+/// draft, pending or published revision on it; `named`, the distinct plans with a revision of any
+/// state on it. `named - plans` are the plans only superseded revisions keep there.
 #[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
 pub struct BookPlanCount {
     pub book_id: Uuid,
     pub plans: i64,
+    pub named: i64,
 }
-/// The plans a book is in (D-441): for each of the tenant's `books`, the distinct plans with a
-/// draft, pending or published revision whose `book_id` is that book — a plan whose only
-/// revisions on it are superseded is not in it, and two revisions of one plan count once. ONE
-/// grouped statement whatever the number of books and revisions; a book no plan is in has no row.
-/// The book delete's `BOOK_IN_PLAN` (phase 7, run 7.2) judges a book by this same read, so a book
-/// whose `stats.plans` is 0 is never refused for a plan.
+/// The plans a book is in (D-441): for each of the tenant's `books` a revision of any state names,
+/// the distinct plans with a draft, pending or published revision whose `book_id` is that book
+/// (`plans`: a plan whose only revisions on it are superseded is not in it, and two revisions of
+/// one plan count once), and the distinct plans with any revision on it (`named`). ONE grouped
+/// statement whatever the number of books and revisions; a book no revision names has no row.
+/// The book stats count `plans` and `named - plans` from it, and the book delete (D-444) judges
+/// `BOOK_IN_PLAN` by `plans` and `BOOK_IN_PLAN_HISTORY` by `named` from the same read, so a book's
+/// stats and its delete never disagree.
 /// # Errors
 /// Returns typed database failures.
 pub async fn plans_on_books(
@@ -195,53 +199,29 @@ pub async fn plans_on_books(
     if books.is_empty() {
         return Ok(Vec::new());
     }
+    let plan = || Expr::col((e::Entity, e::Column::PlanId));
+    let live = Expr::col((e::Entity, e::Column::State)).ne(RevisionState::Superseded.as_str());
     e::Entity::find()
         .secure()
         .scope_with(&AccessScope::for_tenant(tenant))
         .filter(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
-                .add(e::Column::BookId.is_in(books.iter().copied()))
-                .add(e::Column::State.ne(RevisionState::Superseded.as_str())),
+                .add(e::Column::BookId.is_in(books.iter().copied())),
         )
         .project_all(runner, |q| {
             q.select_only()
                 .column(e::Column::BookId)
                 .column_as(
-                    Expr::from(Func::count_distinct(Expr::col((
-                        e::Entity,
-                        e::Column::PlanId,
-                    )))),
+                    Expr::from(Func::count_distinct(Expr::case(live, plan()))),
                     "plans",
                 )
+                .column_as(Expr::from(Func::count_distinct(plan())), "named")
                 .group_by(e::Column::BookId)
                 .into_model::<BookPlanCount>()
         })
         .await
         .map_err(|e| driver_failure("count the plans on books".into(), e))
-}
-/// Whether a revision of any state names `book` (D-444): what keeps a book whose plans
-/// [`plans_on_books`] does not count — revisions that are all superseded — from its delete
-/// (`BOOK_IN_PLAN_HISTORY`); their `book_id` is a foreign key the history keeps. ONE statement.
-/// # Errors
-/// Returns typed database failures.
-pub async fn names_book(
-    runner: &impl DBRunner,
-    tenant: Uuid,
-    book: Uuid,
-) -> Result<bool, RepoError> {
-    e::Entity::find()
-        .secure()
-        .scope_with(&AccessScope::for_tenant(tenant))
-        .filter(
-            Condition::all()
-                .add(e::Column::TenantId.eq(tenant))
-                .add(e::Column::BookId.eq(book)),
-        )
-        .one(runner)
-        .await
-        .map(|found| found.is_some())
-        .map_err(|e| driver_failure("find a revision naming a book".into(), e))
 }
 /// A plan's revisions by revision number.
 /// # Errors

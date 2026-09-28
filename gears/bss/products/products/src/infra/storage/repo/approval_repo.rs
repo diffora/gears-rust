@@ -59,6 +59,7 @@ fn unit_from_model(m: approval_unit::Model) -> Result<Unit, ApprovalError> {
         generation: m.generation,
         submitted_by: m.submitted_by,
         submitted_at: m.submitted_at,
+        submit_note: m.submit_note,
         decided_at: m.decided_at,
         decided_note: m.decided_note,
         snapshot: m.snapshot,
@@ -137,6 +138,7 @@ impl<'a> Store<DbTx<'a>> for ProductsApprovalStore {
             snapshot: Set(unit.snapshot.clone()),
             snapshot_hash: Set(unit.snapshot_hash.clone()),
             version: Set(unit.version),
+            submit_note: Set(unit.submit_note.clone()),
         };
         approval_unit::Entity::insert(m.clone())
             .secure()

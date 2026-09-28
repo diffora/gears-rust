@@ -598,12 +598,7 @@ async fn recorded_categories(
     toolkit_db::test_support::QueryRecorder,
 ) {
     use sea_orm_migration::MigratorTrait;
-    let dsn = format!(
-        "sqlite://{}?mode=rwc",
-        std::env::temp_dir()
-            .join(format!("products-categories-{}.sqlite3", Uuid::new_v4()))
-            .display()
-    );
+    let dsn = crate::test_support::TestDsn::new("products-categories-");
     let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
         &dsn,
         toolkit_db::ConnectOpts {
@@ -647,7 +642,8 @@ async fn recorded_categories(
         skus_in(&dsn, tenant, id, &format!("S{i:03}-"), &["published"]).await;
     }
     recorder.clear();
-    (app, tenant, first, recorder)
+    // The router holds the database's temporary directory.
+    (app.layer(axum::Extension(dsn)), tenant, first, recorder)
 }
 
 /// The statements on the gear's tables one read makes, with their bind counts.
@@ -1008,5 +1004,203 @@ async fn two_concurrent_moves_leave_one_default_and_no_500() {
     assert!(
         now[0] == b.to_string() || now[0] == c.to_string(),
         "{now:?}"
+    );
+}
+
+/// The category's `ETag`, as its read answers it.
+async fn tag_of(app: &axum::Router, tenant: Uuid, id: Uuid) -> String {
+    get(app, tenant, &format!("{CATEGORIES}/{id}"))
+        .await
+        .headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The category's audit rows, `action@version` in the order they were written.
+async fn category_rows(dsn: &str, id: Uuid) -> Vec<String> {
+    use crate::test_support::id_matches;
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let raw = Database::connect(dsn).await.unwrap();
+    let rows = raw
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                "SELECT action || '@' || subject_revision AS v FROM products_audit_log \
+                 WHERE subject_kind = 'category' AND {} ORDER BY audit_id",
+                id_matches("subject_id", id)
+            ),
+        ))
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.try_get::<String>("", "v").unwrap())
+        .collect();
+    raw.close().await.unwrap();
+    rows
+}
+
+/// **A retired category is never made the default** (P-D-220, amends P-D-218). PATCH
+/// `{is_default: true}` on a retired category is 409 `CATEGORY_RETIRED` and moves nothing: the
+/// tenant's default keeps its flag and its version, and no row is written. A stale tag is judged
+/// first (`STALE_REVISION`, as every PATCH). The retired category's other edits still pass: a
+/// rename, and `is_default: false`. A POST always creates an active category, so it has no such
+/// case.
+#[tokio::test]
+async fn a_retired_category_is_never_made_the_default() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let (keeper, _) = default_candidate(&app, tenant, "keeper", true).await;
+    let (gone, _) = default_candidate(&app, tenant, "gone", false).await;
+    let r = post(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{gone}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let tag = tag_of(&app, tenant, gone).await;
+    let rows_before = (
+        category_rows(&dsn, keeper).await,
+        category_rows(&dsn, gone).await,
+    );
+
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{gone}"),
+        json!({"is_default":true}),
+        Some(&tag),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "CATEGORY_RETIRED");
+    assert_eq!(defaults(&app, tenant).await, vec![keeper.to_string()]);
+    let kept = body_json(get(&app, tenant, &format!("{CATEGORIES}/{keeper}")).await).await;
+    assert_eq!(
+        (kept["is_default"].clone(), kept["version"].clone()),
+        (json!(true), json!(1)),
+        "{kept}"
+    );
+    assert_eq!(
+        (
+            category_rows(&dsn, keeper).await,
+            category_rows(&dsn, gone).await
+        ),
+        rows_before,
+        "the refused move writes nothing"
+    );
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{gone}"),
+        json!({"is_default":true}),
+        Some("\"1\""),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "STALE_REVISION");
+
+    for body in [json!({"name":"Gone for good"}), json!({"is_default":false})] {
+        let r = patch(
+            &app,
+            tenant,
+            &format!("{CATEGORIES}/{gone}"),
+            body.clone(),
+            Some(&tag_of(&app, tenant, gone).await),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK, "{body}");
+    }
+    assert_eq!(defaults(&app, tenant).await, vec![keeper.to_string()]);
+}
+
+/// **Retiring the tenant's default clears it** (P-D-220, amends P-D-218), in the retirement's
+/// transaction: the clear is a category write of its own (`version` + 1 and a `category.update`
+/// row), then the retirement (`version` + 1 and its `category.retire` row). The answer reads
+/// `retired` and not default, and the tenant has no default after (P-D-196: nothing falls back to
+/// one). A refused retirement of the default (in use) clears nothing; retiring a category that is
+/// not the default writes the one retirement.
+#[tokio::test]
+async fn retiring_the_default_leaves_the_tenant_without_one() {
+    let tenant = Uuid::new_v4();
+    let (app, dsn) = rest_app(tenant, router).await;
+    let (used, _) = default_candidate(&app, tenant, "used", true).await;
+    skus_in(&dsn, tenant, used, "U-", &["published"]).await;
+    let r = post(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{used}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(&body_json(r).await), "CATEGORY_IN_USE");
+    assert_eq!(defaults(&app, tenant).await, vec![used.to_string()]);
+    assert_eq!(category_rows(&dsn, used).await, ["category.create@1"]);
+
+    let (side, _) = default_candidate(&app, tenant, "side", false).await;
+    let r = post(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{side}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let body = body_json(r).await;
+    assert_eq!(
+        (body["status"].clone(), body["version"].clone()),
+        (json!("retired"), json!(2)),
+        "{body}"
+    );
+    assert_eq!(
+        category_rows(&dsn, side).await,
+        ["category.create@1", "category.retire@2"]
+    );
+
+    let (main, main_tag) = default_candidate(&app, tenant, "main", false).await;
+    let r = patch(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{main}"),
+        json!({"is_default":true}),
+        Some(&main_tag),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(defaults(&app, tenant).await, vec![main.to_string()]);
+    let r = post(
+        &app,
+        tenant,
+        &format!("{CATEGORIES}/{main}/retire"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let body = body_json(r).await;
+    assert_eq!(
+        (
+            body["status"].clone(),
+            body["is_default"].clone(),
+            body["version"].clone()
+        ),
+        (json!("retired"), json!(false), json!(4)),
+        "{body}"
+    );
+    assert_eq!(
+        body_json(get(&app, tenant, &format!("{CATEGORIES}/{main}")).await).await["is_default"],
+        false
+    );
+    assert!(defaults(&app, tenant).await.is_empty(), "no default after");
+    assert_eq!(
+        category_rows(&dsn, main).await,
+        [
+            "category.create@1",
+            "category.update@2",
+            "category.update@3",
+            "category.retire@4"
+        ]
     );
 }

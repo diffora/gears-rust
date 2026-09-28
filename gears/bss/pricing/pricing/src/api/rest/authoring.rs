@@ -178,8 +178,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 \
              BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, \
              pending or published revision on the book, as stats.plans counts it, D-441); 409 \
-             BOOK_IN_PLAN_HISTORY (only superseded revisions name it). A row added by a \
-             concurrent writer is the same 409.",
+             BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only \
+             counts it): the delete succeeds exactly when stats.entries, stats.plans and \
+             stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
         )
         .tag("Pricing")
         .authenticated()

@@ -1,4 +1,5 @@
-//! The four approval tables as raw SQL for a gear to splice into its migration chain.
+//! The four approval tables as raw SQL for a gear to splice into its migration chain, and the
+//! later `submit_note` column a gear adds by its own forward migration ([`add_submit_note`]).
 use sea_orm::{ConnectionTrait, DbBackend, DbErr, Statement};
 use sea_orm_migration::SchemaManager;
 
@@ -73,6 +74,99 @@ pub fn down(prefix: &str, schema: Option<&str>) -> Vec<String> {
     .iter()
     .map(|n| format!("DROP TABLE IF EXISTS {}", t(prefix, schema, n)))
     .collect()
+}
+
+/// The unit table's `submit_note` column (products P-D-219, pricing D-445): the `ALTER TABLE …
+/// ADD COLUMN submit_note text` a gear's own FORWARD migration runs. It is not part of [`up`],
+/// which is the body of migrations already deployed and stays as it shipped, so a fresh chain
+/// and an upgraded one both get the column from that later migration.
+///
+/// Postgres says `IF NOT EXISTS`; `SQLite` has no such clause there, so
+/// [`apply_add_submit_note`] reads the catalog first. Identifiers follow [`up`]'s contract.
+#[must_use]
+pub fn add_submit_note(prefix: &str, schema: Option<&str>, backend: DbBackend) -> String {
+    if backend == DbBackend::Postgres {
+        let unit = t(prefix, schema, "approval_unit");
+        format!("ALTER TABLE {unit} ADD COLUMN IF NOT EXISTS submit_note text")
+    } else {
+        let unit = t(prefix, None, "approval_unit");
+        format!("ALTER TABLE {unit} ADD COLUMN submit_note text")
+    }
+}
+
+/// The reverse of [`add_submit_note`]: `DROP COLUMN submit_note` (`IF EXISTS` on Postgres).
+#[must_use]
+pub fn drop_submit_note(prefix: &str, schema: Option<&str>, backend: DbBackend) -> String {
+    if backend == DbBackend::Postgres {
+        let unit = t(prefix, schema, "approval_unit");
+        format!("ALTER TABLE {unit} DROP COLUMN IF EXISTS submit_note")
+    } else {
+        let unit = t(prefix, None, "approval_unit");
+        format!("ALTER TABLE {unit} DROP COLUMN submit_note")
+    }
+}
+
+/// Whether the unit table has `submit_note`, on `SQLite`.
+async fn sqlite_has_submit_note(manager: &SchemaManager<'_>, prefix: &str) -> Result<bool, DbErr> {
+    let rows = manager
+        .get_connection()
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!(
+                "SELECT name AS v FROM pragma_table_info('{prefix}approval_unit') \
+                 WHERE name = 'submit_note'"
+            ),
+        ))
+        .await?;
+    Ok(!rows.is_empty())
+}
+
+/// Runs [`add_submit_note`] for the manager's backend; on `SQLite` only when the column is
+/// missing, so a replay changes nothing. A gear calls this from its own forward migration.
+///
+/// # Errors
+/// Returns the database error; the gear owns the migration transaction.
+pub async fn apply_add_submit_note(
+    manager: &SchemaManager<'_>,
+    prefix: &str,
+    schema: Option<&str>,
+) -> Result<(), DbErr> {
+    let backend = manager.get_database_backend();
+    if backend == DbBackend::Sqlite && sqlite_has_submit_note(manager, prefix).await? {
+        return Ok(());
+    }
+    manager
+        .get_connection()
+        .execute_raw(Statement::from_string(
+            backend,
+            add_submit_note(prefix, schema, backend),
+        ))
+        .await?;
+    Ok(())
+}
+
+/// Runs [`drop_submit_note`] for the manager's backend; on `SQLite` only when the column is
+/// there, so a replay changes nothing.
+///
+/// # Errors
+/// Returns the database error; the gear owns the migration transaction.
+pub async fn apply_drop_submit_note(
+    manager: &SchemaManager<'_>,
+    prefix: &str,
+    schema: Option<&str>,
+) -> Result<(), DbErr> {
+    let backend = manager.get_database_backend();
+    if backend == DbBackend::Sqlite && !sqlite_has_submit_note(manager, prefix).await? {
+        return Ok(());
+    }
+    manager
+        .get_connection()
+        .execute_raw(Statement::from_string(
+            backend,
+            drop_submit_note(prefix, schema, backend),
+        ))
+        .await?;
+    Ok(())
 }
 
 /// Runs [`up`] for the manager's backend. A gear calls this from its own migration's `up`.

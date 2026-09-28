@@ -136,7 +136,7 @@ async fn two_writers_holding_one_tag_do_not_both_win() {
 #[tokio::test]
 async fn authorization_is_judged_before_the_precondition() {
     let tenant = Uuid::new_v4();
-    let (db, _, _, _) = test_db().await;
+    let (db, _, _, _dsn) = test_db().await;
     let (_, state) = rest_app_on_db(tenant, router, resolved_usage_types(), "test", db).await;
     let denied = router(state, &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(denying_enforcer()));
@@ -236,7 +236,7 @@ async fn an_override_is_reset_to_the_default_under_if_match() {
 #[tokio::test]
 async fn the_reset_is_authorized_before_its_precondition() {
     let tenant = Uuid::new_v4();
-    let (db, _, _, _) = test_db().await;
+    let (db, _, _, _dsn) = test_db().await;
     let (_, state) = rest_app_on_db(tenant, router, resolved_usage_types(), "test", db).await;
     let denied = router(state, &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(denying_enforcer()));

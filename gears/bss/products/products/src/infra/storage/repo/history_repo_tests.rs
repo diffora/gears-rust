@@ -31,6 +31,7 @@ async fn unit(runner: &impl DBRunner, id: Uuid, tenant: Uuid, sku: Uuid, kind: &
         snapshot: Set(serde_json::json!({})),
         snapshot_hash: Set("h".to_owned()),
         version: Set(1),
+        submit_note: Set(None),
     };
     approval_unit::Entity::insert(model.clone())
         .secure()
@@ -102,7 +103,7 @@ async fn walk(runner: &impl DBRunner, limit: u64) -> Vec<String> {
 /// columns reads none.
 #[tokio::test]
 async fn the_history_orders_by_audit_id_across_every_page() {
-    let (db, _, _, _) = test_db().await;
+    let (db, _, _, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     unit(&conn, UNIT, TENANT, SKU, "sku_retire").await;
     unit(&conn, OTHER_UNIT, TENANT, OTHER_SKU, "sku_publish").await;
@@ -251,7 +252,7 @@ async fn walk_of(runner: &impl DBRunner, sku: Uuid, limit: u64) -> Vec<String> {
 /// time when one fraction is a prefix of the other (`…21.41868Z` after `…21.418681Z`).
 #[tokio::test]
 async fn the_history_follows_the_commit_order_where_written_at_disagrees() {
-    let (db, _, _, _) = test_db().await;
+    let (db, _, _, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let second = utc(2026, 9, 27, 10, 0, 21);
     // B began 100 ms after A (`…21.2Z` against `…21.1Z`: text and time agree) and committed
@@ -314,7 +315,7 @@ async fn the_history_follows_the_commit_order_where_written_at_disagrees() {
 /// longer has: it is refused as a query error (400), never read in another order.
 #[tokio::test]
 async fn a_cursor_of_the_written_at_order_is_refused() {
-    let (db, _, _, _) = test_db().await;
+    let (db, _, _, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     for n in 1..=3 {
         row(&conn, n, TENANT, "sku", SKU, 5, LifecycleMove::NONE, None).await;

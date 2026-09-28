@@ -9,12 +9,14 @@ use tower::ServiceExt;
 use uuid::Uuid;
 #[path = "../storage_support/mod.rs"]
 mod storage_support;
-/// A migrated file-backed database: provider, tenant scope, tenant and DSN.
+pub use storage_support::TestDsn;
+/// A migrated file-backed database: provider, tenant scope, tenant and its [`TestDsn`], which the
+/// caller holds for the test's life.
 pub async fn test_db() -> (
     toolkit_db::DBProvider<toolkit_db::DbError>,
     toolkit_db::secure::AccessScope,
     Uuid,
-    String,
+    TestDsn,
 ) {
     storage_support::test_db().await
 }
@@ -125,7 +127,8 @@ pub fn user_of(tenant: Uuid) -> SecurityContext {
         .unwrap()
 }
 pub struct Fixture {
-    pub dsn: String,
+    /// The database's DSN; the fixture holds its temporary directory for the test's life.
+    pub dsn: TestDsn,
     pub state: Arc<bss_pricing::api::rest::authoring::AuthoringState>,
     pub app: Router,
     pub denied: Router,
@@ -149,15 +152,10 @@ pub async fn recorded_db() -> (
     toolkit_db::DBProvider<toolkit_db::DbError>,
     toolkit_db::test_support::QueryRecorder,
     Uuid,
-    String,
+    TestDsn,
 ) {
     use toolkit::contracts::DatabaseCapability;
-    let dsn = format!(
-        "sqlite://{}?mode=rwc",
-        std::env::temp_dir()
-            .join(format!("pricing-recorded-{}.sqlite3", Uuid::new_v4()))
-            .display()
-    );
+    let dsn = TestDsn::new("pricing-recorded-");
     let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
         &dsn,
         toolkit_db::ConnectOpts {
@@ -191,7 +189,7 @@ impl Fixture {
     pub async fn on(
         db: toolkit_db::DBProvider<toolkit_db::DbError>,
         tenant: Uuid,
-        dsn: String,
+        dsn: TestDsn,
         registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
     ) -> Self {
         let hub = Arc::new(toolkit::ClientHub::default());

@@ -9,6 +9,21 @@ pub const KIND_SKU_CHANGE: &str = "sku_change";
 pub const KIND_SKU_RETIRE: &str = "sku_retire";
 /// Missing policy rows still require review (P-D-190).
 pub const DEFAULT_QUORUM: u32 = 1;
+/// The longest submitter's note the submit, change and retire doors take, in characters (Unicode
+/// scalar values), as a book's description is counted in pricing (P-D-219).
+pub const NOTE_MAX_CHARS: usize = 2000;
+
+/// Records `NOTE_TOO_LONG` on `note` when the submitter's note is longer than [`NOTE_MAX_CHARS`].
+/// A note is stored as sent: it is not trimmed, and a blank one is kept.
+pub fn check_note(note: Option<&str>, report: &mut crate::domain::validation::ValidationReport) {
+    if note.is_some_and(|n| n.chars().count() > NOTE_MAX_CHARS) {
+        report.violate(
+            "NOTE_TOO_LONG",
+            "note",
+            format!("a note is at most {NOTE_MAX_CHARS} characters"),
+        );
+    }
+}
 /// The content and requested lifecycle that reviewers decide together.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

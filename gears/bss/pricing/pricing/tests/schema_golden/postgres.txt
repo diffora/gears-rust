@@ -25,6 +25,7 @@ COLUMN bss.pricing_approval_unit ref_type text NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_unit snapshot jsonb NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_unit snapshot_hash text NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_unit state text NOT NULL DEFAULT -
+COLUMN bss.pricing_approval_unit submit_note text NULL DEFAULT -
 COLUMN bss.pricing_approval_unit submitted_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_unit submitted_by uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_approval_unit tenant_id uuid NOT NULL DEFAULT -

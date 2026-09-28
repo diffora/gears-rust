@@ -1004,7 +1004,52 @@ pub fn denying_enforcer() -> PolicyEnforcer {
     PolicyEnforcer::new(Arc::new(DenyingResolver))
 }
 
-/// File-backed database with the production migration chains and a PDP-derived scope.
+/// A test database's DSN and the temporary directory that holds its file, with the file's `-wal`
+/// and `-shm`. The directory is removed when the last clone drops, so a test binds this for its
+/// whole life (`_dsn`, never `_`, which drops it at once). It reads as the DSN: `&dsn` is a `&str`.
+#[derive(Clone, Debug)]
+pub struct TestDsn {
+    dsn: String,
+    _dir: std::sync::Arc<tempfile::TempDir>,
+}
+impl TestDsn {
+    /// A new, empty database file in a new directory of the user's temp dir named `prefix…`.
+    ///
+    /// # Panics
+    /// Panics if the temporary directory cannot be created.
+    #[must_use]
+    pub fn new(prefix: &str) -> Self {
+        let dir = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
+        let dsn = format!(
+            "sqlite://{}?mode=rwc",
+            dir.path().join("db.sqlite3").display()
+        );
+        Self {
+            dsn,
+            _dir: std::sync::Arc::new(dir),
+        }
+    }
+}
+impl std::ops::Deref for TestDsn {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.dsn
+    }
+}
+impl std::fmt::Display for TestDsn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.dsn)
+    }
+}
+/// `Database::connect(&dsn)` takes anything that is `Into<String>`.
+impl From<&TestDsn> for String {
+    fn from(dsn: &TestDsn) -> Self {
+        dsn.dsn.clone()
+    }
+}
+
+/// File-backed database with the production migration chains and a PDP-derived scope; the caller
+/// holds its [`TestDsn`] for the test's life.
 ///
 /// # Panics
 /// Panics if fixture initialization fails.
@@ -1012,11 +1057,10 @@ pub async fn test_db() -> (
     toolkit_db::DBProvider<toolkit_db::DbError>,
     toolkit_db::secure::AccessScope,
     Uuid,
-    String,
+    TestDsn,
 ) {
     use sea_orm_migration::MigratorTrait;
-    let path = std::env::temp_dir().join(format!("products-repos-{}.sqlite3", Uuid::new_v4()));
-    let dsn = format!("sqlite://{}?mode=rwc", path.display());
+    let dsn = TestDsn::new("products-repos-");
     let db = toolkit_db::connect_db(
         &dsn,
         toolkit_db::ConnectOpts {
@@ -1078,7 +1122,9 @@ pub async fn rest_app_with_catalog(
 ) -> (axum::Router, String) {
     let (db, _, _, dsn) = test_db().await;
     let (app, _) = rest_app_on_db(tenant, build, catalog, source, db).await;
-    (app, dsn)
+    // The router holds the database's temporary directory: it goes with the last clone.
+    let dsn_text = dsn.to_string();
+    (app.layer(axum::Extension(dsn)), dsn_text)
 }
 
 /// Build a router on a supplied provider so race tests use independent connections.

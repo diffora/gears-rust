@@ -184,6 +184,15 @@ async fn quorum_zero_applies_at_submit_and_records_the_unit() {
     assert_eq!(receipt["unit"]["ref_id"], g.book);
     assert_eq!(receipt["unit"]["decisions"], json!([]));
     assert!(receipt["unit"]["decided_at"].is_string());
+    // D-445: every unit read carries the submitter's note; pricing's submit doors send none.
+    let card = g.card(&receipt["unit"]).await;
+    for unit in [&receipt["unit"], &card] {
+        assert!(
+            unit.as_object().unwrap().contains_key("submit_note"),
+            "{unit}"
+        );
+        assert_eq!(unit["submit_note"], Value::Null, "{unit}");
+    }
     assert_eq!(receipt["prices"][0]["state"], "approved");
     assert_eq!(
         receipt["prices"][0]["approved_by_unit_id"],
@@ -206,6 +215,13 @@ async fn quorum_zero_applies_at_submit_and_records_the_unit() {
             .await;
         assert_eq!(status, 200, "{list}");
         assert_eq!(list["items"].as_array().unwrap().len(), count, "{query}");
+        for item in list["items"].as_array().unwrap() {
+            assert!(
+                item.as_object().unwrap().contains_key("submit_note"),
+                "{item}"
+            );
+            assert_eq!(item["submit_note"], Value::Null, "{item}");
+        }
     }
     assert_eq!(
         g.f.call("GET", "/approval-units?state=bogus", json!({}), None, None)

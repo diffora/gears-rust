@@ -114,6 +114,9 @@ pub struct Unit {
     pub generation: i32,
     pub submitted_by: Uuid,
     pub submitted_at: OffsetDateTime,
+    /// The submitter's own words on the unit, as sent (products P-D-219, pricing D-445): never
+    /// content, so neither the snapshot nor its hash carries it, and a stale refresh keeps it.
+    pub submit_note: Option<String>,
     pub decided_at: Option<OffsetDateTime>,
     pub decided_note: Option<String>,
     pub snapshot: serde_json::Value,

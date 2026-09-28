@@ -91,7 +91,7 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
             .register_event_type(TOPIC, type_id, object.clone(), &[subject])
             .await;
     }
-    let (db, _, tenant, _) = test_db().await;
+    let (db, _, tenant, _dsn) = test_db().await;
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(Arc::new(Script::default())),
@@ -269,7 +269,10 @@ fn typed_events_in_src() -> std::collections::BTreeSet<String> {
 }
 
 /// A pricing state over a fresh database with a broker that knows `types`.
-async fn bind_with(types: &[(&str, &str, &str)]) -> anyhow::Result<Arc<AuthoringState>> {
+/// The state comes with its database's DSN, which holds the database's temporary directory.
+async fn bind_with(
+    types: &[(&str, &str, &str)],
+) -> anyhow::Result<(Arc<AuthoringState>, entry_support::TestDsn)> {
     let mock = MockBroker::new();
     let control = mock.handle();
     control.register_topic(TOPIC, 8).await;
@@ -278,13 +281,15 @@ async fn bind_with(types: &[(&str, &str, &str)]) -> anyhow::Result<Arc<Authoring
             .register_event_type(TOPIC, type_id, json!({"type":"object"}), &[subject])
             .await;
     }
-    let (db, _, _, _) = test_db().await;
+    let (db, _, _, dsn) = test_db().await;
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(Arc::new(Script::default())),
     ));
     hub.register::<dyn EventBrokerApi>(Arc::new(mock));
-    AuthoringState::new(db, hub).await.map(Arc::new)
+    AuthoringState::new(db, hub)
+        .await
+        .map(|state| (Arc::new(state), dsn))
 }
 
 /// The event census (run 3.5): every type pricing implements is a `TypedEvent` under

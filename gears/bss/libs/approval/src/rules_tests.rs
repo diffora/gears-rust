@@ -17,6 +17,7 @@ fn unit(quorum: u32, submitted_by: Uuid) -> Unit {
         generation: 1,
         submitted_by,
         submitted_at: datetime!(2026-09-24 10:00 UTC),
+        submit_note: None,
         decided_at: None,
         decided_note: None,
         snapshot: serde_json::json!({}),
