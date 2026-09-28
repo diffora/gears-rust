@@ -166,3 +166,86 @@ async fn audit_rolls_back_with_the_act_and_foreign_scope_cannot_write_it() {
         .is_err()
     );
 }
+
+/// The batch writer stores every row as the one-row writer would, across the per-statement cap;
+/// a row of another tenant refuses the whole batch before anything is written; nothing to write
+/// writes nothing.
+#[tokio::test]
+async fn a_batch_of_audit_rows_is_written_whole_or_not_at_all() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let count = || async {
+        audit_log::Entity::find()
+            .secure()
+            .scope_with(&scope)
+            .filter(Condition::all().add(audit_log::Column::TenantId.eq(TENANT)))
+            .all(&conn)
+            .await
+            .unwrap()
+            .len()
+    };
+    write_eventless_act_audits(&conn, TENANT, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(count().await, 0);
+
+    let foreign = Uuid::from_u128(0x7e_12);
+    let stray = vec![
+        (
+            common(Uuid::now_v7(), TENANT, PRODUCT, "a", "sku", at(0)),
+            PRODUCT,
+            Some(1),
+        ),
+        (
+            common(Uuid::now_v7(), foreign, PRODUCT, "b", "sku", at(0)),
+            PRODUCT,
+            Some(1),
+        ),
+    ];
+    assert!(matches!(
+        write_eventless_act_audits(&conn, TENANT, stray).await,
+        Err(RepoError::Db(_))
+    ));
+    assert_eq!(count().await, 0, "a stray row refuses the whole batch");
+
+    let n = AUDIT_ROWS_PER_INSERT + 1;
+    let rows: Vec<_> = (0..n)
+        .map(|_| {
+            let mut c = common(
+                Uuid::now_v7(),
+                TENANT,
+                PRODUCT,
+                "sku.fence_expired",
+                "sku",
+                at(0),
+            );
+            c.lifecycle = LifecycleMove::between(Lifecycle::Retiring, Lifecycle::Published);
+            (c, PRODUCT, Some(7))
+        })
+        .collect();
+    let last = rows[n - 1].0.audit_id;
+    write_eventless_act_audits(&conn, TENANT, rows)
+        .await
+        .unwrap();
+    assert_eq!(count().await, n);
+    let row = find_audit_row(&conn, &scope, last).await;
+    assert_eq!(
+        (
+            row.action.as_str(),
+            row.subject_id,
+            row.subject_revision,
+            row.from_lifecycle.as_deref(),
+            row.to_lifecycle.as_deref(),
+            row.seal_state.as_str(),
+        ),
+        (
+            "sku.fence_expired",
+            Some(PRODUCT),
+            Some(7),
+            Some("retiring"),
+            Some("published"),
+            "unsealed"
+        )
+    );
+}

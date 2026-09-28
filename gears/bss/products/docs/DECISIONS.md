@@ -566,7 +566,14 @@ the list reads it before the terms go. `$orderby`, `$top`/`limit`, `cursor`/`$sk
 does, so its `retiring` agrees with the list, and it counts in one grouped statement whatever the number of
 SKUs. Authorization is `sku × read`.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2).
+The fence recovery the list and the counts run first is set-based too: one read of the tenant's expired
+fences (the lifecycle each had while fenced, which the lift overwrites), one `UPDATE … RETURNING` lifting them
+all on the same predicate in the same transaction, and one multi-row INSERT of their audit rows (P-D-213; one
+INSERT per 1000 rows, under both backends' bind limits). A read that finds one expired fence makes the same
+statements as a read that finds fifty; a read that finds none makes the one read.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 1; plan review M2); phase 6 review (queries F2: the
+set-based fence recovery).
 
 #### P-D-212 [M] The SKU list filters on pricing's usage (`priced`, `in_plan`) through the port's sets
 
@@ -647,9 +654,9 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
   lifts, with the move, the SKU's revision and the reason `fence_ttl_minutes=<n>`, in the read's own
   transaction. Its actor is the system: `actor_ref` is the nil uuid, the subject of the platform's system
   context, which no principal carries (`require_authenticated` refuses a nil subject). This is an audit
-  actor, not an authorization subject; products still reads as the caller (P-D-207). The list's expiry
-  reads the tenant's expired fences once and lifts each at the operation that holds it. A list with no
-  expired fence makes one read, as before, and each fence it lifts adds its update and its row.
+  actor, not an authorization subject; products still reads as the caller (P-D-207). The list's and the
+  counts' expiry is set-based (P-D-211): it reads the tenant's expired fences once, lifts them all in one
+  UPDATE, and writes all their rows in one INSERT; with no expired fence it is the one read.
 - **The read.** `GET /skus/{id}/history` answers `Page<ProductsSkuHistoryEntry>`: `{ items, page_info }`,
   each item `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`. Its source is the
   audit rows whose subject is the SKU, and the rows whose subject is an approval unit whose `ref_id` is the

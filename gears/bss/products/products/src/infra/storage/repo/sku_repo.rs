@@ -628,10 +628,13 @@ pub async fn expire_orphan_fence(
     }
 }
 
-/// Recover tenant-scoped orphan fences before applying list filters: one read of the tenant's
-/// fences older than `cutoff`, then each lifted at the operation that holds it. Pending units
-/// cannot be released, even when their fences are old. Answers what it lifted, for the caller's
-/// audit rows (P-D-213).
+/// Recover tenant-scoped orphan fences before applying list filters, set-based whatever their
+/// number (P-D-211): one read of the tenant's fences older than `cutoff` (the lifecycle each had
+/// while fenced, which the lift overwrites), then ONE `UPDATE … RETURNING` lifting them all. Both
+/// run in the caller's transaction on the same predicate, so the lift writes exactly the fences
+/// read, each at the operation observed (P-D-189). Pending units cannot be released, even when
+/// their fences are old. Answers what it lifted, for the caller's audit rows (P-D-213); when it
+/// finds none, the read is its only statement.
 /// # Errors
 /// Returns scoped storage failures and a stored lifecycle outside the five.
 pub async fn expire_orphan_fences(
@@ -640,21 +643,51 @@ pub async fn expire_orphan_fences(
     tenant: Uuid,
     cutoff: OffsetDateTime,
 ) -> Result<Vec<ExpiredFence>, RepoError> {
+    let orphan = || {
+        Condition::all()
+            .add(sku::Column::TenantId.eq(tenant))
+            .add(sku::Column::PendingUnitId.is_null())
+            .add(sku::Column::FencedAt.lte(cutoff))
+    };
     let fenced = sku::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(sku::Column::TenantId.eq(tenant))
-                .add(sku::Column::PendingUnitId.is_null())
-                .add(sku::Column::FencedAt.lte(cutoff)),
-        )
+        .filter(orphan())
         .all(runner)
         .await
         .map_err(|e| driver_failure("find orphan SKU fences".into(), e))?;
-    let mut expired = Vec::with_capacity(fenced.len());
-    for row in &fenced {
-        expired.extend(lift(runner, scope, tenant, row).await?);
+    if fenced.is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(expired)
+    let mut found = std::collections::HashMap::with_capacity(fenced.len());
+    for row in &fenced {
+        let from = Lifecycle::parse(&row.lifecycle)
+            .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
+        found.insert(row.id, from);
+    }
+    let mut lifted = clear_fence(scope, false)
+        .filter(orphan())
+        .exec_with_returning(runner)
+        .await
+        .map_err(|e| driver_failure("lift orphan SKU fences".into(), e))?;
+    lifted.sort_by_key(|row| row.id);
+    lifted
+        .into_iter()
+        .map(|row| {
+            let from = found.get(&row.id).copied().ok_or_else(|| {
+                RepoError::Db(format!(
+                    "orphan fence {} lifted without being read in its transaction",
+                    row.id
+                ))
+            })?;
+            let to = Lifecycle::parse(&row.lifecycle)
+                .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
+            Ok(ExpiredFence {
+                id: row.id,
+                from,
+                to,
+                revision: row.revision,
+            })
+        })
+        .collect()
 }

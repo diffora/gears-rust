@@ -837,6 +837,76 @@ async fn the_list_and_the_counts_read_in_fixed_statements_for_10_and_100_skus() 
     }
 }
 
+/// The orphan-fence expiry the list and the counts run first is set-based (P-D-189, P-D-211): a
+/// read that finds 1 expired fence and a read that finds 5 make the same number of statements —
+/// the tenant's expired fences, one UPDATE lifting them all, one INSERT of all their audit rows,
+/// then the read — and every fence found is lifted, each with its `sku.fence_expired` row.
+#[tokio::test]
+async fn the_fence_expiry_reads_in_the_same_statements_for_1_and_5_expired_fences() {
+    use crate::infra::storage::entity::audit_log;
+    use sea_orm::{ColumnTrait, Condition, EntityTrait};
+    use toolkit_db::secure::SecureEntityExt;
+    for uri in [list(&[("limit", "200")]), counts(&[])] {
+        let mut traces = Vec::new();
+        for k in [1_usize, 5] {
+            let (d, recorder) = recorded_door(0).await;
+            let conn = d.state.db.conn().unwrap();
+            let mut ids = Vec::new();
+            for i in 0..6 {
+                ids.push(
+                    d.sku(Seed {
+                        lifecycle: Lifecycle::Published,
+                        ..seed(Box::leak(format!("F{i}").into_boxed_str()))
+                    })
+                    .await,
+                );
+            }
+            for id in &ids[..k] {
+                repo::fence_sku(
+                    &conn,
+                    &d.scope,
+                    d.tenant,
+                    *id,
+                    repo::Fence::Retire,
+                    Uuid::new_v4(),
+                    OffsetDateTime::now_utc() - time::Duration::hours(2),
+                )
+                .await
+                .unwrap();
+            }
+            let trace = statements(&d, &recorder, &uri).await;
+            for (i, (sql, binds)) in trace.iter().enumerate() {
+                eprintln!("{uri} k={k} statement {i} ({binds} binds): {sql}");
+            }
+            let expired = audit_log::Entity::find()
+                .secure()
+                .scope_with(&d.scope)
+                .filter(Condition::all().add(audit_log::Column::Action.eq("sku.fence_expired")))
+                .all(&conn)
+                .await
+                .unwrap();
+            assert_eq!(expired.len(), k, "{uri}: one audit row per fence lifted");
+            let (_, body) = d.get(&counts(&[])).await;
+            assert_eq!(
+                (body["published"].as_u64(), body["retiring"].as_u64()),
+                (Some(6), Some(0)),
+                "{uri} k={k}: every expired fence is lifted: {body}"
+            );
+            traces.push(trace);
+        }
+        assert_eq!(
+            traces[0].len(),
+            traces[1].len(),
+            "{uri}: the same statements for 1 and 5 expired fences: {traces:#?}"
+        );
+        assert_eq!(
+            traces[0].len(),
+            4,
+            "{uri}: the fences, one UPDATE, one audit INSERT, the read: {traces:#?}"
+        );
+    }
+}
+
 // ------------------------------------------------------------------ P-D-212: usage filters
 
 use bss_products_sdk::sku_usage::{SkuUsage, SkuUsageSets, SkuUsageV1};

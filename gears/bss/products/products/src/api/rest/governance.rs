@@ -131,22 +131,51 @@ pub async fn expiry_audit(
     repo::write_eventless_act_audit(
         tx,
         &AccessScope::for_tenant(tenant),
-        repo::AuditCommon {
-            audit_id: Uuid::now_v7(),
-            tenant_id: tenant,
-            actor_ref: repo::SYSTEM_ACTOR,
-            action: "sku.fence_expired".into(),
-            subject_kind: "sku".into(),
-            reason: Some(format!("fence_ttl_minutes={ttl}")),
-            correlation_id: None,
-            written_at: now,
-            lifecycle: repo::LifecycleMove::between(expired.from, expired.to),
-        },
+        expiry_row(tenant, &expired, ttl, now),
         expired.id,
         Some(expired.revision),
     )
     .await
     .map_err(TxError::Repo)
+}
+/// The audit rows of every orphan fence one read's expiry lifted (P-D-213), as ONE multi-row
+/// insert whatever their number (P-D-211): each row is [`expiry_audit`]'s.
+pub async fn expiry_audits(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    expired: &[repo::ExpiredFence],
+    ttl: u32,
+    now: OffsetDateTime,
+) -> Result<(), TxError> {
+    repo::write_eventless_act_audits(
+        tx,
+        tenant,
+        expired
+            .iter()
+            .map(|e| (expiry_row(tenant, e, ttl, now), e.id, Some(e.revision)))
+            .collect(),
+    )
+    .await
+    .map_err(TxError::Repo)
+}
+/// An expiry's audit row: the system's act on the SKU, the move it made, the TTL it applied.
+fn expiry_row(
+    tenant: Uuid,
+    expired: &repo::ExpiredFence,
+    ttl: u32,
+    now: OffsetDateTime,
+) -> repo::AuditCommon {
+    repo::AuditCommon {
+        audit_id: Uuid::now_v7(),
+        tenant_id: tenant,
+        actor_ref: repo::SYSTEM_ACTOR,
+        action: "sku.fence_expired".into(),
+        subject_kind: "sku".into(),
+        reason: Some(format!("fence_ttl_minutes={ttl}")),
+        correlation_id: None,
+        written_at: now,
+        lifecycle: repo::LifecycleMove::between(expired.from, expired.to),
+    }
 }
 pub(super) async fn touch(
     state: &ApiState,
