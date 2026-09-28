@@ -3,8 +3,8 @@
 //! A fixed number of grouped statements whatever the number of books on the page, one per source
 //! and none multiplying another: the entries (count, distinct SKUs, latest change), the prices of
 //! those entries (by state, the approved ones by where their window stands today, latest change),
-//! the plans with a live revision on the book, and the book's `prices` units (pending, latest
-//! submission or decision). Every source is read tenant-scoped: the counts are facts of a book
+//! the plans that name the book (those with a live revision on it, and those only superseded
+//! revisions keep there), and the book's `prices` units (pending, latest submission or decision). Every source is read tenant-scoped: the counts are facts of a book
 //! the caller may read (`price_book` read), as D-428 reads an entry's usage.
 use crate::domain::price::PriceState;
 use crate::infra::storage::{
@@ -39,6 +39,10 @@ pub struct BookStats {
     /// The distinct plans with a draft, pending or published revision on the book
     /// ([`plan_revision_repo::plans_on_books`]).
     pub plans: u64,
+    /// The distinct plans that name the book only through superseded revisions (the same read):
+    /// the book delete's `BOOK_IN_PLAN_HISTORY` (D-444). The delete succeeds exactly when this,
+    /// `plans` and `entries` are 0.
+    pub plans_superseded_only: u64,
     pub prices: BookPriceCounts,
     /// The book's `prices` units in review.
     pub pending_units: u64,
@@ -70,6 +74,7 @@ pub async fn book_stats(
                     entries: 0,
                     skus: 0,
                     plans: 0,
+                    plans_superseded_only: 0,
                     prices: BookPriceCounts::default(),
                     pending_units: 0,
                     last_change_at: b.updated_at,
@@ -121,7 +126,11 @@ pub async fn book_stats(
     }
     for row in plan_revision_repo::plans_on_books(runner, tenant, &ids).await? {
         if let Some(stats) = out.get_mut(&row.book_id) {
-            stats.plans = count(row.plans)?;
+            let (plans, named) = (count(row.plans)?, count(row.named)?);
+            stats.plans = plans;
+            stats.plans_superseded_only = named.checked_sub(plans).ok_or_else(|| {
+                RepoError::CorruptRow(format!("{plans} live of {named} plans on a book"))
+            })?;
         }
     }
     for row in approval_repo::prices_units_by_book(runner, tenant, backend, &ids).await? {

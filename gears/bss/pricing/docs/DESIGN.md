@@ -280,11 +280,13 @@ state, each with its display status today; the default chain first, then each va
 by effective_from then version_no (D-440).
 
 The two book reads, GET /price-books and GET /price-books/{id}, answer PricingPriceBookReadDto: the fields of the
-book and stats { entries, skus, plans, prices { draft, pending, approved, scheduled, active, superseded, rejected },
-pending_units, last_change_at } (D-441). plans counts the distinct plans with a non-superseded revision on the book,
-the same read by which the book delete judges BOOK_IN_PLAN; last_change_at is the latest instant of the book, its
-entries, their prices and its prices units' submissions and decisions. Four grouped statements per page or book,
-one per source. The list answers `Page<PricingPriceBookReadDto>` { items, page_info } (D-442). The write answers,
+book and stats { entries, skus, plans, plans_superseded_only, prices { draft, pending, approved, scheduled, active,
+superseded, rejected }, pending_units, last_change_at } (D-441). plans counts the distinct plans with a
+non-superseded revision on the book, and plans_superseded_only those that name it only through superseded
+revisions: one read, by which the book delete also judges BOOK_IN_PLAN and BOOK_IN_PLAN_HISTORY, so entries, plans
+and plans_superseded_only are all 0 exactly when the delete succeeds (D-444); last_change_at is the latest instant
+of the book, its entries, their prices and its prices units' submissions and decisions. Four grouped statements per
+page or book, one per source. The list answers `Page<PricingPriceBookReadDto>` { items, page_info } (D-442). The write answers,
 the export and publish-changes keep PriceBookDto.
 
 The consumer surface named by spec §7.1, `GET /pricing/v1/resolve` and `GET /pricing/v1/prices/{id}`, is

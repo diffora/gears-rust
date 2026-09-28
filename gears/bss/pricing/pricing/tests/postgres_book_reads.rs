@@ -2,14 +2,14 @@
 //! the ICU root collation — on a `C`-locale database too — and the date filters, the order and
 //! the cursor hold on the engine production runs; the stats' grouped statements, the last change
 //! compared as instants to the microsecond, the dated counts and the prices list read the same
-//! on Postgres as on `SQLite`.
+//! on Postgres as on `SQLite`, a plan only history holds among the counts.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod book_support;
 mod pg_support;
 mod plan_support;
 use book_support::{
-    Row, codes, days, door_book, encode, instant, ok, stored_book, stored_entry, stored_price,
-    today, unit_on,
+    Row, bare_revision, codes, days, door_book, encode, instant, ok, stored_book, stored_entry,
+    stored_price, today, unit_on,
 };
 use bss_approval::UnitState;
 use bss_products_sdk::models::SkuType;
@@ -151,6 +151,13 @@ async fn the_stats_the_dated_counts_and_the_prices_hold_on_postgres() {
     item(&f, a1, sku, Some(entry), "paid").await;
     publish(&f, plan_a, a1).await;
     plan(&f, "b", book).await;
+    // c names the book only through a superseded revision: it moved to another book.
+    let away = stored_book(&f, "away", at("2026-09-01T09:00:00Z")).await;
+    let (plan_c, c1) = plan(&f, "c", book).await;
+    let plan_c = id_of(&plan_c["id"]);
+    publish(&f, plan_c, c1).await;
+    let c2 = bare_revision(&f, plan_c, 2, away).await;
+    publish(&f, plan_c, c2).await;
     unit_on(
         &f,
         "prices",
@@ -167,6 +174,7 @@ async fn the_stats_the_dated_counts_and_the_prices_hold_on_postgres() {
             "entries": 2,
             "skus": 2,
             "plans": 2,
+            "plans_superseded_only": 1,
             "prices": {
                 "draft": 1,
                 "pending": 1,

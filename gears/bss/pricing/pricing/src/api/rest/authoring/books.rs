@@ -191,12 +191,13 @@ pub async fn patch(
 /// audit row. Refused in this order, after the door's authorization and If-Match: 404 for a book
 /// the tenant does not hold; 409 `STALE_REVISION`; 409 `BOOK_HAS_ENTRIES` for an entry of any
 /// reference state; 409 `BOOK_IN_PLAN` for a plan with a draft, pending or published revision on
-/// it (`plan_revision_repo::plans_on_books`, the read `stats.plans` counts, D-441); 409
-/// `BOOK_IN_PLAN_HISTORY` when only superseded revisions name it (their history keeps the book,
-/// and `stats.plans` is 0). No unit can be pending on a book without entries (a pending price
-/// keeps its entry), so there is no refusal of its own for one. A row a concurrent writer adds
-/// after these reads is the same 409, from the book's foreign key (`book_repo::delete`). Units
-/// that named the book stay, and their cards answer without it.
+/// it; 409 `BOOK_IN_PLAN_HISTORY` when only superseded revisions name it (their history keeps the
+/// book). Both are judged from `plan_revision_repo::plans_on_books`, the read `stats.plans` and
+/// `stats.plans_superseded_only` count (D-441), and the entries by the read `stats.entries`
+/// counts, so the delete succeeds exactly when the three are 0. No unit can be pending on a book
+/// without entries (a pending price keeps its entry), so there is no refusal of its own for one.
+/// A row a concurrent writer adds after these reads is the same 409, from the book's foreign key
+/// (`book_repo::delete`). Units that named the book stay, and their cards answer without it.
 /// # Errors
 /// The refusals above; storage failures.
 #[allow(
@@ -219,13 +220,11 @@ pub async fn delete(
     if !entries.is_empty() {
         return Err(conflict("BOOK_HAS_ENTRIES").into());
     }
-    if !plan_revision_repo::plans_on_books(tx, tenant, &[id])
-        .await?
-        .is_empty()
-    {
+    let plans = plan_revision_repo::plans_on_books(tx, tenant, &[id]).await?;
+    if plans.iter().any(|row| row.plans > 0) {
         return Err(conflict("BOOK_IN_PLAN").into());
     }
-    if plan_revision_repo::names_book(tx, tenant, id).await? {
+    if plans.iter().any(|row| row.named > 0) {
         return Err(conflict("BOOK_IN_PLAN_HISTORY").into());
     }
     book_repo::delete(tx, scope, tenant, id, m.version).await?;
