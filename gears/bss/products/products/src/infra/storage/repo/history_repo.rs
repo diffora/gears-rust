@@ -1,7 +1,10 @@
 //! A SKU's history on the toolkit's `OData` pager (P-D-213): the audit rows whose subject is the
 //! SKU, and those whose subject is one of the SKU's approval units (`ref_id` the SKU), ordered by
-//! `(written_at, audit_id)`. At quorum 0 a submit and its apply share one instant, so the order ends
-//! with the row's id; `audit_id` is a UUID v7 minted in write order.
+//! `audit_id` alone. Every writer mints it as a UUID v7 inside the act's transaction (per attempt),
+//! so its order is the order the acts wrote — bytes on `SQLite`, `uuid` on Postgres, both compared
+//! in time order. `written_at` is not the order: it is the instant the act began, taken before its
+//! transaction and kept across a retry, and on `SQLite` its RFC 3339 text does not sort as time
+//! within one second.
 use super::{SkuListError, driver_failure};
 use crate::infra::storage::{
     RepoError,
@@ -26,23 +29,21 @@ pub const HISTORY_PAGE: LimitCfg = LimitCfg {
     max: 200,
 };
 
-/// The two keys the history orders by; it takes no `$filter` and no `$orderby`.
+/// The one key the history orders by; it takes no `$filter` and no `$orderby`. A cursor that
+/// names any other key (one minted when the history ordered by `written_at` first) is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HistoryField {
-    WrittenAt,
     AuditId,
 }
 impl FilterField for HistoryField {
-    const FIELDS: &'static [Self] = &[Self::WrittenAt, Self::AuditId];
+    const FIELDS: &'static [Self] = &[Self::AuditId];
     fn name(&self) -> &'static str {
         match self {
-            Self::WrittenAt => "written_at",
             Self::AuditId => "audit_id",
         }
     }
     fn kind(&self) -> FieldKind {
         match self {
-            Self::WrittenAt => FieldKind::DateTimeUtc,
             Self::AuditId => FieldKind::Uuid,
         }
     }
@@ -56,7 +57,6 @@ impl FieldToColumn<HistoryField> for HistoryMapping {
     type Column = audit_log::Column;
     fn map_field(field: HistoryField) -> audit_log::Column {
         match field {
-            HistoryField::WrittenAt => audit_log::Column::WrittenAt,
             HistoryField::AuditId => audit_log::Column::AuditId,
         }
     }
@@ -76,9 +76,6 @@ impl ODataFieldMapping<HistoryField> for HistoryMapping {
     type Entity = audit_log::Entity;
     fn extract_cursor_value(model: &audit_log::Model, field: HistoryField) -> sea_orm::Value {
         match field {
-            HistoryField::WrittenAt => {
-                sea_orm::Value::TimeDateTimeWithTimeZone(Some(model.written_at))
-            }
             HistoryField::AuditId => sea_orm::Value::Uuid(Some(model.audit_id)),
         }
     }
@@ -149,9 +146,10 @@ fn history_condition(tenant: Uuid, sku: Uuid) -> Condition {
         )
 }
 
-/// One page of the SKU's history in `(written_at, audit_id)` order (the query names no order;
-/// a cursor carries its own), `$top` 50 by default and clamped at 200, each unit row with its
-/// unit's kind from ONE read of the page's units. The caller has found the SKU in its scope.
+/// One page of the SKU's history in `audit_id` order — the order the acts wrote (the query names
+/// no order; a cursor carries its own), `$top` 50 by default and clamped at 200, each unit row
+/// with its unit's kind from ONE read of the page's units. The caller has found the SKU in its
+/// scope.
 /// # Errors
 /// [`SkuListError::Query`] for a cursor the pager refuses; [`SkuListError::Repo`] for storage and
 /// a stored lifecycle outside the five.
@@ -164,7 +162,7 @@ pub async fn page_sku_history(
     let mut query = query.clone();
     if query.cursor.is_none() {
         query.order = ODataOrderBy(vec![OrderKey {
-            field: HistoryField::WrittenAt.name().to_owned(),
+            field: HistoryField::AuditId.name().to_owned(),
             dir: SortDir::Asc,
         }]);
     }

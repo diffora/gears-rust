@@ -665,21 +665,26 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
 - **The read.** `GET /skus/{id}/history` answers `Page<ProductsSkuHistoryEntry>`: `{ items, page_info }`,
   each item `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`. Its source is the
   audit rows whose subject is the SKU, and the rows whose subject is an approval unit whose `ref_id` is the
-  SKU, in the caller's tenant. `at` is the row's `written_at`, `actor` its `actor_ref`, and `note` its
-  `reason`: a decision's note, or the expiry's TTL. `unit_id` and `unit_kind` name the unit of a unit's row
-  (one read of the page's units) and are null on a SKU's own row. The order is `(written_at, audit_id)`,
-  oldest first. At quorum 0 the submit and its apply share one instant, so the id breaks the tie, and a
-  page boundary inside a tie skips and repeats nothing. `audit_id` is a UUID v7, minted in write order. The
-  toolkit's pager serves it: `$top` (alias `limit`) defaults to 50 and is clamped at 200, and `cursor`
+  SKU, in the caller's tenant. `at` is the row's `written_at`: the instant the act began, taken before its
+  transaction and kept across a retry, so not its commit. `actor` is its `actor_ref`, and `note` its
+  `reason`: a change's `note` (the change request's own field, on its `approval.submit` row), a decision's
+  note, or the expiry's TTL. `unit_id` and `unit_kind` name the unit of a unit's row (one read of the page's
+  units) and are null on a SKU's own row. The order is `audit_id` alone, the order the acts wrote: every
+  writer mints it as a UUID v7 inside the act's transaction (per attempt), ordered within the process, and
+  both backends compare it in time order (16 bytes on SQLite, `uuid` on Postgres); across replicas it is
+  accurate to the millisecond. `written_at` does not order it: an act that began first can commit second (a
+  slow usage-type resolution, a lost serialization race), and on SQLite its RFC 3339 text does not sort as
+  time within one second (`…21.41868Z` after `…21.418681Z`). At quorum 0 the submit and its apply share one
+  instant and read in the order they were written. The toolkit's pager serves it: `$top` (alias `limit`) defaults to 50 and is clamped at 200, and `cursor`
   (alias `$skiptoken`) comes from `page_info`. Any other key is 400, and so are `$filter`, `$orderby`,
   `$select` and `$count`. The cursor carries a hash of the SKU id, so a cursor from another SKU's history is
-  400 `FILTER_MISMATCH`. The read is authorized as the card is (`sku × read`), runs the SKU's orphan-fence
-  expiry first, and answers 404 for a SKU the tenant does not hold and for a deleted draft. The
-  `sku.delete` row stays in the log but is never read, because its SKU is gone. On SQLite `written_at` is
-  RFC 3339 text and orders as text, as `updated_at` does in the SKU list (P-D-210). Postgres orders it as
-  a timestamp.
+  400 `FILTER_MISMATCH`, and a cursor minted when the history ordered by `written_at` is 400. The read is
+  authorized as the card is (`sku × read`), runs the SKU's orphan-fence expiry first, and answers 404 for a
+  SKU the tenant does not hold and for a deleted draft. The `sku.delete` row stays in the log but is never
+  read, because its SKU is gone.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3).
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 7; plan review H3); phase 6 review (behaviour B-1: the
+change's note; B-2: the order by `audit_id`).
 
 #### P-D-214 [L] SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=`
 

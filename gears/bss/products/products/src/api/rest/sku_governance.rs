@@ -265,7 +265,9 @@ async fn run(
     let payload = json_body(body)?;
     let now = OffsetDateTime::now_utc();
     let tenant = ctx.subject_tenant_id();
-    let (patch, date) = if matches!(kind, SubmitKind::Change) {
+    // A change's `note` is its submitter's reason: the submit's audit row carries it, and the
+    // history shows it (P-D-213).
+    let (patch, date, note) = if matches!(kind, SubmitKind::Change) {
         let parsed: SkuChangeRequest = serde_json::from_value(payload.clone())
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
         (
@@ -273,11 +275,12 @@ async fn run(
                 CanonicalError::from(crate::domain::error::DomainError::Validation(r))
             })?,
             Some(parsed.effective_from.unwrap_or(now.date())),
+            parsed.note,
         )
     } else {
         let _: EmptyRequest = serde_json::from_value(payload.clone())
             .map_err(|e| CanonicalError::from(g::validation("body", e.to_string())))?;
-        (SkuPatch::default(), None)
+        (SkuPatch::default(), None, None)
     };
     let claim = replay::input(
         &state,
@@ -295,7 +298,7 @@ async fn run(
     {
         return Ok(response);
     }
-    execute(state, scope, ctx, id, kind, patch, date, now, claim).await
+    execute(state, scope, ctx, id, kind, patch, date, note, now, claim).await
 }
 #[allow(
     clippy::too_many_arguments,
@@ -309,6 +312,7 @@ async fn execute(
     kind: SubmitKind,
     patch: SkuPatch,
     date: Option<time::Date>,
+    note: Option<String>,
     now: OffsetDateTime,
     claim: Option<IdempotencyClaimInput>,
 ) -> Result<Response, CanonicalError> {
@@ -337,6 +341,7 @@ async fn execute(
             let usage = usage.clone();
             let proposed = proposed.clone();
             let claim = claim.clone();
+            let note = note.clone();
             Box::pin(async move {
                 g::find(tx, &scope, tenant, id).await?;
                 if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
@@ -436,7 +441,7 @@ async fn execute(
                     "approval.submit",
                     "approval_unit",
                     submitted.unit.id,
-                    None,
+                    note,
                     now,
                     repo::LifecycleMove::between(found, fenced),
                 )

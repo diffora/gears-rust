@@ -41,7 +41,8 @@ async fn unit(runner: &impl DBRunner, id: Uuid, tenant: Uuid, sku: Uuid, kind: &
         .unwrap();
 }
 
-/// One audit row: `n` names it (its audit id is `n`), at `second` past midnight.
+/// One audit row: `n` names it (its audit id is `n`, so its place in the history), written at
+/// `second` past ten.
 #[allow(
     clippy::too_many_arguments,
     reason = "each seeded row spells its whole identity"
@@ -95,18 +96,19 @@ async fn walk(runner: &impl DBRunner, limit: u64) -> Vec<String> {
     names
 }
 
-/// The history is the SKU's own rows and its units' rows, in the tenant, ordered by
-/// `(written_at, audit_id)` whatever the order they were written in; a page boundary inside a tie
-/// of `written_at` skips and repeats nothing; a unit row names its unit and kind; a row without the
-/// lifecycle columns reads none.
+/// The history is the SKU's own rows and its units' rows, in the tenant, ordered by `audit_id`
+/// alone whatever their `written_at` and the order they were inserted in; every page boundary
+/// skips and repeats nothing; a unit row names its unit and kind; a row without the lifecycle
+/// columns reads none.
 #[tokio::test]
-async fn the_history_orders_by_written_at_then_audit_id_across_every_page() {
+async fn the_history_orders_by_audit_id_across_every_page() {
     let (db, _, _, _) = test_db().await;
     let conn = db.conn().unwrap();
     unit(&conn, UNIT, TENANT, SKU, "sku_retire").await;
     unit(&conn, OTHER_UNIT, TENANT, OTHER_SKU, "sku_publish").await;
     let moved = LifecycleMove::between(Lifecycle::Published, Lifecycle::Retiring);
-    // Three rows share one instant, written against their id order; one is earlier, one later.
+    // Three rows share one instant, inserted against their id order; the last id is the earliest
+    // instant, and `written_at` decides nothing.
     row(&conn, 3, TENANT, "sku", SKU, 5, moved, None).await;
     row(
         &conn,
@@ -158,7 +160,7 @@ async fn the_history_orders_by_written_at_then_audit_id_across_every_page() {
     )
     .await;
 
-    let expected = ["act.9", "act.1", "act.2", "act.3", "act.4"];
+    let expected = ["act.1", "act.2", "act.3", "act.4", "act.9"];
     for limit in [1, 2, 3, 200] {
         assert_eq!(walk(&conn, limit).await, expected, "limit {limit}");
     }
@@ -166,13 +168,13 @@ async fn the_history_orders_by_written_at_then_audit_id_across_every_page() {
         .await
         .unwrap();
     assert_eq!(page.page_info.limit, 50, "the default page");
-    let first = &page.items[0];
+    let last = &page.items[4];
     assert_eq!(
-        (first.from_lifecycle, first.to_lifecycle, first.unit_id),
+        (last.from_lifecycle, last.to_lifecycle, last.unit_id),
         (None, None, None),
         "a row without the columns reads none"
     );
-    let unit_row = &page.items[1];
+    let unit_row = &page.items[0];
     assert_eq!(
         (
             unit_row.unit_id,
@@ -193,9 +195,143 @@ async fn the_history_orders_by_written_at_then_audit_id_across_every_page() {
             utc(2026, 9, 27, 10, 0, 5),
         )
     );
-    assert_eq!(page.items[2].unit_kind, None, "a SKU row names no unit");
+    assert_eq!(page.items[1].unit_kind, None, "a SKU row names no unit");
     let clamped = page_sku_history(&conn, TENANT, SKU, &ODataQuery::default().with_limit(5000))
         .await
         .unwrap();
     assert_eq!(clamped.page_info.limit, 200, "`$top` is clamped at 200");
+}
+
+/// One audit row of `sku` with its own id and instant, as an act writes it.
+async fn act(runner: &impl DBRunner, audit_id: Uuid, sku: Uuid, name: &str, at: OffsetDateTime) {
+    write_eventless_act_audit(
+        runner,
+        &AccessScope::for_tenant(TENANT),
+        AuditCommon {
+            audit_id,
+            tenant_id: TENANT,
+            actor_ref: ACTOR,
+            action: name.to_owned(),
+            subject_kind: "sku".to_owned(),
+            reason: None,
+            correlation_id: None,
+            written_at: at,
+            lifecycle: LifecycleMove::NONE,
+        },
+        sku,
+        None,
+    )
+    .await
+    .unwrap();
+}
+
+/// Every page of `sku`'s history at `limit`, as action names.
+async fn walk_of(runner: &impl DBRunner, sku: Uuid, limit: u64) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut query = ODataQuery::default().with_limit(limit);
+    loop {
+        let page = page_sku_history(runner, TENANT, sku, &query).await.unwrap();
+        names.extend(page.items.iter().map(|e| e.action.clone()));
+        let Some(next) = page.page_info.next_cursor else {
+            break;
+        };
+        query = ODataQuery::default()
+            .with_limit(limit)
+            .with_cursor(CursorV1::decode(&next).unwrap());
+        assert!(names.len() < 50, "the walk ends: {names:?}");
+    }
+    names
+}
+
+/// B-2: the history is in the order the acts committed — `audit_id`, a UUID v7 minted in the act's
+/// transaction — wherever `written_at` disagrees. `written_at` is the instant the act began, taken
+/// before its transaction and kept across a retry: an act that began first but committed second
+/// (it resolved a usage type slowly, or lost a serialization race) reads after the act that
+/// committed first. And on `SQLite` the RFC 3339 text of two instants in one second sorts against
+/// time when one fraction is a prefix of the other (`…21.41868Z` after `…21.418681Z`).
+#[tokio::test]
+async fn the_history_follows_the_commit_order_where_written_at_disagrees() {
+    let (db, _, _, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    let second = utc(2026, 9, 27, 10, 0, 21);
+    // B began 100 ms after A (`…21.2Z` against `…21.1Z`: text and time agree) and committed
+    // first: its id is minted first.
+    let b = Uuid::now_v7();
+    let a = Uuid::now_v7();
+    act(
+        &conn,
+        b,
+        SKU,
+        "b.began_second_committed_first",
+        second + time::Duration::milliseconds(200),
+    )
+    .await;
+    act(
+        &conn,
+        a,
+        SKU,
+        "a.began_first_committed_second",
+        second + time::Duration::milliseconds(100),
+    )
+    .await;
+    // One second, one fraction a prefix of the other: C began first and committed first.
+    let c = Uuid::now_v7();
+    let d = Uuid::now_v7();
+    act(
+        &conn,
+        c,
+        OTHER_SKU,
+        "c.first",
+        second + time::Duration::microseconds(418_680),
+    )
+    .await;
+    act(
+        &conn,
+        d,
+        OTHER_SKU,
+        "d.second",
+        second + time::Duration::microseconds(418_681),
+    )
+    .await;
+    for limit in [1, 200] {
+        assert_eq!(
+            walk_of(&conn, SKU, limit).await,
+            [
+                "b.began_second_committed_first",
+                "a.began_first_committed_second"
+            ],
+            "limit {limit}"
+        );
+        assert_eq!(
+            walk_of(&conn, OTHER_SKU, limit).await,
+            ["c.first", "d.second"],
+            "limit {limit}"
+        );
+    }
+}
+
+/// A cursor minted when the history ordered by `(written_at, audit_id)` names a key the history no
+/// longer has: it is refused as a query error (400), never read in another order.
+#[tokio::test]
+async fn a_cursor_of_the_written_at_order_is_refused() {
+    let (db, _, _, _) = test_db().await;
+    let conn = db.conn().unwrap();
+    for n in 1..=3 {
+        row(&conn, n, TENANT, "sku", SKU, 5, LifecycleMove::NONE, None).await;
+    }
+    let page = page_sku_history(&conn, TENANT, SKU, &ODataQuery::default().with_limit(1))
+        .await
+        .unwrap();
+    let mut cursor = CursorV1::decode(&page.page_info.next_cursor.unwrap()).unwrap();
+    assert_eq!(cursor.s, "+audit_id", "the order a cursor carries now");
+    cursor.s = "+written_at,+audit_id".to_owned();
+    cursor.k = vec![
+        "2026-09-27T10:00:05Z".to_owned(),
+        Uuid::from_u128(1).to_string(),
+    ];
+    let stale = ODataQuery::default().with_limit(1).with_cursor(cursor);
+    assert!(matches!(
+        page_sku_history(&conn, TENANT, SKU, &stale).await,
+        Err(SkuListError::Query(_))
+    ));
 }

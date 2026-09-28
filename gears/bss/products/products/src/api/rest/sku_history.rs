@@ -1,8 +1,8 @@
-//! `GET /skus/{id}/history` (P-D-213): the SKU's audit rows and its units' audit rows, oldest
-//! first by `(written_at, audit_id)`, on the toolkit's pager — `$top` (alias `limit`; default 50,
-//! clamped at 200) and `cursor` (alias `$skiptoken`); no `$filter`, `$orderby` or `$select`. Read
-//! under `sku × read`, like the card; a SKU the caller's tenant does not hold, or a deleted draft,
-//! is 404.
+//! `GET /skus/{id}/history` (P-D-213): the SKU's audit rows and its units' audit rows, in the
+//! order the acts wrote them (`audit_id`, a UUID v7 minted in the act's transaction), on the
+//! toolkit's pager — `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias
+//! `$skiptoken`); no `$filter`, `$orderby` or `$select`. Read under `sku × read`, like the card;
+//! a SKU the caller's tenant does not hold, or a deleted draft, is 404.
 use super::{
     ApiState, authz_error_to_canonical,
     dto::ProductsSkuHistoryEntry,
@@ -37,10 +37,11 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .operation_id("bss_products.sku_history")
         .summary("Read a SKU's history")
         .description(
-            "Every act on the SKU and on its approval units, oldest first by (written_at, \
-             audit_id) (P-D-213): `at`, `actor` (the nil uuid for the system's orphan-fence \
-             expiry), `action`, `from_lifecycle` and `to_lifecycle` (null on a row written before \
-             the audit log carried them), `unit_id` and `unit_kind` for a unit's act, and `note`. \
+            "Every act on the SKU and on its approval units, in the order the acts wrote them \
+             (P-D-213): `at` (the instant the act began), `actor` (the nil uuid for the system's \
+             orphan-fence expiry), `action`, `from_lifecycle` and `to_lifecycle` (null on a row \
+             written before the audit log carried them), `unit_id` and `unit_kind` for a unit's \
+             act, and `note`. \
              `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) \
              from `page_info`; any other key is 400, and a cursor from another SKU's history is \
              400. A SKU of another tenant, or a deleted draft, is 404.",

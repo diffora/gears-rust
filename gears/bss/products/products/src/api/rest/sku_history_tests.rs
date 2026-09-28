@@ -7,7 +7,7 @@ use super::*;
 use axum::http::Method;
 
 /// The SKU's audit rows as the history reads them — the SKU's own rows and its units' rows — raw,
-/// one `action unit_kind from>to` line each (`-` for none), in `(written_at, audit_id)` order.
+/// one `action unit_kind from>to` line each (`-` for none), in the history's `audit_id` order.
 async fn moves(f: &Fixture, sku: Uuid) -> Vec<String> {
     let hex = sku.simple().to_string().to_uppercase();
     let conn = sea_orm::Database::connect(&f.dsn).await.unwrap();
@@ -22,7 +22,7 @@ async fn moves(f: &Fixture, sku: Uuid) -> Vec<String> {
                  ON a.subject_kind = 'approval_unit' AND u.id = a.subject_id \
                  WHERE (a.subject_kind = 'sku' AND hex(a.subject_id) = '{hex}') \
                  OR (a.subject_kind = 'approval_unit' AND hex(u.ref_id) = '{hex}') \
-                 ORDER BY a.written_at, a.audit_id"
+                 ORDER BY a.audit_id"
             ),
         ))
         .await
@@ -536,4 +536,66 @@ async fn the_history_is_404_off_the_tenant_and_takes_only_its_page_keys() {
     .await;
     assert_eq!(status, 204, "{b}");
     assert_eq!(history_as(&f, &f.author, gone, "").await.0, 404);
+}
+
+/// B-1: a change's `note` is the reason its submitter gave, and the history shows it on the
+/// change's `approval.submit` row. A change without one, a publish and the apply carry none.
+#[tokio::test]
+async fn a_changes_note_reaches_its_submit_row_in_the_history() {
+    let f = Fixture::new(1).await;
+    f.publish().await;
+    let (status, b) = f
+        .post("/changes", json!({"name":"Renamed","note":"raise for Q4"}))
+        .await;
+    assert_eq!((status, &b["applied"]), (200, &json!(true)), "{b}");
+    let (status, b) = f.post("/changes", json!({"name":"Again"})).await;
+    assert_eq!((status, &b["applied"]), (200, &json!(true)), "{b}");
+    let entries = walk(&f, 200).await;
+    let notes: Vec<(String, Value, Value)> = entries
+        .iter()
+        .filter(|e| e["unit_kind"].is_string())
+        .map(|e| {
+            (
+                e["action"].as_str().unwrap().to_owned(),
+                e["unit_kind"].clone(),
+                e["note"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        notes,
+        [
+            (
+                "approval.submit".to_owned(),
+                json!("sku_publish"),
+                Value::Null
+            ),
+            (
+                "approval.applied".to_owned(),
+                json!("sku_publish"),
+                Value::Null
+            ),
+            (
+                "approval.submit".to_owned(),
+                json!("sku_change"),
+                json!("raise for Q4")
+            ),
+            (
+                "approval.applied".to_owned(),
+                json!("sku_change"),
+                Value::Null
+            ),
+            (
+                "approval.submit".to_owned(),
+                json!("sku_change"),
+                Value::Null
+            ),
+            (
+                "approval.applied".to_owned(),
+                json!("sku_change"),
+                Value::Null
+            ),
+        ],
+        "{entries:#?}"
+    );
 }
