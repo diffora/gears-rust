@@ -105,3 +105,36 @@ async fn the_served_spec_documents_each_plan_body_on_its_own_schema() {
     assert!(clone.contains("POST /plans/{id}/clone"), "{clone:?}");
     assert!(!clone.contains("PATCH"), "{clone:?}");
 }
+
+// The served door descriptions say what the doors do: a rejected prices unit leaves its prices
+// rejected (only a plan revision returns to draft), and a paired half submitted alone is 400
+// PAIR_SPLIT, a pair going through publish-changes (D-405).
+#[tokio::test]
+async fn the_served_reject_and_submit_descriptions_say_what_they_do() {
+    use toolkit::api::OpenApiInfo;
+    let harness = rest_support::Harness::new().await.unwrap();
+    let (_, openapi) = harness.router(axum::Router::new()).unwrap();
+    let api =
+        serde_json::to_value(openapi.build_openapi(&OpenApiInfo::default()).unwrap()).unwrap();
+    let described = |path: &str| {
+        api["paths"][path]["post"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let reject = described("/bss-pricing/v1/approval-units/{id}/reject");
+    assert!(
+        reject.contains("plan revision returns to draft") && reject.contains("stay rejected"),
+        "{reject:?}"
+    );
+    assert!(
+        !reject.contains("returns its content to draft"),
+        "{reject:?}"
+    );
+    let submit = described("/bss-pricing/v1/prices/{id}/submit");
+    assert!(
+        submit.contains("PAIR_SPLIT") && submit.contains("publish-changes"),
+        "{submit:?}"
+    );
+    assert!(!submit.contains("with its pair partner"), "{submit:?}");
+}

@@ -8,7 +8,8 @@
 //!
 //! The catalog is read **as the caller** (owner option b): a collector that refuses the caller answers
 //! 403, an unconfigured catalog 501, an unreachable one 503, and an empty configured one 200 with
-//! `items: []` — never one of these as another.
+//! `items: []` — never one of these as another. Over the usage collector, `q` is products' own
+//! search (`infra::usage_types`): the collector's plugin takes no `contains`.
 use super::{ApiState, authz_error_to_canonical, require_authenticated};
 use crate::{
     authz::{access_scope, actions, resource_types},
@@ -85,16 +86,24 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("List usage types for SKU authoring")
         .description(
             "The usage-type catalog the publish gate resolves against, read as the caller \
-             (P-D-207). `q` narrows by substring of the id, `kind` by equality; `limit` defaults \
-             to 50 and is clamped at 200. Refusals: 403 without products SKU author, or when the \
-             catalog refuses the caller; 400 for a malformed query or cursor; 501 when no \
-             catalog is configured; 503 when the configured one does not answer. A configured \
-             catalog with no types answers 200 with no items.",
+             (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; \
+             `limit` defaults to 50 and is clamped at 200. Over the usage collector, `q` searches \
+             at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` \
+             and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses \
+             the caller; 400 for a malformed query, or a cursor of another query; 501 when no \
+             catalog is configured; 503 when the configured one does not answer, or \
+             `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A \
+             configured catalog with no types answers 200 with no items.",
         )
         .tag("SKUs")
         .authenticated()
         .no_license_required()
-        .query_param_typed("q", false, "Substring of the usage type's GTS id", "string")
+        .query_param_typed(
+            "q",
+            false,
+            "Case-insensitive substring of the usage type's GTS id",
+            "string",
+        )
         .query_param_typed("kind", false, "counter or gauge", "string")
         .query_param_typed(
             "limit",

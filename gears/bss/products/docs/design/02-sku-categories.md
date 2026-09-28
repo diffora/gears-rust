@@ -120,15 +120,15 @@ OperationBuilder doors use the Foundation Problem mapping and optional POST Idem
 | `POST /skus` | products:author; 201 draft with id and ETag; `category_id` is optional and an omitted one is null; code/name conflicts are 409. |
 | `PATCH /skus/{id}` | products:author; draft only, If-Match required; `category_id: null` clears the category; pending ownership returns ROW_LOCKED_PENDING; stale version returns STALE_REVISION. |
 | `DELETE /skus/{id}` | products:author; a never-published draft only, by its author (403 NOT_DRAFT_AUTHOR), If-Match required; 204 with an audit row; SKU_NOT_DRAFT, ROW_LOCKED_PENDING, SKU_REFERENCED or STALE_REVISION (409). A draft is deleted, never retired (P-D-206). |
-| `GET /usage-types?q&kind&limit&cursor` | products:author; the usage-type catalog read as the caller, `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable (P-D-207). |
+| `GET /usage-types?q&kind&limit&cursor` | products:author; the usage-type catalog read as the caller, `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable. `q` (case-insensitive substring of the id) is products' own search over the collector: `kind eq` only is sent, at most 1000 types are walked, the cursor is bound to `q` and `kind`; past 1000, 503 `USAGE_TYPE_CATALOG_TOO_LARGE` (P-D-207). |
 | `GET /skus` | products:read; scoped current heads. Slice 04 owns search, filters and pagination. |
 | `GET /skus/{id}` | products:read; current SKU and ETag. Current applied content may be future-effective; use versions for dated truth. |
 | `GET /skus/{id}/versions` | products:read; the history, always an array, oldest first; any query key is 400 (P-D-214). |
 | `GET /skus/{id}/versions/as-of?date=<date>` | products:read; one version in force, or 404 NO_VERSION_IN_FORCE; a missing or malformed `date` is 400 (P-D-214). |
 | `GET /categories?$filter&$orderby&$top&cursor` | products:read; one page of the tenant's categories on the toolkit's OData: `$filter` over id, code, name, status, is_default and sort_order; `$orderby` sort_order, code or name (tie-break id; default sort_order, then code); `$top`/`limit` 200, clamped at 200; each item with `sku_count`, from one grouped count (P-D-215). |
 | `GET /categories/{id}` | products:read; one category with its ETag and `sku_count`; 404 off the tenant (P-D-215). |
-| `POST /categories` | products:author; create directly with tenant-unique code. |
-| `PATCH /categories/{id}` | products:author; direct edit under If-Match; return the new ETag. |
+| `POST /categories` | products:author; create directly with tenant-unique code; `is_default: true` moves the tenant's default to it (P-D-218). |
+| `PATCH /categories/{id}` | products:author; direct edit under If-Match; return the new ETag. `is_default: true` moves the default: the previous holder is cleared (new version, its own audit row) in the same transaction; a lost race is 409 CATEGORY_DEFAULT_TAKEN (P-D-218). |
 | `POST /categories/{id}/retire` | products:author; retire only while no SKU that is not retired references it, otherwise CATEGORY_IN_USE; a retired category is CATEGORY_RETIRED (P-D-208). |
 
 Submit-time subject validation failures are 400 with their code and no unit created (never 422, pricing D-403); apply-time environment refusal
@@ -143,7 +143,7 @@ This slice assigns write ownership and snapshot contents.
 | Record | Fields and write rules |
 | --- | --- |
 | `products_sku` | Identity: id, tenant_id, code, name, type, category_id. Business content: description, sellable, lifecycle, gl_code, tax_category, invoice_line_template, billing_timing, usage_type_ref, unit. Attribution: created_by, created_at, updated_at. Counters: revision (concurrency version), published_version. Approval/fence columns are owned jointly with slice 03. |
-| `products_category` | id, tenant_id, code, name, is_default, sort_order, status, timestamps, version. There is no parent_id. A nullable tenant-qualified category_id links a SKU to at most one category. |
+| `products_category` | id, tenant_id, code, name, is_default, sort_order, status, timestamps, version; at most one default per tenant (`uq_products_category_default`, P-D-218). There is no parent_id. A nullable tenant-qualified category_id links a SKU to at most one category. |
 | `products_sku_version` | tenant_id, sku_id, published_version, effective_from, snapshot. Snapshot preserves applied SKU business content, including type, lifecycle, descriptors and metering; pending ownership, fence metadata and concurrency tokens are not business content. |
 
 `revision` is the SKU concurrency version for ETag, If-Match and conditional writes;

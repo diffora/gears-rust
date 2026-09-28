@@ -448,9 +448,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.submit_price")
         .summary("Submit a draft price")
         .description(
-            "Puts a draft price, with its pair partner, into a prices approval unit; at quorum 0 \
-             the unit applies at once. Refusals: 400 for a rule the price breaks at submit (for \
-             example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 \
+            "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at \
+             once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and \
+             the pair goes through POST /price-books/{id}/publish-changes, which completes it \
+             (D-405). Refusals: 400 PAIR_SPLIT, or a rule the price breaks at submit (for example \
+             WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 \
              PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
         )
         .tag("Pricing")
@@ -596,9 +598,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.reject_unit")
         .summary("Reject an approval unit")
         .description(
-            "Rejects a pending unit on the generation the reviewer saw, with a note, and returns \
-             its content to draft. Refusals: 400 NOTE_REQUIRED, GENERATION_MISMATCH or UNIT_STALE; \
-             409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
+            "Rejects a pending unit on the generation the reviewer saw, with a note. A plan \
+             revision returns to draft. The prices of a prices unit stay rejected, with their \
+             review history, and are not edited again: a replacement is a new draft price \
+             (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, \
+             GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
         )
         .tag("Pricing")
         .authenticated()

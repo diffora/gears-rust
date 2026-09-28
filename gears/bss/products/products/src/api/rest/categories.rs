@@ -89,7 +89,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post(CATEGORIES)
         .operation_id("bss_products.create_category")
         .summary("Create a category")
-        .description("A flat category; one may be the tenant's default.")
+        .description(
+            "A flat category; one may be the tenant's default. Creating one with `is_default: true` \
+             moves the default to it: the previous default is cleared in the same write \
+             (P-D-218). Refusals: 409 CATEGORY_CODE_TAKEN, or CATEGORY_DEFAULT_TAKEN when a \
+             concurrent write took the default first.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -176,6 +181,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::patch(format!("{CATEGORIES}/{{id}}"))
         .operation_id("bss_products.update_category")
         .summary("Rename, reorder or make default")
+        .description(
+            "Edits a category under If-Match. `is_default: true` moves the tenant's default to it: \
+             the previous default is cleared in the same write, gets a new version and its own \
+             audit row (P-D-218). Refusals: 404; 409 STALE_REVISION, or CATEGORY_DEFAULT_TAKEN \
+             when a concurrent write took the default first.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -307,6 +318,9 @@ async fn create_category(
                     if let Some(response) = replay::begin(tx, tenant_id, claim.as_ref()).await? {
                         return Ok(response);
                     }
+                    if new.is_default {
+                        move_default(tx, &scope, tenant_id, actor, None, now).await?;
+                    }
                     let c = repo::insert_category(tx, &scope, tenant_id, new, now)
                         .await
                         .map_err(|e| match e {
@@ -316,7 +330,7 @@ async fn create_category(
                                     detail: "a category with this code exists".into(),
                                 })
                             }
-                            other => TxError::Repo(other),
+                            other => default_taken(other),
                         })?;
                     audit(tx, &scope, tenant_id, actor, "category.create", &c, now).await?;
                     replay::finish(
@@ -477,11 +491,14 @@ async fn update_category(
                             what: "category",
                             id,
                         }))?;
+                    if patch.is_default == Some(true) {
+                        move_default(tx, &scope, tenant_id, actor, Some(id), now).await?;
+                    }
                     let c = match repo::update_category(
                         tx, &scope, tenant_id, id, expected, patch, now,
                     )
                     .await
-                    .map_err(TxError::Repo)?
+                    .map_err(default_taken)?
                     {
                         HeadWrite::Written(c) => c,
                         HeadWrite::Unmatched => {
@@ -587,6 +604,46 @@ async fn retire_category(
         .await
         .map_err(tx_to_canonical)?;
     Ok(retired)
+}
+/// Clear the tenant's other default before a write that sets one (P-D-218): the move is one
+/// transaction, and the old holder's write is audited as every category write is.
+async fn move_default(
+    tx: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor: Uuid,
+    keep: Option<Uuid>,
+    now: OffsetDateTime,
+) -> Result<(), TxError> {
+    for cleared in repo::clear_default_category(tx, scope, tenant_id, keep, now)
+        .await
+        .map_err(TxError::Repo)?
+    {
+        audit(
+            tx,
+            scope,
+            tenant_id,
+            actor,
+            "category.update",
+            &cleared,
+            now,
+        )
+        .await?;
+    }
+    Ok(())
+}
+/// A default that another writer took between the clear and the set: the losing side of two
+/// concurrent moves, a 409 (P-D-218), never the 500 of an unmapped index.
+fn default_taken(e: RepoError) -> TxError {
+    match e {
+        RepoError::Db(code) if code == "CATEGORY_DEFAULT_TAKEN" => {
+            TxError::Refused(DomainError::Conflict {
+                code: "CATEGORY_DEFAULT_TAKEN",
+                detail: "another category became the tenant's default; read it and retry".into(),
+            })
+        }
+        other => TxError::Repo(other),
+    }
 }
 /// Record the direct category act in the same transaction.
 async fn audit(
