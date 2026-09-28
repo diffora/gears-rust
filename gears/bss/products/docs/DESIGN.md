@@ -430,6 +430,7 @@ sequenceDiagram
     participant Approval as Approvals
     participant DB as Products DB
     participant Pricing
+    participant Port as Registry port (in process)
     Author->>API: POST changes
     API->>Approval: sku_change
     Approval->>DB: Submit transaction
@@ -442,8 +443,8 @@ sequenceDiagram
     Note over Approval,DB: SKU, version, audit, outbox, approved unit
     DB-->>Reviewer: Approved
     DB-->>Pricing: SkuChanged via outbox
-    Pricing->>API: GET versions/as-of?date=period start
-    API-->>Pricing: Version and descriptors
+    Pricing->>Port: sku_version_as_of(period start)
+    Port-->>Pricing: Version and descriptors
 ```
 
 #### Fenced retirement
@@ -743,14 +744,16 @@ ownership; zero-row conditional writes cannot be treated as success.
 
 Audit and replay below copy the Postgres statements from `bss/products-backup` migrations
 `m20260829_000004_create_products_audit_log.rs` and `m20260829_000006_create_products_idempotency.rs`.
-Column lists, types and nullability are verbatim. Only the audit table and its dependent SQL object
-names change from `products_audit_log` to the Task 6 name `products_audit`; no old audit semantics are
-reintroduced merely because a reserved column remains. Audit inserts use `seal_state = 'unsealed'`;
+Column lists, types and nullability are verbatim, and so are the names: the chain creates the audit
+table as `bss.products_audit_log`, with its constraints, indexes, the append-only function
+`bss.products_audit_log_append_only()` and its trigger named after it
+(`m20260925_000004_create_products_audit_log`). No old audit semantics are reintroduced merely because a
+reserved column remains. Audit inserts use `seal_state = 'unsealed'`;
 the reserved one-way sealing transition preserves every record column. Replay retains its column
 shape, including nullable `entity_ref`, without reviving old clone or freeze flows (P-D-193).
 
 ```sql
-CREATE TABLE bss.products_audit (
+CREATE TABLE bss.products_audit_log (
             audit_id          uuid        NOT NULL,
             tenant_id         uuid        NOT NULL,
             actor_ref         uuid        NOT NULL,
@@ -770,27 +773,27 @@ CREATE TABLE bss.products_audit (
             seq               bigint,
             prev_hash         bytea,
             row_hash          bytea,
-            CONSTRAINT products_audit_pkey PRIMARY KEY (audit_id),
-            CONSTRAINT chk_products_audit_seal_state CHECK (seal_state IN ('unsealed', 'sealed')),
-            CONSTRAINT chk_products_audit_seal_group CHECK (
+            CONSTRAINT products_audit_log_pkey PRIMARY KEY (audit_id),
+            CONSTRAINT chk_products_audit_log_seal_state CHECK (seal_state IN ('unsealed', 'sealed')),
+            CONSTRAINT chk_products_audit_log_seal_group CHECK (
                 (seal_state = 'unsealed' AND chain_id IS NULL AND seq IS NULL AND prev_hash IS NULL AND row_hash IS NULL)
                 OR
                 (seal_state = 'sealed' AND chain_id IS NOT NULL AND seq IS NOT NULL AND row_hash IS NOT NULL)
             ),
-            CONSTRAINT chk_products_audit_seq CHECK (seq IS NULL OR seq >= 0),
-            CONSTRAINT chk_products_audit_subject_ref CHECK (subject_id IS NOT NULL OR attempted_key IS NOT NULL OR session_id IS NOT NULL)
+            CONSTRAINT chk_products_audit_log_seq CHECK (seq IS NULL OR seq >= 0),
+            CONSTRAINT chk_products_audit_log_subject_ref CHECK (subject_id IS NOT NULL OR attempted_key IS NOT NULL OR session_id IS NOT NULL)
         );
 
-CREATE INDEX idx_products_audit_tenant_time ON bss.products_audit USING btree (tenant_id, written_at);
+CREATE INDEX idx_products_audit_log_tenant_time ON bss.products_audit_log USING btree (tenant_id, written_at);
 
-CREATE INDEX idx_products_audit_subject ON bss.products_audit USING btree (tenant_id, subject_kind, subject_id, written_at);
+CREATE INDEX idx_products_audit_log_subject ON bss.products_audit_log USING btree (tenant_id, subject_kind, subject_id, written_at);
 
-CREATE INDEX idx_products_audit_actor ON bss.products_audit USING btree (tenant_id, actor_ref, written_at);
+CREATE INDEX idx_products_audit_log_actor ON bss.products_audit_log USING btree (tenant_id, actor_ref, written_at);
 
-CREATE OR REPLACE FUNCTION bss.products_audit_append_only() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION bss.products_audit_log_append_only() RETURNS trigger AS $$
         BEGIN
           IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION 'products_audit is append-only: DELETE is not permitted';
+            RAISE EXCEPTION 'products_audit_log is append-only: DELETE is not permitted';
           END IF;
 
           IF OLD.seal_state = 'unsealed'
@@ -816,18 +819,19 @@ CREATE OR REPLACE FUNCTION bss.products_audit_append_only() RETURNS trigger AS $
             RETURN NEW;
           END IF;
 
-          RAISE EXCEPTION 'products_audit is append-only: % is not permitted', TG_OP;
+          RAISE EXCEPTION 'products_audit_log is append-only: % is not permitted', TG_OP;
         END;
      $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_products_audit_append_only BEFORE DELETE OR UPDATE ON bss.products_audit FOR EACH ROW EXECUTE FUNCTION bss.products_audit_append_only();
+CREATE TRIGGER trg_products_audit_log_append_only BEFORE DELETE OR UPDATE ON bss.products_audit_log FOR EACH ROW EXECUTE FUNCTION bss.products_audit_log_append_only();
 ```
 
-The forward migration `m20260927_000008_audit_lifecycle_move` adds two columns to the table above (P-D-213):
-`from_lifecycle text` and `to_lifecycle text`, both nullable, each held to the five lifecycles by a named CHECK. An
-audit row on a SKU, or on one of its units, carries the SKU lifecycle its act found and the one it left. It
-redefines the append-only function (on SQLite, the seal trigger) so the seal also keeps both unchanged. Rows
-written before it read null.
+The forward migration `m20260927_000008_audit_lifecycle_move` adds two columns to `bss.products_audit_log`
+above (P-D-213): `from_lifecycle text` and `to_lifecycle text`, both nullable, each held to the five lifecycles
+by a named CHECK. An audit row on a SKU, or on one of its units, carries the SKU lifecycle its act found and the
+one it left. It redefines `bss.products_audit_log_append_only()` (on SQLite, the trigger
+`trg_products_audit_log_seal_unchanged`) so the seal also keeps both unchanged. Rows written before it read
+null.
 
 ```sql
 CREATE TABLE bss.products_idempotency (

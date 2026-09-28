@@ -140,11 +140,11 @@ all checks and tenant keys. SKU details are in slice 02 and approval mutations i
 | `products_category`, `products_sku` | Tenant-qualified uniqueness and category links; use revision as SKU concurrency version and published_version as its snapshot counter. |
 | `products_sku_version` | Key `(sku_id, published_version)` with tenant-scoped access; immutable inserts; effective dates need not be unique. |
 | Four `products_approval_*` tables | Unit version CAS; item author provenance; decision key `(unit_id, actor, generation)`; policy `'*'` default, absent means quorum 1; no unit replay key. |
-| `products_audit` | Append-only record with tenant/time, subject and actor indexes; only reserved sealing metadata may change as defined in DESIGN. |
+| `products_audit_log` | Append-only record with tenant/time, subject and actor indexes; only reserved sealing metadata may change as defined in DESIGN. |
 | `products_idempotency` | Primary key `(tenant_id, endpoint, client_key)` and tenant/expiry index; response-group check ties nullable response columns to claimed/answered state. |
 
 Audit columns are carried from backup migration `m20260829_000004_create_products_audit_log.rs`,
-with the table renamed to `products_audit` as in DESIGN. Required columns are `audit_id uuid`,
+with the table's name `products_audit_log` kept, as in DESIGN. Required columns are `audit_id uuid`,
 `tenant_id uuid`, `actor_ref uuid`, `action text`, `subject_kind text`, `written_at timestamptz` and
 `seal_state text`. Nullable columns are `subject_id uuid`, `subject_revision bigint`, `error_code text`,
 `attempted_key text`, `reason text`, `correlation_id text`, `session_id uuid`, `ceremony_ref uuid`,
