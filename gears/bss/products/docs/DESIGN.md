@@ -607,7 +607,8 @@ CREATE TABLE bss.products_category (
     UNIQUE (tenant_id, id),
     UNIQUE (tenant_id, code)
 );
--- At most one default per tenant (P-D-218), never a retired one (P-D-220, judged by the doors).
+-- At most one default per tenant (P-D-218), never a retired one (P-D-220, judged by the doors;
+-- m20260928_000010 cleared the retired defaults stored before it, data only).
 CREATE UNIQUE INDEX uq_products_category_default ON bss.products_category (tenant_id) WHERE is_default;
 
 CREATE TABLE bss.products_approval_policy (

@@ -894,7 +894,15 @@ owner chose to close it.
   active fails its version-conditional write (409 `STALE_REVISION`) and its clear of the old default rolls back.
   The retirement runs serializable on Postgres: a move that commits between its reads and its write is a
   serialization failure, and the retry finds the new default and clears it.
-- **A retired default stored before this decision** stays as it is. `PATCH {is_default: false}` clears it, and
-  so does making another category the default. The deploy notes give the query that finds such rows.
+- **A retired default stored before this decision** is cleared by the forward migration
+  `m20260928_000010_clear_retired_defaults`: `UPDATE products_category SET is_default = false, version =
+  version + 1, updated_at = <the migration's instant> WHERE is_default AND status = 'retired'`, on both
+  dialects. The clear is written as a category write writes it: a new version (a client that holds the old ETag
+  gets `STALE_REVISION`) and `updated_at` bound in UTC from the process clock, as the doors bind theirs. It
+  writes no audit row: a migration is not an act of a user, and the audit log records acts. The tenant then has
+  no default, as after the retirement of its default. The schema does not change, a replay matches no row, and
+  `down` changes nothing (a retired default is the state this decision forbids). So the rule holds for every
+  stored row, and the deploy notes' query for such rows is informational.
 
-**Source:** Owner, 2026-09-28 (a yes; phase 7 plan rev 2, added to run 7.3); phase 6 fix run 2 review (LOW-2).
+**Source:** Owner, 2026-09-28 (a yes; phase 7 plan rev 2, added to run 7.3); phase 6 fix run 2 review (LOW-2);
+phase 7 review (queries, migrations and docs lens, LOW-1: the migration for stored rows).
