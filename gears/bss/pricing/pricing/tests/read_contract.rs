@@ -277,7 +277,8 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
         json!({
             "plan_revision_id": w.revision, "plan_id": w.plan, "rev_no": 1, "state": "published",
             "book_id": w.book, "currency": "EUR", "currency_minor_digits": 2,
-            "rounding_policy": "half_up", "date": "2026-10-05", "items": [item]
+            // No settings row: the default rounding, half_even (D-437).
+            "rounding_policy": "half_even", "date": "2026-10-05", "items": [item]
         })
     );
     assert_eq!(

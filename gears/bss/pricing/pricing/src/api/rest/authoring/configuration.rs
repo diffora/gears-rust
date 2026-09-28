@@ -32,6 +32,11 @@ use uuid::Uuid;
 /// before the door that refuses it ships.
 pub const ROUNDING_MODES: [&str; 5] = ["half_up", "half_even", "half_down", "up", "down"];
 
+/// The rounding of a tenant that never wrote its settings: banker's `half_even`, the ledger's
+/// platform default (D-437). It reaches every revision drafted before the first write and
+/// `/resolve`'s `rounding_policy` for them.
+pub const DEFAULT_ROUNDING: &str = "half_even";
+
 pub async fn settings(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -41,7 +46,7 @@ pub async fn settings(
         // Version 0: nothing was ever written, so nobody changed anything (D-438).
         return Ok(PricingSettingsDto {
             default_timing: PricingBillingTiming::Advance,
-            default_rounding: "half_up".into(),
+            default_rounding: DEFAULT_ROUNDING.into(),
             default_gl: None,
             default_tax_category: None,
             invoice_line_templates: serde_json::json!({}),

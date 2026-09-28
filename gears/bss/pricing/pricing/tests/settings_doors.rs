@@ -39,6 +39,7 @@ async fn create_book(f: &Fixture, code: &str, currency: &str) -> (u16, Value) {
     (s, b)
 }
 
+/// The default rounding is banker's `half_even`, the ledger's platform default (D-437).
 #[tokio::test]
 async fn the_default_settings_say_nobody_changed_them() {
     let (f, _) = setup().await;
@@ -48,7 +49,7 @@ async fn the_default_settings_say_nobody_changed_them() {
         b,
         json!({
             "default_timing": "advance",
-            "default_rounding": "half_up",
+            "default_rounding": "half_even",
             "default_gl": null,
             "default_tax_category": null,
             "invoice_line_templates": {},
