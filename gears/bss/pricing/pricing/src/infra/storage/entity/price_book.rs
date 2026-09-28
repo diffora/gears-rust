@@ -13,6 +13,8 @@ pub struct Model {
     pub currency: String,
     pub valid_from: Option<TimeDate>,
     pub valid_until: Option<TimeDate>,
+    /// Free text, at most 2000 characters (D-444); NULL for a book without one.
+    pub description: Option<String>,
     pub version: i64,
     pub created_at: TimeDateTimeWithTimeZone,
     pub updated_at: TimeDateTimeWithTimeZone,

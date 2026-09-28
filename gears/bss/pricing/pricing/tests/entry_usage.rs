@@ -32,6 +32,11 @@ async fn price_in(f: &Fixture, entry: Uuid, state: &str, version_no: i32) {
         .unwrap()
         .unwrap();
     let mut p = entry_support::price(&e);
+    // The money in the entry's model (D-427): an entry read chooses its price in force from its
+    // approved prices, read as the model's money (D-440).
+    if e.model == "flat" {
+        p.price_json = json!({"amount": "10.00"});
+    }
     p.version_no = version_no;
     p.state = state.into();
     p.effective_from = time::Date::from_calendar_date(2031, time::Month::January, 1).unwrap()
@@ -97,9 +102,18 @@ async fn list_entries(f: &Fixture, book: Uuid) -> BTreeMap<String, Value> {
         .map(|e| (e["id"].as_str().unwrap().to_owned(), e.clone()))
         .collect()
 }
+/// An entry's usage (D-428). Every approved price here starts in 2031 (`price_in`), so each one
+/// is `scheduled` today (D-440).
 fn usage(approved: u64, pending: u64, draft: u64, plans: u64, superseded_only: u64) -> Value {
     json!({
-        "prices": {"approved": approved, "pending": pending, "draft": draft},
+        "prices": {
+            "approved": approved,
+            "pending": pending,
+            "draft": draft,
+            "scheduled": approved,
+            "active": 0,
+            "superseded": 0,
+        },
         "plans": plans,
         "plans_superseded_only": superseded_only,
     })
@@ -403,6 +417,7 @@ async fn unknown_foreign_and_bundle_skus_answer_zeros_and_each_id_is_answered_on
             currency: "EUR".into(),
             valid_from: None,
             valid_until: None,
+            description: None,
             version: 1,
             created_at: now,
             updated_at: now,
@@ -545,6 +560,7 @@ async fn the_usage_sets_are_the_skus_whose_usage_counts_entries_and_plans() {
             currency: "EUR".into(),
             valid_from: None,
             valid_until: None,
+            description: None,
             version: 1,
             created_at: now,
             updated_at: now,

@@ -174,6 +174,10 @@ async fn a_new_book_takes_an_offered_currency() {
     let (s, books, _) = f.call("GET", "/price-books", json!({}), None, None).await;
     assert_eq!(s, 200);
     assert_eq!(books["items"].as_array().unwrap().len(), 2);
+    assert!(
+        books["page_info"]["next_cursor"].is_null(),
+        "one page is the whole list: {books}"
+    );
     let (s, _, _) = put(&f, body(json!([]))).await;
     assert_eq!(s, 200);
     assert_eq!(create_book(&f, "gbp2", "GBP").await.0, 201);
