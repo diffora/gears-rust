@@ -24,8 +24,21 @@ pub const USAGE_TYPE_SOURCE_UNCONFIGURED: &str = "unconfigured";
 pub(crate) struct ProductsRuntime {
     pub enforcer: Arc<authz_resolver_sdk::PolicyEnforcer>,
     pub api_state: Arc<crate::api::rest::ApiState>,
-    // Held until the runtime drops, keeping the outbox workers alive.
-    pub _pipeline: OutboxLifetime,
+    /// The running outbox pipeline, taken and stopped once by `serve` after the cancel (RS-12):
+    /// its workers run on a token of their own, so dropping nothing would leave them running past
+    /// the stop window.
+    pub pipeline: tokio::sync::Mutex<Option<OutboxLifetime>>,
+}
+
+impl ProductsRuntime {
+    /// Stop the outbox pipeline, once; a second call finds nothing to stop.
+    pub(crate) async fn stop(&self) {
+        match self.pipeline.lock().await.take() {
+            Some(OutboxLifetime::Broker(handle)) => handle.stop().await,
+            Some(OutboxLifetime::Interim(handle)) => handle.stop().await,
+            None => {}
+        }
+    }
 }
 
 /// Register the one products SDK client against the same runtime dependencies.
@@ -80,13 +93,17 @@ impl BssProductsGear {
         ))
     }
 
-    /// Keep runtime resources alive until cooperative shutdown.
+    /// Keep runtime resources alive until cooperative shutdown, then stop the outbox pipeline
+    /// (RS-12, as pricing's `serve` does).
     pub(crate) async fn serve(
         self: Arc<Self>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<()> {
-        let _runtime = self.runtime.load_full();
+        let runtime = self.runtime.load_full();
         cancel.cancelled().await;
+        if let Some(runtime) = runtime {
+            runtime.stop().await;
+        }
         Ok(())
     }
 }
@@ -163,7 +180,15 @@ fn resolve_usage_type_catalog(
         .client_hub()
         .get::<dyn bss_products_sdk::usage_types::UsageTypeCatalog>()
     {
-        (registered, USAGE_TYPE_SOURCE_REGISTRY)
+        // The collector adapter bounds its own calls; a registered catalog is bounded here by
+        // the same setting (RS-42).
+        (
+            Arc::new(crate::infra::usage_types::TimedUsageTypes::new(
+                registered,
+                cfg.usage_type_resolver_timeout(),
+            )),
+            USAGE_TYPE_SOURCE_REGISTRY,
+        )
     } else if let Ok(client) = ctx
         .client_hub()
         .get::<dyn usage_collector_sdk::UsageCollectorClientV1>()
@@ -374,7 +399,7 @@ impl Gear for BssProductsGear {
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             api_state,
-            _pipeline: pipeline,
+            pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })));
         Ok(())
     }

@@ -131,14 +131,24 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     ];
     expected.sort_unstable();
     assert_eq!(actual, expected);
-    // The actual lifecycle entry must honor the retained cancellation token.
+    // The actual lifecycle entry must honor the retained cancellation token, and it stops the
+    // outbox pipeline before it returns (RS-12): the runtime holds none after.
     let cancel = tokio_util::sync::CancellationToken::new();
     cancel.cancel();
+    let gear = Arc::new(gear);
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        Arc::new(gear).serve(cancel),
+        Arc::clone(&gear).serve(cancel),
     )
     .await??;
+    let runtime = gear
+        .runtime
+        .load_full()
+        .expect("the runtime outlives serve");
+    assert!(
+        runtime.pipeline.lock().await.is_none(),
+        "serve stops the pipeline"
+    );
     Ok(())
 }
 
@@ -316,7 +326,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
     gear.runtime.store(Some(Arc::new(ProductsRuntime {
         enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),
         api_state,
-        _pipeline: OutboxLifetime::Interim(pipeline),
+        pipeline: tokio::sync::Mutex::new(Some(OutboxLifetime::Interim(pipeline))),
     })));
     let ctx = GearCtx::new(
         "bss-products",
@@ -601,4 +611,74 @@ async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() -> anyhow::
         assert!(plain_string(p), "{schema}.{field}: {p}");
     }
     Ok(())
+}
+
+/// A registered usage-type catalog that never answers.
+struct HangingUsageTypes;
+#[async_trait::async_trait]
+impl bss_products_sdk::usage_types::UsageTypeCatalog for HangingUsageTypes {
+    async fn resolve(
+        &self,
+        _: &toolkit_security::SecurityContext,
+        _: &str,
+    ) -> bss_products_sdk::usage_types::UsageTypeAnswer {
+        std::future::pending().await
+    }
+    async fn list(
+        &self,
+        _: &toolkit_security::SecurityContext,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: u32,
+        _: Option<&str>,
+    ) -> Result<
+        bss_products_sdk::usage_types::UsageTypePage,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        std::future::pending().await
+    }
+}
+
+/// RS-42: a registered catalog is bounded by `usage_type_resolver_timeout_ms` as the collector
+/// adapter is: a resolve that outlives it is `Unavailable` and a list a 503, so a hanging catalog
+/// never hangs a submit, an approve or the pick-list.
+#[tokio::test(start_paused = true)]
+async fn a_registered_usage_type_catalog_is_bounded_by_the_resolver_timeout() {
+    use bss_products_sdk::usage_types::{UsageTypeAnswer, UsageTypeCatalog};
+    struct NoConfig;
+    impl toolkit::config::ConfigProvider for NoConfig {
+        fn get_gear_config(&self, _gear: &str) -> Option<&serde_json::Value> {
+            None
+        }
+    }
+    let hub = Arc::new(toolkit::ClientHub::new());
+    hub.register::<dyn UsageTypeCatalog>(Arc::new(HangingUsageTypes));
+    let ctx = GearCtx::new(
+        "bss-products",
+        uuid::Uuid::new_v4(),
+        Arc::new(NoConfig),
+        hub,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let cfg = ProductsConfig {
+        usage_type_resolver_timeout_ms: 50,
+        ..ProductsConfig::default()
+    };
+    let (catalog, source) = super::resolve_usage_type_catalog(&ctx, &cfg);
+    assert_eq!(source, USAGE_TYPE_SOURCE_REGISTRY);
+    let caller = crate::test_support::authed_ctx(uuid::Uuid::new_v4());
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        catalog.resolve(&caller, "storage"),
+    )
+    .await
+    .expect("the resolve is bounded");
+    assert!(matches!(answer, UsageTypeAnswer::Unavailable), "{answer:?}");
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        catalog.list(&caller, None, None, 50, None),
+    )
+    .await
+    .expect("the list is bounded");
+    assert_eq!(listed.unwrap_err().status_code(), 503);
 }

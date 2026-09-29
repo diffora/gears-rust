@@ -254,6 +254,9 @@ impl CollectorUsageTypes {
     }
 
     /// The collector's catalog for `kind`, page by page, up to the cap.
+    // cancel-safe: `search` drives this under `tokio::time::timeout`, and dropping it at any
+    // `.await` loses only the local `walked` buffer; every collector call it makes is a read
+    // (RS-44).
     async fn walk(
         &self,
         ctx: &SecurityContext,
@@ -450,6 +453,61 @@ fn collector_query(
         odata = odata.with_cursor(cursor);
     }
     Ok(odata)
+}
+
+/// A catalog another module registered, under the resolver timeout (RS-42).
+///
+/// [`CollectorUsageTypes`] bounds its own calls with `usage_type_resolver_timeout_ms`; a registered
+/// catalog wins over it (P-D-184) and is bounded here by the same setting, so a catalog that hangs
+/// never hangs a submit, an approve or the pick-list. A resolve that outlives the bound is
+/// `Unavailable` (the SDK's doc assumes the caller has a deadline), and a list a 503.
+pub struct TimedUsageTypes {
+    inner: Arc<dyn UsageTypeCatalog>,
+    timeout: std::time::Duration,
+}
+
+impl TimedUsageTypes {
+    /// Bound `inner`'s calls by `timeout`.
+    #[must_use]
+    pub fn new(inner: Arc<dyn UsageTypeCatalog>, timeout: std::time::Duration) -> Self {
+        Self { inner, timeout }
+    }
+}
+
+#[async_trait]
+impl UsageTypeCatalog for TimedUsageTypes {
+    async fn resolve(&self, ctx: &SecurityContext, usage_type_ref: &str) -> UsageTypeAnswer {
+        tokio::time::timeout(self.timeout, self.inner.resolve(ctx, usage_type_ref))
+            .await
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    timeout_ms = self.timeout.as_millis(),
+                    "bss-products: the registered usage-type catalog did not resolve in time"
+                );
+                UsageTypeAnswer::Unavailable
+            })
+    }
+
+    async fn list(
+        &self,
+        ctx: &SecurityContext,
+        q: Option<&str>,
+        kind: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<UsageTypePage, CanonicalError> {
+        tokio::time::timeout(self.timeout, self.inner.list(ctx, q, kind, limit, cursor))
+            .await
+            .unwrap_or_else(|_| {
+                tracing::warn!(
+                    timeout_ms = self.timeout.as_millis(),
+                    "bss-products: the registered usage-type catalog did not list in time"
+                );
+                Err(usage_type_catalog_unreachable(
+                    "the usage-type catalog did not answer in time",
+                ))
+            })
+    }
 }
 
 /// A **fabricated** usage-type catalog, for a stand with no supplier at all.
