@@ -1210,9 +1210,7 @@ async fn resolve_answers_a_due_revision_the_same_before_and_after_the_switch_is_
 
 /// D-446, D-453: the counts read the stored state. A plan whose rev 1 is published on book A and
 /// whose rev 2 waits on book B is in both books' `stats.plans`; book B cannot be deleted
-/// (`BOOK_IN_PLAN`, on a book with no entry); the SKU's `usage.plans` counts the plan once. Once rev 2 is due, book A
-/// still counts the stored-published rev 1 until the job persists the switch: an over-count of at
-/// most one job cycle.
+/// (`BOOK_IN_PLAN`, on a book with no entry); the SKU's `usage.plans` counts the plan once.
 #[tokio::test]
 async fn a_scheduled_revision_on_another_book_holds_it_in_the_counts() {
     let (f, catalog) = setup().await;
@@ -1260,19 +1258,6 @@ async fn a_scheduled_revision_on_another_book_holds_it_in_the_counts() {
     .await
     .unwrap();
     assert_eq!(usage[0].plans, 1, "one plan, through both books");
-    // Due on book B: book A counts rev 1 until the switch is persisted, then only its history.
-    let later = Ticker::new(f.state.clone(), on(days(2)), 10, 100);
-    assert_eq!(
-        stats(get(&f, &format!("/price-books/{}", pro.book)).await),
-        (json!(1), json!(0)),
-        "the stored state counts"
-    );
-    later.switch_every(1).tick().await.unwrap();
-    assert_eq!(
-        stats(get(&f, &format!("/price-books/{}", pro.book)).await),
-        (json!(0), json!(1)),
-        "persisted: rev 1 is history"
-    );
     // A book with no entry that only a waiting revision is on cannot be deleted: BOOK_IN_PLAN.
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
@@ -1317,4 +1302,72 @@ async fn a_scheduled_revision_on_another_book_holds_it_in_the_counts() {
         .await;
     assert_eq!(s, 409, "{b}");
     assert!(text(&b).contains("BOOK_IN_PLAN"), "{b}");
+}
+
+/// D-446, D-453: the counts read the stored state, so a due revision's stored-published
+/// predecessor still holds its book until the switch is persisted, while every read already shows
+/// it superseded. Rev 1 is on book A and rev 2, due today, on book B: book A counts the plan until
+/// the job's tick, then only its history.
+#[tokio::test]
+async fn a_due_revisions_predecessor_holds_its_book_until_the_switch_is_persisted() {
+    let (f, catalog) = setup().await;
+    let pro = live(&f, &catalog, "pro").await;
+    let other = book(&f, "other").await;
+    let e_other = entry(&f, other, pro.sku, "usage", None).await;
+    approved(&f, e_other, "2020-01-01").await;
+    let rev2 = copy(&f, pro.plan, "copy").await;
+    let path = format!("/plan-revisions/{rev2}");
+    let (_, _, tag) = f.call("GET", &path, json!({}), None, None).await;
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"book_id":other,"available_from":today().to_string()}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let unit = plan_support::lock(&f, rev2).await;
+    plan_revision_repo::schedule(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        f.ctx.subject_tenant_id(),
+        rev2,
+        unit,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    let stats = |b: Value| {
+        (
+            b["stats"]["plans"].clone(),
+            b["stats"]["plans_superseded_only"].clone(),
+        )
+    };
+    let read = get(&f, &format!("/plans/{}", pro.plan)).await;
+    assert_eq!(states(&read), ["superseded", "published"], "{read}");
+    assert_eq!(
+        stats(get(&f, &format!("/price-books/{}", pro.book)).await),
+        (json!(1), json!(0)),
+        "due, not yet persisted: the stored-published rev 1 still counts"
+    );
+    assert_eq!(
+        stats(get(&f, &format!("/price-books/{other}")).await),
+        (json!(1), json!(0))
+    );
+    Ticker::new(f.state.clone(), on(today()), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    assert_eq!(stored(&f, rev2).await, "published", "persisted");
+    assert_eq!(
+        stats(get(&f, &format!("/price-books/{}", pro.book)).await),
+        (json!(0), json!(1)),
+        "persisted: rev 1 is history"
+    );
+    assert_eq!(
+        stats(get(&f, &format!("/price-books/{other}")).await),
+        (json!(1), json!(0))
+    );
 }
