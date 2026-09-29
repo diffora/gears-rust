@@ -4,7 +4,8 @@
 //! Reconciliation scans both kinds of reference (D-407), each with its own cursor: confirmed and
 //! lost price book entries, and confirmed and lost plan items of every revision state (D-414).
 //! The switch duty (D-450) runs first in its tick, with its own error handling, so neither the
-//! reference duties' scans nor a failing reconciliation can skip it.
+//! reference duties' scans nor a failing reconciliation can skip it. The tick count moves right
+//! after it, so a scan that keeps failing cannot freeze the count off the switch's period.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-confirmation-retry:p1
 use super::{
@@ -138,6 +139,9 @@ impl Ticker {
         if self.ticks.is_multiple_of(self.switch_every) {
             self.switch().await;
         }
+        // The count moves before any duty that can return early, so a scan that keeps failing
+        // cannot hold it off the switch's period (phase 8 review B1).
+        self.ticks = self.ticks.wrapping_add(1);
         // Only this trusted scheduler scans all tenants. Every mutation and Products call
         // below has a tenant-only scope and the fixed pricing system actor.
         let due = ops::due(
@@ -166,7 +170,6 @@ impl Ticker {
                 tracing::warn!(op_id=%op.op_id, attempts=op.attempts, error=%error, "pricing reference recovery deferred");
             }
         }
-        self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(self.reconcile_every) {
             self.reconcile().await?;
         }

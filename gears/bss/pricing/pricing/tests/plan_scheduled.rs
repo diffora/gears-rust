@@ -795,6 +795,38 @@ async fn a_failing_reconcile_does_not_keep_the_switch_from_running() {
     assert_eq!(published_of(&f, rev2).await.len(), 1);
 }
 
+/// D-450, phase 8 review B1: the reference duties' scan fails on every tick (its table is gone),
+/// and the switch duty keeps its cadence. The tick count moves before any duty that can return
+/// early, so a revision that falls due after the first tick is switched on the 60th failing tick,
+/// with the scan still failing.
+#[tokio::test]
+async fn a_failing_reference_scan_does_not_freeze_the_switch_duty() {
+    let (f, catalog) = setup().await;
+    let pro = live(&f, &catalog, "pro").await;
+    let mut ticker = Ticker::new(f.state.clone(), on(today()), 10, 1000);
+    ticker.tick().await.unwrap();
+    let (rev2, _) = seeded(&f, &pro, today(), "copy-rev2").await;
+    plan_support::raw(
+        &f,
+        "ALTER TABLE pricing_reference_op RENAME TO pricing_reference_op_gone",
+    )
+    .await;
+    let mut switched = None;
+    for tick in 1..=180 {
+        let result = ticker.tick().await;
+        assert!(result.is_err(), "tick {tick}: the scan fails: {result:?}");
+        if switched.is_none() && stored(&f, rev2).await == "published" {
+            switched = Some(tick);
+        }
+    }
+    assert_eq!(
+        switched,
+        Some(60),
+        "switched on the 60th failing tick after the first"
+    );
+    assert_eq!(published_of(&f, rev2).await.len(), 1);
+}
+
 /// D-450: the switch duty runs on the first tick, then once every 60 ticks.
 #[tokio::test]
 async fn the_switch_duty_runs_on_the_first_tick_and_then_every_sixty() {
