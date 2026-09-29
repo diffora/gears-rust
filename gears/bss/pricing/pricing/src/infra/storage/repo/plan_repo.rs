@@ -73,10 +73,10 @@ pub async fn list(
         .await
         .map_err(|e| driver_failure("list plans".into(), e))
 }
-/// The tenant's plans, by code, that have a draft, pending or published revision whose items
-/// name an entry of `sku` — the plans the SKU's usage counts (D-428, D-434) — in ONE statement
-/// whatever their number. An included item without an entry names no entry and does not count.
-/// The revisions, items and entries are read tenant-scoped.
+/// The tenant's plans, by code, that have a draft, pending, scheduled or published revision whose
+/// items name an entry of `sku` — the plans the SKU's usage counts (D-428, D-434) — in ONE
+/// statement whatever their number. An included item without an entry names no entry and does not
+/// count. The revisions, items and entries are read tenant-scoped.
 /// # Errors
 /// Returns typed database failures.
 pub async fn naming_sku(

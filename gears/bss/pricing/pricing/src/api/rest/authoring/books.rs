@@ -190,14 +190,15 @@ pub async fn patch(
 /// `DELETE /price-books/{id}` (D-444): an unused book at the version the caller read, with an
 /// audit row. Refused in this order, after the door's authorization and If-Match: 404 for a book
 /// the tenant does not hold; 409 `STALE_REVISION`; 409 `BOOK_HAS_ENTRIES` for an entry of any
-/// reference state; 409 `BOOK_IN_PLAN` for a plan with a draft, pending or published revision on
-/// it; 409 `BOOK_IN_PLAN_HISTORY` when only superseded revisions name it (their history keeps the
-/// book). Both are judged from `plan_revision_repo::plans_on_books`, the read `stats.plans` and
-/// `stats.plans_superseded_only` count (D-441), and the entries by the read `stats.entries`
-/// counts, so the delete succeeds exactly when the three are 0. No unit can be pending on a book
-/// without entries (a pending price keeps its entry), so there is no refusal of its own for one.
-/// A row a concurrent writer adds after these reads is the same 409, from the book's foreign key
-/// (`book_repo::delete`). Units that named the book stay, and their cards answer without it.
+/// reference state; 409 `BOOK_IN_PLAN` for a plan with a draft, pending, scheduled or published
+/// revision on it; 409 `BOOK_IN_PLAN_HISTORY` when only superseded revisions name it (their
+/// history keeps the book). Both are judged from `plan_revision_repo::plans_on_books`, the read
+/// `stats.plans` and `stats.plans_superseded_only` count (D-441), and the entries by the read
+/// `stats.entries` counts, so the delete succeeds exactly when the three are 0. No unit can be
+/// pending on a book without entries (a pending price keeps its entry), so there is no refusal of
+/// its own for one. A row a concurrent writer adds after these reads is the same 409, from the
+/// book's foreign key (`book_repo::delete`). Units that named the book stay, and their cards answer
+/// without it.
 /// # Errors
 /// The refusals above; storage failures.
 #[allow(

@@ -1864,11 +1864,12 @@ fn contract(golden: &str) -> (&'static str, Vec<Ask>) {
             ],
         ),
         "price_book_entry_usage" => (
-            "D-428: the two entry reads answer the entry's fields and its usage - its prices by state (a rejected price \
-             is not counted), the distinct plans whose draft, pending or published revisions name it (one plan counts \
-             once however many of its revisions name the entry) and the distinct plans that name it only through \
-             superseded revisions; the list carries it on every entry, an entry nothing uses reads zeros; another \
-             tenant reads nothing",
+            "D-428: the two entry reads answer the entry's fields and its usage - its prices by \
+             state (a rejected price is not counted), the distinct plans whose draft, pending, \
+             scheduled or published revisions name it (one plan counts once however many of its \
+             revisions name the entry) and the distinct plans that name it only through superseded \
+             revisions; the list carries it on every entry, an entry nothing uses reads zeros; \
+             another tenant reads nothing",
             vec![
                 ask(
                     "an entry with approved, pending, draft and rejected prices, named by a superseded and a \

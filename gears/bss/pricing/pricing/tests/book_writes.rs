@@ -367,9 +367,9 @@ async fn an_unused_book_is_deleted_under_if_match_with_an_audit_row() {
 }
 
 /// The refusals, in order: If-Match before use; an entry of any state (`BOOK_HAS_ENTRIES`), then a
-/// plan with a draft, pending or published revision on the book (`BOOK_IN_PLAN`, the one read
-/// `stats.plans` counts, D-441), then a plan that names it only through superseded revisions
-/// (`BOOK_IN_PLAN_HISTORY`: `stats.plans` is 0, the revision's history keeps the book).
+/// plan with a draft, pending, scheduled or published revision on the book (`BOOK_IN_PLAN`, the
+/// one read `stats.plans` counts, D-441), then a plan that names it only through superseded
+/// revisions (`BOOK_IN_PLAN_HISTORY`: `stats.plans` is 0, the revision's history keeps the book).
 #[tokio::test]
 async fn a_book_in_use_is_refused_in_a_stated_order_and_kept() {
     let (f, _) = fixture().await;

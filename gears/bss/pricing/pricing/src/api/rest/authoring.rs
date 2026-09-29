@@ -177,10 +177,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              Refusals, in order: 403 without the book write grant; 400 for a missing or malformed \
              If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 \
              BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, \
-             pending or published revision on the book, as stats.plans counts it, D-441); 409 \
-             BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only \
-             counts it): the delete succeeds exactly when stats.entries, stats.plans and \
-             stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
+             pending, scheduled or published revision on the book, as stats.plans counts it, \
+             D-441); 409 BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as \
+             stats.plans_superseded_only counts it): the delete succeeds exactly when \
+             stats.entries, stats.plans and stats.plans_superseded_only are 0. A row added by a \
+             concurrent writer is the same 409.",
         )
         .tag("Pricing")
         .authenticated()
@@ -198,8 +199,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
              and period, each with its usage (D-428): its prices by state (a rejected price is not \
              counted; the approved ones also as scheduled, active and superseded today, D-440), \
-             the distinct plans whose draft, pending or published revisions name it, and the \
-             distinct plans that name it only through superseded revisions; and its \
+             the distinct plans whose draft, pending, scheduled or published revisions name it, \
+             and the distinct plans that name it only through superseded revisions; and its \
              current_price, the default chain's approved price in force today, shown to a caller \
              who also holds price_book read on the book and null otherwise (D-434, D-440). \
              Refusals: 404 for a book the tenant does not hold.",
@@ -369,10 +370,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Returns one price book entry of the tenant, its version as the ETag a following PATCH \
              sends back as If-Match, its usage (D-428): its prices by state (a rejected price is \
              not counted; the approved ones also as scheduled, active and superseded today, \
-             D-440), the distinct plans whose draft, pending or published revisions name it, and \
-             the distinct plans that name it only through superseded revisions; and its \
-             current_price, the default chain's approved price in force today, shown to a caller \
-             who also holds price_book read on its book and null otherwise (D-434, D-440). \
+             D-440), the distinct plans whose draft, pending, scheduled or published revisions \
+             name it, and the distinct plans that name it only through superseded revisions; and \
+             its current_price, the default chain's approved price in force today, shown to a \
+             caller who also holds price_book read on its book and null otherwise (D-434, D-440). \
              Refusals: 404 ENTRY_NOT_FOUND.",
         )
         .tag("Pricing")

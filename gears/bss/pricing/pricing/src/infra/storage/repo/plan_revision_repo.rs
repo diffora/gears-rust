@@ -174,8 +174,8 @@ pub async fn for_plans(
         .map_err(|e| driver_failure("list the revisions of plans".into(), e))
 }
 /// The plans that name one book, a row of [`plans_on_books`]: `plans`, the distinct plans with a
-/// draft, pending or published revision on it; `named`, the distinct plans with a revision of any
-/// state on it. `named - plans` are the plans only superseded revisions keep there.
+/// draft, pending, scheduled or published revision on it; `named`, the distinct plans with a
+/// revision of any state on it. `named - plans` are the plans only superseded revisions keep there.
 #[derive(Debug, Clone, PartialEq, Eq, sea_orm::FromQueryResult)]
 pub struct BookPlanCount {
     pub book_id: Uuid,
@@ -183,10 +183,11 @@ pub struct BookPlanCount {
     pub named: i64,
 }
 /// The plans a book is in (D-441): for each of the tenant's `books` a revision of any state names,
-/// the distinct plans with a draft, pending or published revision whose `book_id` is that book
-/// (`plans`: a plan whose only revisions on it are superseded is not in it, and two revisions of
-/// one plan count once), and the distinct plans with any revision on it (`named`). ONE grouped
-/// statement whatever the number of books and revisions; a book no revision names has no row.
+/// the distinct plans with a draft, pending, scheduled or published revision whose `book_id` is
+/// that book (`plans`: a plan whose only revisions on it are superseded is not in it, and two
+/// revisions of one plan count once), and the distinct plans with any revision on it (`named`).
+/// ONE grouped statement whatever the number of books and revisions; a book no revision names
+/// has no row.
 /// The book stats count `plans` and `named - plans` from it, and the book delete (D-444) judges
 /// `BOOK_IN_PLAN` by `plans` and `BOOK_IN_PLAN_HISTORY` by `named` from the same read, so a book's
 /// stats and its delete never disagree.

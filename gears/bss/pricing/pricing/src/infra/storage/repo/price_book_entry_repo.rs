@@ -327,9 +327,9 @@ pub async fn priced_skus(
 ) -> Result<Vec<Uuid>, RepoError> {
     distinct_skus(runner, scope, tenant, Condition::all(), "list priced SKUs").await
 }
-/// The SKUs whose entries (under `scope`) a plan item of a draft, pending or published revision
-/// names: the SKUs whose usage counts a plan (D-428), in ONE statement (P-D-212). The items and
-/// revisions are read tenant-scoped, as the usage count reads them.
+/// The SKUs whose entries (under `scope`) a plan item of a draft, pending, scheduled or published
+/// revision names: the SKUs whose usage counts a plan (D-428), in ONE statement (P-D-212). The
+/// items and revisions are read tenant-scoped, as the usage count reads them.
 /// # Errors
 /// Returns typed database failures.
 pub async fn in_plan_skus(

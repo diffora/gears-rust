@@ -116,17 +116,18 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("List, filter and search the price books")
         .description(
             "One page of the tenant's price books (D-442), each with its stats (D-441): its \
-             entries and their distinct SKUs, the distinct plans with a draft, pending or \
-             published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, \
-             active and superseded today), its prices units in review and its last change. OData \
-             `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on \
-             that side); `$orderby` over code and name (tie-break id; default code); `$top` \
-             (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from \
-             `page_info`. `q` is a case-insensitive substring of the code or the name, matched \
-             literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 \
-             QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 \
-             FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 \
-             for `$select`, `$count` and the other OData options it does not take.",
+             entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled \
+             or published revision on it and those that name it only through superseded revisions, \
+             its prices by state (the approved ones also as scheduled, active and superseded \
+             today), its prices units in review and its last change. OData `$filter` over code, \
+             name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` \
+             over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, \
+             clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a \
+             case-insensitive substring of the code or the name, matched literally; `sku_id` keeps \
+             the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a \
+             repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with \
+             another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData \
+             options it does not take.",
         )
         .tag("Pricing")
         .authenticated()

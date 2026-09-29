@@ -10728,7 +10728,7 @@
         "type": "string"
       },
       "PricingEntryUsage": {
-        "description": "An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,\npending or published revision whose items name it; `plans_superseded_only`, the distinct plans\nthat name it only through superseded revisions (they still keep it `ENTRY_IN_USE`).",
+        "description": "An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,\npending, scheduled or published revision whose items name it; `plans_superseded_only`, the\ndistinct plans that name it only through superseded revisions (they still keep it\n`ENTRY_IN_USE`).",
         "properties": {
           "plans": {
             "format": "int64",
@@ -11684,7 +11684,7 @@
         "description": "What the two book reads answer (D-441): the book's fields and its `stats`. The write answers\n(POST, PATCH, the stored receipt), the export and publish-changes keep [`PriceBookDto`]."
       },
       "PricingPriceBookStats": {
-        "description": "A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,\npending or published revision on the book (`plans`), and those that name it only through\nsuperseded revisions (`plans_superseded_only`, what the delete refuses as\n`BOOK_IN_PLAN_HISTORY`); its prices by state; its `prices` units in review; and the latest\nchange of the book, its entries, their prices and its units. `DELETE /price-books/{id}`\nsucceeds exactly when `entries`, `plans` and `plans_superseded_only` are 0 (D-444).",
+        "description": "A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,\npending, scheduled or published revision on the book (`plans`), and those that name it only\nthrough superseded revisions (`plans_superseded_only`, what the delete refuses as\n`BOOK_IN_PLAN_HISTORY`); its prices by state; its `prices` units in review; and the latest\nchange of the book, its entries, their prices and its units. `DELETE /price-books/{id}`\nsucceeds exactly when `entries`, `plans` and `plans_superseded_only` are 0 (D-444).",
         "properties": {
           "entries": {
             "format": "int64",
@@ -37050,7 +37050,7 @@
         ]
       },
       "get": {
-        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on its book and null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
+        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on its book and null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
         "operationId": "bss_pricing.get_entry",
         "parameters": [
           {
@@ -37535,7 +37535,7 @@
     },
     "/bss-pricing/v1/price-books": {
       "get": {
-        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
+        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
         "operationId": "bss_pricing.list_books",
         "parameters": [
           {
@@ -37861,7 +37861,7 @@
     },
     "/bss-pricing/v1/price-books/{id}": {
       "delete": {
-        "description": "Deletes a book no entry and no plan revision names, at the version the caller read (If-Match), with an audit row (D-444). Units that named it stay readable, their cards without the book; the create's Idempotency-Key still replays its answer for a day. Refusals, in order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, pending or published revision on the book, as stats.plans counts it, D-441); 409 BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only counts it): the delete succeeds exactly when stats.entries, stats.plans and stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
+        "description": "Deletes a book no entry and no plan revision names, at the version the caller read (If-Match), with an audit row (D-444). Units that named it stay readable, their cards without the book; the create's Idempotency-Key still replays its answer for a day. Refusals, in order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, pending, scheduled or published revision on the book, as stats.plans counts it, D-441); 409 BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only counts it): the delete succeeds exactly when stats.entries, stats.plans and stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
         "operationId": "bss_pricing.delete_book",
         "parameters": [
           {
@@ -38211,7 +38211,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on the book and null otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
+        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on the book and null otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {

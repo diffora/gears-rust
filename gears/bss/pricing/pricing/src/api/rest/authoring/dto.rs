@@ -148,8 +148,9 @@ pub struct PricingEntryPriceCounts {
     pub superseded: u64,
 }
 /// An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,
-/// pending or published revision whose items name it; `plans_superseded_only`, the distinct plans
-/// that name it only through superseded revisions (they still keep it `ENTRY_IN_USE`).
+/// pending, scheduled or published revision whose items name it; `plans_superseded_only`, the
+/// distinct plans that name it only through superseded revisions (they still keep it
+/// `ENTRY_IN_USE`).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryUsage {
     pub prices: PricingEntryPriceCounts,
@@ -226,8 +227,8 @@ pub struct PricingBookPriceCounts {
     pub rejected: u64,
 }
 /// A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,
-/// pending or published revision on the book (`plans`), and those that name it only through
-/// superseded revisions (`plans_superseded_only`, what the delete refuses as
+/// pending, scheduled or published revision on the book (`plans`), and those that name it only
+/// through superseded revisions (`plans_superseded_only`, what the delete refuses as
 /// `BOOK_IN_PLAN_HISTORY`); its prices by state; its `prices` units in review; and the latest
 /// change of the book, its entries, their prices and its units. `DELETE /price-books/{id}`
 /// succeeds exactly when `entries`, `plans` and `plans_superseded_only` are 0 (D-444).
