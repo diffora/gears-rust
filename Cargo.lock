@@ -2068,6 +2068,7 @@ dependencies = [
  "cf-gears-bss-pricing-sdk",
  "cf-gears-bss-products-sdk",
  "cf-gears-event-broker-sdk",
+ "cf-gears-test-containers",
  "cf-gears-toolkit",
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-contract",

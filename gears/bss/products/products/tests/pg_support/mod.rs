@@ -181,7 +181,10 @@ use toolkit_db::{ConnectOpts, Db, connect_db};
 ///
 /// Pinned rather than defaulted so the engine a guard was proved against is a
 /// fact of the repository and not of whatever the image's moving tag resolved to
-/// on the day. The same tag the donor pins.
+/// on the day. The same tag the donor pins. Below the workspace floor
+/// (`test_containers::POSTGRES_TAG`) as pricing's is, and taken through
+/// `test_containers::postgres_tagged` so `GEARS_TEST_PG_TAG` still overrides it
+/// (docs/TESTING.md 4.4).
 pub const PG_TAG: &str = "16-alpine";
 
 /// The one container's name — fixed, so a later run finds it instead of
@@ -361,8 +364,7 @@ async fn start_named() -> Option<ContainerAsync<Postgres>> {
         // Bound per iteration rather than carried across them: the sibling check
         // below returns without reading it, which makes a loop-scoped `last` a
         // dead assignment on that path (`-D unused-assignments`).
-        let last = match Postgres::default()
-            .with_tag(PG_TAG)
+        let last = match test_containers::postgres_tagged(PG_TAG)
             .with_container_name(HARNESS_CONTAINER)
             .start()
             .await
