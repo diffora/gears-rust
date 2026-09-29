@@ -886,7 +886,7 @@ test-coord-pg: install-tools
 ## Run bss-products' Postgres tier (Docker required; testcontainers).
 ##
 ## Same `--run-ignored ignored-only` shape and the same reason as the two above:
-## the gate is `#[ignore]` rather than a feature. This gear's tier was added on
+## the gate is an ignored-test attribute rather than a feature. This gear's tier was added on
 ## 2026-08-30 and, until this target existed, repeated the donor's own 2026-08-11
 ## failure exactly — 23 tests across six `postgres_*` binaries that compiled on
 ## every run and executed on none, while the DoD they discharge

@@ -249,21 +249,21 @@ fn has_enum(node: &Value) -> bool {
 #[tokio::test]
 async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() {
     let api = served().await;
-    let mut todo = BTreeSet::new();
+    let mut pending = BTreeSet::new();
     for op in api["paths"]
         .as_object()
         .unwrap()
         .values()
         .flat_map(|ops| ops.as_object().unwrap().values())
     {
-        refs(&op["requestBody"], &mut todo);
+        refs(&op["requestBody"], &mut pending);
     }
     let mut seen = BTreeSet::new();
-    while let Some(name) = todo.pop_first() {
+    while let Some(name) = pending.pop_first() {
         if seen.insert(name.clone()) {
             let mut next = BTreeSet::new();
             refs(component(&api, &name), &mut next);
-            todo.extend(next.difference(&seen).cloned());
+            pending.extend(next.difference(&seen).cloned());
         }
     }
     let enums: Vec<_> = seen

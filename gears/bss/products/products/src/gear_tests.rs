@@ -570,21 +570,21 @@ async fn the_fields_no_check_guards_stay_strings_on_the_responses() -> anyhow::R
 #[tokio::test]
 async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() -> anyhow::Result<()> {
     let api = served_spec().await?;
-    let mut todo = std::collections::BTreeSet::new();
+    let mut pending = std::collections::BTreeSet::new();
     for op in api["paths"]
         .as_object()
         .unwrap()
         .values()
         .flat_map(|ops| ops.as_object().unwrap().values())
     {
-        schema_refs(&op["requestBody"], &mut todo);
+        schema_refs(&op["requestBody"], &mut pending);
     }
     let mut seen = std::collections::BTreeSet::new();
-    while let Some(name) = todo.pop_first() {
+    while let Some(name) = pending.pop_first() {
         if seen.insert(name.clone()) {
             let mut next = std::collections::BTreeSet::new();
             schema_refs(component(&api, &name), &mut next);
-            todo.extend(next.difference(&seen).cloned());
+            pending.extend(next.difference(&seen).cloned());
         }
     }
     let enums: Vec<_> = seen
