@@ -387,7 +387,7 @@ async fn advance(
 /// the state, the kind's durable event and the audit record commit together.
 async fn mark_lost(
     tx: &(impl DBRunner + Sync),
-    outbox: &super::events::EventSink,
+    outbox: &super::events::TxOutbox,
     ctx: &SecurityContext,
     work: &Work,
     op: &entity::Model,
@@ -402,7 +402,7 @@ async fn mark_lost(
 /// state, the durable `PriceBookEntryReferenceLost` event and the audit record commit together.
 async fn mark_entry_lost(
     tx: &(impl DBRunner + Sync),
-    outbox: &super::events::EventSink,
+    outbox: &super::events::TxOutbox,
     ctx: &SecurityContext,
     work: &Work,
     op: &entity::Model,
@@ -704,16 +704,15 @@ async fn commit_observation(
     write: Option<Write>,
     clock: Arc<dyn Clock>,
 ) -> Result<(), CanonicalError> {
-    let (op, ctx, outbox) = (op.clone(), ctx.clone(), state.outbox.clone());
-    support::transaction(&state.db.db(), move |tx| {
-        let (op, work, ctx, clock, event, write, outbox) = (
+    let (op, ctx, db) = (op.clone(), ctx.clone(), state.db.db());
+    support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+        let (op, work, ctx, clock, event, write) = (
             op.clone(),
             work.clone(),
             ctx.clone(),
             clock.clone(),
             event.clone(),
             write.clone(),
-            outbox.clone(),
         );
         Box::pin(
             async move { commit(tx, &outbox, &ctx, &op, work, event, write, clock.as_ref()).await },
@@ -727,7 +726,7 @@ async fn commit_observation(
 )]
 async fn commit(
     tx: &(impl DBRunner + Sync),
-    outbox: &super::events::EventSink,
+    outbox: &super::events::TxOutbox,
     ctx: &SecurityContext,
     op: &entity::Model,
     mut work: Work,

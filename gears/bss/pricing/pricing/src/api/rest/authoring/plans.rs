@@ -30,7 +30,7 @@ use crate::{
         price::PriceState,
     },
     infra::{
-        events::EventSink,
+        events::TxOutbox,
         plan_revisions, reference_registry, reference_work,
         storage::{
             RepoError,
@@ -317,24 +317,25 @@ pub(super) async fn copy(
     digest: Vec<u8>,
 ) -> Result<Response, CanonicalError> {
     let original_ctx = ctx.clone();
-    let outbox = state.outbox.clone();
-    let (response, ops) = support::transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
-        let outbox = outbox.clone();
-        Box::pin(async move {
-            copy_in(
-                tx,
-                &outbox,
-                &scope,
-                &ctx,
-                correlation,
-                plan_id,
-                (&key, &digest),
-            )
-            .await
+    let db = state.db.db();
+    let (response, ops) =
+        support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+            let (scope, ctx, key, digest) =
+                (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+            Box::pin(async move {
+                copy_in(
+                    tx,
+                    &outbox,
+                    &scope,
+                    &ctx,
+                    correlation,
+                    plan_id,
+                    (&key, &digest),
+                )
+                .await
+            })
         })
-    })
-    .await?;
+        .await?;
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(response)
 }
@@ -344,7 +345,7 @@ pub(super) async fn copy(
 )]
 async fn copy_in(
     tx: &(impl DBRunner + Sync),
-    outbox: &EventSink,
+    outbox: &TxOutbox,
     scope: &AccessScope,
     ctx: &SecurityContext,
     correlation: Uuid,
@@ -504,25 +505,27 @@ pub(super) async fn clone(
     input: PricingPlanClone,
 ) -> Result<Response, CanonicalError> {
     let original_ctx = ctx.clone();
-    let outbox = state.outbox.clone();
-    let (response, ops) = support::transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
-        let (input, outbox) = (input.clone(), outbox.clone());
-        Box::pin(async move {
-            clone_in(
-                tx,
-                &outbox,
-                &scope,
-                &ctx,
-                correlation,
-                source,
-                (&key, &digest),
-                input,
-            )
-            .await
+    let db = state.db.db();
+    let (response, ops) =
+        support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+            let (scope, ctx, key, digest) =
+                (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+            let input = input.clone();
+            Box::pin(async move {
+                clone_in(
+                    tx,
+                    &outbox,
+                    &scope,
+                    &ctx,
+                    correlation,
+                    source,
+                    (&key, &digest),
+                    input,
+                )
+                .await
+            })
         })
-    })
-    .await?;
+        .await?;
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(response)
 }
@@ -532,7 +535,7 @@ pub(super) async fn clone(
 )]
 async fn clone_in(
     tx: &(impl DBRunner + Sync),
-    outbox: &EventSink,
+    outbox: &TxOutbox,
     scope: &AccessScope,
     ctx: &SecurityContext,
     correlation: Uuid,
@@ -652,10 +655,9 @@ pub(super) async fn unschedule(
     key: String,
     digest: Vec<u8>,
 ) -> Result<Response, CanonicalError> {
-    let outbox = state.outbox.clone();
-    support::transaction(&state.db.db(), move |tx| {
+    let db = state.db.db();
+    support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
         let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
-        let outbox = outbox.clone();
         Box::pin(async move {
             unschedule_in(tx, &outbox, &scope, &ctx, correlation, id, (&key, &digest)).await
         })
@@ -664,7 +666,7 @@ pub(super) async fn unschedule(
 }
 async fn unschedule_in(
     tx: &(impl DBRunner + Sync),
-    outbox: &EventSink,
+    outbox: &TxOutbox,
     scope: &AccessScope,
     ctx: &SecurityContext,
     correlation: Uuid,

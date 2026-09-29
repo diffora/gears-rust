@@ -8,7 +8,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-plan-reference-protocol:p1
 use super::{
-    super::{events::EventSink, reference_events},
+    super::{events::TxOutbox, reference_events},
     Observation, Receipt, Ref, Target, Work, Write, corrupt, new_op,
 };
 use crate::{
@@ -176,7 +176,7 @@ pub(super) async fn finish_written(
 /// announced once; a removed one has nothing to lose.
 pub(super) async fn mark_lost(
     tx: &(impl DBRunner + Sync),
-    outbox: &EventSink,
+    outbox: &TxOutbox,
     ctx: &SecurityContext,
     work: &Work,
     op: &entity::Model,

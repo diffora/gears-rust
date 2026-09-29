@@ -214,9 +214,8 @@ impl Ticker {
         plan: Uuid,
         now: time::OffsetDateTime,
     ) -> Result<(), CanonicalError> {
-        let outbox = self.state.outbox.clone();
-        support::transaction(&self.state.db.db(), move |tx| {
-            let outbox = outbox.clone();
+        let db = self.state.db.db();
+        support::transaction_with_events(&db, &self.state.outbox, move |tx, outbox| {
             Box::pin(async move {
                 plan_revisions::catch_up(tx, &outbox, tenant, plan, now, Uuid::now_v7()).await
             })

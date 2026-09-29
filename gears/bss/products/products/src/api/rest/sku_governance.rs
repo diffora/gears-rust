@@ -16,7 +16,7 @@ use crate::{
         sku::{SkuPatch, apply_patch},
         validation::ValidationReport,
     },
-    infra::{idempotency::IdempotencyClaimInput, storage::repo},
+    infra::{events, idempotency::IdempotencyClaimInput, storage::repo},
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
@@ -358,147 +358,149 @@ async fn execute(
     } else {
         g::resolve(&state, &ctx, &proposed).await?
     };
-    let db = state.db.db();
-    let receipt = db
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let state = state.clone();
-            let scope = scope.clone();
-            let ctx = ctx.clone();
-            let patch = patch.clone();
-            let usage = usage.clone();
-            let proposed = proposed.clone();
-            let claim = claim.clone();
-            let note = note.clone();
-            Box::pin(async move {
-                g::find(tx, &scope, tenant, id).await?;
-                if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
-                    return Ok(response);
-                }
-                // The authorized SKU anchors unit, policy and reference work.
-                let scope = AccessScope::for_tenant(tenant);
-                g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
-                let current = g::find(tx, &scope, tenant, id).await?;
-                if !matches!(kind, SubmitKind::Retire)
-                    && apply_patch(&SkuContent::from(&current), &patch).usage_type_ref
-                        != proposed.usage_type_ref
-                {
-                    return Err(g::conflict(
-                        "STALE_REVISION",
-                        "meter changed during resolution; retry",
-                    ));
-                }
-                if matches!(kind, SubmitKind::Change)
-                    && !patch
+    let (db, sink, config) = (
+        state.db.db(),
+        state.sink.clone(),
+        category_tx_config(&state),
+    );
+    let receipt = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
+        let state = state.clone();
+        let scope = scope.clone();
+        let ctx = ctx.clone();
+        let patch = patch.clone();
+        let usage = usage.clone();
+        let proposed = proposed.clone();
+        let claim = claim.clone();
+        let note = note.clone();
+        Box::pin(async move {
+            g::find(tx, &scope, tenant, id).await?;
+            if let Some(response) = replay::begin(tx, tenant, claim.as_ref()).await? {
+                return Ok(response);
+            }
+            // The authorized SKU anchors unit, policy and reference work.
+            let scope = AccessScope::for_tenant(tenant);
+            g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
+            let current = g::find(tx, &scope, tenant, id).await?;
+            if !matches!(kind, SubmitKind::Retire)
+                && apply_patch(&SkuContent::from(&current), &patch).usage_type_ref
+                    != proposed.usage_type_ref
+            {
+                return Err(g::conflict(
+                    "STALE_REVISION",
+                    "meter changed during resolution; retry",
+                ));
+            }
+            if matches!(kind, SubmitKind::Change)
+                && !patch
+                    .r#type
+                    .is_some_and(|proposed| proposed != current.r#type)
+                && current.type_change_pending
+            {
+                return Err(g::conflict(
+                    "SKU_FENCED",
+                    "resume the type change or unfence it first",
+                ));
+            }
+            // P-D-213: the lifecycle the submit found, and the one it leaves before any apply:
+            // only a retire moves it, by its fence (a fence taken now, or the orphan resumed,
+            // is `retiring` either way); a type-change fence moves none.
+            let found = current.lifecycle;
+            let fenced = if matches!(kind, SubmitKind::Retire) {
+                Lifecycle::Retiring
+            } else {
+                found
+            };
+            let base = SkuPublish {
+                scope: scope.clone(),
+                tenant_id: tenant,
+                outbox: outbox.clone(),
+                actor: ctx.subject_id(),
+                now,
+                usage_type: usage,
+            };
+            let subject = match kind {
+                SubmitKind::Publish => Subject::Publish(base),
+                SubmitKind::Retire => Subject::Retire(SkuRetire {
+                    base,
+                    fence_op_id: fence(tx, &scope, tenant, id, repo::Fence::Retire, now).await?,
+                }),
+                SubmitKind::Change => {
+                    let fence_op_id = if patch
                         .r#type
                         .is_some_and(|proposed| proposed != current.r#type)
-                    && current.type_change_pending
-                {
-                    return Err(g::conflict(
-                        "SKU_FENCED",
-                        "resume the type change or unfence it first",
-                    ));
-                }
-                // P-D-213: the lifecycle the submit found, and the one it leaves before any apply:
-                // only a retire moves it, by its fence (a fence taken now, or the orphan resumed,
-                // is `retiring` either way); a type-change fence moves none.
-                let found = current.lifecycle;
-                let fenced = if matches!(kind, SubmitKind::Retire) {
-                    Lifecycle::Retiring
-                } else {
-                    found
-                };
-                let base = SkuPublish {
-                    scope: scope.clone(),
-                    tenant_id: tenant,
-                    sink: state.sink.clone(),
-                    actor: ctx.subject_id(),
-                    now,
-                    usage_type: usage,
-                };
-                let subject = match kind {
-                    SubmitKind::Publish => Subject::Publish(base),
-                    SubmitKind::Retire => Subject::Retire(SkuRetire {
+                    {
+                        Some(fence(tx, &scope, tenant, id, repo::Fence::TypeChange, now).await?)
+                    } else {
+                        None
+                    };
+                    Subject::Change(SkuChange {
                         base,
-                        fence_op_id: fence(tx, &scope, tenant, id, repo::Fence::Retire, now)
-                            .await?,
-                    }),
-                    SubmitKind::Change => {
-                        let fence_op_id = if patch
-                            .r#type
-                            .is_some_and(|proposed| proposed != current.r#type)
-                        {
-                            Some(fence(tx, &scope, tenant, id, repo::Fence::TypeChange, now).await?)
-                        } else {
-                            None
-                        };
-                        Subject::Change(SkuChange {
-                            base,
-                            patch,
-                            effective_from: date.unwrap_or(now.date()),
-                            fence_op_id,
-                        })
-                    }
-                };
-                let store = repo::ProductsApprovalStore {
-                    scope: scope.clone(),
+                        patch,
+                        effective_from: date.unwrap_or(now.date()),
+                        fence_op_id,
+                    })
+                }
+            };
+            let store = repo::ProductsApprovalStore {
+                scope: scope.clone(),
+                tenant_id: tenant,
+            };
+            let policy = repo::read_policy(tx, &scope, tenant)
+                .await
+                .map_err(TxError::Repo)?;
+            let submitted = Engine::submit(
+                &store,
+                &subject,
+                tx,
+                SubmitRequest {
                     tenant_id: tenant,
-                };
-                let policy = repo::read_policy(tx, &scope, tenant)
-                    .await
-                    .map_err(TxError::Repo)?;
-                let submitted = Engine::submit(
-                    &store,
-                    &subject,
-                    tx,
-                    SubmitRequest {
-                        tenant_id: tenant,
-                        ref_id: id,
-                        item_ids: &[id],
-                        actor: ctx.subject_id(),
-                        policy: &policy,
-                        common_effective_date: date,
-                        note: note.as_deref(),
-                        now,
-                    },
-                )
-                .await?;
+                    ref_id: id,
+                    item_ids: &[id],
+                    actor: ctx.subject_id(),
+                    policy: &policy,
+                    common_effective_date: date,
+                    note: note.as_deref(),
+                    now,
+                },
+            )
+            .await?;
+            g::audit(
+                tx,
+                &scope,
+                &ctx,
+                "approval.submit",
+                "approval_unit",
+                submitted.unit.id,
+                note,
+                now,
+                repo::LifecycleMove::between(found, fenced),
+            )
+            .await?;
+            let after = g::find(tx, &scope, tenant, id).await?;
+            if submitted.applied {
                 g::audit(
                     tx,
                     &scope,
                     &ctx,
-                    "approval.submit",
+                    "approval.applied",
                     "approval_unit",
                     submitted.unit.id,
-                    note,
+                    None,
                     now,
-                    repo::LifecycleMove::between(found, fenced),
+                    repo::LifecycleMove::between(fenced, after.lifecycle),
                 )
                 .await?;
-                let after = g::find(tx, &scope, tenant, id).await?;
-                if submitted.applied {
-                    g::audit(
-                        tx,
-                        &scope,
-                        &ctx,
-                        "approval.applied",
-                        "approval_unit",
-                        submitted.unit.id,
-                        None,
-                        now,
-                        repo::LifecycleMove::between(fenced, after.lifecycle),
-                    )
-                    .await?;
-                    g::decided(&state, tx, &store, &submitted.unit, ctx.subject_id()).await?;
-                }
-                let receipt = SubmitReceipt {
-                    applied: submitted.applied,
-                    unit: submitted.unit.into(),
-                    sku: after.into(),
-                };
-                replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await
-            })
+                g::decided(&outbox, tx, &store, &submitted.unit, ctx.subject_id()).await?;
+            }
+            let receipt = SubmitReceipt {
+                applied: submitted.applied,
+                unit: submitted.unit.into(),
+                sku: after.into(),
+            };
+            replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await
         })
-        .await;
+    })
+    .await;
     match receipt {
         Ok(receipt) => Ok(receipt),
         Err(TxError::FencedReferences { code, rows }) => {

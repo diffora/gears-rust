@@ -158,15 +158,15 @@ async fn persisted<E: TypedEvent + Clone + PartialEq + std::fmt::Debug>(
     event: E,
 ) {
     let expected = event.clone();
-    let sink = sink.clone();
-    db.transaction_with_retry::<(), TxError, _, _>(
+    events::transaction::<(), TxError, _, _>(
+        db,
+        sink,
         TxConfig::default(),
         |_| None,
-        move |tx| {
-            let sink = sink.clone();
+        move |tx, outbox| {
             let event = event.clone();
             Box::pin(async move {
-                enqueue_typed(&sink, tx, event).await?;
+                enqueue_typed(&outbox, tx, event).await?;
                 Ok(())
             })
         },
@@ -224,23 +224,21 @@ async fn every_event_round_trips_through_the_interim_outbox_and_rollback_leaves_
         published_version: 2,
         actor_ref: actor,
     };
-    let failed_sink = sink.clone();
     let failed_event = changed.clone();
-    let result = db
-        .db()
-        .transaction_with_retry::<(), TxError, _, _>(
-            TxConfig::default(),
-            |_| None,
-            move |tx| {
-                let sink = failed_sink.clone();
-                let event = failed_event.clone();
-                Box::pin(async move {
-                    enqueue_typed(&sink, tx, event).await?;
-                    Err(TxError::Rollback)
-                })
-            },
-        )
-        .await;
+    let result = events::transaction::<(), TxError, _, _>(
+        &db.db(),
+        &sink,
+        TxConfig::default(),
+        |_| None,
+        move |tx, outbox| {
+            let event = failed_event.clone();
+            Box::pin(async move {
+                enqueue_typed(&outbox, tx, event).await?;
+                Err(TxError::Rollback)
+            })
+        },
+    )
+    .await;
     assert!(matches!(result, Err(TxError::Rollback)));
     assert_eq!(enqueued_event_count(&dsn, SkuChanged::TYPE_ID).await, 0);
     persisted(
@@ -330,7 +328,7 @@ async fn interim_outbox_retains_driver_error() {
         .unwrap();
     crate::test_support::drop_table(&dsn, "bss_products_outbox_body").await;
     let error = enqueue_typed(
-        &EventSink::Interim(Arc::clone(handle.outbox())),
+        &events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
         &db.conn().unwrap(),
         SkuPublished {
             tenant_id: tenant,

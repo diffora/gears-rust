@@ -1059,12 +1059,28 @@ pub async fn test_db() -> (
     Uuid,
     TestDsn,
 ) {
+    test_db_with(1).await
+}
+
+/// [`test_db`] over a pool of `max_conns` connections: the outbox's workers then read on a
+/// connection of their own while a transaction is still open, as they do in a deployment.
+///
+/// # Panics
+/// Panics if fixture initialization fails.
+pub async fn test_db_with(
+    max_conns: u32,
+) -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::secure::AccessScope,
+    Uuid,
+    TestDsn,
+) {
     use sea_orm_migration::MigratorTrait;
     let dsn = TestDsn::new("products-repos-");
     let db = toolkit_db::connect_db(
         &dsn,
         toolkit_db::ConnectOpts {
-            max_conns: Some(1),
+            max_conns: Some(max_conns),
             min_conns: Some(1),
             ..Default::default()
         },

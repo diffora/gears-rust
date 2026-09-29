@@ -240,7 +240,7 @@ pub async fn audit(
     .map_err(TxError::Repo)
 }
 pub(super) async fn decided(
-    state: &ApiState,
+    outbox: &events::TxOutbox,
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     unit: &Unit,
@@ -257,7 +257,7 @@ pub(super) async fn decided(
     actors.sort();
     actors.dedup();
     events::enqueue_typed(
-        &state.sink,
+        outbox,
         tx,
         broker::ApprovalUnitDecided {
             tenant_id: unit.tenant_id,

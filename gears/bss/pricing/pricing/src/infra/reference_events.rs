@@ -40,7 +40,7 @@ impl TypedEvent for PriceBookEntryReferenceLost {
 /// # Errors
 /// Preserves typed database errors for serializable transaction retries.
 pub async fn lost(
-    outbox: &events::EventSink,
+    outbox: &events::TxOutbox,
     tx: &(impl DBRunner + Sync),
     entry: &price_book_entry::Model,
     actor: Uuid,
@@ -89,7 +89,7 @@ impl TypedEvent for PlanReferenceLost {
 /// # Errors
 /// Preserves typed database errors for serializable transaction retries.
 pub async fn item_lost(
-    outbox: &events::EventSink,
+    outbox: &events::TxOutbox,
     tx: &(impl DBRunner + Sync),
     item: &plan_item::Model,
     plan_id: Uuid,

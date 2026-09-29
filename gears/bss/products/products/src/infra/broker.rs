@@ -265,3 +265,6 @@ pub(crate) async fn bind_producer(
 #[cfg(test)]
 #[path = "broker_tests.rs"]
 mod broker_tests;
+#[cfg(test)]
+#[path = "broker_wake_tests.rs"]
+mod broker_wake_tests;

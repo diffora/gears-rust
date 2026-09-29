@@ -22,6 +22,7 @@ use crate::{
         approval_kinds::{Kind, Subject},
         events::{
             self, ApprovalUnitDecided, PlanRevisionPublished, PricesPublished, PublishedPrice,
+            TxOutbox,
         },
         plan_revisions::PlanRevisionSubject,
         prices::{PricesSubject, Release},
@@ -57,7 +58,8 @@ pub struct Command {
     pub scope: AccessScope,
     pub ctx: SecurityContext,
     pub hub: Arc<toolkit::ClientHub>,
-    /// The toolkit outbox the decision's events are enqueued on, inside its transaction.
+    /// The sink the decision's transaction enqueues its events through; they wake the outbox's
+    /// sequencer once it commits (D-455).
     pub outbox: crate::infra::events::EventSink,
     pub correlation: Uuid,
     pub key: String,
@@ -139,6 +141,7 @@ async fn prices_of(
 /// transaction: the current-generation voters and the acting principal.
 async fn decided(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
     id: Uuid,
@@ -164,7 +167,7 @@ async fn decided(
         generation: unit.generation,
         actors,
     };
-    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    events::enqueue(outbox, tx, &event, now).await?;
     Ok(())
 }
 /// The domain event of an applied unit, by its kind, in the apply transaction. A plan revision
@@ -172,6 +175,7 @@ async fn decided(
 /// its switch's (D-449, D-450).
 async fn published(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
     subject: &Subject,
@@ -179,9 +183,9 @@ async fn published(
     now: OffsetDateTime,
 ) -> Result<(), DoorError> {
     match subject {
-        Subject::Prices(_) => prices_published(tx, cmd, store, id, now).await,
+        Subject::Prices(_) => prices_published(tx, outbox, cmd, store, id, now).await,
         Subject::PlanRevision(s) if s.published_now() => {
-            plan_revision_published(tx, cmd, store, s, id, now).await
+            plan_revision_published(tx, outbox, cmd, store, s, id, now).await
         }
         Subject::PlanRevision(_) => Ok(()),
     }
@@ -190,6 +194,7 @@ async fn published(
 /// one its apply superseded, and the book it reads.
 async fn plan_revision_published(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
     subject: &PlanRevisionSubject,
@@ -214,7 +219,7 @@ async fn plan_revision_published(
         unit_id: unit.id,
         actor_ref: cmd.ctx.subject_id(),
     };
-    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    events::enqueue(outbox, tx, &event, now).await?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
     Ok(())
 }
@@ -222,6 +227,7 @@ async fn plan_revision_published(
 /// approved with.
 async fn prices_published(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     store: &PricingApprovalStore,
     id: Uuid,
@@ -253,7 +259,7 @@ async fn prices_published(
         prices,
         actor_ref: cmd.ctx.subject_id(),
     };
-    events::enqueue(&cmd.outbox, tx, &event, now).await?;
+    events::enqueue(outbox, tx, &event, now).await?;
     Ok(())
 }
 
@@ -277,6 +283,7 @@ struct Submission {
 /// zero with its domain event and `ApprovalUnitDecided`. The caller answers the key.
 async fn record(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     subject: &Subject,
     submission: Submission,
@@ -321,14 +328,15 @@ async fn record(
             unit.version,
         )
         .await?;
-        published(tx, cmd, &store, subject, unit.id, submission.now).await?;
-        decided(tx, cmd, &store, unit.id, submission.now).await?;
+        published(tx, outbox, cmd, &store, subject, unit.id, submission.now).await?;
+        decided(tx, outbox, cmd, &store, unit.id, submission.now).await?;
     }
     Ok(submitted)
 }
 /// Record a `prices` unit and answer the key with the unit and its prices.
 async fn record_prices(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     endpoint: &str,
     subject: PricesSubject,
@@ -339,7 +347,7 @@ async fn record_prices(
         common_effective_date: subject.common_effective_date,
         now: subject.now,
     };
-    let submitted = record(tx, cmd, &Subject::Prices(subject), submission, ids).await?;
+    let submitted = record(tx, outbox, cmd, &Subject::Prices(subject), submission, ids).await?;
     let store = cmd.store();
     let prices = prices_of(tx, &store, submitted.unit.id).await?;
     let receipt = PricingSubmitReceipt {
@@ -363,7 +371,8 @@ async fn record_prices(
 /// # Errors
 /// Returns the canonical refusal.
 pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
-    support::unit_transaction(db, move |tx| {
+    let sink = cmd.outbox.clone();
+    support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
         let cmd = cmd.clone();
         Box::pin(async move {
             let endpoint = format!("/bss-pricing/v1/prices/{id}/submit");
@@ -392,7 +401,7 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
                 entry.book_id,
                 OffsetDateTime::now_utc(),
             );
-            record_prices(tx, &cmd, &endpoint, subject, &[id]).await
+            record_prices(tx, &outbox, &cmd, &endpoint, subject, &[id]).await
         })
     })
     .await
@@ -405,7 +414,8 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
 /// `REVISION_CHECKS_RED` with the red checks and no unit; 409 `ROW_LOCKED_PENDING` for a lost
 /// lock; 503 when the registry cannot answer.
 pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
-    support::unit_transaction(db, move |tx| {
+    let sink = cmd.outbox.clone();
+    support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
         let cmd = cmd.clone();
         Box::pin(async move {
             let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/submit");
@@ -426,8 +436,15 @@ pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response
                 common_effective_date: None,
                 now,
             };
-            let submitted =
-                record(tx, &cmd, &Subject::PlanRevision(subject), submission, &[id]).await?;
+            let submitted = record(
+                tx,
+                &outbox,
+                &cmd,
+                &Subject::PlanRevision(subject),
+                submission,
+                &[id],
+            )
+            .await?;
             // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
             let children = AccessScope::for_tenant(cmd.tenant());
             let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
@@ -536,7 +553,8 @@ pub async fn publish(
     input: PricingPublishChangesRequest,
 ) -> Result<Response, CanonicalError> {
     let date = support::date(input.common_effective_date.clone(), "common_effective_date")?;
-    support::unit_transaction(db, move |tx| {
+    let sink = cmd.outbox.clone();
+    support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
         let (cmd, input) = (cmd.clone(), input.clone());
         Box::pin(async move {
             let endpoint = format!("/bss-pricing/v1/price-books/{book}/publish-changes");
@@ -590,7 +608,7 @@ pub async fn publish(
             );
             subject.common_effective_date = date;
             subject.added_partner = added;
-            record_prices(tx, &cmd, &endpoint, subject, &selected).await
+            record_prices(tx, &outbox, &cmd, &endpoint, subject, &selected).await
         })
     })
     .await
@@ -745,9 +763,10 @@ pub async fn vote(
     action: Vote,
     body: Option<PricingVoteRequest>,
 ) -> Result<Response, CanonicalError> {
-    let result = support::unit_transaction_door(db, move |tx| {
+    let sink = cmd.outbox.clone();
+    let result = support::unit_transaction_door_with_events(db, &sink, move |tx, outbox| {
         let (cmd, body) = (cmd.clone(), body.clone());
-        Box::pin(async move { vote_in(tx, &cmd, id, action, body).await })
+        Box::pin(async move { vote_in(tx, &outbox, &cmd, id, action, body).await })
     })
     .await;
     match result {
@@ -760,6 +779,7 @@ pub async fn vote(
 }
 async fn vote_in(
     tx: &DbTx<'_>,
+    outbox: &TxOutbox,
     cmd: &Command,
     id: Uuid,
     action: Vote,
@@ -854,9 +874,9 @@ async fn vote_in(
         ),
         ApproveOutcome::Applied => {
             if action == Vote::Approve {
-                published(tx, cmd, &store, &subject, id, now).await?;
+                published(tx, outbox, cmd, &store, &subject, id, now).await?;
             }
-            decided(tx, cmd, &store, id, now).await?;
+            decided(tx, outbox, cmd, &store, id, now).await?;
             match action {
                 Vote::Approve => (PricingVoteOutcome::Applied, "approval.approved", None, None),
                 Vote::Reject => (

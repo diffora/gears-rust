@@ -342,7 +342,7 @@ async fn concurrent_approvers_retry_typed_serialization_and_apply_once() {
         actor: f.tenant,
         now: now(),
         usage_type: None,
-        sink: EventSink::Interim(Arc::clone(handle.outbox())),
+        outbox: events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
     };
     let store = repo::ProductsApprovalStore {
         scope: f.scope.clone(),

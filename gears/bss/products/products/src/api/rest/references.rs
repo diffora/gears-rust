@@ -288,93 +288,96 @@ async fn release(
         )
         .into());
     }
-    let db = state.db.db();
-    let row = db
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let state = state.clone();
-            let scope = scope.clone();
-            let ctx = ctx.clone();
-            let principal_owner = principal_owner.clone();
-            let reason = body.reason.clone();
-            Box::pin(async move {
-                let tenant = ctx.subject_tenant_id();
-                if !forced {
-                    return release_tx(
-                        tx,
-                        &scope,
-                        &ctx,
-                        principal_owner.as_deref().unwrap_or_default(),
-                        id,
-                        state.fence_ttl_minutes,
-                    )
-                    .await;
-                }
-                let now = time::OffsetDateTime::now_utc();
-                let row = repo::find_reference(tx, &scope, tenant, id)
-                    .await
-                    .map_err(TxError::Repo)?
-                    .ok_or(TxError::Refused(DomainError::NotFound {
-                        what: "reference",
-                        id,
-                    }))?;
-                g::expire(tx, &scope, tenant, row.sku_id, state.fence_ttl_minutes, now).await?;
-                if !forced && principal_owner.as_deref() != Some(row.owner_gear.as_str()) {
-                    return Err(TxError::Refused(forbidden()));
-                }
-                let released = repo::release_reference(
-                    tx,
-                    &scope,
-                    tenant,
-                    id,
-                    ctx.subject_id(),
-                    reason.as_deref(),
-                    forced,
-                    now,
-                )
-                .await
-                .map_err(TxError::Repo)?;
-                let repo::HeadWrite::Written(row) = released else {
-                    return Ok(row);
-                };
-                g::audit(
+    let (db, sink, config) = (
+        state.db.db(),
+        state.sink.clone(),
+        category_tx_config(&state),
+    );
+    let row = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
+        let state = state.clone();
+        let scope = scope.clone();
+        let ctx = ctx.clone();
+        let principal_owner = principal_owner.clone();
+        let reason = body.reason.clone();
+        Box::pin(async move {
+            let tenant = ctx.subject_tenant_id();
+            if !forced {
+                return release_tx(
                     tx,
                     &scope,
                     &ctx,
-                    if forced {
-                        "reference.force_release"
-                    } else {
-                        "reference.release"
-                    },
-                    "sku_reference",
+                    principal_owner.as_deref().unwrap_or_default(),
                     id,
-                    reason.clone(),
-                    now,
-                    repo::LifecycleMove::NONE,
+                    state.fence_ttl_minutes,
                 )
-                .await?;
+                .await;
+            }
+            let now = time::OffsetDateTime::now_utc();
+            let row = repo::find_reference(tx, &scope, tenant, id)
+                .await
+                .map_err(TxError::Repo)?
+                .ok_or(TxError::Refused(DomainError::NotFound {
+                    what: "reference",
+                    id,
+                }))?;
+            g::expire(tx, &scope, tenant, row.sku_id, state.fence_ttl_minutes, now).await?;
+            if !forced && principal_owner.as_deref() != Some(row.owner_gear.as_str()) {
+                return Err(TxError::Refused(forbidden()));
+            }
+            let released = repo::release_reference(
+                tx,
+                &scope,
+                tenant,
+                id,
+                ctx.subject_id(),
+                reason.as_deref(),
+                forced,
+                now,
+            )
+            .await
+            .map_err(TxError::Repo)?;
+            let repo::HeadWrite::Written(row) = released else {
+                return Ok(row);
+            };
+            g::audit(
+                tx,
+                &scope,
+                &ctx,
                 if forced {
-                    events::enqueue_typed(
-                        &state.sink,
-                        tx,
-                        broker::ReferenceForceReleased {
-                            tenant_id: tenant,
-                            sku_id: row.sku_id,
-                            reference_id: id,
-                            owner: row.owner_gear.clone(),
-                            kind: row.ref_kind.clone(),
-                            ref_id: row.ref_id,
-                            actor_ref: ctx.subject_id(),
-                            reason: reason.unwrap_or_default(),
-                        },
-                    )
-                    .await
-                    .map_err(TxError::from)?;
-                }
-                Ok(row)
-            })
+                    "reference.force_release"
+                } else {
+                    "reference.release"
+                },
+                "sku_reference",
+                id,
+                reason.clone(),
+                now,
+                repo::LifecycleMove::NONE,
+            )
+            .await?;
+            if forced {
+                events::enqueue_typed(
+                    &outbox,
+                    tx,
+                    broker::ReferenceForceReleased {
+                        tenant_id: tenant,
+                        sku_id: row.sku_id,
+                        reference_id: id,
+                        owner: row.owner_gear.clone(),
+                        kind: row.ref_kind.clone(),
+                        ref_id: row.ref_id,
+                        actor_ref: ctx.subject_id(),
+                        reason: reason.unwrap_or_default(),
+                    },
+                )
+                .await
+                .map_err(TxError::from)?;
+            }
+            Ok(row)
         })
-        .await
-        .map_err(tx_to_canonical)?;
+    })
+    .await
+    .map_err(tx_to_canonical)?;
     let receipt = ReferenceReceipt::try_from(row).map_err(|e| repo_error_to_canonical(&e))?;
     Ok(Json(receipt).into_response())
 }

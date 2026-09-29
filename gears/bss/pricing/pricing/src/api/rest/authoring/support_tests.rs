@@ -24,7 +24,15 @@ async fn run(unit: bool, error: fn() -> DoorError) -> (CanonicalError, u32) {
     let attempts = Arc::new(AtomicU32::new(0));
     let seen = attempts.clone();
     let result = if unit {
-        unit_transaction(&db, move |_| {
+        // The unit doors run their events' transaction (D-455), over a sink of their own.
+        let (provider, _, _, _dsn) = crate::test_support::test_db().await;
+        let state = crate::api::rest::authoring::AuthoringState::new(
+            provider,
+            Arc::new(toolkit::ClientHub::default()),
+        )
+        .await
+        .unwrap();
+        unit_transaction_with_events(&state.db.db(), &state.outbox, move |_, _| {
             seen.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move { Err::<(), _>(error()) })
         })
@@ -88,7 +96,9 @@ fn the_classifier_follows_the_backend() {
         DoorError::Repo(RepoError::Driver { .. })
     ));
 }
-/// The unit doors answer `UNIT_CONTENDED`; every other mutation door keeps `CONTENDED`.
+/// The unit doors answer `UNIT_CONTENDED`; every other mutation door keeps `CONTENDED`. Each of
+/// them enqueues `ApprovalUnitDecided` when it decides, so each runs the transaction that wakes
+/// the outbox's sequencer after its commit (D-455).
 #[test]
 fn every_approval_unit_door_runs_a_unit_transaction() {
     let code = crate::source_scan::blank_comments_and_literals(include_str!("approvals.rs"));
@@ -103,6 +113,10 @@ fn every_approval_unit_door_runs_a_unit_transaction() {
         assert!(
             body.contains("support::unit_transaction"),
             "{door} must run a unit transaction"
+        );
+        assert!(
+            body.contains("_with_events("),
+            "{door} must carry its events' wakes to the commit"
         );
         assert!(
             !body.contains("support::transaction(") && !body.contains("support::transaction_door("),

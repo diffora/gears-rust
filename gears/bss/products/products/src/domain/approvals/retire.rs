@@ -65,7 +65,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuRetire {
                 });
             }
             events::enqueue_typed(
-                &b.sink,
+                &b.outbox,
                 tx,
                 broker::SkuRetired {
                     tenant_id: b.tenant_id,

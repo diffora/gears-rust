@@ -19,7 +19,7 @@ use crate::{
     },
     domain::plan::{self, RevisionState},
     infra::{
-        events::{self, EventSink, PlanRevisionPublished},
+        events::{self, PlanRevisionPublished, TxOutbox},
         reference_ticker::system_actor,
         storage::{
             RepoError,
@@ -89,7 +89,7 @@ pub fn switch_actor(unit: &Unit, decisions: &[bss_approval::Decision]) -> Uuid {
 /// unit is gone is a corrupt row.
 pub async fn catch_up(
     tx: &(impl DBRunner + Sync),
-    outbox: &EventSink,
+    outbox: &TxOutbox,
     tenant: Uuid,
     plan_id: Uuid,
     now: OffsetDateTime,

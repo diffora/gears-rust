@@ -76,7 +76,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
     let base = SkuPublish {
         scope: scope.clone(),
         tenant_id: tenant,
-        sink: EventSink::Interim(Arc::clone(handle.outbox())),
+        outbox: events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
         actor: sku.created_by,
         now: at(9),
         usage_type: None,

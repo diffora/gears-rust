@@ -21,7 +21,10 @@ use crate::{
         recognized::UsageTypeAnswer,
         sku::SkuPatch,
     },
-    infra::storage::repo,
+    infra::{
+        events::{self, TxOutbox},
+        storage::repo,
+    },
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
@@ -366,7 +369,7 @@ fn patch_between(before: &SkuProposal, after: &SkuProposal) -> SkuPatch {
     p
 }
 async fn subject(
-    state: &ApiState,
+    outbox: &TxOutbox,
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     ctx: &SecurityContext,
@@ -377,7 +380,7 @@ async fn subject(
     let base = SkuPublish {
         scope: sku_scope.clone(),
         tenant_id: store.tenant_id,
-        sink: state.sink.clone(),
+        outbox: outbox.clone(),
         actor: ctx.subject_id(),
         now: OffsetDateTime::now_utc(),
         usage_type: usage,
@@ -534,133 +537,131 @@ async fn vote(
     }
     let seen = body.as_ref().map(|b| b.generation);
     let note = body.and_then(|b| b.note);
-    let db = state.db.db();
-    let result = db
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let state = state.clone();
-            let scope = scope.clone();
-            let ctx = ctx.clone();
-            let usage = usage.clone();
-            let resolved_ref = resolved_ref.clone();
-            let note = note.clone();
-            let claim = claim.clone();
-            Box::pin(async move {
-                let store = repo::ProductsApprovalStore {
-                    scope: scope.clone(),
-                    tenant_id: ctx.subject_tenant_id(),
-                };
-                let mut unit = load(tx, &store, id).await?;
-                if let Some(response) =
-                    replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
-                {
-                    return Ok(response);
-                }
-                if unit.state != UnitState::Pending {
-                    return Err(ApprovalError::AlreadyDecided.into());
-                }
-                let sub = subject(&state, tx, &store, &ctx, &unit, usage).await?;
-                // P-D-213: the SKU's lifecycle before the decision, and after it below.
-                let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
-                let now = OffsetDateTime::now_utc();
-                let outcome = match action {
-                    Vote::Approve => {
-                        if unit.kind != KIND_SKU_RETIRE
-                            && proposed(&sub, tx, &unit).await?.usage_type_ref != resolved_ref
-                        {
-                            return Err(g::conflict(
-                                "STALE_REVISION",
-                                "meter changed during resolution; retry",
-                            ));
-                        }
-                        Engine::approve(
-                            &store,
-                            &sub,
-                            tx,
-                            id,
-                            ctx.subject_id(),
-                            seen.ok_or_else(|| {
-                                TxError::Refused(g::validation("generation", "required"))
-                            })?,
-                            note.as_deref(),
-                            now,
-                        )
-                        .await?
+    let (db, sink, config) = (
+        state.db.db(),
+        state.sink.clone(),
+        category_tx_config(&state),
+    );
+    let result = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
+        let scope = scope.clone();
+        let ctx = ctx.clone();
+        let usage = usage.clone();
+        let resolved_ref = resolved_ref.clone();
+        let note = note.clone();
+        let claim = claim.clone();
+        Box::pin(async move {
+            let store = repo::ProductsApprovalStore {
+                scope: scope.clone(),
+                tenant_id: ctx.subject_tenant_id(),
+            };
+            let mut unit = load(tx, &store, id).await?;
+            if let Some(response) =
+                replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
+            {
+                return Ok(response);
+            }
+            if unit.state != UnitState::Pending {
+                return Err(ApprovalError::AlreadyDecided.into());
+            }
+            let sub = subject(&outbox, tx, &store, &ctx, &unit, usage).await?;
+            // P-D-213: the SKU's lifecycle before the decision, and after it below.
+            let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+            let now = OffsetDateTime::now_utc();
+            let outcome = match action {
+                Vote::Approve => {
+                    if unit.kind != KIND_SKU_RETIRE
+                        && proposed(&sub, tx, &unit).await?.usage_type_ref != resolved_ref
+                    {
+                        return Err(g::conflict(
+                            "STALE_REVISION",
+                            "meter changed during resolution; retry",
+                        ));
                     }
-                    Vote::Reject => {
-                        let note = note
-                            .as_deref()
-                            .filter(|s| !s.trim().is_empty())
-                            .ok_or(ApprovalError::NoteRequired)?;
-                        let seen = seen.ok_or_else(|| {
+                    Engine::approve(
+                        &store,
+                        &sub,
+                        tx,
+                        id,
+                        ctx.subject_id(),
+                        seen.ok_or_else(|| {
                             TxError::Refused(g::validation("generation", "required"))
-                        })?;
-                        if let Some(generation) =
-                            refresh_reject(tx, &store, &sub, &unit, seen).await?
-                        {
-                            ApproveOutcome::Refreshed { generation }
-                        } else {
-                            Engine::reject(&store, &sub, tx, id, ctx.subject_id(), seen, note, now)
-                                .await?;
-                            ApproveOutcome::Applied
-                        }
-                    }
-                    Vote::Withdraw => {
-                        Engine::withdraw(&store, &sub, tx, id, ctx.subject_id(), now).await?;
+                        })?,
+                        note.as_deref(),
+                        now,
+                    )
+                    .await?
+                }
+                Vote::Reject => {
+                    let note = note
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or(ApprovalError::NoteRequired)?;
+                    let seen = seen
+                        .ok_or_else(|| TxError::Refused(g::validation("generation", "required")))?;
+                    if let Some(generation) = refresh_reject(tx, &store, &sub, &unit, seen).await? {
+                        ApproveOutcome::Refreshed { generation }
+                    } else {
+                        Engine::reject(&store, &sub, tx, id, ctx.subject_id(), seen, note, now)
+                            .await?;
                         ApproveOutcome::Applied
                     }
-                };
-                let (label, have, need) = match outcome {
-                    ApproveOutcome::Refreshed { generation } => {
-                        decision_audit(tx, &scope, &ctx, "refreshed", &unit, found, None, now)
-                            .await?;
-                        let mut problem = toolkit::api::canonical_prelude::Problem::from(
-                            CanonicalError::from(DomainError::StaleUnit { generation }),
-                        );
-                        problem.context["generation"] = serde_json::json!(generation);
-                        return replay::finish(
-                            tx,
-                            ctx.subject_tenant_id(),
-                            claim.as_ref(),
-                            StatusCode::BAD_REQUEST,
-                            &problem,
-                        )
-                        .await;
-                    }
-                    ApproveOutcome::Pending { have, need } => {
-                        (ProductsVoteOutcome::Pending, Some(have), Some(need))
-                    }
-                    ApproveOutcome::Applied => (
-                        match action {
-                            Vote::Approve => ProductsVoteOutcome::Applied,
-                            Vote::Reject => ProductsVoteOutcome::Rejected,
-                            Vote::Withdraw => ProductsVoteOutcome::Withdrawn,
-                        },
-                        None,
-                        None,
-                    ),
-                };
-                decision_audit(tx, &scope, &ctx, label.as_str(), &unit, found, note, now).await?;
-                if matches!(outcome, ApproveOutcome::Applied) {
-                    unit = load(tx, &store, id).await?;
-                    g::decided(&state, tx, &store, &unit, ctx.subject_id()).await?;
                 }
-                let receipt = VoteReceipt {
-                    have,
-                    need,
-                    outcome: label,
-                    unit: with_decisions(tx, &store, unit).await?,
-                };
-                replay::finish(
-                    tx,
-                    ctx.subject_tenant_id(),
-                    claim.as_ref(),
-                    StatusCode::OK,
-                    &receipt,
-                )
-                .await
-            })
+                Vote::Withdraw => {
+                    Engine::withdraw(&store, &sub, tx, id, ctx.subject_id(), now).await?;
+                    ApproveOutcome::Applied
+                }
+            };
+            let (label, have, need) = match outcome {
+                ApproveOutcome::Refreshed { generation } => {
+                    decision_audit(tx, &scope, &ctx, "refreshed", &unit, found, None, now).await?;
+                    let mut problem = toolkit::api::canonical_prelude::Problem::from(
+                        CanonicalError::from(DomainError::StaleUnit { generation }),
+                    );
+                    problem.context["generation"] = serde_json::json!(generation);
+                    return replay::finish(
+                        tx,
+                        ctx.subject_tenant_id(),
+                        claim.as_ref(),
+                        StatusCode::BAD_REQUEST,
+                        &problem,
+                    )
+                    .await;
+                }
+                ApproveOutcome::Pending { have, need } => {
+                    (ProductsVoteOutcome::Pending, Some(have), Some(need))
+                }
+                ApproveOutcome::Applied => (
+                    match action {
+                        Vote::Approve => ProductsVoteOutcome::Applied,
+                        Vote::Reject => ProductsVoteOutcome::Rejected,
+                        Vote::Withdraw => ProductsVoteOutcome::Withdrawn,
+                    },
+                    None,
+                    None,
+                ),
+            };
+            decision_audit(tx, &scope, &ctx, label.as_str(), &unit, found, note, now).await?;
+            if matches!(outcome, ApproveOutcome::Applied) {
+                unit = load(tx, &store, id).await?;
+                g::decided(&outbox, tx, &store, &unit, ctx.subject_id()).await?;
+            }
+            let receipt = VoteReceipt {
+                have,
+                need,
+                outcome: label,
+                unit: with_decisions(tx, &store, unit).await?,
+            };
+            replay::finish(
+                tx,
+                ctx.subject_tenant_id(),
+                claim.as_ref(),
+                StatusCode::OK,
+                &receipt,
+            )
+            .await
         })
-        .await;
+    })
+    .await;
     match result {
         Ok(receipt) => Ok(receipt),
         Err(TxError::GenerationMismatch { seen, current }) => Ok(g::generation_problem(
@@ -717,14 +718,15 @@ async fn review_content(
     ctx: &SecurityContext,
     id: Uuid,
 ) -> Result<Option<SkuContent>, CanonicalError> {
-    let s = state.clone();
     let scope = scope.clone();
     let ctx_tx = ctx.clone();
-    state
-        .db
-        .db()
-        .transaction_with_retry(category_tx_config(state), contention_db_err, move |tx| {
-            let s = s.clone();
+    // It enqueues nothing, but the subject it reads through takes the attempt's handle (P-D-221).
+    events::transaction(
+        &state.db.db(),
+        &state.sink,
+        category_tx_config(state),
+        contention_db_err,
+        move |tx, outbox| {
             let scope = scope.clone();
             let ctx = ctx_tx.clone();
             Box::pin(async move {
@@ -739,10 +741,11 @@ async fn review_content(
                 if unit.kind == KIND_SKU_RETIRE {
                     return Ok(None);
                 }
-                let sub = subject(&s, tx, &store, &ctx, &unit, None).await?;
+                let sub = subject(&outbox, tx, &store, &ctx, &unit, None).await?;
                 Ok(Some(proposed(&sub, tx, &unit).await?))
             })
-        })
-        .await
-        .map_err(tx_to_canonical)
+        },
+    )
+    .await
+    .map_err(tx_to_canonical)
 }

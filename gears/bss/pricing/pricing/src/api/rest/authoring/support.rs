@@ -1,7 +1,10 @@
 //! Canonical failures, transaction retries, and audit plumbing shared by the doors.
 use crate::{
     authz,
-    infra::storage::{RepoError, repo},
+    infra::{
+        events::{self, EventSink, TxOutbox},
+        storage::{RepoError, repo},
+    },
 };
 use axum::{
     Extension, Json,
@@ -329,21 +332,6 @@ pub async fn transaction<T: Send + 'static>(
 ) -> Result<T, CanonicalError> {
     transaction_door(db, work).await.map_err(Into::into)
 }
-/// [`transaction`] for an approval-unit door: exhausted contention is `UNIT_CONTENDED`.
-/// # Errors
-/// Returns the last attempt's refusal or storage failure.
-pub async fn unit_transaction<T: Send + 'static>(
-    db: &Db,
-    work: impl for<'a> FnMut(
-        &'a DbTx<'a>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
-    > + Send,
-) -> Result<T, CanonicalError> {
-    transaction_coded(db, UNIT_CONTENDED, work)
-        .await
-        .map_err(Into::into)
-}
 /// The serializable retrying transaction, keeping the door's typed refusal.
 /// # Errors
 /// Returns the last attempt's refusal or storage failure; contention the retries could not
@@ -358,19 +346,6 @@ pub async fn transaction_door<T: Send + 'static>(
 ) -> Result<T, DoorError> {
     transaction_coded(db, CONTENDED, work).await
 }
-/// [`transaction_door`] for an approval-unit door: exhausted contention is `UNIT_CONTENDED`.
-/// # Errors
-/// Returns the last attempt's refusal or storage failure.
-pub async fn unit_transaction_door<T: Send + 'static>(
-    db: &Db,
-    work: impl for<'a> FnMut(
-        &'a DbTx<'a>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
-    > + Send,
-) -> Result<T, DoorError> {
-    transaction_coded(db, UNIT_CONTENDED, work).await
-}
 /// Run `work` serializably with the toolkit's contention retries. A driver error the retry
 /// classifier still calls contention after the last attempt becomes 409 `code`.
 async fn transaction_coded<T: Send + 'static>(
@@ -384,10 +359,88 @@ async fn transaction_coded<T: Send + 'static>(
 ) -> Result<T, DoorError> {
     db.transaction_with_retry(
         toolkit_db::secure::TxConfig::serializable(),
-        |e| match e {
-            DoorError::Repo(RepoError::Driver { source, .. }) => Some(source),
-            _ => None,
-        },
+        driver_source,
+        work,
+    )
+    .await
+    .map_err(|error| exhausted_contention(db.backend(), code, error))
+}
+/// The driver error the retry classifier judges, if the door's error carries one.
+fn driver_source(error: &DoorError) -> Option<&sea_orm::DbErr> {
+    match error {
+        DoorError::Repo(RepoError::Driver { source, .. }) => Some(source),
+        _ => None,
+    }
+}
+/// [`transaction`] for work that enqueues events: `work` takes the attempt's [`TxOutbox`] over
+/// `sink`, and the outbox's sequencers wake only once the transaction has committed (D-455).
+/// # Errors
+/// Returns the last attempt's refusal or storage failure; exhausted contention is `CONTENDED`.
+pub async fn transaction_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, CanonicalError> {
+    events_coded(db, sink, CONTENDED, work)
+        .await
+        .map_err(Into::into)
+}
+/// [`transaction_with_events`] for an approval-unit door, every one of which enqueues
+/// `ApprovalUnitDecided` when it decides: exhausted contention is `UNIT_CONTENDED`.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure.
+pub async fn unit_transaction_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, CanonicalError> {
+    events_coded(db, sink, UNIT_CONTENDED, work)
+        .await
+        .map_err(Into::into)
+}
+/// [`unit_transaction_with_events`] keeping the door's typed refusal.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure.
+pub async fn unit_transaction_door_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events_coded(db, sink, UNIT_CONTENDED, work).await
+}
+/// [`transaction_coded`] through [`events::transaction`]: the same isolation, retries and
+/// exhausted-contention code, with the attempt's [`TxOutbox`] fired after the commit.
+async fn events_coded<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    code: &'static str,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events::transaction(
+        db,
+        sink,
+        toolkit_db::secure::TxConfig::serializable(),
+        driver_source,
         work,
     )
     .await
