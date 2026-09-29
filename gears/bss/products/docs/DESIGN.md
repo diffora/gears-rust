@@ -373,7 +373,7 @@ authoring behavior is defined in §3.5; these codes do not turn a catalog non-an
 | --- | --- |
 | `bss-approval` | Library types and state machine; Products implements subjects and the transactional Store. No shared cross-gear approval database. |
 | toolkit-db / SecureORM | SecureConn and scoped transactions; PolicyEnforcer-derived AccessScope on all reads/writes, including audit, replay and child records. Conditional writes, no raw unscoped connection. |
-| toolkit-db outbox | State, audit and outbox records share the same transaction; dispatch happens after commit. No success event escapes a rollback. |
+| toolkit-db outbox | State, audit and outbox records share the same transaction; dispatch happens after commit, and the outbox's sequencer is woken only after it (P-D-221). No success event escapes a rollback. |
 | toolkit REST / PolicyEnforcer | OperationBuilder, authenticated operations, RFC-9457 errors and deny-by-default resource/action checks. |
 | products-sdk / ClientHub | Public SKU/version/catalog contracts and usage-type port; consumers resolve typed clients without importing gear internals. |
 

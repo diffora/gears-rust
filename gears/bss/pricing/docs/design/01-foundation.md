@@ -78,7 +78,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-foundation-toolkit-outbox`.
 
 ## 4. States (CDSL)
 
-Replay moves absent → claimed → answered within the operation transaction, and rollback restores absence. Audit moves unsealed → sealed only through the record-preserving guard. Conditional version v → v+1 admits one writer. Outbox delivery never precedes commit.
+Replay moves absent → claimed → answered within the operation transaction, and rollback restores absence. Audit moves unsealed → sealed only through the record-preserving guard. Conditional version v → v+1 admits one writer. Outbox delivery never precedes commit, and the outbox's sequencer is woken only after it (D-455).
 
 State definition: `cpt-cf-bss-pricing-state-foundation` in the FEATURE.
 

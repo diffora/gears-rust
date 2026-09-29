@@ -53,6 +53,7 @@
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
+| P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
 
 ## Entries
 
@@ -907,3 +908,47 @@ owner chose to close it.
 
 **Source:** Owner, 2026-09-28 (a yes; phase 7 plan rev 2, added to run 7.3); phase 6 fix run 2 review (LOW-2);
 phase 7 review (queries, migrations and docs lens, LOW-1: the migration for stored rows).
+
+#### P-D-221 [M] The outbox wakes its sequencer after the commit (twin of pricing D-455)
+
+Since the main sync, toolkit-db's `Outbox::enqueue` does not mark its partition dirty. It returns a `Wake`,
+which marks the partition and wakes the sequencers when it is fired, after the commit (toolkit-db `2bfc76aec`).
+`enqueue_typed` fired that `Wake` at once, inside the caller's transaction. A sequencer woken then read the
+partition before the commit, found nothing and cleared the flag. The committed row then waited for the cold
+reconciler, a minute at the default profile.
+
+- **The handle.** `events::TxOutbox` is the event sink as one transaction sees it. `enqueue_typed` takes it in
+  place of the `EventSink`. It adds each event's `Wake` to the handle and fires nothing. The clones of a handle
+  share it.
+- **The transaction.** `events::transaction` runs the work in `Db::transaction_with_retry` with the door's
+  isolation and retry classifier, and with a new handle over `ApiState::sink`. A retried attempt first discards
+  the wakes of the attempt before it, which rolled back. When the transaction commits, the handle fires once.
+  When it fails, the handle is discarded.
+- **The writers.** Every door that enqueues runs in it: the SKU submit (publish, change and retire, applied at
+  once at quorum 0), the vote door (approve, reject and withdraw) and the force release of a reference. The
+  unit's review read before a vote runs in it too: it enqueues nothing, but the subject it reads through takes
+  the handle.
+- **The approval subjects.** The apply of `SkuPublish`, `SkuChange` and `SkuRetire` enqueues `SkuPublished`,
+  `SkuChanged` and `SkuRetired` inside the engine. `SkuPublish` holds the attempt's handle (its field `outbox`,
+  which was `sink`), so the wake leaves the engine with the subject, which the gear builds for its
+  transaction. `bss-approval` changes no signature, and the `ApprovalSubject` doc says where such an effect
+  stays. `governance::decided` takes the handle for `ApprovalUnitDecided`.
+- **The census.** A test pins that `TxOutbox::new` occurs in `src/` only in `events::transaction`, and that no
+  other file fires or discards a wake. The door test alone cannot see a subject that holds a handle of its own:
+  the test broker puts every event of a tenant in one partition, so the door's `ApprovalUnitDecided` wake
+  delivers the SKU event too.
+- **The tests.** `infra/broker_wake_tests.rs` drives the real in-process broker (the event-broker gear's
+  `test_support` harness, a new dev-dependency) over a database with four connections. With one connection
+  the sequencer queues behind the transaction, and the race does not show. A committed enqueue is delivered at
+  once, although its transaction goes on for 300 ms after it. A rolled-back one wakes nothing: a row committed
+  before it with its wake discarded stays undelivered in the same partition. A retried attempt's wake is
+  dropped. The two events of a quorum-0 SKU submit are delivered at once. A probe that fires the wake inside
+  the transaction again turns the first test red. Products had no real-broker test before: the mock of the
+  broker SDK had hidden the subject-type contract that the sync found.
+- *Rejected alternative:* each enqueue returns its `Wake`, and every function on the path returns it to the
+  transaction (the toolkit's `outbox::in_transaction` and main's gears). The engine's `apply` returns nothing,
+  so the subjects would need a second mechanism. An error after an enqueue would also drop an unfired `Wake`,
+  which the toolkit logs as a leak.
+
+**Source:** Main sync of 2026-09-29 (sync report, port 3; toolkit-db `2bfc76aec`); pricing phase 8 plan rev 2
+(run 8.2b).

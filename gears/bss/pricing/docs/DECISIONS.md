@@ -91,6 +91,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-452 | M | A scheduled revision can be withdrawn to a draft | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M5 |
 | D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5 |
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
+| D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
 
 ## Entries
 
@@ -779,3 +780,18 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - *Rejected alternative:* fence every revision by its available_from. It would change D-419 for revisions that were published at once.
 
 **Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decision 8; plan review M3).
+
+#### D-455 [M] The outbox wakes its sequencer after the commit
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** Since the main sync, toolkit-db's Outbox::enqueue does not mark its partition dirty. It returns a Wake, which marks the partition and wakes the sequencers when it is fired, after the commit (toolkit-db 2bfc76aec). events::enqueue fired that Wake at once, inside the caller's transaction. A sequencer woken then read the partition before the commit, found nothing and cleared the flag. The committed row then waited for the cold reconciler, a minute at the default profile.
+- **The handle.** events::TxOutbox is the event sink as one transaction sees it. events::enqueue takes it in place of the EventSink. It adds each event's Wake to the handle and fires nothing. The clones of a handle share it.
+- **The transaction.** events::transaction runs the work in the retrying transaction, with a new handle over the gear's sink. A retried attempt first discards the wakes of the attempt before it, which rolled back. When the transaction commits, the handle fires once. When it fails, the handle is discarded. The doors call it through support::transaction_with_events, support::unit_transaction_with_events and support::unit_transaction_door_with_events. These keep the isolation, the retries and the codes of support::transaction and the unit transaction: serializable, CONTENDED or UNIT_CONTENDED.
+- **The writers.** Every writer that enqueues runs in it. These are the submit doors of a price, of publish-changes and of a plan revision, and the vote door (PricesPublished, PlanRevisionPublished, ApprovalUnitDecided). They are also the copy, clone and unschedule doors and the switch job, which catch a due switch up (D-450, D-451), and the commit of the reference work, which marks a reference lost (PriceBookEntryReferenceLost, PlanReferenceLost). No approval subject of pricing enqueues in its apply: the doors enqueue after the engine returns, in the same transaction.
+- **The approval engine.** bss-approval changes no signature. An effect that may act only after the commit never passes through the engine: the gear keeps it, and the ApprovalSubject doc says so.
+- **The census.** A test pins that TxOutbox::new occurs in src only in events::transaction, and that no other file fires or discards a wake. The census of the unit doors also requires their _with_events transaction.
+- **The tests.** tests/broker_producer.rs drives the real in-process broker over a database with four connections. With one connection the sequencer queues behind the transaction, and the race does not show. A committed enqueue is delivered at once, although its transaction goes on for 300 ms after it. A rolled-back one wakes nothing: a row committed before it with its wake discarded stays undelivered in the same partition. A retried attempt's wake is dropped. The two events of a quorum-zero price submit are delivered at once. A probe that fires the wake inside the transaction again turns the first test red.
+- *Rejected alternative:* each enqueue returns its Wake, and every function on the path returns it to the transaction (the toolkit's outbox::in_transaction and main's gears). The engine's apply returns nothing, so the products subjects would need a second mechanism. An error after an enqueue would also drop an unfired Wake, which the toolkit logs as a leak. The handle gives both gears one design (products P-D-221).
+
+**Source:** Main sync of 2026-09-29 (sync report, port 3; toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b).
