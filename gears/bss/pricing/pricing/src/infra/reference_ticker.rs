@@ -167,7 +167,7 @@ impl Ticker {
             )
             .await
             {
-                tracing::warn!(op_id=%op.op_id, attempts=op.attempts, error=%error, "pricing reference recovery deferred");
+                tracing::warn!(op_id=%op.op_id, attempts=op.attempts, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing reference recovery deferred");
             }
         }
         if self.ticks.is_multiple_of(self.reconcile_every) {
@@ -191,7 +191,7 @@ impl Ticker {
         };
         for (tenant, plan) in due {
             if let Err(error) = self.switch_plan(tenant, plan, now).await {
-                tracing::warn!(%tenant, plan_id=%plan, error=%error, "pricing plan switch deferred");
+                tracing::warn!(%tenant, plan_id=%plan, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing plan switch deferred");
             }
         }
         // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-1
@@ -269,7 +269,7 @@ impl Ticker {
             // One tenant's divergence (an unreachable or disagreeing registry, a storage
             // error) never halts reconciliation for the others; the cursors move on.
             if let Err(error) = self.reconcile_tenant(registry.as_ref(), tenant, held).await {
-                tracing::warn!(%tenant, error=%error, "pricing reconciliation skipped a tenant");
+                tracing::warn!(%tenant, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing reconciliation skipped a tenant");
             }
         }
         self.cursors = next;
@@ -313,7 +313,7 @@ impl Ticker {
         if let Err(error) =
             reference_work::drive(&self.state, ctx, id, self.clock.clone(), Caller::Ticker).await
         {
-            tracing::warn!(op_id=%id, error=%error, "pricing re-reservation deferred");
+            tracing::warn!(op_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing re-reservation deferred");
         }
         Ok(())
     }
@@ -451,7 +451,7 @@ async fn admits(
                 }
         }
         Err(error) => {
-            tracing::warn!(ref_kind=kind.as_str(), ref_id=%id, error=%error, "pricing lost-reference check deferred");
+            tracing::warn!(ref_kind=kind.as_str(), ref_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing lost-reference check deferred");
             false
         }
     }

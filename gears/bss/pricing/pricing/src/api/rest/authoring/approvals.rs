@@ -686,8 +686,12 @@ fn subject_of(
             let mut subject =
                 PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), unit.ref_id, now);
             subject.common_effective_date = unit.common_effective_date;
-            subject.added_partner =
-                serde_json::from_value(unit.snapshot["added_partner"].clone()).unwrap_or_default();
+            // Every `prices` unit records the partners publish-changes pulled in (an empty list
+            // when none); one that does not read is a corrupt row, never "no partner" (PS-06).
+            subject.added_partner = serde_json::from_value(unit.snapshot["added_partner"].clone())
+                .map_err(|e| {
+                    RepoError::CorruptRow(format!("unit {} added_partner: {e}", unit.id))
+                })?;
             subject.release = if action == Vote::Reject {
                 Release::Rejected
             } else {
@@ -722,8 +726,7 @@ pub async fn vote(
     .await;
     match result {
         Err(DoorError::Generation { current }) => {
-            let problem = support::generation_problem("GENERATION_MISMATCH", current);
-            Ok((StatusCode::BAD_REQUEST, axum::Json(problem)).into_response())
+            Ok(support::generation_problem("GENERATION_MISMATCH", current).into_response())
         }
         other => other.map_err(Into::into),
     }

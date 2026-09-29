@@ -33,7 +33,7 @@ use bss_products_sdk::models::Sku;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
 use time::{Date, OffsetDateTime};
 use toolkit_canonical_errors::CanonicalError;
@@ -316,23 +316,30 @@ impl PlanRevisionSubject {
     /// The refusal that ended the last judgement with a body of its own, if any.
     #[must_use]
     pub fn take_refusal(&self) -> Option<CanonicalError> {
-        self.refused.lock().ok().and_then(|mut slot| slot.take())
+        self.refused
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
     /// The revision the last apply superseded, if any.
     #[must_use]
     pub fn superseded(&self) -> Option<Uuid> {
-        self.review.lock().ok().and_then(|r| r.superseded)
+        self.review
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .superseded
     }
     /// Whether the last apply published the revision now. A revision approved before its sale
     /// date was scheduled instead (D-449): its `PlanRevisionPublished` is its switch's (D-450).
     #[must_use]
     pub fn published_now(&self) -> bool {
-        self.review.lock().is_ok_and(|r| r.published)
+        self.review
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .published
     }
     fn refuse(&self, error: CanonicalError) {
-        if let Ok(mut slot) = self.refused.lock() {
-            *slot = Some(error);
-        }
+        *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
     }
     fn scope(&self) -> AccessScope {
         AccessScope::for_tenant(self.tenant_id)
@@ -354,7 +361,8 @@ impl PlanRevisionSubject {
     async fn skus(&self, ids: impl IntoIterator<Item = Uuid>) -> Result<Vec<Sku>, ApprovalError> {
         match plans::fresh_skus(&self.hub, &self.ctx, ids).await {
             Ok(skus) => {
-                if let Ok(mut review) = self.review.lock() {
+                {
+                    let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
                     review.descriptors = Value::Array(skus.iter().map(descriptors).collect());
                 }
                 Ok(skus)
@@ -431,7 +439,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         let described = descriptors_or_unavailable(
             plans::fresh_skus(&self.hub, &self.ctx, items.iter().map(|i| i.sku_id)).await,
         );
-        if let Ok(mut review) = self.review.lock() {
+        {
+            let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
             review.descriptors = described;
             review.plan_id = Some(p.id);
             review.plan_code = Some(p.code);
@@ -489,18 +498,16 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
     }
     fn snapshot(&self, items: &[ItemRef], _common_effective_date: Option<Date>) -> Value {
         let item = items.first();
-        let (plan_id, plan_code, rev_no, diff, descriptors) = self.review.lock().map_or_else(
-            |_| (None, None, None, Value::Null, Value::Null),
-            |r| {
-                (
-                    r.plan_id,
-                    r.plan_code.clone(),
-                    r.rev_no,
-                    r.diff.clone(),
-                    r.descriptors.clone(),
-                )
-            },
-        );
+        let (plan_id, plan_code, rev_no, diff, descriptors) = {
+            let r = self.review.lock().unwrap_or_else(PoisonError::into_inner);
+            (
+                r.plan_id,
+                r.plan_code.clone(),
+                r.rev_no,
+                r.diff.clone(),
+                r.descriptors.clone(),
+            )
+        };
         json!({
             "plan_id": plan_id,
             "plan_code": plan_code,
@@ -599,7 +606,8 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         .map_err(contended)?;
         // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-5
         // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
-        if let Ok(mut review) = self.review.lock() {
+        {
+            let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
             review.superseded = previous.map(|x| x.id);
             review.published = true;
         }

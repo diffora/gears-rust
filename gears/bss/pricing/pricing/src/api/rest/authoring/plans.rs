@@ -916,7 +916,8 @@ pub async fn fresh_skus(
     ctx: &SecurityContext,
     skus: impl IntoIterator<Item = Uuid>,
 ) -> Result<Vec<Sku>, CanonicalError> {
-    let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
+    let registry =
+        reference_registry::resolve(hub).map_err(|e| support::registry_unavailable(&e))?;
     let wanted: BTreeSet<Uuid> = skus.into_iter().collect();
     let mut found = Vec::with_capacity(wanted.len());
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
@@ -928,7 +929,7 @@ pub async fn fresh_skus(
             Ok(read) => found.push(read),
             Err(error) if error.status_code() == 404 => {}
             Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(_) => return Err(support::unavailable()),
+            Err(error) => return Err(support::registry_unavailable(&error)),
         }
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1

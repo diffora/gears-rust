@@ -203,6 +203,11 @@ impl Receipt {
 fn corrupt() -> CanonicalError {
     CanonicalError::internal("invalid durable pricing reference work").create()
 }
+/// An observation the op's state does not admit: the op, its state and the event, kept in the
+/// diagnostic apart from every other corrupt record (PS-04).
+fn illegal(op: &entity::Model, error: &reference_op::IllegalTransition) -> CanonicalError {
+    CanonicalError::internal(format!("pricing reference op {}: {error}", op.op_id)).create()
+}
 /// A stored token outside its closed set in the answer being written (D-439): a storage failure.
 fn stored_failure(error: crate::infra::storage::RepoError) -> CanonicalError {
     crate::api::rest::authoring::support::DoorError::from(error).into()
@@ -345,16 +350,13 @@ async fn advance(
         },
         event,
     )
-    .map_err(|_| corrupt())?;
+    .map_err(|e| illegal(observed, &e))?;
     let retry = effects.contains(&Effect::Retry);
     let attempts = if retry {
         observed.attempts.saturating_add(1)
     } else {
         observed.attempts
     };
-    if retry && attempts >= 10 {
-        tracing::warn!(op_id=%observed.op_id, attempts, "pricing reference operation still requires recovery");
-    }
     let now = clock.now();
     ops::transition(
         tx,
@@ -372,8 +374,10 @@ async fn advance(
             } else {
                 now + IN_FLIGHT_GRACE
             },
+            // A retry names the registry's unavailability, unless the op already recorded the
+            // refusal it met (a cancelling create's): `next` reads that refusal back from here.
             last_error: if retry {
-                Some("REGISTRY_UNAVAILABLE".into())
+                next.refusal.or_else(|| Some("REGISTRY_UNAVAILABLE".into()))
             } else {
                 next.refusal
             },
@@ -651,14 +655,27 @@ async fn cancel_then(
         Ok(()) => Err(error),
         Err(lost) if contended(&lost) => Ok(()),
         Err(failed) => {
-            tracing::warn!(op_id=%op.op_id, error=%failed, "pricing create not cancelled before its error answer");
+            tracing::warn!(op_id=%op.op_id, error=%failed, diagnostic=failed.diagnostic().unwrap_or_default(), "pricing create not cancelled before its error answer");
             Err(error)
         }
     }
 }
+/// The one warning of an op retried ten times or more, naming what an operator needs to find it
+/// (PS-54).
 fn warn_past_threshold(op: &entity::Model) {
     if op.attempts >= 10 {
-        tracing::warn!(op_id=%op.op_id, attempts=op.attempts, "pricing reference operation retry threshold reached");
+        tracing::warn!(
+            op_id = %op.op_id,
+            attempts = op.attempts,
+            tenant_id = %op.tenant_id,
+            kind = %op.kind,
+            state = %op.state,
+            ref_kind = %op.ref_kind,
+            ref_id = %op.ref_id,
+            sku_id = %op.sku_id,
+            last_error = op.last_error.as_deref().unwrap_or_default(),
+            "pricing reference operation retry threshold reached"
+        );
     }
 }
 /// The door got no definite answer before the write (the reserve, or the SKU re-read after a
@@ -754,7 +771,7 @@ async fn commit(
         },
         event.clone(),
     )
-    .map_err(|_| corrupt())?;
+    .map_err(|e| illegal(op, &e))?;
     match write {
         Some(Write::Entry(entry)) => write_entry(tx, &scope, op, entry, now).await?,
         Some(Write::Item(item)) => plan_item::write(tx, &scope, item).await?,
@@ -999,6 +1016,18 @@ pub fn definite_refusal(error: &CanonicalError) -> bool {
 fn unknown_reservation(error: &CanonicalError) -> bool {
     error.status_code() == 404
 }
+/// A registry call the op retries: the op keeps only a code, so the call's own error is logged
+/// here (PS-05).
+fn unanswered(op: &entity::Model, call: &str, error: &CanonicalError) {
+    tracing::warn!(
+        op_id = %op.op_id,
+        call,
+        status = error.status_code(),
+        error = %error,
+        diagnostic = error.diagnostic().unwrap_or_default(),
+        "pricing reference registry call will be retried"
+    );
+}
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
     ctx: &SecurityContext,
@@ -1024,51 +1053,21 @@ async fn observe(
         // A definite refusal before any receipt: nothing was reserved.
         return Ok((Event::Released, None, None));
     }
-    let Ok(registry) = registry else {
-        return Ok(unavailable());
+    let registry = match registry {
+        Ok(registry) => registry,
+        Err(error) => {
+            unanswered(op, "registry lookup", &error);
+            return Ok(unavailable());
+        }
     };
-    let tenant = op.tenant_id;
     match current {
         OpState::Reserving if op.reservation_id.is_none() => {
-            match registry
-                .reserve(
-                    ctx,
-                    tenant,
-                    op.sku_id,
-                    products_kind(parse_ref_kind(op)?),
-                    op.ref_id,
-                )
-                .await
-            {
-                Ok(receipt) => Ok((
-                    Event::Reserved {
-                        id: receipt.reservation_id,
-                    },
-                    None,
-                    None,
-                )),
-                Err(error) if definite_refusal(&error) => {
-                    let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
-                    if retries_a_refusal(op, ctx) && !LOSING_REFUSALS.contains(&code.as_str()) {
-                        // Only a SKU that admits no reservation loses a live entry or a copied
-                        // item: an attach has the rereserve shape (D-413). Any other refusal (the
-                        // door caller's own grant, say) is retried, and the ticker finishes it as
-                        // the system actor; a refusal given to the system actor ends an attach.
-                        return Ok(unavailable());
-                    }
-                    Ok((
-                        Event::ReserveRefused { code },
-                        None,
-                        Some(Receipt::error(error).await?),
-                    ))
-                }
-                Err(_) => Ok(unavailable()),
-            }
+            observe_reserve(registry.as_ref(), ctx, op).await
         }
         OpState::Reserving => observe_sku(registry.as_ref(), ctx, op).await,
         OpState::Written => {
             let event = match registry
-                .confirm(ctx, tenant, op.reservation_id.ok_or_else(corrupt)?)
+                .confirm(ctx, op.tenant_id, op.reservation_id.ok_or_else(corrupt)?)
                 .await
             {
                 Ok(()) => Event::Confirmed,
@@ -1080,48 +1079,107 @@ async fn observe(
                 {
                     Event::ReleasedOnConfirm
                 }
-                Err(_) => Event::ConfirmFailed,
+                Err(error) => {
+                    unanswered(op, "confirm", &error);
+                    Event::ConfirmFailed
+                }
             };
             Ok((event, None, None))
         }
         OpState::Cancelling | OpState::Releasing => {
-            let result = match op.reservation_id {
-                // A reservation Products does not know holds nothing: it counts as released.
-                Some(id) => match registry.release(ctx, tenant, id).await {
-                    Err(error) if unknown_reservation(&error) => Ok(()),
-                    other => other,
-                },
-                // The reserve outcome was never learned. Reserve is idempotent per logical
-                // reference, so it answers the reservation the lost call made (or makes one),
-                // and releasing that leaves none. A definite refusal means none can exist:
-                // a fence requires zero live references.
-                None => match registry
-                    .reserve(
-                        ctx,
-                        tenant,
-                        op.sku_id,
-                        products_kind(parse_ref_kind(op)?),
-                        op.ref_id,
-                    )
-                    .await
-                {
-                    Ok(receipt) => registry.release(ctx, tenant, receipt.reservation_id).await,
-                    Err(error) if definite_refusal(&error) => Ok(()),
-                    Err(error) => Err(error),
-                },
-            };
-            Ok((
-                if result.is_ok() {
-                    Event::Released
-                } else {
-                    Event::ReleaseFailed
-                },
-                None,
-                None,
-            ))
+            observe_release(registry.as_ref(), ctx, op).await
         }
         OpState::Done => Err(corrupt()),
     }
+}
+/// A create's first reserve, before it knows a reservation id.
+async fn observe_reserve(
+    registry: &dyn ReferenceRegistryV1,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+) -> Result<Observation, CanonicalError> {
+    match registry
+        .reserve(
+            ctx,
+            op.tenant_id,
+            op.sku_id,
+            products_kind(parse_ref_kind(op)?),
+            op.ref_id,
+        )
+        .await
+    {
+        Ok(receipt) => Ok((
+            Event::Reserved {
+                id: receipt.reservation_id,
+            },
+            None,
+            None,
+        )),
+        Err(error) if definite_refusal(&error) => {
+            let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
+            if retries_a_refusal(op, ctx) && !LOSING_REFUSALS.contains(&code.as_str()) {
+                // Only a SKU that admits no reservation loses a live entry or a copied item: an
+                // attach has the rereserve shape (D-413). Any other refusal (the door caller's
+                // own grant, say) is retried, and the ticker finishes it as the system actor; a
+                // refusal given to the system actor ends an attach.
+                unanswered(op, "reserve", &error);
+                return Ok((Event::RegistryUnavailable, None, None));
+            }
+            Ok((
+                Event::ReserveRefused { code },
+                None,
+                Some(Receipt::error(error).await?),
+            ))
+        }
+        Err(error) => {
+            unanswered(op, "reserve", &error);
+            Ok((Event::RegistryUnavailable, None, None))
+        }
+    }
+}
+/// A cancellation's or a removal's release of its reservation.
+async fn observe_release(
+    registry: &dyn ReferenceRegistryV1,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+) -> Result<Observation, CanonicalError> {
+    let tenant = op.tenant_id;
+    let result = match op.reservation_id {
+        // A reservation Products does not know holds nothing: it counts as released.
+        Some(id) => match registry.release(ctx, tenant, id).await {
+            Err(error) if unknown_reservation(&error) => Ok(()),
+            other => other,
+        },
+        // The reserve outcome was never learned. Reserve is idempotent per logical reference, so
+        // it answers the reservation the lost call made (or makes one), and releasing that leaves
+        // none. A definite refusal means none can exist: a fence requires zero live references.
+        None => match registry
+            .reserve(
+                ctx,
+                tenant,
+                op.sku_id,
+                products_kind(parse_ref_kind(op)?),
+                op.ref_id,
+            )
+            .await
+        {
+            Ok(receipt) => registry.release(ctx, tenant, receipt.reservation_id).await,
+            Err(error) if definite_refusal(&error) => Ok(()),
+            Err(error) => Err(error),
+        },
+    };
+    if let Err(error) = &result {
+        unanswered(op, "release", error);
+    }
+    Ok((
+        if result.is_ok() {
+            Event::Released
+        } else {
+            Event::ReleaseFailed
+        },
+        None,
+        None,
+    ))
 }
 
 async fn observe_sku(
@@ -1138,6 +1196,7 @@ async fn observe_sku(
         // lifecycle answer below refuses it (D-413 "the rereserve shape"), or, for an attach, a
         // refusal given to the system actor itself (`retries_a_refusal`).
         Err(error) if definite_refusal(&error) && retries_a_refusal(op, ctx) => {
+            unanswered(op, "SKU re-read", &error);
             return Ok((Event::RegistryUnavailable, None, None));
         }
         Err(error) if definite_refusal(&error) => {
@@ -1149,7 +1208,10 @@ async fn observe_sku(
                 Some(Receipt::error(error).await?),
             ));
         }
-        Err(_) => return Ok((Event::RegistryUnavailable, None, None)),
+        Err(error) => {
+            unanswered(op, "SKU re-read", &error);
+            return Ok((Event::RegistryUnavailable, None, None));
+        }
     };
     let kind = parse_ref_kind(op)?;
     // The lifecycle rules of every kind: a draft, retiring or retired SKU takes no reference,

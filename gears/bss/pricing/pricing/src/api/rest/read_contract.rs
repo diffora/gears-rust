@@ -566,7 +566,8 @@ async fn versions_as_of(
     if wanted.is_empty() {
         return Ok(found);
     }
-    let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
+    let registry =
+        reference_registry::resolve(hub).map_err(|e| support::registry_unavailable(&e))?;
     let actor = reference_ticker::system_actor(tenant)?;
     for sku in wanted {
         match registry.sku_version_as_of(&actor, tenant, sku, date).await {
@@ -576,7 +577,7 @@ async fn versions_as_of(
             Ok(None) => {}
             Err(error) if error.status_code() == 404 => {}
             Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(_) => return Err(support::unavailable()),
+            Err(error) => return Err(support::registry_unavailable(&error)),
         }
     }
     Ok(found)

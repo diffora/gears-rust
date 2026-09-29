@@ -173,7 +173,8 @@ async fn fresh_sku(
     ctx: &SecurityContext,
     sku: Uuid,
 ) -> Result<(), CanonicalError> {
-    let registry = reference_registry::resolve(&state.hub).map_err(|_| support::unavailable())?;
+    let registry =
+        reference_registry::resolve(&state.hub).map_err(|e| support::registry_unavailable(&e))?;
     let sku = registry
         .sku_for_write(ctx, ctx.subject_tenant_id(), sku)
         .await
@@ -181,7 +182,7 @@ async fn fresh_sku(
             if reference_work::definite_refusal(&error) {
                 error
             } else {
-                support::unavailable()
+                support::registry_unavailable(&error)
             }
         })?;
     if sku.lifecycle == Lifecycle::Deprecated {
@@ -452,6 +453,7 @@ pub async fn drive_best_effort(state: &Arc<AuthoringState>, ctx: &SecurityContex
             tracing::warn!(
                 op_id=%op_id,
                 error=%error,
+                diagnostic=error.diagnostic().unwrap_or_default(),
                 left = ops.len() - done,
                 "pricing plan item reference work deferred to the ticker"
             );

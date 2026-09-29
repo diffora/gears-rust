@@ -32,7 +32,7 @@ use bss_products_sdk::{ReferenceRegistryV1, models::SkuVersion};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError},
 };
 use time::{Date, OffsetDateTime};
 use toolkit_canonical_errors::CanonicalError;
@@ -369,7 +369,10 @@ impl PricesSubject {
     /// The Products refusal that ended the last judgement, if any; the door answers it as is.
     #[must_use]
     pub fn take_refusal(&self) -> Option<CanonicalError> {
-        self.refused.lock().ok().and_then(|mut slot| slot.take())
+        self.refused
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
     /// Only unavailability (5xx, timeouts, rate limits, lost races) is `REGISTRY_UNAVAILABLE`;
     /// a definite refusal (403, 404, …) passes through with its code.
@@ -377,9 +380,7 @@ impl PricesSubject {
         if !reference_work::definite_refusal(&error) {
             return invalid("REGISTRY_UNAVAILABLE", "Products reference registry");
         }
-        if let Ok(mut slot) = self.refused.lock() {
-            *slot = Some(error);
-        }
+        *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
         invalid("REGISTRY_REFUSED", "Products refused the dated SKU read")
     }
     async fn version_on(
@@ -434,7 +435,8 @@ impl PricesSubject {
         let descriptors = plan_revisions::descriptors_or_unavailable(
             crate::api::rest::authoring::plans::fresh_skus(&self.hub, &self.ctx, skus).await,
         );
-        if let Ok(mut review) = self.review.lock() {
+        {
+            let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
             review.plans = plans;
             review.descriptors = descriptors;
         }
@@ -710,10 +712,10 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
         Ok(())
     }
     fn snapshot(&self, items: &[ItemRef], common_effective_date: Option<Date>) -> Value {
-        let (plans, descriptors) = self.review.lock().map_or_else(
-            |_| (Vec::new(), Value::Null),
-            |r| (r.plans.clone(), r.descriptors.clone()),
-        );
+        let (plans, descriptors) = {
+            let r = self.review.lock().unwrap_or_else(PoisonError::into_inner);
+            (r.plans.clone(), r.descriptors.clone())
+        };
         json!({
             "book_id": self.book_id,
             "common_effective_date": common_effective_date.map(date),

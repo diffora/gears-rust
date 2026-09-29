@@ -38,6 +38,8 @@ pub fn require_authenticated(
                 .create()
         })
 }
+/// A denial is 403 with the PDP's reason (logged where [`authz::access_scope`] made it); an
+/// unreachable PDP is 503.
 pub fn authz_failure(error: authz::AuthzError) -> CanonicalError {
     match error {
         authz::AuthzError::Denied(d) => PricingResource::permission_denied()
@@ -256,7 +258,6 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
         })
         .into(),
         A::AlreadyDecided | A::DuplicateVote | A::Contended => conflict(error.code()).into(),
-        A::Store(detail) if detail.starts_with("DUPLICATE") => conflict("DUPLICATE_VOTE").into(),
         A::Store(detail) => {
             tracing::error!(detail, "pricing approval store failure");
             CanonicalError::internal("pricing approval store failure")
@@ -294,6 +295,17 @@ pub fn checks_red(red: &[super::dto::PricingPlanCheckDto]) -> CanonicalError {
     let mut problem = toolkit::api::canonical_prelude::Problem::from(refusal.clone());
     problem.detail = detail;
     CanonicalError::try_from(problem).unwrap_or(refusal)
+}
+/// A Products call that did not answer (a 5xx, a timeout, a rate limit): its own status and
+/// diagnostic reach the log, since the caller sees only 503 `REGISTRY_UNAVAILABLE` (PS-32).
+pub fn registry_unavailable(error: &CanonicalError) -> CanonicalError {
+    tracing::warn!(
+        status = error.status_code(),
+        error = %error,
+        diagnostic = error.diagnostic().unwrap_or_default(),
+        "pricing: a Products registry call did not answer"
+    );
+    unavailable()
 }
 /// The Products registry is not reachable from this process.
 pub fn unavailable() -> CanonicalError {
@@ -476,6 +488,11 @@ pub fn exhausted_contention(
         _ => error,
     }
 }
+/// A door's answer with its status and `ETag`. An error status is an RFC 9457 problem, so its
+/// body is served `application/problem+json` and the canonical error middleware completes and
+/// logs it (PS-07): the committed `UNIT_STALE` and its replay are the doors' only such answers.
+/// # Errors
+/// An `ETag` that is not a header value.
 pub fn response<T: serde::Serialize>(
     status: StatusCode,
     body: &T,
@@ -490,7 +507,14 @@ pub fn response<T: serde::Serialize>(
                 .map_err(|_| CanonicalError::internal("invalid ETag").create())?,
         );
     }
-    Ok((status, headers, Json(body)).into_response())
+    let mut response = (status, headers, Json(body)).into_response();
+    if status.is_client_error() || status.is_server_error() {
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/problem+json"),
+        );
+    }
+    Ok(response)
 }
 pub fn value<T: serde::Serialize>(body: &T) -> Result<serde_json::Value, CanonicalError> {
     serde_json::to_value(body)

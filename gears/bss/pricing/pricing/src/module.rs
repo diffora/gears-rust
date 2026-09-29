@@ -57,7 +57,7 @@ impl BssPricingGear {
                     _ = interval.tick() => {
                         tokio::select! { biased;
                             () = child.cancelled() => break,
-                            result = ticker.tick() => if let Err(error) = result { tracing::warn!(error=%error, "pricing reference ticker failed"); }
+                            result = ticker.tick() => if let Err(error) = result { tracing::warn!(error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing reference ticker failed"); }
                         }
                     }
                 }

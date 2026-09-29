@@ -189,7 +189,7 @@ async fn stored(
     let mut keys = Vec::new();
     for r in rows {
         let values = serde_json::from_value(r.values)
-            .map_err(|_| CanonicalError::internal("invalid stored dimension").create())?;
+            .map_err(|e| RepoError::CorruptRow(format!("dimension {} values: {e}", r.key)))?;
         keys.push((r.key, values, r.version));
     }
     Ok((keys, tag))

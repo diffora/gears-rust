@@ -497,13 +497,26 @@ async fn redate(
     };
     let partner = partner_of(tx, ctx, &next).await?;
     let shape = judged_shape(&dates, promo, end, partner.as_ref())?;
-    shaped(&mut next, &shape[0])?;
+    // `price::temporary` answers the promo, alone or with its return (PS-35).
+    let (first, returned) = match shape.as_slice() {
+        [promo] => (promo, None),
+        [promo, returned] => (promo, Some(returned)),
+        _ => {
+            return Err(CanonicalError::internal(format!(
+                "a temporary price split into {} prices",
+                shape.len()
+            ))
+            .create()
+            .into());
+        }
+    };
+    shaped(&mut next, first)?;
     let written = Written {
         ctx,
         correlation,
         now: dates.now,
     };
-    next.version = reconcile(tx, &written, &next, partner, shape.get(1)).await?;
+    next.version = reconcile(tx, &written, &next, partner, returned).await?;
     Ok(support::response(
         StatusCode::OK,
         &PricingPriceDto::of(next, dates.pc.model.as_str())?,

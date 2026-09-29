@@ -122,7 +122,7 @@ async fn check_sku_rules(
         .parse()
         .map_err(|_| support::invalid("model", "MODEL_INVALID"))?;
     let registry = crate::infra::reference_registry::resolve(&state.hub)
-        .map_err(|_| support::unavailable())?;
+        .map_err(|e| support::registry_unavailable(&e))?;
     let sku = registry
         .sku_for_write(ctx, ctx.subject_tenant_id(), input.sku_id)
         .await
@@ -130,7 +130,7 @@ async fn check_sku_rules(
             if reference_work::definite_refusal(&error) {
                 error
             } else {
-                support::unavailable()
+                support::registry_unavailable(&error)
             }
         })?;
     if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
@@ -405,7 +405,7 @@ pub(super) async fn delete(
     )
     .await
     {
-        tracing::warn!(op_id=%op_id, error=%error, "pricing entry release deferred to the ticker");
+        tracing::warn!(op_id=%op_id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing entry release deferred to the ticker");
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }

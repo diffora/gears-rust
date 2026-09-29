@@ -125,7 +125,14 @@ async fn store_round_trip_cas_duplicate_refresh_and_terminal_state() {
             assert!(!store.bump_version(tx, id, 1).await?);
             let vote = decision(id);
             store.insert_decision(tx, &vote).await?;
-            assert!(store.insert_decision(tx, &vote).await.is_err());
+            // The racing second vote is the engine's typed refusal (PS-31, PT-15).
+            assert!(
+                matches!(
+                    store.insert_decision(tx, &vote).await,
+                    Err(ApprovalError::DuplicateVote)
+                ),
+                "a second vote of one actor in one generation is DuplicateVote"
+            );
             let refreshed = vec![ItemRef {
                 after: serde_json::json!({"name":"updated"}),
                 ..items[0].clone()
@@ -258,14 +265,18 @@ async fn foreign_unit_cannot_receive_decisions_or_refreshed_items() {
                 tenant_id: foreign,
             };
             assert!(store.unit(tx, id).await?.is_none());
-            assert!(store.insert_decision(tx, &decision(id)).await.is_err());
+            // Another tenant's unit is not found: not a vote on it, not a refresh (PT-15).
+            assert!(matches!(
+                store.insert_decision(tx, &decision(id)).await,
+                Err(ApprovalError::UnitNotFound { unit_id }) if unit_id == id
+            ));
             let (_, items) = fixture(foreign);
-            assert!(
+            assert!(matches!(
                 store
                     .refresh(tx, id, &items, &serde_json::json!({}), "hash", 2)
-                    .await
-                    .is_err()
-            );
+                    .await,
+                Err(ApprovalError::UnitNotFound { unit_id }) if unit_id == id
+            ));
             Ok(())
         })
     })

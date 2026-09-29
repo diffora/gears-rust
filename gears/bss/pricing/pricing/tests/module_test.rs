@@ -194,8 +194,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // registration and its 200 answer; + 1: run 7.2's price PATCH answers a temporary
         // draft's new dates from their own function (D-443); + 2: run 7.2's book delete (D-444),
         // its registration and its 204 answer; + 2: run 8.2's unschedule door (D-452), its
-        // registration and its 200 answer.
-        ("StatusCode::", 2, 104),
+        // registration and its 200 answer; - 1: the vote's `GENERATION_MISMATCH` renders through
+        // the problem's own response, which carries its status (whole-branch review PS-07).
+        ("StatusCode::", 2, 103),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");

@@ -63,3 +63,43 @@ fn the_switch_names_the_submitter_when_no_current_approval_was_recorded() {
     ];
     assert_eq!(switch_actor(&u, &not_current), u.submitted_by);
 }
+
+/// A lock poisoned while it held the apply's outcome still answers it: the door must not commit a
+/// publication without its `PlanRevisionPublished` (PS-34). The same holds for the refusal slot.
+#[test]
+fn a_poisoned_lock_keeps_what_the_apply_and_the_refusal_recorded() {
+    let ctx = toolkit_security::SecurityContext::builder()
+        .subject_id(Uuid::new_v4())
+        .subject_tenant_id(Uuid::new_v4())
+        .subject_type("user")
+        .build()
+        .unwrap();
+    let subject = super::PlanRevisionSubject::new(
+        ctx,
+        std::sync::Arc::new(toolkit::ClientHub::default()),
+        Uuid::new_v4(),
+        OffsetDateTime::UNIX_EPOCH,
+    );
+    let superseded = Uuid::new_v4();
+    let review = subject.review.clone();
+    let poisoned = std::thread::spawn(move || {
+        let mut held = review.lock().unwrap();
+        held.published = true;
+        held.superseded = Some(superseded);
+        panic!("the lock is poisoned while it holds the apply's outcome");
+    })
+    .join();
+    assert!(poisoned.is_err());
+    assert!(subject.review.is_poisoned());
+    assert!(subject.published_now(), "the apply published the revision");
+    assert_eq!(subject.superseded(), Some(superseded));
+    let refused = subject.refused.clone();
+    let poisoned = std::thread::spawn(move || {
+        let _held = refused.lock().unwrap();
+        panic!("the refusal slot is poisoned");
+    })
+    .join();
+    assert!(poisoned.is_err());
+    subject.refuse(toolkit_canonical_errors::CanonicalError::internal("kept").create());
+    assert!(subject.take_refusal().is_some(), "the refusal is kept");
+}

@@ -88,7 +88,7 @@ impl PricingApprovalStore {
         {
             Ok(())
         } else {
-            Err(ApprovalError::Store("UNIT_NOT_FOUND".into()))
+            Err(ApprovalError::UnitNotFound { unit_id: id })
         }
     }
     async fn insert_items(
@@ -230,7 +230,8 @@ impl<'a> Store<DbTx<'a>> for PricingApprovalStore {
             .await
             .map_err(|e| {
                 if e.is_unique_violation() {
-                    ApprovalError::Store("DUPLICATE decision for actor and generation".into())
+                    // A racing second vote of one actor in one generation (PS-31).
+                    ApprovalError::DuplicateVote
                 } else {
                     store_err("insert decision", e)
                 }
