@@ -977,3 +977,339 @@ async fn the_application_reads_edits_and_deletes_a_migrated_book() {
     assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
     assert_eq!(list["items"][0]["description"], "dated");
 }
+
+// ------------------------------------------------------------------ length caps (D-457)
+
+/// One text over its cap: the request, and the field and code its refusal names.
+struct Capped {
+    method: &'static str,
+    path: String,
+    body: Value,
+    tag: Option<String>,
+    field: &'static str,
+    code: &'static str,
+}
+impl Capped {
+    fn new(
+        method: &'static str,
+        path: impl Into<String>,
+        body: Value,
+        field: &'static str,
+    ) -> Self {
+        Self {
+            method,
+            path: path.into(),
+            body,
+            tag: None,
+            field,
+            code: "FIELD_TOO_LONG",
+        }
+    }
+    fn at(self, tag: &str) -> Self {
+        Self {
+            tag: Some(tag.to_owned()),
+            ..self
+        }
+    }
+    fn note(self) -> Self {
+        Self {
+            code: "NOTE_TOO_LONG",
+            ..self
+        }
+    }
+}
+/// The resources the capped requests name.
+struct Named {
+    book: Uuid,
+    entry: Uuid,
+    plan: Uuid,
+    draft: String,
+    sku: Uuid,
+}
+/// A text of `n` ASCII characters.
+fn ascii(n: usize) -> String {
+    "x".repeat(n)
+}
+/// Every door's requests with one text over its cap.
+async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
+    let tag_of = |path: String| async move { f.call("GET", &path, json!({}), None, None).await.2 };
+    let settings = |field: &str, value: Value| {
+        let mut body = json!({
+            "default_timing":"advance","default_rounding":"half_even","default_gl":null,
+            "default_tax_category":null,"invoice_line_templates":{},"currencies":[]
+        });
+        body[field] = value;
+        body
+    };
+    let Named {
+        book,
+        entry,
+        plan,
+        draft,
+        sku,
+    } = named;
+    let book_tag = tag_of(format!("/price-books/{book}")).await;
+    let plan_tag = tag_of(format!("/plans/{plan}")).await;
+    // A draft's version is its create's ETag; the price read is the pinned consumer read.
+    let price_tag = "\"1\"";
+    let entry_tag = tag_of(format!("/price-book-entries/{entry}")).await;
+    let settings_tag = tag_of("/settings".to_owned()).await;
+    let dimensions_tag = tag_of("/dimension-keys".to_owned()).await;
+    let price = |extra: (&str, Value)| {
+        let mut body =
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-04-01"});
+        body[extra.0] = extra.1;
+        body
+    };
+    let entry_body = |extra: (&str, Value)| {
+        let mut body = json!({"sku_id":sku,"model":"per_unit"});
+        body[extra.0] = extra.1;
+        body
+    };
+    vec![
+        Capped::new(
+            "POST",
+            "/price-books",
+            json!({"code":ascii(65),"name":"n","currency":"EUR"}),
+            "code",
+        ),
+        Capped::new(
+            "POST",
+            "/price-books",
+            json!({"code":"c","name":ascii(201),"currency":"EUR"}),
+            "name",
+        ),
+        Capped::new(
+            "PATCH",
+            format!("/price-books/{book}"),
+            json!({"name":ascii(201)}),
+            "name",
+        )
+        .at(&book_tag),
+        Capped::new(
+            "POST",
+            "/plans",
+            json!({"code":ascii(65),"name":"n","book_id":book}),
+            "code",
+        ),
+        Capped::new(
+            "POST",
+            "/plans",
+            json!({"code":"c","name":ascii(201),"book_id":book}),
+            "name",
+        ),
+        Capped::new(
+            "POST",
+            format!("/plans/{plan}/clone"),
+            json!({"code":ascii(65),"name":"n"}),
+            "code",
+        ),
+        Capped::new(
+            "POST",
+            format!("/plans/{plan}/clone"),
+            json!({"code":"c","name":ascii(201)}),
+            "name",
+        ),
+        Capped::new(
+            "PATCH",
+            format!("/plans/{plan}"),
+            json!({"name":ascii(201)}),
+            "name",
+        )
+        .at(&plan_tag),
+        Capped::new(
+            "POST",
+            format!("/price-book-entries/{entry}/prices"),
+            price(("note", json!(ascii(2001)))),
+            "note",
+        )
+        .note(),
+        Capped::new(
+            "POST",
+            format!("/price-book-entries/{entry}/prices"),
+            price(("dim_value", json!(ascii(65)))),
+            "dim_value",
+        ),
+        Capped::new(
+            "PATCH",
+            format!("/prices/{draft}"),
+            json!({"note":ascii(2001)}),
+            "note",
+        )
+        .at(price_tag)
+        .note(),
+        Capped::new(
+            "PATCH",
+            format!("/prices/{draft}"),
+            json!({"dim_value":ascii(65)}),
+            "dim_value",
+        )
+        .at(price_tag),
+        Capped::new(
+            "POST",
+            format!("/price-books/{book}/entries"),
+            entry_body(("invoice_line_override", json!(ascii(2001)))),
+            "invoice_line_override",
+        ),
+        Capped::new(
+            "POST",
+            format!("/price-books/{book}/entries"),
+            entry_body(("dimension_key", json!(ascii(65)))),
+            "dimension_key",
+        ),
+        Capped::new(
+            "PATCH",
+            format!("/price-book-entries/{entry}"),
+            json!({"invoice_line_override":ascii(2001)}),
+            "invoice_line_override",
+        )
+        .at(&entry_tag),
+        Capped::new(
+            "PATCH",
+            format!("/price-book-entries/{entry}"),
+            json!({"dimension_key":ascii(65)}),
+            "dimension_key",
+        )
+        .at(&entry_tag),
+        Capped::new(
+            "PUT",
+            "/settings",
+            settings("default_gl", json!(ascii(65))),
+            "default_gl",
+        )
+        .at(&settings_tag),
+        Capped::new(
+            "PUT",
+            "/settings",
+            settings("default_tax_category", json!(ascii(65))),
+            "default_tax_category",
+        )
+        .at(&settings_tag),
+        Capped::new(
+            "PUT",
+            "/settings",
+            settings("invoice_line_templates", json!({"usage":ascii(2001)})),
+            "invoice_line_templates",
+        )
+        .at(&settings_tag),
+        Capped::new(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":ascii(65),"values":[]}]}),
+            "key",
+        )
+        .at(&dimensions_tag),
+        Capped::new(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":"region","values":[ascii(65),"eu"]}]}),
+            "values",
+        )
+        .at(&dimensions_tag),
+        Capped::new(
+            "PATCH",
+            "/dimension-keys",
+            json!({"key":ascii(65),"add":["eu","us"]}),
+            "key",
+        )
+        .at(&dimensions_tag),
+        Capped::new(
+            "PATCH",
+            "/dimension-keys",
+            json!({"key":"region","add":[ascii(65),"eu"]}),
+            "add",
+        )
+        .at(&dimensions_tag),
+        Capped::new(
+            "PATCH",
+            "/dimension-keys",
+            json!({"key":"region","remove":[ascii(65)]}),
+            "remove",
+        )
+        .at(&dimensions_tag),
+    ]
+}
+
+/// Every text a request writes has an explicit length cap, counted in characters (D-457, the
+/// whole-branch review's PS-09 and PS-10): a code, a dimension key and value 64, a name 200, a
+/// note 2000 (400 `NOTE_TOO_LONG`), a GL code and a tax category 64, an invoice line template
+/// 2000. A longer one is 400 `FIELD_TOO_LONG` on the field, before anything is read or written;
+/// the caps themselves pass, in two-byte characters.
+#[tokio::test]
+async fn every_text_a_request_writes_has_a_length_cap() {
+    use bss_products_sdk::models::SkuType;
+    let (f, catalog) = plan_support::setup().await;
+    let book = plan_support::book(&f, "eur").await;
+    let entry = plan_support::entry(&f, book, catalog.sku(SkuType::Usage), "usage", None).await;
+    let (created, _) = plan(&f, "pro", book).await;
+    let (status, drafted, _) = f
+        .call(
+            "POST",
+            &format!("/price-book-entries/{entry}/prices"),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"}),
+            None,
+            Some("draft"),
+        )
+        .await;
+    assert_eq!(status, 201, "{drafted}");
+    let named = Named {
+        book,
+        entry,
+        plan: id_of(&created["id"]),
+        draft: drafted["items"][0]["id"].as_str().unwrap().to_owned(),
+        sku: catalog.sku(SkuType::Usage),
+    };
+    for (i, case) in over_the_caps(&f, &named).await.into_iter().enumerate() {
+        let Capped {
+            method,
+            path,
+            body,
+            tag,
+            field,
+            code,
+        } = case;
+        let key = format!("cap-{i}");
+        let (status, b, _) = f
+            .call(method, &path, body, tag.as_deref(), Some(&key))
+            .await;
+        assert_eq!(status, 400, "{method} {path} {field}: {b}");
+        let text = b.to_string();
+        assert!(text.contains(code), "{method} {path}: {b}");
+        assert!(
+            text.contains(&format!("\"{field}\"")),
+            "{method} {path}: {b}"
+        );
+    }
+    assert_eq!(
+        ok(&f, &format!("/price-books/{book}")).await["version"],
+        1,
+        "nothing written"
+    );
+    // The caps themselves, two bytes a character.
+    let accented = |n: usize| "\u{e9}".repeat(n);
+    for (path, body, key) in [
+        (
+            "/price-books".to_owned(),
+            json!({"code":accented(64),"name":accented(200),"currency":"EUR"}),
+            Some("book-at-cap"),
+        ),
+        (
+            "/plans".to_owned(),
+            json!({"code":accented(64),"name":accented(200),"book_id":book}),
+            Some("plan-at-cap"),
+        ),
+    ] {
+        let (status, b, _) = f.call("POST", &path, body, None, key).await;
+        assert_eq!(status, 201, "{path}: {b}");
+    }
+    let (status, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/prices/{}", named.draft),
+            json!({"note":accented(2000)}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+}

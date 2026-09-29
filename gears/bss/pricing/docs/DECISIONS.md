@@ -93,6 +93,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
+| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b |
 
 ## Entries
 
@@ -813,3 +814,16 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **Breaking for a caller** that holds plan author without price_book read on the book: POST /plans, the clone and a book-naming PATCH now answer 403. The vhp-core e2e plan authors hold every pricing action (CATALOG_AUTHOR), and its narrower actors are refused plan author first, so its grants suffice; a new scenario would give one actor every grant but price_book read and expect the three 403s.
 
 **Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440.
+
+#### D-457 [M] Every text a request writes has an explicit length cap
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** A book's and a plan's code and name had only a blank check, and a price's and a vote's note, the settings' GL code, tax category and invoice line templates, an entry's invoice line override and the dimension keys and values had none at all. The request body limit was their only bound, while one list page repeats a book's code and name up to 500 times. Only a book's description had a cap (D-444).
+- **The caps**, counted in characters (Unicode scalar values), as a description always was: a code 64 (a book's, a plan's, a dimension key, a dimension value, and a price's dim_value and an entry's dimension_key, which name them); a name 200 (a book's, a plan's); a note or a description 2000 (a price's note, a vote's note, a book's description); a GL code and a tax category 64 (the settings' default_gl and default_tax_category); an invoice line template 2000 (an entry's invoice_line_override, each template of the settings). The values live in domain::caps; the note cap is the approval engine's NOTE_MAX_CHARS, and a const assertion ties the two.
+- **The refusal.** 400 FIELD_TOO_LONG with the field named (a field violation on code, name, dim_value, dimension_key, invoice_line_override, default_gl, default_tax_category, invoice_line_templates, key, values, add or remove), the shape NOTE_TOO_LONG already has. A note keeps NOTE_TOO_LONG on note, and a description BOOK_DESCRIPTION_TOO_LONG (D-444). Each door judges its body right after it parses it, before it reads or writes anything, so a too long text is refused before a 404 or a 409. The vote note is judged by the approval engine (bss-approval, NoteTooLong) before its first write, on approve and on reject.
+- **Stored rows.** Only a write is judged, and only on the fields its body carries. A stored row over a cap stays readable, and a PATCH that does not carry the field leaves it as it is.
+- **The tests.** tests/book_writes.rs sends one text over each cap, door by door, and each is 400 with its code and field, with nothing written; the caps themselves pass in two-byte characters. tests/approval_doors.rs does the same for the vote note.
+- **Products** applies the same caps in its own decision (fix run W1b). The vhp-core e2e would add one refusal: a book created with a 65-character code is 400 FIELD_TOO_LONG on code.
+
+**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps").

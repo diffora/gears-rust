@@ -2,6 +2,7 @@
 mod approvals;
 mod book_list;
 mod books;
+mod caps;
 pub(crate) mod configuration;
 pub mod dto;
 pub mod plan_items;
@@ -20,6 +21,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
+use caps::Capped;
 use dto::{
     PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingDimensionKeyPatch,
     PricingDimensionRegistry, PricingDimensions, PricingPriceBookEntryList,
@@ -1291,6 +1293,7 @@ async fn create_price(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPriceCreate = preconditions::parse_body(&body)?;
+    input.caps()?;
     prices::create(
         &state.db.db(),
         scope,
@@ -1326,6 +1329,7 @@ async fn patch_price(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
+    input.caps()?;
     prices::patch(&state.db.db(), scope, ctx, correlation, id, version, input).await
 }
 async fn delete_price(
@@ -1379,6 +1383,7 @@ async fn create_book(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let body: PriceBookCreate = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         let (key, digest) = (key.clone(), digest.clone());
@@ -1448,6 +1453,7 @@ async fn patch_book(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let body: PriceBookPatch = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(
@@ -1602,6 +1608,7 @@ async fn put_settings(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let body: PricingSettingsPut = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
@@ -1658,6 +1665,7 @@ async fn put_dimensions(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let body: PricingDimensions = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
@@ -1688,6 +1696,7 @@ async fn patch_dimensions(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let body: PricingDimensionKeyPatch = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
@@ -1765,7 +1774,8 @@ async fn create_entry(
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
-    let input = preconditions::parse_body(&body)?;
+    let input: dto::PricingPriceBookEntryCreate = preconditions::parse_body(&body)?;
+    input.caps()?;
     price_book_entries::create(state, scope, ctx, id, correlation, key, digest, input).await
 }
 
@@ -1922,6 +1932,7 @@ async fn patch_entry(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPriceBookEntryPatch = preconditions::parse_body(&body)?;
+    input.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
         Box::pin(async move {

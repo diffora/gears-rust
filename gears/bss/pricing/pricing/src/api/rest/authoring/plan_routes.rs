@@ -1,6 +1,8 @@
 //! The plan, revision and item doors (phase 3): one `plan` label, read and author.
 use super::{
-    AuthoringState, dto, plan_items, plans,
+    AuthoringState,
+    caps::Capped,
+    dto, plan_items, plans,
     support::{authz_failure, etag, header, require_authenticated, response, transaction},
 };
 use crate::{
@@ -240,6 +242,7 @@ async fn create_plan(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPlanCreate = preconditions::parse_body(&body)?;
+    input.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, books, ctx, input) = (scope.clone(), books.clone(), ctx.clone(), input.clone());
         let (key, digest) = (key.clone(), digest.clone());
@@ -332,6 +335,7 @@ async fn patch_plan(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPlanPatch = preconditions::parse_body(&body)?;
+    input.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
         Box::pin(
@@ -393,6 +397,7 @@ async fn clone_plan(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPlanClone = preconditions::parse_body(&body)?;
+    input.caps()?;
     plans::clone(
         state,
         (scope, books),

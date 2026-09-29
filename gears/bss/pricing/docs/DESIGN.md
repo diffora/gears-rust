@@ -319,6 +319,8 @@ rounding_policy, a unit's kind and ref_type, a check's code and a proposal's cha
 | A settings rounding outside the five modes; a malformed or repeated offered currency | 400 ROUNDING_INVALID (D-437); 400 CURRENCY_INVALID (D-438) |
 | A new book in a currency the tenant settings do not offer | 409 CURRENCY_NOT_OFFERED (D-438) |
 | A book description over 2000 characters; the delete of a book an entry, a plan's live revision or only superseded revisions name | 400 BOOK_DESCRIPTION_TOO_LONG; 409 BOOK_HAS_ENTRIES, BOOK_IN_PLAN, BOOK_IN_PLAN_HISTORY, in that order (D-444) |
+| A text over its cap (D-457): a code, a dimension key or value over 64 characters, a name over 200, a GL code or tax category over 64, an invoice line template over 2000; a price's or a vote's note over 2000 | 400 FIELD_TOO_LONG on the field; 400 NOTE_TOO_LONG on note |
+| Plan create, clone, or a revision PATCH naming a book, without price_book read on that book | 403 PRICE_BOOK_READ_REQUIRED; 503 when that grant cannot be judged (D-456) |
 | An entry's prices read without price_book read on its book (the entry itself readable); an unknown status | 403 PRICE_BOOK_READ_REQUIRED; 400 QUERY_INVALID (D-440) |
 | The book list: an unknown, repeated or malformed plain key; a cursor under another $filter, q or sku_id; $select or $count | 400 QUERY_INVALID; 400 FILTER_MISMATCH; 400 UNSUPPORTED_QUERY_PARAM (D-442) |
 | Deleting the default quorum | 400 POLICY_DEFAULT_REQUIRED (D-435) |
