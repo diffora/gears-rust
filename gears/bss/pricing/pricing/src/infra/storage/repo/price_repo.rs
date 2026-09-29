@@ -82,6 +82,70 @@ pub async fn find(
         .await
         .map_err(|e| driver_failure("find price".into(), e))
 }
+/// The tenant's prices among `ids`, by id, in ONE statement whatever their number; an id the
+/// tenant does not hold has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn find_many(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::Id.is_in(ids.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list prices by id".into(), e))
+}
+/// Every price of the entries, by entry and then as [`for_entry`] orders one entry's (version
+/// number), in ONE statement whatever the number of entries.
+/// # Errors
+/// Returns typed database failures.
+pub async fn for_entries(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entries: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied())),
+        )
+        .order_by(e::Column::PriceBookEntryId, Order::Asc)
+        .order_by(e::Column::VersionNo, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list the prices of entries".into(), e))
+}
+/// [`for_entries`] grouped by entry, each entry's prices in [`for_entry`]'s order; an entry
+/// without prices has no key.
+#[must_use]
+pub fn by_entry(prices: Vec<e::Model>) -> std::collections::BTreeMap<Uuid, Vec<e::Model>> {
+    let mut groups: std::collections::BTreeMap<Uuid, Vec<e::Model>> =
+        std::collections::BTreeMap::new();
+    for p in prices {
+        groups.entry(p.price_book_entry_id).or_default().push(p);
+    }
+    groups
+}
 /// List tenant rows in stable identity order.
 /// # Errors
 /// Returns typed database failures.

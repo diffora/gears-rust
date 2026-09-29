@@ -261,6 +261,8 @@ pub fn impact_of(prices: usize, entries: usize, plans: &[Value]) -> Value {
 /// state is the one the revision reads on `today` among its plan's revisions (D-447): a live read
 /// shows a due switch before it is persisted, and a snapshot records the state of its day, which
 /// then stays its history.
+/// Four statements whatever the number of revisions: the items, the revisions, their plans'
+/// revisions and the plans (PS-14).
 /// # Errors
 /// Storage failures; a revision or plan an item points at that is gone is a corrupt row.
 pub async fn plans_reading(
@@ -271,20 +273,19 @@ pub async fn plans_reading(
 ) -> Result<Vec<Value>, RepoError> {
     let scope = AccessScope::for_tenant(tenant);
     let ids: Vec<Uuid> = entries.iter().copied().collect();
-    let revisions: BTreeSet<Uuid> = plan_item_repo::naming_entries(tx, &scope, tenant, &ids)
+    let revisions: Vec<Uuid> = plan_item_repo::naming_entries(tx, &scope, tenant, &ids)
         .await?
         .into_iter()
         .map(|i| i.revision_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect();
-    let mut found = Vec::with_capacity(revisions.len());
-    for id in revisions {
-        found.push(
-            plan_revision_repo::find(tx, &scope, tenant, id)
-                .await?
-                .ok_or_else(|| {
-                    RepoError::CorruptRow(format!("plan item names lost revision {id}"))
-                })?,
-        );
+    let found = plan_revision_repo::find_many(tx, &scope, tenant, &revisions).await?;
+    let held: BTreeSet<Uuid> = found.iter().map(|r| r.id).collect();
+    if let Some(lost) = revisions.iter().find(|id| !held.contains(id)) {
+        return Err(RepoError::CorruptRow(format!(
+            "plan item names lost revision {lost}"
+        )));
     }
     let plans: Vec<Uuid> = found
         .iter()
@@ -298,15 +299,21 @@ pub async fn plans_reading(
             .into_iter()
             .map(|e| (e.id, e.state.as_str()))
             .collect();
+    let by_id: BTreeMap<Uuid, crate::infra::storage::entity::plan::Model> =
+        plan_repo::find_many(tx, &scope, tenant, &plans)
+            .await?
+            .into_iter()
+            .map(|p| (p.id, p))
+            .collect();
     let mut rows = Vec::with_capacity(found.len());
     for r in found {
-        let p = plan_repo::find(tx, &scope, tenant, r.plan_id)
-            .await?
+        let p = by_id
+            .get(&r.plan_id)
             .ok_or_else(|| RepoError::CorruptRow(format!("revision {} has no plan", r.id)))?;
         let state = effective
             .get(&r.id)
             .map_or_else(|| r.state.clone(), |s| (*s).to_owned());
-        rows.push((p.code, r.rev_no, p.id, r.id, state));
+        rows.push((p.code.clone(), r.rev_no, p.id, r.id, state));
     }
     rows.sort();
     Ok(rows
@@ -442,12 +449,8 @@ impl PricesSubject {
         }
         Ok(())
     }
-    async fn load(&self, tx: &DbTx<'_>, id: Uuid) -> Result<entity::price::Model, ApprovalError> {
-        price_repo::find(tx, &self.scope(), self.tenant_id, id)
-            .await
-            .map_err(storage)?
-            .ok_or_else(|| invalid("PRICE_NOT_FOUND", format!("price {id}")))
-    }
+    /// The prices, by id, in ONE statement whatever their number (PS-39); the first id, in
+    /// ascending order, that the tenant does not hold is `PRICE_NOT_FOUND`.
     async fn load_all(
         &self,
         tx: &DbTx<'_>,
@@ -456,10 +459,14 @@ impl PricesSubject {
         let mut ids: Vec<Uuid> = ids.into_iter().collect();
         ids.sort_unstable();
         ids.dedup();
-        let mut models = Vec::with_capacity(ids.len());
-        for id in ids {
-            models.push(self.load(tx, id).await?);
+        let mut models = price_repo::find_many(tx, &self.scope(), self.tenant_id, &ids)
+            .await
+            .map_err(storage)?;
+        let held: BTreeSet<Uuid> = models.iter().map(|m| m.id).collect();
+        if let Some(id) = ids.iter().find(|id| !held.contains(id)) {
+            return Err(invalid("PRICE_NOT_FOUND", format!("price {id}")));
         }
+        models.sort_by_key(|m| m.id);
         Ok(models)
     }
     /// The SKU's metering in force on a date (D-402). A date before the SKU's first version
@@ -617,14 +624,18 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
     }
     /// The prices, their pair partners, and each price's chain predecessor on its new start.
     async fn collect(&self, tx: &DbTx<'a>, ids: &[Uuid]) -> Result<Vec<ItemRef>, ApprovalError> {
-        let mut wanted: BTreeSet<Uuid> = ids.iter().copied().collect();
-        for id in ids {
-            if let Some(partner) = self.load(tx, *id).await?.paired_price_id {
-                wanted.insert(partner);
-            }
-        }
+        // The asked prices once, then only the partners they name that were not asked (PS-39).
+        let mut models = self.load_all(tx, ids.iter().copied()).await?;
+        let asked: BTreeSet<Uuid> = models.iter().map(|m| m.id).collect();
+        let partners: BTreeSet<Uuid> = models
+            .iter()
+            .filter_map(|m| m.paired_price_id)
+            .filter(|partner| !asked.contains(partner))
+            .collect();
+        models.extend(self.load_all(tx, partners).await?);
+        models.sort_by_key(|m| m.id);
         let mut items = Vec::new();
-        let grouped = by_entry(self.load_all(tx, wanted).await?);
+        let grouped = by_entry(models);
         self.review(tx, &grouped.keys().copied().collect()).await?;
         for (price_book_entry_id, prices) in grouped {
             let unit: BTreeSet<Uuid> = prices.iter().map(|m| m.id).collect();

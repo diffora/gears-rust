@@ -325,8 +325,19 @@ pub async fn export(
     let mut result = Vec::new();
     // The authorized book is the export aggregate; subordinate IDs are not book IDs.
     let children = AccessScope::for_tenant(tenant);
-    for p in entries(tx, &children, tenant, id).await? {
-        let mut prices = price_repo::for_entry(tx, &children, tenant, p.id).await?;
+    let entries = entries(tx, &children, tenant, id).await?;
+    // The book's prices in ONE statement (PS-16).
+    let mut grouped = price_repo::by_entry(
+        price_repo::for_entries(
+            tx,
+            &children,
+            tenant,
+            &entries.iter().map(|p| p.id).collect::<Vec<_>>(),
+        )
+        .await?,
+    );
+    for p in entries {
+        let mut prices = grouped.remove(&p.id).unwrap_or_default();
         prices.sort_by(|a, b| {
             (&a.dim_value, a.effective_from, a.version_no, a.id).cmp(&(
                 &b.dim_value,

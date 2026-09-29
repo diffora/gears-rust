@@ -1163,3 +1163,157 @@ async fn the_book_reads_count_their_stats_in_the_same_statements_for_10_and_100_
     }
     same("entries", &lists[0], &lists[1]);
 }
+
+// ------------------------------------------------------------------ set-based reads (whole-branch review)
+
+/// The statements on pricing's tables the last request made, in order, with their binds.
+fn pricing_statements(recorder: &toolkit_db::test_support::QueryRecorder) -> Vec<(String, usize)> {
+    recorder
+        .events()
+        .into_iter()
+        .filter(|q| {
+            q.table
+                .as_deref()
+                .is_some_and(|t| t.starts_with("pricing_"))
+        })
+        .map(|q| (q.sql, q.param_count))
+        .collect()
+}
+
+/// `GET /resolve` reads the revision's entries and their prices set-based (PS-15): the same
+/// statements for 10 and for 100 items, each item on its own entry with its own price.
+#[tokio::test]
+async fn resolve_reads_in_the_same_statements_for_10_and_100_items() {
+    let (f, catalog, recorder) = recorded().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let now = time::OffsetDateTime::now_utc();
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (created, revision) = plan(&f, &format!("resolve-{n}"), eur).await;
+        for _ in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = stored_entry(&f, eur, sku, "per_unit", now).await;
+            stored_price(&f, e, Row::new(1, "approved", today() - days(1))).await;
+            item(&f, revision, sku, Some(e), "paid").await;
+        }
+        publish(&f, id_of(&created["id"]), revision).await;
+        recorder.clear();
+        let b = ok(
+            &f,
+            &format!("/resolve?plan_revision_id={revision}&date={}", today()),
+        )
+        .await;
+        assert_eq!(b["items"].as_array().unwrap().len(), n);
+        runs.push(pricing_statements(&recorder));
+    }
+    same("resolve", &runs[0], &runs[1]);
+}
+
+/// A book's publish-changes listing and its export read the book's prices, and the listing the
+/// plans that read its entries, set-based (PS-14, PS-16): the same statements for 10 and for 100
+/// entries, each with an approved price and a draft, and each named by its own plan.
+#[tokio::test]
+async fn publish_changes_and_the_export_read_in_the_same_statements_for_10_and_100_entries() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    let (mut listings, mut exports) = (Vec::new(), Vec::new());
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("changes-{n}")).await;
+        for i in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = stored_entry(&f, b, sku, "per_unit", now).await;
+            stored_price(&f, e, Row::new(1, "approved", today() - days(1))).await;
+            stored_price(&f, e, Row::new(2, "draft", today() + days(1))).await;
+            let (_, revision) = plan(&f, &format!("reader-{n}-{i}"), b).await;
+            item(&f, revision, sku, Some(e), "paid").await;
+        }
+        recorder.clear();
+        let listing = ok(&f, &format!("/price-books/{b}/publish-changes")).await;
+        assert_eq!(
+            listing["prices"].as_array().unwrap().len(),
+            n,
+            "{listing:#}"
+        );
+        assert_eq!(listing["impact"]["plans"].as_array().unwrap().len(), n);
+        listings.push(pricing_statements(&recorder));
+        recorder.clear();
+        let export = ok(&f, &format!("/price-books/{b}/export")).await;
+        assert_eq!(export["entries"].as_array().unwrap().len(), n);
+        exports.push(pricing_statements(&recorder));
+    }
+    same("publish-changes", &listings[0], &listings[1]);
+    same("export", &exports[0], &exports[1]);
+}
+
+/// A submit reads its prices set-based (PS-39): publishing 10 or 100 drafts of one entry makes
+/// the same reads of `pricing_price`, under quorum 1 (recorded) and quorum 0 (applied at once,
+/// with its event); only its per-price writes (the locks, the approvals) grow.
+#[tokio::test]
+async fn a_submit_reads_its_prices_in_the_same_statements_for_10_and_100_drafts() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    for quorum in [1, 0] {
+        let (_, _, tag) = f
+            .call("GET", "/approval-policy", json!({}), None, None)
+            .await;
+        let (s, b, _) = f
+            .call(
+                "PUT",
+                "/approval-policy",
+                json!({ "quorum": quorum }),
+                Some(&tag),
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{b}");
+        submit_reads(&f, &catalog, &recorder, now, quorum).await;
+    }
+}
+async fn submit_reads(
+    f: &Fixture,
+    catalog: &Catalog,
+    recorder: &toolkit_db::test_support::QueryRecorder,
+    now: time::OffsetDateTime,
+    quorum: u32,
+) {
+    let mut runs = Vec::new();
+    for n in [10_i32, 100] {
+        let b = plan_support::book(f, &format!("submit-{quorum}-{n}")).await;
+        let e = stored_entry(f, b, catalog.sku(SkuType::Usage), "per_unit", now).await;
+        for i in 1..=n {
+            stored_price(f, e, Row::new(i, "draft", today() + days(i64::from(i)))).await;
+        }
+        recorder.clear();
+        let (s, body, _) = f
+            .call(
+                "POST",
+                &format!("/price-books/{b}/publish-changes"),
+                json!({}),
+                None,
+                Some(&format!("submit-{quorum}-{n}")),
+            )
+            .await;
+        assert_eq!(s, 201, "{body}");
+        assert_eq!(body["applied"], quorum == 0, "{body}");
+        runs.push(
+            recorder
+                .events()
+                .into_iter()
+                .filter(|q| {
+                    q.table.as_deref() == Some("pricing_price")
+                        && q.sql
+                            .trim_start()
+                            .to_ascii_uppercase()
+                            .starts_with("SELECT")
+                })
+                .map(|q| (q.sql, q.param_count))
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(
+        runs[0].len(),
+        runs[1].len(),
+        "quorum {quorum}: the price reads grow with the drafts: {:#?}",
+        runs[1]
+    );
+}

@@ -40,7 +40,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{ApproveOutcome, Engine, RejectOutcome, Store, SubmitRequest, Unit, UnitState};
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use time::OffsetDateTime;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::{
@@ -115,21 +118,41 @@ async fn load_unit(
         .map_err(approval_failure)?
         .ok_or_else(|| support::missing_what("approval_unit").into())
 }
+/// The unit's prices in its items' order, each with its entry's model (D-427): the prices and
+/// their entries in two statements whatever the number of items (PS-39).
 async fn prices_of(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
     unit: Uuid,
 ) -> Result<Vec<PricingPriceDto>, DoorError> {
     let scope = AccessScope::for_tenant(store.tenant_id);
+    let items = store.items(tx, unit).await.map_err(approval_failure)?;
+    let ids: Vec<Uuid> = items.iter().map(|i| i.item_id).collect();
+    let mut found: BTreeMap<Uuid, entity::price::Model> =
+        price_repo::find_many(tx, &scope, store.tenant_id, &ids)
+            .await?
+            .into_iter()
+            .map(|m| (m.id, m))
+            .collect();
+    let entry_ids: Vec<Uuid> = found
+        .values()
+        .map(|m| m.price_book_entry_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let models: BTreeMap<Uuid, String> =
+        price_book_entry_repo::find_many(tx, &scope, store.tenant_id, &entry_ids)
+            .await?
+            .into_iter()
+            .map(|e| (e.id, e.model))
+            .collect();
     let mut prices = Vec::new();
-    for item in store.items(tx, unit).await.map_err(approval_failure)? {
-        if let Some(m) = price_repo::find(tx, &scope, store.tenant_id, item.item_id).await? {
-            // A price reads its entry's model (D-427).
-            let entry =
-                price_book_entry_repo::find(tx, &scope, store.tenant_id, m.price_book_entry_id)
-                    .await?
-                    .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", m.id)))?;
-            prices.push(PricingPriceDto::of(m, &entry.model)?);
+    for item in &items {
+        if let Some(m) = found.remove(&item.item_id) {
+            let model = models
+                .get(&m.price_book_entry_id)
+                .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", m.id)))?;
+            prices.push(PricingPriceDto::of(m, model)?);
         }
     }
     Ok(prices)
@@ -233,13 +256,25 @@ async fn prices_published(
 ) -> Result<(), DoorError> {
     let unit = load_unit(tx, store, id).await?;
     let scope = AccessScope::for_tenant(store.tenant_id);
-    let mut prices = Vec::new();
-    for item in store.items(tx, unit.id).await.map_err(approval_failure)? {
-        let m = price_repo::find(tx, &scope, store.tenant_id, item.item_id)
+    let ids: Vec<Uuid> = store
+        .items(tx, unit.id)
+        .await
+        .map_err(approval_failure)?
+        .iter()
+        .map(|i| i.item_id)
+        .collect();
+    // The unit's prices in ONE statement (PS-39).
+    let mut found: BTreeMap<Uuid, entity::price::Model> =
+        price_repo::find_many(tx, &scope, store.tenant_id, &ids)
             .await?
-            .ok_or_else(|| {
-                RepoError::CorruptRow(format!("unit {} lost price {}", unit.id, item.item_id))
-            })?;
+            .into_iter()
+            .map(|m| (m.id, m))
+            .collect();
+    let mut prices = Vec::new();
+    for item_id in ids {
+        let m = found.remove(&item_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("unit {} lost price {item_id}", unit.id))
+        })?;
         prices.push(PublishedPrice {
             price_id: m.id,
             price_book_entry_id: m.price_book_entry_id,
@@ -475,32 +510,43 @@ async fn proposals(
 ) -> Result<Vec<PricingProposedPrice>, DoorError> {
     let children = AccessScope::for_tenant(tenant);
     let entries = price_book_entry_repo::for_book(tx, &children, tenant, book).await?;
-    let mut stored: Vec<entity::price::Model> = Vec::new();
+    // The book's prices in ONE statement, matched by id through maps (PS-16).
+    let mut grouped = price_repo::by_entry(
+        price_repo::for_entries(
+            tx,
+            &children,
+            tenant,
+            &entries.iter().map(|p| p.id).collect::<Vec<_>>(),
+        )
+        .await?,
+    );
+    let mut stored: BTreeMap<Uuid, entity::price::Model> = BTreeMap::new();
     let mut prices = Vec::new();
     for p in &entries {
-        let of_entry = price_repo::for_entry(tx, &children, tenant, p.id).await?;
         let model = price_book_entry_repo::model_of(p)?;
-        for m in &of_entry {
-            prices.push(price_repo::to_domain(m, model)?);
+        for m in grouped.remove(&p.id).unwrap_or_default() {
+            prices.push(price_repo::to_domain(&m, model)?);
+            stored.insert(m.id, m);
         }
-        stored.extend(of_entry);
     }
+    let by_id: BTreeMap<Uuid, &entity::price_book_entry::Model> =
+        entries.iter().map(|p| (p.id, p)).collect();
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
     let mut out = Vec::new();
     for r in price::proposed_prices(book, &owners, &prices) {
-        let Some(m) = stored.iter().find(|m| m.id == r.id) else {
+        let Some(m) = stored.get(&r.id) else {
             continue;
         };
         if m.pending_unit_id.is_some() {
             continue;
         }
-        let entry = entries
-            .iter()
-            .find(|p| p.id == r.price_book_entry_id)
+        let entry = by_id
+            .get(&r.price_book_entry_id)
+            .copied()
             .cloned()
             .ok_or_else(|| RepoError::CorruptRow(format!("price {} has no entry", r.id)))?;
         let before = price::in_force_before(&prices, r)
-            .and_then(|b| stored.iter().find(|m| m.id == b.id))
+            .and_then(|b| stored.get(&b.id))
             .cloned()
             .map(|b| PricingPriceDto::of(b, &entry.model))
             .transpose()?;
@@ -565,10 +611,22 @@ pub async fn publish(
                 .await?
                 .ok_or_else(support::missing)?;
             let children = AccessScope::for_tenant(cmd.tenant());
-            let mut owned: Vec<entity::price::Model> = Vec::new();
-            for p in price_book_entry_repo::for_book(tx, &children, cmd.tenant(), book).await? {
-                owned.extend(price_repo::for_entry(tx, &children, cmd.tenant(), p.id).await?);
-            }
+            // The book's prices in ONE statement, in the order its entries list them (PS-16).
+            let entries =
+                price_book_entry_repo::for_book(tx, &children, cmd.tenant(), book).await?;
+            let mut grouped = price_repo::by_entry(
+                price_repo::for_entries(
+                    tx,
+                    &children,
+                    cmd.tenant(),
+                    &entries.iter().map(|p| p.id).collect::<Vec<_>>(),
+                )
+                .await?,
+            );
+            let owned: Vec<entity::price::Model> = entries
+                .iter()
+                .flat_map(|p| grouped.remove(&p.id).unwrap_or_default())
+                .collect();
             let draft = |m: &entity::price::Model| {
                 m.state == PriceState::Draft.as_str() && m.pending_unit_id.is_none()
             };

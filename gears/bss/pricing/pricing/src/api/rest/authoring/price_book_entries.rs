@@ -427,13 +427,16 @@ pub(super) async fn in_force(
     let stored =
         price_repo::approved_default_chain(tx, &AccessScope::for_tenant(tenant), tenant, &ids)
             .await?;
+    // Each entry's chain by key, grouped once: linear in the book, not entries x prices (PS-38).
+    let mut chains: std::collections::BTreeMap<Uuid, Vec<&entity::price::Model>> =
+        std::collections::BTreeMap::new();
+    for p in &stored {
+        chains.entry(p.price_book_entry_id).or_default().push(p);
+    }
     let mut current = std::collections::BTreeMap::new();
     for e in entries {
         let model = price_book_entry_repo::model_of(e)?;
-        let chain: Vec<&entity::price::Model> = stored
-            .iter()
-            .filter(|p| p.price_book_entry_id == e.id)
-            .collect();
+        let chain: Vec<&entity::price::Model> = chains.get(&e.id).cloned().unwrap_or_default();
         let prices = chain
             .iter()
             .map(|p| price_repo::to_domain(p, model))

@@ -463,14 +463,23 @@ async fn read_stored(
     let mut entries: BTreeMap<Uuid, resolve::Entry> = BTreeMap::new();
     let mut prices = BTreeMap::new();
     let mut keep_for_bound = BTreeSet::new();
-    for entry_id in rows.iter().filter_map(|r| r.price_book_entry_id) {
-        if entries.contains_key(&entry_id) {
-            continue;
-        }
-        let e = price_book_entry_repo::find(tx, &children, tenant, entry_id)
-            .await?
-            .ok_or_else(|| corrupt(format!("entry {entry_id} of revision {id}")))?;
-        let of_entry = price_repo::for_entry(tx, &children, tenant, e.id).await?;
+    // The items' entries and all their prices in two statements, whatever the number of items
+    // (PS-15).
+    let wanted: Vec<Uuid> = rows
+        .iter()
+        .filter_map(|r| r.price_book_entry_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let found = price_book_entry_repo::find_many(tx, &children, tenant, &wanted).await?;
+    let held: BTreeSet<Uuid> = found.iter().map(|e| e.id).collect();
+    if let Some(lost) = wanted.iter().find(|w| !held.contains(w)) {
+        return Err(corrupt(format!("entry {lost} of revision {id}")));
+    }
+    let mut grouped =
+        price_repo::by_entry(price_repo::for_entries(tx, &children, tenant, &wanted).await?);
+    for e in found {
+        let of_entry = grouped.remove(&e.id).unwrap_or_default();
         keep_for_bound.extend(of_entry.iter().filter(|p| p.keep_for_bound).map(|p| p.id));
         let model = price_book_entry_repo::model_of(&e)?;
         let domain = of_entry
