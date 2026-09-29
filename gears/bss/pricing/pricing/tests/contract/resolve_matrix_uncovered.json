@@ -49,7 +49,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.egress.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.egress.v1",
               "unit": "GB"
             },
             "chains": [
@@ -158,7 +158,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.storage.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.storage.v1",
               "unit": "GB"
             },
             "chains": [

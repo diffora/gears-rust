@@ -741,7 +741,13 @@ fn content(
         tax_category: tax_category.map(str::to_owned),
         invoice_line_template: invoice_line_template.map(str::to_owned),
         billing_timing,
-        usage_type_ref: meter.map(|m| format!("gts.cf.core.uc.usage_record.v1~cf.test.{m}.v1")),
+        usage_type_ref: meter.map(|m| {
+            // A GTS segment is vendor.package.namespace.type.version, with no hyphen.
+            format!(
+                "gts.cf.core.uc.usage_record.v1~cf.test.usage.{}.v1",
+                m.replace('-', "_")
+            )
+        }),
         unit: meter.map(|_| "GB".to_owned()),
     }
 }

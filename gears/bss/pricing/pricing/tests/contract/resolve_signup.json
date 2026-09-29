@@ -105,7 +105,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.storage.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.storage.v1",
               "unit": "GB"
             },
             "chains": [
@@ -237,7 +237,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.egress.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.egress.v1",
               "unit": "GB"
             },
             "chains": [
@@ -327,7 +327,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.backup.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.backup.v1",
               "unit": "GB"
             },
             "chains": []
@@ -363,7 +363,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.requests.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.requests.v1",
               "unit": "GB"
             },
             "chains": [
@@ -540,7 +540,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.requests-volume.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.requests_volume.v1",
               "unit": "GB"
             },
             "chains": [
@@ -625,7 +625,7 @@
               "source": "tenant"
             },
             "meter": {
-              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.requests-package.v1",
+              "usage_type_ref": "gts.cf.core.uc.usage_record.v1~cf.test.usage.requests_package.v1",
               "unit": "GB"
             },
             "chains": [

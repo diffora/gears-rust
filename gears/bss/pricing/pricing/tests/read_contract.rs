@@ -1074,7 +1074,7 @@ async fn september_binds_sku_version_one_and_october_version_two() {
     v1.gl_code = Some("4000".into());
     v1.billing_timing = Some(BillingTiming::Advance);
     v1.invoice_line_template = Some("Storage {unit}".into());
-    v1.usage_type_ref = Some("gts.cf.core.uc.usage_record.v1~cf.test.storage.v1".into());
+    v1.usage_type_ref = Some("gts.cf.core.uc.usage_record.v1~cf.test.usage.storage.v1".into());
     v1.unit = Some("GB".into());
     let mut v2 = v1.clone();
     v2.gl_code = Some("5000".into());
@@ -1125,7 +1125,7 @@ async fn september_binds_sku_version_one_and_october_version_two() {
     );
     assert_eq!(
         item["meter"],
-        json!({"usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.test.storage.v1","unit":"GB"})
+        json!({"usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.test.usage.storage.v1","unit":"GB"})
     );
 
     let (s, october) = resolve(
