@@ -12,7 +12,7 @@ use crate::infra::storage::{
 };
 use bss_products_sdk::models::{BillingTiming, Lifecycle, Sku, SkuContent, SkuType};
 use sea_orm::sea_query::{Expr, ExprTrait, Query};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QueryOrder, QuerySelect, Set};
 use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -189,6 +189,41 @@ pub async fn list_skus(
         .into_iter()
         .map(sku_of)
         .collect()
+}
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct TaxCategoryRow {
+    tax_category: String,
+}
+/// The distinct tax categories the tenant's published SKUs carry, in code order, in ONE projected
+/// read (RS-14): the dictionary the browse door serves, without reading a SKU row.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn distinct_tax_categories(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<String>, RepoError> {
+    Ok(sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::Lifecycle.eq(Lifecycle::Published.as_str()))
+                .add(sku::Column::TaxCategory.is_not_null()),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(sku::Column::TaxCategory)
+                .distinct()
+                .order_by(sku::Column::TaxCategory, Order::Asc)
+                .into_model::<TaxCategoryRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("distinct tax categories".into(), e))?
+        .into_iter()
+        .map(|row| row.tax_category)
+        .collect())
 }
 fn content_update(
     scope: &AccessScope,

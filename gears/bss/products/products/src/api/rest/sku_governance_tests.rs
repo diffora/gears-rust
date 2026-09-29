@@ -99,6 +99,22 @@ async fn call_with(
 }
 impl Fixture {
     async fn new(quorum: u32) -> Self {
+        let (db, _, _, dsn) = test_db().await;
+        Self::on(quorum, db, dsn).await
+    }
+    /// [`Fixture::new`] over a database whose statements `recorder` records; the recorder is
+    /// cleared after the fixture's own writes.
+    async fn recorded(quorum: u32) -> (Self, toolkit_db::test_support::QueryRecorder) {
+        let (db, _, _, dsn, recorder) = recorded_test_db().await;
+        let f = Self::on(quorum, db, dsn).await;
+        recorder.clear();
+        (f, recorder)
+    }
+    async fn on(
+        quorum: u32,
+        db: toolkit_db::DBProvider<toolkit_db::DbError>,
+        dsn: TestDsn,
+    ) -> Self {
         let tenant = Uuid::new_v4();
         let author = authed_ctx(tenant);
         let reviewer = authed_ctx(tenant);
@@ -109,7 +125,6 @@ impl Fixture {
             .token_scopes(vec!["*".into()])
             .build()
             .unwrap();
-        let (db, _, _, dsn) = test_db().await;
         let (app, state) = rest_app_on_db(tenant, routes, resolved_usage_types(), "test", db).await;
         let (status, c) = call(
             &app,
@@ -2075,6 +2090,89 @@ async fn a_reservation_that_loses_the_index_twice_is_409_reference_exists() {
         .await
         .unwrap_err();
     assert_eq!(canonical_code(error), "REFERENCE_EXISTS");
+}
+/// RS-13: the registry answers the states of a batch of reservations in the same statements for
+/// 10 and for 100 ids, one read with the owner checked per row; it read each id on its own. An
+/// unknown id is still the batch's 404.
+#[tokio::test]
+async fn registry_states_read_in_the_same_statements_for_10_and_100_ids() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1, ReferenceState};
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (f, recorder) = Fixture::recorded(0).await;
+        f.publish().await;
+        let registry = local(&f, "pricing");
+        let mut ids = Vec::with_capacity(n);
+        for _ in 0..n {
+            ids.push(
+                registry
+                    .reserve(
+                        &f.author,
+                        f.tenant,
+                        f.id,
+                        ReferenceKind::PriceBookEntry,
+                        Uuid::new_v4(),
+                    )
+                    .await
+                    .unwrap()
+                    .reservation_id,
+            );
+        }
+        recorder.clear();
+        let states = registry.states(&f.author, f.tenant, &ids).await.unwrap();
+        assert_eq!(
+            states,
+            ids.iter()
+                .map(|id| (*id, ReferenceState::Reserved))
+                .collect::<Vec<_>>()
+        );
+        runs.push(products_statements(&recorder));
+        let mut with_unknown = ids.clone();
+        with_unknown.insert(1, Uuid::new_v4());
+        assert_eq!(
+            registry
+                .states(&f.author, f.tenant, &with_unknown)
+                .await
+                .unwrap_err()
+                .status_code(),
+            404
+        );
+    }
+    assert_eq!(runs[0], runs[1]);
+}
+
+/// RS-15: a SKU card counts its live references in one grouped read; it loaded every live row.
+/// The counts it answers are unchanged: by owner and kind, and the reserved subset.
+#[tokio::test]
+async fn a_sku_card_counts_its_references_in_one_grouped_read() {
+    let (f, recorder) = Fixture::recorded(0).await;
+    f.publish().await;
+    for _ in 0..3 {
+        assert_eq!(f.reserve(Uuid::new_v4()).await.0, 201);
+    }
+    recorder.clear();
+    let (status, card) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{card}");
+    assert_eq!(card["references"]["price_book_entries"], 3, "{card}");
+    assert_eq!(card["references"]["reserved"], 3, "{card}");
+    let reads: Vec<String> = products_statements(&recorder)
+        .into_iter()
+        .filter(|sql| sql.contains("products_sku_reference"))
+        .collect();
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    assert!(
+        reads[0].contains("GROUP BY") && reads[0].contains("COUNT"),
+        "{}",
+        reads[0]
+    );
 }
 #[tokio::test]
 async fn bound_registry_refusals_match_rest_codes() {

@@ -4,7 +4,7 @@ use crate::api::rest::{
     references as service,
 };
 use crate::authz::{actions, resource_types};
-use crate::domain::references::RefKind;
+use crate::domain::{error::DomainError, references::RefKind};
 use crate::infra::storage::{RepoError, RepoRefusal, repo};
 use async_trait::async_trait;
 use authz_resolver_sdk::PolicyEnforcer;
@@ -216,11 +216,35 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
         let (scope, _) = self.scope(ctx, tenant, actions::REFERENCE).await?;
         let db = self.state.db.db();
         let conn = db.conn().map_err(|e| rest::tx_to_canonical(e.into()))?;
+        // One read per thousand ids, the owner checked per row (RS-13): pricing's reconcile
+        // asks a whole batch of receipts each pass. The first id in order that is missing or
+        // held by another owner decides the answer, as when each id was read on its own.
+        let mut rows = std::collections::HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(1000) {
+            for row in repo::find_references(&conn, &scope, tenant, chunk)
+                .await
+                .map_err(|e| rest::repo_error_to_canonical(&e))?
+            {
+                rows.insert(row.id, row);
+            }
+        }
         let mut result = Vec::with_capacity(ids.len());
         for id in ids {
-            let row = service::owned(&conn, &scope, ctx, &self.owner, *id)
-                .await
-                .map_err(rest::tx_to_canonical)?;
+            let Some(row) = rows.get(id) else {
+                return Err(DomainError::NotFound {
+                    what: "reference",
+                    id: *id,
+                }
+                .into());
+            };
+            if row.owner_gear != self.owner {
+                return Err(service::forbidden(
+                    ctx.subject_id(),
+                    tenant,
+                    "the reference belongs to another owner",
+                )
+                .into());
+            }
             result.push((*id, state(&row.state, row.id)?));
         }
         Ok(result)

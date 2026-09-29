@@ -287,3 +287,99 @@ async fn a_storage_failure_behind_the_catalog_is_a_500_without_driver_text() {
         assert!(!wire.contains("products_sku"), "{wire}");
     }
 }
+
+/// `n` published usage SKUs of the tenant, their tax categories cycling over three; their ids.
+async fn published_skus(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    n: usize,
+) -> Vec<Uuid> {
+    let conn = db.conn().unwrap();
+    let now = OffsetDateTime::now_utc();
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let s = repo::insert_sku(
+            &conn,
+            scope,
+            tenant,
+            NewSku {
+                code: format!("P{i:04}"),
+                name: format!("published {i:04}"),
+                r#type: SkuType::Recurring,
+                category_id: None,
+                description: String::new(),
+                sellable: true,
+                gl_code: None,
+                tax_category: Some(format!("tax-{}", i % 3)),
+                invoice_line_template: None,
+                billing_timing: None,
+                usage_type_ref: None,
+                unit: None,
+            },
+            tenant,
+            now,
+        )
+        .await
+        .unwrap();
+        repo::set_lifecycle(
+            &conn,
+            scope,
+            tenant,
+            s.id,
+            &[Lifecycle::Draft],
+            Lifecycle::Published,
+            now,
+        )
+        .await
+        .unwrap();
+        ids.push(s.id);
+    }
+    ids
+}
+
+/// RS-40: `get_skus` reads the SKUs a write names in one statement, whatever their number.
+#[tokio::test]
+async fn get_skus_reads_in_the_same_statements_for_10_and_100_ids() {
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (db, scope, tenant, _dsn, recorder) = recorded_test_db().await;
+        let ids = published_skus(&db, &scope, tenant, n).await;
+        let provider = BrowseCatalogProvider::new(db.db(), Arc::new(flat_in_enforcer(tenant)));
+        recorder.clear();
+        let skus = provider.get_skus(&authed_ctx(tenant), &ids).await.unwrap();
+        assert_eq!(skus.len(), n);
+        let codes: Vec<&str> = skus.iter().map(|s| s.sku_code.as_str()).collect();
+        let mut sorted = codes.clone();
+        sorted.sort_unstable();
+        assert_eq!(codes, sorted, "the SKUs come back in code order");
+        runs.push(products_statements(&recorder));
+    }
+    assert_eq!(runs[0], runs[1]);
+}
+
+/// RS-14: the tax-category dictionary is one distinct read over the published SKUs, whatever
+/// their number; it paged every published row 200 at a time.
+#[tokio::test]
+async fn tax_categories_read_in_the_same_statements_for_10_and_250_skus() {
+    let mut runs = Vec::new();
+    for n in [10, 250] {
+        let (db, scope, tenant, _dsn, recorder) = recorded_test_db().await;
+        published_skus(&db, &scope, tenant, n).await;
+        let provider = BrowseCatalogProvider::new(db.db(), Arc::new(flat_in_enforcer(tenant)));
+        recorder.clear();
+        let dictionary = provider
+            .list_tax_categories(&authed_ctx(tenant))
+            .await
+            .unwrap();
+        assert_eq!(
+            dictionary
+                .iter()
+                .map(|c| c.code.as_str())
+                .collect::<Vec<_>>(),
+            ["tax-0", "tax-1", "tax-2"]
+        );
+        runs.push(products_statements(&recorder));
+    }
+    assert_eq!(runs[0], runs[1]);
+}

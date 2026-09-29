@@ -7,7 +7,7 @@ use axum::{
     extract::{Query, rejection::QueryRejection},
     http::StatusCode,
 };
-use bss_pricing_sdk::product_catalog::{CatalogSku, CatalogTaxCategory, ProductCatalogClientV1};
+use bss_pricing_sdk::product_catalog::{CatalogSku, CatalogTaxCategory};
 use std::sync::Arc;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_canonical_errors::CanonicalError;
@@ -135,13 +135,15 @@ async fn browse(
 ) -> Result<Json<BrowsePage>, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let provider = BrowseCatalogProvider::new(state.db.db(), Arc::new(enforcer));
-    provider.scope(&ctx).await?;
+    // The one PDP evaluation of this request: the reads below take its scope (RS-41).
+    let scope = provider.scope(&ctx).await?;
     let Query(q) = query.map_err(|e| invalid("query", e.body_text()))?;
     match q.kind.as_str() {
         "sku" => {
             let page = provider
                 .browse(
-                    &ctx,
+                    &scope,
+                    ctx.subject_tenant_id(),
                     q.filter.as_deref(),
                     q.limit.unwrap_or(50),
                     q.cursor.as_deref(),
@@ -167,7 +169,7 @@ async fn browse(
             }
             Ok(Json(BrowsePage {
                 rows: provider
-                    .list_tax_categories(&ctx)
+                    .tax_categories(&scope, ctx.subject_tenant_id())
                     .await?
                     .into_iter()
                     .map(|r| BrowseRow::Tax(r.into()))
