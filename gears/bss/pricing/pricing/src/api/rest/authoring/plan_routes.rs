@@ -33,8 +33,10 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a plan")
         .description(
             "Creates a plan with a code and a name and its draft revision 1 on a book of the \
-             tenant; the Idempotency-Key replays the answer. Refusals: 400 PLAN_CODE_REQUIRED; 404 \
-             for a book the tenant does not hold; 409 PLAN_CODE_TAKEN.",
+             tenant; the Idempotency-Key replays the answer. The caller also needs price_book \
+             read on that book (D-456). Refusals: 400 PLAN_CODE_REQUIRED; 404 for a book the \
+             tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; \
+             503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
         )
         .tag("Pricing")
         .authenticated()
@@ -132,9 +134,11 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Creates a new plan with its own code and name whose draft revision 1 copies the \
              source's published revision (the one in effect: a scheduled revision whose date has \
-             come is switched first, D-451), without anything of its approval. Refusals: 400 \
-             PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or \
-             PLAN_CODE_TAKEN.",
+             come is switched first, D-451), without anything of its approval. The caller also \
+             needs price_book read on the source's book (D-456). Refusals: 400 PLAN_CODE_REQUIRED; \
+             404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 \
+             PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant \
+             cannot be judged.",
         )
         .tag("Pricing")
         .authenticated()
@@ -172,9 +176,11 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Change a draft revision")
         .description(
             "Changes a draft revision's book, remapping each item to the new book's matching \
-             entry, or its sale date, by its author at the version the author read (If-Match). \
-             Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or \
-             STALE_REVISION.",
+             entry, or its sale date, by its author at the version the author read (If-Match). A \
+             named book needs the caller's price_book read on it (D-456). Refusals: 400 \
+             DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; \
+             403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant \
+             cannot be judged.",
         )
         .tag("Pricing")
         .authenticated()
@@ -227,17 +233,27 @@ async fn create_plan(
     )
     .await
     .map_err(authz_failure)?;
+    // The plan names a book: its author's `price_book` read, judged a second time (D-456).
+    let books = super::money_scope(&enforcer, &ctx).await?;
     let correlation = correlation::require_correlation(corr)?;
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPlanCreate = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+        let (scope, books, ctx, input) = (scope.clone(), books.clone(), ctx.clone(), input.clone());
         let (key, digest) = (key.clone(), digest.clone());
-        Box::pin(
-            async move { plans::create(tx, &scope, &ctx, correlation, &key, &digest, input).await },
-        )
+        Box::pin(async move {
+            plans::create(
+                tx,
+                (&scope, books.as_ref()),
+                &ctx,
+                correlation,
+                (&key, &digest),
+                input,
+            )
+            .await
+        })
     })
     .await
 }
@@ -369,12 +385,25 @@ async fn clone_plan(
     )
     .await
     .map_err(authz_failure)?;
+    // The clone names its source's book: its author's `price_book` read, judged a second time
+    // (D-456).
+    let books = super::money_scope(&enforcer, &ctx).await?;
     let correlation = correlation::require_correlation(corr)?;
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPlanClone = preconditions::parse_body(&body)?;
-    plans::clone(state, scope, ctx, correlation, id, key, digest, input).await
+    plans::clone(
+        state,
+        (scope, books),
+        ctx,
+        correlation,
+        id,
+        key,
+        digest,
+        input,
+    )
+    .await
 }
 async fn get_revision(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -422,10 +451,24 @@ async fn patch_revision(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPlanRevisionPatch = preconditions::parse_body(&body)?;
+    // A patch that names a book: its author's `price_book` read, judged a second time (D-456).
+    let books = match input.book_id {
+        Some(_) => super::money_scope(&enforcer, &ctx).await?,
+        None => None,
+    };
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
+        let (scope, books, ctx, input) = (scope.clone(), books.clone(), ctx.clone(), input.clone());
         Box::pin(async move {
-            plans::patch_revision(tx, &scope, &ctx, correlation, id, version, input).await
+            plans::patch_revision(
+                tx,
+                (&scope, books.as_ref()),
+                &ctx,
+                correlation,
+                id,
+                version,
+                input,
+            )
+            .await
         })
     })
     .await

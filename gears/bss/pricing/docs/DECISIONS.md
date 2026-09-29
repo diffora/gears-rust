@@ -76,7 +76,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434 |
+| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
@@ -92,6 +92,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5 |
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
+| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
 
 ## Entries
 
@@ -583,7 +584,9 @@ The Price Books screen opens a drawer per entry with its dated prices (ask 18). 
 
 Breaking for a consumer that compares usage as a closed object: it gains three fields, and the entry reads gain current_price. The gears-rust e2e is adapted in run 7.1; the vhp-core suite follows in run 7.4.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434.
+D-456 extends this entry: plan create, clone and a book-naming revision PATCH judge the same second price_book read on the book the plan names.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456.
 
 #### D-441 [M] Every book read carries its stats
 
@@ -797,3 +800,16 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - *Rejected alternative:* each enqueue returns its Wake, and every function on the path returns it to the transaction (the toolkit's outbox::in_transaction and main's gears). The engine's apply returns nothing, so the products subjects would need a second mechanism. An error after an enqueue would also drop an unfired Wake, which the toolkit logs as a leak. The handle gives both gears one design (products P-D-221).
 
 **Source:** Main sync of 2026-09-29 (sync report, port 3; toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b).
+
+#### D-456 [M] A plan names only a book its author may read
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** POST /plans and a PATCH /plan-revisions/{id} with a book_id checked the book with a tenant scope only, and the only PDP decision of the request was plan author. POST /plans/{id}/clone named the source's book the same way. So a caller could attach any book of its tenant, one its price_book grants exclude included. Once that revision was published, GET /resolve served the book's prices under plan read, while GET /price-book-entries/{id}/prices refuses the same money without price_book read (D-440).
+- **The rule.** These three doors judge price_book read a second time, as D-440 judges the money, on the book the plan names: the body's book_id for the create and the PATCH, the source's published revision's book for the clone. The grant must admit that book. A denial, or a grant whose scope does not admit the book, is 403 PRICE_BOOK_READ_REQUIRED, and nothing is written. A policy that cannot judge is 503.
+- **The order.** plan author first (403), then the money's policy (503), then the body (400), the book the tenant does not hold (404), then 403 PRICE_BOOK_READ_REQUIRED. A PATCH judges the money only when it names a book, so it reads its body first: one without book_id asks nothing of the money's policy. The clone judges the book it will copy, after a due scheduled revision is switched (D-451), and the refusal rolls the switch back with the rest.
+- **What does not change.** The copy (POST /plans/{id}/revisions) keeps its plan's own book and judges nothing more. Resolve still reads under plan read (D-424); from now on a revision names only a book its author could read when the book was named.
+- **The tests.** tests/book_reads.rs judges the three doors under a grant narrowed to another book (403) and under a policy that cannot judge (503), with nothing written, and then under a grant that admits the book. A caller holding plan author alone is now refused POST /plans and the clone (tests/plan_doors.rs, tests/plan_clone.rs).
+- **Breaking for a caller** that holds plan author without price_book read on the book: POST /plans, the clone and a book-naming PATCH now answer 403. The vhp-core e2e plan authors hold every pricing action (CATALOG_AUTHOR), and its narrower actors are refused plan author first, so its grants suffice; a new scenario would give one actor every grant but price_book read and expect the three 403s.
+
+**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440.

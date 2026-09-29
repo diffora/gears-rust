@@ -130,21 +130,39 @@ fn etag(version: i64) -> Result<u64, CanonicalError> {
     )
 }
 
-/// `POST /plans`: the plan and its draft rev 1 on the named book, in the key's transaction.
+/// The book a plan names is one its author may read (D-456, extending D-440's money rule):
+/// `books` is the caller's `price_book` read, `None` without that grant. A book of the tenant it
+/// does not admit is 403 `PRICE_BOOK_READ_REQUIRED`.
 /// # Errors
-/// 400 `PLAN_CODE_REQUIRED`; 404 for a book the tenant does not hold; 409 `PLAN_CODE_TAKEN`; a
-/// replayed or conflicting key.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "authorized context, replay identity and input belong to one transaction"
-)]
+/// That refusal; storage failures.
+async fn require_book_read(
+    tx: &impl DBRunner,
+    books: Option<&AccessScope>,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<(), DoorError> {
+    if super::price_book_entries::shows_money(tx, books, tenant, book).await? {
+        Ok(())
+    } else {
+        Err(support::forbidden_because(
+            "PRICE_BOOK_READ_REQUIRED",
+            "a plan names a book: authoring it takes price_book read on that book",
+        )
+        .into())
+    }
+}
+/// `POST /plans`: the plan and its draft rev 1 on the named book, in the key's transaction. The
+/// book is one the caller's `price_book` read admits (`books`, D-456).
+/// # Errors
+/// 400 `PLAN_CODE_REQUIRED`; 404 for a book the tenant does not hold; 403
+/// `PRICE_BOOK_READ_REQUIRED` for one the caller may not read; 409 `PLAN_CODE_TAKEN`; a replayed
+/// or conflicting key.
 pub(super) async fn create(
     tx: &impl DBRunner,
-    scope: &AccessScope,
+    (scope, books): (&AccessScope, Option<&AccessScope>),
     ctx: &SecurityContext,
     correlation: Uuid,
-    key: &str,
-    digest: &[u8],
+    (key, digest): (&str, &[u8]),
     input: PricingPlanCreate,
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
@@ -162,6 +180,7 @@ pub(super) async fn create(
     {
         return Err(support::missing().into());
     }
+    require_book_read(tx, books, tenant, input.book_id).await?;
     let now = time::OffsetDateTime::now_utc();
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     let p = plan_repo::insert(
@@ -488,15 +507,17 @@ async fn copy_items(
 /// deprecated SKU is carried, and the new plan's checks show it red (D-408).
 /// # Errors
 /// 400 `PLAN_CODE_REQUIRED`; 404 for a plan the tenant does not hold; 409
-/// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 409 `PLAN_CODE_TAKEN`;
-/// a replayed or conflicting key.
+/// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 403
+/// `PRICE_BOOK_READ_REQUIRED` when the caller's `price_book` read (`books`) does not admit the
+/// book the clone names, the source's (D-456); 409 `PLAN_CODE_TAKEN`; a replayed or conflicting
+/// key.
 #[allow(
     clippy::too_many_arguments,
     reason = "authorized context, replay identity and input belong to one transaction"
 )]
 pub(super) async fn clone(
     state: Arc<AuthoringState>,
-    scope: AccessScope,
+    (scope, books): (AccessScope, Option<AccessScope>),
     ctx: SecurityContext,
     correlation: Uuid,
     source: Uuid,
@@ -508,14 +529,19 @@ pub(super) async fn clone(
     let db = state.db.db();
     let (response, ops) =
         support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
-            let (scope, ctx, key, digest) =
-                (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+            let (scope, books, ctx, key, digest) = (
+                scope.clone(),
+                books.clone(),
+                ctx.clone(),
+                key.clone(),
+                digest.clone(),
+            );
             let input = input.clone();
             Box::pin(async move {
                 clone_in(
                     tx,
                     &outbox,
-                    &scope,
+                    (&scope, books.as_ref()),
                     &ctx,
                     correlation,
                     source,
@@ -536,7 +562,7 @@ pub(super) async fn clone(
 async fn clone_in(
     tx: &(impl DBRunner + Sync),
     outbox: &TxOutbox,
-    scope: &AccessScope,
+    (scope, books): (&AccessScope, Option<&AccessScope>),
     ctx: &SecurityContext,
     correlation: Uuid,
     source: Uuid,
@@ -563,6 +589,8 @@ async fn clone_in(
         .into_iter()
         .find(|r| r.state == RevisionState::Published.as_str())
         .ok_or_else(|| support::conflict("CLONE_SOURCE_UNPUBLISHED"))?;
+    // The clone names the source's book: its author must be able to read it (D-456).
+    require_book_read(tx, books, tenant, published.book_id).await?;
     let p = plan_repo::insert(
         tx,
         scope,
@@ -727,12 +755,14 @@ async fn unschedule_in(
 /// at the version the caller read. A book change remaps every item whose entry has a twin in the
 /// new book (the same SKU, charge kind, period and model, D-427); an unmatched item keeps its old
 /// entry, which the checks then show foreign (`ITEM_BOOK_FOREIGN`).
+/// A named book is one the caller's `price_book` read admits (`books`, D-456).
 /// # Errors
 /// 404; 409 `REVISION_NOT_DRAFT`; 403 `NOT_DRAFT_AUTHOR`; 409 `STALE_REVISION`; 400
-/// `DATE_INVALID`; 404 for a book the tenant does not hold.
+/// `DATE_INVALID`; 404 for a book the tenant does not hold; 403 `PRICE_BOOK_READ_REQUIRED` for
+/// one the caller may not read.
 pub(super) async fn patch_revision(
     tx: &impl DBRunner,
-    scope: &AccessScope,
+    (scope, books): (&AccessScope, Option<&AccessScope>),
     ctx: &SecurityContext,
     correlation: Uuid,
     id: Uuid,
@@ -757,6 +787,7 @@ pub(super) async fn patch_revision(
         {
             return Err(support::missing().into());
         }
+        require_book_read(tx, books, tenant, book).await?;
         if book != m.book_id {
             remap(tx, &children, ctx, correlation, book, &mut items, now).await?;
         }

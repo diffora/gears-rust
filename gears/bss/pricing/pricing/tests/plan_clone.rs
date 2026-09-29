@@ -308,10 +308,13 @@ async fn the_clone_door_needs_plan_author() {
     item(&f, rev1, catalog.sku(SkuType::Usage), None, "included").await;
     publish(&f, source, rev1).await;
     let path = format!("/plans/{source}/clone");
+    // `plan:author` alone does not read the book the clone names (D-456); the fixture's user holds
+    // both grants.
     for (who, status) in [
         (holding(&f, "plan:read"), 403),
         (stranger(), 403),
-        (holding(&f, "plan:author"), 201),
+        (holding(&f, "plan:author"), 403),
+        (f.ctx.clone(), 201),
     ] {
         let (s, b, _) = request(
             &f.app,
@@ -320,11 +323,23 @@ async fn the_clone_door_needs_plan_author() {
             &path,
             json!({"code":format!("c-{status}-{}", Uuid::new_v4()),"name":"C"}),
             None,
-            Some("k"),
+            Some(&Uuid::new_v4().to_string()),
         )
         .await;
         assert_eq!(s, status, "{b}");
     }
+    let (s, b, _) = request(
+        &f.app,
+        &holding(&f, "plan:author"),
+        "POST",
+        &path,
+        json!({"code":"c-author","name":"C"}),
+        None,
+        Some("author"),
+    )
+    .await;
+    assert_eq!(s, 403, "{b}");
+    assert!(b.to_string().contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
 }
 
 /// The `plan-clone` definition of done (AC #15): the clone is a separate plan and draft; renaming

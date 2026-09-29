@@ -908,7 +908,13 @@ async fn plan_doors_need_the_plan_permissions_and_hide_other_tenants() {
             "a stranger may not write here: {method} {path}: {b}"
         );
         let (s, b, _) = request(&f.app, &author, method, &path, body, tag, key).await;
-        assert!(s < 300 || s == 409, "{method} {path}: {s} {b}");
+        if method == "POST" && path == "/plans" {
+            // A new plan names its book, which `plan:author` alone does not read (D-456).
+            assert_eq!(s, 403, "{method} {path}: {b}");
+            assert!(b.to_string().contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
+        } else {
+            assert!(s < 300 || s == 409, "{method} {path}: {s} {b}");
+        }
     }
 }
 

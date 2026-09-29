@@ -71,6 +71,109 @@ fn money_app(f: &Fixture, books: Option<Vec<Uuid>>, unavailable: bool) -> axum::
     ))
 }
 
+// ------------------------------------------------------------------ a plan's book (PS-08)
+
+/// The number of plans of the fixture tenant, read with every grant.
+async fn plan_count(f: &Fixture) -> usize {
+    ok(f, "/plans").await["items"].as_array().unwrap().len()
+}
+
+/// A plan names only a book its author may read (whole-branch review PS-08, D-456): plan create,
+/// clone and a revision PATCH that names a book judge `price_book` read on that book, as D-440
+/// judges the money. A grant that does not admit the book is 403 `PRICE_BOOK_READ_REQUIRED`, a
+/// policy that cannot judge is 503, and nothing is written; a grant that admits it lets all three
+/// through, and a PATCH that names no book asks nothing of the money's policy.
+#[tokio::test]
+async fn a_plan_names_only_a_book_its_author_may_read() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let other = plan_support::book(&f, "other").await;
+    let sku = catalog.sku(SkuType::Usage);
+    let entry = plan_support::entry(&f, eur, sku, "usage", None).await;
+    let (source, rev) = plan(&f, "source", eur).await;
+    let source = id_of(&source["id"]);
+    item(&f, rev, sku, Some(entry), "paid").await;
+    publish(&f, source, rev).await;
+    let (_, draft) = plan(&f, "draft", eur).await;
+    let plans = plan_count(&f).await;
+    let tries = |app: axum::Router, tag: &'static str| {
+        let f = &f;
+        async move {
+            [
+                request(
+                    &app,
+                    &f.ctx,
+                    "POST",
+                    "/plans",
+                    json!({"code":format!("new-{tag}"),"name":"New","book_id":eur}),
+                    None,
+                    Some(&format!("create-{tag}")),
+                )
+                .await,
+                request(
+                    &app,
+                    &f.ctx,
+                    "POST",
+                    &format!("/plans/{source}/clone"),
+                    json!({"code":format!("clone-{tag}"),"name":"Clone"}),
+                    None,
+                    Some(&format!("clone-{tag}")),
+                )
+                .await,
+                request(
+                    &app,
+                    &f.ctx,
+                    "PATCH",
+                    &format!("/plan-revisions/{draft}"),
+                    json!({"book_id":eur}),
+                    Some("\"1\""),
+                    None,
+                )
+                .await,
+            ]
+        }
+    };
+    for (app, status, tag) in [
+        (money_app(&f, Some(vec![other]), false), 403, "narrow"),
+        (money_app(&f, None, true), 503, "down"),
+    ] {
+        for (s, b, _) in tries(app, tag).await {
+            assert_eq!(s, status, "{tag}: {b}");
+            if status == 403 {
+                assert!(code_of(&b).contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
+            }
+        }
+        assert_eq!(plan_count(&f).await, plans, "{tag}: nothing was written");
+    }
+    let revision = ok(&f, &format!("/plan-revisions/{draft}")).await;
+    assert_eq!(
+        revision["version"], 1,
+        "the PATCH wrote nothing: {revision}"
+    );
+    // A PATCH that names no book needs no judgement of the money: the policy may be down.
+    let (s, b, _) = request(
+        &money_app(&f, None, true),
+        &f.ctx,
+        "PATCH",
+        &format!("/plan-revisions/{draft}"),
+        json!({"available_from":null}),
+        Some("\"1\""),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let admitted = money_app(&f, Some(vec![eur]), false);
+    let [created, cloned, patched] = tries(admitted, "admitted").await;
+    assert_eq!(created.0, 201, "{created:?}");
+    assert_eq!(cloned.0, 201, "{cloned:?}");
+    assert_eq!(patched.0, 409, "the draft moved to version 2: {patched:?}");
+    assert!(
+        code_of(&patched.1).contains("STALE_REVISION"),
+        "{patched:?}"
+    );
+    assert_eq!(plan_count(&f).await, plans + 2);
+}
+
 // ------------------------------------------------------------------ D-440: an entry's prices
 
 /// An entry whose default chain holds one price of every status and whose value chains `eu` and
