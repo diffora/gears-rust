@@ -11,7 +11,7 @@ use bss_pricing::infra::{
     reference_work::Clock,
     storage::repo::{plan_repo, plan_revision_repo, price_book_entry_repo, price_repo},
 };
-use bss_products_sdk::models::SkuType;
+use bss_products_sdk::models::{Lifecycle, SkuType};
 use plan_support::{
     Catalog, Fixture, book, entry, entry_support, entry_support::outbox_events, holding, id_of,
     item, items, plan, scope, setup, text,
@@ -1036,6 +1036,84 @@ async fn every_read_shows_a_due_switch_before_it_is_persisted() {
     assert_eq!(stored(&f, rev2).await, "scheduled");
     assert_eq!(stored(&f, pro.rev1).await, "published");
     assert_eq!(stored_plan(&f, pro.plan).await, (Some(1), plan_version));
+}
+
+/// D-447, D-453, phase 8 review B2: the checks judge a deprecated SKU against the revision in
+/// effect today, as every read derives it. Rev 2 adds a SKU and drops rev 1's; both SKUs are
+/// deprecated after the approval. Once rev 2 is due, rev 2 carries its own SKU and rev 1's SKU is
+/// carried by no revision in effect, and both revisions' checks answer the same before and after
+/// the job persists the switch.
+#[tokio::test]
+async fn the_checks_answer_a_due_revision_the_same_before_and_after_the_switch_is_persisted() {
+    let (f, catalog) = setup().await;
+    let pro = live(&f, &catalog, "pro").await;
+    let rev2 = copy(&f, pro.plan, "copy-rev2").await;
+    let added = catalog.sku(SkuType::Usage);
+    plan_support::item_with_qty(&f, rev2, added, "10").await;
+    let carried = items(&f, rev2)
+        .await
+        .into_iter()
+        .find(|i| i.sku_id == pro.sku)
+        .unwrap()
+        .id;
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-items/{carried}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    sale_date(&f, rev2, Some(today())).await;
+    let unit = plan_support::lock(&f, rev2).await;
+    plan_revision_repo::schedule(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        f.ctx.subject_tenant_id(),
+        rev2,
+        unit,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    catalog.age(added, Lifecycle::Deprecated);
+    catalog.age(pro.sku, Lifecycle::Deprecated);
+    let deprecated = |checks: &Value| {
+        checks["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["code"] == "ITEM_SKU_DEPRECATED")
+            .unwrap_or_else(|| panic!("no ITEM_SKU_DEPRECATED in {checks}"))["ok"]
+            .clone()
+    };
+    let mut before = Vec::new();
+    for revision in [rev2, pro.rev1] {
+        before.push(get(&f, &format!("/plan-revisions/{revision}/checks")).await);
+    }
+    assert_eq!(
+        deprecated(&before[0]),
+        true,
+        "rev 2, in effect, carries its own SKU: {}",
+        before[0]
+    );
+    assert_eq!(
+        deprecated(&before[1]),
+        false,
+        "no revision in effect carries rev 1's SKU: {}",
+        before[1]
+    );
+    Ticker::new(f.state.clone(), on(today()), 10, 100)
+        .tick()
+        .await
+        .unwrap();
+    assert_eq!(stored(&f, rev2).await, "published", "persisted");
+    for (revision, before) in [rev2, pro.rev1].into_iter().zip(before) {
+        let after = get(&f, &format!("/plan-revisions/{revision}/checks")).await;
+        assert_eq!(after, before, "{revision}");
+    }
 }
 
 /// D-453: the plan list derives in memory over the revisions it already read: two statements on

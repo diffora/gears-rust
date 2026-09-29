@@ -370,10 +370,12 @@ impl PlanRevisionSubject {
         }
     }
     /// The checks of `GET /plan-revisions/{id}/checks` on the stored state of this transaction
-    /// and fresh SKU reads, on the subject's day.
+    /// and fresh SKU reads, on the subject's day (its UTC date). No scheduled revision stands
+    /// beside the pending one it judges (D-451), so its plan's revisions read as stored.
     async fn judge(&self, tx: &DbTx<'_>) -> Result<Vec<plan::Check>, ApprovalError> {
+        let today = self.now.to_offset(time::UtcOffset::UTC).date();
         let mut context =
-            plans::stored_context(tx, &self.scope(), self.tenant_id, self.revision_id)
+            plans::stored_context(tx, &self.scope(), self.tenant_id, self.revision_id, today)
                 .await
                 .map_err(|error| match error {
                     DoorError::Repo(e) => storage(e),
@@ -384,7 +386,7 @@ impl PlanRevisionSubject {
                     other => ApprovalError::Store(other.to_string()),
                 })?;
         context.skus = self.skus(context.items.iter().map(|i| i.sku_id)).await?;
-        Ok(plan::checks(&context, self.now.date()))
+        Ok(plan::checks(&context, today))
     }
 }
 

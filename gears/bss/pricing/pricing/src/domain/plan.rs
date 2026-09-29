@@ -118,8 +118,9 @@ pub struct PlanContext {
     pub books: Vec<PlanBook>,
     /// Each registered dimension key with its values.
     pub dimension_values: Vec<(String, Vec<String>)>,
-    /// The item SKUs of this plan's published revision: a deprecated SKU may be carried over from
-    /// there, never added (D-408). Empty for a clone, which is a new plan.
+    /// The item SKUs of this plan's published revision, the one in effect on the checks' day
+    /// (D-447): a deprecated SKU may be carried over from there, never added (D-408). Empty for a
+    /// clone, which is a new plan.
     pub published_sku_ids: Vec<Uuid>,
     pub quorum: u32,
     pub defaults: Defaults,

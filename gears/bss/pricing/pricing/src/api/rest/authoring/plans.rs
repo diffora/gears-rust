@@ -887,14 +887,14 @@ pub(super) async fn checks(
     id: Uuid,
 ) -> Result<Response, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
+    let today = today();
     let mut context = support::transaction(&state.db.db(), move |tx| {
         let scope = scope.clone();
-        Box::pin(async move { stored_context(tx, &scope, tenant, id).await })
+        Box::pin(async move { stored_context(tx, &scope, tenant, id, today).await })
     })
     .await?;
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
     context.skus = fresh_skus(&state.hub, &ctx, context.items.iter().map(|i| i.sku_id)).await?;
-    let today = time::OffsetDateTime::now_utc().date();
     let rows = plan::checks(&context, today);
     let ready = plan::ready(&rows);
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
@@ -938,7 +938,10 @@ fn corrupt(what: String) -> DoorError {
     RepoError::CorruptRow(what).into()
 }
 /// Everything the checks read from storage, with no SKU yet: the checks door and the
-/// `plan_revision` subject build the checks' context through this one function.
+/// `plan_revision` subject build the checks' context through this one function. The plan's
+/// revisions are read as they read on `today` (D-447), so the published revision whose SKUs a
+/// deprecated SKU may be carried from is the one in effect, before the job persists a due switch
+/// as after it.
 /// # Errors
 /// 404 for a revision the tenant does not hold; storage failures.
 pub async fn stored_context(
@@ -946,6 +949,7 @@ pub async fn stored_context(
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
+    today: time::Date,
 ) -> Result<PlanContext, DoorError> {
     let children = AccessScope::for_tenant(tenant);
     let r = find_revision(tx, scope, tenant, id).await?;
@@ -989,10 +993,18 @@ pub async fn stored_context(
             .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
         dimension_values.push((d.key, values));
     }
-    let published = plan_revision_repo::for_plan(tx, &children, tenant, p.id)
-        .await?
-        .into_iter()
-        .find(|x| x.state == RevisionState::Published.as_str());
+    let revisions = super::dto::effective_revisions(
+        &plan_revision_repo::for_plan(tx, &children, tenant, p.id).await?,
+        today,
+    )?;
+    let state = revisions
+        .iter()
+        .find(|x| x.id == r.id)
+        .map(|x| x.state)
+        .ok_or_else(|| corrupt(format!("revision {} is not among its plan's", r.id)))?;
+    let published = revisions
+        .iter()
+        .find(|x| x.state == RevisionState::Published);
     let published_sku_ids = match published {
         Some(published) => plan_item_repo::for_revision(tx, &children, tenant, published.id)
             .await?
@@ -1015,10 +1027,7 @@ pub async fn stored_context(
             id: r.id,
             rev_no: r.rev_no,
             book_id: r.book_id,
-            state: r
-                .state
-                .parse()
-                .map_err(|_| corrupt(format!("revision {} state", r.id)))?,
+            state,
             available_from: r.available_from,
         },
         items,
