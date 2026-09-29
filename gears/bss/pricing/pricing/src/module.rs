@@ -32,7 +32,10 @@ impl Default for BssPricingGear {
 }
 
 impl BssPricingGear {
-    /// Spawn the reference recovery task and cancel in-flight work on shutdown.
+    /// Spawn the reference recovery task and cancel in-flight work on shutdown. Its ticker runs
+    /// every second: the plan switch duty first, on the first tick and every
+    /// `reference_ticker::SWITCH_EVERY` (60) after it (D-450), then at most 100 due reference ops,
+    /// and a reconciliation every 10 ticks. The knobs are fixed here; the gear has no config key.
     pub(crate) async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<()> {
         let Some(runtime) = self.runtime.load_full() else {
             cancel.cancelled().await;

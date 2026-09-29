@@ -1,14 +1,20 @@
-//! Bounded recovery and periodic receipt reconciliation under the pricing system actor.
+//! Bounded recovery and periodic receipt reconciliation under the pricing system actor, and the
+//! switch of scheduled plan revisions on their date.
 //!
 //! Reconciliation scans both kinds of reference (D-407), each with its own cursor: confirmed and
 //! lost price book entries, and confirmed and lost plan items of every revision state (D-414).
+//! The switch duty (D-450) runs first in its tick, with its own error handling, so neither the
+//! reference duties' scans nor a failing reconciliation can skip it.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-confirmation-retry:p1
 use super::{
+    plan_revisions,
     reference_work::{self, Caller, Clock},
     storage::{
         entity::{plan_item, price_book_entry},
-        repo::{plan_item_repo, price_book_entry_repo, reference_op_repo as ops},
+        repo::{
+            plan_item_repo, plan_revision_repo, price_book_entry_repo, reference_op_repo as ops,
+        },
     },
 };
 use crate::{
@@ -26,7 +32,10 @@ use bss_products_sdk::{
     PRICING_SYSTEM_ACTOR,
     models::{Lifecycle, ReferenceState as RegistryState, SkuType},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
@@ -42,12 +51,15 @@ pub fn system_actor(tenant: Uuid) -> Result<SecurityContext, CanonicalError> {
         .build()
         .map_err(|_| CanonicalError::internal("pricing recovery identity failed").create())
 }
+/// The switch duty's period in ticks (D-450): once a minute at the gear's one-second tick.
+pub const SWITCH_EVERY: u64 = 60;
 /// One gear-owned ticker. A cursor per reference kind bounds reconciliation across ticks.
 pub struct Ticker {
     state: Arc<AuthoringState>,
     clock: Arc<dyn Clock>,
     limit: u64,
     reconcile_every: u64,
+    switch_every: u64,
     ticks: u64,
     cursors: Cursors,
 }
@@ -105,14 +117,27 @@ impl Ticker {
             clock,
             limit: limit.clamp(1, 1000),
             reconcile_every: reconcile_every.max(1),
+            switch_every: SWITCH_EVERY,
             ticks: 0,
             cursors: Cursors::default(),
         }
     }
-    /// Resume a bounded due batch, then reconcile a bounded confirmed batch every N ticks.
+    /// Run the switch duty every `n` ticks instead of [`SWITCH_EVERY`]; tests tick it at once.
+    #[must_use]
+    pub fn switch_every(mut self, n: u64) -> Self {
+        self.switch_every = n.max(1);
+        self
+    }
+    /// Switch the due scheduled plan revisions on the first tick and every [`SWITCH_EVERY`] after
+    /// it, then resume a bounded due batch, then reconcile a bounded confirmed batch every N ticks.
     /// # Errors
-    /// Scan failures are surfaced; per-op failures remain due at their scheduled retry.
+    /// The reference duties' scan failures are surfaced; per-op failures remain due at their
+    /// scheduled retry. The switch surfaces nothing: it warns and runs again on its next tick.
     pub async fn tick(&mut self) -> Result<(), CanonicalError> {
+        // D-450, plan rev 2 M4: first, and never through `?`.
+        if self.ticks.is_multiple_of(self.switch_every) {
+            self.switch().await;
+        }
         // Only this trusted scheduler scans all tenants. Every mutation and Products call
         // below has a tenant-only scope and the fixed pricing system actor.
         let due = ops::due(
@@ -146,6 +171,58 @@ impl Ticker {
             self.reconcile().await?;
         }
         Ok(())
+    }
+    /// The switch duty (D-450): every plan with a due scheduled revision, across tenants (at most
+    /// `limit` revisions, by `available_from` then id), is switched in its own transaction with its
+    /// event and its audit row ([`plan_revisions::catch_up`]). A failure is a warning for its plan,
+    /// and the other plans go on; the next cycle finds what is still due.
+    async fn switch(&self) {
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-1
+        let now = self.clock.now();
+        let due = match self.due_plans(now).await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::warn!(error=%error, "pricing plan switch scan deferred");
+                return;
+            }
+        };
+        for (tenant, plan) in due {
+            if let Err(error) = self.switch_plan(tenant, plan, now).await {
+                tracing::warn!(%tenant, plan_id=%plan, error=%error, "pricing plan switch deferred");
+            }
+        }
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-1
+    }
+    /// The plans of the due scan on the UTC day of `now`, each once, in the scan's order.
+    async fn due_plans(&self, now: time::OffsetDateTime) -> Result<Vec<(Uuid, Uuid)>, String> {
+        let conn = self.state.db.conn().map_err(|e| e.to_string())?;
+        let today = now.to_offset(time::UtcOffset::UTC).date();
+        let due = plan_revision_repo::due_scheduled(&conn, today, self.limit)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut seen = BTreeSet::new();
+        Ok(due
+            .into_iter()
+            .map(|r| (r.tenant_id, r.plan_id))
+            .filter(|key| seen.insert(*key))
+            .collect())
+    }
+    /// One plan's switch in its own transaction.
+    async fn switch_plan(
+        &self,
+        tenant: Uuid,
+        plan: Uuid,
+        now: time::OffsetDateTime,
+    ) -> Result<(), CanonicalError> {
+        let outbox = self.state.outbox.clone();
+        support::transaction(&self.state.db.db(), move |tx| {
+            let outbox = outbox.clone();
+            Box::pin(async move {
+                plan_revisions::catch_up(tx, &outbox, tenant, plan, now, Uuid::now_v7()).await
+            })
+        })
+        .await
+        .map(|_| ())
     }
     async fn reconcile(&mut self) -> Result<(), CanonicalError> {
         let conn = self

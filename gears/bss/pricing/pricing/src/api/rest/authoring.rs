@@ -523,9 +523,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Submit a plan revision")
         .description(
             "Puts an unlocked draft revision whose checks are all green into a plan_revision \
-             approval unit (plan submit); at quorum 0 it publishes at once. Refusals: 400 \
-             REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or \
-             ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
+             approval unit (plan submit); at quorum 0 it applies at once. An applied revision is \
+             published, or scheduled when its sale date is after today: it takes effect on that \
+             date (D-449). Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 \
+             REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' \
+             SKU reads.",
         )
         .tag("Pricing")
         .authenticated()
@@ -536,6 +538,31 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .json_response_with_schema::<dto::PricingPlanRevisionSubmitReceipt>(
             openapi,
             StatusCode::CREATED,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/unschedule")
+        .operation_id("bss_pricing.unschedule_plan_revision")
+        .summary("Withdraw a scheduled revision")
+        .description(
+            "Returns a plan revision that is approved and waiting for its sale date to an \
+             unlocked draft of its author (plan submit, D-452): its items and their SKU \
+             references stay, the applied unit stays in the history, and no event is sent. A \
+             revision whose date has come is switched first and is then in effect. The \
+             Idempotency-Key replays the answer. Refusals: 404 for a revision the tenant does \
+             not hold; 409 REVISION_IN_EFFECT for a published revision, REVISION_NOT_SCHEDULED \
+             for any other.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan revision id")
+        .param(header("Idempotency-Key"))
+        .handler(unschedule_plan_revision)
+        .json_response_with_schema::<dto::PricingPlanRevisionDto>(
+            openapi,
+            StatusCode::OK,
             "Response",
         )
         .standard_errors(openapi)
@@ -630,7 +657,8 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Approve an approval unit")
         .description(
             "Records an approving vote on the generation the reviewer saw; the vote that reaches \
-             the quorum applies the unit. Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 \
+             the quorum applies the unit (a plan revision whose sale date is after today is \
+             scheduled for that date, D-449). Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 \
              SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, \
              UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
         )
@@ -813,6 +841,32 @@ async fn submit_plan_revision(
         digest,
     };
     approvals::submit_revision(&state.db.db(), cmd, id).await
+}
+async fn unschedule_plan_revision(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    // D-452: withdrawing an approved change is plan submit's (D-418), not plan author's.
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::SUBMIT,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    plans::unschedule(state, scope, ctx, correlation, id, key, digest).await
 }
 async fn list_publish_changes(
     Extension(state): Extension<Arc<AuthoringState>>,

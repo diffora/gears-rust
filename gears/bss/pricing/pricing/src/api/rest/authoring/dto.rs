@@ -7,8 +7,45 @@ use crate::api::rest::closed_sets::{
     PricingReferenceOpState, PricingRevisionState, PricingTreatment, PricingUnitState,
     PricingVoteOutcome,
 };
+use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
 use crate::infra::storage::{RepoError, entity};
 use uuid::Uuid;
+
+/// The stored revisions as the effective-state rule reads them (D-447), in their order; a state
+/// outside the closed set is a corrupt row naming the revision (D-439).
+/// # Errors
+/// `CorruptRow`.
+pub fn stored_revisions(
+    rows: &[entity::plan_revision::Model],
+) -> Result<Vec<StoredRevision>, RepoError> {
+    rows.iter()
+        .map(|m| {
+            Ok(StoredRevision {
+                id: m.id,
+                plan_id: m.plan_id,
+                rev_no: m.rev_no,
+                state: PricingRevisionState::stored(
+                    &m.state,
+                    &format_args!("revision {} state", m.id),
+                )?
+                .into(),
+                available_from: m.available_from,
+                published_at: m.published_at,
+            })
+        })
+        .collect()
+}
+/// The revisions as they read on `today` (D-447), in the order of `rows`: a due scheduled
+/// revision reads published, its plan's stored-published one superseded. A read derives; it never
+/// writes.
+/// # Errors
+/// `CorruptRow` for a state outside the closed set.
+pub fn effective_revisions(
+    rows: &[entity::plan_revision::Model],
+    today: time::Date,
+) -> Result<Vec<EffectiveRevision>, RepoError> {
+    Ok(plan::effective(&stored_revisions(rows)?, today))
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PriceBookDto {
     pub id: Uuid,
@@ -578,7 +615,8 @@ pub struct PricingPlanItemReadDto {
     pub item: PricingPlanItemDto,
     pub plan_id: Uuid,
     pub rev_no: i32,
-    /// The revision's state.
+    /// The revision's state as it reads today (D-447): a scheduled revision whose date has come
+    /// reads `published`, and the one it replaces `superseded`, before the switch is persisted.
     pub state: PricingRevisionState,
 }
 /// The query of `GET /plans`: an optional `sku_id` (D-434).
@@ -618,25 +656,26 @@ pub struct PricingPlanRevisionHeader {
     pub id: Uuid,
     pub rev_no: i32,
     pub book_id: Uuid,
+    /// The state as it reads today (D-447).
     pub state: PricingRevisionState,
     pub available_from: Option<String>,
+    /// When it took effect: its approval's instant, or 00:00 UTC of its sale date for a revision
+    /// that waited for it (D-447, D-450); null until then.
     #[serde(with = "time::serde::rfc3339::option")]
     pub published_at: Option<time::OffsetDateTime>,
 }
-impl TryFrom<&entity::plan_revision::Model> for PricingPlanRevisionHeader {
-    type Error = RepoError;
-    fn try_from(m: &entity::plan_revision::Model) -> Result<Self, RepoError> {
-        Ok(Self {
+impl PricingPlanRevisionHeader {
+    /// The header of `m` with its effective state and `published_at` (D-447).
+    #[must_use]
+    pub fn of(m: &entity::plan_revision::Model, effective: &EffectiveRevision) -> Self {
+        Self {
             id: m.id,
             rev_no: m.rev_no,
             book_id: m.book_id,
-            state: PricingRevisionState::stored(
-                &m.state,
-                &format_args!("revision {} state", m.id),
-            )?,
+            state: effective.state.into(),
             available_from: m.available_from.map(|d| d.to_string()),
-            published_at: m.published_at,
-        })
+            published_at: effective.published_at,
+        }
     }
 }
 /// A plan with the headers of its revisions in revision order.
@@ -646,7 +685,9 @@ pub struct PricingPlanDto {
     pub tenant_id: Uuid,
     pub code: String,
     pub name: String,
-    /// The revision number the last applied `plan_revision` unit published.
+    /// The revision number the plan sells today (D-447): the last one published, or the number of
+    /// a scheduled revision whose date has come, before its switch is persisted. It never counts
+    /// a revision that is still waiting for its date.
     pub published_rev: Option<i32>,
     pub version: i64,
     pub created_by: Uuid,
@@ -657,26 +698,32 @@ pub struct PricingPlanDto {
     pub revisions: Vec<PricingPlanRevisionHeader>,
 }
 impl PricingPlanDto {
+    /// The plan with the headers of `revisions` (all of its own) as they read on `today`, and its
+    /// effective `published_rev` (D-447): derived in memory, so the read makes no statement more.
     /// # Errors
     /// `CorruptRow` for a stored token outside its closed set (D-439).
     pub fn of(
         m: entity::plan::Model,
         revisions: &[entity::plan_revision::Model],
+        today: time::Date,
     ) -> Result<Self, RepoError> {
+        let stored = stored_revisions(revisions)?;
+        let effective = plan::effective(&stored, today);
         Ok(Self {
             id: m.id,
             tenant_id: m.tenant_id,
             code: m.code,
             name: m.name,
-            published_rev: m.published_rev,
+            published_rev: plan::published_rev(m.published_rev, &stored, m.id, today),
             version: m.version,
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
             revisions: revisions
                 .iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()?,
+                .zip(&effective)
+                .map(|(r, e)| PricingPlanRevisionHeader::of(r, e))
+                .collect(),
         })
     }
 }
@@ -692,11 +739,14 @@ pub struct PricingPlanRevisionDto {
     pub plan_id: Uuid,
     pub rev_no: i32,
     pub book_id: Uuid,
+    /// The state as it reads today (D-447); `scheduled` is approved and waiting for its sale date.
     pub state: PricingRevisionState,
     /// The sale date; null means "at publish".
     pub available_from: Option<String>,
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
+    /// When it took effect (D-447): its approval's instant, or 00:00 UTC of its sale date for a
+    /// revision that waited for it; null until then.
     #[serde(with = "time::serde::rfc3339::option")]
     pub published_at: Option<time::OffsetDateTime>,
     pub version: i64,
@@ -709,6 +759,27 @@ pub struct PricingPlanRevisionDto {
     pub items: Vec<PricingPlanItemDto>,
 }
 impl PricingPlanRevisionDto {
+    /// A read of `m`: as [`Self::of`], with the state and `published_at` it reads today among
+    /// `siblings`, its plan's revisions (D-447).
+    /// # Errors
+    /// `CorruptRow` for a stored token outside its closed set (D-439).
+    pub fn read(
+        m: &entity::plan_revision::Model,
+        siblings: &[entity::plan_revision::Model],
+        items: Vec<entity::plan_item::Model>,
+        today: time::Date,
+    ) -> Result<Self, RepoError> {
+        let mut dto = Self::of(m, items)?;
+        if let Some(e) = effective_revisions(siblings, today)?
+            .into_iter()
+            .find(|e| e.id == m.id)
+        {
+            dto.state = e.state.into();
+            dto.published_at = e.published_at;
+        }
+        Ok(dto)
+    }
+    /// The revision as stored: a write's answer, whose state is the one it just wrote.
     /// # Errors
     /// `CorruptRow` for a stored token outside its closed set (D-439).
     pub fn of(

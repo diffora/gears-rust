@@ -223,6 +223,7 @@ impl Harness {
             ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
             ("PATCH", "/bss-pricing/v1/dimension-keys"),
             ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+            ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -291,3 +292,6 @@ impl Harness {
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
 // GET /prices/{id} price:read false false
+
+// Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/unschedule plan:submit false true

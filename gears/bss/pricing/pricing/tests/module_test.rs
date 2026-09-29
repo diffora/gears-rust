@@ -58,6 +58,7 @@ fn declared_paths() -> Routes {
         ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
         ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -98,6 +99,7 @@ fn idempotency_key_routes() -> Routes {
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/submit"),
         ("POST", "/bss-pricing/v1/plans/{id}/clone"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -118,7 +120,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 50);
+    assert_eq!(registered.len(), 51);
     assert!(router.has_routes());
 }
 
@@ -178,7 +180,7 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
     );
     for (needle, control, production) in [
         ("preconditions::if_match(", 1, 13),
-        ("preconditions::idempotency_key(", 1, 13),
+        ("preconditions::idempotency_key(", 1, 14),
         ("Query<", 1, 0),
         // + 1: plan_items::delete answers 204 below its door; + 16: the plan and revision doors
         // (eight registrations and the statuses their handlers and operations answer); + 6: the
@@ -191,8 +193,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // an empty patch answers without a write); + 2: run 7.1's entry prices (D-440), its
         // registration and its 200 answer; + 1: run 7.2's price PATCH answers a temporary
         // draft's new dates from their own function (D-443); + 2: run 7.2's book delete (D-444),
-        // its registration and its 204 answer.
-        ("StatusCode::", 2, 102),
+        // its registration and its 204 answer; + 2: run 8.2's unschedule door (D-452), its
+        // registration and its 200 answer.
+        ("StatusCode::", 2, 104),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -273,7 +276,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 50);
+    assert_eq!(described, 51);
 }
 
 /// Every read that answers an `ETag` declares the header on its 200 response, and nothing else
@@ -400,3 +403,6 @@ async fn no_operation_declares_a_422() {
 
 // Run 7.1 (D-440): method | path | resource:action | If-Match | Idempotency-Key
 // GET /price-book-entries/{id}/prices price_book_entry:read (then price_book:read) false false
+
+// Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/unschedule plan:submit false true

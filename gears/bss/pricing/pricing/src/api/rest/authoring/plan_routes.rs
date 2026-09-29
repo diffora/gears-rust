@@ -49,11 +49,12 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.list_plans")
         .summary("List the plans")
         .description(
-            "Lists the tenant's plans by code, each with the headers of its revisions. With \
-             sku_id, only the plans that have a draft, pending or published revision whose items \
-             name the SKU through a price book entry (D-434; an included item without an entry \
-             does not count), in the same shape. Refusals: 400 QUERY_INVALID for a malformed \
-             sku_id or any other key.",
+            "Lists the tenant's plans by code, each with the headers of its revisions as they \
+             read today (a scheduled revision whose date has come reads published, D-447). With \
+             sku_id, only the plans that have a draft, pending, scheduled or published revision \
+             whose items name the SKU through a price book entry (D-434; an included item without \
+             an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a \
+             malformed sku_id or any other key.",
         )
         .tag("Pricing")
         .authenticated()
@@ -71,9 +72,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan")
         .description(
-            "Returns one plan with the headers of its revisions, its version as the ETag a \
-             following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not \
-             hold.",
+            "Returns one plan with the headers of its revisions as they read today (D-447), its \
+             version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a \
+             plan the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -106,8 +107,10 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Copy the published revision")
         .description(
             "Copies the plan's published revision (book, sale date and items) into a new draft \
-             revision and attaches each copied item's SKU reference. Refusals: 404 for an unknown \
-             plan; 409 REVISION_DRAFT_EXISTS while a draft or pending revision exists, \
+             revision and attaches each copied item's SKU reference; a scheduled revision whose \
+             date has come is switched first, so the copy is of the revision in effect (D-451). \
+             Refusals: 404 for an unknown plan; 409 REVISION_DRAFT_EXISTS while a draft or \
+             pending revision exists, REVISION_SCHEDULED while a revision waits for its sale date, \
              PLAN_UNPUBLISHED without a published one.",
         )
         .tag("Pricing")
@@ -128,7 +131,8 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Clone a plan")
         .description(
             "Creates a new plan with its own code and name whose draft revision 1 copies the \
-             source's published revision, without anything of its approval. Refusals: 400 \
+             source's published revision (the one in effect: a scheduled revision whose date has \
+             come is switched first, D-451), without anything of its approval. Refusals: 400 \
              PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or \
              PLAN_CODE_TAKEN.",
         )
@@ -146,8 +150,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan_revision")
         .summary("Read a plan revision")
         .description(
-            "Returns one plan revision with its items, its version as the ETag a following PATCH \
-             sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
+            "Returns one plan revision with its items and its state as it reads today (D-447), its \
+             version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a \
+             revision the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()

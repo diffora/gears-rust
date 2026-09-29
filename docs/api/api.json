@@ -11056,7 +11056,7 @@
             "type": "string"
           },
           "published_rev": {
-            "description": "The revision number the last applied `plan_revision` unit published.",
+            "description": "The revision number the plan sells today (D-447): the last one published, or the number of\na scheduled revision whose date has come, before its switch is persisted. It never counts\na revision that is still waiting for its date.",
             "format": "int32",
             "type": [
               "integer",
@@ -11268,7 +11268,7 @@
               },
               "state": {
                 "$ref": "#/components/schemas/PricingRevisionState",
-                "description": "The revision's state."
+                "description": "The revision's state as it reads today (D-447): a scheduled revision whose date has come\nreads `published`, and the one it replaces `superseded`, before the switch is persisted."
               }
             },
             "required": [
@@ -11360,6 +11360,7 @@
             "type": "string"
           },
           "published_at": {
+            "description": "When it took effect (D-447): its approval's instant, or 00:00 UTC of its sale date for a\nrevision that waited for it; null until then.",
             "format": "date-time",
             "type": [
               "string",
@@ -11371,7 +11372,8 @@
             "type": "integer"
           },
           "state": {
-            "$ref": "#/components/schemas/PricingRevisionState"
+            "$ref": "#/components/schemas/PricingRevisionState",
+            "description": "The state as it reads today (D-447); `scheduled` is approved and waiting for its sale date."
           },
           "tenant_id": {
             "format": "uuid",
@@ -11419,6 +11421,7 @@
             "type": "string"
           },
           "published_at": {
+            "description": "When it took effect: its approval's instant, or 00:00 UTC of its sale date for a revision\nthat waited for it (D-447, D-450); null until then.",
             "format": "date-time",
             "type": [
               "string",
@@ -11430,7 +11433,8 @@
             "type": "integer"
           },
           "state": {
-            "$ref": "#/components/schemas/PricingRevisionState"
+            "$ref": "#/components/schemas/PricingRevisionState",
+            "description": "The state as it reads today (D-447)."
           }
         },
         "required": [
@@ -12337,7 +12341,7 @@
           },
           "state": {
             "$ref": "#/components/schemas/PricingResolvedRevisionState",
-            "description": "No other revision resolves."
+            "description": "The revision's state as it reads today (D-447): `published`, `superseded`, or `scheduled`\nfor a revision asked on or after its sale date while that date has not come yet (D-454). No\nother revision resolves."
           }
         },
         "required": [
@@ -12542,10 +12546,11 @@
         "type": "string"
       },
       "PricingResolvedRevisionState": {
-        "description": "The state of a revision that resolves: no other does (D-419).",
+        "description": "The state of a revision that resolves, as it reads today (D-447): a published or\nsuperseded one on every date (D-419), a scheduled one from its sale date on (D-454). No\nother resolves.",
         "enum": [
           "published",
-          "superseded"
+          "superseded",
+          "scheduled"
         ],
         "type": "string"
       },
@@ -34262,7 +34267,7 @@
     },
     "/bss-pricing/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit. Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
+        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
         "operationId": "bss_pricing.approve_unit",
         "parameters": [
           {
@@ -35414,7 +35419,7 @@
         ]
       },
       "get": {
-        "description": "Returns one plan revision with its items, its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
+        "description": "Returns one plan revision with its items and its state as it reads today (D-447), its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
         "operationId": "bss_pricing.get_plan_revision",
         "parameters": [
           {
@@ -35892,7 +35897,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/submit": {
       "post": {
-        "description": "Puts an unlocked draft revision whose checks are all green into a plan_revision approval unit (plan submit); at quorum 0 it publishes at once. Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
+        "description": "Puts an unlocked draft revision whose checks are all green into a plan_revision approval unit (plan submit); at quorum 0 it applies at once. An applied revision is published, or scheduled when its sale date is after today: it takes effect on that date (D-449). Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
         "operationId": "bss_pricing.submit_plan_revision",
         "parameters": [
           {
@@ -36007,9 +36012,126 @@
         ]
       }
     },
+    "/bss-pricing/v1/plan-revisions/{id}/unschedule": {
+      "post": {
+        "description": "Returns a plan revision that is approved and waiting for its sale date to an unlocked draft of its author (plan submit, D-452): its items and their SKU references stay, the applied unit stays in the history, and no event is sent. A revision whose date has come is switched first and is then in effect. The Idempotency-Key replays the answer. Refusals: 404 for a revision the tenant does not hold; 409 REVISION_IN_EFFECT for a published revision, REVISION_NOT_SCHEDULED for any other.",
+        "operationId": "bss_pricing.unschedule_plan_revision",
+        "parameters": [
+          {
+            "description": "Plan revision id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPlanRevisionDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Withdraw a scheduled revision",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "Lists the tenant's plans by code, each with the headers of its revisions. With sku_id, only the plans that have a draft, pending or published revision whose items name the SKU through a price book entry (D-434; an included item without an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a malformed sku_id or any other key.",
+        "description": "Lists the tenant's plans by code, each with the headers of its revisions as they read today (a scheduled revision whose date has come reads published, D-447). With sku_id, only the plans that have a draft, pending, scheduled or published revision whose items name the SKU through a price book entry (D-434; an included item without an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a malformed sku_id or any other key.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
@@ -36234,7 +36356,7 @@
     },
     "/bss-pricing/v1/plans/{id}": {
       "get": {
-        "description": "Returns one plan with the headers of its revisions, its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
+        "description": "Returns one plan with the headers of its revisions as they read today (D-447), its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
         "operationId": "bss_pricing.get_plan",
         "parameters": [
           {
@@ -36476,7 +36598,7 @@
     },
     "/bss-pricing/v1/plans/{id}/clone": {
       "post": {
-        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision, without anything of its approval. Refusals: 400 PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN.",
+        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision (the one in effect: a scheduled revision whose date has come is switched first, D-451), without anything of its approval. Refusals: 400 PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN.",
         "operationId": "bss_pricing.clone_plan",
         "parameters": [
           {
@@ -36604,7 +36726,7 @@
     },
     "/bss-pricing/v1/plans/{id}/revisions": {
       "post": {
-        "description": "Copies the plan's published revision (book, sale date and items) into a new draft revision and attaches each copied item's SKU reference. Refusals: 404 for an unknown plan; 409 REVISION_DRAFT_EXISTS while a draft or pending revision exists, PLAN_UNPUBLISHED without a published one.",
+        "description": "Copies the plan's published revision (book, sale date and items) into a new draft revision and attaches each copied item's SKU reference; a scheduled revision whose date has come is switched first, so the copy is of the revision in effect (D-451). Refusals: 404 for an unknown plan; 409 REVISION_DRAFT_EXISTS while a draft or pending revision exists, REVISION_SCHEDULED while a revision waits for its sale date, PLAN_UNPUBLISHED without a published one.",
         "operationId": "bss_pricing.copy_plan_revision",
         "parameters": [
           {
@@ -39250,11 +39372,11 @@
     },
     "/bss-pricing/v1/resolve": {
       "get": {
-        "description": "Returns, per item of a published or superseded plan revision, the chain matrix (the default chain and every dimension value) with the price bound on the date, the SKU version in force and the resolved invoice inputs; pins renew a subscription's bindings. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 REVISION_NOT_PUBLISHED; Products' own refusal of a SKU read; 503 when Products cannot answer.",
+        "description": "Returns, per item of a published or superseded plan revision, or of a scheduled one on or after its sale date, the chain matrix (the default chain and every dimension value) with the price bound on the date, the SKU version in force and the resolved invoice inputs; pins renew a subscription's bindings. A scheduled revision whose date has come resolves as published, on every date, whether or not its switch is persisted yet. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 when Products cannot answer.",
         "operationId": "bss_pricing.resolve",
         "parameters": [
           {
-            "description": "A published or superseded plan revision",
+            "description": "A published or superseded plan revision, or a scheduled one from its sale date",
             "in": "query",
             "name": "plan_revision_id",
             "required": true,

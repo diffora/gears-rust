@@ -257,13 +257,17 @@ pub fn impact_of(prices: usize, entries: usize, plans: &[Value]) -> Value {
     })
 }
 /// Every plan revision, in any state, whose items name one of the entries, as
-/// `{ plan_id, code, revision_id, rev_no, state }`, by plan code and revision number (D-408).
+/// `{ plan_id, code, revision_id, rev_no, state }`, by plan code and revision number (D-408). The
+/// state is the one the revision reads on `today` among its plan's revisions (D-447): a live read
+/// shows a due switch before it is persisted, and a snapshot records the state of its day, which
+/// then stays its history.
 /// # Errors
 /// Storage failures; a revision or plan an item points at that is gone is a corrupt row.
 pub async fn plans_reading(
     tx: &impl DBRunner,
     tenant: Uuid,
     entries: &BTreeSet<Uuid>,
+    today: Date,
 ) -> Result<Vec<Value>, RepoError> {
     let scope = AccessScope::for_tenant(tenant);
     let ids: Vec<Uuid> = entries.iter().copied().collect();
@@ -272,15 +276,37 @@ pub async fn plans_reading(
         .into_iter()
         .map(|i| i.revision_id)
         .collect();
-    let mut rows = Vec::with_capacity(revisions.len());
+    let mut found = Vec::with_capacity(revisions.len());
     for id in revisions {
-        let r = plan_revision_repo::find(tx, &scope, tenant, id)
-            .await?
-            .ok_or_else(|| RepoError::CorruptRow(format!("plan item names lost revision {id}")))?;
+        found.push(
+            plan_revision_repo::find(tx, &scope, tenant, id)
+                .await?
+                .ok_or_else(|| {
+                    RepoError::CorruptRow(format!("plan item names lost revision {id}"))
+                })?,
+        );
+    }
+    let plans: Vec<Uuid> = found
+        .iter()
+        .map(|r| r.plan_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let siblings = plan_revision_repo::for_plans(tx, &scope, tenant, &plans).await?;
+    let effective: BTreeMap<Uuid, &'static str> =
+        crate::api::rest::authoring::dto::effective_revisions(&siblings, today)?
+            .into_iter()
+            .map(|e| (e.id, e.state.as_str()))
+            .collect();
+    let mut rows = Vec::with_capacity(found.len());
+    for r in found {
         let p = plan_repo::find(tx, &scope, tenant, r.plan_id)
             .await?
-            .ok_or_else(|| RepoError::CorruptRow(format!("revision {id} has no plan")))?;
-        rows.push((p.code, r.rev_no, p.id, r.id, r.state));
+            .ok_or_else(|| RepoError::CorruptRow(format!("revision {} has no plan", r.id)))?;
+        let state = effective
+            .get(&r.id)
+            .map_or_else(|| r.state.clone(), |s| (*s).to_owned());
+        rows.push((p.code, r.rev_no, p.id, r.id, state));
     }
     rows.sort();
     Ok(rows
@@ -305,7 +331,8 @@ pub async fn live_impact(
     items: &[ItemRef],
 ) -> Result<Value, RepoError> {
     let entries = entries_of(items);
-    let plans = plans_reading(tx, tenant, &entries).await?;
+    let today = OffsetDateTime::now_utc().date();
+    let plans = plans_reading(tx, tenant, &entries, today).await?;
     Ok(impact_of(items.len(), entries.len(), &plans))
 }
 fn by_entry(models: Vec<entity::price::Model>) -> BTreeMap<Uuid, Vec<entity::price::Model>> {
@@ -392,7 +419,7 @@ impl PricesSubject {
     /// the caller records them `"unavailable"` and never refuses the submit, vote or reject. The
     /// reads a rule needs (a usage chain's dated metering, D-402) stay hard in `judge`.
     async fn review(&self, tx: &DbTx<'_>, entries: &BTreeSet<Uuid>) -> Result<(), ApprovalError> {
-        let plans = plans_reading(tx, self.tenant_id, entries)
+        let plans = plans_reading(tx, self.tenant_id, entries, self.now.date())
             .await
             .map_err(storage)?;
         let mut skus = BTreeSet::new();

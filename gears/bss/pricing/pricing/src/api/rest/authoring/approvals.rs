@@ -167,7 +167,9 @@ async fn decided(
     events::enqueue(&cmd.outbox, tx, &event, now).await?;
     Ok(())
 }
-/// The domain event of an applied unit, by its kind, in the apply transaction.
+/// The domain event of an applied unit, by its kind, in the apply transaction. A plan revision
+/// approved before its sale date was scheduled, not published: its `PlanRevisionPublished` is
+/// its switch's (D-449, D-450).
 async fn published(
     tx: &DbTx<'_>,
     cmd: &Command,
@@ -178,7 +180,10 @@ async fn published(
 ) -> Result<(), DoorError> {
     match subject {
         Subject::Prices(_) => prices_published(tx, cmd, store, id, now).await,
-        Subject::PlanRevision(s) => plan_revision_published(tx, cmd, store, s, id, now).await,
+        Subject::PlanRevision(s) if s.published_now() => {
+            plan_revision_published(tx, cmd, store, s, id, now).await
+        }
+        Subject::PlanRevision(_) => Ok(()),
     }
 }
 /// `PlanRevisionPublished` for an applied `plan_revision` unit: the revision now published, the
@@ -510,7 +515,7 @@ pub async fn publish_list(
         .ok_or_else(support::missing)?;
     let prices = proposals(tx, tenant, book).await?;
     let entries: BTreeSet<Uuid> = prices.iter().map(|r| r.entry.id).collect();
-    let plans = crate::infra::prices::plans_reading(tx, tenant, &entries).await?;
+    let plans = crate::infra::prices::plans_reading(tx, tenant, &entries, plans::today()).await?;
     let impact = crate::infra::prices::impact_of(prices.len(), entries.len(), &plans);
     let body = PricingPublishChanges {
         book: PriceBookDto::from(model),

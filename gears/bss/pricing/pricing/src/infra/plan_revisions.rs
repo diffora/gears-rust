@@ -18,10 +18,14 @@ use crate::{
         support::{self, DoorError},
     },
     domain::plan::{self, RevisionState},
-    infra::storage::{
-        RepoError,
-        entity::{plan_item, plan_revision},
-        repo::{plan_item_repo, plan_repo, plan_revision_repo},
+    infra::{
+        events::{self, EventSink, PlanRevisionPublished},
+        reference_ticker::system_actor,
+        storage::{
+            RepoError,
+            entity::{plan_item, plan_revision},
+            repo::{approval_repo, plan_item_repo, plan_repo, plan_revision_repo},
+        },
     },
 };
 use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
@@ -55,6 +59,84 @@ pub const SUBSCRIPTIONS_UNAVAILABLE: &str = "unavailable until the Subscriptions
 #[must_use]
 pub fn impact() -> Value {
     json!({ "subscriptions": SUBSCRIPTIONS_UNAVAILABLE })
+}
+
+/// Who a `PlanRevisionPublished` of a persisted switch names as its actor (plan rev 2 H1): the
+/// actor of the unit's latest approving decision that is neither stale nor of an older
+/// generation, else the unit's submitter — at quorum 0 the unit applies at its submit and records
+/// no decision.
+#[must_use]
+pub fn switch_actor(unit: &Unit, decisions: &[bss_approval::Decision]) -> Uuid {
+    decisions
+        .iter()
+        .filter(|d| {
+            !d.stale
+                && d.generation == unit.generation
+                && d.verdict == bss_approval::Verdict::Approve
+        })
+        .max_by_key(|d| (d.at, d.actor))
+        .map_or(unit.submitted_by, |d| d.actor)
+}
+
+/// Persist a plan's due switch and announce it, in the caller's transaction (D-450, D-451):
+/// [`plan_revision_repo::switch_due`], then, only when it switched, `PlanRevisionPublished` (the
+/// approving unit, [`switch_actor`], the revision it superseded) and the audit row
+/// `plan_revision.switch` under pricing's system actor. The switch job calls it for each due
+/// plan, and the copy, clone and unschedule doors call it before they judge anything; whichever
+/// switches announces, so a switch is announced exactly once. Answers what it switched.
+/// # Errors
+/// Storage failures, kept typed so a serializable transaction retries; a scheduled revision whose
+/// unit is gone is a corrupt row.
+pub async fn catch_up(
+    tx: &(impl DBRunner + Sync),
+    outbox: &EventSink,
+    tenant: Uuid,
+    plan_id: Uuid,
+    now: OffsetDateTime,
+    correlation: Uuid,
+) -> Result<Option<plan_revision_repo::Switched>, DoorError> {
+    let scope = AccessScope::for_tenant(tenant);
+    let Some(switched) = plan_revision_repo::switch_due(tx, &scope, tenant, plan_id, now).await?
+    else {
+        return Ok(None);
+    };
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-2
+    let lost = |what: &str| {
+        RepoError::CorruptRow(format!(
+            "switched plan revision {} lost its {what}",
+            switched.revision_id
+        ))
+    };
+    let unit = approval_repo::find_unit(tx, &scope, tenant, switched.unit_id)
+        .await
+        .map_err(support::approval_failure)?
+        .ok_or_else(|| lost("unit"))?;
+    let decisions = approval_repo::decisions_of(tx, &scope, tenant, unit.id).await?;
+    let event = PlanRevisionPublished {
+        tenant_id: tenant,
+        plan_id,
+        revision_id: switched.revision_id,
+        rev_no: switched.rev_no,
+        book_id: switched.book_id,
+        superseded_revision_id: switched.superseded_revision_id,
+        unit_id: switched.unit_id,
+        actor_ref: switch_actor(&unit, &decisions),
+    };
+    events::enqueue(outbox, tx, &event, now).await?;
+    let published = plan_revision_repo::find(tx, &scope, tenant, switched.revision_id)
+        .await?
+        .ok_or_else(|| lost("row"))?;
+    support::audit(
+        tx,
+        &system_actor(tenant)?,
+        correlation,
+        "plan_revision.switch",
+        published.id,
+        published.version,
+    )
+    .await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-2
+    Ok(Some(switched))
 }
 
 /// A revision's business content, the unit's `after` (and `before` for the published one).
@@ -150,6 +232,9 @@ struct Review {
     /// The item SKUs' descriptors, or `"unavailable"` when Products did not answer the read.
     descriptors: Value,
     superseded: Option<Uuid>,
+    /// Whether the last apply published the revision now (a revision approved before its sale
+    /// date is scheduled instead, D-449).
+    published: bool,
 }
 
 /// The subject of one `plan_revision` unit.
@@ -237,6 +322,12 @@ impl PlanRevisionSubject {
     #[must_use]
     pub fn superseded(&self) -> Option<Uuid> {
         self.review.lock().ok().and_then(|r| r.superseded)
+    }
+    /// Whether the last apply published the revision now. A revision approved before its sale
+    /// date was scheduled instead (D-449): its `PlanRevisionPublished` is its switch's (D-450).
+    #[must_use]
+    pub fn published_now(&self) -> bool {
+        self.review.lock().is_ok_and(|r| r.published)
     }
     fn refuse(&self, error: CanonicalError) {
         if let Ok(mut slot) = self.refused.lock() {
@@ -425,8 +516,9 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         })
     }
     /// The checks again with fresh reads (red: `APPLY_REFUSED`, the whole unit rolls back); then
-    /// the published revision is superseded FIRST, this one published, and the plan's
-    /// `published_rev` advanced.
+    /// a revision whose sale date is after the apply's UTC day is scheduled (D-449): nothing is
+    /// superseded or published, and `published_rev` stays. Otherwise the published revision is
+    /// superseded FIRST, this one published, and the plan's `published_rev` advanced.
     async fn apply(
         &self,
         tx: &DbTx<'a>,
@@ -450,6 +542,18 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         }
         // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-2
         let scope = self.scope();
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-5
+        if r.available_from
+            .is_some_and(|from| from > self.now.to_offset(time::UtcOffset::UTC).date())
+        {
+            // D-449: approved before its sale date, the revision waits; the plan keeps selling
+            // its published revision until the switch (D-450).
+            plan_revision_repo::schedule(tx, &scope, self.tenant_id, r.id, unit.id, self.now)
+                .await
+                .map_err(storage)?;
+            return Ok(());
+        }
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-5
         let previous = plan_revision_repo::for_plan(tx, &scope, self.tenant_id, r.plan_id)
             .await
             .map_err(storage)?
@@ -495,6 +599,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-3
         if let Ok(mut review) = self.review.lock() {
             review.superseded = previous.map(|x| x.id);
+            review.published = true;
         }
         Ok(())
     }
@@ -520,3 +625,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "plan_revisions_tests.rs"]
+mod plan_revisions_tests;

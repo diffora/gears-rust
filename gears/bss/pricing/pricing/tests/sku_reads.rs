@@ -416,10 +416,10 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
 
 // ------------------------------------------------------------------ a stored scheduled revision
 
-/// D-446, run 8.1: a revision stored `scheduled` reads as stored wherever a read renders a
-/// revision state, and counts as a live revision wherever a count reads one, until the reads
-/// derive the effective state (D-447, run 8.2). No read answers 500 on it; `/resolve` refuses it as
-/// it refuses any revision that is not published or superseded.
+/// D-446: a revision stored `scheduled` and not yet due reads as stored wherever a read renders a
+/// revision state (its effective state is its stored one, D-447), and counts as a live revision
+/// wherever a count reads one. No read answers 500 on it; `/resolve` refuses it before its date
+/// (D-454).
 #[tokio::test]
 async fn a_stored_scheduled_revision_reads_as_stored_and_counts_as_live() {
     let (f, catalog) = setup().await;
@@ -488,7 +488,7 @@ async fn a_stored_scheduled_revision_reads_as_stored_and_counts_as_live() {
     )
     .await;
     assert_eq!(s, 409, "{b}");
-    assert!(b.to_string().contains("REVISION_NOT_PUBLISHED"), "{b}");
+    assert!(b.to_string().contains("REVISION_NOT_YET_AVAILABLE"), "{b}");
 }
 
 // ------------------------------------------------------------------ GET /plan-items/{id}

@@ -105,8 +105,10 @@ impl TypedEvent for PricesPublished {
 
 // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-2
 /// A `plan_revision` unit was applied: the revision is the plan's published one, the revision
-/// published before it (if any) is superseded, and the plan's `published_rev` is its number.
-/// Existing subscription pins do not move (D-394).
+/// published before it (if any) is superseded, and the plan's `published_rev` is its number. A
+/// revision approved before its sale date is announced instead when its switch is persisted on that
+/// date, once, by the switch job or the door that catches it up (D-449, D-450). Existing
+/// subscription pins do not move (D-394).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanRevisionPublished {
@@ -119,7 +121,8 @@ pub struct PlanRevisionPublished {
     /// The revision this one superseded; `None` for a plan's first publication.
     pub superseded_revision_id: Option<Uuid>,
     pub unit_id: Uuid,
-    /// The principal whose act applied the unit.
+    /// The principal whose act applied the unit; at a switch, the unit's latest current approver,
+    /// or its submitter when no one voted (quorum 0, D-450).
     pub actor_ref: Uuid,
 }
 impl TypedEvent for PlanRevisionPublished {

@@ -56,6 +56,7 @@ fn census() -> census::Routes {
         ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
         ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -78,7 +79,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 50);
+    assert_eq!(registered.len(), 51);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 6);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -89,13 +90,13 @@ async fn the_census_covers_every_route_the_routers_register() {
 
 #[test]
 fn the_authentication_and_authz_parsers_have_positive_controls() {
-    // One per route (50), and more: `require_authenticated(` is also its own definition;
+    // One per route (51), and more: `require_authenticated(` is also its own definition;
     // `authz::access_scope(` is also the SKU usage port, which authorizes the Products caller it
     // serves (D-428), and the money's second judgement, price_book read, in the one helper the
     // SKU's entry list, the two entry reads and an entry's prices call (D-434, D-440).
     for (needle, more) in [("require_authenticated(", 1), ("authz::access_scope(", 2)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        assert_eq!(census::production_count(needle), 50 + more, "{needle}");
+        assert_eq!(census::production_count(needle), 51 + more, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(
@@ -105,7 +106,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 50);
+    assert_eq!(census::source_routes().len(), 51);
 }
 
 #[test]
@@ -205,3 +206,6 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 
 // Run 7.1 (D-440): method | path | resource:action | If-Match | Idempotency-Key
 // GET /price-book-entries/{id}/prices price_book_entry:read (then price_book:read) false false
+
+// Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/unschedule plan:submit false true

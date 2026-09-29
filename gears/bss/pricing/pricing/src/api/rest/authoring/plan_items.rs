@@ -244,7 +244,8 @@ pub(super) async fn patch(
     )?)
 }
 /// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan,
-/// its version as the `ETag` a following PATCH sends back as If-Match.
+/// its version as the `ETag` a following PATCH sends back as If-Match. The state is the one the
+/// revision reads today among its plan's revisions (D-447).
 /// # Errors
 /// 404 for an item the tenant does not hold.
 pub(super) async fn get(
@@ -256,8 +257,16 @@ pub(super) async fn get(
     let m = plan_item_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("plan_item"))?;
-    let r =
-        plans::find_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.revision_id).await?;
+    let children = AccessScope::for_tenant(tenant);
+    let r = plans::find_revision(tx, &children, tenant, m.revision_id).await?;
+    let siblings = plan_revision_repo::for_plan(tx, &children, tenant, r.plan_id).await?;
+    let state = super::dto::effective_revisions(&siblings, plans::today())?
+        .into_iter()
+        .find(|e| e.id == r.id)
+        .map_or_else(
+            || PricingRevisionState::stored(&r.state, &format_args!("revision {} state", r.id)),
+            |e| Ok(e.state.into()),
+        )?;
     let version = crate::api::rest::preconditions::RowVersion::from_stored(m.version)
         .map_err(CanonicalError::from)?
         .get();
@@ -267,10 +276,7 @@ pub(super) async fn get(
             item: m.try_into()?,
             plan_id: r.plan_id,
             rev_no: r.rev_no,
-            state: PricingRevisionState::stored(
-                &r.state,
-                &format_args!("revision {} state", r.id),
-            )?,
+            state,
         },
         Some(version),
     )?)
