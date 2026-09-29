@@ -10398,16 +10398,21 @@
         "type": "object"
       },
       "PricingApprovalUnitList": {
+        "description": "One page of the unit list (D-458): its units, and the toolkit pager's `page_info`, whose\n`next_cursor` continues it.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/PricingApprovalUnitDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo"
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -34024,7 +34029,7 @@
     },
     "/bss-pricing/v1/approval-units": {
       "get": {
-        "description": "Lists the tenant's approval units, filtered by state, kind and referenced aggregate, each with its stored snapshot and live impact. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID.",
+        "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions and its live impact. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read.",
         "operationId": "bss_pricing.list_approval_units",
         "parameters": [
           {
@@ -34058,6 +34063,24 @@
             "description": "Price book id",
             "in": "query",
             "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info",
+            "in": "query",
+            "name": "cursor",
             "required": false,
             "schema": {
               "type": "string"
