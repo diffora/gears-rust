@@ -661,6 +661,16 @@ plan item's reference starts unreserved when it is copied (D-413), and reservati
 answers; the reference columns of an item in a published or superseded revision change only through the
 reference machine.
 
+Phase 8 adds the forward migration m20260929_000017_revision_scheduled (D-446). A revision may be stored
+scheduled: approved, and waiting for its sale date. The state CHECK gains 'scheduled', and the partial unique
+index pricing_plan_revision_scheduled admits one scheduled revision per plan (409 REVISION_SCHEDULED_EXISTS).
+Postgres drops the CHECK and adds it again. SQLite rebuilds the family pricing_plan_revision + pricing_plan_item
+in the runner's transaction, with no PRAGMA (the precedent is products m20260925_000007, P-D-196): new tables
+with 000011's and 000012's text except the wider CHECK, every row copied, the child dropped and then the parent,
+the renames, and the two partial indexes recreated with their original text. Its down is an explicit
+irreversible error. The DDL below is the shape after it. A due scheduled revision reads as published from 00:00
+UTC of its date (D-447), and the storage writes schedule, switch_due and unschedule are D-448's.
+
 ```sql
 CREATE TABLE bss.pricing_plan (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, code text NOT NULL, name text NOT NULL, published_rev integer,
@@ -676,12 +686,17 @@ CREATE TABLE bss.pricing_plan_revision (
   version bigint NOT NULL DEFAULT 1, created_by uuid NOT NULL,
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
   CONSTRAINT pricing_plan_revision_no UNIQUE (plan_id, rev_no),
-  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','published','superseded'))
+  -- m20260929_000017 (D-446) added 'scheduled'.
+  CONSTRAINT chk_pricing_plan_revision_state
+    CHECK (state IN ('draft','pending','scheduled','published','superseded'))
 );
 CREATE UNIQUE INDEX pricing_plan_revision_open ON bss.pricing_plan_revision (plan_id)
   WHERE state IN ('draft','pending');
 CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision (plan_id)
   WHERE state = 'published';
+-- m20260929_000017 (D-446): one scheduled revision per plan.
+CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON bss.pricing_plan_revision (plan_id)
+  WHERE state = 'scheduled';
 CREATE TABLE bss.pricing_plan_item (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, revision_id uuid NOT NULL REFERENCES bss.pricing_plan_revision(id),
   sku_id uuid NOT NULL, price_book_entry_id uuid REFERENCES bss.pricing_price_book_entry(id),

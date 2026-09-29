@@ -462,10 +462,11 @@ pub struct Switched {
     pub book_id: Uuid,
 }
 /// Persist the plan's due switch, in the caller's transaction (D-448): the published revision is
-/// superseded, then the due scheduled one (see [`due_on`]; the UTC day of `now`) is published with
-/// `published_at` = 00:00 UTC of its `available_from`, then the plan's `published_rev` is advanced
-/// WITHOUT its version or `updated_at` moving (`plan_repo::advance_published`). The two revision
-/// rows bump their version and `updated_at` as every write does.
+/// superseded, then the due scheduled one (state `scheduled`, `available_from` on or before the UTC
+/// day of `now`) is published with `published_at` = 00:00 UTC of its `available_from`, then the
+/// plan's `published_rev` is advanced WITHOUT its version or `updated_at` moving
+/// (`plan_repo::advance_published`). The two revision rows bump their version and `updated_at` as
+/// every write does.
 ///
 /// Every write is conditional on the state it reads, so a switch that lost a race is a no-op:
 /// `Some` only when the scheduled-to-published update hit its row, `None` when nothing was due or

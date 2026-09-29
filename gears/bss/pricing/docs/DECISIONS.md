@@ -82,6 +82,9 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
 | D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-446 | M | A plan revision can be stored scheduled: the state, its index and its migration | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
+| D-447 | M | A scheduled revision takes effect on its date: the effective state is derived | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
+| D-448 | M | The storage writes of a scheduled revision: schedule, switch, unschedule and the due scan | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 
 ## Entries
 
@@ -640,3 +643,51 @@ The approval library's unit now carries `submit_note`, the submitter's own words
 - **Not content.** The note is not part of the snapshot or of snapshot_hash, and a stale refresh keeps it.
 
 **Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3).
+
+#### D-446 [M] A plan revision can be stored scheduled: the state, its index and its migration
+
+**Status:** DECIDED 2026-09-29.
+
+The owner approved scheduled plan revisions (2026-09-28): a plan change is approved today and takes effect on a later date. Until that date the plan keeps selling its current revision.
+
+- **The state.** A revision state `scheduled` joins draft, pending, published and superseded. An approved revision whose sale date (`available_from`) is after the apply's day is stored `scheduled`: its lock is cleared, `approved_by_unit_id` names the unit, and `published_at` stays null. The plan's published revision and its `published_rev` do not move. A null or past `available_from` publishes at once, as before. A revision that was published at once before this entry stays published: there is no backfill. The apply that makes this choice, and its event, come with the doors (phase 8 run 8.2).
+- **Why a stored state.** The published partial unique index admits one published revision per plan. A reader that filters `state = 'published'` does not see a scheduled revision, so no reader sells the future revision early. A reader that filters `state <> 'superseded'` (the BOOK_IN_PLAN family, D-441) counts it as a holder of its book and its entries, which is correct. The alternative, "published with a null published_at", would need a second test in every revision reader, and one missed reader would sell the future revision today.
+- **One per plan.** The partial unique index pricing_plan_revision_scheduled ON (plan_id) WHERE state = 'scheduled' admits one scheduled revision per plan. A second one is 409 REVISION_SCHEDULED_EXISTS. Postgres names the index; SQLite names only the column, so the write that sets the state tells the two single-column indexes apart.
+- **The migration.** The chain is deployed, so the change is the forward migration m20260929_000017_revision_scheduled. Postgres drops chk_pricing_plan_revision_state and adds it again with 'scheduled' (DROP CONSTRAINT IF EXISTS, so a replay changes nothing), then creates the index. SQLite cannot change a CHECK. The toolkit runner runs each up() in a transaction, where PRAGMA foreign_keys=OFF has no effect, so the SQLite arm rebuilds the family without a PRAGMA, as products m20260925_000007 does (P-D-196). The family is pricing_plan_revision and its only child, pricing_plan_item. The steps: create both new tables (000011's and 000012's text, word for word, except the wider CHECK), copy every row, drop the child and then the parent, rename the new tables, recreate the two partial indexes with their original text, and create the new index. down() is an explicit irreversible error.
+- **The proof.** Upgrade tests on both dialects go through the real runner, from a database migrated without 000017, with plans, revisions in every old state and items. Only 000017 is pending. The dump differs by the CHECK and the new index only, each table's text by the CHECK only, and every row and foreign key survives. The CHECK admits scheduled and refuses an unknown state, and the new index refuses a second scheduled revision. An upgraded database equals a fresh one, and a replay applies nothing. The schema goldens were recorded again once: only the CHECK and the index changed. The schema guard needs no change.
+- **The wire.** The closed set PricingRevisionState gains scheduled, so no read answers 500 on a stored scheduled row. Until the reads derive the effective state (D-447, wired in run 8.2), every read renders the stored state: the plan read and list, the revision read, the item read, SKU usage and the prices unit's impact. /resolve refuses a scheduled revision with 409 REVISION_NOT_PUBLISHED until then.
+- **The counts.** The counts read the stored state: stats.plans and BOOK_IN_PLAN (D-441, D-444), the SKU's usage.plans (D-434), the entry usage (D-428) and the plans that name a SKU. They count a scheduled revision as they count a published one. They also count its stored-published predecessor until the switch is persisted: an over-count of at most one job cycle once the switch job runs (run 8.2).
+- **Deploy and rollback.** An old pod refuses a stored scheduled row in its closed sets and answers 500 for that tenant's plan list, SKU usage and item reads. So the deploy is not a rolling update: scale core-server to 0, set the image, then scale to 1, after a dump of the pricing and products tables (plan rev 2 H2). A rollback first unschedules every scheduled row or restores the dump.
+
+**Source:** Owner, 2026-09-28 (scheduled plan revisions); phase 8 plan rev 2 (decisions 1, 2, 10; plan review H2, L3, L4, L5, L8).
+
+#### D-447 [M] A scheduled revision takes effect on its date: the effective state is derived
+
+**Status:** DECIDED 2026-09-29.
+
+A scheduled revision must take effect on its date with nobody acting and before any job runs. So every read derives the effective state from the stored rows, as a price's display state is derived (domain::price::status).
+
+- **The rule.** domain::plan::effective(revisions, today) is a pure function. A scheduled revision whose available_from is on or before today reads as published, with published_at at 00:00 UTC of available_from. The stored-published revision of its plan reads as superseded and keeps its own published_at. The plan's published_rev reads as the due revision's rev_no (domain::plan::published_rev). Every other revision reads as stored. One list may hold the revisions of many plans; plans are told apart by plan_id.
+- **Today.** Today is the UTC date of now, as the checks use it (domain::plan::sale_date).
+- **A revision with no date.** A scheduled revision with a null available_from is never due. The storage writes none, because the apply schedules only a future date. The persisted switch (D-448) reads such a row the same way.
+- **Reads never write.** The derivation runs in memory over the revisions a read already has, so a GET door writes nothing and its statement count does not change.
+- **The persisted switch agrees.** D-448's switch writes the same states and the same published_at. Only the two revision rows' version and updated_at change when the switch is persisted; the plan row does not change (D-448).
+- **Where it applies.** The plan read and list, the revision read, the item read, /resolve and the prices unit's live impact use it from run 8.2 (plan rev 2 M2, M3). In run 8.1 the rule and its tests exist, and no read calls it yet.
+
+**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decision 3).
+
+#### D-448 [M] The storage writes of a scheduled revision: schedule, switch, unschedule and the due scan
+
+**Status:** DECIDED 2026-09-29.
+
+The doors and the job of run 8.2 call four storage functions of plan_revision_repo. Each one is conditional on the state it reads, so a lost race changes nothing.
+
+- **schedule(tenant, id, unit, now).** A pending revision that the unit holds becomes scheduled. pending_unit_id becomes null, approved_by_unit_id names the unit, the version increases and updated_at is now. published_at stays null. Any other state, or another unit's revision, is 409 REVISION_NOT_PENDING, and a second scheduled revision of the plan is 409 REVISION_SCHEDULED_EXISTS. The write does not read the date: the apply decides between schedule and publish (D-446).
+- **switch_due(tenant, plan_id, now).** This persists the plan's due switch in the caller's transaction. First it finds the due scheduled revision (state scheduled, available_from on or before the UTC date of now). Then it supersedes the stored-published revision, publishes the due one with published_at at 00:00 UTC of its date, and writes published_rev through plan_repo::advance_published. That write changes neither the plan's version nor its updated_at: published_rev is a projection, so an If-Match that a client read before the switch stays valid (plan rev 2 L6). The two revision rows increase their version and set updated_at, as every write does. The result names the superseded revision (none for a plan's first publication), the published revision, its unit, its rev_no and its book: what a PlanRevisionPublished event names. There is a result only when the update from scheduled to published changed its row. Nothing due, or a switch that another writer made first, returns nothing and writes nothing. A predecessor superseded with no revision published after it is refused with 409 STALE_REVISION and not committed. A scheduled row that names no approving unit is a corrupt row, and nothing is written.
+- **unschedule(tenant, id, now).** A scheduled revision that is not yet due (its available_from is after the UTC date of now, or null) becomes an unlocked draft. approved_by_unit_id becomes null, the version increases, and its items stay. The state condition is the concurrency control; there is no If-Match (plan rev 2 M5). Any other state, or a due revision, is 409 REVISION_NOT_SCHEDULED. A draft or pending revision beside it is 409 REVISION_DRAFT_EXISTS (the open index). The applied unit stays applied in its history.
+- **due_scheduled(today, limit).** This is the job's scan: the due scheduled revisions of every tenant, ordered by available_from and then id, at most limit. It reads across tenants on purpose (AccessScope::allow_all(), as the reference ticker's scans do). The job then switches each plan in its tenant's scope.
+- **Now, not today.** switch_due and unschedule take the instant now and not a date. The revision rows need it for updated_at, and today is always its UTC date, so a caller cannot pass two times that disagree.
+- **Left to the callers (run 8.2).** The callers write the audit row plan_revision.switch under the system actor (plan rev 2 L2), enqueue the event, run the catch-up in the copy, clone and unschedule doors, and add the ticker duty.
+- **The tests.** Each write's from-states, an idempotent switch, a switch that races itself (two connections on SQLite, two pools on Postgres: exactly one switches), a second scheduled revision refused, the plan's version unchanged by a switch, and the due scan, on both dialects. A probe of each behaviour was armed, caught by these tests, and reverted.
+
+**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 4, 5, 7; plan review L2, L6, M5).
