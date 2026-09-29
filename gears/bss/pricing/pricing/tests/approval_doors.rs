@@ -433,6 +433,113 @@ async fn content_drift_refreshes_the_generation_and_earlier_votes_go_stale() {
     assert_eq!(b["outcome"], "applied");
 }
 
+/// A reject on content that drifted under the unit refreshes it as an approve does (the approval
+/// engine's reject, X-02): 400 `UNIT_STALE` with the new generation, committed with the key's
+/// answer, no vote recorded and the price still pending; the reviewer then rejects generation 2.
+#[tokio::test]
+async fn a_reject_on_drifted_content_answers_unit_stale_and_commits_the_refresh() {
+    let g = gov(1).await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    let unit = &receipt["unit"];
+    let tenant = g.f.ctx.subject_tenant_id();
+    price::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .col_expr(
+            price::Column::PriceJson,
+            sea_orm::sea_query::Expr::value(json!({"rate":"0.12"})),
+        )
+        .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
+            &price::Column::Id,
+            price["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
+        )))
+        .exec(&g.f.db.conn().unwrap())
+        .await
+        .unwrap();
+    let reviewer = g.f.user();
+    let stale = g
+        .vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":1,"note":"too cheap"}),
+            "r1",
+        )
+        .await;
+    assert_eq!(stale.0, 400, "{stale:?}");
+    assert!(code(&stale.1).contains("UNIT_STALE"), "{stale:?}");
+    assert_eq!(stale.1["context"]["generation"], 2);
+    assert_eq!(
+        g.vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":1,"note":"too cheap"}),
+            "r1",
+        )
+        .await,
+        stale,
+        "the refresh committed with its answer; the key replays it"
+    );
+    let card = g.card(unit).await;
+    assert_eq!(card["generation"], 2);
+    assert_eq!(card["state"], "pending");
+    assert_eq!(card["decisions"], json!([]), "the refresh records no vote");
+    assert_eq!(g.price(&price["id"]).await.state, "pending");
+    let (status, b, _) = g
+        .vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":2,"note":"still too cheap"}),
+            "r2",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "rejected");
+    assert_eq!(g.price(&price["id"]).await.state, "rejected");
+}
+
+/// A vote's note is at most 2000 characters on approve and on reject (the approval engine's cap,
+/// X-01): a longer one is 400 `NOTE_TOO_LONG` on `note` and records nothing; 2000 two-byte
+/// characters pass.
+#[tokio::test]
+async fn a_vote_note_longer_than_2000_characters_is_refused() {
+    let g = gov(2).await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    let unit = &receipt["unit"];
+    let long = "n".repeat(2001);
+    for action in ["approve", "reject"] {
+        let (status, b, _) = g
+            .vote(
+                &g.f.user(),
+                unit,
+                action,
+                json!({"generation":1,"note":long}),
+                &format!("long-{action}"),
+            )
+            .await;
+        assert_eq!(status, 400, "{action}: {b}");
+        assert!(code(&b).contains("NOTE_TOO_LONG"), "{action}: {b}");
+        assert!(code(&b).contains("\"note\""), "{action}: {b}");
+    }
+    let card = g.card(unit).await;
+    assert_eq!(card["decisions"], json!([]), "nothing was recorded");
+    let (status, b, _) = g
+        .vote(
+            &g.f.user(),
+            unit,
+            "approve",
+            json!({"generation":1,"note":"\u{e9}".repeat(2000)}),
+            "at-cap",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "pending");
+}
+
 #[tokio::test]
 async fn a_vote_must_name_the_generation_it_saw() {
     let g = gov(2).await;

@@ -112,6 +112,7 @@ impl From<DomainError> for CanonicalError {
             D::Approval(r) => match r.code {
                 "SOD_VIOLATION" | "NOT_SUBMITTER" => denied(r.code),
                 "NOTE_REQUIRED" => precondition("note", "a reject needs a note", "NOTE_REQUIRED"),
+                "NOTE_TOO_LONG" => precondition("note", &r.detail, "NOTE_TOO_LONG"),
                 "VALIDATION" => precondition("items", &r.detail, "VALIDATION"),
                 "GENERATION_MISMATCH" => {
                     precondition("generation", &r.detail, "GENERATION_MISMATCH")

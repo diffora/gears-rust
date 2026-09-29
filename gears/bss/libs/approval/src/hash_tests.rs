@@ -55,3 +55,25 @@ fn authorship_and_before_are_not_part_of_the_fingerprint() {
         snapshot_hash(&[item(a, serde_json::json!({"amount": 10}))], None)
     );
 }
+
+/// Keys in any order, nested ones included, give one fingerprint. The crate's dev-dependencies
+/// turn on `serde_json`'s `preserve_order`, as the gears' builds do, so a `json!` object keeps the
+/// order it is written in and only the canonical form sorts it.
+#[test]
+fn the_hash_ignores_nested_key_order() {
+    let a = Uuid::new_v4();
+    let x = item(
+        a,
+        serde_json::json!({"price": {"rate": "0.10", "tiers": [{"up_to": 10, "rate": "1"}]}, "model": "flat"}),
+    );
+    let y = item(
+        a,
+        serde_json::json!({"model": "flat", "price": {"tiers": [{"rate": "1", "up_to": 10}], "rate": "0.10"}}),
+    );
+    assert_ne!(
+        serde_json::to_string(&x.after).unwrap(),
+        serde_json::to_string(&y.after).unwrap(),
+        "the two objects keep their written key order"
+    );
+    assert_eq!(snapshot_hash(&[x], None), snapshot_hash(&[y], None));
+}

@@ -37,7 +37,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{
-    ApprovalError, ApprovalSubject, ApproveOutcome, Engine, Store, Unit, UnitState,
+    ApprovalError, ApprovalSubject, ApproveOutcome, Engine, RejectOutcome, Store, Unit, UnitState,
 };
 use bss_products_sdk::models::SkuContent;
 use std::sync::Arc;
@@ -443,45 +443,6 @@ async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuCo
             .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))
     }
 }
-/// Rejects obey the same content-generation barrier without applying or resolving the catalog.
-async fn refresh_reject(
-    tx: &DbTx<'_>,
-    store: &repo::ProductsApprovalStore,
-    subject: &Subject,
-    unit: &Unit,
-    seen: i32,
-) -> Result<Option<i32>, TxError> {
-    if unit.state != UnitState::Pending {
-        return Err(ApprovalError::AlreadyDecided.into());
-    }
-    if unit.generation != seen {
-        return Err(ApprovalError::GenerationMismatch {
-            seen,
-            current: unit.generation,
-        }
-        .into());
-    }
-    let items = subject.collect(tx, &[unit.ref_id]).await?;
-    let hash = bss_approval::hash::snapshot_hash(&items, unit.common_effective_date);
-    if hash == unit.snapshot_hash {
-        return Ok(None);
-    }
-    if !store.bump_version(tx, unit.id, unit.version).await? {
-        return Err(ApprovalError::Contended.into());
-    }
-    let generation = unit.generation + 1;
-    store
-        .refresh(
-            tx,
-            unit.id,
-            &items,
-            &subject.snapshot(&items, unit.common_effective_date),
-            &hash,
-            generation,
-        )
-        .await?;
-    Ok(Some(generation))
-}
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
 async fn vote(
     state: Arc<ApiState>,
@@ -598,12 +559,14 @@ async fn vote(
                         .ok_or(ApprovalError::NoteRequired)?;
                     let seen = seen
                         .ok_or_else(|| TxError::Refused(g::validation("generation", "required")))?;
-                    if let Some(generation) = refresh_reject(tx, &store, &sub, &unit, seen).await? {
-                        ApproveOutcome::Refreshed { generation }
-                    } else {
-                        Engine::reject(&store, &sub, tx, id, ctx.subject_id(), seen, note, now)
-                            .await?;
-                        ApproveOutcome::Applied
+                    // A stale unit is refreshed without applying or resolving the catalog.
+                    match Engine::reject(&store, &sub, tx, id, ctx.subject_id(), seen, note, now)
+                        .await?
+                    {
+                        RejectOutcome::Refreshed { generation } => {
+                            ApproveOutcome::Refreshed { generation }
+                        }
+                        RejectOutcome::Rejected => ApproveOutcome::Applied,
                     }
                 }
                 Vote::Withdraw => {

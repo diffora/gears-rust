@@ -660,7 +660,7 @@ async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
     s.tx(move |tx, store| {
         let subject = subject.clone();
         Box::pin(async move {
-            Engine::reject(
+            let outcome = Engine::reject(
                 &store,
                 &subject,
                 tx,
@@ -671,6 +671,7 @@ async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
                 time::OffsetDateTime::now_utc(),
             )
             .await?;
+            assert_eq!(outcome, bss_approval::RejectOutcome::Rejected);
             Ok(())
         })
     })

@@ -113,26 +113,85 @@ fn the_policy_overrides_per_kind_and_falls_back_to_star() {
     assert_eq!(p.quorum_for("promotion"), 0);
     assert_eq!(p.quorum_for("prices"), 1);
 }
+/// Every variant's `code()`, which the gears map to their wire codes. The expectation is an
+/// exhaustive match, so a new variant does not compile until its code is pinned here.
 #[test]
 fn every_error_has_a_stable_code() {
-    assert_eq!(ApprovalError::SodViolation.code(), "SOD_VIOLATION");
-    assert_eq!(ApprovalError::Contended.code(), "UNIT_CONTENDED");
-    assert_eq!(
+    fn expected(error: &ApprovalError) -> &'static str {
+        match error {
+            ApprovalError::SodViolation => "SOD_VIOLATION",
+            ApprovalError::AlreadyDecided => "UNIT_ALREADY_DECIDED",
+            ApprovalError::DuplicateVote => "DUPLICATE_VOTE",
+            ApprovalError::Contended => "UNIT_CONTENDED",
+            ApprovalError::Locked { .. } => "ROW_LOCKED_PENDING",
+            ApprovalError::NotSubmitter => "NOT_SUBMITTER",
+            ApprovalError::NoteRequired => "NOTE_REQUIRED",
+            ApprovalError::NoteTooLong => "NOTE_TOO_LONG",
+            ApprovalError::UnitNotFound { .. } => "UNIT_NOT_FOUND",
+            ApprovalError::Empty | ApprovalError::InvalidSubmit { .. } => "VALIDATION",
+            ApprovalError::ApplyRefused { .. } => "APPLY_REFUSED",
+            ApprovalError::GenerationMismatch { .. } => "GENERATION_MISMATCH",
+            ApprovalError::Db(_) => "DB",
+            ApprovalError::Store(_) => "STORE",
+        }
+    }
+    let every = [
+        ApprovalError::SodViolation,
+        ApprovalError::AlreadyDecided,
+        ApprovalError::DuplicateVote,
+        ApprovalError::Contended,
         ApprovalError::Locked {
             item_type: "sku".into(),
-            item_id: Uuid::nil()
-        }
-        .code(),
-        "ROW_LOCKED_PENDING"
-    );
-    assert_eq!(
+            item_id: Uuid::nil(),
+        },
+        ApprovalError::NotSubmitter,
+        ApprovalError::NoteRequired,
+        ApprovalError::NoteTooLong,
+        ApprovalError::UnitNotFound {
+            unit_id: Uuid::nil(),
+        },
+        ApprovalError::Empty,
+        ApprovalError::InvalidSubmit {
+            code: "USAGE_NEEDS_METER",
+            field: "unit".into(),
+            detail: String::new(),
+        },
         ApprovalError::ApplyRefused {
             code: "SKU_NAME_TAKEN",
-            detail: String::new()
-        }
-        .code(),
-        "APPLY_REFUSED"
+            detail: String::new(),
+        },
+        ApprovalError::GenerationMismatch {
+            seen: 1,
+            current: 2,
+        },
+        ApprovalError::Db(sea_orm::DbErr::Custom("driver".into())),
+        ApprovalError::Store("store".into()),
+    ];
+    let pinned: Vec<&str> = every.iter().map(expected).collect();
+    assert_eq!(
+        pinned,
+        [
+            "SOD_VIOLATION",
+            "UNIT_ALREADY_DECIDED",
+            "DUPLICATE_VOTE",
+            "UNIT_CONTENDED",
+            "ROW_LOCKED_PENDING",
+            "NOT_SUBMITTER",
+            "NOTE_REQUIRED",
+            "NOTE_TOO_LONG",
+            "UNIT_NOT_FOUND",
+            "VALIDATION",
+            "VALIDATION",
+            "APPLY_REFUSED",
+            "GENERATION_MISMATCH",
+            "DB",
+            "STORE",
+        ],
+        "one of each variant, in declaration order"
     );
+    for error in &every {
+        assert_eq!(error.code(), expected(error), "{error:?}");
+    }
     let db_error = sea_orm::DbErr::Custom("retry classification".into());
     let error = ApprovalError::from(db_error.clone());
     assert_eq!(error.db_err(), Some(&db_error));

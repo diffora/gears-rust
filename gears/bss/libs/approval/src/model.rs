@@ -39,6 +39,7 @@ impl UnitState {
     }
 }
 
+/// A reviewer's vote on one generation of a unit, stored as `approve` or `reject`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
@@ -100,6 +101,8 @@ pub struct ItemRef {
     pub after: serde_json::Value,
 }
 
+/// One approval unit: the reviewed change of one aggregate (`ref_type`, `ref_id`), its state,
+/// quorum and generation, the snapshot the reviewers see and the fingerprint of its content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unit {
     pub id: Uuid,
@@ -125,6 +128,8 @@ pub struct Unit {
     pub version: i64,
 }
 
+/// One reviewer's vote on a unit in one generation; at most one per actor per generation. A
+/// vote of an earlier generation is `stale` once the unit is refreshed and no longer counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
     pub unit_id: Uuid,
@@ -135,6 +140,11 @@ pub struct Decision {
     pub at: OffsetDateTime,
     pub stale: bool,
 }
+
+/// The longest note a vote carries, in characters (Unicode scalar values): the engine refuses a
+/// longer one with [`ApprovalError::NoteTooLong`] before any write (products P-D-219's limit for
+/// a submitter's note).
+pub const NOTE_MAX_CHARS: usize = 2000;
 
 /// Every refusal the engine can produce; gears map `code()` to their wire codes.
 #[derive(Debug, thiserror::Error)]
@@ -153,6 +163,10 @@ pub enum ApprovalError {
     NotSubmitter,
     #[error("a reject needs a note")]
     NoteRequired,
+    #[error("a note is at most {NOTE_MAX_CHARS} characters")]
+    NoteTooLong,
+    #[error("unit {unit_id} not found")]
+    UnitNotFound { unit_id: Uuid },
     #[error("no items to submit")]
     Empty,
     #[error("submit refused: {code} on {field} — {detail}")]
@@ -184,6 +198,8 @@ impl ApprovalError {
             Self::Locked { .. } => "ROW_LOCKED_PENDING",
             Self::NotSubmitter => "NOT_SUBMITTER",
             Self::NoteRequired => "NOTE_REQUIRED",
+            Self::NoteTooLong => "NOTE_TOO_LONG",
+            Self::UnitNotFound { .. } => "UNIT_NOT_FOUND",
             Self::Empty | Self::InvalidSubmit { .. } => "VALIDATION",
             Self::ApplyRefused { .. } => "APPLY_REFUSED",
             Self::GenerationMismatch { .. } => "GENERATION_MISMATCH",
@@ -204,3 +220,7 @@ impl ApprovalError {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod model_tests;

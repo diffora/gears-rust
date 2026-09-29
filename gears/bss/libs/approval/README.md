@@ -13,7 +13,8 @@ at submission and still records an approved unit without votes.
 The submitter and every item's author are excluded from approving, and each actor
 may vote only once per generation.
 Content drift refreshes the items, snapshot and fingerprint, increments the
-generation and marks earlier decisions stale so reviewers must vote again.
+generation and marks earlier decisions stale so reviewers must vote again; an
+approve and a reject both refresh a stale unit instead of voting.
 An optimistic unit version detects competing writes without row locks, while
 approve and reject require the generation the reviewer actually saw.
 
@@ -63,16 +64,21 @@ for<'a> FnMut(&'a DbTx<'a>)
 ```
 
 Build the scoped store and subject for each attempt, then call `Engine::submit`,
-`Engine::approve`, `Engine::reject` or `Engine::withdraw` with that runner.
+`Engine::approve`, `Engine::reject` or `Engine::withdraw` with that runner. The
+four take an `InTransaction` runner (`DbTx` or `SecureTx`): their writes are one
+unit only inside a transaction, so a connection does not compile.
 `submit` takes `SubmitRequest` and returns `Submitted { unit, applied }`.
 `approve` returns `ApproveOutcome::{Pending { have, need }, Applied,
-Refreshed { generation }}`. Reject requires a nonblank note; withdrawal is
-restricted to the submitter. Pass the client's `seen_generation` to approve and
-reject; do not replace it with a newly loaded generation.
+Refreshed { generation }}`, and `reject` returns `RejectOutcome::{Rejected,
+Refreshed { generation }}`. Reject requires a nonblank note; a vote's note is at
+most `NOTE_MAX_CHARS` (2000) characters (`NoteTooLong`, before any write);
+withdrawal is restricted to the submitter. A unit the store does not hold is
+`UnitNotFound`. Pass the client's `seen_generation` to approve and reject; do not
+replace it with a newly loaded generation.
 
 Propagate every `Err` out of the callback so the transaction rolls back, including
 any preceding version bump, vote or lock. **Return `Ok(Refreshed { generation })`
-from the callback and map it to wire `UNIT_STALE` only after
+(either outcome's) from the callback and map it to wire `UNIT_STALE` only after
 `transaction_with_retry` has committed.** Mapping refresh to an error inside the
 callback would undo the new generation and its stale-vote marks.
 
@@ -115,7 +121,7 @@ matter. Authorship, `before` and the reviewer-facing snapshot are not fingerprin
 inputs. Keep informational impact or computation timestamps in the snapshot,
 not in `after`.
 
-The nine scenarios in `tests/engine_fake.rs` drive the engine through real
+The scenarios in `tests/engine_fake.rs` drive the engine through real
 SQLite toolkit-db transactions with fakes typed over `DbTx<'a>`. They prove the
 runner/lifetime integration and state-machine decisions. The maps do not roll
 back, and simulated contention is not a two-writer test: phase 1c must prove

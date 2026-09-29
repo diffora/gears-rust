@@ -235,6 +235,16 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             .create()
             .into(),
         A::NoteRequired => invalid("note", "NOTE_REQUIRED").into(),
+        A::NoteTooLong => invalid_because(
+            "note",
+            "NOTE_TOO_LONG",
+            &format!(
+                "a note is at most {} characters",
+                bss_approval::NOTE_MAX_CHARS
+            ),
+        )
+        .into(),
+        A::UnitNotFound { .. } => missing_what("approval_unit").into(),
         A::Empty => invalid("price_ids", "NO_DRAFT_PRICES").into(),
         A::GenerationMismatch { current, .. } => DoorError::Generation { current },
         // The shared engine names its lock conflict for every gear (`ROW_LOCKED_PENDING`);

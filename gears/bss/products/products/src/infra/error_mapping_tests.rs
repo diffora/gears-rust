@@ -32,7 +32,9 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         DomainError::NotFound { .. } => (404, None),
         DomainError::Approval(r) => match r.code {
             "SOD_VIOLATION" | "NOT_SUBMITTER" => (403, Some(r.code)),
-            "NOTE_REQUIRED" | "VALIDATION" | "GENERATION_MISMATCH" => (400, Some(r.code)),
+            "NOTE_REQUIRED" | "NOTE_TOO_LONG" | "VALIDATION" | "GENERATION_MISMATCH" => {
+                (400, Some(r.code))
+            }
             "DB" | "STORE" => (500, None),
             _ => (409, Some(r.code)),
         },
@@ -135,6 +137,7 @@ fn approval_refusals_preserve_their_status_code_and_generation() {
         ("SOD_VIOLATION", 403),
         ("NOT_SUBMITTER", 403),
         ("NOTE_REQUIRED", 400),
+        ("NOTE_TOO_LONG", 400),
         ("VALIDATION", 400),
         ("GENERATION_MISMATCH", 400),
         ("DB", 500),
@@ -192,6 +195,7 @@ fn actual_approval_errors_keep_custom_codes_fields_and_details() {
             Some("ROW_LOCKED_PENDING"),
         ),
         (A::NoteRequired, 400, Some("NOTE_REQUIRED")),
+        (A::NoteTooLong, 400, Some("NOTE_TOO_LONG")),
         (A::Empty, 400, Some("VALIDATION")),
         (
             A::GenerationMismatch {

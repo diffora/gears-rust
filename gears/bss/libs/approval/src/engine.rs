@@ -1,16 +1,33 @@
 //! Approval transitions inside the transaction opened by the gear.
 //!
 //! Return every error to that transaction so all preceding writes roll back.
-//! [`ApproveOutcome::Refreshed`] is a success: commit before mapping it to
-//! the wire `UNIT_STALE` response.
+//! [`ApproveOutcome::Refreshed`] and [`RejectOutcome::Refreshed`] are successes: commit before
+//! mapping them to the wire `UNIT_STALE` response.
+//!
+//! Every entry point takes an [`InTransaction`] runner: its writes (the unit, its locks, the vote,
+//! the state) are one unit of work only inside the caller's transaction, so an autocommit runner
+//! does not compile.
 use crate::hash::snapshot_hash;
-use crate::model::{ApprovalError, Decision, Policy, Unit, UnitState, Verdict};
+use crate::model::{
+    ApprovalError, Decision, ItemRef, NOTE_MAX_CHARS, Policy, Unit, UnitState, Verdict,
+};
 use crate::rules::{ApproveStep, already_voted, authors_of, evaluate_approve};
 use crate::store::Store;
 use crate::subject::ApprovalSubject;
 use time::{Date, OffsetDateTime};
-use toolkit_db::secure::DBRunner;
+use toolkit_db::secure::{DBRunner, DbTx, SecureTx};
 use uuid::Uuid;
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for toolkit_db::secure::DbTx<'_> {}
+    impl Sealed for toolkit_db::secure::SecureTx<'_> {}
+}
+/// A runner inside an open transaction: [`DbTx`] or [`SecureTx`], never a connection. Sealed:
+/// the engine's multi-write sequences roll back as one only on such a runner.
+pub trait InTransaction: DBRunner + Sync + sealed::Sealed {}
+impl InTransaction for DbTx<'_> {}
+impl InTransaction for SecureTx<'_> {}
 
 /// Inputs captured by the gear for one submission.
 pub struct SubmitRequest<'a> {
@@ -40,6 +57,16 @@ pub enum ApproveOutcome {
     Refreshed { generation: i32 },
 }
 
+/// A successful rejection transaction; both variants must be committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectOutcome {
+    /// The unit is rejected and its locks are released.
+    Rejected,
+    /// The content changed since the reviewer's generation: the unit is refreshed to
+    /// `generation`, still pending with its locks, and no vote is recorded.
+    Refreshed { generation: i32 },
+}
+
 /// Stateless coordinator; it opens no connection or transaction.
 pub struct Engine;
 
@@ -48,7 +75,8 @@ impl Engine {
     ///
     /// # Errors
     /// Returns empty-input, validation, lock, application or persistence errors.
-    pub async fn submit<R: DBRunner + Sync, S: Store<R>, B: ApprovalSubject<R>>(
+    // NOT cancel-safe: a drop between its writes relies on the caller's transaction rolling back.
+    pub async fn submit<R: InTransaction, S: Store<R>, B: ApprovalSubject<R>>(
         store: &S,
         subject: &B,
         runner: &R,
@@ -100,18 +128,20 @@ impl Engine {
         })
     }
 
-    /// load → pending? → bump version (or `Contended`) → generation seen? → separation of duties → duplicate → fingerprint → vote → quorum → apply.
+    /// note length → load → pending? → bump version (or `Contended`) → generation seen? → separation of duties → duplicate → fingerprint → vote → quorum → apply.
     ///
     /// `seen_generation` must match the reviewed generation. A mismatch returns
     /// an error before voting; the earlier version bump rolls back with it.
     ///
     /// # Errors
-    /// Returns state, contention, generation, separation of duties, duplicate, application or store errors.
-    #[allow(
+    /// Returns note-length, not-found, state, contention, generation, separation of duties,
+    /// duplicate, application or store errors.
+    #[expect(
         clippy::too_many_arguments,
         reason = "The approval command carries the reviewer and generation explicitly"
     )]
-    pub async fn approve<R: DBRunner + Sync, S: Store<R>, B: ApprovalSubject<R>>(
+    // NOT cancel-safe: a drop between its writes relies on the caller's transaction rolling back.
+    pub async fn approve<R: InTransaction, S: Store<R>, B: ApprovalSubject<R>>(
         store: &S,
         subject: &B,
         runner: &R,
@@ -121,33 +151,15 @@ impl Engine {
         note: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<ApproveOutcome, ApprovalError> {
+        check_note_length(note)?;
         let unit = Self::load_pending(store, runner, unit_id).await?;
-        if unit.generation != seen_generation {
-            return Err(ApprovalError::GenerationMismatch {
-                seen: seen_generation,
-                current: unit.generation,
-            });
-        }
+        check_generation(&unit, seen_generation)?;
         let items = store.items(runner, unit_id).await?;
         let decisions = store.decisions(runner, unit_id).await?;
         let step = evaluate_approve(&unit, &decisions, actor, &authors_of(&items))?;
-        let fresh_items = subject
-            .collect(runner, &items.iter().map(|i| i.item_id).collect::<Vec<_>>())
-            .await?;
-        let fresh_hash = snapshot_hash(&fresh_items, unit.common_effective_date);
-        if fresh_hash != unit.snapshot_hash {
-            let generation = unit.generation.saturating_add(1);
-            let snapshot = subject.snapshot(&fresh_items, unit.common_effective_date);
-            store
-                .refresh(
-                    runner,
-                    unit_id,
-                    &fresh_items,
-                    &snapshot,
-                    &fresh_hash,
-                    generation,
-                )
-                .await?;
+        if let Some(generation) =
+            Self::refresh_if_stale(store, subject, runner, &unit, &items).await?
+        {
             return Ok(ApproveOutcome::Refreshed { generation });
         }
         store
@@ -177,15 +189,24 @@ impl Engine {
         }
     }
 
-    /// Closes a pending unit with one rejection and a nonblank note.
+    /// Closes a pending unit with one rejection and a nonblank note, unless its content changed
+    /// since the reviewer's generation: then it refreshes the unit as [`Engine::approve`] does
+    /// and records no vote.
+    ///
+    /// blank note → note length → load → pending? → bump version (or `Contended`) → generation
+    /// seen? → fingerprint → duplicate → vote → unlock → rejected. The fingerprint comes before
+    /// the duplicate check, so a reviewer who already voted in a stale generation is answered
+    /// with the refresh.
     ///
     /// # Errors
-    /// Returns missing-note, state, contention, generation, duplicate or store errors.
-    #[allow(
+    /// Returns missing-note, note-length, not-found, state, contention, generation, duplicate or
+    /// store errors.
+    #[expect(
         clippy::too_many_arguments,
         reason = "The rejection command carries the reviewer, generation and required note"
     )]
-    pub async fn reject<R: DBRunner + Sync, S: Store<R>, B: ApprovalSubject<R>>(
+    // NOT cancel-safe: a drop between its writes relies on the caller's transaction rolling back.
+    pub async fn reject<R: InTransaction, S: Store<R>, B: ApprovalSubject<R>>(
         store: &S,
         subject: &B,
         runner: &R,
@@ -194,22 +215,23 @@ impl Engine {
         seen_generation: i32,
         note: &str,
         now: OffsetDateTime,
-    ) -> Result<(), ApprovalError> {
+    ) -> Result<RejectOutcome, ApprovalError> {
         if note.trim().is_empty() {
             return Err(ApprovalError::NoteRequired);
         }
+        check_note_length(Some(note))?;
         let unit = Self::load_pending(store, runner, unit_id).await?;
-        if unit.generation != seen_generation {
-            return Err(ApprovalError::GenerationMismatch {
-                seen: seen_generation,
-                current: unit.generation,
-            });
+        check_generation(&unit, seen_generation)?;
+        let items = store.items(runner, unit_id).await?;
+        if let Some(generation) =
+            Self::refresh_if_stale(store, subject, runner, &unit, &items).await?
+        {
+            return Ok(RejectOutcome::Refreshed { generation });
         }
         let decisions = store.decisions(runner, unit_id).await?;
         if already_voted(&unit, &decisions, actor) {
             return Err(ApprovalError::DuplicateVote);
         }
-        let items = store.items(runner, unit_id).await?;
         store
             .insert_decision(
                 runner,
@@ -227,14 +249,16 @@ impl Engine {
         subject.unlock(runner, &unit, &items, false).await?;
         store
             .set_state(runner, unit_id, UnitState::Rejected, Some(now), Some(note))
-            .await
+            .await?;
+        Ok(RejectOutcome::Rejected)
     }
 
     /// Lets the submitter close a pending unit and release its locks.
     ///
     /// # Errors
-    /// Returns state, contention, wrong-submitter or persistence errors.
-    pub async fn withdraw<R: DBRunner + Sync, S: Store<R>, B: ApprovalSubject<R>>(
+    /// Returns not-found, state, contention, wrong-submitter or persistence errors.
+    // NOT cancel-safe: a drop between its writes relies on the caller's transaction rolling back.
+    pub async fn withdraw<R: InTransaction, S: Store<R>, B: ApprovalSubject<R>>(
         store: &S,
         subject: &B,
         runner: &R,
@@ -253,8 +277,39 @@ impl Engine {
             .await
     }
 
+    /// Refreshes the unit when the items' current content no longer has its fingerprint: the
+    /// items, snapshot and fingerprint are rewritten at the next generation, which it returns.
+    async fn refresh_if_stale<R: InTransaction, S: Store<R>, B: ApprovalSubject<R>>(
+        store: &S,
+        subject: &B,
+        runner: &R,
+        unit: &Unit,
+        items: &[ItemRef],
+    ) -> Result<Option<i32>, ApprovalError> {
+        let fresh_items = subject
+            .collect(runner, &items.iter().map(|i| i.item_id).collect::<Vec<_>>())
+            .await?;
+        let fresh_hash = snapshot_hash(&fresh_items, unit.common_effective_date);
+        if fresh_hash == unit.snapshot_hash {
+            return Ok(None);
+        }
+        let generation = unit.generation.saturating_add(1);
+        let snapshot = subject.snapshot(&fresh_items, unit.common_effective_date);
+        store
+            .refresh(
+                runner,
+                unit.id,
+                &fresh_items,
+                &snapshot,
+                &fresh_hash,
+                generation,
+            )
+            .await?;
+        Ok(Some(generation))
+    }
+
     /// The unit as of now, still pending, with its version bumped so a concurrent writer loses.
-    async fn load_pending<R: DBRunner + Sync, S: Store<R>>(
+    async fn load_pending<R: InTransaction, S: Store<R>>(
         store: &S,
         runner: &R,
         unit_id: Uuid,
@@ -262,7 +317,7 @@ impl Engine {
         let unit = store
             .unit(runner, unit_id)
             .await?
-            .ok_or_else(|| ApprovalError::Store(format!("unit {unit_id} not found")))?;
+            .ok_or(ApprovalError::UnitNotFound { unit_id })?;
         if unit.state != UnitState::Pending {
             return Err(ApprovalError::AlreadyDecided);
         }
@@ -273,5 +328,26 @@ impl Engine {
             version: unit.version + 1,
             ..unit
         })
+    }
+}
+
+/// The vote names the unit's current generation.
+const fn check_generation(unit: &Unit, seen: i32) -> Result<(), ApprovalError> {
+    if unit.generation == seen {
+        Ok(())
+    } else {
+        Err(ApprovalError::GenerationMismatch {
+            seen,
+            current: unit.generation,
+        })
+    }
+}
+
+/// A vote's note is at most [`NOTE_MAX_CHARS`] characters (Unicode scalar values).
+fn check_note_length(note: Option<&str>) -> Result<(), ApprovalError> {
+    if note.is_some_and(|n| n.chars().count() > NOTE_MAX_CHARS) {
+        Err(ApprovalError::NoteTooLong)
+    } else {
+        Ok(())
     }
 }

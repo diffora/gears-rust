@@ -39,9 +39,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use bss_approval::{
-    ApprovalSubject, ApproveOutcome, Engine, Store, SubmitRequest, Unit, UnitState,
-};
+use bss_approval::{ApproveOutcome, Engine, RejectOutcome, Store, SubmitRequest, Unit, UnitState};
 use std::{collections::BTreeSet, sync::Arc};
 use time::OffsetDateTime;
 use toolkit_canonical_errors::CanonicalError;
@@ -705,53 +703,6 @@ fn subject_of(
         ))),
     }
 }
-/// Rejects obey the same content-generation barrier without applying.
-async fn refresh_reject(
-    tx: &DbTx<'_>,
-    store: &PricingApprovalStore,
-    subject: &Subject,
-    unit: &Unit,
-    seen: i32,
-) -> Result<Option<i32>, DoorError> {
-    if unit.generation != seen {
-        return Err(DoorError::Generation {
-            current: unit.generation,
-        });
-    }
-    let ids: Vec<Uuid> = store
-        .items(tx, unit.id)
-        .await
-        .map_err(approval_failure)?
-        .iter()
-        .map(|i| i.item_id)
-        .collect();
-    // A Products refusal keeps its own status and code, as on approve (D-402, DESIGN §3.3).
-    let items = subject.collect(tx, &ids).await.map_err(refusal(subject))?;
-    let hash = bss_approval::hash::snapshot_hash(&items, unit.common_effective_date);
-    if hash == unit.snapshot_hash {
-        return Ok(None);
-    }
-    if !store
-        .bump_version(tx, unit.id, unit.version)
-        .await
-        .map_err(approval_failure)?
-    {
-        return Err(approval_failure(bss_approval::ApprovalError::Contended));
-    }
-    let generation = unit.generation.saturating_add(1);
-    store
-        .refresh(
-            tx,
-            unit.id,
-            &items,
-            &subject.snapshot(&items, unit.common_effective_date),
-            &hash,
-            generation,
-        )
-        .await
-        .map_err(approval_failure)?;
-    Ok(Some(generation))
-}
 /// `POST /approval-units/{id}/approve|reject|withdraw`.
 /// Content drift commits the refreshed unit and answers `UNIT_STALE` with the new generation.
 /// # Errors
@@ -827,13 +778,14 @@ async fn vote_in(
                 .as_deref()
                 .filter(|s| !s.trim().is_empty())
                 .ok_or_else(|| support::invalid("note", "NOTE_REQUIRED"))?;
-            if let Some(generation) = refresh_reject(tx, &store, &subject, &unit, seen()?).await? {
-                ApproveOutcome::Refreshed { generation }
-            } else {
-                Engine::reject(&store, &subject, tx, id, actor, seen()?, note, now)
-                    .await
-                    .map_err(approval_failure)?;
-                ApproveOutcome::Applied
+            // A stale unit is refreshed as on approve; a Products refusal of the re-read keeps
+            // its own status and code (D-402, DESIGN §3.3).
+            match Engine::reject(&store, &subject, tx, id, actor, seen()?, note, now)
+                .await
+                .map_err(refusal(&subject))?
+            {
+                RejectOutcome::Refreshed { generation } => ApproveOutcome::Refreshed { generation },
+                RejectOutcome::Rejected => ApproveOutcome::Applied,
             }
         }
         Vote::Withdraw => {
