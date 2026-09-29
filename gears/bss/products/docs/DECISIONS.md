@@ -599,7 +599,8 @@ page's `usage` on the client, so the list and the counts take `priced=true|false
 
 - **The definitions are the usage's own** (pricing D-428): `priced` keeps the SKUs whose `usage.entries` is
   above zero (an entry in any book of the tenant, in any reference state), `in_plan` those whose `usage.plans`
-  is above zero (a draft, pending or published revision names one of the SKU's entries). A plan item that
+  is above zero (a draft, pending, scheduled or published revision names one of the SKU's entries; pricing D-453
+  counts a revision by its stored state). A plan item that
   names a SKU without an entry (an `included` item) does not count, as it does not in `plans`: the owner's open
   question from phase 5 stays open. `false` keeps the other SKUs. Tests pin `priced` ⇔ `entries > 0` and
   `in_plan` ⇔ `plans > 0` on the same data.

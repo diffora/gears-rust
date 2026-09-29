@@ -78,9 +78,10 @@ pub struct SkuUsage {
     pub currencies: Vec<String>,
     /// The prices of those entries, added up by state.
     pub prices: PriceCounts,
-    /// The distinct plans with a draft, pending or published revision whose
-    /// items name one of those entries — distinct across the SKU's entries,
-    /// never a sum of the entries' counts.
+    /// The distinct plans with a draft, pending, scheduled or published
+    /// revision whose items name one of those entries — distinct across the
+    /// SKU's entries, never a sum of the entries' counts. The revisions are
+    /// counted by their stored state (pricing D-453).
     pub plans: u64,
 }
 
@@ -91,8 +92,9 @@ pub struct SkuUsageSets {
     /// The SKUs with an entry in a book of the tenant, in any reference state:
     /// exactly those whose [`SkuUsage::entries`] is above zero.
     pub priced: Vec<Uuid>,
-    /// The SKUs whose entries a plan item of a draft, pending or published
-    /// revision names: exactly those whose [`SkuUsage::plans`] is above zero.
+    /// The SKUs whose entries a plan item of a draft, pending, scheduled or
+    /// published revision names: exactly those whose [`SkuUsage::plans`] is
+    /// above zero.
     /// An item that names a SKU without an entry does not count, as it does not
     /// in `plans`.
     pub in_plan: Vec<Uuid>,
