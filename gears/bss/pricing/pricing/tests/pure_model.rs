@@ -6,42 +6,6 @@ use bss_pricing::domain::{
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState},
     reference_op::{OpKind, RefKind},
 };
-#[test]
-fn enum_check_values_match_migration_text() {
-    let entry = include_str!(
-        "../src/infra/storage/migrations/m20260926_000005_create_pricing_price_book_entry.rs"
-    );
-    let price =
-        include_str!("../src/infra/storage/migrations/m20260926_000007_create_pricing_price.rs");
-    let op = include_str!(
-        "../src/infra/storage/migrations/m20260926_000006_create_pricing_reference_op.rs"
-    );
-    macro_rules! pin {
-        ($ty:ty,$ddl:expr,$column:literal) => {{
-            let values = <$ty>::ALL
-                .iter()
-                .map(|v| {
-                    let s = v.as_str();
-                    assert_eq!(s.parse::<$ty>().unwrap(), *v);
-                    format!("'{s}'")
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            assert!(
-                $ddl.contains(&format!("CHECK ({} IN ({}))", $column, values)),
-                "{}: {}",
-                $column,
-                values
-            );
-            assert!("invalid".parse::<$ty>().is_err());
-        }};
-    }
-    pin!(ChargeKind, entry, "charge_kind");
-    pin!(Eligibility, price, "eligibility");
-    pin!(PriceState, price, "state");
-    pin!(ReferenceState, entry, "reference_state");
-    pin!(OpState, op, "state");
-}
 /// Each phase 3 CHECK is spelled once per dialect: both halves carry the enum's exact vocabulary.
 macro_rules! pin_both_dialects {
     ($ty:ty,$ddl:expr,$column:literal) => {{
@@ -58,6 +22,24 @@ macro_rules! pin_both_dialects {
         assert_eq!($ddl.matches(&check).count(), 2, "{check}");
         assert!("invalid".parse::<$ty>().is_err());
     }};
+}
+#[test]
+fn enum_check_values_match_migration_text() {
+    let entry = include_str!(
+        "../src/infra/storage/migrations/m20260926_000005_create_pricing_price_book_entry.rs"
+    );
+    let price =
+        include_str!("../src/infra/storage/migrations/m20260926_000007_create_pricing_price.rs");
+    let op = include_str!(
+        "../src/infra/storage/migrations/m20260926_000006_create_pricing_reference_op.rs"
+    );
+    // Each migration spells its CHECK once for Postgres and once for SQLite: both halves must
+    // carry the enum's vocabulary, not one of them (PT-13).
+    pin_both_dialects!(ChargeKind, entry, "charge_kind");
+    pin_both_dialects!(Eligibility, price, "eligibility");
+    pin_both_dialects!(PriceState, price, "state");
+    pin_both_dialects!(ReferenceState, entry, "reference_state");
+    pin_both_dialects!(OpState, op, "state");
 }
 /// The revision state's CHECK is `m20260929_000017`'s since D-446 widened it with `scheduled`:
 /// Postgres re-adds it, and the `SQLite` family rebuild spells it in the new table.

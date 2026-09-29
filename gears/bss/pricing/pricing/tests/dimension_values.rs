@@ -216,7 +216,12 @@ async fn a_patch_edits_the_values_of_one_declared_key() {
             400,
             "DIM_VALUES_FEW",
         ),
-        (json!({"key":"region","values":["eu"]}), 400, ""),
+        // A PUT-shaped body: the PATCH names `add` and `remove`, never `values` (PT-14).
+        (
+            json!({"key":"region","values":["eu"]}),
+            400,
+            "unknown field `values`",
+        ),
     ] {
         let (s, b, _) = patch(&f, body.clone(), Some(&tag2)).await;
         assert_eq!(s, status, "{body}: {b}");

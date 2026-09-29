@@ -99,17 +99,29 @@ fn the_classifier_follows_the_backend() {
 /// The unit doors answer `UNIT_CONTENDED`; every other mutation door keeps `CONTENDED`. Each of
 /// them enqueues `ApprovalUnitDecided` when it decides, so each runs the transaction that wakes
 /// the outbox's sequencer after its commit (D-455).
+///
+/// The roster is derived from the file (PT-01): every `pub async fn` of `approvals.rs` whose body
+/// records a unit (`record`, `record_prices`) or calls the engine is a unit door, and the derived
+/// roster is pinned, so a new unit door cannot be skipped.
 #[test]
 fn every_approval_unit_door_runs_a_unit_transaction() {
     let code = crate::source_scan::blank_comments_and_literals(include_str!("approvals.rs"));
-    for door in [
-        "pub async fn submit_price(",
-        "pub async fn publish(",
-        "pub async fn vote(",
-    ] {
-        let start = code.find(door).unwrap();
-        let rest = &code[start + door.len()..];
-        let body = &rest[..rest.find("\npub async fn ").unwrap_or(rest.len())];
+    let doors: Vec<(&str, &str)> = code
+        .split("\npub async fn ")
+        .skip(1)
+        .map(|door| (&door[..door.find('(').unwrap()], door))
+        .filter(|(_, body)| {
+            ["record(", "record_prices(", "Engine::"]
+                .iter()
+                .any(|call| body.contains(call))
+        })
+        .collect();
+    assert_eq!(
+        doors.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        ["submit_price", "submit_revision", "publish", "vote"],
+        "the unit doors of approvals.rs"
+    );
+    for (door, body) in doors {
         assert!(
             body.contains("support::unit_transaction"),
             "{door} must run a unit transaction"

@@ -49,6 +49,21 @@ async fn broker_knowing(types: &[(&str, &str)]) -> EventBrokerHarness {
         .await
 }
 
+/// The retries pricing's outbox processor has recorded, over its partitions: a dispatch the
+/// broker refused is retried, and counted there.
+async fn processor_retries(dsn: &str) -> i64 {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let db = Database::connect(dsn).await.unwrap();
+    db.query_one_raw(Statement::from_string(
+        DbBackend::Sqlite,
+        "SELECT COALESCE(SUM(attempts), 0) AS n FROM bss_pricing_outbox_processor".to_owned(),
+    ))
+    .await
+    .unwrap()
+    .unwrap()
+    .try_get::<i64>("", "n")
+    .unwrap()
+}
 /// Every event the broker stored on pricing's topic: its type and its data.
 async fn stored(broker: &EventBrokerHarness) -> Vec<(String, serde_json::Value)> {
     let mut all = Vec::new();
@@ -124,7 +139,7 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
         (DECIDED, APPROVAL_UNIT_SUBJECT_TYPE),
     ])
     .await;
-    let (db, _, tenant, _dsn) = test_db().await;
+    let (db, _, tenant, dsn) = test_db().await;
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(Arc::new(Script::default())),
@@ -143,7 +158,17 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
     // A real door's transaction: quorum zero applies at submit and announces both events.
     submit_a_price_at_quorum_zero(&state, tenant).await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Evidence that a dispatch was attempted and refused, not only that time passed (PT-17): the
+    // outbox's processor records each retry of its partition.
+    let mut retried = 0;
+    for _ in 0..300 {
+        retried = processor_retries(&dsn).await;
+        if retried > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(retried > 0, "the processor retried a refused dispatch");
     assert!(
         stored(&broker).await.is_empty(),
         "no dispatch succeeded while the broker refused"

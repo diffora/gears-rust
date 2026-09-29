@@ -196,11 +196,12 @@ fn run(path: &str) {
                             a.expect.error_code.as_deref(),
                             Some("SUPERSESSION_UNIT_MISMATCH")
                         );
-                        let key = |s: &Snapshot| (s.charge_kind, s.model_kind);
-                        assert_ne!(
-                            key(pred),
-                            key(succ),
-                            "{path}: another model is another entry"
+                        // The pair guard judges no model (D-427, PT-04): the flip passes it, and
+                        // what keeps the two prices apart is the entry key, which takes the model
+                        // (tests/entry_model_migration.rs pins that key on the stored table).
+                        assert!(
+                            result.is_ok(),
+                            "{path}: the pair guard compares no model: {result:?}"
                         );
                     }
                     "accepted" => assert!(result.is_ok(), "{path}: {}", a.why),

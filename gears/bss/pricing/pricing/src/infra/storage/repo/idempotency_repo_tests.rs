@@ -888,7 +888,7 @@ async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
     let mutation = provider
         .transaction(move |tx| {
             Box::pin(async move {
-                claim_idempotency_key(
+                let claimed = claim_idempotency_key(
                     tx,
                     &scope_for_mutation,
                     TENANT,
@@ -900,8 +900,10 @@ async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
                 )
                 .await
                 .map_err(|e| DbError::Other(anyhow::Error::msg(e.to_string())))?;
+                // The claim and the answer both succeeded before the act failed (PT-16).
+                assert!(matches!(claimed, IdempotencyClaim::Claimed), "{claimed:?}");
 
-                answer_idempotency_key(
+                let answered = answer_idempotency_key(
                     tx,
                     &scope_for_mutation,
                     TENANT,
@@ -913,6 +915,7 @@ async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
                 )
                 .await
                 .map_err(|e| DbError::Other(anyhow::Error::msg(e.to_string())))?;
+                assert_eq!(answered, IdempotencyAnswer::Recorded);
 
                 Err::<(), DbError>(DbError::Other(anyhow::Error::msg(
                     "the act fails after its claim was answered",
@@ -920,7 +923,13 @@ async fn the_answer_write_rolls_back_with_the_transaction_it_rides_in() {
             })
         })
         .await;
-    assert!(mutation.is_err(), "the mutation must roll back");
+    let error = mutation.expect_err("the mutation must roll back");
+    assert!(
+        error
+            .to_string()
+            .contains("the act fails after its claim was answered"),
+        "the deliberate failure, not an earlier one: {error}"
+    );
 
     let conn = provider.conn().expect("scoped connection");
     assert!(
