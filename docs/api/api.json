@@ -35533,7 +35533,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft revision's book, remapping each item to the new book's matching entry, or its sale date, by its author at the version the author read (If-Match). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION.",
+        "description": "Changes a draft revision's book, remapping each item to the new book's matching entry, or its sale date, by its author at the version the author read (If-Match). A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.patch_plan_revision",
         "parameters": [
           {
@@ -36237,7 +36237,7 @@
         ]
       },
       "post": {
-        "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant; the Idempotency-Key replays the answer. Refusals: 400 PLAN_CODE_REQUIRED; 404 for a book the tenant does not hold; 409 PLAN_CODE_TAKEN.",
+        "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant; the Idempotency-Key replays the answer. The caller also needs price_book read on that book (D-456). Refusals: 400 PLAN_CODE_REQUIRED; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
         "operationId": "bss_pricing.create_plan",
         "parameters": [
           {
@@ -36598,7 +36598,7 @@
     },
     "/bss-pricing/v1/plans/{id}/clone": {
       "post": {
-        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision (the one in effect: a scheduled revision whose date has come is switched first, D-451), without anything of its approval. Refusals: 400 PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN.",
+        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision (the one in effect: a scheduled revision whose date has come is switched first, D-451), without anything of its approval. The caller also needs price_book read on the source's book (D-456). Refusals: 400 PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.clone_plan",
         "parameters": [
           {
