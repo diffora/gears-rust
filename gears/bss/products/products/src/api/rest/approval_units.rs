@@ -132,6 +132,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/approval-units/{id}/approve")
         .operation_id("bss_products.approve_unit")
         .summary("approve_unit")
+        .description(
+            "Approves the unit at the generation its reviewer saw. The note is at most 2000 \
+             characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a \
+             longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
+             SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()
@@ -151,6 +157,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/approval-units/{id}/reject")
         .operation_id("bss_products.reject_unit")
         .summary("reject_unit")
+        .description(
+            "Rejects the unit at the generation its reviewer saw; a reject needs a note. The \
+             note is at most 2000 characters (the approval engine's cap). Refusals include 400 \
+             NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 \
+             GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 \
+             DUPLICATE_VOTE.",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()

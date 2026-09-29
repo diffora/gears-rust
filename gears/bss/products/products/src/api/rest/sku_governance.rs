@@ -83,6 +83,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/skus/{id}/changes")
         .operation_id("bss_products.change_sku")
         .summary("change_sku")
+        .description(
+            "Submits a change of a published SKU for approval, effective from `effective_from`. \
+             The texts it carries have the caps of the create (P-D-225), and the note at most \
+             2000 characters. Refusals include 400 FIELD_TOO_LONG on a text over its cap and 400 \
+             NOTE_TOO_LONG on the note.",
+        )
         .tag("SKU governance")
         .authenticated()
         .no_license_required()
@@ -290,6 +296,7 @@ async fn run(
             Ok(patch) => (patch, ValidationReport::new()),
             Err(report) => (SkuPatch::default(), report),
         };
+        crate::domain::sku::check_patch(&mut report, &patch);
         check_note(parsed.note.as_deref(), &mut report);
         if !report.is_empty() {
             return Err(crate::domain::error::DomainError::Validation(report).into());

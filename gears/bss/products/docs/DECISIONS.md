@@ -57,6 +57,7 @@
 | P-D-222 | H | The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ок"); whole-branch review RS-02 (fix run W1b); keeps pricing D-424 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ок"); whole-branch review RS-03 (fix run W1b) |
+| P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 
 ## Entries
 
@@ -1035,3 +1036,30 @@ register.
   tenant with a few units, so it passes unchanged; a vhp-core change would make them follow `next_cursor`.
 
 **Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ок"); whole-branch review RS-03 (fix run W1b).
+
+#### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** Only a SKU's code had a cap (64). A SKU's name, description, GL code, tax category, invoice line template,
+  usage-type reference and unit, a category's code and name, and an operator's release reason had a blank check at most, on
+  create, draft PATCH and change alike (RS-10, RS-11, RS-38). They landed in unbounded `text` columns and were copied into the
+  approval snapshots, and a long category code could fail its unique index on Postgres as a 500.
+- **The caps**, counted in characters (Unicode scalar values), as a submitter's note always was (P-D-219): a code 64 (a SKU's,
+  a category's); a name 200 (a SKU's, a category's); a description, a note or a reason 2000 (a SKU's description, a forced
+  release's reason, a submitter's note, a vote's note); a GL code, a tax category and a unit 64; an invoice line template 2000;
+  a usage-type reference 512. The values live in `domain::caps`, and const assertions tie the note cap to the approval
+  engine's `NOTE_MAX_CHARS` and the submit doors' own.
+- **The refusal.** 400 `FIELD_TOO_LONG` with the field named, a violation of the body's validation stage (P-D-202), the shape
+  `NOTE_TOO_LONG` already has. A SKU code over 64 characters was a `VALIDATION` violation and is now `FIELD_TOO_LONG` too. A
+  note keeps `NOTE_TOO_LONG`: the submit, change and retire doors judge it (P-D-219) and the approval engine judges a vote's
+  (fix run W1a, X-01; RS-37 measured already closed). Each door judges the texts with its body's other rules, before its
+  transaction opens, so a text too long is refused before a 404 or a 409.
+- **Stored rows.** Only a write is judged, and only on the texts its body carries (a cleared field carries none). A stored row
+  over a cap stays readable, and a PATCH that does not carry the field leaves it as it is.
+- **The tests.** `api/rest/caps_tests.rs` sends one text over each cap to each door and reads that nothing was written; texts
+  at the caps in two-byte characters pass; a vote's note over 2000 characters is `NOTE_TOO_LONG` on approve and reject.
+- **Pricing** applies the same caps in D-457. The vhp-core e2e would add one refusal: a SKU created with a 65-character code is
+  400 `FIELD_TOO_LONG` on `code`.
+
+**Source:** Whole-branch review of 2026-09-29, RS-10, RS-11, RS-37 and RS-38 (fix run W1b; the dispositions' "Length caps").

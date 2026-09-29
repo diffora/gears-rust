@@ -78,6 +78,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::delete("/bss-products/v1/references/{id}")
         .operation_id("bss_products.release_reference")
         .summary("release_reference")
+        .description(
+            "Releases a reference: its owner gear releases its own, and an operator forces the \
+             release with `force: true` and a reason of at most 2000 characters (P-D-225), which \
+             the audit row and the `ReferenceForceReleased` event carry. Refusals: 400 for a \
+             forced release without a reason, 400 FIELD_TOO_LONG on a reason over its cap; 403 \
+             REFERENCE_OWNER_MISMATCH; 404.",
+        )
         .tag("References")
         .authenticated()
         .no_license_required()
@@ -313,6 +320,18 @@ async fn release(
             "operator release requires force and a nonempty reason",
         )
         .into());
+    }
+    // The operator's reason goes into the audit row and the `ReferenceForceReleased` event as
+    // sent: at most 2000 characters (P-D-225).
+    let mut report = crate::domain::validation::ValidationReport::new();
+    crate::domain::caps::check(
+        &mut report,
+        "reason",
+        body.reason.as_deref(),
+        crate::domain::caps::NOTE_MAX_CHARS,
+    );
+    if !report.is_empty() {
+        return Err(DomainError::Validation(report).into());
     }
     let (db, sink, config) = (
         state.db.db(),

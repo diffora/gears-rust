@@ -94,8 +94,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "A flat category; one may be the tenant's default. Creating one with `is_default: true` \
              moves the default to it: the previous default is cleared in the same write \
-             (P-D-218). Refusals: 409 CATEGORY_CODE_TAKEN, or CATEGORY_DEFAULT_TAKEN when a \
-             concurrent write took the default first.",
+             (P-D-218). The code is at most 64 characters and the name 200 (P-D-225). Refusals: \
+             400 FIELD_TOO_LONG on a code or a name over its cap; 409 CATEGORY_CODE_TAKEN, or \
+             CATEGORY_DEFAULT_TAKEN when a concurrent write took the default first.",
         )
         .tag(TAG)
         .authenticated()
@@ -186,8 +187,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "Edits a category under If-Match. `is_default: true` moves the tenant's default to it: \
              the previous default is cleared in the same write, gets a new version and its own \
-             audit row (P-D-218); a retired category never becomes the default (P-D-220). \
-             Refusals: 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a \
+             audit row (P-D-218); a retired category never becomes the default (P-D-220). The \
+             name is at most 200 characters (P-D-225). Refusals: 400 FIELD_TOO_LONG on a name \
+             over its cap; 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a \
              retired category, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default \
              first.",
         )
@@ -474,9 +476,17 @@ async fn update_category(
         is_default: body.is_default,
         sort_order: body.sort_order,
     };
+    let mut r = ValidationReport::new();
     if patch_tx.name.as_deref() == Some("") {
-        let mut r = ValidationReport::new();
         r.violate("VALIDATION", "name", "name must not be blank");
+    }
+    crate::domain::caps::check(
+        &mut r,
+        "name",
+        patch_tx.name.as_deref(),
+        crate::domain::caps::NAME_MAX_CHARS,
+    );
+    if !r.is_empty() {
         return Err(DomainError::Validation(r).into());
     }
     let now = OffsetDateTime::now_utc();

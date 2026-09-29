@@ -40,7 +40,7 @@ fn blank_code_or_name_is_a_violation() {
     assert!(has(&r, "code", "VALIDATION") && has(&r, "name", "VALIDATION"));
     n.code = "x".repeat(65);
     n.name = "ok".into();
-    assert!(has(&validate_new(&n), "code", "VALIDATION"));
+    assert!(has(&validate_new(&n), "code", "FIELD_TOO_LONG"));
 }
 #[test]
 fn usage_needs_a_meter_and_a_resolved_type_bundle_has_none() {

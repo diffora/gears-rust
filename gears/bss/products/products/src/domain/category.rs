@@ -29,6 +29,18 @@ pub fn validate_new_category(new: &NewCategory) -> ValidationReport {
     if new.name.trim().is_empty() {
         report.violate("VALIDATION", "name", "name must not be blank");
     }
+    crate::domain::caps::check(
+        &mut report,
+        "code",
+        Some(&new.code),
+        crate::domain::caps::CODE_MAX_CHARS,
+    );
+    crate::domain::caps::check(
+        &mut report,
+        "name",
+        Some(&new.name),
+        crate::domain::caps::NAME_MAX_CHARS,
+    );
     report
 }
 #[cfg(test)]

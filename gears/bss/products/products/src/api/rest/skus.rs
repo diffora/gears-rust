@@ -108,6 +108,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post(SKUS)
         .operation_id("bss_products.create_sku")
         .summary("Create a draft SKU")
+        .description(
+            "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters \
+             (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, \
+             invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 \
+             FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; \
+             409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -144,6 +151,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::patch(format!("{SKUS}/{{id}}"))
         .operation_id("bss_products.update_sku_draft")
         .summary("Edit a draft SKU")
+        .description(
+            "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts \
+             it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, \
+             400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, \
+             ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -502,6 +515,7 @@ async fn update_sku_draft(
     if patch_tx.name.as_deref() == Some("") {
         report.violate("VALIDATION", "name", "name must not be blank");
     }
+    crate::domain::sku::check_patch(&mut report, &patch_tx);
     if patch_tx.lifecycle.is_some_and(|s| s != Lifecycle::Draft) {
         report.violate(
             "VALIDATION",

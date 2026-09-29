@@ -1,6 +1,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-edges:p1
 //! Pure SKU content validation, patching and lifecycle rules.
 //! @cpt-dod:cpt-cf-bss-products-dod-bundle-unpriced:p1
+use crate::domain::caps;
 use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;
 use crate::domain::validation::ValidationReport;
@@ -110,13 +111,64 @@ pub fn validate_new(new: &NewSku) -> ValidationReport {
     if new.code.trim().is_empty() {
         r.violate("VALIDATION", "code", "code must not be blank");
     }
-    if new.code.chars().count() > 64 {
-        r.violate("VALIDATION", "code", "code is at most 64 characters");
-    }
     if new.name.trim().is_empty() {
         r.violate("VALIDATION", "name", "name must not be blank");
     }
+    caps::check(&mut r, "code", Some(&new.code), caps::CODE_MAX_CHARS);
+    caps::check(&mut r, "name", Some(&new.name), caps::NAME_MAX_CHARS);
+    check_texts(
+        &mut r,
+        Some(&new.description),
+        new.gl_code.as_deref(),
+        new.tax_category.as_deref(),
+        new.invoice_line_template.as_deref(),
+        new.usage_type_ref.as_deref(),
+        new.unit.as_deref(),
+    );
     r
+}
+
+/// The caps of the texts a draft PATCH or a change carries (P-D-225): only a carried text is
+/// judged, and a cleared one (`null`) carries none.
+pub fn check_patch(r: &mut ValidationReport, p: &SkuPatch) {
+    caps::check(r, "name", p.name.as_deref(), caps::NAME_MAX_CHARS);
+    check_texts(
+        r,
+        p.description.as_deref(),
+        p.gl_code.as_ref().and_then(Option::as_deref),
+        p.tax_category.as_ref().and_then(Option::as_deref),
+        p.invoice_line_template.as_ref().and_then(Option::as_deref),
+        p.usage_type_ref.as_ref().and_then(Option::as_deref),
+        p.unit.as_ref().and_then(Option::as_deref),
+    );
+}
+
+/// The caps of a SKU's texts past its code and name.
+fn check_texts(
+    r: &mut ValidationReport,
+    description: Option<&str>,
+    gl_code: Option<&str>,
+    tax_category: Option<&str>,
+    invoice_line_template: Option<&str>,
+    usage_type_ref: Option<&str>,
+    unit: Option<&str>,
+) {
+    caps::check(r, "description", description, caps::NOTE_MAX_CHARS);
+    caps::check(r, "gl_code", gl_code, caps::LABEL_MAX_CHARS);
+    caps::check(r, "tax_category", tax_category, caps::LABEL_MAX_CHARS);
+    caps::check(
+        r,
+        "invoice_line_template",
+        invoice_line_template,
+        caps::TEMPLATE_MAX_CHARS,
+    );
+    caps::check(
+        r,
+        "usage_type_ref",
+        usage_type_ref,
+        caps::USAGE_TYPE_REF_MAX_CHARS,
+    );
+    caps::check(r, "unit", unit, caps::LABEL_MAX_CHARS);
 }
 
 /// @cpt-cf-bss-products-fr-sku-metering · @cpt-cf-bss-products-fr-sku-bundle
