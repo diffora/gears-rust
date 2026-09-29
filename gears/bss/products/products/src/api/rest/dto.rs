@@ -15,9 +15,11 @@ use serde::Deserialize;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
+// `Products`-prefixed like the gear's other shared names: settings-service serves its own
+// `CategoryDto`, and the toolkit refuses two definitions under one component name at boot.
 /// Wire representation of the registry Category.
 #[toolkit_macros::api_dto(response)]
-pub struct CategoryDto {
+pub struct ProductsCategoryDto {
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub code: String,
@@ -27,7 +29,7 @@ pub struct CategoryDto {
     pub status: ProductsCategoryStatus,
     pub version: i64,
 }
-impl TryFrom<Category> for CategoryDto {
+impl TryFrom<Category> for ProductsCategoryDto {
     type Error = RepoError;
     fn try_from(value: Category) -> Result<Self, RepoError> {
         Ok(Self {
@@ -211,7 +213,7 @@ pub struct CategoryPatchRequest {
 #[toolkit_macros::api_dto(response)]
 pub struct ProductsCategoryItem {
     #[serde(flatten)]
-    pub category: CategoryDto,
+    pub category: ProductsCategoryDto,
     pub sku_count: u64,
 }
 #[toolkit_macros::api_dto(response)]

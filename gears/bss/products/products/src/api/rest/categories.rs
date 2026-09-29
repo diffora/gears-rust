@@ -4,7 +4,7 @@
 use super::authz_error_to_canonical;
 use super::{
     ApiState, TxError, category_tx_config, contention_db_err,
-    dto::{CategoryDto, CategoryPatchRequest, CategoryRequest, ProductsCategoryItem},
+    dto::{CategoryPatchRequest, CategoryRequest, ProductsCategoryDto, ProductsCategoryItem},
     preconditions::{etag, if_match, if_match_param},
     replay, repo_error_to_canonical, require_authenticated,
     sku_list::{RawQuery, UNSUPPORTED, cursor_hash, params, refused},
@@ -103,7 +103,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .json_request::<CategoryRequest>(openapi, "code, name, is_default, sort_order")
         .param(replay::param())
         .handler(create_category)
-        .json_response_with_schema::<CategoryDto>(
+        .json_response_with_schema::<ProductsCategoryDto>(
             openapi,
             StatusCode::CREATED,
             "Created category; ETag carries its version.",
@@ -198,7 +198,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .param(if_match_param())
         .json_request::<CategoryPatchRequest>(openapi, "Mutable category fields")
         .handler(update_category)
-        .json_response_with_schema::<CategoryDto>(
+        .json_response_with_schema::<ProductsCategoryDto>(
             openapi,
             StatusCode::OK,
             "Category with its new ETag.",
@@ -227,7 +227,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .path_param("id", "Category id")
         .param(replay::param())
         .handler(retire_category)
-        .json_response_with_schema::<CategoryDto>(openapi, StatusCode::OK, "Retired category.")
+        .json_response_with_schema::<ProductsCategoryDto>(
+            openapi,
+            StatusCode::OK,
+            "Retired category.",
+        )
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -270,7 +274,7 @@ async fn scope(
 /// A stored status outside the category's closed set (P-D-217): a storage failure.
 fn response(status: StatusCode, c: Category) -> Result<Response, CanonicalError> {
     let version = c.version;
-    let body = CategoryDto::try_from(c).map_err(|e| repo_error_to_canonical(&e))?;
+    let body = ProductsCategoryDto::try_from(c).map_err(|e| repo_error_to_canonical(&e))?;
     Ok((
         status,
         [(header::ETAG, etag(InternalRevision::new(version)))],
@@ -344,7 +348,7 @@ async fn create_category(
                         tenant_id,
                         claim.as_ref(),
                         StatusCode::CREATED,
-                        &CategoryDto::try_from(c).map_err(TxError::Repo)?,
+                        &ProductsCategoryDto::try_from(c).map_err(TxError::Repo)?,
                     )
                     .await
                 })
@@ -633,7 +637,7 @@ async fn retire_category(
                         tenant_id,
                         claim.as_ref(),
                         StatusCode::OK,
-                        &CategoryDto::try_from(c).map_err(TxError::Repo)?,
+                        &ProductsCategoryDto::try_from(c).map_err(TxError::Repo)?,
                     )
                     .await
                 })

@@ -55,7 +55,16 @@ pub fn unit_span(
         baseline_gts_id = field::Empty,
         baseline_revision = field::Empty,
         compat_verdict = field::Empty,
+        // T20: how many live direct dependants blocked a deletion. A count,
+        // and on the span rather than in a label: identities are unbounded and
+        // the caller may not be entitled to read them.
+        blocked_dependents = field::Empty,
     )
+}
+
+/// Record how many live direct dependants refused a deletion (T20).
+pub fn record_blocked_dependents(span: &Span, blocked: usize) {
+    span.record("blocked_dependents", blocked);
 }
 
 /// Compatibility facts for the unit span. Domain types keep token mapping here.

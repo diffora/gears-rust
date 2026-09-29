@@ -508,13 +508,7 @@ pub fn etag() -> toolkit::api::operation_builder::ResponseHeaderSpec {
     )
 }
 pub fn header(name: &str) -> toolkit::api::operation_builder::ParamSpec {
-    use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
-    ParamSpec {
-        name: name.into(),
-        location: ParamLocation::Header,
-        required: true,
-        description: Some("Required authoring precondition".into()),
-        param_type: "string".into(),
-        array: false,
-    }
+    toolkit::api::operation_builder::ParamSpec::header(name)
+        .required(true)
+        .description("Required authoring precondition")
 }

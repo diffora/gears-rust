@@ -9,11 +9,11 @@ use uuid::Uuid;
 
 pub const TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.products.catalog.v1";
 pub const SOURCE: &str = "bss-products";
-pub const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.sku.v1";
+pub const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.sku.v1~";
 
 /// Approval-unit event subject; SKU events retain the existing subject type.
 pub const APPROVAL_UNIT_SUBJECT_TYPE: &str =
-    "gts.cf.core.events.subject.v1~cf.bss.products.approval_unit.v1";
+    "gts.cf.core.events.subject.v1~cf.bss.products.approval_unit.v1~";
 
 /// A SKU was published.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

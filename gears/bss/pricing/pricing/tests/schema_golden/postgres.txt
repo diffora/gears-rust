@@ -186,6 +186,7 @@ COLUMN public.bss_pricing_outbox_body created_at timestamp with time zone NOT NU
 COLUMN public.bss_pricing_outbox_body id bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_body payload bytea NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_body payload_type character varying(1024) NOT NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_body trace character varying(256) NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_dead_letters attempts smallint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_dead_letters completed_at timestamp with time zone NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_dead_letters created_at timestamp with time zone NOT NULL DEFAULT -
@@ -198,6 +199,7 @@ COLUMN public.bss_pricing_outbox_dead_letters payload bytea NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_dead_letters payload_type character varying(1024) NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_dead_letters seq bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_dead_letters status character varying(32) NOT NULL DEFAULT 'pending'::character varying
+COLUMN public.bss_pricing_outbox_dead_letters trace character varying(256) NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_incoming body_id bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_incoming id bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_incoming partition_id bigint NOT NULL DEFAULT -
@@ -216,6 +218,19 @@ COLUMN public.bss_pricing_outbox_processor locked_by character varying(1024) NUL
 COLUMN public.bss_pricing_outbox_processor locked_until timestamp with time zone NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_processor partition_id bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_processor processed_seq bigint NOT NULL DEFAULT 0
+COLUMN public.bss_pricing_outbox_trace attempts bigint NOT NULL DEFAULT 0
+COLUMN public.bss_pricing_outbox_trace completed_at timestamp with time zone NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace created_at timestamp with time zone NOT NULL DEFAULT now()
+COLUMN public.bss_pricing_outbox_trace entities bigint NOT NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace failures bigint NOT NULL DEFAULT 0
+COLUMN public.bss_pricing_outbox_trace id bigint NOT NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace last_error text NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace notified_at timestamp with time zone NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace owner_instance character varying(256) NOT NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace pending bigint NOT NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace queue character varying(1024) NOT NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace retrying_since timestamp with time zone NULL DEFAULT -
+COLUMN public.bss_pricing_outbox_trace trace character varying(256) NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_vacuum_counter counter bigint NOT NULL DEFAULT 0
 COLUMN public.bss_pricing_outbox_vacuum_counter partition_id bigint NOT NULL DEFAULT -
 COLUMN public.event_broker_producer_registrations client_agent character varying(256) NOT NULL DEFAULT -
@@ -303,6 +318,7 @@ CONSTRAINT public.bss_pricing_outbox_partitions bss_pricing_outbox_partitions_pk
 CONSTRAINT public.bss_pricing_outbox_partitions bss_pricing_outbox_partitions_queue_partition_key UNIQUE (queue, partition)
 CONSTRAINT public.bss_pricing_outbox_processor bss_pricing_outbox_processor_partition_id_fkey FOREIGN KEY (partition_id) REFERENCES bss_pricing_outbox_partitions(id)
 CONSTRAINT public.bss_pricing_outbox_processor bss_pricing_outbox_processor_pkey PRIMARY KEY (partition_id)
+CONSTRAINT public.bss_pricing_outbox_trace bss_pricing_outbox_trace_pkey PRIMARY KEY (id)
 CONSTRAINT public.bss_pricing_outbox_vacuum_counter bss_pricing_outbox_vacuum_counter_partition_id_fkey FOREIGN KEY (partition_id) REFERENCES bss_pricing_outbox_partitions(id)
 CONSTRAINT public.bss_pricing_outbox_vacuum_counter bss_pricing_outbox_vacuum_counter_pkey PRIMARY KEY (partition_id)
 CONSTRAINT public.event_broker_producer_registrations event_broker_producer_registrations_pkey PRIMARY KEY (registration_key)
@@ -346,6 +362,7 @@ INDEX public bss_pricing_outbox_outgoing_pkey CREATE UNIQUE INDEX bss_pricing_ou
 INDEX public bss_pricing_outbox_partitions_pkey CREATE UNIQUE INDEX bss_pricing_outbox_partitions_pkey ON public.bss_pricing_outbox_partitions USING btree (id)
 INDEX public bss_pricing_outbox_partitions_queue_partition_key CREATE UNIQUE INDEX bss_pricing_outbox_partitions_queue_partition_key ON public.bss_pricing_outbox_partitions USING btree (queue, partition)
 INDEX public bss_pricing_outbox_processor_pkey CREATE UNIQUE INDEX bss_pricing_outbox_processor_pkey ON public.bss_pricing_outbox_processor USING btree (partition_id)
+INDEX public bss_pricing_outbox_trace_pkey CREATE UNIQUE INDEX bss_pricing_outbox_trace_pkey ON public.bss_pricing_outbox_trace USING btree (id)
 INDEX public bss_pricing_outbox_vacuum_counter_pkey CREATE UNIQUE INDEX bss_pricing_outbox_vacuum_counter_pkey ON public.bss_pricing_outbox_vacuum_counter USING btree (partition_id)
 INDEX public event_broker_producer_registrations_pkey CREATE UNIQUE INDEX event_broker_producer_registrations_pkey ON public.event_broker_producer_registrations USING btree (registration_key)
 INDEX public idx_bss_pricing_outbox_dl_replayable CREATE INDEX idx_bss_pricing_outbox_dl_replayable ON public.bss_pricing_outbox_dead_letters USING btree (status, deadline) WHERE ((status)::text = ANY ((ARRAY['pending'::character varying, 'reprocessing'::character varying])::text[]))
@@ -354,5 +371,8 @@ INDEX public idx_bss_pricing_outbox_incoming_body_id CREATE INDEX idx_bss_pricin
 INDEX public idx_bss_pricing_outbox_incoming_partition CREATE INDEX idx_bss_pricing_outbox_incoming_partition ON public.bss_pricing_outbox_incoming USING btree (partition_id, id)
 INDEX public idx_bss_pricing_outbox_outgoing_body_id CREATE INDEX idx_bss_pricing_outbox_outgoing_body_id ON public.bss_pricing_outbox_outgoing USING btree (body_id)
 INDEX public idx_bss_pricing_outbox_outgoing_partition_seq CREATE UNIQUE INDEX idx_bss_pricing_outbox_outgoing_partition_seq ON public.bss_pricing_outbox_outgoing USING btree (partition_id, seq)
+INDEX public idx_bss_pricing_outbox_trace_key CREATE INDEX idx_bss_pricing_outbox_trace_key ON public.bss_pricing_outbox_trace USING btree (trace)
+INDEX public idx_bss_pricing_outbox_trace_mail CREATE INDEX idx_bss_pricing_outbox_trace_mail ON public.bss_pricing_outbox_trace USING btree (owner_instance) WHERE ((completed_at IS NOT NULL) AND (notified_at IS NULL))
+INDEX public idx_bss_pricing_outbox_trace_retrying CREATE INDEX idx_bss_pricing_outbox_trace_retrying ON public.bss_pricing_outbox_trace USING btree (owner_instance) WHERE ((completed_at IS NULL) AND (retrying_since IS NOT NULL))
 TRIGGER bss.pricing_audit trg_pricing_audit_append_only CREATE TRIGGER trg_pricing_audit_append_only BEFORE DELETE OR UPDATE ON bss.pricing_audit FOR EACH ROW EXECUTE FUNCTION bss.pricing_audit_append_only()
 FUNCTION bss pricing_audit_append_only CREATE OR REPLACE FUNCTION bss.pricing_audit_append_only() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'pricing_audit is append-only: DELETE is not permitted'; END IF; IF OLD.seal_state = 'unsealed' AND NEW.seal_state = 'sealed' AND NEW.chain_id IS NOT NULL AND NEW.seq IS NOT NULL AND NEW.row_hash IS NOT NULL AND NEW.audit_id IS NOT DISTINCT FROM OLD.audit_id AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id AND NEW.actor_ref IS NOT DISTINCT FROM OLD.actor_ref AND NEW.action IS NOT DISTINCT FROM OLD.action AND NEW.subject_kind IS NOT DISTINCT FROM OLD.subject_kind AND NEW.subject_id IS NOT DISTINCT FROM OLD.subject_id AND NEW.subject_revision IS NOT DISTINCT FROM OLD.subject_revision AND NEW.error_code IS NOT DISTINCT FROM OLD.error_code AND NEW.attempted_key IS NOT DISTINCT FROM OLD.attempted_key AND NEW.reason IS NOT DISTINCT FROM OLD.reason AND NEW.correlation_id IS NOT DISTINCT FROM OLD.correlation_id AND NEW.written_at IS NOT DISTINCT FROM OLD.written_at AND NEW.session_id IS NOT DISTINCT FROM OLD.session_id AND NEW.ceremony_ref IS NOT DISTINCT FROM OLD.ceremony_ref THEN RETURN NEW; END IF; RAISE EXCEPTION 'pricing_audit is append-only: % is not permitted', TG_OP; END; $function$

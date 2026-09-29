@@ -112,14 +112,6 @@ fn reply(status: i32, body: Value) -> Response {
     response
 }
 pub(super) fn param() -> toolkit::api::operation_builder::ParamSpec {
-    toolkit::api::operation_builder::ParamSpec {
-        name: "Idempotency-Key".into(),
-        location: toolkit::api::operation_builder::ParamLocation::Header,
-        required: false,
-        description: Some(
-            "Replay this endpoint's original receipt within the retention period".into(),
-        ),
-        param_type: "string".into(),
-        array: false,
-    }
+    toolkit::api::operation_builder::ParamSpec::header("Idempotency-Key")
+        .description("Replay this endpoint's original receipt within the retention period")
 }

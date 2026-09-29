@@ -9,7 +9,7 @@ mod test_stores;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use test_stores::{CasMissHooks, ClaimHooks, PauseHooks, PausePoint, StoreHooks, TestStores};
+pub use test_stores::{FailingCall, Hooks, PausePoint, SharedPause, TestStores, TestStoresBuilder};
 
 use gts::GtsConfig;
 use types_registry::{
@@ -84,6 +84,14 @@ pub async fn test_db_file(path: &std::path::Path) -> Arc<DBProvider<DbError>> {
     provider_for(&dsn, 4).await
 }
 
+/// File-backed `SQLite` in WAL mode, allowing writers to commit during an open
+/// read snapshot. Matches the interleaving tested under PostgreSQL/MySQL
+/// `REPEATABLE READ`; rollback journaling would block the writer.
+pub async fn test_db_file_wal(path: &std::path::Path) -> Arc<DBProvider<DbError>> {
+    let dsn = format!("sqlite://{}?mode=rwc&journal_mode=wal", path.display());
+    provider_for(&dsn, 4).await
+}
+
 /// Any DSN with the managed-state migration applied. The `integration` suite
 /// hands this a container DSN so the `PostgreSQL` and `MySQL` repository tests
 /// exercise the same code path as the `SQLite` ones.
@@ -108,9 +116,68 @@ fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
     types_registry::infra::storage::Migrator::migrations()
 }
 
+pub async fn test_db_with_outbox() -> Arc<DBProvider<DbError>> {
+    let name = format!("tr-outbox-{}", uuid::Uuid::new_v4());
+    provider_for_with_outbox(&format!("sqlite:file:{name}?mode=memory&cache=shared"), 4).await
+}
+
+pub async fn provider_for_with_outbox(dsn: &str, max_conns: u32) -> Arc<DBProvider<DbError>> {
+    let opts = ConnectOpts {
+        max_conns: Some(max_conns),
+        min_conns: Some(1),
+        ..Default::default()
+    };
+    let dsn_scheme = dsn.split(':').next().unwrap_or("database");
+    let db = connect_db(dsn, opts)
+        .await
+        .unwrap_or_else(|e| panic!("connect {dsn_scheme} test database: {e}"));
+    let mut all = migrations();
+    all.extend(
+        toolkit_db::outbox::outbox_migrations_with_prefix(
+            types_registry::infra::outbox::TABLE_PREFIX,
+        )
+        .expect("outbox migration prefix"),
+    );
+    run_migrations_for_testing(&db, all)
+        .await
+        .expect("run migrations");
+    Arc::new(DBProvider::new(db))
+}
+
+pub async fn await_delivery<T, F, Fut>(what: &str, read: F) -> T
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    use std::time::Duration;
+
+    const DEADLINE: Duration = Duration::from_secs(2);
+    const FIRST_BACKOFF: Duration = Duration::from_millis(10);
+    const MAX_BACKOFF: Duration = Duration::from_millis(100);
+
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    let mut backoff = FIRST_BACKOFF;
+    loop {
+        if let Some(value) = read().await {
+            return value;
+        }
+        assert!(
+            tokio::time::Instant::now() + backoff < deadline,
+            "{what}: the outbox did not deliver within {DEADLINE:?}"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(MAX_BACKOFF);
+    }
+}
+
 /// The database-backed persistence ports, as the gear wires them. Tests that
 /// drive `accept` / `run_operation` / `RegistryService` pass this: the domain names
 /// only its ports, so the adapter is chosen here exactly as `init()` chooses it.
+/// A read document as a tree, to compare with an authored `json!` value.
+pub fn doc(raw: Option<&serde_json::value::RawValue>) -> Option<serde_json::Value> {
+    raw.map(|raw| serde_json::from_str(raw.get()).expect("a read document is JSON"))
+}
+
 pub fn stores() -> Arc<dyn types_registry::domain::ports::Stores> {
     Arc::new(types_registry::infra::storage::Repos)
 }
@@ -127,6 +194,146 @@ pub fn allow_all() -> AccessScope {
 #[must_use]
 pub fn metrics() -> std::sync::Arc<dyn types_registry::domain::ports::metrics::AdmissionMetrics> {
     std::sync::Arc::new(types_registry::domain::ports::metrics::NoopMetrics)
+}
+
+/// In-memory `tracing` capture for a binary's one global subscriber: a
+/// per-future subscriber is not isolated from concurrent tests.
+#[derive(Clone, Default)]
+pub struct CapturedLog(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+impl CapturedLog {
+    /// Install as the process-wide subscriber. Call once per test binary.
+    pub fn install_global() -> Self {
+        let captured = Self::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(captured.clone())
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("this binary installs exactly one subscriber");
+        captured
+    }
+
+    pub fn clear(&self) {
+        self.0.lock().clear();
+    }
+
+    /// Whether `needle` appears anywhere: a leak outside the operation's span
+    /// is still a leak.
+    #[must_use]
+    pub fn contains(&self, needle: &str) -> bool {
+        String::from_utf8_lossy(&self.0.lock()).contains(needle)
+    }
+
+    /// Only the lines naming `operation_id`, so a concurrent test cannot
+    /// satisfy or break an assertion.
+    #[must_use]
+    pub fn lines_for(&self, operation_id: uuid::Uuid) -> String {
+        let needle = operation_id.to_string();
+        String::from_utf8_lossy(&self.0.lock())
+            .lines()
+            .filter(|line| line.contains(&needle))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for CapturedLog {
+    type Writer = Self;
+
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Enqueues nothing, for tests that drive `admit` themselves. Test-only: a
+/// production composition must never commit an operation with no message.
+#[derive(Debug, Default)]
+pub struct NoDispatch;
+
+#[async_trait::async_trait]
+impl types_registry::domain::admission::OperationDispatch for NoDispatch {
+    async fn enqueue(
+        &self,
+        _tx: &toolkit_db::DbTx<'_>,
+        _operation_id: uuid::Uuid,
+    ) -> Result<toolkit_db::outbox::Wake, types_registry::domain::admission::OutboxError> {
+        Ok(toolkit_db::outbox::Wake::empty())
+    }
+}
+
+#[must_use]
+pub fn no_dispatch() -> Arc<dyn types_registry::domain::admission::OperationDispatch> {
+    Arc::new(NoDispatch)
+}
+
+#[derive(Debug, Default)]
+pub struct RecordingDeliveryMetrics {
+    outcomes: parking_lot::Mutex<Vec<types_registry::domain::ports::metrics::DeliveryOutcome>>,
+}
+
+impl RecordingDeliveryMetrics {
+    #[must_use]
+    pub fn outcomes(&self) -> Vec<types_registry::domain::ports::metrics::DeliveryOutcome> {
+        self.outcomes.lock().clone()
+    }
+}
+
+impl types_registry::domain::ports::metrics::AdmissionMetrics for RecordingDeliveryMetrics {
+    fn unchanged_probe(&self, _hit: bool) {}
+
+    fn candidate_terminalized(
+        &self,
+        _status: types_registry::domain::ports::metrics::TerminalStatus,
+        _labels: types_registry::domain::ports::metrics::PassLabels,
+    ) {
+    }
+
+    fn refused(
+        &self,
+        _stage: types_registry::domain::ports::metrics::RefusalStage,
+        _reason: &'static str,
+        _labels: types_registry::domain::ports::metrics::PassLabels,
+    ) {
+    }
+
+    fn compat_verdict(
+        &self,
+        _verdict: gts::CompatibilityVerdict,
+        _forced: bool,
+        _labels: types_registry::domain::ports::metrics::PassLabels,
+    ) {
+    }
+
+    fn revalidation_retried(
+        &self,
+        _drift: &types_registry::domain::admission::vector::VectorDrift,
+    ) {
+    }
+
+    fn observe_activation_write_set(
+        &self,
+        _refreshed: usize,
+        _labels: types_registry::domain::ports::metrics::PassLabels,
+    ) {
+    }
+
+    fn observe_operation_duration(&self, _elapsed: std::time::Duration) {}
+
+    fn admission_delivery(&self, outcome: types_registry::domain::ports::metrics::DeliveryOutcome) {
+        self.outcomes.lock().push(outcome);
+    }
 }
 
 pub fn limits() -> types_registry::config::Limits {
@@ -166,6 +373,19 @@ pub async fn seed_operation_item(
     revision_no: i32,
     now: OffsetDateTime,
 ) -> i64 {
+    seed_completed_operation_item(runner, gts_id, revision_no, now)
+        .await
+        .1
+}
+
+/// [`seed_operation_item`], also handing back the operation id — for a test that
+/// drives the worker over the seeded operation rather than only over its item.
+pub async fn seed_completed_operation_item(
+    runner: &impl DBRunner,
+    gts_id: &str,
+    revision_no: i32,
+    now: OffsetDateTime,
+) -> (Uuid, i64) {
     let scope = allow_all();
     let op_id = Uuid::new_v4();
     secure_insert::<operation::Entity>(
@@ -177,8 +397,11 @@ pub async fn seed_operation_item(
             tenant_id: Set(None),
             principal_id: Set(Uuid::from_u128(0xB1)),
             idempotency_key: Set(format!("idem-{op_id}")),
-            idempotency_scope_hash: Set(vec![0x01]),
-            request_fingerprint: Set(vec![0x02]),
+            // 32 bytes, as the columns are declared: a shorter value stores fine
+            // but fails on the way back out, which only shows up once a test reads
+            // the operation row rather than only its item.
+            idempotency_scope_hash: Set(vec![0x01; 32]),
+            request_fingerprint: Set(vec![0x02; 32]),
             status: Set(OperationStatus::Completed),
             created_at: Set(now),
             started_at: Set(Some(now)),
@@ -213,7 +436,7 @@ pub async fn seed_operation_item(
     )
     .await
     .expect("insert operation item");
-    item.id
+    (op_id, item.id)
 }
 
 /// A **pending** item naming a positive `expected_resource_version`: the input a
@@ -293,6 +516,69 @@ pub async fn seed_pending_revision_item_with(
     (op_id, item.id)
 }
 
+/// A **pending deletion** item written directly, so a test can produce a shape
+/// acceptance refuses — a deletion with no `expected_resource_version` being the
+/// one the worker still has to answer for. Returns `(operation_id, item_id)`.
+pub async fn seed_pending_deletion_item(
+    runner: &impl DBRunner,
+    gts_id: &str,
+    expected_resource_version: i64,
+    dry_run: bool,
+    now: OffsetDateTime,
+) -> (Uuid, i64) {
+    let scope = allow_all();
+    let op_id = Uuid::new_v4();
+    secure_insert::<operation::Entity>(
+        operation::ActiveModel {
+            id: Set(op_id),
+            kind: Set(OperationKind::Deletion),
+            dry_run: Set(dry_run),
+            plane: Set(Plane::Platform),
+            tenant_id: Set(None),
+            principal_id: Set(Uuid::from_u128(0xB1)),
+            idempotency_key: Set(format!("idem-{op_id}")),
+            idempotency_scope_hash: Set(vec![0x01; 32]),
+            request_fingerprint: Set(vec![0x02; 32]),
+            status: Set(OperationStatus::Running),
+            created_at: Set(now),
+            started_at: Set(Some(now)),
+            completed_at: Set(None),
+        },
+        &scope,
+        runner,
+    )
+    .await
+    .expect("insert operation");
+
+    let item = secure_insert::<operation_item::Entity>(
+        operation_item::ActiveModel {
+            operation_id: Set(op_id),
+            item_no: Set(0),
+            gts_id: Set(gts_id.to_owned()),
+            dry_run: Set(dry_run),
+            kind: Set(OperationKind::Deletion),
+            expected_resource_version: Set(expected_resource_version),
+            compat_forced: Set(false),
+            status: Set(OperationItemStatus::Pending),
+            // `ck_tr_operation_item_state` requires a payload while pending, and
+            // a deletion records the absence of a document as JSON `null`.
+            request_payload: Set(Some("null".to_owned())),
+            result_revision_no: Set(None),
+            result_resource_version: Set(None),
+            error_payload: Set(None),
+            created_at: Set(now),
+            started_at: Set(None),
+            completed_at: Set(None),
+            ..Default::default()
+        },
+        &scope,
+        runner,
+    )
+    .await
+    .expect("insert pending deletion item");
+    (op_id, item.id)
+}
+
 /// One immutable authored revision.
 pub async fn seed_type_schema_revision(
     runner: &impl DBRunner,
@@ -307,7 +593,6 @@ pub async fn seed_type_schema_revision(
             entity_id: Set(entity_id),
             revision_no: Set(revision_no),
             raw_schema: Set(raw_schema.to_owned()),
-            content_hash: Set(vec![u8::try_from(revision_no).expect("small revision")]),
             gts_spec_version: Set(gts::GTS_SPECIFICATION_VERSION.to_owned()),
             gts_impl_version: Set(gts::GTS_IMPLEMENTATION_VERSION.to_owned()),
             compat_forced: Set(false),

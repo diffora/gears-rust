@@ -35,7 +35,7 @@ use types_registry::domain::enums as domain_enums;
 use types_registry::domain::enums::OperationItemStatus;
 use types_registry::domain::policy::RegistrationPolicy;
 use types_registry::domain::ports::Stores;
-use types_registry::domain::ports::metrics::{AdmissionMetrics, RefusalStage};
+use types_registry::domain::ports::metrics::{AdmissionMetrics, PassLabels, RefusalStage};
 use types_registry::infra::metrics::{AdmissionMetricsMeter, SCOPE};
 
 const NOW: OffsetDateTime = datetime!(2026-08-21 09:15:30 UTC);
@@ -54,6 +54,10 @@ const UNSTABLE: &str = gts_id!("cf.core.obsv.draft.v0~");
 const DERIVED_FROM_UNSTABLE: &str = gts_id!("cf.core.obsv.draft.v0~cf.core.obsv.leaf.v1~");
 const INSTANCE_OF_UNSTABLE: &str = gts_id!("cf.core.obsv.draft.v0~cf.core.obsv.first.v1");
 const RESTATED: &str = gts_id!("cf.core.obsv.restated.v1~");
+/// T19: a minor pair whose lower member fails, so the upper is blocked by the
+/// implicit predecessor edge rather than by anything it authored.
+const MINOR_V1_0: &str = gts_id!("cf.core.obsv.blocked.v1.0~");
+const MINOR_V1_1: &str = gts_id!("cf.core.obsv.blocked.v1.1~");
 
 type Provider = Arc<DBProvider<DbError>>;
 
@@ -235,8 +239,12 @@ struct NoDispatch;
 
 #[async_trait::async_trait]
 impl OperationDispatch for NoDispatch {
-    async fn enqueue(&self, _tx: &DbTx<'_>, _operation_id: Uuid) -> anyhow::Result<()> {
-        Ok(())
+    async fn enqueue(
+        &self,
+        _tx: &DbTx<'_>,
+        _operation_id: Uuid,
+    ) -> Result<toolkit_db::outbox::Wake, types_registry::domain::admission::OutboxError> {
+        Ok(toolkit_db::outbox::Wake::empty())
     }
 }
 
@@ -322,7 +330,7 @@ async fn submit_via(
         },
         &dispatch,
         &SubmitRequest {
-            idempotency_key: key.to_owned(),
+            idempotency_key: Some(key.to_owned()),
             kind: domain_enums::OperationKind::Registration,
             dry_run: false,
             candidates,
@@ -358,7 +366,7 @@ async fn submit_forced(
         },
         &dispatch,
         &SubmitRequest {
-            idempotency_key: key.to_owned(),
+            idempotency_key: Some(key.to_owned()),
             kind: domain_enums::OperationKind::Registration,
             dry_run: false,
             candidates: vec![Candidate {
@@ -615,7 +623,11 @@ async fn an_unknown_stored_failure_reason_counts_under_other_and_creates_no_new_
         matches!(failure.reason, AdmissionFailureReason::Unknown(_)),
         "unknown stored codes must be preserved"
     );
-    metrics().refused(RefusalStage::Admission, reason_label(&failure.reason));
+    metrics().refused(
+        RefusalStage::Admission,
+        reason_label(&failure.reason),
+        PassLabels::new(domain_enums::OperationKind::Registration, false),
+    );
     flush();
 
     assert_eq!(
@@ -640,8 +652,13 @@ async fn an_infrastructure_failure_is_counted_but_not_warned_as_a_refusal() {
     struct FailingDispatch;
     #[async_trait::async_trait]
     impl OperationDispatch for FailingDispatch {
-        async fn enqueue(&self, _tx: &DbTx<'_>, _operation_id: Uuid) -> anyhow::Result<()> {
-            Err(anyhow::anyhow!("observability-dispatch-outage"))
+        async fn enqueue(
+            &self,
+            _tx: &DbTx<'_>,
+            _operation_id: Uuid,
+        ) -> Result<toolkit_db::outbox::Wake, types_registry::domain::admission::OutboxError>
+        {
+            Err(types_registry::domain::admission::OutboxError::NotRunning)
         }
     }
 
@@ -691,7 +708,7 @@ async fn an_infrastructure_failure_is_counted_but_not_warned_as_a_refusal() {
     );
     // Absence proves the dispatch error was not logged by `accept`.
     assert!(
-        !captured_log().contains("observability-dispatch-outage"),
+        !captured_log().contains("the admission outbox is not running"),
         "an infrastructure arm must not be logged as a refusal; captured:\n{}",
         captured_log()
     );
@@ -1313,6 +1330,88 @@ async fn the_quarantine_and_dialect_refusals_each_carry_their_own_reason_label()
     );
 }
 
+/// T19: a blocked candidate is counted like any other refusal, so a batch's
+/// blocked fan-out is one query rather than a read of every item row. Both
+/// blocking kinds appear under their own `reason`, never merged.
+#[tokio::test]
+async fn a_blocked_batch_counts_one_failed_candidate_per_blocked_reason() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    reset_metrics();
+
+    // `MINOR_V1_0` fails on an unresolvable reference; `MINOR_V1_1` is blocked by
+    // it as a predecessor, and `REFERRER` by it as a selected dependency.
+    let operation_id = submit(
+        &db,
+        "k-blocked-batch",
+        vec![
+            candidate(MINOR_V1_0, referencing_target(MINOR_V1_0, ABSENT), None),
+            candidate(MINOR_V1_1, plain(MINOR_V1_1), None),
+            candidate(REFERRER, referencing_target(REFERRER, MINOR_V1_0), None),
+        ],
+    )
+    .await
+    .expect("acceptance");
+    let outcome = run_operation(
+        &stores(),
+        &worker(&db),
+        &allow_all(),
+        Tuning {
+            limits: &common::limits(),
+            worker: &worker_settings(),
+            metrics: metrics(),
+            allow_compatibility_force: false,
+        },
+        operation_id,
+        LATER,
+    )
+    .await
+    .expect("the worker must not fail on infrastructure");
+    flush();
+
+    assert!(
+        outcome
+            .items
+            .iter()
+            .all(|item| item.status == OperationItemStatus::Failed),
+        "one broken candidate and its two blocked dependents: {:?}",
+        outcome.items,
+    );
+    assert_eq!(
+        counter_sum_where("types_registry_candidates_total", &[("status", "failed")]),
+        3,
+        "every blocked candidate is terminalized and counted, not silently skipped",
+    );
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_refusals_total",
+            &[
+                ("stage", "admission"),
+                (
+                    "reason",
+                    reason_label(&AdmissionFailureReason::BlockedByDependency)
+                ),
+            ],
+        ),
+        1,
+    );
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_refusals_total",
+            &[
+                ("stage", "admission"),
+                (
+                    "reason",
+                    reason_label(&AdmissionFailureReason::BlockedByPredecessor)
+                ),
+            ],
+        ),
+        1,
+        "a failed lower minor is its own number, not merged into the dependency one",
+    );
+}
+
 /// A plain open object schema: valid on its own, as a derivation base, and as an
 /// Instance's conforming type.
 fn plain(gts_id: &str) -> Value {
@@ -1328,4 +1427,486 @@ fn referencing_target(gts_id: &str, target: &str) -> Value {
     let mut doc = plain(gts_id);
     doc["properties"] = json!({ "target": { "$ref": format!("gts://{target}") } });
     doc
+}
+
+// ---------------------------------------------------------------------------
+// T20: the mode and kind labels, emitted end to end
+// ---------------------------------------------------------------------------
+
+/// T20's fixtures: a subject to delete, and a `$ref` holder that refuses it.
+const DEL_SUBJECT: &str = gts_id!("cf.core.obsv.delsubject.v1~");
+const DEL_HOLDER: &str = gts_id!("cf.core.obsv.delholder.v1~");
+
+/// Run one pass of any kind and mode, and return its single item outcome.
+async fn one_pass(
+    db: &Provider,
+    key: &str,
+    kind: domain_enums::OperationKind,
+    dry_run: bool,
+    candidate: Candidate,
+) -> types_registry::domain::admission::worker::ItemOutcome {
+    let provider: DBProvider<AcceptanceError> = DBProvider::new(db.db());
+    let policy = RegistrationPolicy::default();
+    let config = TypesRegistryConfig::default();
+    let dispatch: Arc<dyn OperationDispatch> = Arc::new(NoDispatch);
+    let operation_id = accept(
+        &stores(),
+        &provider,
+        &allow_all(),
+        &AcceptanceContext {
+            policy: &policy,
+            config: &config,
+            metrics: metrics(),
+        },
+        &dispatch,
+        &SubmitRequest {
+            idempotency_key: Some(key.to_owned()),
+            kind,
+            dry_run,
+            candidates: vec![candidate],
+        },
+        NOW,
+    )
+    .await
+    .expect("accepted")
+    .operation_id;
+
+    run_operation(
+        &stores(),
+        &worker(db),
+        &allow_all(),
+        Tuning {
+            limits: &common::limits(),
+            worker: &worker_settings(),
+            metrics: metrics(),
+            allow_compatibility_force: false,
+        },
+        operation_id,
+        LATER,
+    )
+    .await
+    .expect("the worker must not fail on infrastructure")
+    .items
+    .remove(0)
+}
+
+fn creation_of(gts_id: &str) -> Candidate {
+    candidate(gts_id, plain(gts_id), None)
+}
+
+fn removal_of(gts_id: &str, expected: i64) -> Candidate {
+    Candidate {
+        gts_id: gts_id.to_owned(),
+        content: None,
+        expected_resource_version: Some(expected),
+        force: false,
+    }
+}
+
+/// A committed deletion counts under its own kind, and not under the kind that
+/// registered the entity in the first place.
+#[tokio::test]
+async fn a_committed_deletion_counts_under_its_own_kind() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    one_pass(
+        &db,
+        "seed",
+        domain_enums::OperationKind::Registration,
+        false,
+        creation_of(DEL_SUBJECT),
+    )
+    .await;
+
+    // Reset after the seed so the assertions are this pass's delta.
+    reset_metrics();
+    let item = one_pass(
+        &db,
+        "del",
+        domain_enums::OperationKind::Deletion,
+        false,
+        removal_of(DEL_SUBJECT, 1),
+    )
+    .await;
+    flush();
+
+    assert_eq!(item.status, OperationItemStatus::Succeeded, "{item:?}");
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_candidates_total",
+            &[
+                ("kind", "deletion"),
+                ("status", "succeeded"),
+                ("dry_run", "false")
+            ],
+        ),
+        1,
+    );
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_candidates_total",
+            &[("kind", "registration")]
+        ),
+        0,
+        "the seed was reset away; this pass deleted and registered nothing",
+    );
+}
+
+/// A refused deletion carries its own reason **and** its own kind.
+#[tokio::test]
+async fn a_refused_deletion_counts_its_reason_under_the_deletion_kind() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    one_pass(
+        &db,
+        "seed",
+        domain_enums::OperationKind::Registration,
+        false,
+        creation_of(DEL_SUBJECT),
+    )
+    .await;
+    one_pass(
+        &db,
+        "holder",
+        domain_enums::OperationKind::Registration,
+        false,
+        candidate(
+            DEL_HOLDER,
+            referencing_target(DEL_HOLDER, DEL_SUBJECT),
+            None,
+        ),
+    )
+    .await;
+
+    reset_metrics();
+    let item = one_pass(
+        &db,
+        "del",
+        domain_enums::OperationKind::Deletion,
+        false,
+        removal_of(DEL_SUBJECT, 1),
+    )
+    .await;
+    flush();
+
+    assert_eq!(item.status, OperationItemStatus::Failed, "{item:?}");
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_refusals_total",
+            &[
+                ("stage", "admission"),
+                ("reason", "has_registered_dependents"),
+                ("kind", "deletion"),
+                ("dry_run", "false"),
+            ],
+        ),
+        1,
+    );
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_candidates_total",
+            &[("kind", "deletion"), ("status", "failed")],
+        ),
+        1,
+    );
+}
+
+/// **Nothing** a dry-run pass emits may land under `dry_run="false"`. This is
+/// the assertion that makes "how many registrations succeeded today" answerable.
+#[tokio::test]
+async fn no_counter_from_a_dry_run_pass_appears_under_dry_run_false() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    reset_metrics();
+
+    let item = one_pass(
+        &db,
+        "dry",
+        domain_enums::OperationKind::Registration,
+        true,
+        creation_of(SUBJECT),
+    )
+    .await;
+    flush();
+
+    assert_eq!(item.status, OperationItemStatus::Succeeded, "{item:?}");
+    for series in [
+        "types_registry_candidates_total",
+        "types_registry_refusals_total",
+        "types_registry_compat_verdicts_total",
+    ] {
+        assert_eq!(
+            counter_sum_where(series, &[("dry_run", "false")]),
+            0,
+            "{series} must carry nothing from a pass that wrote nothing",
+        );
+    }
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_candidates_total",
+            &[
+                ("dry_run", "true"),
+                ("kind", "registration"),
+                ("status", "succeeded")
+            ],
+        ),
+        1,
+    );
+}
+
+/// The fourth corner: a dry-run deletion. Both labels move together.
+#[tokio::test]
+async fn a_dry_run_deletion_lands_under_both_labels() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    one_pass(
+        &db,
+        "seed",
+        domain_enums::OperationKind::Registration,
+        false,
+        creation_of(DEL_SUBJECT),
+    )
+    .await;
+
+    reset_metrics();
+    let item = one_pass(
+        &db,
+        "dry-del",
+        domain_enums::OperationKind::Deletion,
+        true,
+        removal_of(DEL_SUBJECT, 1),
+    )
+    .await;
+    flush();
+
+    assert_eq!(item.status, OperationItemStatus::Succeeded, "{item:?}");
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_candidates_total",
+            &[
+                ("kind", "deletion"),
+                ("dry_run", "true"),
+                ("status", "succeeded")
+            ],
+        ),
+        1,
+    );
+    assert_eq!(
+        counter_sum_where("types_registry_candidates_total", &[("dry_run", "false")]),
+        0,
+    );
+}
+
+/// A dry run records no activation write set — the histogram answers how close
+/// this deployment runs to `limits.activation_write_set`, and a pass that
+/// rewrote no dependents is not a data point about that.
+#[tokio::test]
+async fn a_dry_run_revision_records_no_activation_write_set() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    one_pass(
+        &db,
+        "seed",
+        domain_enums::OperationKind::Registration,
+        false,
+        creation_of(DEL_SUBJECT),
+    )
+    .await;
+
+    reset_metrics();
+    one_pass(
+        &db,
+        "dry-rev",
+        domain_enums::OperationKind::Registration,
+        true,
+        candidate(DEL_SUBJECT, subject_like(DEL_SUBJECT, "moved"), Some(1)),
+    )
+    .await;
+    flush();
+
+    assert_eq!(
+        histogram_count("types_registry_activation_write_set"),
+        0,
+        "a dry-run pass observes no write set",
+    );
+}
+
+/// A schema with a marker annotation, so a revision of it is a real change.
+fn subject_like(gts_id: &str, marker: &str) -> Value {
+    let mut doc = plain(gts_id);
+    doc["title"] = json!(marker);
+    doc
+}
+
+/// The blocked-dependant **count** goes on the unit span, and the identities go
+/// nowhere. A count is bounded and safe to read; the identities are unbounded
+/// and the caller may not be entitled to them. Asserted on the refusal line, in
+/// both directions — the number is there and the holder's identifier is not.
+#[tokio::test]
+async fn a_blocked_deletion_puts_the_dependant_count_on_its_span_and_no_identities() {
+    let _serial = SERIAL.lock().await;
+    recorder();
+    let db = test_db().await;
+    let subject = gts_id!("cf.core.obsv.spansubject.v1~");
+    let holder = gts_id!("cf.core.obsv.spanholder.v1~");
+    one_pass(
+        &db,
+        "span-seed",
+        domain_enums::OperationKind::Registration,
+        false,
+        candidate(subject, plain(subject), None),
+    )
+    .await;
+    one_pass(
+        &db,
+        "span-holder",
+        domain_enums::OperationKind::Registration,
+        false,
+        candidate(holder, referencing_target(holder, subject), None),
+    )
+    .await;
+
+    let item = one_pass(
+        &db,
+        "span-del",
+        domain_enums::OperationKind::Deletion,
+        false,
+        removal_of(subject, 1),
+    )
+    .await;
+    assert_eq!(item.status, OperationItemStatus::Failed, "{item:?}");
+
+    let refusal = lines_mentioning(subject)
+        .into_iter()
+        .find(|line| line.contains("candidate refused"))
+        .unwrap_or_else(|| panic!("no refusal line; captured:\n{}", captured_log()));
+
+    assert!(
+        refusal.contains("blocked_dependents=1"),
+        "the count must be on the unit span: {refusal}"
+    );
+    assert!(
+        !refusal.contains(holder),
+        "and the dependant's identity must not be anywhere on it: {refusal}"
+    );
+    assert!(
+        refusal.contains(r#"kind="deletion""#),
+        "the span still carries the operation kind: {refusal}"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_deletion_batch_is_refused_before_it_reads_and_counted_as_a_deletion() {
+    use types_registry::config::TypesRegistryConfig;
+    use types_registry::domain::policy::RegistrationPolicy;
+    use types_registry::domain::registry_service::{
+        DeleteRequest, DeleteTarget, EntityKey, RegistryService, ServiceError,
+    };
+
+    const LIMIT: usize = 2;
+
+    let _serial = SERIAL.lock().await;
+
+    let db = common::test_db().await;
+    let mut config = TypesRegistryConfig::default();
+    config.limits.batch_candidates = LIMIT;
+    let registry = RegistryService::new(
+        db.db(),
+        common::stores(),
+        RegistrationPolicy::default(),
+        config,
+        std::sync::Arc::new(common::NoDispatch),
+        std::sync::Arc::clone(metrics()),
+    );
+
+    flush();
+    let before = counter_sum_where(
+        "types_registry_refusals_total",
+        &[("reason", "batch_too_large"), ("kind", "deletion")],
+    );
+
+    let targets: Vec<DeleteTarget> = (0..=LIMIT)
+        .map(|_| DeleteTarget {
+            key: EntityKey::Uuid(uuid::Uuid::new_v4()),
+            expected_resource_version: Some(1),
+        })
+        .collect();
+    let refused = registry
+        .delete(
+            &DeleteRequest {
+                idempotency_key: Some("over-the-limit".to_owned()),
+                dry_run: false,
+                targets,
+            },
+            NOW,
+        )
+        .await;
+
+    match refused {
+        Err(ServiceError::Acceptance(error)) => {
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(&(LIMIT + 1).to_string())
+                    && rendered.contains(&LIMIT.to_string()),
+                "the refusal names both numbers so an operator can size the batch: {rendered}",
+            );
+        }
+        Err(ServiceError::UnresolvedReference { .. }) => panic!(
+            "the bound must be checked before `resolve_targets`: reaching the lookup means an \
+             oversized batch became an unbounded read",
+        ),
+        other => panic!("an over-limit deletion batch must be refused synchronously: {other:?}"),
+    }
+
+    flush();
+    assert_eq!(
+        counter_sum_where(
+            "types_registry_refusals_total",
+            &[("reason", "batch_too_large"), ("kind", "deletion")],
+        ),
+        before + 1,
+        "the series must not depend on which of the two checks fired, so this one \
+         counts the refusal it raises itself",
+    );
+}
+
+#[tokio::test]
+async fn the_delivery_outcome_labels_are_exactly_retried_and_dead_lettered() {
+    use types_registry::domain::ports::metrics::DeliveryOutcome;
+
+    const NAME: &str = "types_registry_admission_deliveries_total";
+
+    let _serial = SERIAL.lock().await;
+
+    flush();
+    let before_retried = counter_sum_where(NAME, &[("outcome", "retried")]);
+    let before_dead = counter_sum_where(NAME, &[("outcome", "dead_lettered")]);
+
+    metrics().admission_delivery(DeliveryOutcome::Retried);
+    metrics().admission_delivery(DeliveryOutcome::DeadLettered);
+
+    flush();
+    assert_eq!(
+        counter_sum_where(NAME, &[("outcome", "retried")]),
+        before_retried + 1,
+    );
+    assert_eq!(
+        counter_sum_where(NAME, &[("outcome", "dead_lettered")]),
+        before_dead + 1,
+    );
+
+    let mut vocabulary = label_values_of(NAME, "outcome");
+    vocabulary.dedup();
+    assert_eq!(
+        vocabulary,
+        vec!["dead_lettered".to_owned(), "retried".to_owned()],
+        "the alert's series must be bounded to these two values: a delivery that \
+         terminalizes its operation succeeded as a transport and is counted by the \
+         per-candidate instruments, not here",
+    );
 }

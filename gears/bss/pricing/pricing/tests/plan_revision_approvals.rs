@@ -761,7 +761,7 @@ fn plan_revision_published_is_a_typed_event_about_the_plan() {
     assert_eq!(PlanRevisionPublished::TYPE_ID, PUBLISHED);
     assert_eq!(
         PLAN_SUBJECT_TYPE,
-        "gts.cf.core.events.subject.v1~cf.bss.pricing.plan.v1"
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.plan.v1~"
     );
     assert_eq!(PlanRevisionPublished::SUBJECT_TYPE, PLAN_SUBJECT_TYPE);
     assert_eq!(PlanRevisionPublished::SOURCE, "bss-pricing");

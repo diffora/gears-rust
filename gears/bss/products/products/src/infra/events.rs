@@ -71,13 +71,19 @@ pub(crate) async fn enqueue_typed<E: TypedEvent>(
     runner: &(impl DBRunner + Sync),
     event: E,
 ) -> Result<(), EventsError> {
+    // Both arms fire the returned `Wake` at once, inside the caller's
+    // transaction: the pre-`2bfc76aec` outbox marked the partition dirty on
+    // enqueue, and this keeps that. The post-commit fire the toolkit now
+    // documents needs the wake carried out of every door's transaction; until
+    // then a sequencer that wakes before the commit lands leaves the row to the
+    // cold reconciler, as it did before.
     match sink {
         // SDK ProducerOutbox::enqueue currently erases OutboxError into
         // EventBrokerError::Internal(String), exposing no DbErr/source to recover.
         EventSink::Broker(producer) => producer
             .enqueue(runner, event)
             .await
-            .map(|_| ())
+            .map(toolkit_db::outbox::Wake::fire)
             .map_err(EventsError::from),
         EventSink::Interim(outbox) => {
             // The SDK constructor is crate-private and DbProducer::outbox_envelope
@@ -105,16 +111,16 @@ pub(crate) async fn enqueue_typed<E: TypedEvent>(
             let partition = event.tenant_id().map_or(0, |t| {
                 u32::from(u16::from_le_bytes([t.as_bytes()[14], t.as_bytes()[15]]) % PARTITIONS)
             });
-            outbox
-                .enqueue(
-                    runner,
-                    QUEUE_NAME,
-                    partition,
+            let record = toolkit_db::outbox::Record::to(QUEUE_NAME, partition)
+                .payload(
                     payload,
                     "application/vnd.constructorfabric.event-broker.producer-outbox+json;version=1",
                 )
+                .build()?;
+            outbox
+                .enqueue(runner, record)
                 .await
-                .map(|_| ())
+                .map(toolkit_db::outbox::Wake::fire)
                 .map_err(EventsError::from)
         }
     }

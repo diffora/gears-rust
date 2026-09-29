@@ -191,7 +191,7 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
     assert_eq!(PricesPublished::SUBJECT_TYPE, PRICE_BOOK_SUBJECT_TYPE);
     assert_eq!(
         PRICE_BOOK_SUBJECT_TYPE,
-        "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1"
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1~"
     );
     assert_eq!(PricesPublished::SOURCE, "bss-pricing");
     assert_eq!(published.subject(), book.to_string());
@@ -217,7 +217,7 @@ fn three_event_contracts_have_stable_ids_subjects_and_camel_case_payloads() {
     );
     assert_eq!(
         APPROVAL_UNIT_SUBJECT_TYPE,
-        "gts.cf.core.events.subject.v1~cf.bss.pricing.approval_unit.v1"
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.approval_unit.v1~"
     );
     assert_eq!(ApprovalUnitDecided::SOURCE, SOURCE);
     assert_eq!(decided.subject(), unit.to_string());
@@ -576,7 +576,7 @@ fn price_book_entry_reference_lost_is_a_typed_event_about_the_entry() {
     );
     assert_eq!(
         PriceBookEntryReferenceLost::SUBJECT_TYPE,
-        "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book_entry.v1"
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book_entry.v1~"
     );
     assert_eq!(PriceBookEntryReferenceLost::SOURCE, SOURCE);
     assert_eq!(lost.subject(), entry.to_string());
@@ -614,7 +614,7 @@ fn plan_reference_lost_is_a_typed_event_about_the_item() {
     );
     assert_eq!(
         PlanReferenceLost::SUBJECT_TYPE,
-        "gts.cf.core.events.subject.v1~cf.bss.pricing.plan_item.v1"
+        "gts.cf.core.events.subject.v1~cf.bss.pricing.plan_item.v1~"
     );
     assert_eq!(PlanReferenceLost::SOURCE, SOURCE);
     assert_eq!(lost.subject(), item.to_string());

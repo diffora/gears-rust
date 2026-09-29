@@ -386,7 +386,7 @@ const CLOSED: &[Closed] = &[
     ("SkuDto", "billing_timing", TIMING, true),
     ("SkuContentDto", "type", SKU_TYPE, false),
     ("SkuContentDto", "billing_timing", TIMING, true),
-    ("CategoryDto", "status", CATEGORY_STATUS, false),
+    ("ProductsCategoryDto", "status", CATEGORY_STATUS, false),
     ("ProductsSkuHistoryEntry", "from_lifecycle", LIFECYCLE, true),
     ("ProductsSkuHistoryEntry", "to_lifecycle", LIFECYCLE, true),
     ("UnitDto", "state", UNIT_STATE, false),

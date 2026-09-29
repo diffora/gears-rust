@@ -26,12 +26,12 @@ pub const TOPIC: &str = "gts.cf.core.events.topic.v1~cf.bss.pricing.catalog.v1";
 pub const SOURCE: &str = "bss-pricing";
 /// `PricesPublished` is about a book.
 pub const PRICE_BOOK_SUBJECT_TYPE: &str =
-    "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1";
+    "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book.v1~";
 /// `PlanRevisionPublished` is about a plan: which revision it sells moved.
-pub const PLAN_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.pricing.plan.v1";
+pub const PLAN_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.pricing.plan.v1~";
 /// `ApprovalUnitDecided` is about a unit.
 pub const APPROVAL_UNIT_SUBJECT_TYPE: &str =
-    "gts.cf.core.events.subject.v1~cf.bss.pricing.approval_unit.v1";
+    "gts.cf.core.events.subject.v1~cf.bss.pricing.approval_unit.v1~";
 const CONTENT_TYPE: &str =
     "application/vnd.constructorfabric.event-broker.producer-outbox+json;version=1";
 
@@ -175,6 +175,11 @@ pub async fn enqueue<E: TypedEvent + Clone>(
     now: time::OffsetDateTime,
 ) -> Result<(), RepoError> {
     // @cpt-begin:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-3
+    // Both arms fire the returned `Wake` at once, inside the caller's transaction: the
+    // pre-`2bfc76aec` outbox marked the partition dirty on enqueue, and this keeps that. The
+    // post-commit fire the toolkit now documents needs the wake carried out of every door's
+    // transaction; until then a sequencer that wakes before the commit lands leaves the row
+    // to the cold reconciler, as it did before (Products does the same).
     let outbox = match sink {
         EventSink::Interim(outbox) => outbox,
         // The SDK's enqueue erases the outbox's database error into a string, so a
@@ -183,7 +188,7 @@ pub async fn enqueue<E: TypedEvent + Clone>(
             return producer
                 .enqueue(tx, event.clone())
                 .await
-                .map(|_| ())
+                .map(toolkit_db::outbox::Wake::fire)
                 .map_err(|e| RepoError::Db(format!("{} event: {e}", E::TYPE_ID)));
         }
     };
@@ -206,15 +211,17 @@ pub async fn enqueue<E: TypedEvent + Clone>(
         "producer_mode": "stateless",
         "diagnostic_metadata": {"sdk_client_agent": SOURCE},
     });
-    outbox
-        .enqueue(
-            tx,
-            QUEUE,
-            0,
+    let record = toolkit_db::outbox::Record::to(QUEUE, 0)
+        .payload(
             serde_json::to_vec(&envelope).map_err(|e| serialize(e.to_string()))?,
             CONTENT_TYPE,
         )
+        .build()
+        .map_err(|e| RepoError::Db(e.to_string()))?;
+    outbox
+        .enqueue(tx, record)
         .await
+        .map(toolkit_db::outbox::Wake::fire)
         .map_err(|e| match e {
             toolkit_db::outbox::OutboxError::Database(source) => RepoError::Driver {
                 context: format!("{} event", E::TYPE_ID),

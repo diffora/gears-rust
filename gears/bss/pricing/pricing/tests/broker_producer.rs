@@ -2,6 +2,11 @@
 //! to its outbox queue (D-400, Products' pattern): committed events reach the broker, an
 //! interrupted dispatch is retried from the durable envelope, and a rolled-back transaction
 //! delivers nothing.
+//!
+//! The broker is the event-broker gear itself, in process: its own test harness
+//! (`event_broker::test_support`), which replaced the SDK's `MockBroker`. Topics and event types
+//! are seeded the way `types-registry` would hold them, publishes go through the gear's real
+//! ingest, and what the broker stored is read back from its backend.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod entry_support;
 use bss_pricing::{
@@ -12,25 +17,55 @@ use bss_pricing::{
     },
 };
 use entry_support::{Script, app_for, request, test_db, user_of};
-use event_broker_sdk::{TypedEvent, api::EventBrokerApi, mock::MockBroker};
+use event_broker::test_support::{EventBrokerHarness, StaticTypesRegistry};
+use event_broker_sdk::{Sequence, TypedEvent, api::EventBrokerApi};
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
 const PUBLISHED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.prices_published.v1~";
 const DECIDED: &str = "gts.cf.core.events.event.v1~cf.bss.pricing.approval_unit_decided.v1~";
-const ENTRY_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book_entry.v1";
+const ENTRY_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.pricing.price_book_entry.v1~";
+/// The partitions pricing's topic is configured with: the broker's default, which the producer
+/// assumes when it declares none.
+const PARTITIONS: u32 = 8;
+
+/// A real in-process broker that knows pricing's topic and each `(type, subject type)` of
+/// `types`, every one over an object payload. The harness must outlive every publish.
+async fn broker_knowing(types: &[(&str, &str)]) -> EventBrokerHarness {
+    let mut spec = vec![json!({"id": TOPIC, "partitions": PARTITIONS})];
+    for (type_id, subject) in types {
+        spec.push(json!({
+            "id": type_id,
+            "topic": TOPIC,
+            "data_schema": {"type": "object"},
+            "allowed_subject_types": [subject],
+        }));
+    }
+    EventBrokerHarness::builder()
+        .with_type_registry(StaticTypesRegistry::of(serde_json::Value::Array(spec)))
+        .build()
+        .await
+}
 
 /// Every event the broker stored on pricing's topic: its type and its data.
-async fn stored(mock: &MockBroker) -> Vec<(String, serde_json::Value)> {
-    let handle = mock.handle();
+async fn stored(broker: &EventBrokerHarness) -> Vec<(String, serde_json::Value)> {
     let mut all = Vec::new();
-    for partition in 0..8 {
-        for stored in handle.stored(TOPIC, partition).await {
-            all.push((
-                stored.event.type_id.clone(),
-                stored.event.data.clone().unwrap_or_default(),
-            ));
+    for partition in 0..PARTITIONS {
+        let events = broker
+            .backend()
+            .read(
+                broker.security_context(),
+                TOPIC,
+                partition,
+                Sequence::NONE,
+                1024,
+            )
+            .await
+            .unwrap();
+        for event in events {
+            all.push((event.type_id.to_string(), event.data.unwrap_or_default()));
         }
     }
     all
@@ -73,11 +108,7 @@ async fn enqueue(state: &AuthoringState, event: PriceBookEntryReferenceLost, com
 
 #[tokio::test]
 async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_rollbacks() {
-    let mock = MockBroker::new();
-    let control = mock.handle();
-    control.register_topic(TOPIC, 8).await;
-    let object = json!({"type":"object"});
-    for (type_id, subject) in [
+    let broker = broker_knowing(&[
         (PriceBookEntryReferenceLost::TYPE_ID, ENTRY_SUBJECT_TYPE),
         (PlanReferenceLost::TYPE_ID, PlanReferenceLost::SUBJECT_TYPE),
         (PUBLISHED, PRICE_BOOK_SUBJECT_TYPE),
@@ -86,21 +117,19 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
             events::PlanRevisionPublished::SUBJECT_TYPE,
         ),
         (DECIDED, APPROVAL_UNIT_SUBJECT_TYPE),
-    ] {
-        control
-            .register_event_type(TOPIC, type_id, object.clone(), &[subject])
-            .await;
-    }
+    ])
+    .await;
     let (db, _, tenant, _dsn) = test_db().await;
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(Arc::new(Script::default())),
     ));
-    hub.register::<dyn EventBrokerApi>(Arc::new(mock.clone()));
+    hub.register::<dyn EventBrokerApi>(broker.broker());
     let state = Arc::new(AuthoringState::new(db, hub).await.unwrap());
 
-    // The broker refuses every dispatch for now (429): the committed envelope stays durable.
-    control.set_publish_rate_limit(Some(0)).await;
+    // The broker refuses every dispatch for now (a real `RateLimited` on its publish path):
+    // the committed envelope stays durable.
+    broker.set_publish_rate_limited(true);
     let committed = lost(tenant);
     enqueue(&state, committed.clone(), true).await;
     let rolled_back = lost(tenant);
@@ -174,14 +203,14 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(
-        stored(&mock).await.is_empty(),
+        stored(&broker).await.is_empty(),
         "no dispatch succeeded while the broker refused"
     );
     // Delivery resumes: the durable envelopes are retried.
-    control.set_publish_rate_limit(None).await;
+    broker.set_publish_rate_limited(false);
     let mut delivered = Vec::new();
     for _ in 0..300 {
-        delivered = stored(&mock).await;
+        delivered = stored(&broker).await;
         if delivered.len() >= 3 {
             break;
         }
@@ -269,27 +298,29 @@ fn typed_events_in_src() -> std::collections::BTreeSet<String> {
 }
 
 /// A pricing state over a fresh database with a broker that knows `types`.
-/// The state comes with its database's DSN, which holds the database's temporary directory.
+/// The state comes with its database's DSN, which holds the database's temporary directory,
+/// and with the broker, which must outlive the state.
 async fn bind_with(
     types: &[(&str, &str, &str)],
-) -> anyhow::Result<(Arc<AuthoringState>, entry_support::TestDsn)> {
-    let mock = MockBroker::new();
-    let control = mock.handle();
-    control.register_topic(TOPIC, 8).await;
-    for (_, type_id, subject) in types {
-        control
-            .register_event_type(TOPIC, type_id, json!({"type":"object"}), &[subject])
-            .await;
-    }
+) -> anyhow::Result<(
+    Arc<AuthoringState>,
+    entry_support::TestDsn,
+    EventBrokerHarness,
+)> {
+    let known: Vec<(&str, &str)> = types
+        .iter()
+        .map(|(_, type_id, subject)| (*type_id, *subject))
+        .collect();
+    let broker = broker_knowing(&known).await;
     let (db, _, _, dsn) = test_db().await;
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(Arc::new(Script::default())),
     ));
-    hub.register::<dyn EventBrokerApi>(Arc::new(mock));
+    hub.register::<dyn EventBrokerApi>(broker.broker());
     AuthoringState::new(db, hub)
         .await
-        .map(|state| (Arc::new(state), dsn))
+        .map(|state| (Arc::new(state), dsn, broker))
 }
 
 /// The event census (run 3.5): every type pricing implements is a `TypedEvent` under
@@ -316,8 +347,11 @@ async fn the_bound_producer_prepares_every_pricing_event_type_at_bind() {
             !short.is_empty() && short.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
             "{name}: {type_id}"
         );
+        // A subject type names a kind of entity: a GTS type id, which the broker refuses without
+        // its trailing `~`.
         assert!(
-            subject.starts_with("gts.cf.core.events.subject.v1~cf.bss.pricing."),
+            subject.starts_with("gts.cf.core.events.subject.v1~cf.bss.pricing.")
+                && subject.ends_with(".v1~"),
             "{name}: {subject}"
         );
     }

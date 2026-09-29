@@ -39,7 +39,7 @@ impl ProductCatalogRestClient {
     pub fn new(config: ClientConfig) -> Result<Self, toolkit_http::HttpError> {
         let http = toolkit::contract_support::runtime::client::build_default_http_client(
             "ProductCatalogRestClient",
-            config.require_tls,
+            &config,
         )?;
         Ok(Self { http, config })
     }
