@@ -156,7 +156,11 @@ fn browse_url(base: &str, filter: Option<&str>, limit: u32, cursor: Option<&str>
     url
 }
 
-/// Surface browse's 503 with **its** `Retry-After`. Do not invent a delay.
+/// Surface browse's 503 with **its** `Retry-After`. Do not invent a delay. A 4xx is the door's
+/// refusal of this call (a caller without `sku` read, a `$filter` or a cursor it refused): its
+/// Problem passes through with its class, never as a retryable outage (RS-06). A 4xx that carries
+/// no Problem is an answer the client cannot use, a 500; any other status is a catalog that did
+/// not answer.
 pub(crate) fn catalog_error_from_http(
     status: u16,
     retry_after: Option<std::time::Duration>,
@@ -174,7 +178,23 @@ pub(crate) fn catalog_error_from_http(
         }
         return builder.create();
     }
-    catalog_unreachable(format!("HTTP {status}: {}", String::from_utf8_lossy(body)))
+    if (400..500).contains(&status) {
+        return serde_json::from_slice::<Problem>(body)
+            .ok()
+            .and_then(|problem| CanonicalError::try_from(problem).ok())
+            .unwrap_or_else(|| {
+                tracing::error!(
+                    status,
+                    "bss-products: the browse door answered a 4xx without a problem"
+                );
+                CanonicalError::internal(format!(
+                    "products catalog browse: HTTP {status} without a problem"
+                ))
+                .create()
+            });
+    }
+    tracing::warn!(status, "bss-products: the browse door did not answer");
+    catalog_unreachable(format!("the product catalog answered HTTP {status}"))
 }
 
 impl ProductCatalogRestClient {

@@ -8,7 +8,7 @@ use super::{
     unit_tx_to_canonical,
 };
 use crate::{
-    authz::actions,
+    authz::{actions, resource_types},
     domain::{
         approvals::{
             Subject, change::SkuChange, check_note, publish::SkuPublish, retire::SkuRetire,
@@ -152,7 +152,7 @@ async fn submit(
     body: Result<Option<Json<Value>>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, false).await?;
+    let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
     run(
         state,
         scope,
@@ -173,7 +173,7 @@ async fn changes(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, false).await?;
+    let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
     run(state, scope, ctx, id, headers, body, SubmitKind::Change).await
 }
 async fn retire(
@@ -185,7 +185,7 @@ async fn retire(
     body: Result<Option<Json<Value>>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, false).await?;
+    let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
     run(
         state,
         scope,
@@ -524,7 +524,7 @@ async fn unfence(
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, false).await?;
+    let scope = g::scope(&enforcer, &ctx, &resource_types::SKU, actions::SUBMIT).await?;
     let claim = replay::input(
         &state,
         &headers,

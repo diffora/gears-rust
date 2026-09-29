@@ -436,7 +436,13 @@ fn collector_query(
         // cursor is one this gear minted for an in-process client; here the
         // operand arrives on a public query string, and paging an on-call for
         // somebody's typo is the wrong answer.
-        let parsed = parse_filter_string(&format!("kind eq '{}'", wanted.replace('\'', "''")))
+        // The operand is the closed set's own token, never the caller's text (RS-39).
+        let token = match wanted.parse::<usage_collector_sdk::UsageKind>() {
+            Ok(usage_collector_sdk::UsageKind::Counter) => "counter",
+            Ok(usage_collector_sdk::UsageKind::Gauge) => "gauge",
+            Err(_) => return Err(usage_type_catalog_rejected_the_query()),
+        };
+        let parsed = parse_filter_string(&format!("kind eq '{token}'"))
             .map_err(|_| usage_type_catalog_rejected_the_query())?;
         odata = odata.with_filter(parsed.into_expr());
     }

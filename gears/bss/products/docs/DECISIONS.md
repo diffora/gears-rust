@@ -54,6 +54,8 @@
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
+| P-D-222 | H | The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ок"); whole-branch review RS-02 (fix run W1b); keeps pricing D-424 |
+| P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
 
 ## Entries
 
@@ -952,3 +954,59 @@ reconciler, a minute at the default profile.
 
 **Source:** Main sync of 2026-09-29 (sync report, port 3; toolkit-db `2bfc76aec`); pricing phase 8 plan rev 2
 (run 8.2b).
+
+#### P-D-222 [H] The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller
+
+**Status:** DECIDED 2026-09-29.
+
+The in-process reference registry (`infra::reference_registry::LocalReferenceRegistry`, the `ReferenceRegistryV1` that pricing
+reaches as `PricingReferenceRegistry`) gives one principal a tenant-wide scope without the PDP: pricing's system actor
+(`subject_type` `bss-pricing.system`, `subject_id` `PRICING_SYSTEM_ACTOR`), on the registry bound to the `pricing` owner, in the
+caller's own tenant. Pricing's resolve and its reference ticker read and reserve as that actor (pricing D-424). The whole-branch
+review asked whether a caller could assert it (RS-02). The owner kept the trust (O1).
+
+- **What was measured.** A REST caller's `SecurityContext` comes from its token, and it can carry that subject type. The OIDC
+  authn plugin maps `subject_type` from a claim (`user_type` by default, and vhp-core's `config/server.yaml` configures the same)
+  and `subject_id` from `sub`. The static-authn plugin takes both from its configured identities. The gateway does not remove the
+  value. A caller cannot forge a signed token, but an IdP that issues `user_type: bss-pricing.system` with that `sub` gives a REST
+  caller exactly the context the registry trusts. So the trust is safe only because no REST path honours it.
+- **The threat model.** In-process code of the same binary is trusted, as it is trusted with the database. The registry is reached
+  only through the `ClientHub`: products registers it once at init, pricing is its one consumer, and no REST door calls it.
+  Nothing on a REST path reads the subject type for a decision. Every REST door asks the PDP for every caller, and the PDP
+  judges an asserted pricing system actor as it judges any other subject, by its roles. The registry's system branch is in
+  `LocalReferenceRegistry::scope` alone, and its doc says so.
+- **The audit label.** The reference doors wrote `actor_kind=system` on a reserve, confirm or release audit row when the subject
+  type ended in `.system`, so a REST caller's token set the label. Now `references::Acting` carries the context and whether the
+  registry's trusted branch admitted it. A REST door always acts as a subject, and only the registry records the system's act.
+- **The tests.** `a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass` calls every served door (the operations the
+  OpenAPI declares, RT-01) as the asserted actor under a PDP that allows nothing: each is 403 after the PDP was asked the door's
+  own action. A probe that lets `governance::scope` honour the actor turns it red.
+  `a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts` pins the audit label.
+- *Rejected alternative:* a PDP role for the system actor (the way account-management's `am.system` goes through its PDP). vhp-core's
+  PDP does not know `bss-pricing.system` (D-424's note), so every resolve and every ticker call would be refused until it did.
+
+**Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ок"); whole-branch review RS-02 (fix run W1b). Keeps pricing D-424.
+
+#### P-D-223 [M] A refusal keeps its class and names its resource
+
+The whole-branch review found refusals that left with another class than the one decided, or named a resource the gear does not
+register.
+
+- **The resource.** Every `DomainError` refusal named `cf.bss.products.product.v1~`, a type this gear neither defines nor
+  registers, so a SKU's 404 said `product.v1~` and its 403 `sku.v1~` (RS-25). The ladder (`infra::error_mapping`) now picks one of
+  the three registered labels from the refusal: a missing row by its kind (a reference is a SKU's), an approval refusal and a
+  stale unit the approval unit, a code starting `CATEGORY_` the category, and every other refusal the SKU. The approval policy's
+  404 names the approval unit, the label its grant is asked on, and `governance::scope`'s 403 names the resource it asked.
+- **The class.** The browse REST client turned every non-2xx answer into a retryable 503. A 4xx from the browse door now passes
+  its Problem through with its class (a caller without `sku` read stays 403, a refused `$filter` 400). A 4xx without a Problem is a
+  500, an answer the client cannot use. Any other status stays the 503 of a catalog that did not answer, with a fixed detail
+  (RS-06). Behind the catalog, a repository failure was a 503 whose detail was the driver's text. It is now the repository's
+  logged 500 with the text off the wire, and only a pool that cannot hand out a connection stays a 503 (RS-07, RS-09).
+- **The engine's refusals.** The engine's `UnitNotFound` answered 409 through the `other` arm, and it is now the unit's 404. A
+  duplicate decision that loses the unique index is `DUPLICATE_VOTE` 409, not a store failure's 500 (RS-32). A reservation that
+  loses the live-reference index twice is `REFERENCE_EXISTS` 409, not a 500 (RS-04, RS-05).
+- **Consumers.** No consumer reads `resource_type`: the gears-rust tests, the e2e suites and vhp-core's e2e do not. Pricing no
+  longer calls `ProductCatalogClientV1`. Products' own browse door and the REST client's test are its only callers.
+
+**Source:** Whole-branch review of 2026-09-29, RS-04, RS-05, RS-06, RS-07, RS-09, RS-25 and RS-32, and fix run W1a's note on
+`UnitNotFound` (fix run W1b).

@@ -1,7 +1,7 @@
 //! Append-only published content and deterministic date resolution.
 //! @cpt-dod:cpt-cf-bss-products-dod-versions-as-of:p1
 use super::{driver_failure, map_unique};
-use crate::infra::storage::{RepoError, entity::sku_version};
+use crate::infra::storage::{RepoError, RepoRefusal, entity::sku_version};
 use bss_products_sdk::models::{SkuContent, SkuVersion};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
 use time::{Date, OffsetDateTime};
@@ -49,7 +49,7 @@ pub async fn append_version(
         .await
         .map_err(|e| driver_failure("latest version".into(), e))?;
     if latest.is_some_and(|v| effective_from < v.effective_from) {
-        return Err(RepoError::Db("VERSION_ORDER".into()));
+        return Err(RepoError::Refused(RepoRefusal::VersionOrder));
     }
     let model = sku_version::ActiveModel {
         sku_id: Set(sku_id),

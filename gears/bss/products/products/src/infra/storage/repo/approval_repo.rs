@@ -217,8 +217,10 @@ impl<'a> Store<DbTx<'a>> for ProductsApprovalStore {
             .exec(runner)
             .await
             .map_err(|e| {
+                // Two votes of one actor that both passed `already_voted`: the loser's 409
+                // `DUPLICATE_VOTE`, never a store failure's 500 (RS-32).
                 if e.is_unique_violation() {
-                    ApprovalError::Store("DUPLICATE decision for actor and generation".into())
+                    ApprovalError::DuplicateVote
                 } else {
                     store_err("insert decision", e)
                 }

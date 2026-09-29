@@ -83,6 +83,50 @@ pub enum RepoError {
     /// coincidental, not a shared mechanism.
     #[error("products repo: corrupt stored value: {0}")]
     CorruptRow(String),
+
+    /// A refusal this repository decides itself: a unique index a write met, or a consistency
+    /// rule of the write. Typed, so each caller maps it in an exhaustive match (RS-16), not by
+    /// comparing a string.
+    #[error("products repo refusal: {}", .0.code())]
+    Refused(RepoRefusal),
+}
+
+/// The refusals of [`RepoError::Refused`], one per code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoRefusal {
+    /// `uq_products_sku_code`: the tenant has a SKU with this code.
+    SkuCodeTaken,
+    /// `uq_products_sku_name`: the tenant has a SKU with this name.
+    SkuNameTaken,
+    /// `uq_products_category_code`: the tenant has a category with this code.
+    CategoryCodeTaken,
+    /// `uq_products_category_default`: another category became the default (P-D-218).
+    CategoryDefaultTaken,
+    /// `uq_products_sku_reference_live`: the logical reference is live on a SKU.
+    ReferenceExists,
+    /// The category a write names is retired.
+    CategoryRetired,
+    /// The category a write names is not the tenant's.
+    CategoryNotFound,
+    /// A version's `effective_from` is before the latest version's.
+    VersionOrder,
+}
+
+impl RepoRefusal {
+    /// The refusal's stable code, the one the doors answer.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::SkuCodeTaken => "SKU_CODE_TAKEN",
+            Self::SkuNameTaken => "SKU_NAME_TAKEN",
+            Self::CategoryCodeTaken => "CATEGORY_CODE_TAKEN",
+            Self::CategoryDefaultTaken => "CATEGORY_DEFAULT_TAKEN",
+            Self::ReferenceExists => "REFERENCE_EXISTS",
+            Self::CategoryRetired => "CATEGORY_RETIRED",
+            Self::CategoryNotFound => "CATEGORY_NOT_FOUND",
+            Self::VersionOrder => "VERSION_ORDER",
+        }
+    }
 }
 
 impl RepoError {
@@ -105,7 +149,7 @@ impl RepoError {
     pub fn to_db_err(&self) -> DbErr {
         match self {
             Self::Driver { source, .. } => source.clone(),
-            Self::Db(_) | Self::CorruptRow(_) => DbErr::Custom(self.to_string()),
+            Self::Db(_) | Self::CorruptRow(_) | Self::Refused(_) => DbErr::Custom(self.to_string()),
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::{
     api::rest::authz_error_to_canonical,
     authz::{access_scope, actions, resource_types},
     domain::{error::DomainError, validation::ValidationReport},
-    infra::storage::{entity::sku, repo},
+    infra::storage::{RepoError, entity::sku, repo},
 };
 use async_trait::async_trait;
 use authz_resolver_sdk::PolicyEnforcer;
@@ -43,8 +43,6 @@ impl BrowseCatalogProvider {
             &resource_types::SKU,
             actions::READ,
             None,
-            None,
-            true,
         )
         .await
         .map_err(|e| {
@@ -88,13 +86,10 @@ impl BrowseCatalogProvider {
             limit: u64::from(limit),
             after_code: cursor.filter(|s| !s.is_empty()).map(str::to_owned),
         };
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
+        let conn = self.db.conn().map_err(|e| no_connection(&e))?;
         let mut rows = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &query)
             .await
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
+            .map_err(|e| read_failure(&e))?;
         let more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
         let next_cursor = if more {
@@ -107,6 +102,28 @@ impl BrowseCatalogProvider {
             next_cursor,
         })
     }
+}
+
+/// A connection this read could not take (`Db::conn` refuses only inside a transaction): the
+/// repository's logged 500, its text off the wire (RS-09).
+fn no_connection(e: &toolkit_db::DbError) -> CanonicalError {
+    crate::api::rest::repo_error_to_canonical(&RepoError::Db(format!("catalog connection: {e}")))
+}
+
+/// A repository failure behind a catalog read. A pool that could not hand out a connection is the
+/// catalog that did not answer, a 503 with a fixed detail; any other failure (a statement, a row
+/// that does not read) is the repository's logged 500. The driver's text stays in the log, never
+/// in a wire detail (RS-07, RS-09).
+fn read_failure(e: &RepoError) -> CanonicalError {
+    if let RepoError::Driver {
+        source: sea_orm::DbErr::ConnectionAcquire(_) | sea_orm::DbErr::Conn(_),
+        ..
+    } = e
+    {
+        tracing::error!(error = %e, "bss-products: the catalog's database did not answer");
+        return catalog_unreachable("the product catalog's database did not answer");
+    }
+    crate::api::rest::repo_error_to_canonical(e)
 }
 
 pub(crate) fn invalid(field: &str, detail: impl Into<String>) -> CanonicalError {
@@ -180,10 +197,7 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         ids: &[Uuid],
     ) -> Result<Vec<CatalogSku>, CanonicalError> {
         let scope = self.scope(ctx).await?;
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
+        let conn = self.db.conn().map_err(|e| no_connection(&e))?;
         let mut rows = Vec::new();
         let mut seen = BTreeSet::new();
         for &id in ids {
@@ -192,7 +206,7 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
             }
             if let Some(s) = repo::find_sku(&conn, &scope, ctx.subject_tenant_id(), id)
                 .await
-                .map_err(|e| catalog_unreachable(e.to_string()))?
+                .map_err(|e| read_failure(&e))?
                 && matches!(s.lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
             {
                 rows.push(s);
@@ -218,10 +232,7 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         ctx: &SecurityContext,
     ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
         let scope = self.scope(ctx).await?;
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
+        let conn = self.db.conn().map_err(|e| no_connection(&e))?;
         let mut query = repo::SkuQuery {
             catalog_filter: None,
             lifecycle: Some(Lifecycle::Published),
@@ -232,7 +243,7 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         loop {
             let mut rows = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &query)
                 .await
-                .map_err(|e| catalog_unreachable(e.to_string()))?;
+                .map_err(|e| read_failure(&e))?;
             let more = rows.len() > 200;
             rows.truncate(200);
             query.after_code = rows.last().map(|s| s.code.clone());

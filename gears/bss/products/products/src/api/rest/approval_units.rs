@@ -11,7 +11,7 @@ use super::{
     unit_tx_to_canonical,
 };
 use crate::{
-    authz::actions,
+    authz::{actions, resource_types},
     domain::{
         approvals::{
             KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE, SkuProposal, Subject,
@@ -177,7 +177,13 @@ async fn approve(
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::APPROVE, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::APPROVE,
+    )
+    .await?;
     let body = json_body(body)?;
     vote(state, scope, ctx, id, Vote::Approve, Some(body), headers).await
 }
@@ -190,7 +196,13 @@ async fn reject(
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::APPROVE, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::APPROVE,
+    )
+    .await?;
     let body = json_body(body)?;
     vote(state, scope, ctx, id, Vote::Reject, Some(body), headers).await
 }
@@ -202,7 +214,13 @@ async fn withdraw(
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::SUBMIT,
+    )
+    .await?;
     vote(state, scope, ctx, id, Vote::Withdraw, None, headers).await
 }
 async fn list(
@@ -212,7 +230,13 @@ async fn list(
     query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::READ, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+    )
+    .await?;
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = q
@@ -273,7 +297,13 @@ async fn get(
     Path(id): Path<Uuid>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::READ, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+    )
+    .await?;
     let ttl = state.fence_ttl_minutes;
     let card = state
         .db

@@ -1106,8 +1106,6 @@ pub async fn test_db_with(
         &crate::authz::resource_types::SKU,
         crate::authz::actions::READ,
         Some(tenant),
-        None,
-        true,
     )
     .await
     .unwrap();
@@ -1209,8 +1207,6 @@ pub async fn repo_connection(
         &crate::authz::resource_types::SKU,
         crate::authz::actions::AUTHOR,
         Some(tenant),
-        None,
-        true,
     )
     .await
     .unwrap();

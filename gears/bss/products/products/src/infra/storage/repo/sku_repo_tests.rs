@@ -2,9 +2,9 @@
 use super::*;
 use crate::domain::category::NewCategory;
 use crate::domain::sku::NewSku;
-use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::*;
 use crate::infra::storage::repo::{HeadWrite, insert_category};
+use crate::infra::storage::{RepoError, RepoRefusal};
 use crate::test_support::test_db;
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use time::OffsetDateTime;
@@ -58,12 +58,30 @@ async fn duplicate_code_and_name_are_refused_by_the_database_with_their_own_code
     )
     .await
     .unwrap();
-    assert!(
-        matches!(insert_sku(&conn, &scope, tenant, new_sku("STORAGE", "Other", cat.id), tenant, now()).await, Err(RepoError::Db(c)) if c == "SKU_CODE_TAKEN")
-    );
-    assert!(
-        matches!(insert_sku(&conn, &scope, tenant, new_sku("OTHER", "Storage", cat.id), tenant, now()).await, Err(RepoError::Db(c)) if c == "SKU_NAME_TAKEN")
-    );
+    assert!(matches!(
+        insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            new_sku("STORAGE", "Other", cat.id),
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::SkuCodeTaken))
+    ));
+    assert!(matches!(
+        insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            new_sku("OTHER", "Storage", cat.id),
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::SkuNameTaken))
+    ));
 }
 #[tokio::test]
 async fn the_lock_is_conditional_and_the_second_taker_gets_false() {
@@ -215,7 +233,10 @@ async fn versions_append_and_resolve_as_of() {
         .await
         .unwrap(); // same day: allowed, the higher version wins
     assert!(
-        matches!(append_version(&conn, &scope, tenant, s.id, 4, d("2026-09-20"), &c3, now()).await, Err(RepoError::Db(code)) if code == "VERSION_ORDER"),
+        matches!(
+            append_version(&conn, &scope, tenant, s.id, 4, d("2026-09-20"), &c3, now()).await,
+            Err(RepoError::Refused(RepoRefusal::VersionOrder))
+        ),
         "no insertion before the latest date"
     );
     assert_eq!(
@@ -305,9 +326,22 @@ async fn categories_are_ordered_revision_guarded_and_retire_only_when_unused() {
             .collect::<Vec<_>>(),
         vec![first.id, cat.id]
     );
-    assert!(
-        matches!(insert_category(&conn,&scope,tenant,NewCategory {code:"z".into(),name:"Z2".into(),is_default:false,sort_order:0},now()).await,Err(RepoError::Db(c)) if c=="CATEGORY_CODE_TAKEN")
-    );
+    assert!(matches!(
+        insert_category(
+            &conn,
+            &scope,
+            tenant,
+            NewCategory {
+                code: "z".into(),
+                name: "Z2".into(),
+                is_default: false,
+                sort_order: 0
+            },
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::CategoryCodeTaken))
+    ));
     let patch = crate::domain::category::CategoryPatch {
         name: Some("Renamed".into()),
         ..Default::default()
@@ -349,9 +383,18 @@ async fn categories_are_ordered_revision_guarded_and_retire_only_when_unused() {
             .unwrap(),
         Some(HeadWrite::Written(_))
     ));
-    assert!(
-        matches!(insert_sku(&conn,&scope,tenant,new_sku("b","b",first.id),tenant,now()).await,Err(RepoError::Db(c)) if c=="CATEGORY_RETIRED")
-    );
+    assert!(matches!(
+        insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            new_sku("b", "b", first.id),
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::CategoryRetired))
+    ));
     assert!(
         retire_category_if_unused(&conn, &scope, tenant, uuid::Uuid::new_v4(), now())
             .await
@@ -398,9 +441,21 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
     )
     .await
     .unwrap();
-    assert!(
-        matches!(reserve_reference(&conn,&scope,tenant,s.id,"pricing",RefKind::PriceBookEntry,ref_id,tenant,now()).await,Err(RepoError::Db(c)) if c=="REFERENCE_EXISTS")
-    );
+    assert!(matches!(
+        reserve_reference(
+            &conn,
+            &scope,
+            tenant,
+            s.id,
+            "pricing",
+            RefKind::PriceBookEntry,
+            ref_id,
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::ReferenceExists))
+    ));
     for kind in [Fence::Retire, Fence::TypeChange] {
         assert!(matches!(
             fence_sku(

@@ -24,6 +24,7 @@ fn routes(s: Arc<crate::api::rest::ApiState>, o: &dyn toolkit::api::OpenApiRegis
         .merge(crate::api::rest::approval_units::router(s.clone(), o))
         .merge(crate::api::rest::approval_policy::router(s.clone(), o))
         .merge(crate::api::rest::references::router(s.clone(), o))
+        .merge(crate::api::rest::browse::router(s.clone(), o))
         .merge(crate::api::rest::usage_types::router(s, o))
 }
 struct Fixture {
@@ -1011,6 +1012,106 @@ impl authz_resolver_sdk::AuthZResolverApi for ActionResolver {
         })
     }
 }
+/// The action each served operation's door asks the PDP, by `operationId`. The release of a
+/// reference is `submit` for a caller that owns no reference (the operator route).
+const DOOR_ACTIONS: &[(&str, &str)] = &[
+    ("bss_products.create_category", "author"),
+    ("bss_products.list_categories", "read"),
+    ("bss_products.get_category", "read"),
+    ("bss_products.update_category", "author"),
+    ("bss_products.retire_category", "author"),
+    ("bss_products.create_sku", "author"),
+    ("bss_products.list_skus", "read"),
+    ("bss_products.count_skus", "read"),
+    ("bss_products.get_sku", "read"),
+    ("bss_products.update_sku_draft", "author"),
+    ("bss_products.delete_sku_draft", "author"),
+    ("bss_products.sku_versions", "read"),
+    ("bss_products.sku_version_as_of", "read"),
+    ("bss_products.sku_references", "read"),
+    ("bss_products.sku_history", "read"),
+    ("bss_products.submit_sku", "submit"),
+    ("bss_products.change_sku", "submit"),
+    ("bss_products.retire_sku", "submit"),
+    ("bss_products.unfence_sku", "submit"),
+    ("bss_products.list_approval_units", "read"),
+    ("bss_products.get_approval_unit", "read"),
+    ("bss_products.approve_unit", "approve"),
+    ("bss_products.reject_unit", "approve"),
+    ("bss_products.withdraw_unit", "submit"),
+    ("bss_products.get_approval_policy", "settings"),
+    ("bss_products.put_approval_policy", "settings"),
+    ("bss_products.delete_approval_policy_override", "settings"),
+    ("bss_products.reserve_reference", "reference"),
+    ("bss_products.confirm_reference", "reference"),
+    ("bss_products.release_reference", "submit"),
+    ("bss_products.browse", "read"),
+    ("bss_products.list_usage_types", "author"),
+];
+
+/// Every operation `routes` serves, from the `OpenAPI` it registers, as the method, the concrete
+/// path this suite calls and the action its door asks (RT-01): an operation without a row in
+/// [`DOOR_ACTIONS`], or a row that names no served operation, fails here. A SKU path names the
+/// fixture's SKU; any other id is fresh.
+fn served_doors(f: &Fixture) -> Vec<(Method, String, &'static str)> {
+    let openapi = toolkit::api::OpenApiRegistryImpl::new();
+    // Registering the routes fills the registry; the router itself is not served here.
+    drop(routes(f.state.clone(), &openapi));
+    let api = serde_json::to_value(
+        openapi
+            .build_openapi(&toolkit::api::OpenApiInfo::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let table: std::collections::BTreeMap<&str, &'static str> =
+        DOOR_ACTIONS.iter().copied().collect();
+    let mut served = std::collections::BTreeSet::new();
+    let mut doors = Vec::new();
+    for (template, item) in api["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            let Some(id) = operation["operationId"].as_str() else {
+                continue;
+            };
+            let action = *table
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} is served and has no row in DOOR_ACTIONS"));
+            served.insert(id.to_owned());
+            let path = template
+                .strip_prefix("/bss-products/v1")
+                .unwrap()
+                .replace("/skus/{id}", &format!("/skus/{}", f.id))
+                .replace("{id}", &Uuid::new_v4().to_string())
+                .replace("{kind}", "sku_publish");
+            let path = match id {
+                "bss_products.sku_version_as_of" => format!("{path}?date=2026-09-27"),
+                "bss_products.browse" => format!("{path}?kind=sku"),
+                _ => path,
+            };
+            doors.push((
+                Method::from_bytes(method.to_uppercase().as_bytes()).unwrap(),
+                path,
+                action,
+            ));
+        }
+    }
+    let rows: std::collections::BTreeSet<String> =
+        table.keys().map(|id| (*id).to_owned()).collect();
+    assert_eq!(
+        served, rows,
+        "a row of DOOR_ACTIONS names no served operation"
+    );
+    doors
+}
+
+/// The position [`ActionResolver`] records for `action`.
+fn action_seen(action: &str) -> usize {
+    crate::authz::actions::ALL
+        .iter()
+        .position(|a| *a == action)
+        .unwrap()
+        + 1
+}
+
 #[tokio::test]
 async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
     let f = Fixture::new(1).await;
@@ -1024,70 +1125,14 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
     let app = routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
         .layer(axum::Extension(enforcer));
     let sku_path = format!("/skus/{}", f.id);
-    let category_path = format!("/categories/{}", Uuid::new_v4());
-    let unit_path = format!("/approval-units/{}", Uuid::new_v4());
-    let reference_path = format!("/references/{}", Uuid::new_v4());
-    let cases = vec![
-        (Method::POST, "/categories".into(), "author"),
-        (Method::GET, "/categories".into(), "read"),
-        (Method::PATCH, category_path.clone(), "author"),
-        (Method::POST, format!("{category_path}/retire"), "author"),
-        (Method::POST, "/skus".into(), "author"),
-        (Method::GET, "/skus".into(), "read"),
-        (Method::GET, sku_path.clone(), "read"),
-        (Method::PATCH, sku_path.clone(), "author"),
-        (Method::GET, format!("{sku_path}/versions"), "read"),
-        (Method::GET, format!("{sku_path}/references"), "read"),
-        (Method::POST, format!("{sku_path}/submit"), "submit"),
-        (Method::POST, format!("{sku_path}/changes"), "submit"),
-        (Method::POST, format!("{sku_path}/retire"), "submit"),
-        (Method::POST, format!("{sku_path}/unfence"), "submit"),
-        (Method::GET, "/approval-units".into(), "read"),
-        (Method::GET, unit_path.clone(), "read"),
-        (Method::POST, format!("{unit_path}/approve"), "approve"),
-        (Method::POST, format!("{unit_path}/reject"), "approve"),
-        (Method::POST, format!("{unit_path}/withdraw"), "submit"),
-        (Method::GET, "/approval-policy".into(), "settings"),
-        (Method::PUT, "/approval-policy".into(), "settings"),
-        (
-            Method::DELETE,
-            "/approval-policy/sku_publish".into(),
-            "settings",
-        ),
-        (
-            Method::POST,
-            format!("{sku_path}/references/reserve"),
-            "reference",
-        ),
-        (
-            Method::POST,
-            format!("{reference_path}/confirm"),
-            "reference",
-        ),
-        (Method::DELETE, reference_path, "submit"),
-        (Method::DELETE, sku_path.clone(), "author"),
-        (Method::GET, "/usage-types".into(), "author"),
-        (Method::GET, "/skus/counts".into(), "read"),
-        (Method::GET, format!("{sku_path}/history"), "read"),
-        (
-            Method::GET,
-            format!("{sku_path}/versions/as-of?date=2026-09-27"),
-            "read",
-        ),
-        (Method::GET, category_path.clone(), "read"),
-    ];
-    assert_eq!(cases.len(), 31);
-    for (method, path, action) in cases {
+    for (method, path, action) in served_doors(&f) {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;
         assert_eq!(status, 403, "{method} {path}: {b}");
         assert_eq!(
             seen.load(std::sync::atomic::Ordering::Relaxed),
-            crate::authz::actions::ALL
-                .iter()
-                .position(|a| *a == action)
-                .unwrap()
-                + 1
+            action_seen(action),
+            "{method} {path} asks {action}"
         );
         let response = app
             .clone()
@@ -1150,6 +1195,104 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         .0,
         200
     );
+}
+/// O1 (P-D-222): a REST caller whose context asserts the pricing system actor (the subject type
+/// `bss-pricing.system` and the id `PRICING_SYSTEM_ACTOR`, which a token's claims can carry) is
+/// judged by the PDP at every served door, as any caller is. Under a PDP that allows nothing,
+/// every door answers 403 after asking its own action: no door honours the registry's in-process
+/// trust of that actor.
+#[tokio::test]
+async fn a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass() {
+    let f = Fixture::new(1).await;
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app =
+        routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new()).layer(axum::Extension(
+            authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
+                id: None,
+                allowed: None,
+                tenant: f.tenant,
+                seen: seen.clone(),
+            })),
+        ));
+    let asserted = SecurityContext::builder()
+        .subject_id(bss_products_sdk::PRICING_SYSTEM_ACTOR)
+        .subject_tenant_id(f.tenant)
+        .subject_type("bss-pricing.system")
+        .token_scopes(vec!["*".into()])
+        .build()
+        .unwrap();
+    let doors = served_doors(&f);
+    assert_eq!(doors.len(), DOOR_ACTIONS.len());
+    for (method, path, action) in doors {
+        seen.store(0, std::sync::atomic::Ordering::Relaxed);
+        let (status, b) = call(&app, &asserted, method.clone(), &path, json!({}), None).await;
+        assert_eq!(status, 403, "{method} {path}: {b}");
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::Relaxed),
+            action_seen(action),
+            "{method} {path}: the PDP judged {action}"
+        );
+    }
+}
+/// O1 (P-D-222): a REST door never records the registry's trust either. A reserve through the
+/// door by a principal whose token asserts a `.system` subject type is audited as a subject's
+/// act; only the in-process registry records the pricing system actor's act as the system's.
+#[tokio::test]
+async fn a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts() {
+    use bss_products_sdk::{PRICING_SYSTEM_ACTOR, ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let asserting = SecurityContext::builder()
+        .subject_id(Uuid::from_u128(42))
+        .subject_tenant_id(f.tenant)
+        .subject_type("bss-pricing.system")
+        .token_scopes(vec!["*".into()])
+        .build()
+        .unwrap();
+    let (status, b) = call(
+        &f.app,
+        &asserting,
+        Method::POST,
+        &format!("/skus/{}/references/reserve", f.id),
+        json!({"owner":"pricing","kind":"price_book_entry","ref_id":Uuid::new_v4()}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{b}");
+    let system = SecurityContext::builder()
+        .subject_id(PRICING_SYSTEM_ACTOR)
+        .subject_type("bss-pricing.system")
+        .subject_tenant_id(f.tenant)
+        .build()
+        .unwrap();
+    local(&f, "pricing")
+        .reserve(
+            &system,
+            f.tenant,
+            f.id,
+            ReferenceKind::PriceBookEntry,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    for (actor, kind) in [
+        (Uuid::from_u128(42), "subject"),
+        (PRICING_SYSTEM_ACTOR, "system"),
+    ] {
+        let reason = raw_string_opt(
+            &f.dsn,
+            &format!(
+                "SELECT reason AS v FROM products_audit_log WHERE action = 'reference.reserve' \
+                 AND {}",
+                id_matches("actor_ref", actor)
+            ),
+        )
+        .await;
+        assert_eq!(
+            reason.as_deref(),
+            Some(format!("owner=pricing; actor_kind={kind}").as_str())
+        );
+    }
 }
 #[tokio::test]
 async fn reject_refreshes_drift_and_commits_without_counting_the_rejection() {
@@ -1892,6 +2035,46 @@ async fn bound_registry_reserve_confirm_release_states_and_owner_isolation() {
             .1,
         ReferenceState::Reserved
     );
+}
+/// RS-04 / RS-05: a reservation whose insert loses the live-reference index on both attempts is
+/// 409 `REFERENCE_EXISTS`, at the door and through the registry, never a 500. The loss is made
+/// lasting by an extra unique index over the logical reference with no `state` condition: the
+/// released attempt holds it, and the live read each attempt makes never sees a released row.
+#[tokio::test]
+async fn a_reservation_that_loses_the_index_twice_is_409_reference_exists() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let ref_id = Uuid::new_v4();
+    let (status, r) = f.reserve(ref_id).await;
+    assert_eq!(status, 201, "{r}");
+    let (status, b) = f.release(&r["reservation_id"]).await;
+    assert_eq!(status, 200, "{b}");
+    {
+        use sea_orm::{ConnectionTrait, Database};
+        let raw = Database::connect(&f.dsn).await.unwrap();
+        raw.execute_unprepared(
+            "CREATE UNIQUE INDEX every_attempt_of_a_reference ON products_sku_reference \
+             (tenant_id, owner_gear, ref_kind, ref_id)",
+        )
+        .await
+        .unwrap();
+        raw.close().await.ok();
+    }
+    let (status, b) = f.reserve(ref_id).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "REFERENCE_EXISTS");
+    let error = local(&f, "pricing")
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::PriceBookEntry,
+            ref_id,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(canonical_code(error), "REFERENCE_EXISTS");
 }
 #[tokio::test]
 async fn bound_registry_refusals_match_rest_codes() {

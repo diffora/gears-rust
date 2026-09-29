@@ -234,3 +234,77 @@ fn a_report_carrying_a_catalog_denial_is_403() {
     assert_eq!(canonical.status_code(), 403);
     assert_eq!(code_of(&canonical), Some("USAGE_TYPE_FORBIDDEN"));
 }
+
+/// W1a left the engine's `UnitNotFound` on the `other` arm, a 409. It is the unit's 404, naming the
+/// unit as the door's own pre-load does.
+#[test]
+fn an_engine_unit_not_found_is_the_units_404() {
+    let unit_id = uuid::Uuid::new_v4();
+    let canonical = CanonicalError::from(DomainError::from(
+        bss_approval::ApprovalError::UnitNotFound { unit_id },
+    ));
+    assert_eq!(canonical.status_code(), 404);
+    assert_eq!(
+        canonical.resource_name(),
+        Some(unit_id.to_string().as_str())
+    );
+    assert_eq!(
+        canonical.resource_type(),
+        Some(crate::authz::labels::APPROVAL_UNIT)
+    );
+}
+
+/// RS-25: a refusal names the resource it refuses, one of the gear's registered authz labels,
+/// never the unregistered `product.v1~` every refusal carried.
+#[test]
+fn a_refusal_names_the_resource_it_refuses() {
+    use crate::authz::labels;
+    use crate::domain::error::ApprovalRefusal;
+    let id = uuid::Uuid::new_v4();
+    for (err, expected) in [
+        (DomainError::NotFound { what: "sku", id }, labels::SKU),
+        (
+            DomainError::NotFound {
+                what: "category",
+                id,
+            },
+            labels::CATEGORY,
+        ),
+        (
+            DomainError::NotFound {
+                what: "approval_unit",
+                id,
+            },
+            labels::APPROVAL_UNIT,
+        ),
+        (
+            DomainError::NotFound {
+                what: "reference",
+                id,
+            },
+            labels::SKU,
+        ),
+        (
+            DomainError::Approval(ApprovalRefusal {
+                code: "DUPLICATE_VOTE",
+                detail: "vote".into(),
+            }),
+            labels::APPROVAL_UNIT,
+        ),
+        (
+            DomainError::StaleUnit { generation: 2 },
+            labels::APPROVAL_UNIT,
+        ),
+        (
+            DomainError::Conflict {
+                code: "SKU_CODE_TAKEN",
+                detail: "taken".into(),
+            },
+            labels::SKU,
+        ),
+    ] {
+        let name = format!("{err:?}");
+        let canonical = CanonicalError::from(err);
+        assert_eq!(canonical.resource_type(), Some(expected), "{name}");
+    }
+}

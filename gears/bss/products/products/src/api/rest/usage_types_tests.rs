@@ -445,3 +445,29 @@ async fn a_search_keeps_the_pickers_refusals() {
         StatusCode::NOT_IMPLEMENTED
     );
 }
+
+/// RS-39: `kind` is the collector's closed set, `counter` or `gauge`. Any other value is a 400
+/// before a catalog is asked, so it never reaches the collector's filter.
+#[tokio::test]
+async fn a_kind_outside_the_closed_set_is_400_and_asks_nobody() {
+    let tenant = Uuid::new_v4();
+    let catalog = Arc::new(Recording::default());
+    let (app, _) = rest_app_with_catalog(tenant, router, catalog.clone(), "registry").await;
+    for bad in ["bogus", "Counter", "counter'%20or%20kind%20eq%20'gauge"] {
+        let r = get(&app, tenant, &format!("{PICKER}?kind={bad}")).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert!(
+        catalog.asked.lock().unwrap().is_empty(),
+        "a refused kind asks nobody"
+    );
+    for kind in ["counter", "gauge"] {
+        assert_eq!(
+            get(&app, tenant, &format!("{PICKER}?kind={kind}"))
+                .await
+                .status(),
+            StatusCode::OK,
+            "{kind}"
+        );
+    }
+}

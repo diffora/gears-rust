@@ -236,3 +236,54 @@ async fn a_wildcard_in_the_search_text_is_a_literal() {
         assert_eq!(codes, expected, "search {text}");
     }
 }
+
+/// RS-06: a refusal the browse door answers keeps its class through the REST client: a caller the
+/// door refused stays 403, a query it refused 400 and a missing row 404, never a retryable 503.
+/// A 5xx other than 503 stays the catalog that did not answer.
+#[test]
+fn a_browse_refusal_keeps_its_class_through_the_rest_client() {
+    use crate::infra::catalog_rest_client::catalog_error_from_http;
+    use toolkit_canonical_errors::Problem;
+    for refusal in [
+        SkuResource::permission_denied()
+            .with_reason("a PDP reason")
+            .create(),
+        invalid("$filter", "a filter that does not parse"),
+        SkuResource::not_found("sku x").with_resource("x").create(),
+    ] {
+        let status = refusal.status_code();
+        let body = serde_json::to_vec(&Problem::from(refusal)).unwrap();
+        let error = catalog_error_from_http(status, None, &body);
+        assert_eq!(error.status_code(), status);
+    }
+    assert_eq!(
+        catalog_error_from_http(502, None, b"bad gateway").status_code(),
+        503
+    );
+}
+
+/// RS-07 / RS-09: a storage failure behind the catalog is the repository's logged 500, with the
+/// driver's text kept off the wire; it was a retryable 503 whose detail was the driver's message.
+#[tokio::test]
+async fn a_storage_failure_behind_the_catalog_is_a_500_without_driver_text() {
+    use toolkit_canonical_errors::Problem;
+    let (db, _scope, tenant, dsn) = test_db().await;
+    drop_table(&dsn, "products_sku").await;
+    let ctx = authed_ctx(tenant);
+    let provider = BrowseCatalogProvider::new(db.db(), Arc::new(flat_in_enforcer(tenant)));
+    for error in [
+        provider
+            .search_skus(&ctx, Some("x"), 10, None)
+            .await
+            .unwrap_err(),
+        provider
+            .get_skus(&ctx, &[Uuid::new_v4()])
+            .await
+            .unwrap_err(),
+        provider.list_tax_categories(&ctx).await.unwrap_err(),
+    ] {
+        assert_eq!(error.status_code(), 500);
+        let wire = serde_json::to_string(&Problem::from(error)).unwrap();
+        assert!(!wire.contains("products_sku"), "{wire}");
+    }
+}

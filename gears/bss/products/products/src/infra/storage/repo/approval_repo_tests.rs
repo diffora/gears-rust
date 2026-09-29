@@ -132,7 +132,11 @@ async fn store_round_trip_cas_duplicate_refresh_and_terminal_state() {
             assert!(!store.bump_version(tx, id, 1).await?);
             let vote = decision(id);
             store.insert_decision(tx, &vote).await?;
-            assert!(store.insert_decision(tx, &vote).await.is_err());
+            // RS-32: the unique index's loser is the typed duplicate vote (409), not a store failure.
+            assert!(matches!(
+                store.insert_decision(tx, &vote).await,
+                Err(ApprovalError::DuplicateVote)
+            ));
             let refreshed = vec![ItemRef {
                 after: serde_json::json!({"name":"updated"}),
                 ..items[0].clone()

@@ -87,10 +87,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "The usage-type catalog the publish gate resolves against, read as the caller \
              (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; \
-             `limit` defaults to 50 and is clamped at 200. Over the usage collector, `q` searches \
+             `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches \
              at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` \
              and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses \
-             the caller; 400 for a malformed query, for a search cursor (one cut with `q`) \
+             the caller; 400 for a malformed query, a `kind` outside counter and gauge, for a search cursor (one cut with `q`) \
              replayed with another `q` or `kind` or without `q`, and for a cursor cut without \
              `q` replayed under any `q` (without `q`, such a cursor passes to the collector \
              unchecked); 501 when no catalog is configured; 503 when the configured one does not \
@@ -152,8 +152,6 @@ async fn list_usage_types(
         &resource_types::SKU,
         actions::AUTHOR,
         Some(ctx.subject_tenant_id()),
-        None,
-        true,
     )
     .await
     .map_err(|e| {
@@ -167,6 +165,13 @@ async fn list_usage_types(
     let limit = q.limit.unwrap_or(DEFAULT_LIMIT);
     if limit == 0 {
         return Err(refuse("limit", "limit must be at least one"));
+    }
+    // `kind` is the collector's closed set: any other value is refused here, before a catalog is
+    // asked, and never reaches a filter (RS-39).
+    if let Some(kind) = q.kind.as_deref()
+        && kind.parse::<usage_collector_sdk::UsageKind>().is_err()
+    {
+        return Err(refuse("kind", "kind is counter or gauge"));
     }
     let page: UsageTypePage = state
         .usage_type_catalog

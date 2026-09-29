@@ -7,7 +7,7 @@ mod pg_support;
 use bss_products::{
     domain::category::{CategoryPatch, NewCategory},
     infra::storage::{
-        RepoError,
+        RepoError, RepoRefusal,
         repo::{self, HeadWrite},
     },
 };
@@ -100,7 +100,7 @@ impl Fixture {
 
 fn is_default_taken(result: Result<impl std::fmt::Debug, RepoError>) {
     match result {
-        Err(RepoError::Db(code)) => assert_eq!(code, "CATEGORY_DEFAULT_TAKEN"),
+        Err(RepoError::Refused(RepoRefusal::CategoryDefaultTaken)) => {}
         other => panic!("expected CATEGORY_DEFAULT_TAKEN, got {other:?}"),
     }
 }
@@ -195,7 +195,7 @@ async fn two_moves_on_two_connections_leave_one_default() {
         "{won:?}"
     );
     match lost {
-        Err(TxError::Repo(RepoError::Db(code))) => assert_eq!(code, "CATEGORY_DEFAULT_TAKEN"),
+        Err(TxError::Repo(RepoError::Refused(RepoRefusal::CategoryDefaultTaken))) => {}
         other => panic!("expected CATEGORY_DEFAULT_TAKEN, got {other:?}"),
     }
     let defaults: Vec<Uuid> = repo::list_categories(&f.db.conn().unwrap(), &f.scope, f.tenant)

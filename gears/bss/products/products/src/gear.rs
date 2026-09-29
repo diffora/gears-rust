@@ -108,7 +108,10 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
         // chain (P-D-199): they come from `outbox_migrations()`, imported
         // rather than gear-authored. Appended, never declared: no `CreateProductsOutbox`-shaped
         // migration exists anywhere in `crate::infra::storage::migrations`.
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "OUTBOX_TABLE_PREFIX is a fixed, valid identifier; `migrations()` cannot fail"
+        )]
         let outbox_migrations =
             toolkit_db::outbox::outbox_migrations_with_prefix(OUTBOX_TABLE_PREFIX).expect(
                 "OUTBOX_TABLE_PREFIX is a fixed compile-time identifier, validated once here \
