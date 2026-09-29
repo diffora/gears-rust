@@ -950,17 +950,8 @@ async fn due(f: &Fixture) -> Vec<bss_pricing::infra::storage::entity::reference_
 }
 /// The stored units of one revision, as the queue lists them.
 async fn units_of(f: &Fixture, revision: Uuid) -> Vec<Value> {
-    let (s, b, _) = f
-        .call(
-            "GET",
-            &format!("/approval-units?kind=plan_revision&ref_id={revision}"),
-            json!({}),
-            None,
-            None,
-        )
-        .await;
-    assert_eq!(s, 200, "{b}");
-    b["items"].as_array().unwrap().clone()
+    f.all_units(&format!("kind=plan_revision&ref_id={revision}"))
+        .await
 }
 /// What was published is what the unit fingerprinted: the published revision's items are
 /// exactly the unit's `after`, so no item reached a revision after its lock.

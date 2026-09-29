@@ -67,6 +67,17 @@ impl Kind {
     }
 }
 
+impl Kind {
+    /// [`Kind::impact`] from a reading of the plans loaded once for a page of units (D-458).
+    #[must_use]
+    pub fn impact_from(self, reading: &super::prices::PlansReading, items: &[ItemRef]) -> Value {
+        match self {
+            Self::Prices => super::prices::impact_from(reading, items),
+            Self::PlanRevision => plan_revisions::impact(),
+        }
+    }
+}
+
 /// The subject one unit is judged by, chosen by its kind.
 #[derive(Clone)]
 pub enum Subject {

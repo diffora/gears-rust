@@ -123,17 +123,7 @@ async fn plan_of(f: &Fixture, id: Uuid) -> Value {
     b
 }
 async fn units(f: &Fixture) -> Vec<Value> {
-    let (s, b, _) = f
-        .call(
-            "GET",
-            "/approval-units?kind=plan_revision",
-            json!({}),
-            None,
-            None,
-        )
-        .await;
-    assert_eq!(s, 200, "{b}");
-    b["items"].as_array().unwrap().clone()
+    f.all_units("kind=plan_revision").await
 }
 async fn checks(f: &Fixture, revision: Uuid) -> Value {
     let (s, b, _) = f

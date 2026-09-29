@@ -654,12 +654,10 @@ async fn a_decided_unit_that_named_a_deleted_book_stays_readable() {
     )
     .await;
     assert_eq!(card["decisions"].as_array().unwrap().len(), 1, "{card}");
-    let listed = ok(
-        &f,
-        &format!("/approval-units?book_id={}", book["id"].as_str().unwrap()),
-    )
-    .await;
-    assert_eq!(listed["items"].as_array().unwrap().len(), 2, "{listed}");
+    let listed = f
+        .all_units(&format!("book_id={}", book["id"].as_str().unwrap()))
+        .await;
+    assert_eq!(listed.len(), 2, "{listed:?}");
 }
 
 /// An entry create in flight when its book is deleted loses cleanly: its Tx B finds no book

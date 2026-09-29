@@ -271,63 +271,114 @@ pub async fn plans_reading(
     entries: &BTreeSet<Uuid>,
     today: Date,
 ) -> Result<Vec<Value>, RepoError> {
-    let scope = AccessScope::for_tenant(tenant);
-    let ids: Vec<Uuid> = entries.iter().copied().collect();
-    let revisions: Vec<Uuid> = plan_item_repo::naming_entries(tx, &scope, tenant, &ids)
+    Ok(PlansReading::load(tx, tenant, entries, today)
         .await?
-        .into_iter()
-        .map(|i| i.revision_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let found = plan_revision_repo::find_many(tx, &scope, tenant, &revisions).await?;
-    let held: BTreeSet<Uuid> = found.iter().map(|r| r.id).collect();
-    if let Some(lost) = revisions.iter().find(|id| !held.contains(id)) {
-        return Err(RepoError::CorruptRow(format!(
-            "plan item names lost revision {lost}"
-        )));
-    }
-    let plans: Vec<Uuid> = found
-        .iter()
-        .map(|r| r.plan_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let siblings = plan_revision_repo::for_plans(tx, &scope, tenant, &plans).await?;
-    let effective: BTreeMap<Uuid, &'static str> =
-        crate::api::rest::authoring::dto::effective_revisions(&siblings, today)?
+        .rows(entries))
+}
+/// The plan revisions that read a set of entries, loaded once for many readers (the unit list's
+/// page, D-458): which revisions name each entry, and each revision's row as [`plans_reading`]
+/// answers it.
+pub struct PlansReading {
+    by_entry: BTreeMap<Uuid, BTreeSet<Uuid>>,
+    rows: BTreeMap<Uuid, PlanRow>,
+}
+/// One revision's row, in its sort order: plan code, revision number, plan, revision, state.
+type PlanRow = (String, i32, Uuid, Uuid, String);
+impl PlansReading {
+    /// The revisions naming any of `entries`, in [`plans_reading`]'s four statements.
+    /// # Errors
+    /// Storage failures; a revision or plan an item points at that is gone is a corrupt row.
+    pub async fn load(
+        tx: &impl DBRunner,
+        tenant: Uuid,
+        entries: &BTreeSet<Uuid>,
+        today: Date,
+    ) -> Result<Self, RepoError> {
+        let scope = AccessScope::for_tenant(tenant);
+        let ids: Vec<Uuid> = entries.iter().copied().collect();
+        let mut by_entry: BTreeMap<Uuid, BTreeSet<Uuid>> = BTreeMap::new();
+        for item in plan_item_repo::naming_entries(tx, &scope, tenant, &ids).await? {
+            if let Some(entry) = item.price_book_entry_id {
+                by_entry.entry(entry).or_default().insert(item.revision_id);
+            }
+        }
+        let revisions: Vec<Uuid> = by_entry
+            .values()
+            .flatten()
+            .copied()
+            .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|e| (e.id, e.state.as_str()))
             .collect();
-    let by_id: BTreeMap<Uuid, crate::infra::storage::entity::plan::Model> =
-        plan_repo::find_many(tx, &scope, tenant, &plans)
-            .await?
+        let found = plan_revision_repo::find_many(tx, &scope, tenant, &revisions).await?;
+        let held: BTreeSet<Uuid> = found.iter().map(|r| r.id).collect();
+        if let Some(lost) = revisions.iter().find(|id| !held.contains(id)) {
+            return Err(RepoError::CorruptRow(format!(
+                "plan item names lost revision {lost}"
+            )));
+        }
+        let plans: Vec<Uuid> = found
+            .iter()
+            .map(|r| r.plan_id)
+            .collect::<BTreeSet<_>>()
             .into_iter()
-            .map(|p| (p.id, p))
             .collect();
-    let mut rows = Vec::with_capacity(found.len());
-    for r in found {
-        let p = by_id
-            .get(&r.plan_id)
-            .ok_or_else(|| RepoError::CorruptRow(format!("revision {} has no plan", r.id)))?;
-        let state = effective
-            .get(&r.id)
-            .map_or_else(|| r.state.clone(), |s| (*s).to_owned());
-        rows.push((p.code.clone(), r.rev_no, p.id, r.id, state));
+        let siblings = plan_revision_repo::for_plans(tx, &scope, tenant, &plans).await?;
+        let effective: BTreeMap<Uuid, &'static str> =
+            crate::api::rest::authoring::dto::effective_revisions(&siblings, today)?
+                .into_iter()
+                .map(|e| (e.id, e.state.as_str()))
+                .collect();
+        let by_id: BTreeMap<Uuid, crate::infra::storage::entity::plan::Model> =
+            plan_repo::find_many(tx, &scope, tenant, &plans)
+                .await?
+                .into_iter()
+                .map(|p| (p.id, p))
+                .collect();
+        let mut rows = BTreeMap::new();
+        for r in found {
+            let p = by_id
+                .get(&r.plan_id)
+                .ok_or_else(|| RepoError::CorruptRow(format!("revision {} has no plan", r.id)))?;
+            let state = effective
+                .get(&r.id)
+                .map_or_else(|| r.state.clone(), |s| (*s).to_owned());
+            rows.insert(r.id, (p.code.clone(), r.rev_no, p.id, r.id, state));
+        }
+        Ok(Self { by_entry, rows })
     }
-    rows.sort();
-    Ok(rows
-        .into_iter()
-        .map(|(code, rev_no, plan_id, revision_id, state)| {
-            json!({
-                "plan_id": plan_id,
-                "code": code,
-                "revision_id": revision_id,
-                "rev_no": rev_no,
-                "state": state,
+    /// The rows of the revisions naming any of `entries`, each once, by plan code and revision
+    /// number.
+    #[must_use]
+    pub fn rows(&self, entries: &BTreeSet<Uuid>) -> Vec<Value> {
+        let revisions: BTreeSet<Uuid> = entries
+            .iter()
+            .filter_map(|e| self.by_entry.get(e))
+            .flatten()
+            .copied()
+            .collect();
+        let mut rows: Vec<_> = revisions
+            .iter()
+            .filter_map(|id| self.rows.get(id))
+            .cloned()
+            .collect();
+        rows.sort();
+        rows.into_iter()
+            .map(|(code, rev_no, plan_id, revision_id, state)| {
+                json!({
+                    "plan_id": plan_id,
+                    "code": code,
+                    "revision_id": revision_id,
+                    "rev_no": rev_no,
+                    "state": state,
+                })
             })
-        })
-        .collect())
+            .collect()
+    }
+}
+/// The entries a `prices` unit's items name.
+#[must_use]
+pub fn entries_of_items(items: &[ItemRef]) -> BTreeSet<Uuid> {
+    entries_of(items)
 }
 /// The live impact of a stored `prices` unit, recomputed on every read.
 /// # Errors
@@ -341,6 +392,12 @@ pub async fn live_impact(
     let today = OffsetDateTime::now_utc().date();
     let plans = plans_reading(tx, tenant, &entries, today).await?;
     Ok(impact_of(items.len(), entries.len(), &plans))
+}
+/// [`live_impact`] from a reading loaded for many units at once (D-458).
+#[must_use]
+pub fn impact_from(reading: &PlansReading, items: &[ItemRef]) -> Value {
+    let entries = entries_of(items);
+    impact_of(items.len(), entries.len(), &reading.rows(&entries))
 }
 fn by_entry(models: Vec<entity::price::Model>) -> BTreeMap<Uuid, Vec<entity::price::Model>> {
     let mut groups: BTreeMap<Uuid, Vec<entity::price::Model>> = BTreeMap::new();

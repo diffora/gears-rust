@@ -77,18 +77,9 @@ async fn a_plan_revision_unit_shows_its_own_impact_on_the_card_and_in_the_queue(
     assert_eq!(s, 200, "{card}");
     assert_eq!(card["kind"], "plan_revision");
     assert_eq!(card["impact"], impact, "{card}");
-    let (s, list, _) = f
-        .call(
-            "GET",
-            "/approval-units?kind=plan_revision",
-            json!({}),
-            None,
-            None,
-        )
-        .await;
-    assert_eq!(s, 200, "{list}");
-    assert_eq!(list["items"].as_array().unwrap().len(), 1, "{list}");
-    assert_eq!(list["items"][0]["impact"], impact, "{list}");
+    let list = f.all_units("kind=plan_revision").await;
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["impact"], impact, "{list:?}");
 }
 
 #[tokio::test]

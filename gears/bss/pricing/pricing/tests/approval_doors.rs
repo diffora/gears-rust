@@ -959,10 +959,7 @@ async fn a_changed_usage_structure_is_refused_at_submit_with_400() {
         "draft",
         "no unit was created"
     );
-    let (_, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(list["items"], json!([]));
+    assert_eq!(g.f.all_units("").await, Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -1342,10 +1339,7 @@ async fn simultaneous_claims_of_one_key_record_one_unit() {
         other == first || (other.0 == 409 && code(&other.1).contains("IDEMPOTENCY_KEY_IN_FLIGHT")),
         "the other claim replays or waits: {other:?}"
     );
-    let (_, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(list["items"].as_array().unwrap().len(), 1, "one act");
+    assert_eq!(g.f.all_units("").await.len(), 1, "one act");
 }
 
 #[tokio::test]
@@ -1501,11 +1495,11 @@ async fn a_common_date_past_an_approved_change_answers_400_pair_return_stale() {
     assert_eq!(status, 400, "{b}");
     assert!(code(&b).contains("PAIR_RETURN_STALE"), "{b}");
     assert_eq!(g.price(&pair[0]["id"]).await.state, "draft");
-    let (status, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(status, 200, "{list}");
-    assert_eq!(list["items"], json!([]), "no unit was recorded");
+    assert_eq!(
+        g.f.all_units("").await,
+        Vec::<Value>::new(),
+        "no unit was recorded"
+    );
 }
 
 // Docs F10 (D-392): the queue list and the publish-changes listing carry the same impact
@@ -1530,16 +1524,13 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     );
     let (status, receipt, _) = g.f.call("POST", &path, json!({}), None, Some("all")).await;
     assert_eq!(status, 201, "{receipt}");
-    let (status, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(status, 200, "{list}");
+    let list = g.f.all_units("").await;
     let card = g.card(&receipt["unit"]).await;
     assert_eq!(
-        list["items"][0]["impact"],
+        list[0]["impact"],
         json!({"prices":3,"entries":1,"plans":[],"subscriptions":unavailable})
     );
-    assert_eq!(list["items"][0]["impact"], card["impact"]);
+    assert_eq!(list[0]["impact"], card["impact"]);
 }
 
 // Behaviour LOW-3 (D-404): an entry delete cannot take another author's draft with it. Bob, who

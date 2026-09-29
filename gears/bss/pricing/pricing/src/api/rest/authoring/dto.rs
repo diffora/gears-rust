@@ -1046,9 +1046,12 @@ impl From<bss_approval::Unit> for PricingApprovalUnitDto {
         }
     }
 }
+/// One page of the unit list (D-458): its units, and the toolkit pager's `page_info`, whose
+/// `next_cursor` continues it.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingApprovalUnitList {
     pub items: Vec<PricingApprovalUnitDto>,
+    pub page_info: toolkit_odata::PageInfo,
 }
 /// A vote names the generation its reviewer saw; a reject needs a note.
 #[toolkit_macros::api_dto(request)]
@@ -1133,4 +1136,8 @@ pub(super) struct PricingApprovalUnitQuery {
     pub kind: Option<String>,
     pub ref_id: Option<Uuid>,
     pub book_id: Option<Uuid>,
+    /// Page size (D-458): 200 by default, clamped at 500.
+    pub limit: Option<u64>,
+    /// The opaque continuation of a page's `page_info.next_cursor`.
+    pub cursor: Option<String>,
 }

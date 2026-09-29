@@ -617,9 +617,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.list_approval_units")
         .summary("List the approval units")
         .description(
-            "Lists the tenant's approval units, filtered by state, kind and referenced aggregate, \
-             each with its stored snapshot and live impact. Refusals: 400 UNIT_STATE_INVALID or \
-             QUERY_INVALID.",
+            "One page of the tenant's approval units in submission order (D-458), filtered by \
+             state, kind and referenced aggregate, each with its stored snapshot, its decisions \
+             and its live impact. `limit` (default 200, clamped at 500) and `cursor` from \
+             `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 \
+             FILTER_MISMATCH for a cursor replayed with another state, kind or referenced \
+             aggregate; 400 for a cursor that does not read.",
         )
         .tag("Pricing")
         .authenticated()
@@ -628,6 +631,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .query_param("kind", false, "Approval kind")
         .query_param("ref_id", false, "Referenced aggregate id")
         .query_param("book_id", false, "Price book id")
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size (default 200, clamped at 500)",
+            "integer",
+        )
+        .query_param_typed("cursor", false, "Continuation from page_info", "string")
         .handler(list_approval_units)
         .json_response_with_schema::<dto::PricingApprovalUnitList>(
             openapi,
@@ -957,21 +967,55 @@ async fn list_approval_units(
         (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
         (a, b) => a.or(b),
     };
+    let filter = crate::infra::storage::repo::approval_repo::UnitListFilter {
+        state: state_filter,
+        kind: query.kind,
+        ref_id: reference,
+    };
+    let page = unit_page(&filter, query.limit, query.cursor.as_deref())?;
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, kind) = (scope.clone(), ctx.clone(), query.kind.clone());
+        let (scope, ctx, filter, page) = (scope.clone(), ctx.clone(), filter.clone(), page.clone());
         Box::pin(async move {
-            approvals::list_units(
-                tx,
-                &scope,
-                ctx.subject_tenant_id(),
-                state_filter,
-                kind.as_deref(),
-                reference,
-            )
-            .await
+            approvals::list_units(tx, &scope, ctx.subject_tenant_id(), &filter, &page).await
         })
     })
     .await
+}
+/// The unit list's page (D-458): `limit`, and `cursor` from a page's `page_info`, which carries a
+/// hash of the narrowing (`state`, `kind` and the referenced aggregate), so a cursor replayed
+/// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442).
+fn unit_page(
+    filter: &crate::infra::storage::repo::approval_repo::UnitListFilter,
+    limit: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    let digest = preconditions::request_digest(&serde_json::json!({
+        "state": filter.state.map(bss_approval::UnitState::as_str),
+        "kind": filter.kind,
+        "ref_id": filter.ref_id,
+    }))
+    .map_err(CanonicalError::from)?;
+    let hash = digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, b| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
+            hex
+        });
+    let mut query = toolkit_odata::ODataQuery::new().with_filter_hash(hash.clone());
+    if let Some(limit) = limit {
+        query = query.with_limit(limit);
+    }
+    if let Some(token) = cursor {
+        let cursor = toolkit_odata::CursorV1::decode(token).map_err(CanonicalError::from)?;
+        if cursor.f.as_deref() != Some(hash.as_str()) {
+            return Err(toolkit_odata::Error::FilterMismatch.into());
+        }
+        query = query.with_cursor(cursor);
+    }
+    Ok(query)
 }
 async fn get_approval_unit(
     Extension(state): Extension<Arc<AuthoringState>>,

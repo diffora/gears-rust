@@ -94,6 +94,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b |
+| D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
 
 ## Entries
 
@@ -828,3 +829,15 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **Products** applies the same caps in its own decision (fix run W1b). The vhp-core e2e would add one refusal: a book created with a 65-character code is 400 FIELD_TOO_LONG on code.
 
 **Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps").
+
+#### D-458 [M] The approval-unit list pages and reads its page set-based
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** GET /bss-pricing/v1/approval-units answered every unit of the tenant that its filters kept, and read each unit's items, its decisions and its impact's plans with statements of their own: a tenant with many units got an unbounded answer in a number of statements that grew with it.
+- **The page.** The list takes limit (200 by default, clamped at 500, the book list's rule, D-442) and cursor, the opaque continuation of a page's page_info.next_cursor, the toolkit pager's cursor as the book list's. The order stays submission order (submitted_at), with the unit id breaking a tie. The answer is { items, page_info }: items keeps its shape, and page_info (next_cursor, prev_cursor, limit) is added. The cursor carries a hash of the narrowing (state, kind and the referenced aggregate, ref_id or book_id), so a cursor replayed under another narrowing is 400 FILTER_MISMATCH. A cursor that does not read is 400, and a limit that is not a number 400 QUERY_INVALID.
+- **The reads.** A page reads its units, then all their items, all their decisions and the plans their impact names, each in one statement (infra::prices::PlansReading, the four statements of plans_reading over the page's entries). The QueryRecorder shows the same statements for 10 and for 100 units, each with an item, a vote and a plan naming its entry.
+- **Breaking for a caller** that reads the list whole: a tenant with more than 200 units matching its filters gets them over several pages, and must follow next_cursor. The Studio (the pricing-mfe) has to follow it. The gears-rust tests that read the list whole follow it (entry_support::Fixture::all_units); the gears-rust e2e reads no list. The vhp-core e2e reads it whole in tests/bss-pricing/test_pricing_isolation.py (two reads) and test_pricing_prices.py (the pending queue), each with far fewer than 200 units, so they pass unchanged; a vhp-core change would only make them follow next_cursor.
+- **Products** gets the same list in its own decision (fix run W1b).
+
+**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "2"); whole-branch review PS-13 (fix run W1a, a scope addition).

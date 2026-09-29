@@ -1420,3 +1420,183 @@ async fn submit_reads(
         runs[1]
     );
 }
+
+// ------------------------------------------------------------------ the unit list (PS-13, D-458)
+
+/// A `prices` unit on `book` whose one price item names `entry`, with one current vote.
+async fn priced_unit(
+    f: &Fixture,
+    book: Uuid,
+    entry: Uuid,
+    submitted: time::OffsetDateTime,
+) -> Uuid {
+    use bss_approval::{Decision, ItemRef, Store, Unit, Verdict};
+    use bss_pricing::infra::storage::repo::{approval_repo::PricingApprovalStore, price_repo};
+    let (id, tenant) = (Uuid::now_v7(), f.ctx.subject_tenant_id());
+    let scope = plan_support::scope(f);
+    price_repo::transaction(&f.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move {
+            let store = PricingApprovalStore {
+                scope,
+                tenant_id: tenant,
+            };
+            let err = |e: bss_approval::ApprovalError| {
+                bss_pricing::infra::storage::RepoError::Db(e.to_string())
+            };
+            store
+                .insert_unit(
+                    tx,
+                    &Unit {
+                        id,
+                        tenant_id: tenant,
+                        kind: "prices".into(),
+                        ref_type: "price_book".into(),
+                        ref_id: book,
+                        state: UnitState::Pending,
+                        common_effective_date: None,
+                        quorum_required: 2,
+                        generation: 1,
+                        submitted_by: Uuid::new_v4(),
+                        submitted_at: submitted,
+                        submit_note: None,
+                        decided_at: None,
+                        decided_note: None,
+                        snapshot: json!({}),
+                        snapshot_hash: "hash".into(),
+                        version: 1,
+                    },
+                    &[ItemRef {
+                        item_type: "price".into(),
+                        item_id: Uuid::now_v7(),
+                        created_by: Uuid::new_v4(),
+                        before: None,
+                        after: json!({ "price_book_entry_id": entry }),
+                    }],
+                )
+                .await
+                .map_err(err)?;
+            store
+                .insert_decision(
+                    tx,
+                    &Decision {
+                        unit_id: id,
+                        actor: Uuid::new_v4(),
+                        generation: 1,
+                        verdict: Verdict::Approve,
+                        note: None,
+                        at: submitted,
+                        stale: false,
+                    },
+                )
+                .await
+                .map_err(err)
+        })
+    })
+    .await
+    .unwrap();
+    id
+}
+
+/// `GET /approval-units` reads one page set-based (PS-13, D-458): its units, their items, their
+/// decisions and their impact's plans in the same statements for 10 and for 100 units, each with
+/// an item on its own entry, a vote, and a plan that names the entry.
+#[tokio::test]
+async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("units-{n}")).await;
+        for i in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = stored_entry(&f, b, sku, "per_unit", now).await;
+            let (_, revision) = plan(&f, &format!("reads-{n}-{i}"), b).await;
+            item(&f, revision, sku, Some(e), "paid").await;
+            priced_unit(&f, b, e, now).await;
+        }
+        recorder.clear();
+        let page = ok(&f, &format!("/approval-units?book_id={b}")).await;
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), n);
+        for unit in items {
+            assert_eq!(unit["decisions"].as_array().unwrap().len(), 1, "{unit}");
+            assert_eq!(
+                unit["impact"]["plans"].as_array().unwrap().len(),
+                1,
+                "{unit}"
+            );
+        }
+        runs.push(pricing_statements(&recorder));
+    }
+    same("approval units", &runs[0], &runs[1]);
+}
+
+/// The unit list pages (PS-13, D-458): `limit` (default 200, clamped at 500) and the opaque
+/// `cursor` of `page_info`, in submission order with the id breaking a tie; the pages together are
+/// the whole list, and a cursor replayed under another filter is 400.
+#[tokio::test]
+async fn the_unit_list_pages_in_submission_order() {
+    let (f, _catalog) = setup().await;
+    let book = plan_support::book(&f, "paged").await;
+    let t0 = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    let mut submitted = Vec::new();
+    for minutes in [0_i64, 1, 1, 2, 3] {
+        submitted.push(
+            unit_on(
+                &f,
+                "prices",
+                book,
+                UnitState::Pending,
+                t0 + time::Duration::minutes(minutes),
+                None,
+            )
+            .await,
+        );
+    }
+    // Minute 1 holds two units: the id orders them.
+    submitted[1..3].sort();
+    let whole = ok(&f, &format!("/approval-units?book_id={book}")).await;
+    assert_eq!(
+        ids(&whole),
+        submitted.iter().map(Uuid::to_string).collect::<Vec<_>>()
+    );
+    assert_eq!(whole["page_info"]["limit"], 200, "{whole}");
+    assert!(whole["page_info"]["next_cursor"].is_null(), "{whole}");
+    let mut seen = Vec::new();
+    let mut path = format!("/approval-units?book_id={book}&limit=2");
+    let mut pages = 0;
+    loop {
+        let page = ok(&f, &path).await;
+        pages += 1;
+        assert!(page["items"].as_array().unwrap().len() <= 2, "{page}");
+        seen.extend(ids(&page));
+        match page["page_info"]["next_cursor"].as_str() {
+            Some(cursor) => {
+                path = format!(
+                    "/approval-units?book_id={book}&limit=2&cursor={}",
+                    encode(cursor)
+                );
+            }
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    assert_eq!(seen, ids(&whole), "the pages are the whole list, in order");
+    let first = ok(&f, &format!("/approval-units?book_id={book}&limit=2")).await;
+    let cursor = encode(first["page_info"]["next_cursor"].as_str().unwrap());
+    let (s, b, _) = get(
+        &f,
+        &format!("/approval-units?book_id={book}&state=pending&limit=2&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(s, 400, "a cursor of another filter: {b}");
+    assert!(code_of(&b).contains("FILTER_MISMATCH"), "{b}");
+    let (s, b, _) = get(&f, "/approval-units?cursor=not-a-cursor").await;
+    assert_eq!(s, 400, "{b}");
+    let (s, b, _) = get(&f, "/approval-units?limit=many").await;
+    assert_eq!(s, 400, "{b}");
+    assert!(code_of(&b).contains("QUERY_INVALID"), "{b}");
+    let clamped = ok(&f, &format!("/approval-units?book_id={book}&limit=1000")).await;
+    assert_eq!(clamped["page_info"]["limit"], 500, "{clamped}");
+}

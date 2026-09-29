@@ -678,33 +678,65 @@ pub fn state_filter(state: Option<&str>) -> Result<Option<UnitState>, CanonicalE
         .map(|s| UnitState::parse(s).ok_or_else(|| support::invalid("state", "UNIT_STATE_INVALID")))
         .transpose()
 }
-/// `GET /approval-units` in submission order, with every generation's decisions and the
-/// same live impact as the card.
+/// `GET /approval-units`: one page in submission order (D-458), each unit with every
+/// generation's decisions and the same live impact as the card. The page, its units' items, their
+/// decisions and the plans their impact names are read set-based: a fixed number of statements
+/// whatever the page's size.
 /// # Errors
-/// Returns storage failures.
+/// Returns a cursor the pager refuses (400) or storage failures.
 pub async fn list_units(
     tx: &DbTx<'_>,
     scope: &AccessScope,
     tenant: Uuid,
-    state: Option<UnitState>,
-    kind: Option<&str>,
-    reference: Option<Uuid>,
+    filter: &approval_repo::UnitListFilter,
+    query: &toolkit_odata::ODataQuery,
 ) -> Result<Response, DoorError> {
-    let store = PricingApprovalStore {
-        scope: scope.clone(),
-        tenant_id: tenant,
-    };
-    let mut items = Vec::new();
-    for unit in approval_repo::list_units(tx, scope, tenant, state, kind, reference).await? {
-        let kind = Kind::of(&unit)?;
-        let touched = store.items(tx, unit.id).await.map_err(approval_failure)?;
-        let mut dto = unit_dto(tx, &store, unit).await?;
-        dto.impact = Some(kind.impact(tx, tenant, &touched).await?);
+    let page = approval_repo::page_units(tx, scope, tenant, filter, query)
+        .await
+        .map_err(|e| match e {
+            approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
+            approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
+        })?;
+    let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
+    let mut touched = approval_repo::items_of_units(tx, scope, tenant, &ids).await?;
+    let mut decisions = approval_repo::decisions_of_units(tx, scope, tenant, &ids).await?;
+    let mut kinds = Vec::with_capacity(page.items.len());
+    let mut entries = BTreeSet::new();
+    for unit in &page.items {
+        let kind = Kind::of(unit)?;
+        if kind == Kind::Prices
+            && let Some(items) = touched.get(&unit.id)
+        {
+            entries.extend(crate::infra::prices::entries_of_items(items));
+        }
+        kinds.push(kind);
+    }
+    let reading = crate::infra::prices::PlansReading::load(
+        tx,
+        tenant,
+        &entries,
+        OffsetDateTime::now_utc().date(),
+    )
+    .await?;
+    let mut items = Vec::with_capacity(page.items.len());
+    for (unit, kind) in page.items.into_iter().zip(kinds) {
+        let id = unit.id;
+        let mut dto = PricingApprovalUnitDto::from(unit);
+        dto.decisions = decisions
+            .remove(&id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(Into::into)
+            .collect();
+        dto.impact = Some(kind.impact_from(&reading, &touched.remove(&id).unwrap_or_default()));
         items.push(dto);
     }
     Ok(support::response(
         StatusCode::OK,
-        &PricingApprovalUnitList { items },
+        &PricingApprovalUnitList {
+            items,
+            page_info: page.page_info,
+        },
         None,
     )?)
 }
