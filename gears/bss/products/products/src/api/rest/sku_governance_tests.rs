@@ -248,6 +248,75 @@ impl Fixture {
         let (status, b) = self.post("/submit", json!({})).await;
         assert_eq!(status, 200, "{b}");
     }
+    /// A second recurring draft of the tenant, by the fixture's author; its id.
+    async fn draft(&self, code: &str) -> Uuid {
+        let (status, s) = call(
+            &self.app,
+            &self.author,
+            Method::POST,
+            "/skus",
+            json!({"code":code,"name":code,"type":"recurring"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 201, "{s}");
+        Uuid::parse_str(s["id"].as_str().unwrap()).unwrap()
+    }
+    /// Submit the draft `id` for publication; the unit's id.
+    async fn submit(&self, id: Uuid) -> String {
+        let (status, u) = call(
+            &self.app,
+            &self.author,
+            Method::POST,
+            &format!("/skus/{id}/submit"),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{u}");
+        u["unit"]["id"].as_str().unwrap().to_owned()
+    }
+    /// `GET /approval-units` with `query`, as the reviewer.
+    async fn units(&self, query: &str) -> (u16, Value) {
+        call(
+            &self.app,
+            &self.reviewer,
+            Method::GET,
+            &format!("/approval-units{query}"),
+            json!({}),
+            None,
+        )
+        .await
+    }
+    /// Every unit the list answers under `narrowing` (`&`-joined, may be empty), following
+    /// `page_info.next_cursor` to the last page (P-D-224).
+    async fn all_units(&self, narrowing: &str) -> Vec<Value> {
+        let mut items = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut query = narrowing.to_owned();
+            if let Some(c) = &cursor {
+                if !query.is_empty() {
+                    query.push('&');
+                }
+                query.push_str("cursor=");
+                query.push_str(c);
+            }
+            let (status, page) = self
+                .units(&if query.is_empty() {
+                    String::new()
+                } else {
+                    format!("?{query}")
+                })
+                .await;
+            assert_eq!(status, 200, "{page}");
+            items.extend(page["items"].as_array().unwrap().iter().cloned());
+            match page["page_info"]["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return items,
+            }
+        }
+    }
     async fn reserve(&self, ref_id: Uuid) -> (u16, Value) {
         call(
             &self.app,
@@ -280,29 +349,14 @@ async fn quorum_zero_publishes_at_submit_and_records_the_unit() {
     let s = f.card().await;
     assert_eq!(s["lifecycle"], "published");
     assert_eq!(s["published_version"], 1);
-    let (status, units) = call(
-        &f.app,
-        &f.author,
-        Method::GET,
-        "/approval-units?state=approved",
-        json!({}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 200);
-    assert_eq!(units["items"].as_array().unwrap().len(), 1);
+    assert_eq!(f.all_units("state=approved").await.len(), 1);
     for (reference, count) in [(f.id, 1), (Uuid::new_v4(), 0)] {
-        let (status, body) = call(
-            &f.app,
-            &f.author,
-            Method::GET,
-            &format!("/approval-units?state=approved&kind=sku_publish&ref_id={reference}"),
-            json!({}),
-            None,
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(body["items"].as_array().unwrap().len(), count);
+        let units = f
+            .all_units(&format!(
+                "state=approved&kind=sku_publish&ref_id={reference}"
+            ))
+            .await;
+        assert_eq!(units.len(), count);
     }
     assert_eq!(enqueued_event_count(&f.dsn, SkuPublished::TYPE_ID).await, 1);
     assert_eq!(
@@ -404,18 +458,8 @@ async fn content_drift_refreshes_the_generation_and_the_first_reviewer_votes_aga
     let (status, first) = f.vote(&u, "approve", 1).await;
     assert_eq!(status, 200);
     assert_eq!(first["unit"]["decisions"].as_array().unwrap().len(), 1);
-    let (_, queue) = call(
-        &f.app,
-        &f.reviewer,
-        Method::GET,
-        &format!("/approval-units?ref_id={}", f.id),
-        json!({}),
-        None,
-    )
-    .await;
-    let pending = queue["items"]
-        .as_array()
-        .unwrap()
+    let queue = f.all_units(&format!("ref_id={}", f.id)).await;
+    let pending = queue
         .iter()
         .find(|item| item["id"] == u["unit"]["id"])
         .unwrap();
@@ -1308,6 +1352,94 @@ async fn a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts() {
             Some(format!("owner=pricing; actor_kind={kind}").as_str())
         );
     }
+}
+/// RS-03 (O2, P-D-224): the unit list pages in submission order, `limit` 200 by default and
+/// clamped at 500, `cursor` from `page_info`. A cursor replayed under another narrowing is 400
+/// `FILTER_MISMATCH`, a cursor that does not read and a `limit` that is not a number 400.
+#[tokio::test]
+async fn the_unit_list_pages_in_submission_order() {
+    let f = Fixture::new(2).await;
+    let mut units = vec![f.submit(f.id).await];
+    for code in ["P1", "P2"] {
+        let id = f.draft(code).await;
+        units.push(f.submit(id).await);
+    }
+    let (status, first) = f.units("?limit=2").await;
+    assert_eq!(status, 200, "{first}");
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&first), units[..2]);
+    assert_eq!(first["page_info"]["limit"], 2);
+    let next = first["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, second) = f.units(&format!("?limit=2&cursor={next}")).await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(ids(&second), units[2..]);
+    assert!(second["page_info"]["next_cursor"].is_null(), "{second}");
+    assert_eq!(f.units("").await.1["page_info"]["limit"], 200);
+    assert_eq!(f.units("?limit=9999").await.1["page_info"]["limit"], 500);
+    let (status, b) = f.units(&format!("?state=pending&cursor={next}")).await;
+    assert_eq!(status, 400, "{b}");
+    assert!(b.to_string().contains("FILTER_MISMATCH"), "{b}");
+    for bad in ["?cursor=not-a-cursor", "?limit=many"] {
+        assert_eq!(f.units(bad).await.0, 400, "{bad}");
+    }
+    let every: Vec<String> = f
+        .all_units("limit=1")
+        .await
+        .iter()
+        .map(|u| u["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(every, units);
+}
+
+/// RS-03 (P-D-224): a page of the unit list reads its units and all their decisions in the same
+/// statements for 10 and for 100 units, each with a vote; it read each unit's decisions on its own.
+#[tokio::test]
+async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units() {
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (f, recorder) = Fixture::recorded(2).await;
+        for i in 0..n {
+            let id = if i == 0 {
+                f.id
+            } else {
+                f.draft(&format!("U{i:03}")).await
+            };
+            let unit = f.submit(id).await;
+            let (status, b) = call(
+                &f.app,
+                &f.reviewer,
+                Method::POST,
+                &format!("/approval-units/{unit}/approve"),
+                json!({"generation":1}),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200, "{b}");
+        }
+        recorder.clear();
+        let (status, page) = f.units("").await;
+        assert_eq!(status, 200, "{page}");
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), n);
+        assert!(
+            items
+                .iter()
+                .all(|u| u["decisions"].as_array().unwrap().len() == 1),
+            "every unit carries its vote"
+        );
+        runs.push(products_statements(&recorder));
+    }
+    assert_eq!(runs[0], runs[1]);
 }
 #[tokio::test]
 async fn reject_refreshes_drift_and_commits_without_counting_the_rejection() {
@@ -2911,17 +3043,7 @@ async fn the_unit_card_of_a_deleted_draft_answers_impact_live_null() {
     assert_eq!(card["state"], "rejected");
     assert_eq!(card["impact_live"], Value::Null);
     assert!(card["snapshot"].is_object(), "{card}");
-    let (status, list) = call(
-        &f.app,
-        &f.author,
-        Method::GET,
-        &format!("/approval-units?ref_id={}", f.id),
-        json!({}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 200, "{list}");
-    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(f.all_units(&format!("ref_id={}", f.id)).await.len(), 1);
 }
 
 /// P-D-206: a draft cannot be reserved, so no registry row can name a never-published draft; were

@@ -513,9 +513,12 @@ pub struct DecisionDto {
     pub at: OffsetDateTime,
     pub stale: bool,
 }
+/// One page of the unit list (P-D-224): its units, and the toolkit pager's `page_info`, whose
+/// `next_cursor` continues it.
 #[toolkit_macros::api_dto(response)]
 pub struct UnitList {
     pub items: Vec<UnitDto>,
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(request)]
 pub struct VoteRequest {

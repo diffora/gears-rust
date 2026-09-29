@@ -56,6 +56,7 @@
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
 | P-D-222 | H | The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ок"); whole-branch review RS-02 (fix run W1b); keeps pricing D-424 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
+| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ок"); whole-branch review RS-03 (fix run W1b) |
 
 ## Entries
 
@@ -1010,3 +1011,27 @@ register.
 
 **Source:** Whole-branch review of 2026-09-29, RS-04, RS-05, RS-06, RS-07, RS-09, RS-25 and RS-32, and fix run W1a's note on
 `UnitNotFound` (fix run W1b).
+
+#### P-D-224 [M] The approval-unit list pages and reads its page set-based (twin of pricing D-458)
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** `GET /bss-products/v1/approval-units` answered every unit of the tenant that its filters kept, decided ones
+  included, and read each unit's decisions with a statement of its own, all in one serializable transaction on Postgres (RS-03).
+- **The page.** The list takes `limit` (200 by default, clamped at 500, pricing's rule, D-458) and `cursor`, the opaque
+  continuation of a page's `page_info.next_cursor`, the toolkit pager's cursor. The order stays submission order
+  (`submitted_at`), with the unit id breaking a tie. The answer is `{ items, page_info }`: `items` keeps its shape, and
+  `page_info` (`next_cursor`, `prev_cursor`, `limit`) is added. The cursor carries a hash of the narrowing (`state`, `kind`,
+  `ref_id`), so a cursor replayed under another narrowing is 400 `FILTER_MISMATCH`. A cursor that does not read is 400, and a
+  `limit` that is not a number 400 `VALIDATION` on `query`.
+- **The reads.** A page reads its units in one statement and all their decisions in one more
+  (`approval_repo::page_units`, `decisions_of_units`). The QueryRecorder shows the same statements for 10 and for 100 units,
+  each with a vote.
+- **Breaking for a caller** that reads the list whole: a tenant with more than 200 units matching its filters gets them over
+  several pages and must follow `next_cursor`. The in-gear tests that read the list whole follow it
+  (`sku_governance_tests::Fixture::all_units`); the gears-rust e2e reads no products list. The vhp-core e2e reads page 1
+  in `tests/bss-products/test_products_approvals.py` (the pending queue, twice), `test_products_isolation.py` (another tenant's
+  list), `test_products_usage_types.py` (an empty list) and `test_products_authz.py` (a reader's list). Each runs in a fresh
+  tenant with a few units, so it passes unchanged; a vhp-core change would make them follow `next_cursor`.
+
+**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ок"); whole-branch review RS-03 (fix run W1b).

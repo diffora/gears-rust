@@ -54,6 +54,10 @@ struct ListQuery {
     state: Option<String>,
     kind: Option<String>,
     ref_id: Option<Uuid>,
+    /// Page size (P-D-224): 200 by default, clamped at 500.
+    limit: Option<u64>,
+    /// The opaque continuation of a page's `page_info.next_cursor`.
+    cursor: Option<String>,
 }
 #[derive(Clone, Copy)]
 enum Vote {
@@ -67,6 +71,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::get("/bss-products/v1/approval-units")
         .operation_id("bss_products.list_approval_units")
         .summary("list_approval_units")
+        .description(
+            "One page of the tenant's approval units in submission order (P-D-224), filtered by \
+             state, kind and SKU, each with its stored snapshot and the decisions of every \
+             generation. `limit` (default 200, clamped at 500) and `cursor` from `page_info` \
+             page it. Refusals: 400 for an unknown state or a query that does not parse; 400 \
+             FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a \
+             cursor that does not read.",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()
@@ -83,6 +95,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "string",
         )
         .query_param_typed("ref_id", false, "SKU id (a UUID)", "string")
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size (default 200, clamped at 500)",
+            "integer",
+        )
+        .query_param_typed("cursor", false, "Continuation from page_info", "string")
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -247,31 +266,93 @@ async fn list(
                 .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
         })
         .transpose()?;
-    let items = state
+    let filter = repo::UnitListFilter {
+        state: filter,
+        kind: q.kind,
+        ref_id: q.ref_id,
+    };
+    let page = unit_page(&filter, q.limit, q.cursor.as_deref())?;
+    let tenant = ctx.subject_tenant_id();
+    let list = state
         .db
         .db()
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let scope = scope.clone();
-            let kind = q.kind.clone();
-            let tenant = ctx.subject_tenant_id();
+            let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
             Box::pin(async move {
-                let store = repo::ProductsApprovalStore {
-                    scope: scope.clone(),
-                    tenant_id: tenant,
-                };
-                let units = repo::list_units(tx, &scope, tenant, filter, kind.as_deref(), q.ref_id)
+                // One page, and all its units' decisions in one read (P-D-224): the same
+                // statements whatever the page's size.
+                let page = repo::page_units(tx, &scope, tenant, &filter, &page)
+                    .await
+                    .map_err(|e| match e {
+                        repo::UnitListError::Query(e) => TxError::OData(e),
+                        repo::UnitListError::Repo(e) => TxError::Repo(e),
+                    })?;
+                let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
+                let mut decisions = repo::decisions_of_units(tx, &scope, tenant, &ids)
                     .await
                     .map_err(TxError::Repo)?;
-                let mut items = Vec::with_capacity(units.len());
-                for unit in units {
-                    items.push(with_decisions(tx, &store, unit).await?);
-                }
-                Ok(items)
+                let items = page
+                    .items
+                    .into_iter()
+                    .map(|unit| {
+                        let id = unit.id;
+                        let mut dto = UnitDto::from(unit);
+                        dto.decisions = decisions
+                            .remove(&id)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(Into::into)
+                            .collect();
+                        dto
+                    })
+                    .collect();
+                Ok(UnitList {
+                    items,
+                    page_info: page.page_info,
+                })
             })
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(UnitList { items }).into_response())
+    Ok(Json(list).into_response())
+}
+/// The unit list's page (P-D-224): `limit`, and `cursor` from a page's `page_info`, which carries a
+/// hash of the narrowing (`state`, `kind` and `ref_id`), so a cursor replayed under another is 400
+/// `FILTER_MISMATCH`, as pricing's list's is (D-458).
+fn unit_page(
+    filter: &repo::UnitListFilter,
+    limit: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    let narrowing = serde_json::json!({
+        "state": filter.state.map(UnitState::as_str),
+        "kind": filter.kind,
+        "ref_id": filter.ref_id,
+    });
+    let digest = crate::domain::canonical::content_digest(
+        &crate::domain::canonical::canonical_rendering(&narrowing),
+    );
+    let hash = digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, b| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
+            hex
+        });
+    let mut query = toolkit_odata::ODataQuery::new().with_filter_hash(hash.clone());
+    if let Some(limit) = limit {
+        query = query.with_limit(limit);
+    }
+    if let Some(token) = cursor {
+        let cursor = toolkit_odata::CursorV1::decode(token).map_err(CanonicalError::from)?;
+        if cursor.f.as_deref() != Some(hash.as_str()) {
+            return Err(toolkit_odata::Error::FilterMismatch.into());
+        }
+        query = query.with_cursor(cursor);
+    }
+    Ok(query)
 }
 /// Every embedded unit reports the decisions actually stored for all generations.
 async fn with_decisions(

@@ -8,12 +8,18 @@ use crate::infra::storage::{
 use bss_approval::{ApprovalError, Decision, ItemRef, Policy, Store, Unit, UnitState, Verdict};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use std::collections::BTreeMap;
 use time::OffsetDateTime;
 use toolkit_db::DbTx;
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, paginate_odata_try,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
     SecureOnConflict, SecureUpdateExt,
 };
+use toolkit_odata::filter::{FieldKind, FilterField};
+use toolkit_odata::{ODataOrderBy, ODataQuery, OrderKey, Page, SortDir};
 use uuid::Uuid;
 
 /// The tenant-scoped SQL implementation used inside each approval transaction.
@@ -411,6 +417,173 @@ pub async fn list_units(
         .into_iter()
         .map(|m| unit_from_model(m).map_err(|e| RepoError::CorruptRow(e.to_string())))
         .collect()
+}
+/// The fields of the unit list's pager (P-D-224): its one order, `submitted_at`, and the tie-break
+/// `id`. The list takes no `$filter`; its narrowing is [`UnitListFilter`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnitListField {
+    SubmittedAt,
+    Id,
+}
+impl FilterField for UnitListField {
+    const FIELDS: &'static [Self] = &[Self::SubmittedAt, Self::Id];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::SubmittedAt => "submitted_at",
+            Self::Id => "id",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::SubmittedAt => FieldKind::DateTimeUtc,
+            Self::Id => FieldKind::Uuid,
+        }
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS.iter().copied().find(|f| f.name() == name)
+    }
+}
+/// How the pager reads the unit row for each field.
+pub struct UnitListMapping;
+impl FieldToColumn<UnitListField> for UnitListMapping {
+    type Column = approval_unit::Column;
+    fn map_field(field: UnitListField) -> approval_unit::Column {
+        match field {
+            UnitListField::SubmittedAt => approval_unit::Column::SubmittedAt,
+            UnitListField::Id => approval_unit::Column::Id,
+        }
+    }
+}
+impl ODataFieldMapping<UnitListField> for UnitListMapping {
+    type Entity = approval_unit::Entity;
+    fn extract_cursor_value(model: &approval_unit::Model, field: UnitListField) -> sea_orm::Value {
+        match field {
+            UnitListField::SubmittedAt => {
+                sea_orm::Value::TimeDateTimeWithTimeZone(Some(model.submitted_at))
+            }
+            UnitListField::Id => sea_orm::Value::Uuid(Some(model.id)),
+        }
+    }
+}
+/// The unit list's page size: 200 by default, at most 500, as pricing's list (D-458, P-D-224).
+pub const UNIT_PAGE: LimitCfg = LimitCfg {
+    default: 200,
+    max: 500,
+};
+/// What the unit list narrows the tenant's units by.
+#[derive(Debug, Clone, Default)]
+pub struct UnitListFilter {
+    pub state: Option<UnitState>,
+    pub kind: Option<String>,
+    pub ref_id: Option<Uuid>,
+}
+/// A unit list read refused or failed.
+#[derive(Debug)]
+pub enum UnitListError {
+    /// The query itself: a cursor the pager refuses (400).
+    Query(toolkit_odata::Error),
+    /// Storage; a driver failure keeps its message for the retry classifier.
+    Repo(RepoError),
+}
+/// One page of the tenant's units under `scope`, narrowed by `filter`, in submission order with
+/// the id breaking a tie (P-D-224): `limit` defaults to 200 and is clamped at 500, and the query's
+/// cursor continues it. ONE statement.
+/// # Errors
+/// [`UnitListError::Query`] for a cursor the pager refuses; [`UnitListError::Repo`] for storage
+/// and a stored row outside its closed sets.
+pub async fn page_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    filter: &UnitListFilter,
+    query: &ODataQuery,
+) -> Result<Page<Unit>, UnitListError> {
+    let mut query = query.clone();
+    if query.cursor.is_none() {
+        query.order = ODataOrderBy(vec![OrderKey {
+            field: UnitListField::SubmittedAt.name().to_owned(),
+            dir: SortDir::Asc,
+        }]);
+    }
+    let mut c = Condition::all().add(approval_unit::Column::TenantId.eq(tenant_id));
+    if let Some(s) = filter.state {
+        c = c.add(approval_unit::Column::State.eq(s.as_str()));
+    }
+    if let Some(k) = &filter.kind {
+        c = c.add(approval_unit::Column::Kind.eq(k.as_str()));
+    }
+    if let Some(id) = filter.ref_id {
+        c = c.add(approval_unit::Column::RefId.eq(id));
+    }
+    let select = approval_unit::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(c);
+    paginate_odata_try::<
+        UnitListField,
+        UnitListMapping,
+        approval_unit::Entity,
+        Unit,
+        _,
+        RepoError,
+        _,
+    >(
+        select,
+        runner,
+        &query,
+        (UnitListField::Id.name(), SortDir::Asc),
+        UNIT_PAGE,
+        |m| unit_from_model(m).map_err(|e| RepoError::CorruptRow(e.to_string())),
+    )
+    .await
+    .map_err(|e| match e {
+        // The pager renders the driver's error as text; kept as a driver failure so the door's
+        // retry still sees a serialization failure or a busy database by its message.
+        PaginateOdataTryError::OData(toolkit_odata::Error::Db(message)) => {
+            UnitListError::Repo(RepoError::Driver {
+                context: "list units".into(),
+                source: sea_orm::DbErr::Custom(message),
+            })
+        }
+        PaginateOdataTryError::OData(other) => UnitListError::Query(other),
+        PaginateOdataTryError::MapError(e) => UnitListError::Repo(e),
+    })
+}
+/// The decisions of every unit among `units`, each unit's by generation, instant and actor as
+/// [`Store::decisions`] reads them, in ONE statement whatever their number (P-D-224).
+/// # Errors
+/// Returns typed database failures; a stored decision outside its set is a corrupt row.
+pub async fn decisions_of_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    units: &[Uuid],
+) -> Result<BTreeMap<Uuid, Vec<Decision>>, RepoError> {
+    let mut grouped: BTreeMap<Uuid, Vec<Decision>> = BTreeMap::new();
+    if units.is_empty() {
+        return Ok(grouped);
+    }
+    for m in approval_decision::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_decision::Column::TenantId.eq(tenant_id))
+                .add(approval_decision::Column::UnitId.is_in(units.iter().copied())),
+        )
+        .order_by(approval_decision::Column::UnitId, Order::Asc)
+        .order_by(approval_decision::Column::Generation, Order::Asc)
+        .order_by(approval_decision::Column::At, Order::Asc)
+        .order_by(approval_decision::Column::Actor, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("read the decisions of units".into(), e))?
+    {
+        let unit = m.unit_id;
+        let decision = decision_from_model(m).map_err(|e| RepoError::CorruptRow(e.to_string()))?;
+        grouped.entry(unit).or_default().push(decision);
+    }
+    Ok(grouped)
 }
 async fn decision_rows(
     runner: &impl DBRunner,
