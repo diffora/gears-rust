@@ -728,6 +728,558 @@ async fn revision_delete_is_a_conditional_write_on_an_empty_unlocked_draft() {
     );
 }
 
+// ---------------------------------------------------------------- scheduled revisions (D-448)
+
+/// `hour` o'clock UTC on `day`.
+fn instant(day: &str, hour: u8) -> time::OffsetDateTime {
+    date(day).with_hms(hour, 0, 0).unwrap().assume_utc()
+}
+async fn find_revision(w: &World, id: Uuid) -> plan_revision::Model {
+    plan_revision_repo::find(&w.db.conn().unwrap(), &w.scope, w.tenant, id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+async fn find_plan(w: &World, id: Uuid) -> plan_e::Model {
+    plan_repo::find(&w.db.conn().unwrap(), &w.scope, w.tenant, id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+/// A new unit of the tenant locks the draft at `version`.
+async fn locked(w: &World, id: Uuid, version: i64) -> Uuid {
+    let u = unit(&w.db, &w.scope, w.tenant, "plan_revision").await;
+    assert!(
+        plan_revision_repo::try_lock(&w.db.conn().unwrap(), &w.scope, w.tenant, id, u, version)
+            .await
+            .unwrap()
+    );
+    u
+}
+/// The world's rev 1 published through its unit at 09:00 (the plan's `published_rev` 1, its
+/// version 2), and rev 2 the next change: a draft available from `from`.
+async fn changing(w: &World, from: &str) -> plan_revision::Model {
+    let conn = w.db.conn().unwrap();
+    let u = locked(w, w.revision.id, 1).await;
+    plan_revision_repo::publish(&conn, &w.scope, w.tenant, w.revision.id, u, at(9))
+        .await
+        .unwrap();
+    plan_repo::set_published(&conn, &w.scope, w.tenant, w.plan.id, 1, 1, at(9))
+        .await
+        .unwrap();
+    let mut next = revision(&w.plan, &w.book, 2);
+    next.available_from = Some(date(from));
+    plan_revision_repo::insert(&conn, &w.scope, next)
+        .await
+        .unwrap()
+}
+/// A switch that finds nothing due reads as the loser of a race.
+fn switched(s: Option<plan_revision_repo::Switched>) -> Result<(), RepoError> {
+    if s.is_some() {
+        Ok(())
+    } else {
+        Err(RepoError::Conflict {
+            code: "NOTHING_DUE",
+        })
+    }
+}
+
+/// `schedule` moves only a pending revision its own unit holds; the lock turns into
+/// `approved_by_unit_id`, `published_at` stays null, and the published revision and the plan's
+/// projection do not move. A plan holds one scheduled revision.
+#[tokio::test]
+async fn revision_schedule_is_conditional_on_the_owning_unit_and_one_scheduled_per_plan() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let next = changing(&w, "2026-10-01").await;
+    let early = unit(&w.db, &w.scope, w.tenant, "plan_revision").await;
+    conflict(
+        plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, early, at(10)).await,
+        "REVISION_NOT_PENDING",
+    );
+    let u = locked(&w, next.id, 1).await;
+    conflict(
+        plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, Uuid::new_v4(), at(10))
+            .await,
+        "REVISION_NOT_PENDING",
+    );
+    let (tenant, id, scope) = (w.tenant, next.id, w.scope.clone());
+    exactly_one_wins(
+        &w.db,
+        &w.dsn,
+        "REVISION_NOT_PENDING",
+        Arc::new(move |tx| {
+            let scope = scope.clone();
+            Box::pin(async move {
+                plan_revision_repo::schedule(tx, &scope, tenant, id, u, at(10)).await
+            })
+        }),
+    )
+    .await;
+    let got = find_revision(&w, next.id).await;
+    assert_eq!(
+        (
+            got.state.as_str(),
+            got.pending_unit_id,
+            got.approved_by_unit_id,
+            got.published_at,
+            got.version,
+            got.updated_at
+        ),
+        ("scheduled", None, Some(u), None, 3, at(10))
+    );
+    let published = find_revision(&w, w.revision.id).await;
+    assert_eq!(
+        (published.state.as_str(), published.version),
+        ("published", 3)
+    );
+    let p = find_plan(&w, w.plan.id).await;
+    assert_eq!((p.published_rev, p.version), (Some(1), 2));
+    // A published or a scheduled revision is not scheduled again.
+    conflict(
+        plan_revision_repo::schedule(&conn, &w.scope, w.tenant, w.revision.id, u, at(11)).await,
+        "REVISION_NOT_PENDING",
+    );
+    conflict(
+        plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, u, at(11)).await,
+        "REVISION_NOT_PENDING",
+    );
+    // One scheduled revision per plan: a third one, locked, meets the index on SQLite's
+    // column-only message, told apart by the state the write sets.
+    let mut third = revision(&w.plan, &w.book, 3);
+    third.available_from = Some(date("2026-11-01"));
+    let third = plan_revision_repo::insert(&conn, &w.scope, third)
+        .await
+        .unwrap();
+    let u3 = locked(&w, third.id, 1).await;
+    conflict(
+        plan_revision_repo::schedule(&conn, &w.scope, w.tenant, third.id, u3, at(11)).await,
+        "REVISION_SCHEDULED_EXISTS",
+    );
+    let mut direct = revision(&w.plan, &w.book, 4);
+    direct.state = "scheduled".into();
+    direct.approved_by_unit_id = Some(u3);
+    direct.available_from = Some(date("2026-12-01"));
+    conflict(
+        plan_revision_repo::insert(&conn, &w.scope, direct).await,
+        "REVISION_SCHEDULED_EXISTS",
+    );
+}
+
+/// `switch_due` persists the plan's due switch in one transaction: the published revision is
+/// superseded, the scheduled one published from 00:00 UTC of its date, and `published_rev`
+/// advanced WITHOUT the plan's version or `updated_at` moving; the revision rows bump as usual. A
+/// second call switches nothing and writes nothing.
+#[tokio::test]
+async fn revision_switch_due_publishes_the_due_revision_once_and_leaves_the_plan_version() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    // A plan with nothing scheduled has nothing to switch.
+    assert_eq!(
+        plan_revision_repo::switch_due(&conn, &w.scope, w.tenant, w.plan.id, at(10))
+            .await
+            .unwrap(),
+        None
+    );
+    let next = changing(&w, "2026-10-01").await;
+    let u = locked(&w, next.id, 1).await;
+    plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, u, at(10))
+        .await
+        .unwrap();
+    // The day before its date, to the last second, it is not due.
+    let eve = date("2026-09-30")
+        .with_hms(23, 59, 59)
+        .unwrap()
+        .assume_utc();
+    assert_eq!(
+        plan_revision_repo::switch_due(&conn, &w.scope, w.tenant, w.plan.id, eve)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(find_revision(&w, next.id).await.state, "scheduled");
+    let now = instant("2026-10-01", 8);
+    let got = plan_revision_repo::switch_due(&conn, &w.scope, w.tenant, w.plan.id, now)
+        .await
+        .unwrap();
+    assert_eq!(
+        got,
+        Some(plan_revision_repo::Switched {
+            superseded_revision_id: Some(w.revision.id),
+            revision_id: next.id,
+            unit_id: u,
+            rev_no: 2,
+            book_id: w.book.id,
+        })
+    );
+    let old = find_revision(&w, w.revision.id).await;
+    assert_eq!(
+        (
+            old.state.as_str(),
+            old.published_at,
+            old.version,
+            old.updated_at
+        ),
+        ("superseded", Some(at(9)), 4, now),
+        "the predecessor keeps the instant it was published at"
+    );
+    let new = find_revision(&w, next.id).await;
+    assert_eq!(
+        (
+            new.state.as_str(),
+            new.published_at,
+            new.pending_unit_id,
+            new.approved_by_unit_id,
+            new.version,
+            new.updated_at
+        ),
+        (
+            "published",
+            Some(instant("2026-10-01", 0)),
+            None,
+            Some(u),
+            4,
+            now
+        )
+    );
+    let p = find_plan(&w, w.plan.id).await;
+    assert_eq!(
+        (p.published_rev, p.version, p.updated_at),
+        (Some(2), 2, at(9)),
+        "published_rev is a projection: the plan's version and updated_at stay"
+    );
+    // Idempotent: nothing is due any more, and nothing is written.
+    assert_eq!(
+        plan_revision_repo::switch_due(
+            &conn,
+            &w.scope,
+            w.tenant,
+            w.plan.id,
+            instant("2026-10-02", 8)
+        )
+        .await
+        .unwrap(),
+        None
+    );
+    assert_eq!(find_revision(&w, next.id).await.version, 4);
+    assert_eq!(find_revision(&w, w.revision.id).await.version, 4);
+    assert_eq!(find_plan(&w, w.plan.id).await.version, 2);
+    // The plan's rename If-Match read before the switch is still good.
+    plan_repo::rename(&conn, &w.scope, w.tenant, w.plan.id, 2, "Pro 2".into(), now)
+        .await
+        .unwrap();
+}
+
+/// A plan's first revision scheduled: the switch publishes it with nothing to supersede.
+#[tokio::test]
+async fn revision_switch_due_of_a_first_revision_supersedes_nothing() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let mut dated = w.revision.clone();
+    dated.available_from = Some(date("2026-10-01"));
+    plan_revision_repo::update_draft(&conn, &w.scope, dated)
+        .await
+        .unwrap();
+    let u = locked(&w, w.revision.id, 2).await;
+    plan_revision_repo::schedule(&conn, &w.scope, w.tenant, w.revision.id, u, at(10))
+        .await
+        .unwrap();
+    assert_eq!(find_plan(&w, w.plan.id).await.published_rev, None);
+    let got = plan_revision_repo::switch_due(
+        &conn,
+        &w.scope,
+        w.tenant,
+        w.plan.id,
+        instant("2026-10-03", 1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        got,
+        Some(plan_revision_repo::Switched {
+            superseded_revision_id: None,
+            revision_id: w.revision.id,
+            unit_id: u,
+            rev_no: 1,
+            book_id: w.book.id,
+        })
+    );
+    let p = find_plan(&w, w.plan.id).await;
+    assert_eq!((p.published_rev, p.version), (Some(1), 1));
+    assert_eq!(
+        find_revision(&w, w.revision.id).await.published_at,
+        Some(instant("2026-10-01", 0))
+    );
+}
+
+/// A scheduled row that names no approving unit has nothing an event could name: the switch
+/// refuses it as a corrupt row and writes nothing. No write of the gear makes one; it is inserted
+/// here to isolate the refusal.
+#[tokio::test]
+async fn revision_switch_due_refuses_a_scheduled_revision_without_its_unit() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let other = plan_repo::insert(&conn, &w.scope, plan(w.tenant, "orphan"))
+        .await
+        .unwrap();
+    let mut orphan = revision(&other, &w.book, 1);
+    orphan.state = "scheduled".into();
+    orphan.available_from = Some(date("2026-10-01"));
+    let orphan = plan_revision_repo::insert(&conn, &w.scope, orphan)
+        .await
+        .unwrap();
+    let refused = plan_revision_repo::switch_due(
+        &conn,
+        &w.scope,
+        w.tenant,
+        other.id,
+        instant("2026-10-02", 0),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(RepoError::CorruptRow(m)) if m.contains(&orphan.id.to_string())),
+        "{refused:?}"
+    );
+    let got = find_revision(&w, orphan.id).await;
+    assert_eq!((got.state.as_str(), got.version), ("scheduled", 1));
+    assert_eq!(find_plan(&w, other.id).await.published_rev, None);
+}
+
+/// Two writers switch one plan at once: exactly one switches, the other finds nothing due and
+/// writes nothing; the plan ends with one published revision.
+#[tokio::test]
+async fn revision_switch_due_racing_itself_switches_once() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let next = changing(&w, "2026-10-01").await;
+    let u = locked(&w, next.id, 1).await;
+    plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, u, at(10))
+        .await
+        .unwrap();
+    let (tenant, plan_id, scope) = (w.tenant, w.plan.id, w.scope.clone());
+    exactly_one_wins(
+        &w.db,
+        &w.dsn,
+        "NOTHING_DUE",
+        Arc::new(move |tx| {
+            let scope = scope.clone();
+            Box::pin(async move {
+                switched(
+                    plan_revision_repo::switch_due(
+                        tx,
+                        &scope,
+                        tenant,
+                        plan_id,
+                        instant("2026-10-01", 9),
+                    )
+                    .await?,
+                )
+            })
+        }),
+    )
+    .await;
+    let states: Vec<(i32, String, i64)> =
+        plan_revision_repo::for_plan(&conn, &w.scope, w.tenant, w.plan.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.rev_no, r.state, r.version))
+            .collect();
+    assert_eq!(
+        states,
+        [
+            (1, "superseded".to_owned(), 4),
+            (2, "published".to_owned(), 4)
+        ]
+    );
+    let p = find_plan(&w, w.plan.id).await;
+    assert_eq!((p.published_rev, p.version), (Some(2), 2));
+}
+
+/// `unschedule` returns a scheduled revision to an unlocked draft only BEFORE its date, with
+/// `approved_by_unit_id` cleared, conditional on its state (no If-Match, D-448). A draft beside
+/// it would break the one-open-revision index, which refuses it.
+#[tokio::test]
+async fn revision_unschedule_returns_a_scheduled_revision_before_its_date_to_an_unlocked_draft() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let next = changing(&w, "2026-10-01").await;
+    conflict(
+        plan_revision_repo::unschedule(&conn, &w.scope, w.tenant, next.id, at(10)).await,
+        "REVISION_NOT_SCHEDULED",
+    );
+    let u = locked(&w, next.id, 1).await;
+    conflict(
+        plan_revision_repo::unschedule(&conn, &w.scope, w.tenant, next.id, at(10)).await,
+        "REVISION_NOT_SCHEDULED",
+    );
+    conflict(
+        plan_revision_repo::unschedule(&conn, &w.scope, w.tenant, w.revision.id, at(10)).await,
+        "REVISION_NOT_SCHEDULED",
+    );
+    plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, u, at(10))
+        .await
+        .unwrap();
+    // From 00:00 UTC of its date it is due, and no longer withdrawn.
+    conflict(
+        plan_revision_repo::unschedule(
+            &conn,
+            &w.scope,
+            w.tenant,
+            next.id,
+            instant("2026-10-01", 0),
+        )
+        .await,
+        "REVISION_NOT_SCHEDULED",
+    );
+    let (tenant, id, scope) = (w.tenant, next.id, w.scope.clone());
+    let eve = instant("2026-09-30", 23);
+    exactly_one_wins(
+        &w.db,
+        &w.dsn,
+        "REVISION_NOT_SCHEDULED",
+        Arc::new(move |tx| {
+            let scope = scope.clone();
+            Box::pin(
+                async move { plan_revision_repo::unschedule(tx, &scope, tenant, id, eve).await },
+            )
+        }),
+    )
+    .await;
+    let got = find_revision(&w, next.id).await;
+    assert_eq!(
+        (
+            got.state.as_str(),
+            got.pending_unit_id,
+            got.approved_by_unit_id,
+            got.published_at,
+            got.version,
+            got.updated_at
+        ),
+        ("draft", None, None, None, 4, eve)
+    );
+    assert_eq!(find_revision(&w, w.revision.id).await.state, "published");
+    // A draft again: it is edited, locked and scheduled again as any draft is.
+    let mut edited = got.clone();
+    edited.available_from = Some(date("2026-10-15"));
+    plan_revision_repo::update_draft(&conn, &w.scope, edited)
+        .await
+        .unwrap();
+    let u2 = locked(&w, next.id, 5).await;
+    plan_revision_repo::schedule(&conn, &w.scope, w.tenant, next.id, u2, at(11))
+        .await
+        .unwrap();
+    // A draft beside the scheduled revision (M1's invariant, held at the storage too).
+    plan_revision_repo::insert(&conn, &w.scope, revision(&w.plan, &w.book, 3))
+        .await
+        .unwrap();
+    conflict(
+        plan_revision_repo::unschedule(&conn, &w.scope, w.tenant, next.id, at(12)).await,
+        "REVISION_DRAFT_EXISTS",
+    );
+    assert_eq!(find_revision(&w, next.id).await.state, "scheduled");
+}
+
+/// The job's scan: every tenant's due scheduled revisions, by date then id, bounded; a revision
+/// not yet due and a revision in another state are not in it.
+#[tokio::test]
+async fn due_scheduled_scans_every_tenant_by_date_then_id() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let other = Uuid::new_v4();
+    let other_scope = AccessScope::for_tenant(other);
+    let their_book = book_repo::insert(&conn, &other_scope, book(other))
+        .await
+        .unwrap();
+    let mut due = Vec::new();
+    // Fixed ids, the later date carrying the smallest: an order by id alone is not this one.
+    for (n, tenant, scope, b, code, state, from) in [
+        (
+            1,
+            w.tenant,
+            &w.scope,
+            &w.book,
+            "a",
+            "scheduled",
+            "2026-10-02",
+        ),
+        (
+            3,
+            w.tenant,
+            &w.scope,
+            &w.book,
+            "b",
+            "scheduled",
+            "2026-10-01",
+        ),
+        (
+            4,
+            w.tenant,
+            &w.scope,
+            &w.book,
+            "c",
+            "scheduled",
+            "2026-10-05",
+        ),
+        (
+            5,
+            w.tenant,
+            &w.scope,
+            &w.book,
+            "d",
+            "published",
+            "2026-09-01",
+        ),
+        (
+            2,
+            other,
+            &other_scope,
+            &their_book,
+            "e",
+            "scheduled",
+            "2026-10-01",
+        ),
+    ] {
+        let p = plan_repo::insert(&conn, scope, plan(tenant, code))
+            .await
+            .unwrap();
+        let u = unit(&w.db, scope, tenant, "plan_revision").await;
+        let mut r = revision(&p, b, 1);
+        r.id = Uuid::from_u128(0x0017_0000 + n);
+        r.state = state.into();
+        r.approved_by_unit_id = Some(u);
+        r.available_from = Some(date(from));
+        let r = plan_revision_repo::insert(&conn, scope, r).await.unwrap();
+        if state == "scheduled" && from <= "2026-10-03" {
+            due.push((from, r.id, tenant));
+        }
+    }
+    due.sort();
+    let scan = |today: &str, limit: u64| {
+        let conn = w.db.conn().unwrap();
+        let today = date(today);
+        async move {
+            plan_revision_repo::due_scheduled(&conn, today, limit)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.id, r.tenant_id))
+                .collect::<Vec<_>>()
+        }
+    };
+    let all: Vec<(Uuid, Uuid)> = due.iter().map(|(_, id, t)| (*id, *t)).collect();
+    assert_eq!(
+        all.iter()
+            .map(|(id, _)| id.as_u128() - 0x0017_0000)
+            .collect::<Vec<_>>(),
+        [2, 3, 1],
+        "by date, then id"
+    );
+    assert_eq!(scan("2026-10-03", 10).await, all);
+    assert_eq!(scan("2026-10-03", 2).await, all[..2]);
+    assert!(scan("2026-09-30", 10).await.is_empty());
+}
+
 // ---------------------------------------------------------------- items
 
 #[tokio::test]
@@ -1128,6 +1680,10 @@ fn phase_3_unique_messages_match_both_engines() {
             "REVISION_PUBLISHED_EXISTS",
         ),
         (
+            "duplicate key value violates unique constraint \"pricing_plan_revision_scheduled\"",
+            "REVISION_SCHEDULED_EXISTS",
+        ),
+        (
             "duplicate key value violates unique constraint \"pricing_plan_item_sku\"",
             "ITEM_SKU_TAKEN",
         ),
@@ -1138,7 +1694,7 @@ fn phase_3_unique_messages_match_both_engines() {
     ] {
         assert_eq!(unique_code(message), Some(code), "{message}");
     }
-    // SQLite names only the columns of a partial index: the two single-column revision indexes
+    // SQLite names only the columns of a partial index: the three single-column revision indexes
     // read alike, so the shared matcher leaves them to the revision repository, which knows the
     // state it wrote.
     assert_eq!(

@@ -176,6 +176,29 @@ pub async fn set_published(
         .map_err(|e| driver_failure("publish plan projection".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
 }
+/// Advance the revision number a due switch publishes (D-448), in the caller's transaction.
+/// `published_rev` is a projection of the revisions, not an edit of the plan: neither the plan's
+/// `version` nor its `updated_at` moves, so an If-Match read before the switch stays good and a
+/// read that derives the switch (D-447) shows the same plan row as one after it (plan rev 2 L6).
+/// # Errors
+/// `PLAN_NOT_FOUND` for a plan the tenant does not hold; database failures keep their type.
+pub async fn advance_published(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    published_rev: i32,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::PublishedRev, Expr::value(Some(published_rev)))
+        .filter(key(tenant, id))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("advance the plan's published projection".into(), e))?;
+    matched(result.rows_affected, "PLAN_NOT_FOUND")
+}
 /// Delete a plan that was never published and has no revision left, at the version the caller
 /// read, in the caller's transaction (D-417): its code is free again.
 /// # Errors

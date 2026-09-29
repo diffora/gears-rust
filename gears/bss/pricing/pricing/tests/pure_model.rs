@@ -59,11 +59,12 @@ macro_rules! pin_both_dialects {
         assert!("invalid".parse::<$ty>().is_err());
     }};
 }
+/// The revision state's CHECK is `m20260929_000017`'s since D-446 widened it with `scheduled`:
+/// Postgres re-adds it, and the `SQLite` family rebuild spells it in the new table.
 #[test]
 fn plan_enum_check_values_match_migration_text() {
-    let revision = include_str!(
-        "../src/infra/storage/migrations/m20260926_000011_create_pricing_plan_revision.rs"
-    );
+    let revision =
+        include_str!("../src/infra/storage/migrations/m20260929_000017_revision_scheduled.rs");
     let item = include_str!(
         "../src/infra/storage/migrations/m20260926_000012_create_pricing_plan_item.rs"
     );

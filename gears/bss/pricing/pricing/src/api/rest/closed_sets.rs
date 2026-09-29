@@ -134,6 +134,7 @@ closed_set!(
     PricingRevisionState from RevisionState {
         Draft => "draft",
         Pending => "pending",
+        Scheduled => "scheduled",
         Published => "published",
         Superseded => "superseded",
     }

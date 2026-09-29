@@ -85,10 +85,11 @@ pub fn unique_code(message: &str) -> Option<&'static str> {
         plan_unique_code(message)
     }
 }
-/// The phase 3 keys. Postgres names the index or constraint; `SQLite` names the columns, which a
-/// partial index shares with its siblings: the two single-column revision indexes read alike there
-/// and are told apart by `plan_revision_repo`, which knows the state it wrote. Longer column
-/// lists are matched before the single column they begin with.
+/// The phase 3 keys, and phase 8's scheduled index (D-446). Postgres names the index or
+/// constraint; `SQLite` names the columns, which a partial index shares with its siblings: the
+/// three single-column revision indexes read alike there and are told apart by
+/// `plan_revision_repo`, which knows the state it wrote. Longer column lists are matched before the
+/// single column they begin with.
 fn plan_unique_code(message: &str) -> Option<&'static str> {
     if message.contains("pricing_plan_code")
         || message.contains("pricing_plan.tenant_id, pricing_plan.code")
@@ -102,6 +103,8 @@ fn plan_unique_code(message: &str) -> Option<&'static str> {
         Some("REVISION_DRAFT_EXISTS")
     } else if message.contains("pricing_plan_revision_published") {
         Some("REVISION_PUBLISHED_EXISTS")
+    } else if message.contains("pricing_plan_revision_scheduled") {
+        Some("REVISION_SCHEDULED_EXISTS")
     } else if message.contains("pricing_plan_item_sku")
         || message.contains("pricing_plan_item.revision_id, pricing_plan_item.sku_id")
     {

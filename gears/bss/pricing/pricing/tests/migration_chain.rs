@@ -1,6 +1,7 @@
-//! The new chain is replayable and every migration reverses independently, with one named
-//! exception: the forward migration `m20260926_000013` (D-427) moves data and is irreversible, so it
-//! applies once through the runner and its down refuses. The schema guard (D-423) sorts first and
+//! The new chain is replayable and every migration reverses independently, with two named
+//! exceptions: the forward migration `m20260926_000013` (D-427) moves data and is irreversible, so it
+//! applies once through the runner and its down refuses; `m20260929_000017` (D-446) widens a CHECK a
+//! stored row may then need, so its down refuses too. The schema guard (D-423) sorts first and
 //! creates nothing.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -157,12 +158,12 @@ async fn m20260926_000013_applies_once_and_refuses_to_revert() {
 }
 
 #[test]
-fn gear_chain_is_the_guard_coord_then_sixteen_ordered_unique_migrations() {
+fn gear_chain_is_the_guard_coord_then_seventeen_ordered_unique_migrations() {
     let names: Vec<_> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 18);
+    assert_eq!(names.len(), 19);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
@@ -177,6 +178,80 @@ fn gear_chain_is_the_guard_coord_then_sixteen_ordered_unique_migrations() {
     assert_eq!(names[15], "m20260927_000014_settings_currencies_and_author");
     assert_eq!(names[16], "m20260928_000015_book_description");
     assert_eq!(names[17], "m20260928_000016_unit_submit_note");
+    assert_eq!(names[18], "m20260929_000017_revision_scheduled");
+}
+
+/// D-446: 000017 widens the revision state CHECK and adds the scheduled index. It replays without
+/// effect (the `SQLite` family rebuild runs again on the rebuilt family) and its down refuses by
+/// name: a revision stored `scheduled` has no state under the old CHECK.
+#[tokio::test]
+async fn m20260929_000017_widens_the_state_check_replays_and_refuses_to_revert() {
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let manager = SchemaManager::new(&db);
+    let chain = Migrator::migrations();
+    let at = chain
+        .iter()
+        .position(|m| m.name() == "m20260929_000017_revision_scheduled")
+        .unwrap();
+    for prior in &chain[..at] {
+        prior.up(&manager).await.unwrap();
+    }
+    let indexes = || async {
+        db.query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type = 'index' \
+             AND tbl_name = 'pricing_plan_revision' AND sql IS NOT NULL ORDER BY name"
+                .to_owned(),
+        ))
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.try_get::<String>("", "name").unwrap())
+        .collect::<Vec<String>>()
+    };
+    assert_eq!(
+        indexes().await,
+        [
+            "pricing_plan_revision_open",
+            "pricing_plan_revision_published"
+        ]
+    );
+    let step = &chain[at];
+    step.up(&manager).await.unwrap();
+    step.up(&manager).await.unwrap();
+    assert_eq!(
+        indexes().await,
+        [
+            "pricing_plan_revision_open",
+            "pricing_plan_revision_published",
+            "pricing_plan_revision_scheduled"
+        ]
+    );
+    let tables = db
+        .query_all_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'pricing_plan_%' \
+             ORDER BY name"
+                .to_owned(),
+        ))
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.try_get::<String>("", "name").unwrap())
+        .collect::<Vec<String>>();
+    assert_eq!(
+        tables,
+        ["pricing_plan_item", "pricing_plan_revision"],
+        "no rebuild table is left behind"
+    );
+    for _ in 0..2 {
+        let refused = step.down(&manager).await.unwrap_err().to_string();
+        assert!(
+            refused.contains("m20260929_000017_revision_scheduled: irreversible"),
+            "{refused}"
+        );
+    }
+    assert_eq!(indexes().await.len(), 3, "a refused down changes nothing");
 }
 
 /// Run 7.3 (D-445): 000016 adds `pricing_approval_unit.submit_note`, through the approval library's

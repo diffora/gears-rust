@@ -22,8 +22,9 @@ fn unlocked_draft(tenant: Uuid, id: Uuid, version: i64) -> Condition {
         .add(e::Column::PendingUnitId.is_null())
 }
 /// A unique conflict of a revision write. Postgres names the index; `SQLite` names only the
-/// columns of a partial index, so its single-column `plan_id` form is whichever of the two partial
-/// indexes the written state joins: the published one, or the draft-or-pending one.
+/// columns of a partial index, so its single-column `plan_id` form is whichever of the three
+/// partial indexes the written state joins: the published one, the scheduled one (D-446), or the
+/// draft-or-pending one.
 fn map_revision_unique(context: &str, error: ScopeError, state: &str) -> RepoError {
     if error.is_unique_violation() {
         let message = error.to_string();
@@ -33,6 +34,8 @@ fn map_revision_unique(context: &str, error: ScopeError, state: &str) -> RepoErr
         if message.contains("pricing_plan_revision.plan_id") {
             let code = if state == RevisionState::Published.as_str() {
                 "REVISION_PUBLISHED_EXISTS"
+            } else if state == RevisionState::Scheduled.as_str() {
+                "REVISION_SCHEDULED_EXISTS"
             } else {
                 "REVISION_DRAFT_EXISTS"
             };
@@ -59,8 +62,8 @@ async fn book_in_tenant(
 }
 /// Insert a revision of a tenant's plan on a tenant's book.
 /// # Errors
-/// `PLAN_NOT_FOUND`, `BOOK_NOT_FOUND`, `REVISION_NO_TAKEN`, `REVISION_DRAFT_EXISTS` or
-/// `REVISION_PUBLISHED_EXISTS`; database failures keep their type.
+/// `PLAN_NOT_FOUND`, `BOOK_NOT_FOUND`, `REVISION_NO_TAKEN`, `REVISION_DRAFT_EXISTS`,
+/// `REVISION_PUBLISHED_EXISTS` or `REVISION_SCHEDULED_EXISTS`; database failures keep their type.
 pub async fn insert(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -393,6 +396,244 @@ pub async fn supersede(
         .map_err(|e| driver_failure("supersede plan revision".into(), e))?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-4
     matched(result.rows_affected, "STALE_REVISION")
+}
+/// The UTC day of `now`: the day a revision's `available_from` is compared with (D-447).
+fn utc_day(now: time::OffsetDateTime) -> time::Date {
+    now.to_offset(time::UtcOffset::UTC).date()
+}
+/// A scheduled revision whose sale date has come by `today`. A null `available_from` is never on or
+/// before a day, so a scheduled row without a date is never due, as `domain::plan::is_due` reads it.
+fn due_on(today: time::Date) -> Condition {
+    Condition::all()
+        .add(e::Column::State.eq(RevisionState::Scheduled.as_str()))
+        .add(e::Column::AvailableFrom.lte(today))
+}
+/// Schedule the revision its unit holds (D-446, D-448): an approval whose sale date is after the
+/// apply's day. The lock turns into `approved_by_unit_id`, the state into `scheduled`, the version
+/// moves; `published_at` stays null, and the plan's published revision and `published_rev` do not
+/// move. The caller decides that the date is in the future; this write does not read it.
+/// # Errors
+/// `REVISION_NOT_PENDING` when the unit does not hold the pending revision;
+/// `REVISION_SCHEDULED_EXISTS` while the plan has another scheduled revision.
+pub async fn schedule(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    unit: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            e::Column::State,
+            Expr::value(RevisionState::Scheduled.as_str()),
+        )
+        .col_expr(e::Column::PendingUnitId, Expr::value(None::<Uuid>))
+        .col_expr(e::Column::ApprovedByUnitId, Expr::value(Some(unit)))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::PendingUnitId.eq(unit))
+                .add(e::Column::State.eq(RevisionState::Pending.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            map_revision_unique(
+                "schedule plan revision",
+                e,
+                RevisionState::Scheduled.as_str(),
+            )
+        })?;
+    matched(result.rows_affected, "REVISION_NOT_PENDING")
+}
+/// What [`switch_due`] switched (D-448): what a `PlanRevisionPublished` for it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Switched {
+    /// The revision that was published before; `None` for a plan's first publication.
+    pub superseded_revision_id: Option<Uuid>,
+    pub revision_id: Uuid,
+    /// The unit that approved the revision (`approved_by_unit_id`).
+    pub unit_id: Uuid,
+    pub rev_no: i32,
+    pub book_id: Uuid,
+}
+/// Persist the plan's due switch, in the caller's transaction (D-448): the published revision is
+/// superseded, then the due scheduled one (see [`due_on`]; the UTC day of `now`) is published with
+/// `published_at` = 00:00 UTC of its `available_from`, then the plan's `published_rev` is advanced
+/// WITHOUT its version or `updated_at` moving (`plan_repo::advance_published`). The two revision
+/// rows bump their version and `updated_at` as every write does.
+///
+/// Every write is conditional on the state it reads, so a switch that lost a race is a no-op:
+/// `Some` only when the scheduled-to-published update hit its row, `None` when nothing was due or
+/// another writer switched first. A superseded predecessor with no revision published after it is
+/// refused rather than committed.
+/// # Errors
+/// `CorruptRow` for a scheduled revision that names no approving unit (nothing is written);
+/// `STALE_REVISION` when the predecessor was superseded but the due revision moved under this
+/// transaction; `REVISION_PUBLISHED_EXISTS`; typed database failures.
+pub async fn switch_due(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<Option<Switched>, RepoError> {
+    let today = utc_day(now);
+    let of_plan = || {
+        Condition::all()
+            .add(e::Column::TenantId.eq(tenant))
+            .add(e::Column::PlanId.eq(plan_id))
+    };
+    let Some(due) = e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(of_plan().add(due_on(today)))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure("find the due scheduled revision".into(), e))?
+    else {
+        return Ok(None);
+    };
+    let (Some(unit_id), Some(from)) = (due.approved_by_unit_id, due.available_from) else {
+        return Err(RepoError::CorruptRow(format!(
+            "scheduled plan revision {} names no approving unit",
+            due.id
+        )));
+    };
+    let previous = e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            of_plan()
+                .add(e::Column::State.eq(RevisionState::Published.as_str()))
+                .add(e::Column::Id.ne(due.id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure("find the published plan revision".into(), e))?;
+    let mut superseded_revision_id = None;
+    if let Some(previous) = previous {
+        let result = e::Entity::update_many()
+            .secure()
+            .scope_with(scope)
+            .col_expr(
+                e::Column::State,
+                Expr::value(RevisionState::Superseded.as_str()),
+            )
+            .col_expr(e::Column::UpdatedAt, Expr::value(now))
+            .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+            .filter(
+                key(tenant, previous.id)
+                    .add(e::Column::State.eq(RevisionState::Published.as_str())),
+            )
+            .exec(runner)
+            .await
+            .map_err(|e| driver_failure("supersede the switched plan revision".into(), e))?;
+        if result.rows_affected == 1 {
+            superseded_revision_id = Some(previous.id);
+        }
+    }
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            e::Column::State,
+            Expr::value(RevisionState::Published.as_str()),
+        )
+        .col_expr(
+            e::Column::PublishedAt,
+            Expr::value(Some(crate::domain::plan::published_from(from))),
+        )
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(key(tenant, due.id).add(due_on(today)))
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            map_revision_unique(
+                "publish the due plan revision",
+                e,
+                RevisionState::Published.as_str(),
+            )
+        })?;
+    if result.rows_affected != 1 {
+        return if superseded_revision_id.is_some() {
+            Err(RepoError::Conflict {
+                code: "STALE_REVISION",
+            })
+        } else {
+            Ok(None)
+        };
+    }
+    super::plan_repo::advance_published(runner, scope, tenant, plan_id, due.rev_no).await?;
+    Ok(Some(Switched {
+        superseded_revision_id,
+        revision_id: due.id,
+        unit_id,
+        rev_no: due.rev_no,
+        book_id: due.book_id,
+    }))
+}
+/// Return a scheduled revision that is not yet due (the UTC day of `now` is before its
+/// `available_from`) to an unlocked draft (D-448): `approved_by_unit_id` is cleared, the version
+/// moves, and its items stay. The write is conditional on that state, which is its concurrency: no
+/// If-Match (plan rev 2 M5). The applied unit stays applied in its history.
+/// # Errors
+/// `REVISION_NOT_SCHEDULED` for a revision in any other state, or one already due;
+/// `REVISION_DRAFT_EXISTS` while the plan has another draft or pending revision.
+pub async fn unschedule(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    now: time::OffsetDateTime,
+) -> Result<(), RepoError> {
+    let not_due = Condition::any()
+        .add(e::Column::AvailableFrom.is_null())
+        .add(e::Column::AvailableFrom.gt(utc_day(now)));
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::State, Expr::value(RevisionState::Draft.as_str()))
+        .col_expr(e::Column::ApprovedByUnitId, Expr::value(None::<Uuid>))
+        .col_expr(e::Column::UpdatedAt, Expr::value(now))
+        .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
+        .filter(
+            key(tenant, id)
+                .add(e::Column::State.eq(RevisionState::Scheduled.as_str()))
+                .add(not_due),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            map_revision_unique("unschedule plan revision", e, RevisionState::Draft.as_str())
+        })?;
+    matched(result.rows_affected, "REVISION_NOT_SCHEDULED")
+}
+/// The switch job's scan (D-448): the due scheduled revisions of EVERY tenant on `today`, by
+/// `available_from` then id, at most `limit`. Cross-tenant by design (`AccessScope::allow_all()`,
+/// as the reference ticker's scans are); the job then switches each plan in its tenant's scope.
+/// # Errors
+/// Returns typed database failures.
+pub async fn due_scheduled(
+    runner: &impl DBRunner,
+    today: time::Date,
+    limit: u64,
+) -> Result<Vec<e::Model>, RepoError> {
+    e::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(due_on(today))
+        .order_by(e::Column::AvailableFrom, Order::Asc)
+        .order_by(e::Column::Id, Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("due scheduled plan revisions".into(), e))
 }
 /// Delete an unlocked draft that has no items left, at its observed version; the caller deletes
 /// the items first, with their delete ops (D-414).

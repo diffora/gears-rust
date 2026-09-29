@@ -103,7 +103,9 @@ struct Seed {
     revision: plan_revision::Model,
 }
 async fn seed() -> Seed {
-    let pg = pg_support::Pg::applied().await;
+    seed_on(&pg_support::Pg::applied().await).await
+}
+async fn seed_on(pg: &pg_support::Pg) -> Seed {
     let provider = DBProvider::<DbError>::new(pg.db().await);
     let conn = provider.conn().unwrap();
     let tenant = Uuid::new_v4();
@@ -464,6 +466,260 @@ async fn postgres_pricing_plan_item_keys_checks_and_reference() {
             .await
             .unwrap()
     );
+}
+
+// ------------------------------------------------------------------ scheduled revisions (D-448)
+
+/// `hour` o'clock UTC on `day`.
+fn instant(day: &str, hour: u8) -> time::OffsetDateTime {
+    date(day).with_hms(hour, 0, 0).unwrap().assume_utc()
+}
+async fn rev(s: &Seed, id: Uuid) -> plan_revision::Model {
+    plan_revision_repo::find(&s.provider.conn().unwrap(), &s.scope, s.tenant, id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+async fn plan_of(s: &Seed) -> plan_e::Model {
+    plan_repo::find(&s.provider.conn().unwrap(), &s.scope, s.tenant, s.plan.id)
+        .await
+        .unwrap()
+        .unwrap()
+}
+/// A new unit locks the draft at `version`.
+async fn lock(s: &Seed, id: Uuid, version: i64) -> Uuid {
+    let u = unit(s, "plan_revision").await;
+    assert!(
+        plan_revision_repo::try_lock(
+            &s.provider.conn().unwrap(),
+            &s.scope,
+            s.tenant,
+            id,
+            u,
+            version
+        )
+        .await
+        .unwrap()
+    );
+    u
+}
+/// The seed's rev 1 published (the plan's `published_rev` 1, its version 2) and rev 2, available
+/// from 2026-10-01, scheduled by its unit; returns rev 2 and its unit.
+async fn scheduled(s: &Seed) -> (plan_revision::Model, Uuid) {
+    let conn = s.provider.conn().unwrap();
+    let u1 = lock(s, s.revision.id, 1).await;
+    plan_revision_repo::publish(&conn, &s.scope, s.tenant, s.revision.id, u1, now())
+        .await
+        .unwrap();
+    plan_repo::set_published(&conn, &s.scope, s.tenant, s.plan.id, 1, 1, now())
+        .await
+        .unwrap();
+    let next = plan_revision_repo::insert(&conn, &s.scope, revision(&s.plan, &s.book, 2))
+        .await
+        .unwrap();
+    conflict(
+        plan_revision_repo::schedule(&conn, &s.scope, s.tenant, next.id, u1, now()).await,
+        "REVISION_NOT_PENDING",
+    );
+    let u2 = lock(s, next.id, 1).await;
+    conflict(
+        plan_revision_repo::schedule(&conn, &s.scope, s.tenant, next.id, u1, now()).await,
+        "REVISION_NOT_PENDING",
+    );
+    plan_revision_repo::schedule(&conn, &s.scope, s.tenant, next.id, u2, now())
+        .await
+        .unwrap();
+    (rev(s, next.id).await, u2)
+}
+
+/// D-448 on Postgres: `schedule` from pending only, the scheduled index (Postgres names it),
+/// `switch_due` once with the plan's version kept, `unschedule` before the date only, and the
+/// job's scan.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_pricing_plan_revision_schedule_switch_and_unschedule() {
+    let s = seed().await;
+    let conn = s.provider.conn().unwrap();
+    let (next, u2) = scheduled(&s).await;
+    assert_eq!(
+        (
+            next.state.as_str(),
+            next.pending_unit_id,
+            next.approved_by_unit_id,
+            next.published_at,
+            next.version
+        ),
+        ("scheduled", None, Some(u2), None, 3)
+    );
+    let mut third = revision(&s.plan, &s.book, 3);
+    third.available_from = Some(date("2026-11-01"));
+    let third = plan_revision_repo::insert(&conn, &s.scope, third)
+        .await
+        .unwrap();
+    let u3 = lock(&s, third.id, 1).await;
+    conflict(
+        plan_revision_repo::schedule(&conn, &s.scope, s.tenant, third.id, u3, now()).await,
+        "REVISION_SCHEDULED_EXISTS",
+    );
+    // The job's scan and the switch, before the date and on it.
+    assert!(
+        plan_revision_repo::due_scheduled(&conn, date("2026-09-30"), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let due: Vec<Uuid> = plan_revision_repo::due_scheduled(&conn, date("2026-10-01"), 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(due, [next.id]);
+    assert_eq!(
+        plan_revision_repo::switch_due(
+            &conn,
+            &s.scope,
+            s.tenant,
+            s.plan.id,
+            instant("2026-09-30", 23)
+        )
+        .await
+        .unwrap(),
+        None
+    );
+    let at = instant("2026-10-01", 8);
+    assert_eq!(
+        plan_revision_repo::switch_due(&conn, &s.scope, s.tenant, s.plan.id, at)
+            .await
+            .unwrap(),
+        Some(plan_revision_repo::Switched {
+            superseded_revision_id: Some(s.revision.id),
+            revision_id: next.id,
+            unit_id: u2,
+            rev_no: 2,
+            book_id: s.book.id,
+        })
+    );
+    let old = rev(&s, s.revision.id).await;
+    assert_eq!(
+        (
+            old.state.as_str(),
+            old.published_at,
+            old.version,
+            old.updated_at
+        ),
+        ("superseded", Some(now()), 4, at)
+    );
+    let new = rev(&s, next.id).await;
+    assert_eq!(
+        (
+            new.state.as_str(),
+            new.published_at,
+            new.version,
+            new.updated_at
+        ),
+        ("published", Some(instant("2026-10-01", 0)), 4, at)
+    );
+    let p = plan_of(&s).await;
+    assert_eq!(
+        (p.published_rev, p.version, p.updated_at),
+        (Some(2), 2, now())
+    );
+    assert_eq!(
+        plan_revision_repo::switch_due(&conn, &s.scope, s.tenant, s.plan.id, at)
+            .await
+            .unwrap(),
+        None,
+        "a second call switches nothing"
+    );
+    assert_eq!(rev(&s, next.id).await.version, 4);
+    // Unschedule: not a published revision; a scheduled one only before its date.
+    conflict(
+        plan_revision_repo::unschedule(&conn, &s.scope, s.tenant, next.id, at).await,
+        "REVISION_NOT_SCHEDULED",
+    );
+    plan_revision_repo::schedule(&conn, &s.scope, s.tenant, third.id, u3, at)
+        .await
+        .unwrap();
+    conflict(
+        plan_revision_repo::unschedule(
+            &conn,
+            &s.scope,
+            s.tenant,
+            third.id,
+            instant("2026-11-01", 0),
+        )
+        .await,
+        "REVISION_NOT_SCHEDULED",
+    );
+    let eve = instant("2026-10-15", 12);
+    plan_revision_repo::unschedule(&conn, &s.scope, s.tenant, third.id, eve)
+        .await
+        .unwrap();
+    let back = rev(&s, third.id).await;
+    assert_eq!(
+        (
+            back.state.as_str(),
+            back.pending_unit_id,
+            back.approved_by_unit_id,
+            back.published_at,
+            back.version,
+            back.updated_at
+        ),
+        ("draft", None, None, None, 4, eve)
+    );
+    conflict(
+        plan_revision_repo::unschedule(&conn, &s.scope, s.tenant, third.id, eve).await,
+        "REVISION_NOT_SCHEDULED",
+    );
+}
+
+/// Two pools switch one plan at once under serializable transactions: exactly one switches; the
+/// other retries, finds nothing due and writes nothing.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_pricing_plan_revision_switch_due_racing_itself_switches_once() {
+    let pg = pg_support::Pg::applied().await;
+    let s = seed_on(&pg).await;
+    let (next, _) = scheduled(&s).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let race = |db: toolkit_db::Db| {
+        let barrier = Arc::clone(&barrier);
+        let (scope, tenant, plan_id) = (s.scope.clone(), s.tenant, s.plan.id);
+        async move {
+            let mut first = true;
+            price_repo::transaction(&db, move |tx| {
+                let barrier = Arc::clone(&barrier);
+                let scope = scope.clone();
+                let go = std::mem::replace(&mut first, false);
+                Box::pin(async move {
+                    if go {
+                        barrier.wait().await;
+                    }
+                    plan_revision_repo::switch_due(
+                        tx,
+                        &scope,
+                        tenant,
+                        plan_id,
+                        instant("2026-10-01", 9),
+                    )
+                    .await
+                })
+            })
+            .await
+        }
+    };
+    let (a, b) = tokio::join!(race(pg.db().await), race(pg.db().await));
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        usize::from(a.is_some()) + usize::from(b.is_some()),
+        1,
+        "{a:?} / {b:?}"
+    );
+    assert_eq!(rev(&s, s.revision.id).await.state, "superseded");
+    assert_eq!(rev(&s, next.id).await.state, "published");
+    let p = plan_of(&s).await;
+    assert_eq!((p.published_rev, p.version), (Some(2), 2));
 }
 
 // ------------------------------------------------------------------ the doors on Postgres (run 3.5)

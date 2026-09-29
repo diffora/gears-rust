@@ -414,6 +414,83 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
     }
 }
 
+// ------------------------------------------------------------------ a stored scheduled revision
+
+/// D-446, run 8.1: a revision stored `scheduled` reads as stored wherever a read renders a
+/// revision state, and counts as a live revision wherever a count reads one, until the reads
+/// derive the effective state (D-447, run 8.2). No read answers 500 on it; `/resolve` refuses it as
+/// it refuses any revision that is not published or superseded.
+#[tokio::test]
+async fn a_stored_scheduled_revision_reads_as_stored_and_counts_as_live() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let sku = catalog.sku(SkuType::Usage);
+    let e = entry(&f, eur, sku, "usage", None).await;
+    let (created, r1) = plan(&f, "pro", eur).await;
+    let plan_id = id_of(&created["id"]);
+    item(&f, r1, sku, Some(e), "paid").await;
+    publish(&f, plan_id, r1).await;
+    // Rev 2, available in two days, approved and waiting: scheduled through the repository.
+    let r2 = bare_revision(&f, plan_id, 2, eur).await;
+    let (conn, tenant) = (f.db.conn().unwrap(), f.ctx.subject_tenant_id());
+    let mut dated = plan_revision_repo::find(&conn, &scope(&f), tenant, r2)
+        .await
+        .unwrap()
+        .unwrap();
+    dated.available_from = Some(today() + time::Duration::days(2));
+    plan_revision_repo::update_draft(&conn, &scope(&f), dated)
+        .await
+        .unwrap();
+    let waiting = item(&f, r2, sku, Some(e), "optional").await;
+    let unit = plan_support::lock(&f, r2).await;
+    plan_revision_repo::schedule(
+        &conn,
+        &scope(&f),
+        tenant,
+        r2,
+        unit,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+
+    let (s, b, _) = get(&f, &format!("/plans/{plan_id}")).await;
+    assert_eq!(s, 200, "{b}");
+    let states: Vec<&str> = b["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(states, ["published", "scheduled"], "{b}");
+    assert_eq!(b["published_rev"], 1);
+    let (s, b, _) = get(&f, "/plans").await;
+    assert_eq!(s, 200, "{b}");
+    let (s, b, _) = get(&f, &format!("/plan-revisions/{r2}")).await;
+    assert_eq!((s, b["state"].as_str()), (200, Some("scheduled")), "{b}");
+    let (s, b, _) = get(&f, &format!("/plan-items/{}", waiting.id)).await;
+    assert_eq!((s, b["state"].as_str()), (200, Some("scheduled")), "{b}");
+    // The counts: the plan is on the SKU through both revisions, once.
+    let (s, b, _) = get(&f, &format!("/plans?sku_id={sku}")).await;
+    assert_eq!(
+        (s, b["items"].as_array().map(Vec::len)),
+        (200, Some(1)),
+        "{b}"
+    );
+    assert_eq!(sku_entries(&f, sku).await[0]["usage"]["plans"], 1);
+    let usage = bss_pricing::infra::usage::sku_usage(&conn, &scope(&f), tenant, &[sku])
+        .await
+        .unwrap();
+    assert_eq!(usage[0].plans, 1);
+    let (s, b, _) = get(
+        &f,
+        &format!("/resolve?plan_revision_id={r2}&date={}", today()),
+    )
+    .await;
+    assert_eq!(s, 409, "{b}");
+    assert!(b.to_string().contains("REVISION_NOT_PUBLISHED"), "{b}");
+}
+
 // ------------------------------------------------------------------ GET /plan-items/{id}
 
 #[tokio::test]

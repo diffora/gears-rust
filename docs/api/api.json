@@ -12554,6 +12554,7 @@
         "enum": [
           "draft",
           "pending",
+          "scheduled",
           "published",
           "superseded"
         ],

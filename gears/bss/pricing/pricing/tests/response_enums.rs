@@ -25,7 +25,7 @@ const PRICE_STATUS: &[&str] = &[
 ];
 const TREATMENT: &[&str] = &["paid", "optional", "included"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
-const REVISION: &[&str] = &["draft", "pending", "published", "superseded"];
+const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "superseded"];
 const RESOLVED_REVISION: &[&str] = &["published", "superseded"];
 const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach"];
 const OP_STATE: &[&str] = &["reserving", "written", "cancelling", "releasing", "done"];

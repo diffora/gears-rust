@@ -18,10 +18,11 @@ use super::{
 use bss_products_sdk::models::{Lifecycle, Sku, SkuType};
 use rust_decimal::Decimal;
 use std::collections::BTreeSet;
-use time::Date;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
-string_enum!(RevisionState {Draft=>"draft", Pending=>"pending", Published=>"published", Superseded=>"superseded"});
+// `scheduled`: approved, and waiting for its sale date (D-446).
+string_enum!(RevisionState {Draft=>"draft", Pending=>"pending", Scheduled=>"scheduled", Published=>"published", Superseded=>"superseded"});
 string_enum!(Treatment {Paid=>"paid", Optional=>"optional", Included=>"included"});
 // A copied item starts `unreserved` and attaches after its write (D-413).
 string_enum!(ReferenceState {Unreserved=>"unreserved", ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost"});
@@ -144,6 +145,91 @@ pub struct ItemCoverage {
     pub detail: String,
     pub version_no: Option<i32>,
     pub blocked_by: Vec<Uuid>,
+}
+
+/// A stored revision as [`effective`] reads it: the columns its effective state depends on.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredRevision {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub rev_no: i32,
+    pub state: RevisionState,
+    pub available_from: Option<Date>,
+    pub published_at: Option<OffsetDateTime>,
+}
+/// What a stored revision reads as on one day (D-447).
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveRevision {
+    pub id: Uuid,
+    pub plan_id: Uuid,
+    pub rev_no: i32,
+    pub state: RevisionState,
+    pub published_at: Option<OffsetDateTime>,
+}
+/// Whether a stored revision is a scheduled one whose sale date has come: `available_from` on or
+/// before `today`. A scheduled revision without a date is never due; the storage writes none (the
+/// apply schedules only a future date), and `plan_revision_repo::switch_due` reads it the same way.
+#[must_use]
+pub fn is_due(revision: &StoredRevision, today: Date) -> bool {
+    revision.state == RevisionState::Scheduled
+        && revision.available_from.is_some_and(|from| from <= today)
+}
+/// The instant a due revision reads as published at: 00:00 UTC of its sale date.
+#[must_use]
+pub fn published_from(from: Date) -> OffsetDateTime {
+    from.midnight().assume_utc()
+}
+/// Every revision as it reads on `today` (D-447), in the order given; a pure function of the stored
+/// rows, so a read never writes. A due scheduled revision (see [`is_due`]) reads `published`, with
+/// `published_at` from [`published_from`]; the stored-published revision of its plan reads
+/// `superseded`, keeping its own `published_at`; every other revision reads as stored. Plans are told
+/// apart by `plan_id`, so one list may carry the revisions of many plans.
+#[must_use]
+pub fn effective(revisions: &[StoredRevision], today: Date) -> Vec<EffectiveRevision> {
+    let switching: BTreeSet<Uuid> = revisions
+        .iter()
+        .filter(|r| is_due(r, today))
+        .map(|r| r.plan_id)
+        .collect();
+    revisions
+        .iter()
+        .map(|r| {
+            let (state, published_at) = if is_due(r, today) {
+                (
+                    RevisionState::Published,
+                    r.available_from.map(published_from),
+                )
+            } else if r.state == RevisionState::Published && switching.contains(&r.plan_id) {
+                (RevisionState::Superseded, r.published_at)
+            } else {
+                (r.state, r.published_at)
+            };
+            EffectiveRevision {
+                id: r.id,
+                plan_id: r.plan_id,
+                rev_no: r.rev_no,
+                state,
+                published_at,
+            }
+        })
+        .collect()
+}
+/// The plan's `published_rev` as it reads on `today` (D-447): the number of its due scheduled
+/// revision when it has one, else `stored`, the plan's own projection. Only the due revision need be
+/// among `revisions`.
+#[must_use]
+pub fn published_rev(
+    stored: Option<i32>,
+    revisions: &[StoredRevision],
+    plan_id: Uuid,
+    today: Date,
+) -> Option<i32> {
+    revisions
+        .iter()
+        .find(|r| r.plan_id == plan_id && is_due(r, today))
+        .map_or(stored, |r| Some(r.rev_no))
 }
 
 /// The sale date: `available_from`, or today for "at publish" (the prototype's `planFrom`).
@@ -667,6 +753,9 @@ pub fn checks(ctx: &PlanContext, today: Date) -> Vec<Check> {
     out.extend(info_rows(ctx));
     out
 }
+#[cfg(test)]
+#[path = "plan_effective_tests.rs"]
+mod effective_tests;
 #[cfg(test)]
 #[path = "plan_tests.rs"]
 mod tests;
