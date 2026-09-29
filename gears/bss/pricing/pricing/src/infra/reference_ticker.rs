@@ -134,6 +134,11 @@ impl Ticker {
     /// # Errors
     /// The reference duties' scan failures are surfaced; per-op failures remain due at their
     /// scheduled retry. The switch surfaces nothing: it warns and runs again on its next tick.
+    // cancel-safe: `serve` drops this future at shutdown at any await, a Products call inside a
+    // drive or an open transaction included. A dropped transaction rolls back; every op is a
+    // durable journal row written before its registry call, advanced by compare-and-swap, and
+    // due again after `IN_FLIGHT_GRACE`, so a drop is a crash the next tick recovers (D-401).
+    // The in-memory tick count and cursors only pace the duties.
     pub async fn tick(&mut self) -> Result<(), CanonicalError> {
         // D-450, plan rev 2 M4: first, and never through `?`.
         if self.ticks.is_multiple_of(self.switch_every) {

@@ -36,6 +36,8 @@ impl BssPricingGear {
     /// every second: the plan switch duty first, on the first tick and every
     /// `reference_ticker::SWITCH_EVERY` (60) after it (D-450), then at most 100 due reference ops,
     /// and a reconciliation every 10 ticks. The knobs are fixed here; the gear has no config key.
+    /// The outbox pipeline is stopped however the task ends, a panic included; the task's
+    /// failure is returned after that (PS-36).
     pub(crate) async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<()> {
         let Some(runtime) = self.runtime.load_full() else {
             cancel.cancelled().await;
@@ -50,7 +52,7 @@ impl BssPricingGear {
                 100,
                 10,
             );
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut interval = tick_interval();
             loop {
                 tokio::select! { biased;
                     () = child.cancelled() => break,
@@ -63,12 +65,24 @@ impl BssPricingGear {
                 }
             }
         });
-        task.await
-            .context("pricing reference ticker stopped unexpectedly")?;
+        let ended = task.await;
         runtime.state.stop().await;
-        Ok(())
+        ended.context("pricing reference ticker stopped unexpectedly")
     }
 }
+
+/// The ticker's one-second interval. A tick that overruns (a slow Products under a hundred
+/// drives) delays the next by a full second: the missed ticks are not fired back to back, which
+/// would repeat the scans and the Products calls while Products is slow (PS-12).
+pub(crate) fn tick_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
+#[cfg(test)]
+#[path = "module_tests.rs"]
+mod module_tests;
 
 #[async_trait]
 impl Gear for BssPricingGear {
