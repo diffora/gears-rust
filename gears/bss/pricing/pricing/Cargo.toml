@@ -21,7 +21,6 @@ toolkit-macros = { workspace = true }
 bss-products-sdk = { workspace = true }
 bss-approval = { workspace = true }
 event-broker-sdk = { workspace = true, features = ["db", "outbox"] }
-account-management = { workspace = true }
 coord = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

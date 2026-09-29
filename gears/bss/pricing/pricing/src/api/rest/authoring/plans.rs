@@ -358,10 +358,6 @@ pub(super) async fn copy(
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(response)
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "authorized context, replay identity and the plan belong to one transaction"
-)]
 async fn copy_in(
     tx: &(impl DBRunner + Sync),
     outbox: &TxOutbox,
@@ -451,10 +447,6 @@ async fn copy_in(
 /// transaction (D-413): each copy is written `unreserved` with no receipt and authored by the
 /// caller, with one attach op per copy. Answers the copies and their op ids, for the door to drive
 /// after its commit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the copy's context, both revisions and its clock belong to one transaction"
-)]
 async fn copy_items(
     tx: &impl DBRunner,
     children: &AccessScope,
@@ -511,7 +503,7 @@ async fn copy_items(
 /// `PRICE_BOOK_READ_REQUIRED` when the caller's `price_book` read (`books`) does not admit the
 /// book the clone names, the source's (D-456); 409 `PLAN_CODE_TAKEN`; a replayed or conflicting
 /// key.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized context, replay identity and input belong to one transaction"
 )]
@@ -555,7 +547,7 @@ pub(super) async fn clone(
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(response)
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized context, replay identity and input belong to one transaction"
 )]

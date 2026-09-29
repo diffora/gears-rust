@@ -2002,7 +2002,6 @@ dependencies = [
  "async-trait",
  "aws-lc-rs",
  "axum",
- "cf-gears-account-management",
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
  "cf-gears-bss-approval",

@@ -51,10 +51,6 @@ fn validate(m: &price_book::Model) -> Result<(), CanonicalError> {
     }
     book::validate_description(m.description.as_deref()).map_err(|e| invalid("description", e.code))
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Authorized context, replay identity and input belong to one transaction"
-)]
 pub async fn create(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -68,7 +64,7 @@ pub async fn create(
     let now = time::OffsetDateTime::now_utc();
     let receipt_scope = AccessScope::for_tenant(tenant);
     let endpoint = "/bss-pricing/v1/price-books";
-    match idem::claim_idempotency_key(
+    let claim = idem::claim_idempotency_key(
         tx,
         &receipt_scope,
         tenant,
@@ -78,38 +74,14 @@ pub async fn create(
         now,
         now + time::Duration::hours(24),
     )
-    .await?
-    {
-        idem::IdempotencyClaim::Claimed => {}
-        idem::IdempotencyClaim::Answered {
-            payload_hash,
-            response_status,
-            response_body,
-        } => {
-            if payload_hash != digest {
-                return Err(conflict("IDEMPOTENCY_CONFLICT").into());
-            }
-            let status = u16::try_from(response_status)
-                .ok()
-                .and_then(|s| StatusCode::from_u16(s).ok())
-                .ok_or_else(|| CanonicalError::internal("invalid stored status").create())?;
-            return Ok(response(
-                status,
-                &response_body,
-                response_body["version"].as_u64(),
-            )?);
-        }
-        idem::IdempotencyClaim::InFlight { payload_hash, .. } => {
-            return Err(conflict(if payload_hash == digest {
-                "IDEMPOTENCY_KEY_IN_FLIGHT"
-            } else {
-                "IDEMPOTENCY_CONFLICT"
-            })
-            .into());
-        }
-        idem::IdempotencyClaim::TakeoverRaceLost => {
-            return Err(conflict("IDEMPOTENCY_KEY_IN_FLIGHT").into());
-        }
+    .await?;
+    // The book's answer is stored as its body, with its version inside it.
+    if let Some((status, body)) = super::support::held(claim, digest)? {
+        return Ok(response(
+            super::support::stored_status(status)?,
+            &body,
+            body["version"].as_u64(),
+        )?);
     }
     let model = price_book::Model {
         id: Uuid::now_v7(),
@@ -149,10 +121,6 @@ pub async fn create(
     }
     Ok(response(StatusCode::CREATED, &body, Some(1))?)
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Conditional resource identity and audit context are explicit"
-)]
 pub async fn patch(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -201,10 +169,6 @@ pub async fn patch(
 /// without it.
 /// # Errors
 /// The refusals above; storage failures.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Conditional resource identity and audit context are explicit"
-)]
 pub async fn delete(
     tx: &impl DBRunner,
     scope: &AccessScope,

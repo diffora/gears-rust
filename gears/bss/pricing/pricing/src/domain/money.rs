@@ -113,7 +113,11 @@ pub fn validate(model: Model, data: &PriceData) -> Vec<RuleError> {
             vec![RuleError::new("PACKAGE_FIELDS_INVALID")]
         }
         PriceData::Tiers { tiers } => validate_tiers(tiers),
-        _ => Vec::new(),
+        // Every shape the guards above let through; a new shape does not compile until it is
+        // judged here (whole-branch review PS-44).
+        PriceData::Flat { .. } | PriceData::PerUnit { .. } | PriceData::Package { .. } => {
+            Vec::new()
+        }
     }
 }
 fn checked(value: Option<Decimal>) -> Result<Decimal, RuleError> {

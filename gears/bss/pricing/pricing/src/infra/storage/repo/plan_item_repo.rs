@@ -231,7 +231,7 @@ pub async fn update_draft(
 /// (D-413).
 /// # Errors
 /// A concurrent change is `STALE_REVISION`; database failures keep their type.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "tenant identity, version and receipt are the conditional write operands"
 )]

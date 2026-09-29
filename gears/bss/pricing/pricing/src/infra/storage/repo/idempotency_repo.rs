@@ -71,7 +71,7 @@ fn idempotency_key_of(tenant_id: Uuid, endpoint: &str, client_key: &str) -> Cond
         .add(idempotency::Column::ClientKey.eq(client_key))
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the composite key is three columns and the claim needs the digest, the \
               instant and the fresh expiry beside them, matching the sibling pricing \
@@ -288,7 +288,7 @@ pub enum IdempotencyAnswer {
 /// Answer idempotency key.
 /// # Errors
 /// Returns scoped storage failures, preserving database errors for retry.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the composite key is three columns and the answer needs the status, the body and \
               the late answer's retention beside them, like the claim above"

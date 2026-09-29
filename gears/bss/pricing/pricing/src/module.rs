@@ -18,7 +18,7 @@ struct PricingRuntime {
     state: Arc<crate::api::rest::authoring::AuthoringState>,
 }
 
-#[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver, account_management], lifecycle(entry = "serve", stop_timeout = "30s"))]
+#[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver], lifecycle(entry = "serve", stop_timeout = "30s"))]
 pub struct BssPricingGear {
     runtime: ArcSwapOption<PricingRuntime>,
 }

@@ -158,3 +158,35 @@ fn an_unknown_reserve_outcome_cancels_only_work_without_a_receipt() {
     let (op, _) = next(op, Event::Released).unwrap();
     assert_eq!(op.state, OpState::Done);
 }
+
+/// A stored plan item op keeps its create input in a shape of its own, not the request's (the
+/// whole-branch review's PS-19): an op whose input carries a field this build does not know still
+/// reads, and so does one written before a field was added, so a change of the wire cannot make
+/// the ops in flight corrupt.
+#[test]
+fn a_stored_item_input_reads_with_a_field_it_does_not_know_or_lacks() {
+    use bss_pricing::infra::reference_work::{Target, Work};
+    let stored = |input: serde_json::Value| {
+        serde_json::json!({
+            "target": {"plan_item": {"revision_id": Uuid::nil(), "input": input}},
+            "correlation": Uuid::nil(),
+            "refusal": null,
+            "receipt": null
+        })
+        .to_string()
+    };
+    let later = stored(serde_json::json!({
+        "sku_id": Uuid::nil(), "price_book_entry_id": null, "treatment": "paid",
+        "included_qty": null, "qty_min": null, "a_later_field": "x"
+    }));
+    let work: Work = serde_json::from_str(&later).unwrap();
+    let Target::PlanItem {
+        input: Some(input), ..
+    } = work.target
+    else {
+        panic!("a plan item target");
+    };
+    assert_eq!(input.treatment, "paid");
+    let earlier = stored(serde_json::json!({"sku_id": Uuid::nil(), "treatment": "included"}));
+    assert!(serde_json::from_str::<Work>(&earlier).is_ok(), "{earlier}");
+}

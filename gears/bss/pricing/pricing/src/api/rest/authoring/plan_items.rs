@@ -107,7 +107,7 @@ async fn entry_fits(
 /// `ITEM_SKU_DEPRECATED` or `ITEM_BUNDLE_SKU`; 404 for an unknown revision or entry; 409
 /// `REVISION_NOT_DRAFT` or `ITEM_SKU_TAKEN`; 403 `NOT_DRAFT_AUTHOR` (D-404); 503 when Products
 /// cannot answer; then [`create`]'s own.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
 )]
@@ -294,7 +294,7 @@ enum Begun {
 /// revision that is missing (404) or no longer an unlocked draft (409 `REVISION_NOT_DRAFT`).
 /// # Errors
 /// The canonical refusal, conflict or unavailability of any step.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
 )]
@@ -355,7 +355,7 @@ pub async fn create(
             let work = Work {
                 target: Target::PlanItem {
                     revision_id: revision,
-                    input: Some(input),
+                    input: Some(input.into()),
                 },
                 correlation,
                 refusal: None,

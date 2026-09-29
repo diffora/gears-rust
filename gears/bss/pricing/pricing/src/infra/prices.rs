@@ -531,7 +531,7 @@ impl PricesSubject {
                 format!("entry {price_book_entry_id}"),
             ));
         }
-        if entry.reference_state == "lost" {
+        if entry.reference_state == crate::domain::price_book_entry::ReferenceState::Lost.as_str() {
             return Err(invalid(
                 "ENTRY_REFERENCE_LOST",
                 format!("entry {price_book_entry_id}"),
@@ -754,7 +754,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
         let models = self.load_all(tx, items.iter().map(|i| i.item_id)).await?;
         if let Some(m) = models
             .iter()
-            .find(|m| m.pending_unit_id != Some(unit.id) || m.state != "pending")
+            .find(|m| m.pending_unit_id != Some(unit.id) || m.state != PriceState::Pending.as_str())
         {
             return Err(ApprovalError::ApplyRefused {
                 code: "PRICE_NOT_PENDING",

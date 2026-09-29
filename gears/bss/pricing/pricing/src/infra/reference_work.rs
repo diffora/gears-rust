@@ -95,6 +95,30 @@ impl EntryInput {
         }
     }
 }
+/// A plan item's persisted create input (whole-branch review PS-19): what its create writes,
+/// kept apart from the request `PricingPlanItemCreate`, whose `deny_unknown_fields` would make a
+/// stored op corrupt the day a field of the wire is renamed or removed. Its JSON is the request
+/// body's, field for field; it denies no unknown field, and a field added later takes
+/// `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemInput {
+    pub sku_id: Uuid,
+    pub price_book_entry_id: Option<Uuid>,
+    pub treatment: String,
+    pub included_qty: Option<String>,
+    pub qty_min: Option<i32>,
+}
+impl From<PricingPlanItemCreate> for ItemInput {
+    fn from(input: PricingPlanItemCreate) -> Self {
+        Self {
+            sku_id: input.sku_id,
+            price_book_entry_id: input.price_book_entry_id,
+            treatment: input.treatment,
+            included_qty: input.included_qty,
+            qty_min: input.qty_min,
+        }
+    }
+}
 /// The work input of each kind: what its create writes, and where its Idempotency-Key lives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,7 +129,7 @@ pub enum Target {
     /// delete find the item by the op's `ref_id`.
     PlanItem {
         revision_id: Uuid,
-        input: Option<PricingPlanItemCreate>,
+        input: Option<ItemInput>,
     },
 }
 /// The reference an op works for: its kind, its id and the SKU it reserves.
@@ -337,7 +361,7 @@ async fn advance(
         .ok_or_else(corrupt)?;
     if current != *observed {
         return Err(RepoError::Conflict {
-            code: "REFERENCE_OP_CONTENDED",
+            code: ops::REFERENCE_OP_CONTENDED,
         }
         .into());
     }
@@ -433,7 +457,7 @@ async fn mark_entry_lost(
     )
     .await?;
     super::reference_events::lost(outbox, tx, &entry, ctx.subject_id(), now).await?;
-    entry.reference_state = "lost".into();
+    entry.reference_state = ReferenceState::Lost.as_str().into();
     entry.version += 1;
     support::audit(
         tx,
@@ -494,10 +518,10 @@ async fn abandon(
     op: &entity::Model,
     mut work: Work,
     clock: Arc<dyn Clock>,
-) -> Result<(), CanonicalError> {
+) -> Result<(), DoorError> {
     work.outcome = Some(CANCELLED.into());
     let op = op.clone();
-    support::transaction(&state.db.db(), move |tx| {
+    support::transaction_door(&state.db.db(), move |tx| {
         let (op, work, clock) = (op.clone(), work.clone(), clock.clone());
         Box::pin(async move {
             advance(tx, &op, &work, Event::ReservationUnknown, clock.as_ref()).await?;
@@ -548,9 +572,24 @@ fn gate(caller: Caller, op: &entity::Model, work: &Work, current: OpState) -> Ga
         Gate::Observe
     }
 }
-/// Whether a failed transaction's error is the lost compare-and-swap of a racing driver.
-fn contended(error: &CanonicalError) -> bool {
-    error_code(error).as_deref() == Some("REFERENCE_OP_CONTENDED")
+/// Whether a failed transaction's error is the lost compare-and-swap of a racing driver, read
+/// from the typed error before it is rendered (whole-branch review PS-42).
+fn contended(error: &DoorError) -> bool {
+    matches!(
+        error,
+        DoorError::Repo(RepoError::Conflict {
+            code: ops::REFERENCE_OP_CONTENDED
+        })
+    )
+}
+/// The code of a failed transaction's typed error: a repository conflict's own, or the reason of
+/// a refusal the gear built with its code (PS-42). Anything else has none.
+fn door_code(error: &DoorError) -> Option<String> {
+    match error {
+        DoorError::Repo(RepoError::Conflict { code }) => Some((*code).to_owned()),
+        DoorError::Api(error) => error_code(error),
+        DoorError::Repo(_) | DoorError::Generation { .. } => None,
+    }
 }
 /// Drive a durable op until terminal completion or the next scheduled retry.
 ///
@@ -582,7 +621,7 @@ pub async fn drive(
             Gate::Cancelled => return Err(support::unavailable()),
             Gate::Finished => return Ok(work.receipt.or(work.refusal)),
             Gate::Abandon => match abandon(state, &op, work, clock.clone()).await {
-                Err(error) if !contended(&error) => return Err(error),
+                Err(error) if !contended(&error) => return Err(error.into()),
                 _ => continue,
             },
             Gate::Observe => {}
@@ -626,10 +665,10 @@ async fn step(
         Err(error)
             if refuses_the_write(parse_ref_kind(op)?, &error) && current == OpState::Reserving =>
         {
-            cancel(state, op, work, error, clock).await
+            cancel(state, op, work, error.into(), clock).await
         }
         Err(error) if !contended(&error) => {
-            cancel_then(state, caller, op, work, current, clock, error).await
+            cancel_then(state, caller, op, work, current, clock, error.into()).await
         }
         _ => Ok(()),
     }
@@ -655,6 +694,7 @@ async fn cancel_then(
         Ok(()) => Err(error),
         Err(lost) if contended(&lost) => Ok(()),
         Err(failed) => {
+            let failed = CanonicalError::from(failed);
             tracing::warn!(op_id=%op.op_id, error=%failed, diagnostic=failed.diagnostic().unwrap_or_default(), "pricing create not cancelled before its error answer");
             Err(error)
         }
@@ -690,12 +730,13 @@ async fn give_up(
     match abandon(state, op, work, clock).await {
         Ok(()) => Err(support::unavailable()),
         Err(error) if contended(&error) => Ok(()),
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
 }
-/// A local refusal of Tx B that cancels the op (and releases its reservation), per kind.
-fn refuses_the_write(kind: RefKind, error: &CanonicalError) -> bool {
-    let Some(code) = error_code(error) else {
+/// A local refusal of Tx B that cancels the op (and releases its reservation), per kind, judged
+/// on the typed error before it is rendered (PS-42).
+fn refuses_the_write(kind: RefKind, error: &DoorError) -> bool {
+    let Some(code) = door_code(error) else {
         return false;
     };
     match kind {
@@ -720,9 +761,9 @@ async fn commit_observation(
     event: Event,
     write: Option<Write>,
     clock: Arc<dyn Clock>,
-) -> Result<(), CanonicalError> {
+) -> Result<(), DoorError> {
     let (op, ctx, db) = (op.clone(), ctx.clone(), state.db.db());
-    support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+    support::transaction_door_with_events(&db, &state.outbox, move |tx, outbox| {
         let (op, work, ctx, clock, event, write) = (
             op.clone(),
             work.clone(),
@@ -737,7 +778,7 @@ async fn commit_observation(
     })
     .await
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the observed op, its work and the observation are the transaction's operands"
 )]
@@ -758,7 +799,7 @@ async fn commit(
         != Some(op)
     {
         return Err(RepoError::Conflict {
-            code: "REFERENCE_OP_CONTENDED",
+            code: ops::REFERENCE_OP_CONTENDED,
         }
         .into());
     }

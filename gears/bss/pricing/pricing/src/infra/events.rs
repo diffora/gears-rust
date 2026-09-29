@@ -261,6 +261,40 @@ impl TypedEvent for ApprovalUnitDecided {
 }
 // @cpt-end:cpt-cf-bss-pricing-algo-read-contract-events-typed-events:p1:inst-read-contract-events-typed-events-1
 
+/// The broker SDK's producer-outbox envelope of `event`, as the interim arm writes it before any
+/// broker is bound. Its `producer_mode` is `stateless`, the one mode an envelope written with no
+/// producer registration can carry (D-455's note on the interim envelope, whole-branch review
+/// PS-21): the SDK's processor refuses a monotonic or chained envelope without a `producer_id`,
+/// so a held row in either would never drain once a broker is bound on the same queue; a
+/// stateless one drains, published without the producer's sequence. A test deserializes it as
+/// `event_broker_sdk::producer::ProducerOutboxEnvelope`, so a change of the SDK's envelope fails
+/// the build of that test, not a boot.
+/// # Errors
+/// Serialization failures.
+pub(crate) fn interim_envelope<E: TypedEvent>(
+    event: &E,
+    now: time::OffsetDateTime,
+) -> Result<serde_json::Value, RepoError> {
+    let serialize = |e: String| RepoError::Db(format!("{} event: {e}", E::TYPE_ID));
+    Ok(serde_json::json!({
+        "version": 1,
+        "event_id": Uuid::now_v7(),
+        "type": E::TYPE_ID,
+        "topic": TOPIC,
+        "tenant_id": event.tenant_id(),
+        "source": E::SOURCE,
+        "subject": event.subject(),
+        "subject_type": E::SUBJECT_TYPE,
+        "occurred_at": now
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|e| serialize(e.to_string()))?,
+        "trace_parent": event.trace_parent(),
+        "data": serde_json::to_value(event).map_err(|e| serialize(e.to_string()))?,
+        "broker_partition": 0,
+        "producer_mode": "stateless",
+        "diagnostic_metadata": {"sdk_client_agent": SOURCE},
+    }))
+}
 /// Enqueue one event on the caller's transaction in the broker's producer-outbox envelope. Its
 /// wake stays with `outbox` until the transaction ends (D-455).
 /// # Errors
@@ -288,24 +322,7 @@ pub async fn enqueue<E: TypedEvent + Clone>(
         }
     };
     let serialize = |e: String| RepoError::Db(format!("{} event: {e}", E::TYPE_ID));
-    let envelope = serde_json::json!({
-        "version": 1,
-        "event_id": Uuid::now_v7(),
-        "type": E::TYPE_ID,
-        "topic": TOPIC,
-        "tenant_id": event.tenant_id(),
-        "source": E::SOURCE,
-        "subject": event.subject(),
-        "subject_type": E::SUBJECT_TYPE,
-        "occurred_at": now
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(|e| serialize(e.to_string()))?,
-        "trace_parent": event.trace_parent(),
-        "data": serde_json::to_value(event).map_err(|e| serialize(e.to_string()))?,
-        "broker_partition": 0,
-        "producer_mode": "stateless",
-        "diagnostic_metadata": {"sdk_client_agent": SOURCE},
-    });
+    let envelope = interim_envelope(event, now)?;
     let record = toolkit_db::outbox::Record::to(QUEUE, 0)
         .payload(
             serde_json::to_vec(&envelope).map_err(|e| serialize(e.to_string()))?,

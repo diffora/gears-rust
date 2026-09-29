@@ -1,5 +1,6 @@
 //! Scoped price persistence with conditional versions.
 use super::{driver_failure, map_unique, matched};
+use crate::domain::{price::PriceState, price_book_entry::ReferenceState};
 use crate::infra::storage::{RepoError, entity::price as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
@@ -26,7 +27,7 @@ pub async fn insert(
             .ok_or(RepoError::Conflict {
                 code: "ENTRY_NOT_FOUND",
             })?;
-    if entry.reference_state == "lost" {
+    if entry.reference_state == ReferenceState::Lost.as_str() {
         return Err(RepoError::Conflict {
             code: "ENTRY_REFERENCE_LOST",
         });
@@ -173,7 +174,7 @@ pub async fn update_draft(
 ) -> Result<(), RepoError> {
     let predicate = key(m.tenant_id, m.id).add(e::Column::Version.eq(m.version));
     let predicate = predicate
-        .add(e::Column::State.eq("draft"))
+        .add(e::Column::State.eq(PriceState::Draft.as_str()))
         .add(e::Column::PendingUnitId.is_null());
     let result = e::Entity::update_many()
         .secure()
@@ -447,7 +448,7 @@ pub async fn delete_draft(
         .filter(
             key(tenant, id)
                 .add(e::Column::Version.eq(version))
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -506,7 +507,7 @@ pub async fn link_pair(
         .col_expr(e::Column::PairedPriceId, Expr::value(Some(partner)))
         .filter(
             key(tenant, id)
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null())
                 .add(e::Column::PairedPriceId.is_null()),
         )
@@ -544,7 +545,7 @@ pub async fn delete_drafts(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
                 .add(any)
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -589,7 +590,10 @@ pub async fn delete_unapproved(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
                 .add(any)
-                .add(e::Column::State.is_in(["draft", "rejected"]))
+                .add(
+                    e::Column::State
+                        .is_in([PriceState::Draft.as_str(), PriceState::Rejected.as_str()]),
+                )
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -656,12 +660,12 @@ pub async fn try_lock(
         .secure()
         .scope_with(scope)
         .col_expr(e::Column::PendingUnitId, Expr::value(Some(unit)))
-        .col_expr(e::Column::State, Expr::value("pending"))
+        .col_expr(e::Column::State, Expr::value(PriceState::Pending.as_str()))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(
             key(tenant, id)
                 .add(e::Column::Version.eq(version))
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -691,9 +695,9 @@ pub async fn unlock(
     outcome: Unlock,
 ) -> Result<(), RepoError> {
     let (state, from) = match outcome {
-        Unlock::Approved => ("approved", "approved"),
-        Unlock::Draft => ("draft", "pending"),
-        Unlock::Rejected => ("rejected", "pending"),
+        Unlock::Approved => (PriceState::Approved, PriceState::Approved),
+        Unlock::Draft => (PriceState::Draft, PriceState::Pending),
+        Unlock::Rejected => (PriceState::Rejected, PriceState::Pending),
     };
     let result = e::Entity::update_many()
         .secure()
@@ -703,12 +707,12 @@ pub async fn unlock(
             e::Column::ApprovedByUnitId,
             Expr::value((outcome == Unlock::Approved).then_some(unit)),
         )
-        .col_expr(e::Column::State, Expr::value(state))
+        .col_expr(e::Column::State, Expr::value(state.as_str()))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(
             key(tenant, id)
                 .add(e::Column::PendingUnitId.eq(unit))
-                .add(e::Column::State.eq(from)),
+                .add(e::Column::State.eq(from.as_str())),
         )
         .exec(runner)
         .await
@@ -739,7 +743,7 @@ pub async fn approve(
     let result = e::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(e::Column::State, Expr::value("approved"))
+        .col_expr(e::Column::State, Expr::value(PriceState::Approved.as_str()))
         .col_expr(e::Column::EffectiveFrom, Expr::value(window.effective_from))
         .col_expr(e::Column::EffectiveTo, Expr::value(window.effective_to))
         .col_expr(
@@ -753,7 +757,7 @@ pub async fn approve(
         .filter(
             key(tenant, id)
                 .add(e::Column::PendingUnitId.eq(unit))
-                .add(e::Column::State.eq("pending")),
+                .add(e::Column::State.eq(PriceState::Pending.as_str())),
         )
         .exec(runner)
         .await
@@ -763,7 +767,7 @@ pub async fn approve(
 /// Re-close an approved price after its chain changed, at the version the caller read.
 /// # Errors
 /// A concurrent change is `STALE_REVISION`; database failures keep their type.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "tenant identity, version and the two recomputed columns are the write's operands"
 )]
@@ -787,7 +791,7 @@ pub async fn set_window(
         .filter(
             key(tenant, id)
                 .add(e::Column::Version.eq(version))
-                .add(e::Column::State.eq("approved")),
+                .add(e::Column::State.eq(PriceState::Approved.as_str())),
         )
         .exec(runner)
         .await

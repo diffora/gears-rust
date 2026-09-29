@@ -720,7 +720,6 @@ fn version(catalog: &Catalog, sku: Uuid, published_version: i64, from: &str, con
     });
     chain.sort_by_key(|v| v.effective_from);
 }
-#[allow(clippy::too_many_arguments)]
 fn content(
     code: &str,
     r#type: SkuType,

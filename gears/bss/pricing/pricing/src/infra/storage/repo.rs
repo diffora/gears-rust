@@ -62,6 +62,9 @@ pub fn driver_failure(context: String, error: ScopeError) -> RepoError {
         other => RepoError::Db(format!("{context}: {other}")),
     }
 }
+/// The conflict of a price's `(entry, version_no)` key: the create and the PATCH retry on it with
+/// the entry's next number, matched on this one symbol, never a second literal (PS-41).
+pub const PRICE_VERSION_TAKEN: &str = "PRICE_VERSION_TAKEN";
 /// Identify named Postgres constraints and `SQLite` unique column/index diagnostics.
 #[must_use]
 pub fn unique_code(message: &str) -> Option<&'static str> {
@@ -76,7 +79,7 @@ pub fn unique_code(message: &str) -> Option<&'static str> {
     } else if message.contains("pricing_price_price_book_entry_id_version_no_key")
         || message.contains("pricing_price.price_book_entry_id, pricing_price.version_no")
     {
-        Some("PRICE_VERSION_TAKEN")
+        Some(PRICE_VERSION_TAKEN)
     } else if message.contains("pricing_dimension_key_pkey")
         || message.contains("pricing_dimension_key.tenant_id, pricing_dimension_key.key")
     {

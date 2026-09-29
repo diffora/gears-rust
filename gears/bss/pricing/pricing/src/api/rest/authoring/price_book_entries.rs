@@ -60,25 +60,13 @@ pub(super) fn settled(
     claim: idem::IdempotencyClaim,
     digest: &[u8],
 ) -> Result<Option<Receipt>, CanonicalError> {
-    match claim {
-        idem::IdempotencyClaim::Claimed => Ok(None),
-        idem::IdempotencyClaim::Answered {
-            payload_hash,
-            response_body,
-            ..
-        } => {
-            if payload_hash != digest {
-                return Err(support::conflict("IDEMPOTENCY_CONFLICT"));
-            }
-            serde_json::from_value(response_body)
-                .map(Some)
+    // The op's answer is stored as its whole receipt (D-429).
+    support::held(claim, digest)?
+        .map(|(_, receipt)| {
+            serde_json::from_value(receipt)
                 .map_err(|_| CanonicalError::internal("invalid entry receipt").create())
-        }
-        idem::IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != digest => {
-            Err(support::conflict("IDEMPOTENCY_CONFLICT"))
-        }
-        _ => Err(support::conflict("IDEMPOTENCY_KEY_IN_FLIGHT")),
-    }
+        })
+        .transpose()
 }
 /// The key's stored answer, read without claiming it: a replay or an in-flight duplicate is
 /// answered from the store alone, before any Products call.
@@ -158,7 +146,7 @@ async fn check_dimension(
     }
     Ok(())
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
 )]
@@ -319,7 +307,9 @@ pub(super) async fn delete(
             let tenant = ctx.subject_tenant_id();
             let m = find(tx, &scope, tenant, id).await?;
             // A pending create must complete before deletion, otherwise its confirm could lose its entry.
-            if m.reference_state == "confirmation_pending" {
+            if m.reference_state
+                == crate::domain::price_book_entry::ReferenceState::ConfirmationPending.as_str()
+            {
                 return Err(support::conflict("ENTRY_CONFIRMATION_PENDING").into());
             }
             // D-408: an entry a plan item names is in use, whatever its revision's state: a draft
@@ -333,8 +323,10 @@ pub(super) async fn delete(
             // the entry (a rejected price's history stays in its unit's snapshot).
             let prices = price_repo::for_entry(tx, &scope, tenant, id).await?;
             if prices.iter().any(|price| {
-                !matches!(price.state.as_str(), "draft" | "rejected")
-                    || price.pending_unit_id.is_some()
+                !matches!(
+                    price.state.parse(),
+                    Ok(PriceState::Draft | PriceState::Rejected)
+                ) || price.pending_unit_id.is_some()
             }) {
                 return Err(support::conflict("ENTRY_PRICES_IN_USE").into());
             }

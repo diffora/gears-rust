@@ -59,3 +59,28 @@ fn only_the_event_transaction_opens_and_settles_a_tx_outbox() {
         "the one TxOutbox::new is the event transaction's"
     );
 }
+
+/// The interim arm's envelope is the broker SDK's (PS-21): it deserializes as
+/// `ProducerOutboxEnvelope` and serializes back to itself, field for field, so an SDK that changes
+/// its envelope fails here; and it is `stateless`, the mode the SDK's processor drains without a
+/// producer registration.
+#[test]
+fn the_interim_envelope_is_the_sdks_stateless_envelope() {
+    let event = super::ApprovalUnitDecided {
+        tenant_id: uuid::Uuid::new_v4(),
+        unit_id: uuid::Uuid::new_v4(),
+        kind: "prices".into(),
+        state: "approved".into(),
+        generation: 1,
+        actors: vec![uuid::Uuid::new_v4()],
+    };
+    let mut ours = super::interim_envelope(&event, time::OffsetDateTime::UNIX_EPOCH).unwrap();
+    let sdk: event_broker_sdk::producer::ProducerOutboxEnvelope =
+        serde_json::from_value(ours.clone()).unwrap();
+    let back = serde_json::to_value(&sdk).unwrap();
+    // The SDK leaves an absent trace parent out; ours writes it null.
+    ours.as_object_mut().unwrap().remove("trace_parent");
+    assert_eq!(back, ours, "every field is the SDK's, in its shape");
+    assert_eq!(back["producer_mode"], "stateless");
+    assert_eq!(back["version"], 1);
+}

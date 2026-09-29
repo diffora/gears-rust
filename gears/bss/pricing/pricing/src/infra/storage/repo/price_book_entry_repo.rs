@@ -403,7 +403,7 @@ pub async fn in_plan_skus(
 /// Change the reference receipt/state at the observed version.
 /// # Errors
 /// Returns a version conflict or a typed database failure.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "tenant identity, version and receipt are the conditional write operands"
 )]

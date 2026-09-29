@@ -102,6 +102,50 @@ pub fn missing_what(what: &str) -> CanonicalError {
         .with_resource(what)
         .create()
 }
+/// What a claimed key answers, the one mapping of every door (whole-branch review PS-43):
+/// `Ok(None)` when this call holds the key, the stored status and body of an answered key the
+/// same payload claims, and the refusal otherwise. The match is exhaustive, so a new claim
+/// outcome does not compile until it is answered here.
+/// # Errors
+/// A different payload under the key is `IDEMPOTENCY_CONFLICT`, in either state; a live claim of
+/// the same payload, or a lost takeover race, is `IDEMPOTENCY_KEY_IN_FLIGHT`.
+pub fn held(
+    claim: repo::idempotency_repo::IdempotencyClaim,
+    digest: &[u8],
+) -> Result<Option<(i32, serde_json::Value)>, CanonicalError> {
+    use repo::idempotency_repo::IdempotencyClaim;
+    match claim {
+        IdempotencyClaim::Claimed => Ok(None),
+        IdempotencyClaim::Answered {
+            payload_hash,
+            response_status,
+            response_body,
+        } => {
+            if payload_hash == digest {
+                Ok(Some((response_status, response_body)))
+            } else {
+                Err(conflict("IDEMPOTENCY_CONFLICT"))
+            }
+        }
+        IdempotencyClaim::InFlight { payload_hash, .. } => {
+            Err(conflict(if payload_hash == digest {
+                "IDEMPOTENCY_KEY_IN_FLIGHT"
+            } else {
+                "IDEMPOTENCY_CONFLICT"
+            }))
+        }
+        IdempotencyClaim::TakeoverRaceLost => Err(conflict("IDEMPOTENCY_KEY_IN_FLIGHT")),
+    }
+}
+/// A stored status, back as the one the caller was told.
+/// # Errors
+/// A stored status that is not an HTTP status is an internal failure.
+pub fn stored_status(status: i32) -> Result<StatusCode, CanonicalError> {
+    u16::try_from(status)
+        .ok()
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .ok_or_else(|| CanonicalError::internal("invalid stored status").create())
+}
 /// Claim a POST's key inside the mutation transaction, or replay its stored answer.
 /// # Errors
 /// A different payload under the key is `IDEMPOTENCY_CONFLICT`; a live claim is in flight.
@@ -114,7 +158,7 @@ pub async fn claim(
 ) -> Result<Option<Response>, DoorError> {
     let now = time::OffsetDateTime::now_utc();
     let scope = AccessScope::for_tenant(tenant);
-    match repo::idempotency_repo::claim_idempotency_key(
+    let claim = repo::idempotency_repo::claim_idempotency_key(
         tx,
         &scope,
         tenant,
@@ -124,39 +168,15 @@ pub async fn claim(
         now,
         now + time::Duration::hours(24),
     )
-    .await?
-    {
-        repo::idempotency_repo::IdempotencyClaim::Claimed => Ok(None),
-        repo::idempotency_repo::IdempotencyClaim::Answered {
-            payload_hash,
-            response_status,
-            response_body,
-        } => {
-            if payload_hash != digest {
-                return Err(conflict("IDEMPOTENCY_CONFLICT").into());
-            }
-            let status = u16::try_from(response_status)
-                .ok()
-                .and_then(|s| StatusCode::from_u16(s).ok())
-                .ok_or_else(|| CanonicalError::internal("invalid stored status").create())?;
-            Ok(Some(response(
-                status,
-                &response_body["body"],
-                response_body["etag"].as_u64(),
-            )?))
-        }
-        repo::idempotency_repo::IdempotencyClaim::InFlight { payload_hash, .. } => {
-            Err(conflict(if payload_hash == digest {
-                "IDEMPOTENCY_KEY_IN_FLIGHT"
-            } else {
-                "IDEMPOTENCY_CONFLICT"
-            })
-            .into())
-        }
-        repo::idempotency_repo::IdempotencyClaim::TakeoverRaceLost => {
-            Err(conflict("IDEMPOTENCY_KEY_IN_FLIGHT").into())
-        }
-    }
+    .await?;
+    let Some((status, body)) = held(claim, digest)? else {
+        return Ok(None);
+    };
+    Ok(Some(response(
+        stored_status(status)?,
+        &body["body"],
+        body["etag"].as_u64(),
+    )?))
 }
 /// Record the answer of a claimed key in the same transaction and render it.
 /// # Errors
@@ -411,6 +431,22 @@ pub async fn transaction_with_events<T: Send + 'static>(
     events_coded(db, sink, CONTENDED, work)
         .await
         .map_err(Into::into)
+}
+/// [`transaction_with_events`] keeping the typed error, for a caller that classifies it before it
+/// is rendered (the reference work's commit, PS-42).
+/// # Errors
+/// Returns the last attempt's refusal or storage failure; exhausted contention is `CONTENDED`.
+pub async fn transaction_door_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events_coded(db, sink, CONTENDED, work).await
 }
 /// [`transaction_with_events`] for an approval-unit door, every one of which enqueues
 /// `ApprovalUnitDecided` when it decides: exhausted contention is `UNIT_CONTENDED`.
