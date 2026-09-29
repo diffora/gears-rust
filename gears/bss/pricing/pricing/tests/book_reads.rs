@@ -490,7 +490,7 @@ async fn approved_is_always_scheduled_plus_active_plus_superseded() {
 fn stats(
     entries: u64,
     skus: u64,
-    plans: u64,
+    [plans, plans_superseded_only]: [u64; 2],
     prices: [u64; 7],
     pending_units: u64,
     last_change_at: &str,
@@ -508,6 +508,7 @@ fn stats(
         "entries": entries,
         "skus": skus,
         "plans": plans,
+        "plans_superseded_only": plans_superseded_only,
         "prices": {
             "draft": draft,
             "pending": pending,
@@ -571,7 +572,8 @@ async fn a_books_stats_count_its_entries_skus_plans_prices_and_units() {
         stored_price(&f, entry, row.updated(old)).await;
     }
     // Plans: a (a published and a superseded revision on the book: once), b (a draft on it),
-    // c (on it only through a superseded revision: not counted), d (on the other book).
+    // c (on it only through a superseded revision: not in `plans`, the one plan of
+    // `plans_superseded_only`), d (on the other book).
     let (plan_a, a1) = plan(&f, "a", book).await;
     let plan_a = id_of(&plan_a["id"]);
     item(&f, a1, sku, Some(e1), "paid").await;
@@ -607,7 +609,14 @@ async fn a_books_stats_count_its_entries_skus_plans_prices_and_units() {
         None,
     )
     .await;
-    let expected = stats(3, 2, 2, [2, 1, 3, 1, 1, 1, 2], 2, "2026-09-03T09:00:00Z");
+    let expected = stats(
+        3,
+        2,
+        [2, 1],
+        [2, 1, 3, 1, 1, 1, 2],
+        2,
+        "2026-09-03T09:00:00Z",
+    );
     assert_eq!(listed_book(&f, "stats").await["stats"], expected);
     let read = ok(&f, &format!("/price-books/{book}")).await;
     assert_eq!(read["stats"], expected, "{read:#}");
@@ -620,13 +629,13 @@ async fn a_books_stats_count_its_entries_skus_plans_prices_and_units() {
     // The other book: its own entry and plans (c's live revision, d).
     assert_eq!(
         ok(&f, &format!("/price-books/{other}")).await["stats"],
-        stats(1, 1, 2, [0; 7], 0, "2026-09-20T09:00:00Z")
+        stats(1, 1, [2, 0], [0; 7], 0, "2026-09-20T09:00:00Z")
     );
     // A book with nothing reads zeros and its own last change.
     let empty = stored_book(&f, "empty", at("2026-08-01T09:00:00.25Z")).await;
     assert_eq!(
         ok(&f, &format!("/price-books/{empty}")).await["stats"],
-        stats(0, 0, 0, [0; 7], 0, "2026-08-01T09:00:00.25Z")
+        stats(0, 0, [0, 0], [0; 7], 0, "2026-08-01T09:00:00.25Z")
     );
     // The write answers keep the book alone.
     let (s, created, _) = f
@@ -1033,9 +1042,10 @@ async fn an_entrys_prices_read_in_the_same_statements_for_10_and_100_prices() {
     same("prices", &lists[0], &lists[1]);
 }
 
-/// `n` more books, each with an entry, an approved price in force, a draft, a plan and a pending
-/// unit.
-async fn seed_books(f: &Fixture, catalog: &Catalog, tag: &str, n: usize) {
+/// `n` more books, each with an entry, an approved price in force, a draft and a pending unit.
+/// An even book is in a plan (a draft revision with an item); an odd one is named only by a plan's
+/// superseded revision, the plan having moved to `moved`: `plans` 0, `plans_superseded_only` 1.
+async fn seed_books(f: &Fixture, catalog: &Catalog, tag: &str, n: usize, moved: Uuid) {
     for i in 0..n {
         let code = format!("{tag}-{i:03}");
         let b = plan_support::book(f, &code).await;
@@ -1043,8 +1053,15 @@ async fn seed_books(f: &Fixture, catalog: &Catalog, tag: &str, n: usize) {
         let e = plan_support::entry(f, b, sku, "usage", None).await;
         stored_price(f, e, Row::new(1, "approved", today() - days(1))).await;
         stored_price(f, e, Row::new(2, "draft", today() + days(1))).await;
-        let (_, revision) = plan(f, &format!("plan-{code}"), b).await;
-        item(f, revision, sku, Some(e), "paid").await;
+        let (created, revision) = plan(f, &format!("plan-{code}"), b).await;
+        if i % 2 == 0 {
+            item(f, revision, sku, Some(e), "paid").await;
+        } else {
+            let plan_id = id_of(&created["id"]);
+            publish(f, plan_id, revision).await;
+            let second = bare_revision(f, plan_id, 2, moved).await;
+            publish(f, plan_id, second).await;
+        }
         unit_on(
             f,
             "prices",
@@ -1061,44 +1078,79 @@ async fn seed_books(f: &Fixture, catalog: &Catalog, tag: &str, n: usize) {
 #[tokio::test]
 async fn the_book_reads_count_their_stats_in_the_same_statements_for_10_and_100_books() {
     let (f, catalog, recorder) = recorded().await;
-    seed_books(&f, &catalog, "s", 10).await;
-    let ten = statements(&f, &recorder, "/price-books?$top=200", 10).await;
-    seed_books(&f, &catalog, "l", 90).await;
-    let hundred = statements(&f, &recorder, "/price-books?$top=200", 100).await;
+    // The plans that moved away land on a book the seeded books' search (`q=-`) leaves out.
+    let moved = plan_support::book(&f, "moved").await;
+    seed_books(&f, &catalog, "s", 10, moved).await;
+    let seeded = "/price-books?q=-&$top=200";
+    let ten = statements(&f, &recorder, seeded, 10).await;
+    seed_books(&f, &catalog, "l", 90, moved).await;
+    let hundred = statements(&f, &recorder, seeded, 100).await;
     same("books", &ten, &hundred);
-    // The page, then one grouped statement per source: entries, prices, plans, units.
+    // The page, then one grouped statement per source: entries, prices, plans (the live ones and
+    // those only history holds, together), units.
     assert_eq!(ten.len(), 5, "{ten:#?}");
-    let listed = ok(&f, "/price-books?$top=200").await;
+    let listed = ok(&f, seeded).await;
     for b in listed["items"].as_array().unwrap() {
         let s = &b["stats"];
+        let odd = b["code"]
+            .as_str()
+            .unwrap()
+            .ends_with(['1', '3', '5', '7', '9']);
         assert_eq!(
             (
                 s["entries"].as_u64(),
                 s["skus"].as_u64(),
                 s["plans"].as_u64(),
+                s["plans_superseded_only"].as_u64(),
                 s["prices"]["active"].as_u64(),
                 s["prices"]["draft"].as_u64(),
                 s["pending_units"].as_u64()
             ),
-            (Some(1), Some(1), Some(1), Some(1), Some(1), Some(1)),
+            (
+                Some(1),
+                Some(1),
+                Some(u64::from(!odd)),
+                Some(u64::from(odd)),
+                Some(1),
+                Some(1),
+                Some(1)
+            ),
             "{b}"
         );
     }
-    // One book's read counts it with the same statements.
-    let one = listed["items"][0]["id"].as_str().unwrap().to_owned();
-    recorder.clear();
-    ok(&f, &format!("/price-books/{one}")).await;
-    let read: Vec<String> = recorder
-        .events()
-        .into_iter()
-        .filter(|q| {
-            q.table
-                .as_deref()
-                .is_some_and(|t| t.starts_with("pricing_"))
-        })
-        .map(|q| q.sql)
-        .collect();
-    assert_eq!(read.len(), 5, "{read:#?}");
+    // One book's read counts it with the same statements, a book in a plan (`l-000`) and a book
+    // only history holds (`l-001`) alike.
+    let mut reads = Vec::new();
+    for book in &listed["items"].as_array().unwrap()[..2] {
+        recorder.clear();
+        let read = ok(
+            &f,
+            &format!("/price-books/{}", book["id"].as_str().unwrap()),
+        )
+        .await;
+        assert_eq!(read["stats"], book["stats"], "{read:#}");
+        reads.push(
+            recorder
+                .events()
+                .into_iter()
+                .filter(|q| {
+                    q.table
+                        .as_deref()
+                        .is_some_and(|t| t.starts_with("pricing_"))
+                })
+                .map(|q| q.sql)
+                .collect::<Vec<String>>(),
+        );
+    }
+    assert_eq!(reads[0].len(), 5, "{:#?}", reads[0]);
+    assert_eq!(reads[0], reads[1], "the same statements for either book");
+    assert_eq!(
+        (
+            listed["items"][0]["stats"]["plans_superseded_only"].as_u64(),
+            listed["items"][1]["stats"]["plans_superseded_only"].as_u64()
+        ),
+        (Some(0), Some(1))
+    );
     // The entry reads stay set-based with their price in force (D-434's two extra reads).
     let mut lists = Vec::new();
     for n in [10, 100] {

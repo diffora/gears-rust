@@ -327,6 +327,7 @@ impl Writer<'_> {
                         generation: 1,
                         submitted_by: Uuid::nil(),
                         submitted_at: submitted,
+                        submit_note: None,
                         decided_at: decided,
                         decided_note: None,
                         snapshot: json!({}),

@@ -148,12 +148,12 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 
 | Route | Permission and contract |
 | --- | --- |
-| `POST /skus/{id}/submit` | products:submit; sku_publish for a draft. |
-| `POST /skus/{id}/changes` | products:submit; proposed content/lifecycle plus effective_from (default today) on published/deprecated SKU; type changes first fence. |
-| `POST /skus/{id}/retire` | products:submit; commit guarded fence then submit/resume sku_retire. |
+| `POST /skus/{id}/submit` | products:submit; sku_publish for a draft. An optional body `{ note }`: the submitter's note, at most 2000 characters (400 NOTE_TOO_LONG), any other field 400 (P-D-219). |
+| `POST /skus/{id}/changes` | products:submit; proposed content/lifecycle plus effective_from (default today) on published/deprecated SKU; type changes first fence. The optional `note` is the submitter's reason, at most 2000 characters (P-D-213, P-D-219). |
+| `POST /skus/{id}/retire` | products:submit; commit guarded fence then submit/resume sku_retire. The optional body `{ note }` as on submit (P-D-219). |
 | `POST /skus/{id}/unfence` | products:author; explicit recovery of an expired orphan only, never a pending unit's barrier. |
 | `GET /approval-units?state&kind&ref_id` | products:read; tenant queue, ordered by submitted_at with a stable id tie-break. |
-| `GET /approval-units/{id}` | products:read; stored snapshot, generation, decisions (including stale) and live recomputation; a GET does not replace or refresh the stored snapshot. A unit whose draft was deleted after its rejection or withdrawal answers `impact_live: null` (P-D-206). |
+| `GET /approval-units/{id}` | products:read; stored snapshot, generation, decisions (including stale) and live recomputation; a GET does not replace or refresh the stored snapshot. A unit whose draft was deleted after its rejection or withdrawal answers `impact_live: null` (P-D-206). Both unit reads carry `submit_note` (P-D-219). |
 | `POST /approval-units/{id}/approve` | products:approve; generation required, SoD enforced. |
 | `POST /approval-units/{id}/reject` | products:approve; generation and note required; one rejection closes the unit. |
 | `POST /approval-units/{id}/withdraw` | products:submit plus submitter identity; pending only. |
@@ -161,7 +161,7 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 | `DELETE /approval-policy/{kind}` | products:settings; removes one kind's override under the policy's `If-Match`, so the kind follows the default again; the default (`*`) is 400 POLICY_DEFAULT_REQUIRED, a kind without an override 404, a stale tag 409 STALE_REVISION; authorization first (P-D-216). |
 | `DELETE /skus/{id}` | products:author; a never-published draft only, by its author (403 NOT_DRAFT_AUTHOR), If-Match; 204 with an audit row; SKU_NOT_DRAFT, ROW_LOCKED_PENDING, SKU_REFERENCED (409). A draft is deleted, never retired (P-D-206). |
 
-Submit validation failure returns 400 with its code and no new unit (never 422, pricing D-403). Conflicts include ROW_LOCKED_PENDING,
+Submit validation failure returns 400 with its code and no new unit (never 422, pricing D-403); a note over 2000 characters is NOTE_TOO_LONG, judged with the body's other violations (P-D-219). Conflicts include ROW_LOCKED_PENDING,
 VERSION_ORDER, SKU_REFERENCED, SKU_TYPE_FROZEN, UNIT_CONTENDED and UNIT_ALREADY_DECIDED (409).
 SOD_VIOLATION, NOT_SUBMITTER and USAGE_TYPE_FORBIDDEN (the usage-type catalog, read as the caller, refused
 the caller at submit or approve; P-D-207) are 403. UNIT_STALE and GENERATION_MISMATCH are 400 with generation.
@@ -175,7 +175,7 @@ migrates them. This slice owns their domain writes:
 | Table/columns | Mutation semantics |
 | --- | --- |
 | `products_approval_policy (tenant_id, kind, quorum)` | Nonnegative quorum; '*' default plus sku_publish/sku_change/sku_retire overrides; policy edits affect future submissions, not already copied quorum. |
-| `products_approval_unit` | kind/ref_type/ref_id, state, common_effective_date, quorum_required, generation, submitted_by/at, decided_at/note, snapshot/hash, version, tenant/id. common_effective_date holds effective_from; generation/version start at 1 and serve different purposes. |
+| `products_approval_unit` | kind/ref_type/ref_id, state, common_effective_date, quorum_required, generation, submitted_by/at, decided_at/note, snapshot/hash, version, tenant/id, submit_note. common_effective_date holds effective_from; generation/version start at 1 and serve different purposes. `submit_note` (m20260928_000009, P-D-219) is written once at submit, as sent, and never rewritten: a refresh keeps it; it is not content, so neither the snapshot nor the hash carries it; a unit submitted before the migration reads null. |
 | `products_approval_unit_item` | unit_id, item_type/id, created_by, before and after. Before is nullable for creation; after is proposed business content. Snapshot/hash use content and date, not storage locks. |
 | `products_approval_decision` | unit_id, actor, generation, decision, note, at, stale; key is unit/actor/generation. Refresh marks existing decisions stale instead of deleting them. |
 | SKU ownership | pending_unit_id and approved_by_unit_id are tenant-qualified links. Acquisition guards null pending id and observed version; terminal writes guard the current owner. |

@@ -167,7 +167,7 @@ Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-stale-refresh-generation`
 
-Fingerprint mismatch replaces items/snapshot/hash and increments generation, preserving old decisions as stale. Caller receives committed UNIT_STALE with the new generation and no old-content publication (spec §2.2).
+Fingerprint mismatch replaces items/snapshot/hash and increments generation, preserving old decisions as stale and the unit's submit_note, which is not a fingerprint input (D-445). Caller receives committed UNIT_STALE with the new generation and no old-content publication (spec §2.2).
 
 Requirement: `cpt-cf-bss-pricing-fr-approval-units`; PRD AC #10.
 

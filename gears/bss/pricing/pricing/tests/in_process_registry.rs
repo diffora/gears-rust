@@ -23,6 +23,8 @@ use uuid::Uuid;
 struct InProcess {
     catalog: Arc<Catalog>,
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    /// Holds `db`'s temporary directory for the registry's life.
+    _dsn: plan_support::entry_support::TestDsn,
 }
 impl InProcess {
     fn connect(&self) -> Result<(), CanonicalError> {
@@ -95,10 +97,11 @@ impl ReferenceRegistryV1 for InProcess {
 
 async fn setup() -> (Fixture, Arc<Catalog>) {
     let catalog = Arc::new(Catalog::default());
-    let (db, _, _, _) = plan_support::entry_support::test_db().await;
+    let (db, _, _, dsn) = plan_support::entry_support::test_db().await;
     let f = Fixture::new(Arc::new(InProcess {
         catalog: catalog.clone(),
         db,
+        _dsn: dsn,
     }))
     .await;
     (f, catalog)

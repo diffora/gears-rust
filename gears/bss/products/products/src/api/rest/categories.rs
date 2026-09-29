@@ -49,6 +49,8 @@ use uuid::Uuid;
 
 pub(crate) const CATEGORIES: &str = "/bss-products/v1/categories";
 const TAG: &str = "Categories";
+/// The stored status of a retired category (P-D-208, P-D-220).
+const RETIRED: &str = "retired";
 #[resource_error(gts_id!("cf.bss.products.category.v1~"))]
 struct CategoryResource;
 
@@ -184,8 +186,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "Edits a category under If-Match. `is_default: true` moves the tenant's default to it: \
              the previous default is cleared in the same write, gets a new version and its own \
-             audit row (P-D-218). Refusals: 404; 409 STALE_REVISION, or CATEGORY_DEFAULT_TAKEN \
-             when a concurrent write took the default first.",
+             audit row (P-D-218); a retired category never becomes the default (P-D-220). \
+             Refusals: 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a \
+             retired category, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default \
+             first.",
         )
         .tag(TAG)
         .authenticated()
@@ -212,8 +216,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Retire an unused category")
         .description(
             "Retires a category no SKU in draft, published, deprecated or retiring names; retired \
-             SKUs do not keep it in use (P-D-208). Refusals: 404; 409 CATEGORY_IN_USE, or \
-             CATEGORY_RETIRED when it is already retired.",
+             SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the \
+             same transaction, with its own version and audit row, and leaves the tenant without \
+             a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it \
+             is already retired.",
         )
         .tag(TAG)
         .authenticated()
@@ -491,6 +497,21 @@ async fn update_category(
                             what: "category",
                             id,
                         }))?;
+                    // P-D-220: a retired category is never the default. A stale tag is judged
+                    // first, as on every PATCH; nothing is cleared before the refusal.
+                    if patch.is_default == Some(true) && current.status == RETIRED {
+                        return Err(TxError::Refused(if current.version == expected {
+                            DomainError::Conflict {
+                                code: "CATEGORY_RETIRED",
+                                detail: "a retired category cannot be the tenant's default".into(),
+                            }
+                        } else {
+                            DomainError::StaleRevision {
+                                expected,
+                                found: current.version,
+                            }
+                        }));
+                    }
                     if patch.is_default == Some(true) {
                         move_default(tx, &scope, tenant_id, actor, Some(id), now).await?;
                     }
@@ -559,6 +580,23 @@ async fn retire_category(
                     if let Some(response) = replay::begin(tx, tenant_id, claim.as_ref()).await? {
                         return Ok(response);
                     }
+                    // P-D-220: retiring the tenant's default clears it first, a category write of
+                    // its own with its own audit row; a refused retirement rolls it back.
+                    if let Some(cleared) = repo::clear_default_of(tx, &scope, tenant_id, id, now)
+                        .await
+                        .map_err(TxError::Repo)?
+                    {
+                        audit(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            actor,
+                            "category.update",
+                            &cleared,
+                            now,
+                        )
+                        .await?;
+                    }
                     let c = match repo::retire_category_if_unused(tx, &scope, tenant_id, id, now)
                         .await
                         .map_err(TxError::Repo)?
@@ -569,7 +607,7 @@ async fn retire_category(
                             let retired = repo::find_category(tx, &scope, tenant_id, id)
                                 .await
                                 .map_err(TxError::Repo)?
-                                .is_some_and(|c| c.status == "retired");
+                                .is_some_and(|c| c.status == RETIRED);
                             return Err(TxError::Refused(if retired {
                                 DomainError::Conflict {
                                     code: "CATEGORY_RETIRED",

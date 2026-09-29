@@ -32,7 +32,7 @@ fn new_sku(code: &str, name: &str, cat: uuid::Uuid) -> NewSku {
 
 #[tokio::test]
 async fn duplicate_code_and_name_are_refused_by_the_database_with_their_own_codes() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = insert_category(
         &conn,
@@ -67,7 +67,7 @@ async fn duplicate_code_and_name_are_refused_by_the_database_with_their_own_code
 }
 #[tokio::test]
 async fn the_lock_is_conditional_and_the_second_taker_gets_false() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
@@ -109,7 +109,7 @@ async fn the_lock_is_conditional_and_the_second_taker_gets_false() {
 }
 #[tokio::test]
 async fn a_stale_revision_does_not_write_and_a_published_sku_is_not_a_draft() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
@@ -149,7 +149,7 @@ async fn a_stale_revision_does_not_write_and_a_published_sku_is_not_a_draft() {
 }
 #[tokio::test]
 async fn a_pending_sku_takes_no_ordinary_write_and_no_fence() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
@@ -191,7 +191,7 @@ async fn a_pending_sku_takes_no_ordinary_write_and_no_fence() {
 }
 #[tokio::test]
 async fn versions_append_and_resolve_as_of() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
@@ -266,7 +266,7 @@ async fn seed_category(
 
 #[tokio::test]
 async fn categories_are_ordered_revision_guarded_and_retire_only_when_unused() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = insert_category(
         &conn,
@@ -367,7 +367,7 @@ async fn categories_are_ordered_revision_guarded_and_retire_only_when_unused() {
 )]
 async fn references_block_both_fences_and_release_is_a_tombstone() {
     use crate::domain::references::RefKind;
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let s = insert_sku(&conn, &scope, tenant, new_sku("a", "a", cat), tenant, now())
@@ -667,7 +667,7 @@ async fn type_fence_and_retire_completion_clear_only_the_matching_ownership() {
 
 #[tokio::test]
 async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_versions() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let a = insert_sku(
@@ -761,7 +761,7 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
 
 #[tokio::test]
 async fn stale_unlock_cannot_clear_another_units_lock() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = seed_category(&conn, &scope, tenant).await;
     let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())

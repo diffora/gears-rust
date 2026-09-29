@@ -103,6 +103,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
                         overrides: std::collections::BTreeMap::default(),
                     },
                     common_effective_date: None,
+                    note: None,
                     now: b.now,
                 },
             )
@@ -194,6 +195,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
                         overrides: std::collections::BTreeMap::default(),
                     },
                     common_effective_date: Some(s.effective_from),
+                    note: None,
                     now: s.base.now,
                 },
             )
@@ -268,6 +270,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
                         overrides: std::collections::BTreeMap::default(),
                     },
                     common_effective_date: Some(requested.date()),
+                    note: None,
                     now: requested,
                 },
             )
@@ -371,6 +374,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
                         overrides: std::collections::BTreeMap::default(),
                     },
                     common_effective_date: None,
+                    note: None,
                     now: s.base.now,
                 },
             )

@@ -180,3 +180,6 @@ testcontainers-modules = { workspace = true }
 # without a running event-broker. Feature-gated in the SDK as `test-util`, which
 # is why it is named again here rather than inherited from the entry above.
 event-broker-sdk = { workspace = true, features = ["outbox", "test-util"] }
+# A test's `SQLite` file lives in its own temporary directory, removed with the test (the database,
+# its `-wal` and its `-shm`); before, every run left its files in the user's temp dir.
+tempfile = { workspace = true }

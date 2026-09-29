@@ -207,3 +207,61 @@ async fn two_moves_on_two_connections_leave_one_default() {
         .collect();
     assert_eq!(defaults, vec![b]);
 }
+
+/// **Retiring the default clears it first** (P-D-220) on Postgres: `clear_default_of` clears only
+/// the named category, and only while it holds the default, answering it with its new version;
+/// the retirement then finds it unused and not default, and the tenant has no default until
+/// another category is made one.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn retiring_the_default_clears_it_first_and_leaves_no_default() {
+    let f = Fixture::new().await;
+    let main = f.category("main", true).await.unwrap();
+    let side = f.category("side", false).await.unwrap();
+    let conn = f.db.conn().unwrap();
+    let now = OffsetDateTime::now_utc();
+    assert!(
+        repo::clear_default_of(&conn, &f.scope, f.tenant, side, now)
+            .await
+            .unwrap()
+            .is_none(),
+        "a category that is not the default clears nothing"
+    );
+    let cleared = repo::clear_default_of(&conn, &f.scope, f.tenant, main, now)
+        .await
+        .unwrap()
+        .expect("the default is cleared");
+    assert_eq!(
+        (cleared.id, cleared.is_default, cleared.version),
+        (main, false, 2)
+    );
+    assert!(
+        repo::clear_default_of(&conn, &f.scope, f.tenant, main, now)
+            .await
+            .unwrap()
+            .is_none(),
+        "a second clear finds no default"
+    );
+    let retired = repo::retire_category_if_unused(&conn, &f.scope, f.tenant, main, now)
+        .await
+        .unwrap();
+    assert!(
+        matches!(retired, Some(HeadWrite::Written(ref c)) if c.status == "retired" && !c.is_default && c.version == 3),
+        "{retired:?}"
+    );
+    let defaults = || async {
+        repo::list_categories(&f.db.conn().unwrap(), &f.scope, f.tenant)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|cat| cat.is_default)
+            .map(|cat| cat.id)
+            .collect::<Vec<Uuid>>()
+    };
+    assert!(defaults().await.is_empty());
+    assert!(matches!(
+        move_default(&conn, &f.scope, f.tenant, side).await.unwrap(),
+        HeadWrite::Written(_)
+    ));
+    assert_eq!(defaults().await, vec![side]);
+}

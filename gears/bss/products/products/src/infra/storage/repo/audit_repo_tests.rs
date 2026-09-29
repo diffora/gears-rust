@@ -6,8 +6,13 @@ use toolkit_db::secure::SecureEntityExt;
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const PRODUCT: Uuid = Uuid::from_u128(0xf0_01);
 const AUDIT: Uuid = Uuid::from_u128(0xa0_01);
-async fn harness() -> toolkit_db::DBProvider<toolkit_db::DbError> {
-    test_db().await.0
+/// A migrated database and its DSN, which the test holds for its life (the directory goes with it).
+async fn harness() -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    crate::test_support::TestDsn,
+) {
+    let (db, _, _, dsn) = test_db().await;
+    (db, dsn)
 }
 /// Build the fields every audit-row class shares, for the tests below.
 fn common(
@@ -52,7 +57,7 @@ async fn find_audit_row(
 /// is neither.
 #[tokio::test]
 async fn an_eventless_act_row_carries_neither_error_code_nor_session_id() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
@@ -172,7 +177,7 @@ async fn audit_rolls_back_with_the_act_and_foreign_scope_cannot_write_it() {
 /// writes nothing.
 #[tokio::test]
 async fn a_batch_of_audit_rows_is_written_whole_or_not_at_all() {
-    let provider = harness().await;
+    let (provider, _dsn) = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
     let count = || async {

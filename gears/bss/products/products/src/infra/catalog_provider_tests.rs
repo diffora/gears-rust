@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 
 #[tokio::test]
 async fn both_transports_serve_the_same_published_catalog_and_pages() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let now = OffsetDateTime::now_utc();
     let cat = repo::insert_category(
@@ -175,7 +175,7 @@ async fn both_transports_serve_the_same_published_catalog_and_pages() {
 /// `SQLite` has no default escape, so such a search matched nothing).
 #[tokio::test]
 async fn a_wildcard_in_the_search_text_is_a_literal() {
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let now = OffsetDateTime::now_utc();
     for (code, name) in [

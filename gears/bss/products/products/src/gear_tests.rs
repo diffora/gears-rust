@@ -79,8 +79,9 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        10,
-        "the schema guard, coordination and the eight PriceBook migrations"
+        12,
+        "the schema guard, coordination and the ten PriceBook migrations (000009: the unit's \
+         note, P-D-219; 000010: no retired default, P-D-220)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -332,7 +333,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
 async fn registered_products_client_reads_drafts_and_hides_foreign_rows() {
     use crate::infra::storage::repo;
     use crate::test_support::*;
-    let (db, scope, tenant, _) = test_db().await;
+    let (db, scope, tenant, _dsn) = test_db().await;
     let conn = db.conn().unwrap();
     let cat = repo::insert_category(
         &conn,

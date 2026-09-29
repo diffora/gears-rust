@@ -368,6 +368,7 @@ async fn concurrent_approvers_retry_typed_serialization_and_apply_once() {
                             overrides: std::collections::BTreeMap::default(),
                         },
                         common_effective_date: None,
+                        note: None,
                         now: b.now,
                     },
                 )

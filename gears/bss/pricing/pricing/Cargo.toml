@@ -65,3 +65,6 @@ tokio = { workspace = true, features = ["test-util"] }
 testcontainers-modules = { workspace = true }
 test-containers = { workspace = true }
 tower = { workspace = true }
+# A test's `SQLite` file lives in its own temporary directory, removed with the test (the database,
+# its `-wal` and its `-shm`); before, every run left its files in the user's temp dir.
+tempfile = { workspace = true }

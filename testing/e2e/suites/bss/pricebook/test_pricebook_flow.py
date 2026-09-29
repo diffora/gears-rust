@@ -1127,6 +1127,7 @@ def test_where_a_sku_is_priced_and_sold_and_the_settings_offer_currencies(api):
             "entries": 1,
             "skus": 1,
             "plans": 1,
+            "plans_superseded_only": 0,
             "prices": {
                 "draft": 0,
                 "pending": 0,

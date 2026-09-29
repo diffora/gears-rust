@@ -117,6 +117,8 @@ The fresh migration allocation is:
 | `000006` | Reference registry and live-reference indexes. |
 | `000007` | A SKU's category becomes optional (P-D-196): Postgres drops the NOT NULL; SQLite rebuilds `products_sku` with its two child tables inside the runner's transaction, without PRAGMA. `down()` is irreversible. |
 | `000008` | The audit row carries the SKU lifecycle move its act made (P-D-213): `ADD COLUMN` `from_lifecycle`, `to_lifecycle` (nullable, CHECKed to the five lifecycles), and the append-only guard redefined so the seal keeps both unchanged too. `down()` is irreversible. |
+| `000009` | The unit carries its submitter's note (P-D-219): `ADD COLUMN submit_note text` (nullable) on `products_approval_unit`, by the approval library's separate step `ddl::apply_add_submit_note`; the library's `ddl::up()`, the body of `000003`, stays as it shipped. It replays; `down()` drops the column. |
+| `000010` | No stored category is a retired default (P-D-220): `UPDATE products_category SET is_default = false, version = version + 1, updated_at = <now>` where the row is the default and retired, as a category write clears a default, with no audit row. Data only: the schema does not change. It replays; `down()` changes nothing. |
 
 Before `000001` runs the guard `m0000_products_refuse_a_legacy_or_stale_schema` ([P-D-195](../DECISIONS.md)).
 Its name sorts it before every other migration of the gear, and it creates nothing. It refuses a database

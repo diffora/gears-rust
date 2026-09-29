@@ -189,13 +189,17 @@ pub struct PricingBookPriceCounts {
     pub rejected: u64,
 }
 /// A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,
-/// pending or published revision on the book; its prices by state; its `prices` units in review;
-/// and the latest change of the book, its entries, their prices and its units.
+/// pending or published revision on the book (`plans`), and those that name it only through
+/// superseded revisions (`plans_superseded_only`, what the delete refuses as
+/// `BOOK_IN_PLAN_HISTORY`); its prices by state; its `prices` units in review; and the latest
+/// change of the book, its entries, their prices and its units. `DELETE /price-books/{id}`
+/// succeeds exactly when `entries`, `plans` and `plans_superseded_only` are 0 (D-444).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookStats {
     pub entries: u64,
     pub skus: u64,
     pub plans: u64,
+    pub plans_superseded_only: u64,
     pub prices: PricingBookPriceCounts,
     pub pending_units: u64,
     #[serde(with = "time::serde::rfc3339")]
@@ -208,6 +212,7 @@ impl From<crate::infra::book_stats::BookStats> for PricingPriceBookStats {
             entries: s.entries,
             skus: s.skus,
             plans: s.plans,
+            plans_superseded_only: s.plans_superseded_only,
             prices: PricingBookPriceCounts {
                 draft: p.draft,
                 pending: p.pending,
@@ -937,6 +942,9 @@ pub struct PricingApprovalUnitDto {
     pub submitted_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: time::OffsetDateTime,
+    /// The submitter's note (D-445). Pricing's submit doors take none, so it is null on every
+    /// pricing unit; the field keeps the unit shape products shares (P-D-219).
+    pub submit_note: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub decided_at: Option<time::OffsetDateTime>,
     pub decided_note: Option<String>,
@@ -957,6 +965,7 @@ impl From<bss_approval::Unit> for PricingApprovalUnitDto {
             common_effective_date: u.common_effective_date.map(|d| d.to_string()),
             submitted_by: u.submitted_by,
             submitted_at: u.submitted_at,
+            submit_note: u.submit_note,
             decided_at: u.decided_at,
             decided_note: u.decided_note,
             snapshot: u.snapshot,

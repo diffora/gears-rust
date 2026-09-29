@@ -23,6 +23,9 @@ pub struct Model {
     pub snapshot: Json,
     pub snapshot_hash: String,
     pub version: i64,
+    /// The submitter's note (products P-D-219, pricing D-445), added by a forward migration after
+    /// `version`; null on every unit written before it.
+    pub submit_note: Option<String>,
 }
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}

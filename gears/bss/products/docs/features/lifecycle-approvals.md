@@ -255,7 +255,7 @@ Approval excludes submitted_by and every current item's created_by with 403 SOD_
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/approval_units.rs`.
 
-Approve/reject names the reviewed generation; a mismatch returns GENERATION_MISMATCH with the current generation, and duplicate current-generation voting returns DUPLICATE_VOTE. Before a vote counts, re-collection fingerprints proposed business content and effective date, excluding lock/fence/version metadata; drift rewrites items/snapshot/hash, increments generation, preserves earlier decisions as stale and commits before returning UNIT_STALE with the new generation. Only current-generation non-stale approvals count, and an environment failure remains a rolled-back APPLY_REFUSED (spec §2.2, §6; DESIGN §3.2, §3.6).
+Approve/reject names the reviewed generation; a mismatch returns GENERATION_MISMATCH with the current generation, and duplicate current-generation voting returns DUPLICATE_VOTE. Before a vote counts, re-collection fingerprints proposed business content and effective date, excluding lock/fence/version metadata and the submitter's note (P-D-219); drift rewrites items/snapshot/hash, increments generation, keeps the unit's `submit_note`, preserves earlier decisions as stale and commits before returning UNIT_STALE with the new generation. Only current-generation non-stale approvals count, and an environment failure remains a rolled-back APPLY_REFUSED (spec §2.2, §6; DESIGN §3.2, §3.6).
 
 ### Every unit mutation checks version
 
@@ -263,7 +263,7 @@ Approve/reject names the reviewed generation; a mismatch returns GENERATION_MISM
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/api/rest/approval_units.rs`.
 
-Every existing-unit mutation, including decisions, refresh and withdrawal, conditionally advances the observed version without database row locks. A lost race returns 409 UNIT_CONTENDED and rolls back that attempt's writes; non-pending units return UNIT_ALREADY_DECIDED, rejection requires a note and withdrawal requires the original submitter. GET detail returns stored snapshot, generation, history and live recomputation without silently refreshing stored content (spec §2.2, §6, §7.2; DESIGN §3.2–§3.3).
+Every existing-unit mutation, including decisions, refresh and withdrawal, conditionally advances the observed version without database row locks. A lost race returns 409 UNIT_CONTENDED and rolls back that attempt's writes; non-pending units return UNIT_ALREADY_DECIDED, rejection requires a note and withdrawal requires the original submitter. GET detail returns stored snapshot, generation, history and live recomputation without silently refreshing stored content, and both unit reads carry the `submit_note` its submit, change or retire sent (P-D-219) (spec §2.2, §6, §7.2; DESIGN §3.2–§3.3).
 
 ### Quorum zero preserves the approval record
 

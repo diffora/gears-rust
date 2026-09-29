@@ -274,6 +274,7 @@ impl Setup {
                         actor,
                         policy: &policy,
                         common_effective_date: date,
+                        note: None,
                         now: time::OffsetDateTime::now_utc(),
                     },
                 )
@@ -502,6 +503,7 @@ fn first_unit_like(tenant: Uuid) -> Unit {
         generation: 1,
         submitted_by: Uuid::new_v4(),
         submitted_at: time::OffsetDateTime::now_utc(),
+        submit_note: None,
         decided_at: None,
         decided_note: None,
         snapshot: json!({}),

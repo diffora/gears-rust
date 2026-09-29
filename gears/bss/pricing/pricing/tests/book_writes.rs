@@ -402,13 +402,15 @@ async fn a_book_in_use_is_refused_in_a_stated_order_and_kept() {
     )
     .await;
     assert_eq!(stats["stats"]["plans"], 1);
+    assert_eq!(stats["stats"]["plans_superseded_only"], 0);
     assert_eq!(stats["stats"]["entries"], 0);
     refused(
         &delete(&f, &planned, Some("\"1\"")).await,
         409,
         "BOOK_IN_PLAN",
     );
-    // Only a superseded revision names the book: stats.plans is 0 and BOOK_IN_PLAN does not fire.
+    // Only a superseded revision names the book: stats.plans is 0 and BOOK_IN_PLAN does not fire;
+    // stats.plans_superseded_only says why the delete is refused.
     let history = new_book(&f, "history", None).await;
     let other = new_book(&f, "other", None).await;
     let (p, first) = plan(&f, "moved", id_of(&history["id"])).await;
@@ -422,6 +424,7 @@ async fn a_book_in_use_is_refused_in_a_stated_order_and_kept() {
     )
     .await;
     assert_eq!(stats["stats"]["plans"], 0, "{stats}");
+    assert_eq!(stats["stats"]["plans_superseded_only"], 1, "{stats}");
     let answer = delete(&f, &history, Some("\"1\"")).await;
     refused(&answer, 409, "BOOK_IN_PLAN_HISTORY");
     // Every refused book is still there.
@@ -436,6 +439,128 @@ async fn a_book_in_use_is_refused_in_a_stated_order_and_kept() {
             200
         );
     }
+}
+
+/// A book's stats say whether its delete succeeds (D-441, D-444): `stats.plans`,
+/// `stats.plans_superseded_only` and `stats.entries` are all 0 exactly when the delete answers
+/// 204. Each case reads the book's stats, then deletes it at its version.
+#[tokio::test]
+async fn a_books_stats_say_whether_its_delete_succeeds() {
+    let (f, _) = fixture().await;
+    quorum_one(&f).await;
+    // The book every moved plan moves to; it is not one of the cases.
+    let elsewhere = id_of(&new_book(&f, "elsewhere", None).await["id"]);
+    let moved = |code: &'static str, book: Uuid| {
+        let f = &f;
+        async move {
+            let (p, first) = plan(f, code, book).await;
+            let p = id_of(&p["id"]);
+            publish(f, p, first).await;
+            let second = bare_revision(f, p, 2, elsewhere).await;
+            publish(f, p, second).await;
+        }
+    };
+    let mut cases: Vec<(&str, Value, Option<&str>)> = Vec::new();
+
+    cases.push(("nothing uses it", new_book(&f, "unused", None).await, None));
+
+    let book = new_book(&f, "entry", None).await;
+    door_entry(&f, &book).await;
+    cases.push(("an entry", book, Some("BOOK_HAS_ENTRIES")));
+
+    // A price submitted and withdrawn, then its entry deleted: the decided unit keeps nothing.
+    let book = new_book(&f, "emptied", None).await;
+    let entry = door_entry(&f, &book).await;
+    let unit = submit(&f, &door_price(&f, &entry).await).await;
+    let (s, b, _) = f
+        .call(
+            "POST",
+            &format!("/approval-units/{}/withdraw", unit["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            Some("emptied-withdraw"),
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    let entry_path = format!("/price-book-entries/{}", entry["id"].as_str().unwrap());
+    assert_eq!(
+        f.call("DELETE", &entry_path, json!({}), None, None).await.0,
+        204
+    );
+    cases.push(("its entry deleted, a decided unit", book, None));
+
+    let book = new_book(&f, "pending", None).await;
+    submit(&f, &door_price(&f, &door_entry(&f, &book).await).await).await;
+    cases.push(("a pending prices unit", book, Some("BOOK_HAS_ENTRIES")));
+
+    let book = new_book(&f, "draft", None).await;
+    plan(&f, "draft", id_of(&book["id"])).await;
+    cases.push(("a draft revision", book, Some("BOOK_IN_PLAN")));
+
+    let book = new_book(&f, "published", None).await;
+    let (p, first) = plan(&f, "published", id_of(&book["id"])).await;
+    publish(&f, id_of(&p["id"]), first).await;
+    cases.push(("a published revision", book, Some("BOOK_IN_PLAN")));
+
+    // One plan with a published and a superseded revision on the book counts once, as live.
+    let book = new_book(&f, "republished", None).await;
+    let (p, first) = plan(&f, "republished", id_of(&book["id"])).await;
+    let p = id_of(&p["id"]);
+    publish(&f, p, first).await;
+    let second = bare_revision(&f, p, 2, id_of(&book["id"])).await;
+    publish(&f, p, second).await;
+    cases.push((
+        "a live and a superseded revision",
+        book,
+        Some("BOOK_IN_PLAN"),
+    ));
+
+    let book = new_book(&f, "history", None).await;
+    moved("history", id_of(&book["id"])).await;
+    cases.push((
+        "only a superseded revision",
+        book,
+        Some("BOOK_IN_PLAN_HISTORY"),
+    ));
+
+    let book = new_book(&f, "mixed", None).await;
+    plan(&f, "mixed-live", id_of(&book["id"])).await;
+    moved("mixed-moved", id_of(&book["id"])).await;
+    cases.push(("a live plan and a moved one", book, Some("BOOK_IN_PLAN")));
+
+    let mut seen = Vec::new();
+    for (label, book, refusal) in cases {
+        let id = book["id"].as_str().unwrap();
+        let stats = ok(&f, &format!("/price-books/{id}")).await["stats"].clone();
+        let free =
+            stats["plans"] == 0 && stats["plans_superseded_only"] == 0 && stats["entries"] == 0;
+        let answer = delete(&f, &book, Some("\"1\"")).await;
+        assert_eq!(free, answer.0 == 204, "{label}: {stats} vs {answer:?}");
+        match refusal {
+            None => assert_eq!(answer.0, 204, "{label}: {answer:?}"),
+            Some(code) => refused(&answer, 409, code),
+        }
+        seen.push((
+            label,
+            stats["entries"].as_u64().unwrap(),
+            stats["plans"].as_u64().unwrap(),
+            stats["plans_superseded_only"].as_u64().unwrap(),
+        ));
+    }
+    assert_eq!(
+        seen,
+        [
+            ("nothing uses it", 0, 0, 0),
+            ("an entry", 1, 0, 0),
+            ("its entry deleted, a decided unit", 0, 0, 0),
+            ("a pending prices unit", 1, 0, 0),
+            ("a draft revision", 0, 1, 0),
+            ("a published revision", 0, 1, 0),
+            ("a live and a superseded revision", 0, 1, 0),
+            ("only a superseded revision", 0, 0, 1),
+            ("a live plan and a moved one", 0, 1, 1),
+        ]
+    );
 }
 
 /// `BOOK_LOCKED_PENDING` is not a refusal: a pending prices unit holds pending prices, a pending
@@ -584,13 +709,19 @@ const DATED: Uuid = Uuid::from_u128(0xb00c_0002);
 
 /// A file database, so the runner's pool, the repositories and a raw connection see one schema.
 struct Lite {
+    /// The database's own temporary directory, removed with the `Lite` (the file, its `-wal` and
+    /// its `-shm`).
+    _dir: tempfile::TempDir,
     path: std::path::PathBuf,
 }
 impl Lite {
     fn new() -> Self {
-        Self {
-            path: std::env::temp_dir().join(format!("pricing-book-{}.sqlite3", Uuid::new_v4())),
-        }
+        let dir = tempfile::Builder::new()
+            .prefix("pricing-book-")
+            .tempdir()
+            .unwrap();
+        let path = dir.path().join("db.sqlite3");
+        Self { _dir: dir, path }
     }
     fn dsn(&self) -> String {
         format!("sqlite://{}?mode=rwc", self.path.display())

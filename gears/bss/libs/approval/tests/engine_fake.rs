@@ -300,6 +300,18 @@ async fn submit(
     actor: Uuid,
     q: u32,
 ) -> Result<bss_approval::Submitted, ApprovalError> {
+    submit_noted(db, store, subject, ids, actor, q, None).await
+}
+/// [`submit`] with the submitter's note.
+async fn submit_noted(
+    db: &Db,
+    store: &Mem,
+    subject: &Rows,
+    ids: Vec<Uuid>,
+    actor: Uuid,
+    q: u32,
+    note: Option<&'static str>,
+) -> Result<bss_approval::Submitted, ApprovalError> {
     let (store, subject) = (store.clone(), subject.clone());
     in_tx(db, move |tx| {
         let (store, subject, ids) = (store.clone(), subject.clone(), ids.clone());
@@ -315,6 +327,7 @@ async fn submit(
                     actor,
                     policy: &policy(q),
                     common_effective_date: None,
+                    note,
                     now: T0,
                 },
             )
@@ -322,6 +335,15 @@ async fn submit(
         })
     })
     .await
+}
+async fn withdraw(db: &Db, store: &Mem, subject: &Rows, unit: Uuid, actor: Uuid) {
+    let (store, subject) = (store.clone(), subject.clone());
+    in_tx(db, move |tx| {
+        let (store, subject) = (store.clone(), subject.clone());
+        Box::pin(async move { Engine::withdraw(&store, &subject, tx, unit, actor, T1).await })
+    })
+    .await
+    .unwrap();
 }
 async fn approve(
     db: &Db,
@@ -599,4 +621,66 @@ async fn reject_needs_a_note_and_unlocks_withdraw_is_the_submitters() {
     assert_eq!(withdrawn.state, UnitState::Withdrawn);
     assert_eq!(withdrawn.decided_at, Some(T1));
     assert!(subject.locked.lock().is_empty());
+}
+
+/// Products P-D-219, pricing D-445: the submitter's note is stored on the unit as sent, and it is
+/// not content. Three submits of the same items (each withdrawn to free the lock) that differ only
+/// by their note — two notes and none — record the same snapshot and the same fingerprint.
+#[tokio::test]
+async fn the_submitters_note_is_stored_on_the_unit_and_is_not_content() {
+    let db = db().await;
+    let author = Uuid::new_v4();
+    let (subject, ids) = rows(author, 2);
+    let store = Mem::default();
+    let mut units = Vec::new();
+    for note in [Some("raise for Q4"), Some("  another reason  "), None] {
+        let s = submit_noted(&db, &store, &subject, ids.clone(), author, 1, note)
+            .await
+            .unwrap();
+        assert_eq!(s.unit.submit_note.as_deref(), note);
+        let stored = unit_of(&db, &store, s.unit.id).await;
+        assert_eq!(stored.submit_note.as_deref(), note, "stored as sent");
+        withdraw(&db, &store, &subject, s.unit.id, author).await;
+        units.push(stored);
+    }
+    for u in &units[1..] {
+        assert_eq!(
+            u.snapshot_hash, units[0].snapshot_hash,
+            "a note is not content"
+        );
+        assert_eq!(u.snapshot, units[0].snapshot, "nor part of the snapshot");
+    }
+    assert!(
+        !units[0].snapshot.to_string().contains("raise for Q4"),
+        "{}",
+        units[0].snapshot
+    );
+    // The withdrawal decided the unit; the submitter's note stays beside the decision.
+    let withdrawn = unit_of(&db, &store, units[0].id).await;
+    assert_eq!(withdrawn.state, UnitState::Withdrawn);
+    assert_eq!(withdrawn.submit_note.as_deref(), Some("raise for Q4"));
+}
+
+/// A stale refresh rewrites the items, the snapshot and the fingerprint, and keeps the note: it is
+/// what the submitter said, not what the reviewers review.
+#[tokio::test]
+async fn a_stale_refresh_keeps_the_submitters_note() {
+    let db = db().await;
+    let author = Uuid::new_v4();
+    let (subject, ids) = rows(author, 1);
+    let store = Mem::default();
+    let s = submit_noted(&db, &store, &subject, ids.clone(), author, 1, Some("why"))
+        .await
+        .unwrap();
+    subject.live.lock().insert(ids[0], (author, 11));
+    assert!(matches!(
+        approve(&db, &store, &subject, s.unit.id, Uuid::new_v4())
+            .await
+            .unwrap(),
+        ApproveOutcome::Refreshed { generation: 2 }
+    ));
+    let refreshed = unit_of(&db, &store, s.unit.id).await;
+    assert_eq!(refreshed.generation, 2);
+    assert_ne!(refreshed.snapshot_hash, s.unit.snapshot_hash);
+    assert_eq!(refreshed.submit_note.as_deref(), Some("why"));
 }
