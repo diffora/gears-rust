@@ -374,10 +374,11 @@ Phase 7 adds the Price Books screen's reads: an entry's prices with their status
 approved prices by date (D-440), every book read's stats (D-441), and a book list that pages on the toolkit's OData
 pager and is searched by q and sku_id (D-442); and its writes: the dates of a temporary draft, whose pair follows
 them (D-443), and a book's description and the delete of a book nothing uses (D-444). An approval unit carries its
-submitter's note, `submit_note`, the unit shape products shares; pricing's doors send none (D-445).
+submitter's note, `submit_note`, the unit shape products shares (D-445).
 Phase 9 adds what the plans screen reads: each plan's current revision and the one in effect (D-460), who made
 each revision and when it was submitted and approved (D-461), and a pending revision's vote progress (D-462); and
-a plan's create and clone take its sale date (D-463).
+a plan's create and clone take its sale date (D-463). A plan revision's submit and publish-changes carry the
+submitter's note to the unit's submit_note; a single price's submit takes none (D-464).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose

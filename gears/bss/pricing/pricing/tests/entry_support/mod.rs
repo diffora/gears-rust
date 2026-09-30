@@ -364,6 +364,38 @@ pub async fn request(
         tag,
     )
 }
+/// [`request`] with a body sent as these bytes, the empty body included, which a JSON value
+/// cannot spell: `(status, body)`.
+pub async fn request_raw(
+    app: &Router,
+    ctx: &SecurityContext,
+    method: &str,
+    path: &str,
+    body: &str,
+    key: Option<&str>,
+) -> (u16, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(format!("/bss-pricing/v1{path}"))
+        .extension(ctx.clone())
+        .header("content-type", "application/json");
+    if let Some(key) = key {
+        req = req.header("idempotency-key", key);
+    }
+    let response = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(json!(null)),
+    )
+}
 use bss_products_sdk::{
     ReferenceRegistryV1,
     models::{

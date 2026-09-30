@@ -1183,8 +1183,9 @@ pub struct PricingApprovalUnitDto {
     pub submitted_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub submitted_at: time::OffsetDateTime,
-    /// The submitter's note (D-445). Pricing's submit doors take none, so it is null on every
-    /// pricing unit; the field keeps the unit shape products shares (P-D-219).
+    /// The submitter's note (D-445), the unit shape products shares (P-D-219): the note a plan
+    /// revision's submit or publish-changes sent (D-464), or null. A single price's submit takes
+    /// none.
     pub submit_note: Option<String>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub decided_at: Option<time::OffsetDateTime>,
@@ -1258,6 +1259,21 @@ pub struct PricingPlanRevisionSubmitReceipt {
 pub struct PricingPublishChangesRequest {
     pub price_ids: Option<Vec<Uuid>>,
     pub common_effective_date: Option<String>,
+    /// The submitter's note for the approver (D-464), stored on the unit as `submit_note`; at most
+    /// 2000 characters (400 `NOTE_TOO_LONG`). Omitted or null, none.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+/// `POST /plan-revisions/{id}/submit`: an optional body with the submitter's note (D-464). No
+/// body, `{}` and `note: null` carry none; any other key is 400 `BODY_UNEXPECTED`.
+#[toolkit_macros::api_dto(request)]
+#[derive(Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PricingPlanRevisionSubmitRequest {
+    /// The submitter's note for the approver, stored on the unit as `submit_note`; at most 2000
+    /// characters (400 `NOTE_TOO_LONG`).
+    #[serde(default)]
+    pub note: Option<String>,
 }
 /// One draft price as the operator sees it before publishing: the entry key, the chain,
 /// the approved predecessor it follows, its pair partner and the default selection.

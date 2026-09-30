@@ -306,10 +306,11 @@ fn refusal(subject: &Subject) -> impl Fn(bss_approval::ApprovalError) -> DoorErr
     }
 }
 /// What one submission names besides its items: the aggregate the unit references, the shared
-/// start and the submission time.
+/// start, the submitter's note (D-464; a single price's submit sends none) and the submission time.
 struct Submission {
     ref_id: Uuid,
     common_effective_date: Option<time::Date>,
+    note: Option<String>,
     now: OffsetDateTime,
 }
 /// Record one unit over the items through the kind's subject, applying it at once under quorum
@@ -335,7 +336,7 @@ async fn record(
             actor: cmd.ctx.subject_id(),
             policy: &policy,
             common_effective_date: submission.common_effective_date,
-            note: None,
+            note: submission.note.as_deref(),
             now: submission.now,
         },
     )
@@ -366,18 +367,20 @@ async fn record(
     }
     Ok(submitted)
 }
-/// Record a `prices` unit and answer the key with the unit and its prices.
+/// Record a `prices` unit with the submitter's `note` and answer the key with the unit and its
+/// prices.
 async fn record_prices(
     tx: &DbTx<'_>,
     outbox: &TxOutbox,
     cmd: &Command,
     endpoint: &str,
-    subject: PricesSubject,
+    (subject, note): (PricesSubject, Option<String>),
     ids: &[Uuid],
 ) -> Result<Response, DoorError> {
     let submission = Submission {
         ref_id: subject.book_id,
         common_effective_date: subject.common_effective_date,
+        note,
         now: subject.now,
     };
     let submitted = record(tx, outbox, cmd, &Subject::Prices(subject), submission, ids).await?;
@@ -434,24 +437,29 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
                 entry.book_id,
                 OffsetDateTime::now_utc(),
             );
-            record_prices(tx, &outbox, &cmd, &endpoint, subject, &[id]).await
+            record_prices(tx, &outbox, &cmd, &endpoint, (subject, None), &[id]).await
         })
     })
     .await
 }
 
 /// `POST /plan-revisions/{id}/submit`: one unlocked draft revision whose checks are all green
-/// becomes a `plan_revision` unit; quorum zero publishes it in the same transaction. The receipt's
-/// revision says when it was submitted and, applied at once, approved (D-461), and a pending one
-/// its vote progress (D-462).
+/// becomes a `plan_revision` unit carrying the submitter's `note` (D-464, capped by the door);
+/// quorum zero publishes it in the same transaction. The receipt's revision says when it was
+/// submitted and, applied at once, approved (D-461), and a pending one its vote progress (D-462).
 /// # Errors
 /// 404 for a revision the tenant does not hold; 409 `REVISION_NOT_DRAFT`; 400
 /// `REVISION_CHECKS_RED` with the red checks and no unit; 409 `ROW_LOCKED_PENDING` for a lost
 /// lock; 503 when the registry cannot answer.
-pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response, CanonicalError> {
+pub async fn submit_revision(
+    db: &Db,
+    cmd: Command,
+    id: Uuid,
+    note: Option<String>,
+) -> Result<Response, CanonicalError> {
     let sink = cmd.outbox.clone();
     support::unit_transaction_with_events(db, &sink, move |tx, outbox| {
-        let cmd = cmd.clone();
+        let (cmd, note) = (cmd.clone(), note.clone());
         Box::pin(async move {
             let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/submit");
             if let Some(replay) =
@@ -469,6 +477,7 @@ pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response
             let submission = Submission {
                 ref_id: id,
                 common_effective_date: None,
+                note,
                 now,
             };
             let submitted = record(
@@ -595,7 +604,8 @@ pub async fn publish_list(
 }
 
 /// `POST /price-books/{id}/publish-changes`: the ticked drafts (all when omitted), their pair
-/// partners pulled in and recorded as `added_partner`, and an optional common start.
+/// partners pulled in and recorded as `added_partner`, an optional common start and the
+/// submitter's optional note (D-464, capped by the door).
 /// # Errors
 /// Returns the canonical refusal.
 pub async fn publish(
@@ -672,7 +682,15 @@ pub async fn publish(
             );
             subject.common_effective_date = date;
             subject.added_partner = added;
-            record_prices(tx, &outbox, &cmd, &endpoint, subject, &selected).await
+            record_prices(
+                tx,
+                &outbox,
+                &cmd,
+                &endpoint,
+                (subject, input.note.clone()),
+                &selected,
+            )
+            .await
         })
     })
     .await

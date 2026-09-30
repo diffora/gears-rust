@@ -51,7 +51,7 @@
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
-| P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
+| P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213; its Pricing bullet amended by pricing D-464 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
 | P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424 |
@@ -875,9 +875,12 @@ the submit's audit row, and `POST /skus/{id}/submit` and `/retire` took no body 
 - **Units submitted before the migration** read `submit_note: null`. This includes a change unit whose history
   row shows its note: nothing is backfilled from the audit log (plan review L6).
 - **Pricing.** The column belongs to the one unit shape the gears share. Pricing adds it by its own migration and
-  carries it on its unit reads; its submit doors take no note (D-445).
+  carries it on its unit reads; its submit doors took no note (D-445). Pricing D-464 amends this bullet: its plan
+  revision submit takes an optional `{ note }` under this entry's body rule, and its publish-changes an optional
+  `note` beside its selection, both capped at 2000 characters; its single price's submit takes none.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3, L6).
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3, L6). Its Pricing bullet is amended by
+pricing D-464.
 
 #### P-D-220 [M] A retired category is never the default; retiring the default clears it
 

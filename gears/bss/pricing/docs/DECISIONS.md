@@ -81,7 +81,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
 | D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
-| D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-464 |
 | D-446 | M | A plan revision can be stored scheduled: the state, its index and its migration | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-447 | M | A scheduled revision takes effect on its date: the effective state is derived | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-448 | M | The storage writes of a scheduled revision: schedule, switch, unschedule and the due scan | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
@@ -100,6 +100,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
+| D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
 
 ## Entries
 
@@ -671,7 +672,9 @@ The approval library's unit now carries `submit_note`, the submitter's own words
 - **No note from pricing's doors.** POST /prices/{id}/submit, POST /price-books/{id}/publish-changes and POST /plan-revisions/{id}/submit take no note, and their bodies are unchanged. So submit_note is null on every pricing unit. A door that takes a note later passes it through the library's SubmitRequest.note.
 - **Not content.** The note is not part of the snapshot or of snapshot_hash, and a stale refresh keeps it.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3).
+D-464 amends this entry: POST /plan-revisions/{id}/submit and POST /price-books/{id}/publish-changes take an optional note, which they pass through SubmitRequest.note to the unit's submit_note; POST /prices/{id}/submit still takes none. So submit_note is null on a pricing unit only when its submitter sent no note.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3). Amended by D-464.
 
 #### D-446 [M] A plan revision can be stored scheduled: the state, its index and its migration
 
@@ -936,3 +939,18 @@ A new plan's first revision took its sale date only through a second call, the r
 - **The tests.** tests/plan_doors.rs: a create with a date, without one, with null, and with a malformed date on a known and on an unknown book (400 both times, nothing written). tests/plan_clone.rs: a clone that keeps, overrides and clears the source's date, and a malformed date on a known and an unknown source plan; the source is unchanged. Probes that dropped the create's date and ignored the clone's override were caught.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10). Amends D-451; extends D-456.
+
+#### D-464 [L] A plan submit and a publish-changes carry the submitter's note
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen shows why a unit was submitted (ask 44). Products' submit doors take a note (P-D-219); pricing's took none (D-445), so a plan change or a batch of prices reached its approver without one.
+
+- **The plan submit.** POST /plan-revisions/{id}/submit takes an optional body { note } (PricingPlanRevisionSubmitRequest; the served body is optional), products P-D-219's body rule: no body, {} and note: null carry no note, and any other key is 400 BODY_UNEXPECTED, the rule of the empty body it replaces. A note that is neither text nor null is 400, as a body that does not read. The Idempotency-Key's digest covers the body as sent ({} for none).
+- **Publish-changes.** POST /price-books/{id}/publish-changes takes an optional note beside price_ids and common_effective_date; omitted or null carries none. Its body rules are otherwise unchanged: it still needs a JSON object, and a key it does not know is 400 as before.
+- **The cap.** Both doors judge the note right after they parse the body, before they read anything: at most 2000 characters, counted as Unicode scalar values (bss_approval::NOTE_MAX_CHARS, D-457), else 400 NOTE_TOO_LONG on note, and nothing is written. So a revision or a book the tenant does not hold answers the 400 too. The engine's submit caps no note, so the door is its only judge.
+- **Where it goes.** The note passes through the library's SubmitRequest.note onto the unit's submit_note: the submit receipt and every unit read carry it. It is not content (D-445): neither the snapshot nor the fingerprint carries it.
+- **The single price.** POST /prices/{id}/submit takes no note: its body stays empty, and any key is 400 BODY_UNEXPECTED. A note for prices travels with publish-changes. Its served text says so.
+- **The tests.** tests/plan_revision_approvals.rs: a note stored and read back; no body, {} and a null note; 2000 two-byte characters pass; 2001 are 400 NOTE_TOO_LONG on a revision and on an unknown one, with nothing written; a stray key alone and beside a note is 400 BODY_UNEXPECTED. The pin that the plan submit takes no body now pins that it takes nothing but a note. tests/approval_doors.rs: publish-changes stores a note and a null one, refuses one over the cap before the 404 of an unknown book, and the price submit refuses a note. Probes that dropped either door's cap were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3). Amends D-445 and products P-D-219's Pricing bullet.
