@@ -13,8 +13,9 @@ pub const PRICING_SYSTEM_SUBJECT_TYPE: &str = "bss-pricing.system";
 /// Whether `ctx` carries pricing's system actor in either half: the subject type
 /// [`PRICING_SYSTEM_SUBJECT_TYPE`] or the id [`PRICING_SYSTEM_ACTOR`]. Only in-process code acts
 /// as that actor. A token's claims can carry both halves, so both gears refuse such a caller at
-/// every REST door, 403 `SYSTEM_ACTOR_RESERVED`, before any other check (products P-D-222,
-/// pricing D-424). Other system subjects (Rating's, Subscriptions') are not refused.
+/// every REST door, 403 `SYSTEM_ACTOR_RESERVED`, after authentication and before the PDP
+/// (products P-D-222, pricing D-424). Other system subjects (Rating's, Subscriptions') are not
+/// refused.
 #[must_use]
 pub fn is_pricing_system_actor(ctx: &SecurityContext) -> bool {
     ctx.subject_type() == Some(PRICING_SYSTEM_SUBJECT_TYPE)

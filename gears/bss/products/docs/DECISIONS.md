@@ -978,14 +978,14 @@ review asked whether a caller could assert it (RS-02). The owner kept the trust 
   The registry's system branch is in `LocalReferenceRegistry::scope` alone, and its doc says so.
 - **The relay (second review of W1b, M1).** No products door calls the registry, but pricing's doors do, with their caller's
   context: the entry create reads the SKU (`sku_for_write`) and drives its reserve and confirm as the caller
-  (`reference_work::drive`), and so do the entry PATCH and delete, the plan item doors and the plan checks' SKU reads
-  (`plans::fresh_skus`). So a REST caller whose token carried the actor got the registry's tenant-wide trust through a pricing
+  (`reference_work::drive`), and so do the entry delete, the plan item doors, the plan copy, clone and revision delete (their
+  reference ops), and the plan checks' SKU reads (`plans::fresh_skus`). The entry PATCH makes no registry call. So a REST caller whose token carried the actor got the registry's tenant-wide trust through a pricing
   door, without products' own `read` or `reference` check, and the audit row said `actor_kind=system`. A pricing test showed
   it: under a policy that grants the caller every pricing action and a products that grants nobody, the entry create answered
   201. The first version of this decision said that nothing on a REST path read the subject type, which left pricing's doors out.
 - **The edge refusal (fix run W1c).** Both gears refuse pricing's system actor on every REST door, in either half: a context
-  whose subject type is `bss-pricing.system` or whose id is `PRICING_SYSTEM_ACTOR` is 403 `SYSTEM_ACTOR_RESERVED`, before the
-  PDP or any other check. The one test is `bss_products_sdk::is_pricing_system_actor`, and each gear's `require_authenticated`,
+  whose subject type is `bss-pricing.system` or whose id is `PRICING_SYSTEM_ACTOR` is 403 `SYSTEM_ACTOR_RESERVED`, after the
+  authentication check (401) and before the PDP. The one test is `bss_products_sdk::is_pricing_system_actor`, and each gear's `require_authenticated`,
   which every door calls first, applies it (products `api::rest`, pricing `authoring::support`). The refusal is logged on the
   gear's authz deny target. Only pricing's own actor is refused: another system subject (Rating's and Subscriptions', which call
   pricing's resolve, D-424) passes the edge, and the PDP judges it by its roles, as every other caller.
