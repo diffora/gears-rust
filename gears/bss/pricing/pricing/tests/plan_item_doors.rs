@@ -891,3 +891,95 @@ async fn a_rejected_or_withdrawn_price_unit_is_no_longer_named_by_the_next_check
         assert_eq!(next["ready"], false);
     }
 }
+
+/// D-465 (O-9b): D-408's "newly added" does not cover a re-add. A deprecated SKU that the plan's
+/// published revision in effect carries may be added again to its draft after a removal (the door
+/// and the create op's SKU re-read both admit it), and its checks stay green; any other deprecated
+/// SKU is still 400 `ITEM_SKU_DEPRECATED`, and so is the carried one in a clone, a new plan with
+/// no revision in effect.
+#[tokio::test]
+async fn a_deprecated_sku_the_plan_sells_may_be_added_again_and_no_other() {
+    let (f, catalog) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (p, rev1) = plan(&f, "pro", eur).await;
+    let plan_id = id_of(&p["id"]);
+    let carried = catalog.sku(SkuType::Usage);
+    item_with_qty(&f, rev1, carried, "10").await;
+    publish(&f, plan_id, rev1).await;
+    catalog.age(carried, Lifecycle::Deprecated);
+    let another = catalog.sku(SkuType::Usage);
+    catalog.age(another, Lifecycle::Deprecated);
+    let (s, copied, _) = f
+        .call(
+            "POST",
+            &format!("/plans/{plan_id}/revisions"),
+            json!({}),
+            None,
+            Some("copy"),
+        )
+        .await;
+    assert_eq!(s, 201, "{copied}");
+    let rev2 = id_of(&copied["id"]);
+    let removed = copied["items"][0]["id"].as_str().unwrap().to_owned();
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-items/{removed}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    let again = json!({"sku_id":carried,"treatment":"included","included_qty":"10"});
+    let (s, b, _) = add(&f, rev2, again, "again").await;
+    assert_eq!(s, 201, "the published revision in effect carries it: {b}");
+    assert_eq!(b["sku_id"], carried.to_string());
+    assert_eq!(b["reference_state"], "confirmed", "{b}");
+    let (s, b) = checks(&f, rev2).await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(row(&b, "ITEM_SKU_DEPRECATED")["ok"], true, "{b}");
+    let (s, b, _) = add(
+        &f,
+        rev2,
+        json!({"sku_id":another,"treatment":"included","included_qty":"1"}),
+        "another",
+    )
+    .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(text(&b).contains("ITEM_SKU_DEPRECATED"), "{b}");
+    let (s, cloned, _) = f
+        .call(
+            "POST",
+            &format!("/plans/{plan_id}/clone"),
+            json!({"code":"clone","name":"Clone"}),
+            None,
+            Some("clone"),
+        )
+        .await;
+    assert_eq!(s, 201, "{cloned}");
+    let clone_rev1 = id_of(&cloned["revisions"][0]["id"]);
+    let copy = items(&f, clone_rev1).await;
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-items/{}", copy[0].id),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
+    let (s, b, _) = add(
+        &f,
+        clone_rev1,
+        json!({"sku_id":carried,"treatment":"included","included_qty":"10"}),
+        "clone-again",
+    )
+    .await;
+    assert_eq!(
+        s, 400,
+        "a clone is a new plan with no revision in effect: {b}"
+    );
+    assert!(text(&b).contains("ITEM_SKU_DEPRECATED"), "{b}");
+}

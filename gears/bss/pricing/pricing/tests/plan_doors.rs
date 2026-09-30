@@ -1028,3 +1028,67 @@ async fn a_rest_caller_asserting_pricings_system_actor_never_reaches_the_registr
     assert_eq!(s, 200, "{listed}");
     assert_eq!(listed["items"], json!([]), "nothing written: {listed}");
 }
+
+/// D-463: `POST /plans` takes an optional `available_from`, judged as the revision PATCH judges
+/// it: a date is rev 1's sale date, omitted or null is "at publish", and a malformed one is 400
+/// `DATE_INVALID` with nothing written, among the body's refusals: before the 404 of a book the
+/// tenant does not hold.
+#[tokio::test]
+async fn a_plan_is_created_with_its_sale_date() {
+    let (f, _) = setup().await;
+    let eur = book(&f, "eur").await;
+    let dated = f
+        .call(
+            "POST",
+            "/plans",
+            json!({"code":"dated","name":"Dated","book_id":eur,"available_from":"2031-03-01"}),
+            None,
+            Some("dated"),
+        )
+        .await;
+    assert_eq!(dated.0, 201, "{dated:?}");
+    assert_eq!(dated.1["revisions"][0]["available_from"], "2031-03-01");
+    let rev1 = id_of(&dated.1["revisions"][0]["id"]);
+    let read = f
+        .call(
+            "GET",
+            &format!("/plan-revisions/{rev1}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(read.1["available_from"], "2031-03-01", "stored: {read:?}");
+    for (code, from) in [("omitted", None), ("null", Some(json!(null)))] {
+        let mut body = json!({"code":code,"name":code,"book_id":eur});
+        if let Some(from) = from {
+            body["available_from"] = from;
+        }
+        let created = f.call("POST", "/plans", body, None, Some(code)).await;
+        assert_eq!(created.0, 201, "{created:?}");
+        assert_eq!(
+            created.1["revisions"][0]["available_from"],
+            json!(null),
+            "{code}"
+        );
+    }
+    for (key, book_id) in [("bad", eur), ("bad-and-unknown-book", Uuid::new_v4())] {
+        let refused = f
+            .call(
+                "POST",
+                "/plans",
+                json!({"code":key,"name":key,"book_id":book_id,"available_from":"2031-13-01"}),
+                None,
+                Some(key),
+            )
+            .await;
+        assert_eq!(refused.0, 400, "{key}: {refused:?}");
+        assert!(text(&refused.1).contains("DATE_INVALID"), "{refused:?}");
+    }
+    let (_, listed, _) = f.call("GET", "/plans", json!({}), None, None).await;
+    assert_eq!(
+        listed["items"].as_array().unwrap().len(),
+        3,
+        "nothing written: {listed}"
+    );
+}

@@ -35,12 +35,13 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a plan")
         .description(
             "Creates a plan with a code and a name and its draft revision 1 on a book of the \
-             tenant; the Idempotency-Key replays the answer. The caller also needs price_book \
-             read on that book (D-456). The code is at most 64 characters and the name 200 \
-             (D-457). Refusals: 400 PLAN_CODE_REQUIRED, or FIELD_TOO_LONG on a code or a name \
-             over its cap; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED \
-             for one the caller may not read; 503 when that grant cannot be judged; 409 \
-             PLAN_CODE_TAKEN.",
+             tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \
+             \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs \
+             price_book read on that book (D-456). The code is at most 64 characters and the name \
+             200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a \
+             code or a name over its cap; 404 for a book the tenant does not hold; 403 \
+             PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot \
+             be judged; 409 PLAN_CODE_TAKEN.",
         )
         .tag("Pricing")
         .authenticated()
@@ -56,11 +57,16 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("List the plans")
         .description(
             "Lists the tenant's plans by code, each with the headers of its revisions as they \
-             read today (a scheduled revision whose date has come reads published, D-447). With \
-             sku_id, only the plans that have a draft, pending, scheduled or published revision \
-             whose items name the SKU through a price book entry (D-434; an included item without \
-             an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a \
-             malformed sku_id or any other key.",
+             read today (a scheduled revision whose date has come reads published, D-447), each \
+             header with its author and when it was submitted and approved (D-461). Each plan names \
+             its current revision (the draft or pending one, else the scheduled one, else the \
+             published one in effect) with its item count, item SKUs and author, and the \
+             published revision in effect (D-460). With sku_id, only the plans that have a draft, \
+             pending, scheduled or published revision whose items name the SKU through a price \
+             book entry (D-434; an included item without an entry does not count), in the same \
+             shape: so a plan's current sku_ids, which name every item, may differ from what the \
+             filter keeps. Four statements whatever the number of plans. Refusals: 400 \
+             QUERY_INVALID for a malformed sku_id or any other key.",
         )
         .tag("Pricing")
         .authenticated()
@@ -78,9 +84,10 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan")
         .description(
-            "Returns one plan with the headers of its revisions as they read today (D-447), its \
-             version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a \
-             plan the tenant does not hold.",
+            "Returns one plan with the headers of its revisions as they read today (D-447) and \
+             when each was submitted and approved (D-461), its current revision and the one in \
+             effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. \
+             Refusals: 404 for a plan the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -139,12 +146,14 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Creates a new plan with its own code and name whose draft revision 1 copies the \
              source's published revision (the one in effect: a scheduled revision whose date has \
-             come is switched first, D-451), without anything of its approval. The caller also \
-             needs price_book read on the source's book (D-456). The code is at most 64 \
-             characters and the name 200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, or \
-             FIELD_TOO_LONG on a code or a name over its cap; 404 for an unknown plan; 409 \
-             CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 PRICE_BOOK_READ_REQUIRED for a book \
-             the caller may not read; 503 when that grant cannot be judged.",
+             come is switched first, D-451): its book, its items and its sale date, without \
+             anything of its approval. An available_from in the body overrides the sale date, \
+             and null clears it (D-463). The caller also needs price_book read on the source's \
+             book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: \
+             400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a code or a name over its \
+             cap; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 \
+             PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant \
+             cannot be judged.",
         )
         .tag("Pricing")
         .authenticated()
@@ -160,9 +169,11 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan_revision")
         .summary("Read a plan revision")
         .description(
-            "Returns one plan revision with its items and its state as it reads today (D-447), its \
-             version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a \
-             revision the tenant does not hold.",
+            "Returns one plan revision with its items and its state as it reads today (D-447), \
+             when it was submitted and approved (D-461) and, while it is pending, its vote \
+             progress: the approve votes counted toward the quorum and the quorum, counts only, \
+             under plan read (D-462). Its version is the ETag a following PATCH sends back as \
+             If-Match. Refusals: 404 for a revision the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -433,7 +444,9 @@ async fn get_revision(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { plans::get_revision(tx, &scope, ctx.subject_tenant_id(), id).await })
+        Box::pin(async move {
+            plans::get_revision(tx, &scope, (ctx.subject_tenant_id(), ctx.subject_id()), id).await
+        })
     })
     .await
 }
@@ -510,10 +523,11 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Add an item to a draft revision")
         .description(
             "Adds an item for a SKU to a draft revision with its entry, treatment and quantities, \
-             reserving the SKU reference in Products; the Idempotency-Key replays the receipt. \
-             Refusals: 400 TREATMENT_INVALID, INCLUDED_QTY_INVALID, QTY_MIN_INVALID, \
-             ITEM_ENTRY_SKU_MISMATCH or REVISION_ITEMS_TOO_MANY; 409 REVISION_NOT_DRAFT or \
-             ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
+             reserving the SKU reference in Products; the Idempotency-Key replays the receipt. A \
+             deprecated SKU is added only when the plan's published revision in effect carries it \
+             (D-465). Refusals: 400 TREATMENT_INVALID, INCLUDED_QTY_INVALID, QTY_MIN_INVALID, \
+             ITEM_ENTRY_SKU_MISMATCH, ITEM_SKU_DEPRECATED or REVISION_ITEMS_TOO_MANY; 409 \
+             REVISION_NOT_DRAFT or ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()

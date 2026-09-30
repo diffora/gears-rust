@@ -145,6 +145,50 @@ pub async fn for_revision(
         .await
         .map_err(|e| driver_failure("list plan items of a revision".into(), e))
 }
+/// One item's revision and SKU, a row of [`skus_of_revisions`].
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct RevisionSkuRow {
+    revision_id: Uuid,
+    sku_id: Uuid,
+}
+/// The item SKUs of every revision among `revisions`, each revision's in ascending order, in ONE
+/// statement whatever their number (D-460: the plans list's current revisions). The statement
+/// runs for an empty list too (the query builder renders it `1 = 2`), so a list that reads it
+/// makes the same statements for any number of rows; a revision without items has no key.
+/// # Errors
+/// Returns typed database failures.
+pub async fn skus_of_revisions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    revisions: &[Uuid],
+) -> Result<std::collections::BTreeMap<Uuid, Vec<Uuid>>, RepoError> {
+    use sea_orm::{QueryOrder, QuerySelect};
+    let mut grouped: std::collections::BTreeMap<Uuid, Vec<Uuid>> =
+        std::collections::BTreeMap::new();
+    for row in e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::RevisionId.is_in(revisions.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::RevisionId)
+                .column(e::Column::SkuId)
+                .order_by(e::Column::RevisionId, Order::Asc)
+                .order_by(e::Column::SkuId, Order::Asc)
+                .into_model::<RevisionSkuRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("read the item SKUs of revisions".into(), e))?
+    {
+        grouped.entry(row.revision_id).or_default().push(row.sku_id);
+    }
+    Ok(grouped)
+}
 /// Whether any plan item names an entry (`ENTRY_IN_USE`, D-408).
 /// # Errors
 /// Returns typed database failures.

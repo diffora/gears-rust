@@ -516,9 +516,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at \
              once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and \
              the pair goes through POST /price-books/{id}/publish-changes, which completes it \
-             (D-405). Refusals: 400 PAIR_SPLIT, or a rule the price breaks at submit (for example \
-             WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 \
-             PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+             (D-405). It takes no body and no note: a note for the approver travels with \
+             publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 \
+             PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, \
+             PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING \
+             or UNIT_CONTENDED.",
         )
         .tag("Pricing")
         .authenticated()
@@ -540,14 +542,24 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Puts an unlocked draft revision whose checks are all green into a plan_revision \
              approval unit (plan submit); at quorum 0 it applies at once. An applied revision is \
              published, or scheduled when its sale date is after today: it takes effect on that \
-             date (D-449). Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 \
-             REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' \
-             SKU reads.",
+             date (D-449). An optional body carries the submitter's note for the approver, stored \
+             on the unit as submit_note (D-464): no body, {} and a null note carry none. The \
+             receipt's revision says when it was submitted and approved (D-461) and, while it is \
+             pending, its vote progress (D-462). Refusals: 400 NOTE_TOO_LONG for a note over 2000 \
+             characters, judged before anything is read, and BODY_UNEXPECTED for any other key; \
+             400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or \
+             ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Plan revision id")
+        .json_request::<dto::PricingPlanRevisionSubmitRequest>(
+            openapi,
+            "Optional: the submitter's note, at most 2000 characters (400 NOTE_TOO_LONG); stored \
+             on the unit as submit_note (D-464)",
+        )
+        .request_optional()
         .param(header("Idempotency-Key"))
         .handler(submit_plan_revision)
         .json_response_with_schema::<dto::PricingPlanRevisionSubmitReceipt>(
@@ -608,7 +620,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Submits the book's draft prices, all of them or the listed price_ids, optionally on a \
              common effective date, as one prices approval unit; at quorum 0 it applies at once. \
-             Refusals: 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
+             An optional note for the approver is stored on the unit as submit_note (D-464). \
+             Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything \
+             is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
              PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
         )
         .tag("Pricing")
@@ -857,7 +871,10 @@ async fn submit_plan_revision(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let key = preconditions::idempotency_key(&headers)?;
-    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    // D-464: the submitter's optional note, its cap judged before any read.
+    let (payload, note) = support::note_body(&body)?;
+    caps::note(note.as_deref())?;
+    let digest = preconditions::request_digest(&payload)?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -867,7 +884,7 @@ async fn submit_plan_revision(
         key,
         digest,
     };
-    approvals::submit_revision(&state.db.db(), cmd, id).await
+    approvals::submit_revision(&state.db.db(), cmd, id, note).await
 }
 async fn unschedule_plan_revision(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -945,6 +962,8 @@ async fn publish_changes(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPublishChangesRequest = preconditions::parse_body(&body)?;
+    // D-464: the submitter's optional note, its cap judged before any read.
+    input.caps()?;
     let cmd = approvals::Command {
         scope,
         ctx,

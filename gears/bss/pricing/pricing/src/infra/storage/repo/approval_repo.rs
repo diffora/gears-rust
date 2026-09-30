@@ -694,6 +694,48 @@ pub async fn decisions_of_units(
     }
     Ok(grouped)
 }
+/// When a unit was submitted and decided, a row of [`unit_instants`]: what a plan revision's
+/// header shows of the unit it names (D-461).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sea_orm::FromQueryResult)]
+pub struct UnitInstants {
+    pub id: Uuid,
+    pub submitted_at: OffsetDateTime,
+    pub decided_at: Option<OffsetDateTime>,
+}
+/// The submission and decision instants of every unit among `units`, by id, in ONE statement
+/// whatever their number (D-461: the units the listed revisions name). The statement runs for an
+/// empty list too (the query builder renders it `1 = 2`), so a list that reads it makes the same
+/// statements for any number of rows; a unit the tenant does not hold has no key.
+/// # Errors
+/// Returns typed database failures.
+pub async fn unit_instants(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    units: &[Uuid],
+) -> Result<BTreeMap<Uuid, UnitInstants>, RepoError> {
+    use sea_orm::QuerySelect;
+    Ok(approval_unit::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_unit::Column::TenantId.eq(tenant_id))
+                .add(approval_unit::Column::Id.is_in(units.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(approval_unit::Column::Id)
+                .column(approval_unit::Column::SubmittedAt)
+                .column(approval_unit::Column::DecidedAt)
+                .into_model::<UnitInstants>()
+        })
+        .await
+        .map_err(|e| driver_failure("read the instants of units".into(), e))?
+        .into_iter()
+        .map(|u| (u.id, u))
+        .collect())
+}
 async fn decision_rows(
     runner: &impl DBRunner,
     scope: &AccessScope,
