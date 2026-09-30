@@ -6129,7 +6129,7 @@
             "type": "integer"
           },
           "truncated": {
-            "description": "Whether the budget or `limit` cut the report short: it then reads as\n\"at least this many\".",
+            "description": "Whether the node budget, the time budget or `limit` cut the report\nshort: it then reads as \"at least this many\".",
             "type": "boolean"
           }
         },
@@ -19685,6 +19685,13 @@
       "ValidateRequest": {
         "description": "`POST /settings/{key}/validate`: the candidate to check.",
         "properties": {
+          "impact": {
+            "description": "Whether to carry the impact report; `true` when absent. A client that\nfetches the report on its own time through `impact` sends `false` and\ngets the type check alone.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "limit": {
             "description": "Page size of the impact report, for a cascading setting.",
             "minimum": 0,
@@ -19716,7 +19723,7 @@
               },
               {
                 "$ref": "#/components/schemas/ImpactReportDto",
-                "description": "The descendants the change would affect, for a cascading setting."
+                "description": "The descendants the change would affect, for a cascading setting;\nabsent when the request skipped it."
               }
             ]
           },
@@ -55437,7 +55444,7 @@
     },
     "/settings-service/v1/search": {
       "get": {
-        "description": "Cross-field search over every category the caller may see. Matches a setting's key, description, category name, Schema Default and the overrides explicitly set inside the target's subtree, under the same authorization, target, visibility and `hidden` rules as browsing; results come back flat and ordered by key, each hit with its category, the field that matched -- one of `key`, `description`, `category_name`, `default_value` or `value` -- and its declaration's `mode` as a tag that withholds nothing. A hit on the key, description, category name or default belongs to the declaration and carries no scope; a hit on an override names the scope and tenant where it is set. Search runs over stored rows, not resolved values: an inherited value is a hit where it was set, and a default is a hit on its declaration. `tenant` bounds the override corpus to that subtree and is resolution context as everywhere else. `q` is a case-insensitive substring of at least two characters and at most two hundred; shorter or longer is refused 400. A `secret` value is never matched, so an empty result says nothing about it; a `pii` value is matched only for a caller entitled to read it unmasked. A page holds up to `limit` settings; a setting with several matching overrides contributes one hit per override. `$filter`, `$orderby` and `$select` are refused.",
+        "description": "Cross-field search over every category the caller may see. Matches a setting's key, description, category name, Schema Default and the overrides explicitly set inside the target's subtree, under the same authorization, target, visibility and `hidden` rules as browsing; results come back flat and ordered by key, each hit with its category, the field that matched -- one of `key`, `description`, `category_name`, `default_value` or `value` -- and its declaration's `mode` as a tag that withholds nothing. A hit on the key, description, category name or default belongs to the declaration and carries no scope; a hit on an override names the scope and tenant where it is set. Search runs over stored rows, not resolved values: an inherited value is a hit where it was set, and a default is a hit on its declaration. `tenant` bounds the override corpus to that subtree and is resolution context as everywhere else. `q` is a case-insensitive substring of at least two characters and at most two hundred; shorter or longer is refused 400. A `secret` value is never matched, so an empty result says nothing about it; a `pii` value is matched only for a caller entitled to read it unmasked. A page holds up to `limit` settings; a setting with several matching overrides contributes one hit per override. `$filter` takes the grammar `GET /settings` takes - `category_id eq`, `key eq`, `key in (...)` and `needs_review eq true`, joined by `and` - and narrows the corpus in the query, so the cursor pages the filtered set; `needs_review eq true` keeps the settings with an override flagged for review in the target's subtree. `$orderby` and `$select` are refused.",
         "operationId": "settings_service.search_settings",
         "parameters": [
           {
@@ -55471,6 +55478,15 @@
             "description": "Cursor for pagination",
             "in": "query",
             "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- key: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- needs_review: eq|ne",
+            "in": "query",
+            "name": "$filter",
             "required": false,
             "schema": {
               "type": "string"
@@ -55547,7 +55563,28 @@
         "summary": "Search settings across categories",
         "tags": [
           "settings-search"
-        ]
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "category_id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "key": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "needs_review": [
+              "eq",
+              "ne"
+            ]
+          }
+        }
       }
     },
     "/settings-service/v1/settings": {
@@ -56054,7 +56091,7 @@
     },
     "/settings-service/v1/settings/{key}/impact": {
       "post": {
-        "description": "Which descendants of the target would see a different effective value under the candidate: the first `limit` in breadth-first order (default 100, at most 500), the total, how many were scanned under the node budget of 5000, and whether the report was truncated. Standalone descendants are omitted from the list and the count; each listed descendant's current value is masked by the setting's classification. A POST because the candidate travels in the body, as it does for `validate` - a value may run to 64 KiB. Read-only, informational, and never blocking a write.",
+        "description": "Which descendants of the target would see a different effective value under the candidate: the first `limit` in breadth-first order (default 100, at most 500), the total, how many were scanned under the node budget of 5000, and whether the report was truncated - by that budget, by `limit`, or by the time budget of one second the walk runs under, in which case nothing was scanned. The subtree is resolved in one pass, a fixed number of round trips whatever its size. Standalone descendants are omitted from the list and the count; each listed descendant's current value is masked by the setting's classification. A POST because the candidate travels in the body, as it does for `validate` - a value may run to 64 KiB. Read-only, informational, and never blocking a write.",
         "operationId": "settings_service.impact",
         "parameters": [
           {
@@ -56838,7 +56875,7 @@
     },
     "/settings-service/v1/settings/{key}/validate": {
       "post": {
-        "description": "Report whether the candidate would be accepted, with field-level detail, the current effective value and its source at the target, and - for a cascading setting - the descendants the change would affect, in pages. Read-only: needs no step-up, stores nothing, emits no audit record, and is never required before a write.",
+        "description": "Report whether the candidate would be accepted, with field-level detail, the current effective value and its source at the target, and - for a cascading setting - the descendants the change would affect, in pages, unless the body says `impact: false`, for a client that fetches that report on its own time through `impact`. Read-only: needs no step-up, stores nothing, emits no audit record, and is never required before a write.",
         "operationId": "settings_service.validate_value",
         "parameters": [
           {

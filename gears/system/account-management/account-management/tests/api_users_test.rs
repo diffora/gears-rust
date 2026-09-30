@@ -595,6 +595,96 @@ async fn list_users_http_with_unknown_orderby_field_returns_400() {
     );
 }
 
+/// A continuation cursor carries the order it was issued under (`s`), and
+/// the route reuses that order when the request has no `$orderby`. The
+/// cursor is caller-held, so its order is caller input: it must pass the
+/// same field whitelist as `$orderby` and fail with the same 400, not reach
+/// the real static `IdP` plugin, which has no projection for an unknown
+/// field and panics on it.
+#[tokio::test]
+async fn list_users_http_with_forged_cursor_order_is_400_before_the_static_plugin() {
+    let h = setup_sqlite().await.expect("sqlite");
+    let root = Uuid::new_v4();
+    seed_root(&h, root).await;
+    let services = build_services_full(
+        &h,
+        std::sync::Arc::new(static_idp_plugin::domain::Service::new()),
+        empty_metadata_registry(),
+        types_registry_for_users(),
+    );
+    let router = build_test_router(&services);
+    let users = format!("/account-management/v1/tenants/{root}/users");
+
+    for username in ["alice", "bob"] {
+        let req = json_request(
+            "POST",
+            &users,
+            Some(serde_json::json!({ "username": username })),
+            ctx_for(root),
+        );
+        let resp = router.clone().oneshot(req).await.expect("router");
+        assert_eq!(resp.status(), StatusCode::CREATED, "a user is provisioned");
+    }
+
+    let forged = toolkit_odata::CursorV1 {
+        k: vec!["alice".to_owned(), Uuid::nil().to_string()],
+        o: toolkit_odata::SortDir::Asc,
+        s: "+foo,+id".to_owned(),
+        f: None,
+        d: "fwd".to_owned(),
+    }
+    .encode()
+    .expect("encode cursor");
+    let req = json_request(
+        "GET",
+        &format!("{users}?cursor={forged}"),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.clone().oneshot(req).await.expect("router");
+    let status = resp.status();
+    let cursor_body = response_body(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{cursor_body}");
+
+    // The same answer the `$orderby` path gives for the same unknown field.
+    let req = json_request(
+        "GET",
+        &format!("{users}?%24orderby=foo%20asc"),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.clone().oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let orderby_body = response_body(resp).await;
+    for key in ["type", "title", "status"] {
+        assert_eq!(
+            cursor_body[key], orderby_body[key],
+            "`{key}`: cursor {cursor_body} vs $orderby {orderby_body}"
+        );
+    }
+
+    // A cursor the route issued itself still continues the walk.
+    let req = json_request("GET", &format!("{users}?limit=1"), None, ctx_for(root));
+    let resp = router.clone().oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let first = response_body(resp).await;
+    assert_eq!(first["items"][0]["username"], "alice", "{first}");
+    let next = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("a first page of one of two users has a next cursor")
+        .to_owned();
+    let req = json_request(
+        "GET",
+        &format!("{users}?limit=1&cursor={next}"),
+        None,
+        ctx_for(root),
+    );
+    let resp = router.oneshot(req).await.expect("router");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let second = response_body(resp).await;
+    assert_eq!(second["items"][0]["username"], "bob", "{second}");
+}
+
 #[tokio::test]
 async fn list_users_http_default_no_filter_no_orderby_returns_200() {
     // Plain `GET /users` (no $filter, no $orderby, no limit, no cursor)

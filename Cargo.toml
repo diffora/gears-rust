@@ -51,6 +51,7 @@ debug = true
 [workspace]
 members = [
     "apps/cf-gears-example-server",
+    "apps/cf-gears-flight-control",
     "tools/gts-analyze",
     "tools/xtask",
     "libs/toolkit",
@@ -416,7 +417,7 @@ aws-lc-rs = "1.17"
 
 # settings-service
 settings-service-sdk = { package = "cf-gears-settings-service-sdk", version = "0.1.0", path = "gears/settings-service/settings-service-sdk" }
-settings-service = { package = "cf-gears-settings-service", version = "0.1.0", path = "gears/settings-service/settings-service" }
+settings-service = { package = "cf-gears-settings-service", version = "0.1.2", path = "gears/settings-service/settings-service" }
 
 # credstore
 credstore-sdk = { package = "cf-gears-credstore-sdk", version = "0.2.17", path = "gears/credstore/credstore-sdk" }
@@ -551,6 +552,9 @@ proptest = "1"
 
 # CLI support
 clap = { version = "4.5", features = ["derive"] }
+
+# Allocator
+mimalloc = { version = "0.1" }
 
 # Database utilities
 #
@@ -763,7 +767,7 @@ proc-macro-crate = "3"
 # `testcontainers` pair it wraps.
 test-containers = { package = "cf-gears-test-containers", path = "libs/test-containers" }
 trybuild = "1"
-serial_test = { version = "3", features = ["file_locks"] }
+serial_test = { version = "4", features = ["file_locks"] }
 criterion = { version = "0.8", default-features = false }
 testcontainers = { version = "0.27", default-features = false, features = ["aws-lc-rs"] }
 testcontainers-modules = { version = "0.15", default-features = false, features = ["aws-lc-rs", "postgres", "mysql", "redis"] }

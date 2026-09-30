@@ -443,6 +443,16 @@ gears:
     # instead of being silently invented.
     config: {}
 
+  # The credstore gateway reads a secret's metadata from its own DB, so the
+  # values below are not readable on their own (issue #5094). Until that is
+  # fixed, set each secret through the API after every start (the first run
+  # needs POST instead of PUT); mini-chat retries the deferred provider.
+  # Read the key with -s so it never lands in shell history or `ps`, and
+  # pipe the body through -d @- so it never appears as a curl argument:
+  #   read -s -p 'openai key: ' KEY && printf '{"value":"%s","sharing":"tenant"}' "$KEY" \
+  #     | curl -X PUT http://localhost:8087/cf/credstore/v1/secrets/openai-key \
+  #         -H 'Authorization: Bearer dev' -H 'content-type: application/json' \
+  #         -H 'If-Match: *' -d @-
   static-credstore-plugin:
     config:
       secrets:
