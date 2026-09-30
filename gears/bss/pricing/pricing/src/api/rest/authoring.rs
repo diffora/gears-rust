@@ -678,10 +678,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("List the approval units")
         .description(
             "One page of the tenant's approval units in submission order (D-458), filtered by \
-             state, kind and referenced aggregate, each with its stored snapshot, its decisions \
-             and its live impact. `$orderby=submitted_at desc` pages it newest first, and \
-             `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same \
-             direction (D-470). A client merging pages of several gears compares \
+             state, kind and referenced aggregate, each with its stored snapshot, its decisions, \
+             its live impact and caller_can_approve, whether the caller may approve it now (the \
+             approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, \
+             and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the \
+             same direction (D-470). A client merging pages of several gears compares \
              submitted_at as an instant, never as text, then the id as lower-case hex. \
              `impact=false` skips the live impact read: every unit answers impact null. `limit` \
              (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
@@ -758,8 +759,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_approval_unit")
         .summary("Read an approval unit")
         .description(
-            "Returns one approval unit with its stored snapshot, its decisions and the live \
-             impact. Refusals: 404 for a unit the tenant does not hold.",
+            "Returns one approval unit with its stored snapshot, its decisions, the live impact \
+             and caller_can_approve, whether the caller may approve it now (D-471). Refusals: 404 \
+             for a unit the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1109,7 +1111,14 @@ async fn list_approval_units(
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
         Box::pin(async move {
-            approvals::list_units(tx, &scope, ctx.subject_tenant_id(), &request).await
+            approvals::list_units(
+                tx,
+                &scope,
+                ctx.subject_tenant_id(),
+                ctx.subject_id(),
+                &request,
+            )
+            .await
         })
     })
     .await
@@ -1246,7 +1255,9 @@ async fn get_approval_unit(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { approvals::get_unit(tx, &scope, ctx.subject_tenant_id(), id).await })
+        Box::pin(async move {
+            approvals::get_unit(tx, &scope, ctx.subject_tenant_id(), ctx.subject_id(), id).await
+        })
     })
     .await
 }

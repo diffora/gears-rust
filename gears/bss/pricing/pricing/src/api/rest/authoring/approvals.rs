@@ -96,18 +96,21 @@ impl Vote {
     }
 }
 
+/// The unit as `reader` reads it: its decisions, and whether `reader` may approve it, judged over
+/// its stored items and its decisions (D-471). Every answer that carries a unit builds it here or
+/// through [`PricingApprovalUnitDto::of`] over rows already read.
 async fn unit_dto(
     tx: &DbTx<'_>,
     store: &PricingApprovalStore,
     unit: Unit,
+    reader: Uuid,
 ) -> Result<PricingApprovalUnitDto, DoorError> {
+    let items = store.items(tx, unit.id).await.map_err(approval_failure)?;
     let decisions = store
         .decisions(tx, unit.id)
         .await
         .map_err(approval_failure)?;
-    let mut dto = PricingApprovalUnitDto::from(unit);
-    dto.decisions = decisions.into_iter().map(Into::into).collect();
-    Ok(dto)
+    Ok(PricingApprovalUnitDto::of(unit, &items, decisions, reader))
 }
 async fn load_unit(
     tx: &DbTx<'_>,
@@ -390,7 +393,7 @@ async fn record_prices(
     let prices = prices_of(tx, &store, submitted.unit.id).await?;
     let receipt = PricingSubmitReceipt {
         applied: submitted.applied,
-        unit: unit_dto(tx, &store, submitted.unit).await?,
+        unit: unit_dto(tx, &store, submitted.unit, cmd.ctx.subject_id()).await?,
         prices,
     };
     support::answer(
@@ -503,7 +506,7 @@ pub async fn submit_revision(
                 .with_units(&plans::instants_of(&submitted.unit), approval);
             let receipt = PricingPlanRevisionSubmitReceipt {
                 applied: submitted.applied,
-                unit: unit_dto(tx, &cmd.store(), submitted.unit).await?,
+                unit: unit_dto(tx, &cmd.store(), submitted.unit, cmd.ctx.subject_id()).await?,
                 revision,
             };
             support::answer(
@@ -718,8 +721,8 @@ pub struct UnitListRequest {
     pub impact: bool,
 }
 /// `GET /approval-units`: one page in submission order (D-458), oldest or newest first (D-470),
-/// each unit with every generation's decisions and, unless the request declines it, the same live
-/// impact as the card. The page, its units' items, their
+/// each unit with every generation's decisions, whether `reader` may approve it (D-471) and, unless
+/// the request declines it, the same live impact as the card. The page, its units' items, their
 /// decisions and the plans their impact names are read set-based: a fixed number of statements
 /// whatever the page's size, and no plan read without the impact.
 /// # Errors
@@ -728,6 +731,7 @@ pub async fn list_units(
     tx: &DbTx<'_>,
     scope: &AccessScope,
     tenant: Uuid,
+    reader: Uuid,
     request: &UnitListRequest,
 ) -> Result<Response, DoorError> {
     let page = approval_repo::page_units(
@@ -744,7 +748,8 @@ pub async fn list_units(
         approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
     })?;
     let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
-    // Only the plans' reading depends on the impact (plan review M3); the items stay read.
+    // The items are read whatever the impact: whether the reader may approve judges their
+    // authors (D-471).
     let mut touched = approval_repo::items_of_units(tx, scope, tenant, &ids).await?;
     let mut decisions = approval_repo::decisions_of_units(tx, scope, tenant, &ids).await?;
     let mut kinds = Vec::with_capacity(page.items.len());
@@ -775,13 +780,8 @@ pub async fn list_units(
     for (unit, kind) in page.items.into_iter().zip(kinds) {
         let id = unit.id;
         let touched = touched.remove(&id).unwrap_or_default();
-        let mut dto = PricingApprovalUnitDto::from(unit);
-        dto.decisions = decisions
-            .remove(&id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(Into::into)
-            .collect();
+        let decisions = decisions.remove(&id).unwrap_or_default();
+        let mut dto = PricingApprovalUnitDto::of(unit, &touched, decisions, reader);
         dto.impact = reading
             .as_ref()
             .map(|reading| kind.impact_from(reading, &touched));
@@ -839,13 +839,15 @@ pub async fn count_units(
         None,
     )?)
 }
-/// `GET /approval-units/{id}`: the stored snapshot, the decisions and the live impact.
+/// `GET /approval-units/{id}`: the stored snapshot, the decisions, the live impact and whether
+/// `reader` may approve it (D-471).
 /// # Errors
 /// Returns a missing unit or storage failure.
 pub async fn get_unit(
     tx: &DbTx<'_>,
     scope: &AccessScope,
     tenant: Uuid,
+    reader: Uuid,
     id: Uuid,
 ) -> Result<Response, DoorError> {
     let store = PricingApprovalStore {
@@ -855,7 +857,8 @@ pub async fn get_unit(
     let unit = load_unit(tx, &store, id).await?;
     let kind = Kind::of(&unit)?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
-    let mut dto = unit_dto(tx, &store, unit).await?;
+    let decisions = store.decisions(tx, id).await.map_err(approval_failure)?;
+    let mut dto = PricingApprovalUnitDto::of(unit, &items, decisions, reader);
     dto.impact = Some(kind.impact(tx, tenant, &items).await?);
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }
@@ -1044,7 +1047,7 @@ async fn vote_in(
         have,
         need,
         outcome: label,
-        unit: unit_dto(tx, &store, unit).await?,
+        unit: unit_dto(tx, &store, unit, actor).await?,
     };
     support::answer(
         tx,

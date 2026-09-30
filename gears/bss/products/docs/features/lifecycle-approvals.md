@@ -55,7 +55,7 @@ is the architecture and schema authority. Unchecked items describe implementatio
 
 ### 1.2 Purpose
 
-Govern publish/change/retire with the shared approval shape, copied policy quorum, author SoD, reviewed generations and recoverable local fences. GL changes reach period bindings through dated versions; all terminal paths preserve audit and approval provenance. The queue counts its units by state and kind and pages newest first on request (P-D-227).
+Govern publish/change/retire with the shared approval shape, copied policy quorum, author SoD, reviewed generations and recoverable local fences. GL changes reach period bindings through dated versions; all terminal paths preserve audit and approval provenance. The queue counts its units by state and kind and pages newest first on request (P-D-227), and every unit says whether its reader may approve it, by the engine's own rule (P-D-228).
 
 Requirements: `cpt-cf-bss-products-fr-sku-descriptors`, `cpt-cf-bss-products-fr-sku-lifecycle`, `cpt-cf-bss-products-fr-sku-retire-fenced`, `cpt-cf-bss-products-fr-approval-units`, `cpt-cf-bss-products-fr-sku-type-frozen`, `cpt-cf-bss-products-fr-concurrency-idempotency`, `cpt-cf-bss-products-nfr-authz`, `cpt-cf-bss-products-nfr-audit`, `cpt-cf-bss-products-fr-sku-metering`, `cpt-cf-bss-products-fr-sku-versions`, `cpt-cf-bss-products-fr-reference-registry`, `cpt-cf-bss-products-fr-events`.
 

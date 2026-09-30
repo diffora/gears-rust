@@ -498,6 +498,15 @@ pub struct UnitDto {
     pub snapshot: serde_json::Value,
     pub decisions: Vec<DecisionDto>,
     pub impact_live: Option<serde_json::Value>,
+    /// Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule
+    /// (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its
+    /// decisions, with the caller as the voter. It is false for a decided unit, for its submitter
+    /// and every author of its items (the SKU's creator: separation of duties) and for a caller who
+    /// already voted in its current generation. It means Approve only: a reject judges no
+    /// separation of duties, so the submitter and the SKU's creator may reject a unit whose flag
+    /// is false. The grant is not judged here: without products approve the vote door still
+    /// answers 403.
+    pub caller_can_approve: bool,
 }
 /// `GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by
 /// kind, every state and kind named (0 when none), and their total.
@@ -577,8 +586,20 @@ pub struct ApprovalPolicyDto {
 #[path = "dto_tests.rs"]
 mod dto_tests;
 
-impl From<bss_approval::Unit> for UnitDto {
-    fn from(u: bss_approval::Unit) -> Self {
+impl UnitDto {
+    /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
+    /// approve it, judged by the engine's own predicate over the unit's stored (current
+    /// generation) `items` and its `decisions` (P-D-228). `impact_live` is the caller's to fill.
+    #[must_use]
+    pub fn of(
+        u: bss_approval::Unit,
+        items: &[bss_approval::ItemRef],
+        decisions: Vec<bss_approval::Decision>,
+        reader: Uuid,
+    ) -> Self {
+        let caller_can_approve = bss_approval::approve_eligibility(&u, items, &decisions, reader)
+            .refusal
+            .is_none();
         Self {
             id: u.id,
             kind: u.kind,
@@ -594,8 +615,9 @@ impl From<bss_approval::Unit> for UnitDto {
             decided_at: u.decided_at,
             decided_note: u.decided_note,
             snapshot: u.snapshot,
-            decisions: Vec::new(),
+            decisions: decisions.into_iter().map(Into::into).collect(),
             impact_live: None,
+            caller_can_approve,
         }
     }
 }

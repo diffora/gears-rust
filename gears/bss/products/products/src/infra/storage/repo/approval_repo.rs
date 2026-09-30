@@ -609,6 +609,47 @@ pub async fn count_units(
         })
         .collect()
 }
+/// The items of every unit among `units`, each unit's by type and id as [`Store::items`] reads
+/// them, in ONE statement whatever their number (P-D-228, the twin of pricing's): the authors
+/// whether a reader may approve a unit judges. An empty list reads nothing, as
+/// [`decisions_of_units`].
+/// # Errors
+/// Returns typed database failures.
+pub async fn items_of_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    units: &[Uuid],
+) -> Result<BTreeMap<Uuid, Vec<ItemRef>>, RepoError> {
+    let mut grouped: BTreeMap<Uuid, Vec<ItemRef>> = BTreeMap::new();
+    if units.is_empty() {
+        return Ok(grouped);
+    }
+    for m in approval_unit_item::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_unit_item::Column::TenantId.eq(tenant_id))
+                .add(approval_unit_item::Column::UnitId.is_in(units.iter().copied())),
+        )
+        .order_by(approval_unit_item::Column::UnitId, Order::Asc)
+        .order_by(approval_unit_item::Column::ItemType, Order::Asc)
+        .order_by(approval_unit_item::Column::ItemId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("read the items of units".into(), e))?
+    {
+        grouped.entry(m.unit_id).or_default().push(ItemRef {
+            item_type: m.item_type,
+            item_id: m.item_id,
+            created_by: m.created_by,
+            before: m.before_json,
+            after: m.after_json,
+        });
+    }
+    Ok(grouped)
+}
 /// The decisions of every unit among `units`, each unit's by generation, instant and actor as
 /// [`Store::decisions`] reads them, in ONE statement whatever their number (P-D-224).
 /// # Errors

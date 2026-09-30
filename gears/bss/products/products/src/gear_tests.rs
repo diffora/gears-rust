@@ -662,3 +662,35 @@ async fn the_unit_reads_say_how_they_count_and_order() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// P-D-228 (ask 28): every unit carries `caller_can_approve`, a required boolean whose text says
+/// it judges Approve only and not the grant, and the list's text names it; the reject door no
+/// longer claims `SOD_VIOLATION`, which only the approve answers.
+#[tokio::test]
+async fn every_unit_says_whether_its_reader_may_approve_it() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let list = api["paths"]["/bss-products/v1/approval-units"]["get"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(list.contains("caller_can_approve"), "{list}");
+    let flag = property(&api, "UnitDto", "caller_can_approve").expect("the flag");
+    assert_eq!(flag["type"], "boolean", "{flag}");
+    assert!(
+        component(&api, "UnitDto")["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "caller_can_approve")
+    );
+    let said = flag["description"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("Approve only") && said.contains("403"),
+        "the flag says what it judges: {said}"
+    );
+    let reject = api["paths"]["/bss-products/v1/approval-units/{id}/reject"]["post"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!reject.contains("SOD_VIOLATION"), "{reject}");
+    assert!(reject.contains("separation of duties"), "{reject}");
+    Ok(())
+}

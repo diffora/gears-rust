@@ -60,6 +60,7 @@
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224 |
+| P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224 |
 
 ## Entries
 
@@ -1156,3 +1157,41 @@ the UI merges). It shows a badge per state and per kind and the newest units fir
 
 **Source:** Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11).
 Amends P-D-224 (the order).
+
+#### P-D-228 [M] A unit says whether its reader may approve it (twin of pricing D-471)
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen shows the Approve action only to a reviewer the vote door would take (ask 28). Separation of duties
+excludes the submitter and every author of the unit's items, and a products item's author is the SKU's creator
+(`domain/approvals/publish.rs`, `change.rs`), who is often not the submitter of a change or a retire (pricing plan review
+H1). The list and the card read no unit items, so the screen could not judge it.
+
+- **The field.** Every `UnitDto` carries `caller_can_approve`, a boolean: on `GET /approval-units`, `GET /approval-units/{id}`
+  and every receipt that carries a unit (the submit, change and retire receipts, and the vote receipts). It is true when the
+  caller may approve the unit now.
+- **One rule (pricing W2, D-459).** It is `bss_approval::approve_eligibility(unit, items, decisions, caller).refusal.is_none()`:
+  the predicate `Engine::approve` judges through, over the unit's STORED items (the current generation's, as
+  `Engine::approve` reads them) and its decisions. So it is false for a decided unit, for the submitter and for the SKU's
+  creator (`SOD_VIOLATION`), and for a caller who voted in the current generation (`DUPLICATE_VOTE`); a vote that a refresh
+  made stale does not stop its voter.
+- **Approve only (pricing plan review M2).** `Engine::reject` judges no separation of duties, so the submitter and the SKU's
+  creator may reject a unit whose flag is false. The reject door's served text claimed 403 `SOD_VIOLATION`; it now says that a
+  reject judges no separation of duties, and names 409 `UNIT_ALREADY_DECIDED`.
+- **Not the grant.** The flag does not judge products approve on approval units: without it the vote door still answers 403.
+  The field's text says so.
+- **The reads (amends P-D-224).** The list's page adds ONE grouped read of its units' items
+  (`approval_repo::items_of_units`, the twin of pricing's): a page reads its units, all their decisions and all their items,
+  three statements whatever its size; the QueryRecorder pins three for 10 and for 100 units. The card reads the unit's stored
+  items (`store.items`) beside its decisions. A receipt reads the unit's items and decisions.
+- **The tests.** `api/rest/sku_governance_tests.rs`: a publish unit at quorum 3 of a SKU created by one user and submitted by
+  another, a vote in generation 1, a content drift that refreshes the unit to generation 2 (400 `UNIT_STALE`), a vote in
+  generation 2; for the SKU's creator, the submitter, the voter of this generation, a fresh reviewer and the voter of the
+  earlier generation, the flag on the card and in the list (which agree) is exactly whether the vote door answers 200; on the
+  decided unit it is false for everyone and the door answers 409 `UNIT_ALREADY_DECIDED`; the submit and vote receipts answer
+  false for their caller. The submitter's reject answers 200 while the submitter's and the creator's flags are false. The
+  list's statement test pins three statements with the items read. `gear_tests.rs`: the field is a required boolean whose
+  text says Approve only and 403, the list's text names it, and the reject's text claims no `SOD_VIOLATION`.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2, binding; plan review
+H1, M2). Amends P-D-224 (the page's statements).

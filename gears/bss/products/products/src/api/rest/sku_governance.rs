@@ -499,7 +499,14 @@ async fn execute(
             }
             let receipt = SubmitReceipt {
                 applied: submitted.applied,
-                unit: submitted.unit.into(),
+                // A write answers what it wrote, as its submitter reads it (P-D-228).
+                unit: super::approval_units::as_read_by(
+                    tx,
+                    &store,
+                    submitted.unit,
+                    ctx.subject_id(),
+                )
+                .await?,
                 sku: after.into(),
             };
             replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await

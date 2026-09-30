@@ -88,10 +88,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("list_approval_units")
         .description(
             "One page of the tenant's approval units in submission order (P-D-224), filtered by \
-             state, kind and SKU, each with its stored snapshot and the decisions of every \
-             generation. `$orderby=submitted_at desc` pages it newest first, and `submitted_at \
-             asc`, the default, oldest first; the unit id breaks a tie in the same direction \
-             (P-D-227). A client merging pages of several gears compares \
+             state, kind and SKU, each with its stored snapshot, the decisions of every \
+             generation and caller_can_approve, whether the caller may approve it now (the \
+             approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, \
+             and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the \
+             same direction (P-D-227). A client merging pages of several gears compares \
              submitted_at as an instant, never as text, then the id as lower-case hex. `limit` \
              (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
              its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state \
@@ -224,10 +225,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("reject_unit")
         .description(
             "Rejects the unit at the generation its reviewer saw; a reject needs a note. The \
-             note is at most 2000 characters (the approval engine's cap). Refusals include 400 \
-             NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 \
-             GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 \
-             DUPLICATE_VOTE.",
+             note is at most 2000 characters (the approval engine's cap). A reject judges no \
+             separation of duties: the submitter and the SKU's creator may reject (P-D-228). \
+             Refusals include 400 NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without \
+             one, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, and 409 DUPLICATE_VOTE \
+             or UNIT_ALREADY_DECIDED.",
         )
         .tag("Approval units")
         .authenticated()
@@ -338,15 +340,15 @@ async fn list(
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = narrowing(q.state.as_deref(), q.kind, q.ref_id)?;
     let (page, direction) = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
-    let tenant = ctx.subject_tenant_id();
+    let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let list = state
         .db
         .db()
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
             let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
             Box::pin(async move {
-                // One page, and all its units' decisions in one read (P-D-224): the same
-                // statements whatever the page's size.
+                // One page, all its units' decisions and all their items, one read each
+                // (P-D-224, P-D-228): the same statements whatever the page's size.
                 let page = repo::page_units(tx, &scope, tenant, &filter, &page, direction)
                     .await
                     .map_err(|e| match e {
@@ -357,19 +359,20 @@ async fn list(
                 let mut decisions = repo::decisions_of_units(tx, &scope, tenant, &ids)
                     .await
                     .map_err(TxError::Repo)?;
+                let mut authored = repo::items_of_units(tx, &scope, tenant, &ids)
+                    .await
+                    .map_err(TxError::Repo)?;
                 let items = page
                     .items
                     .into_iter()
                     .map(|unit| {
                         let id = unit.id;
-                        let mut dto = UnitDto::from(unit);
-                        dto.decisions = decisions
-                            .remove(&id)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(Into::into)
-                            .collect();
-                        dto
+                        UnitDto::of(
+                            unit,
+                            &authored.remove(&id).unwrap_or_default(),
+                            decisions.remove(&id).unwrap_or_default(),
+                            reader,
+                        )
                     })
                     .collect();
                 Ok(UnitList {
@@ -514,21 +517,17 @@ async fn counts(
     })
     .into_response())
 }
-/// Every embedded unit reports the decisions actually stored for all generations.
-async fn with_decisions(
+/// A unit as `reader` reads it in a receipt: the decisions actually stored for all generations, and
+/// whether `reader` may approve it over its stored items (P-D-228).
+pub(super) async fn as_read_by(
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     unit: Unit,
+    reader: Uuid,
 ) -> Result<UnitDto, TxError> {
-    let decisions = store
-        .decisions(tx, unit.id)
-        .await?
-        .into_iter()
-        .map(Into::into)
-        .collect();
-    let mut dto = UnitDto::from(unit);
-    dto.decisions = decisions;
-    Ok(dto)
+    let items = store.items(tx, unit.id).await?;
+    let decisions = store.decisions(tx, unit.id).await?;
+    Ok(UnitDto::of(unit, &items, decisions, reader))
 }
 
 async fn get(
@@ -573,14 +572,9 @@ async fn get(
                 let live = repo::find_sku(tx, &scope, ctx.subject_tenant_id(), unit.ref_id)
                     .await
                     .map_err(TxError::Repo)?;
-                let decisions = store
-                    .decisions(tx, id)
-                    .await?
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
-                let mut dto = UnitDto::from(unit);
-                dto.decisions = decisions;
+                let items = store.items(tx, id).await?;
+                let decisions = store.decisions(tx, id).await?;
+                let mut dto = UnitDto::of(unit, &items, decisions, ctx.subject_id());
                 dto.impact_live = live
                     .map(|live| {
                         serde_json::to_value(super::dto::SkuDto::from(live))
@@ -893,7 +887,7 @@ async fn vote(
                 have,
                 need,
                 outcome: label,
-                unit: with_decisions(tx, &store, unit).await?,
+                unit: as_read_by(tx, &store, unit, ctx.subject_id()).await?,
             };
             replay::finish(
                 tx,

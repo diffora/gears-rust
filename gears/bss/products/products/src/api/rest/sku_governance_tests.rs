@@ -1462,9 +1462,9 @@ async fn the_unit_list_pages_in_submission_order() {
     assert_eq!(every, units);
 }
 
-/// RS-03 (P-D-224): a page of the unit list reads its units and all their decisions in the same
-/// statements for 10 and for 100 units, each with a vote; it read each unit's decisions on its own.
-/// The counts (P-D-227) are one grouped statement.
+/// RS-03 (P-D-224, amended by P-D-228): a page of the unit list reads its units, all their
+/// decisions and all their items in three statements for 10 and for 100 units, each with a vote;
+/// it read each unit's decisions on its own. The counts (P-D-227) are one grouped statement.
 #[tokio::test]
 async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units() {
     let mut runs = Vec::new();
@@ -1500,11 +1500,19 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
                 .all(|u| u["decisions"].as_array().unwrap().len() == 1),
             "every unit carries its vote"
         );
+        assert!(
+            items.iter().all(|u| u["caller_can_approve"] == false),
+            "the reviewer voted on each"
+        );
         let statements = products_statements(&recorder);
-        assert_eq!(
-            statements.len(),
-            2,
-            "the page and its decisions: {statements:#?}"
+        // P-D-228 (plan review H1): the page, its units' decisions and their items, whose
+        // authors the flag's separation of duties reads.
+        assert_eq!(statements.len(), 3, "{statements:#?}");
+        assert!(
+            statements
+                .iter()
+                .any(|sql| sql.contains("products_approval_unit_item")),
+            "{statements:#?}"
         );
         runs.push(statements);
         // P-D-227: the counts are ONE grouped statement.
@@ -3646,4 +3654,179 @@ async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continue
             "{bad}: {b}"
         );
     }
+}
+
+// ------------------------------------------------------------------ whether a reader may approve (P-D-228)
+
+impl Fixture {
+    /// `caller_can_approve` as `who` reads it on the unit's card and in the list, which agree.
+    async fn flag(&self, who: &SecurityContext, unit: &str) -> bool {
+        let (status, card) = call(
+            &self.app,
+            who,
+            Method::GET,
+            &format!("/approval-units/{unit}"),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{card}");
+        let (status, list) = call(
+            &self.app,
+            who,
+            Method::GET,
+            &format!("/approval-units?ref_id={}", self.id),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{list}");
+        let listed = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == unit)
+            .unwrap()
+            .clone();
+        let flag = card["caller_can_approve"].as_bool().expect("a boolean");
+        assert_eq!(
+            listed["caller_can_approve"].as_bool(),
+            Some(flag),
+            "the list and the card agree: {listed} {card}"
+        );
+        flag
+    }
+    /// A vote on `unit` by `who` at `generation`.
+    async fn vote_as(
+        &self,
+        who: &SecurityContext,
+        unit: &str,
+        action: &str,
+        generation: i32,
+    ) -> (u16, Value) {
+        call(
+            &self.app,
+            who,
+            Method::POST,
+            &format!("/approval-units/{unit}/{action}"),
+            json!({"generation":generation,"note":"reviewed"}),
+            None,
+        )
+        .await
+    }
+}
+
+/// P-D-228 (ask 28, plan review H1): every unit read says whether its reader may approve the
+/// unit, judged by the approval library's own predicate (pricing D-459) over the unit's stored
+/// items and its decisions, so the flag is what the vote door answers that reader on the same
+/// rows: false for the SKU's creator (the author of the unit's item) and the submitter
+/// (separation of duties), for a reviewer who voted in the current generation and for anyone on a
+/// decided unit; true for a fresh reviewer and for one whose vote a refresh made stale. The card
+/// and the list agree, and the receipts answer their caller's flag.
+#[tokio::test]
+async fn caller_can_approve_is_what_the_vote_door_answers_each_reader() {
+    let f = Fixture::new(3).await;
+    let author = f.author.clone();
+    let (submitter, prior, fresh, stale) = (
+        authed_ctx(f.tenant),
+        authed_ctx(f.tenant),
+        authed_ctx(f.tenant),
+        authed_ctx(f.tenant),
+    );
+    let (status, receipt) = call(
+        &f.app,
+        &submitter,
+        Method::POST,
+        &format!("/skus/{}/submit", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(
+        receipt["unit"]["caller_can_approve"], false,
+        "the submitter's receipt"
+    );
+    let unit = receipt["unit"]["id"].as_str().unwrap().to_owned();
+    let (status, b) = f.vote_as(&stale, &unit, "approve", 1).await;
+    assert_eq!((status, b["have"].clone()), (200, json!(1)), "{b}");
+    assert_eq!(b["unit"]["caller_can_approve"], false, "a voter's receipt");
+    assert!(
+        f.flag(&fresh, &unit).await,
+        "a fresh reviewer before the drift"
+    );
+    // The SKU's content drifts: the next vote refreshes the unit and the first vote turns stale.
+    let (db, scope) = repo_connection(&f.dsn, f.tenant).await;
+    let conn = db.conn().unwrap();
+    let mut content = bss_products_sdk::models::SkuContent::from(
+        &repo::find_sku(&conn, &scope, f.tenant, f.id)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    content.description = "changed".into();
+    repo::write_sku_content(
+        &conn,
+        &scope,
+        f.tenant,
+        f.id,
+        &content,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    let (status, b) = f.vote_as(&prior, &unit, "approve", 1).await;
+    assert_eq!(status, 400, "{b}");
+    assert_eq!(problem_code(&b), "UNIT_STALE");
+    let (status, b) = f.vote_as(&prior, &unit, "approve", 2).await;
+    assert_eq!((status, b["have"].clone()), (200, json!(1)), "{b}");
+    for (who, name, status, answer) in [
+        (&author, "the SKU's creator", 403, "SOD_VIOLATION"),
+        (&submitter, "the submitter", 403, "SOD_VIOLATION"),
+        (&prior, "a voter of this generation", 409, "DUPLICATE_VOTE"),
+        (&fresh, "a fresh reviewer", 200, "pending"),
+        (&stale, "a voter of an earlier generation", 200, "applied"),
+    ] {
+        let flag = f.flag(who, &unit).await;
+        let (s, b) = f.vote_as(who, &unit, "approve", 2).await;
+        assert_eq!(flag, s == 200, "{name}: the flag {flag}, the door {s}: {b}");
+        assert_eq!(s, status, "{name}: {b}");
+        if s == 200 {
+            assert_eq!(b["outcome"], answer, "{name}: {b}");
+        } else {
+            assert_eq!(problem_code(&b), answer, "{name}: {b}");
+        }
+    }
+    let late = authed_ctx(f.tenant);
+    for who in [&late, &fresh, &author] {
+        assert!(!f.flag(who, &unit).await, "a decided unit");
+    }
+    let (status, b) = f.vote_as(&late, &unit, "approve", 2).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "UNIT_ALREADY_DECIDED");
+}
+
+/// P-D-228 (plan review M2): the flag is about Approve only. The engine's reject judges no
+/// separation of duties, so the submitter may reject a unit that their flag says they may not
+/// approve, and the reject door's text no longer claims `SOD_VIOLATION`.
+#[tokio::test]
+async fn the_submitter_rejects_what_the_flag_says_they_may_not_approve() {
+    let f = Fixture::new(1).await;
+    let submitter = authed_ctx(f.tenant);
+    let (status, receipt) = call(
+        &f.app,
+        &submitter,
+        Method::POST,
+        &format!("/skus/{}/submit", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{receipt}");
+    let unit = receipt["unit"]["id"].as_str().unwrap().to_owned();
+    assert!(!f.flag(&submitter, &unit).await);
+    assert!(!f.flag(&f.author, &unit).await, "the SKU's creator");
+    let (status, b) = f.vote_as(&submitter, &unit, "reject", 1).await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "rejected", "{b}");
 }

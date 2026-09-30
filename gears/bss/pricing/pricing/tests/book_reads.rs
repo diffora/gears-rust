@@ -1930,8 +1930,8 @@ fn tables_read(recorder: &toolkit_db::test_support::QueryRecorder) -> Vec<String
 }
 
 /// D-470 (plan review M3): `impact=false` skips the live impact read. Each unit answers
-/// `impact: null`; the page reads its units, their items and their decisions, and no plan: only
-/// the plans' reading is skipped. `impact=true` is the default. A value that
+/// `impact: null`; the page reads its units, their items (whether its reader may approve a unit
+/// judges them, D-471) and their decisions, and no plan. `impact=true` is the default. A value that
 /// is not a boolean is 400 `QUERY_INVALID`.
 #[tokio::test]
 async fn impact_false_serves_no_impact_and_reads_no_plan() {

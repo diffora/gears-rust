@@ -197,3 +197,33 @@ async fn the_unit_reads_say_how_they_count_and_order() {
         assert!(text.contains(said), "the list says {said}: {text}");
     }
 }
+
+/// D-471 (ask 28): every unit carries `caller_can_approve`, a required boolean whose text says it
+/// judges Approve only and not the grant; the list's and the card's texts name it.
+#[tokio::test]
+async fn every_unit_says_whether_its_reader_may_approve_it() {
+    let api = served().await;
+    for path in [
+        "/bss-pricing/v1/approval-units",
+        "/bss-pricing/v1/approval-units/{id}",
+    ] {
+        let text = description(&api, "get", path);
+        assert!(text.contains("caller_can_approve"), "{path}: {text}");
+    }
+    let unit = &api["components"]["schemas"]["PricingApprovalUnitDto"];
+    let flag = &unit["properties"]["caller_can_approve"];
+    assert_eq!(flag["type"], "boolean", "{flag}");
+    assert!(
+        unit["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "caller_can_approve"),
+        "{unit}"
+    );
+    let said = flag["description"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("Approve only") && said.contains("403"),
+        "the flag says what it judges: {said}"
+    );
+}
