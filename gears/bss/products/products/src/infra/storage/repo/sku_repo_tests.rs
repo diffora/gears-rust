@@ -792,17 +792,16 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
         .unwrap(),
         HeadWrite::Unmatched
     ));
+    // RT-05: with no category, the category lookup cannot refuse first, so the insert's own scope
+    // guard is what refuses the tenant outside the scope.
+    let uncategorized = NewSku {
+        category_id: None,
+        ..new_sku("C", "C", cat)
+    };
+    let refused = insert_sku(&conn, &foreign, tenant, uncategorized, tenant, now()).await;
     assert!(
-        insert_sku(
-            &conn,
-            &foreign,
-            tenant,
-            new_sku("C", "C", cat),
-            tenant,
-            now()
-        )
-        .await
-        .is_err()
+        matches!(&refused, Err(RepoError::Db(m)) if m.starts_with("SKU scope:")),
+        "{refused:?}"
     );
     let mut content = bss_products_sdk::models::SkuContent::from(&a);
     content.name = "Applied".into();

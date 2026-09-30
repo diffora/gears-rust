@@ -329,7 +329,9 @@ async fn every_order_pages_with_a_stable_cursor_across_ties() {
             .await;
         rows.push((code.to_owned(), name.to_owned(), at, id));
     }
-    let expected = |key: &str, desc: bool| -> Vec<String> {
+    // The oracle: the primary key, then an optional ascending code (the one order with a
+    // secondary key, RT-16), then the id.
+    let expected_then = |key: &str, desc: bool, then_code: bool| -> Vec<String> {
         let mut r = rows.clone();
         r.sort_by(|a, b| {
             let primary = match key {
@@ -338,10 +340,16 @@ async fn every_order_pages_with_a_stable_cursor_across_ties() {
                 _ => a.2.cmp(&b.2),
             };
             let primary = if desc { primary.reverse() } else { primary };
-            primary.then(a.3.cmp(&b.3))
+            let secondary = if then_code {
+                a.0.cmp(&b.0)
+            } else {
+                std::cmp::Ordering::Equal
+            };
+            primary.then(secondary).then(a.3.cmp(&b.3))
         });
         r.into_iter().map(|r| r.0).collect()
     };
+    let expected = |key: &str, desc: bool| expected_then(key, desc, false);
     for (orderby, key, desc) in [
         ("code", "code", false),
         ("code desc", "code", true),
@@ -352,9 +360,11 @@ async fn every_order_pages_with_a_stable_cursor_across_ties() {
         ("updated_at desc, code", "updated_at", true),
     ] {
         let one_page = d.codes(&list(&[("$orderby", orderby)])).await;
-        if orderby != "updated_at desc, code" {
-            assert_eq!(one_page, expected(key, desc), "{orderby}");
-        }
+        assert_eq!(
+            one_page,
+            expected_then(key, desc, orderby == "updated_at desc, code"),
+            "{orderby}"
+        );
         let (status, mut page) = d.get(&list(&[("$orderby", orderby), ("limit", "2")])).await;
         assert_eq!(status, StatusCode::OK, "{page}");
         let mut walked = codes(&page);

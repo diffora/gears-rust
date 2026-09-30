@@ -639,11 +639,32 @@ async fn an_operator_release_needs_force_and_a_reason_and_is_evented() {
     f.publish().await;
     let (_, r) = f.reserve(Uuid::new_v4()).await;
     let path = format!("/references/{}", r["reservation_id"].as_str().unwrap());
+    // RT-02: each half of the guard refuses on its own: no force, a force with no reason, and a
+    // force with a blank reason; none releases.
+    for body in [
+        json!({}),
+        json!({"force":true}),
+        json!({"force":true,"reason":"  "}),
+    ] {
+        let (status, b) = call(&f.app, &f.author, Method::DELETE, &path, body.clone(), None).await;
+        assert_eq!(status, 400, "{body}: {b}");
+    }
+    let (_, refs) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}/references", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert!(
+        refs.to_string().contains("\"reserved\""),
+        "still live: {refs}"
+    );
     assert_eq!(
-        call(&f.app, &f.author, Method::DELETE, &path, json!({}), None)
-            .await
-            .0,
-        400
+        enqueued_event_count(&f.dsn, ReferenceForceReleased::TYPE_ID).await,
+        0
     );
     let (status, b) = call(
         &f.app,
@@ -2033,6 +2054,18 @@ async fn unit_only_reviewer_can_approve() {
             })),
         ))
     };
+    // RT-03: a second unit of the tenant, outside the grant's RESOURCE_ID, is refused.
+    let other = f.submit(f.draft("OTHER").await).await;
+    let refused = call(
+        &restricted("approve", unit_id),
+        &f.reviewer,
+        Method::POST,
+        &format!("/approval-units/{other}/approve"),
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(refused.0, 404, "{refused:?}");
     let result = call(
         &restricted("approve", unit_id),
         &f.reviewer,
@@ -2083,12 +2116,25 @@ async fn sku_only_reader_sees_reference_counts() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(refs["items"].as_array().unwrap().len(), 1);
+    // RT-03: another SKU of the tenant, outside the grant's RESOURCE_ID, is not read; a fresh id
+    // would be 404 whether the constraint applied or not.
+    let outside = f.draft("OUTSIDE").await;
+    let unrestricted = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{outside}"),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(unrestricted.0, 200, "{unrestricted:?}");
     assert_eq!(
         call(
             &app,
             &f.author,
             Method::GET,
-            &format!("/skus/{}", Uuid::new_v4()),
+            &format!("/skus/{outside}"),
             json!({}),
             None
         )
@@ -2533,11 +2579,15 @@ async fn bound_registry_system_identity_and_tenant_are_checked() {
         ),
         "REFERENCE_OWNER_MISMATCH"
     );
-    assert!(
-        registry
-            .sku_for_write(&system, Uuid::new_v4(), f.id)
-            .await
-            .is_err()
+    // RT-04: the tenant check's own code, not a data-scope 404 another tenant's scope would give.
+    assert_eq!(
+        canonical_code(
+            registry
+                .sku_for_write(&system, Uuid::new_v4(), f.id)
+                .await
+                .unwrap_err()
+        ),
+        "REFERENCE_OWNER_MISMATCH"
     );
 }
 

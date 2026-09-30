@@ -65,6 +65,12 @@ fn usage_needs_a_meter_and_a_resolved_type_bundle_has_none() {
         "unit",
         "BUNDLE_HAS_NO_METER"
     ));
+    // RT-06: the meter half, on its own.
+    let mut metered = content(SkuType::Bundle);
+    metered.usage_type_ref = Some("storage".into());
+    let report = validate_publish(&metered, None);
+    assert!(has(&report, "usage_type_ref", "BUNDLE_HAS_NO_METER"));
+    assert!(!has(&report, "unit", "BUNDLE_HAS_NO_METER"));
 }
 #[test]
 fn the_type_is_frozen_once_a_price_book_entry_exists() {

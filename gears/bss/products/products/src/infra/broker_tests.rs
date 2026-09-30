@@ -303,11 +303,6 @@ async fn every_event_round_trips_through_the_interim_outbox_and_rollback_leaves_
         u16::from_le_bytes([tenant.as_bytes()[14], tenant.as_bytes()[15]]) % events::PARTITIONS,
     );
     assert_eq!(crate::test_support::raw_i64(&dsn,&format!("SELECT COUNT(*) AS v FROM (SELECT body_id, partition_id FROM bss_products_outbox_incoming UNION SELECT body_id, partition_id FROM bss_products_outbox_outgoing) b JOIN bss_products_outbox_partitions p ON p.id=b.partition_id WHERE p.partition={partition} AND p.queue='bss_products_events'")).await,5);
-    let approval = bss_approval::ApprovalError::from(events::EventsError::from(
-        toolkit_db::outbox::OutboxError::Database(sea_orm::DbErr::Custom("retry probe".into())),
-    ));
-    let tx_error = crate::api::rest::TxError::from(approval);
-    assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
     handle.stop().await;
 }
 
@@ -346,14 +341,19 @@ async fn interim_outbox_retains_driver_error() {
             .is_some(),
         "{error}"
     );
+    handle.stop().await;
+}
+
+/// RT-15: an outbox enqueue's database error reaches the retry classifier typed, the interim
+/// outbox's and the SDK producer's alike; one copy of the check, beside the SDK producer's.
+#[test]
+fn an_interim_outbox_database_error_reaches_the_retry_classifier() {
     let approval = bss_approval::ApprovalError::from(events::EventsError::from(
         toolkit_db::outbox::OutboxError::Database(sea_orm::DbErr::Custom("retry probe".into())),
     ));
     let tx_error = crate::api::rest::TxError::from(approval);
     assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
-    handle.stop().await;
 }
-
 #[test]
 fn sdk_producer_errors_preserve_any_exposed_database_cause() {
     let sdk_error = event_broker_sdk::EventBrokerError::OffsetManager(
