@@ -59,6 +59,7 @@
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b) |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
+| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224 |
 
 ## Entries
 
@@ -1116,3 +1117,42 @@ register.
   them back unchanged; `the_sdk_payload_reads_the_emitted_sku_changed_event` does the same for the event.
 
 **Source:** Whole-branch review of 2026-09-29, RS-22, RS-23, RS-24 and RS-48 (fix run W1b).
+
+#### P-D-227 [M] The approval units are counted by state and kind and list newest first on request (twin of pricing D-470)
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen of the pricing-mfe merges pricing's and products' units (the owner's option 1: two per-gear methods that
+the UI merges). It shows a badge per state and per kind and the newest units first (ask 42).
+
+- **The counts.** `GET /bss-products/v1/approval-units/counts` answers `ProductsApprovalUnitCounts { by_state { pending,
+  approved, rejected, withdrawn }, by_kind { sku_publish, sku_change, sku_retire }, total }`: every state and every kind is
+  named, 0 when none, and `total` is the number of units the list pages through under the same narrowing.
+  - It takes the list's whole narrowing (pricing plan review L11): `state`, `kind` and `ref_id`. The list and the counts read
+    one condition (`approval_repo::UnitListFilter`), so the badge and the list count the same set.
+  - A narrowing the list refuses is refused the same way: 400 `VALIDATION` on `state` for an unknown state, 400 `VALIDATION`
+    on `query` for a query that does not parse. It takes nothing but the narrowing: `limit`, `cursor`, `$orderby` and any
+    other key are 400 on `query`.
+  - It counts in ONE grouped statement (`approval_repo::count_units`), whatever the number of units. A stored kind products
+    does not record is a corrupt row (500).
+  - It is authorized as the list is (products read on approval units) and declares 503 as every products op does.
+- **The descending order.** The list takes `$orderby=submitted_at desc`, newest first, and `submitted_at asc` (or
+  `submitted_at` alone), the submission order of P-D-224 and still the default. The unit id breaks a tie in the same
+  direction. Any other `$orderby` is the toolkit's 400 `INVALID_ORDERBY_FIELD`. Before this decision the list ignored an
+  `$orderby`.
+  - The order is not part of the narrowing's hash (pricing plan review M4). The cursor carries its order (`CursorV1.s`), and a
+    continuation follows it, so every cursor minted before this decision still continues ascending, never 400
+    `FILTER_MISMATCH`.
+  - `$orderby` beside a cursor is the toolkit's 400 `ORDER_WITH_CURSOR`, judged first: a continuation sends only its cursor.
+- **The merge contract** (shared with pricing D-470). A client merging the two gears' pages compares `submitted_at` as an
+  instant, never as text: the RFC 3339 rendering trims trailing zeros of the fraction and writes UTC as `Z`, so as strings
+  `…:00Z` sorts after `…:00.5Z` (the P-D-213 trap). It then compares the unit id as lower-case hex, in the same direction.
+- **The tests.** `api/rest/sku_governance_tests.rs`: the counts against the list's own pages under seven narrowings, and the
+  list's refusals refused alike by the counts; the counts in one grouped statement for 10 and 100 units (in the list's
+  statement test); the newest-first order and every page size over a three-way tie; a cursor minted before this decision (its
+  narrowing hash `f71fffbdfa52de1f`, pinned as a literal), each order's cursor with the same hash and its own order,
+  `ORDER_WITH_CURSOR` and `INVALID_ORDERBY_FIELD`. `gear_tests.rs`: the counts op's 503, parameters, schema and text, and the
+  list's; the operation census and the door census (`DOOR_ACTIONS`) name `bss_products.count_approval_units`.
+
+**Source:** Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11).
+Amends P-D-224 (the order).

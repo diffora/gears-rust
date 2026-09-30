@@ -1254,6 +1254,30 @@ impl From<bss_approval::Unit> for PricingApprovalUnitDto {
         }
     }
 }
+/// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by
+/// kind, every state and kind named (0 when none), and their total.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingApprovalUnitCounts {
+    pub by_state: PricingApprovalUnitStateCounts,
+    pub by_kind: PricingApprovalUnitKindCounts,
+    pub total: u64,
+}
+/// The units in each state (D-470).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingApprovalUnitStateCounts {
+    pub pending: u64,
+    pub approved: u64,
+    pub rejected: u64,
+    pub withdrawn: u64,
+}
+/// The units of each kind pricing records (D-470).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingApprovalUnitKindCounts {
+    pub prices: u64,
+    pub plan_revision: u64,
+}
 /// One page of the unit list (D-458): its units, and the toolkit pager's `page_info`, whose
 /// `next_cursor` continues it.
 #[toolkit_macros::api_dto(response)]
@@ -1363,4 +1387,19 @@ pub(super) struct PricingApprovalUnitQuery {
     pub limit: Option<u64>,
     /// The opaque continuation of a page's `page_info.next_cursor`.
     pub cursor: Option<String>,
+    /// `submitted_at asc` (the default, D-458) or `submitted_at desc` (D-470); the id breaks a
+    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
+    #[serde(rename = "$orderby")]
+    pub orderby: Option<String>,
+    /// `false` skips the live impact read: every unit answers `impact: null` (D-470).
+    pub impact: Option<bool>,
+}
+/// `GET /approval-units/counts` (D-470): the list's narrowing, and nothing else.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingApprovalUnitCountsQuery {
+    pub state: Option<String>,
+    pub kind: Option<String>,
+    pub ref_id: Option<Uuid>,
+    pub book_id: Option<Uuid>,
 }

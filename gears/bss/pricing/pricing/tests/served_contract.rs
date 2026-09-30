@@ -62,7 +62,7 @@ fn description(api: &Value, method: &str, path: &str) -> String {
 async fn every_op_declares_its_503() {
     let api = served().await;
     let all = ops(&api);
-    assert_eq!(all.len(), 51, "the route census holds 51 ops");
+    assert_eq!(all.len(), 52, "the route census holds 52 ops");
     let missing: Vec<_> = all
         .iter()
         .filter(|(_, _, op)| {
@@ -138,5 +138,62 @@ async fn the_texts_name_what_the_doors_refuse() {
             text.contains("PLAN_CODE_INVALID") && text.contains("1 to 32 characters"),
             "{path}: {text}"
         );
+    }
+}
+
+/// D-470 (ask 42): the counts op declares its 503, its narrowing, its answer and its refusals;
+/// the list names its order, its light read and their refusals.
+#[tokio::test]
+async fn the_unit_reads_say_how_they_count_and_order() {
+    let api = served().await;
+    let path = "/bss-pricing/v1/approval-units/counts";
+    let counts = &api["paths"][path]["get"];
+    assert!(
+        !counts["responses"]["503"]["content"]["application/problem+json"].is_null(),
+        "{counts}"
+    );
+    let names = |op: &Value| -> Vec<String> {
+        op["parameters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["in"] == "query")
+            .map(|p| p["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(counts), ["state", "kind", "ref_id", "book_id"]);
+    let text = description(&api, "get", path);
+    for said in [
+        "by_state",
+        "by_kind",
+        "total",
+        "one grouped statement",
+        "UNIT_STATE_INVALID",
+        "QUERY_INVALID",
+    ] {
+        assert!(text.contains(said), "the counts say {said}: {text}");
+    }
+    let schema = &counts["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+    assert_eq!(
+        schema, "#/components/schemas/PricingApprovalUnitCounts",
+        "{counts}"
+    );
+    let shape = &api["components"]["schemas"]["PricingApprovalUnitCounts"]["properties"];
+    for field in ["by_state", "by_kind", "total"] {
+        assert!(!shape[field].is_null(), "{field}: {shape}");
+    }
+    let list = &api["paths"]["/bss-pricing/v1/approval-units"]["get"];
+    let listed = names(list);
+    for name in ["$orderby", "impact"] {
+        assert!(listed.iter().any(|n| n == name), "{name}: {listed:?}");
+    }
+    let text = description(&api, "get", "/bss-pricing/v1/approval-units");
+    for said in [
+        "submitted_at desc",
+        "ORDER_WITH_CURSOR",
+        "INVALID_ORDERBY_FIELD",
+        "impact=false",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
     }
 }

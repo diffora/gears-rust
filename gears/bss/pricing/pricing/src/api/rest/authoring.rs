@@ -679,10 +679,16 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "One page of the tenant's approval units in submission order (D-458), filtered by \
              state, kind and referenced aggregate, each with its stored snapshot, its decisions \
-             and its live impact. `limit` (default 200, clamped at 500) and `cursor` from \
-             `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 \
-             FILTER_MISMATCH for a cursor replayed with another state, kind or referenced \
-             aggregate; 400 for a cursor that does not read.",
+             and its live impact. `$orderby=submitted_at desc` pages it newest first, and \
+             `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same \
+             direction (D-470). A client merging pages of several gears compares \
+             submitted_at as an instant, never as text, then the id as lower-case hex. \
+             `impact=false` skips the live impact read: every unit answers impact null. `limit` \
+             (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
+             its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID \
+             or QUERY_INVALID; 400 FILTER_MISMATCH for a cursor replayed with another state, kind \
+             or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR \
+             for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         )
         .tag("Pricing")
         .authenticated()
@@ -698,8 +704,49 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
+        .query_param_typed(
+            "$orderby",
+            false,
+            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "string",
+        )
+        .query_param_typed(
+            "impact",
+            false,
+            "false skips the live impact read (impact null); true by default",
+            "boolean",
+        )
         .handler(list_approval_units)
         .json_response_with_schema::<dto::PricingApprovalUnitList>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/approval-units/counts")
+        .operation_id("bss_pricing.count_approval_units")
+        .summary("Count the approval units")
+        .description(
+            "Counts the tenant's approval units that the list's narrowing keeps (state, kind and \
+             the referenced aggregate, ref_id or book_id), under the list's own grant: by_state \
+             (pending, approved, rejected, withdrawn), by_kind (prices, plan_revision), each named \
+             with 0 when none, and total, the length of the list under the same narrowing \
+             (D-470). It reads one grouped statement, whatever the number of units. It takes \
+             nothing but the narrowing. Refusals: the list's: 400 UNIT_STATE_INVALID for an \
+             unknown state; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed \
+             id, or any other key (limit, cursor, $orderby, impact).",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .query_param("state", false, "Unit state")
+        .query_param("kind", false, "Approval kind")
+        .query_param("ref_id", false, "Referenced aggregate id")
+        .query_param("book_id", false, "Price book id")
+        .handler(count_approval_units)
+        .json_response_with_schema::<dto::PricingApprovalUnitCounts>(
             openapi,
             StatusCode::OK,
             "Response",
@@ -1041,33 +1088,82 @@ async fn list_approval_units(
     let axum::extract::Query(query) =
         axum::extract::Query::<dto::PricingApprovalUnitQuery>::try_from_uri(&uri)
             .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
-    let state_filter = approvals::state_filter(query.state.as_deref())?;
-    let reference = match (query.ref_id, query.book_id) {
-        (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
-        (a, b) => a.or(b),
+    let filter = unit_narrowing(
+        query.state.as_deref(),
+        query.kind,
+        query.ref_id,
+        query.book_id,
+    )?;
+    let (page, direction) = unit_page(
+        &filter,
+        query.limit,
+        query.cursor.as_deref(),
+        query.orderby.as_deref(),
+    )?;
+    let request = approvals::UnitListRequest {
+        filter,
+        page,
+        direction,
+        impact: query.impact.unwrap_or(true),
     };
-    let filter = crate::infra::storage::repo::approval_repo::UnitListFilter {
-        state: state_filter,
-        kind: query.kind,
-        ref_id: reference,
-    };
-    let page = unit_page(&filter, query.limit, query.cursor.as_deref())?;
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, filter, page) = (scope.clone(), ctx.clone(), filter.clone(), page.clone());
+        let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
         Box::pin(async move {
-            approvals::list_units(tx, &scope, ctx.subject_tenant_id(), &filter, &page).await
+            approvals::list_units(tx, &scope, ctx.subject_tenant_id(), &request).await
         })
     })
     .await
 }
+/// The unit list's narrowing, which the counts take too (D-458, D-470): a known state (else 400
+/// `UNIT_STATE_INVALID`), a kind as sent, and the referenced aggregate, `ref_id` or its alias
+/// `book_id` (400 `QUERY_INVALID` on `book_id` when the two differ).
+fn unit_narrowing(
+    state: Option<&str>,
+    kind: Option<String>,
+    ref_id: Option<Uuid>,
+    book_id: Option<Uuid>,
+) -> Result<crate::infra::storage::repo::approval_repo::UnitListFilter, CanonicalError> {
+    let state = approvals::state_filter(state)?;
+    let reference = match (ref_id, book_id) {
+        (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
+        (a, b) => a.or(b),
+    };
+    Ok(crate::infra::storage::repo::approval_repo::UnitListFilter {
+        state,
+        kind,
+        ref_id: reference,
+    })
+}
+/// The unit list's order (D-470): `submitted_at` ascending (also when omitted, D-458) or
+/// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
+    let Some(raw) = orderby else {
+        return Ok(toolkit_odata::SortDir::Asc);
+    };
+    let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    match order.0.as_slice() {
+        [] => Ok(toolkit_odata::SortDir::Asc),
+        [key] if key.field == "submitted_at" => Ok(key.dir),
+        _ => Err(toolkit_odata::Error::InvalidOrderByField(raw.to_owned()).into()),
+    }
+}
 /// The unit list's page (D-458): `limit`, and `cursor` from a page's `page_info`, which carries a
 /// hash of the narrowing (`state`, `kind` and the referenced aggregate), so a cursor replayed
-/// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442).
+/// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442). The order is not part of
+/// the hash (D-470): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so
+/// every cursor minted before the descending order still reads. `$orderby` beside a cursor is the
+/// toolkit's 400 `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
 fn unit_page(
     filter: &crate::infra::storage::repo::approval_repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
-) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    orderby: Option<&str>,
+) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+    if cursor.is_some() && orderby.is_some() {
+        return Err(toolkit_odata::Error::OrderWithCursor.into());
+    }
+    let direction = unit_order(orderby)?;
     let digest = preconditions::request_digest(&serde_json::json!({
         "state": filter.state.map(bss_approval::UnitState::as_str),
         "kind": filter.kind,
@@ -1094,7 +1190,42 @@ fn unit_page(
         }
         query = query.with_cursor(cursor);
     }
-    Ok(query)
+    Ok((query, direction))
+}
+/// `GET /approval-units/counts` (D-470): under the list's grant, the list's narrowing, counted.
+async fn count_approval_units(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    uri: axum::http::Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<dto::PricingApprovalUnitCountsQuery>::try_from_uri(&uri)
+            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    let filter = unit_narrowing(
+        query.state.as_deref(),
+        query.kind,
+        query.ref_id,
+        query.book_id,
+    )?;
+    transaction(&state.db.db(), move |tx| {
+        let (scope, ctx, filter) = (scope.clone(), ctx.clone(), filter.clone());
+        Box::pin(async move {
+            approvals::count_units(tx, &scope, ctx.subject_tenant_id(), &filter).await
+        })
+    })
+    .await
 }
 async fn get_approval_unit(
     Extension(state): Extension<Arc<AuthoringState>>,

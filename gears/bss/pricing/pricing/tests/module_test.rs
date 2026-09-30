@@ -31,6 +31,7 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("GET", "/bss-pricing/v1/approval-units"),
+        ("GET", "/bss-pricing/v1/approval-units/counts"),
         ("GET", "/bss-pricing/v1/approval-units/{id}"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
@@ -120,7 +121,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 51);
+    assert_eq!(registered.len(), 52);
     assert!(router.has_routes());
 }
 
@@ -197,8 +198,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // registration and its 200 answer; - 1: the vote's `GENERATION_MISMATCH` renders through
         // the problem's own response, which carries its status (whole-branch review PS-07); - 1:
         // a claimed key's stored status is read back by one function (`support::stored_status`,
-        // PS-43), where the claim and the book create each read it.
-        ("StatusCode::", 2, 102),
+        // PS-43), where the claim and the book create each read it; + 2: run 9.3's counts door
+        // (D-470), its registration and its 200 answer.
+        ("StatusCode::", 2, 104),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -299,7 +301,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 51);
+    assert_eq!(described, 52);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
@@ -391,6 +393,7 @@ async fn no_operation_declares_a_422() {
 // GET /price-books/{id}/publish-changes price_book:read false false
 // POST /price-books/{id}/publish-changes price_book:submit false true
 // GET /approval-units approval_unit:read false false
+// GET /approval-units/counts approval_unit:read false false (D-470)
 // GET /approval-units/{id} approval_unit:read false false
 // POST /approval-units/{id}/approve approval_unit:approve false true
 // POST /approval-units/{id}/reject approval_unit:approve false true

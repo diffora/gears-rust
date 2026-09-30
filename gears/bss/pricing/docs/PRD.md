@@ -379,7 +379,9 @@ Phase 9 adds what the plans screen reads: each plan's current revision and the o
 each revision and when it was submitted and approved (D-461), and a pending revision's vote progress (D-462); and
 a plan's create and clone take its sale date (D-463). A plan revision's submit and publish-changes carry the
 submitter's note to the unit's submit_note; a single price's submit takes none (D-464). A draft may add again a
-deprecated SKU its plan's published revision in effect carries (D-465).
+deprecated SKU its plan's published revision in effect carries (D-465). The approval units are counted by state and
+kind under the list's narrowing, the list pages newest first on request, and it skips the live impact on request
+(D-470).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose

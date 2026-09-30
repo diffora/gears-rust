@@ -1402,7 +1402,8 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
         assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
         measured += 1;
     }
-    assert_eq!(measured, 21, "every GET operation is measured");
+    // 22 since run 9.3's unit counts (D-470), which declare no ETag.
+    assert_eq!(measured, 22, "every GET operation is measured");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused

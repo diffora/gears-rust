@@ -499,6 +499,35 @@ pub struct UnitDto {
     pub decisions: Vec<DecisionDto>,
     pub impact_live: Option<serde_json::Value>,
 }
+/// `GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by
+/// kind, every state and kind named (0 when none), and their total.
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsApprovalUnitCounts {
+    pub by_state: ProductsApprovalUnitStateCounts,
+    pub by_kind: ProductsApprovalUnitKindCounts,
+    pub total: u64,
+}
+/// The units in each state (P-D-227).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct ProductsApprovalUnitStateCounts {
+    pub pending: u64,
+    pub approved: u64,
+    pub rejected: u64,
+    pub withdrawn: u64,
+}
+/// The units of each kind products records (P-D-227).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields are the stored kind names, sku_publish, sku_change and sku_retire"
+)]
+pub struct ProductsApprovalUnitKindCounts {
+    pub sku_publish: u64,
+    pub sku_change: u64,
+    pub sku_retire: u64,
+}
 #[toolkit_macros::api_dto(response)]
 pub struct DecisionDto {
     pub actor: Uuid,

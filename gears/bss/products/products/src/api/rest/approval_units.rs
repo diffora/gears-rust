@@ -6,7 +6,10 @@ use super::{
     ApiState, TxError, category_tx_config,
     closed_sets::ProductsVoteOutcome,
     contention_db_err,
-    dto::{UnitDto, UnitList, VoteReceipt, VoteRequest},
+    dto::{
+        ProductsApprovalUnitCounts, ProductsApprovalUnitKindCounts,
+        ProductsApprovalUnitStateCounts, UnitDto, UnitList, VoteReceipt, VoteRequest,
+    },
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
     unit_tx_to_canonical,
 };
@@ -58,6 +61,18 @@ struct ListQuery {
     limit: Option<u64>,
     /// The opaque continuation of a page's `page_info.next_cursor`.
     cursor: Option<String>,
+    /// `submitted_at asc` (the default, P-D-224) or `submitted_at desc` (P-D-227); the id breaks a
+    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
+    #[serde(rename = "$orderby")]
+    orderby: Option<String>,
+}
+/// `GET /approval-units/counts` (P-D-227): the list's narrowing, and nothing else.
+#[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
+struct CountsQuery {
+    state: Option<String>,
+    kind: Option<String>,
+    ref_id: Option<Uuid>,
 }
 #[derive(Clone, Copy)]
 enum Vote {
@@ -74,10 +89,16 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "One page of the tenant's approval units in submission order (P-D-224), filtered by \
              state, kind and SKU, each with its stored snapshot and the decisions of every \
-             generation. `limit` (default 200, clamped at 500) and `cursor` from `page_info` \
-             page it. Refusals: 400 for an unknown state or a query that does not parse; 400 \
-             FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a \
-             cursor that does not read.",
+             generation. `$orderby=submitted_at desc` pages it newest first, and `submitted_at \
+             asc`, the default, oldest first; the unit id breaks a tie in the same direction \
+             (P-D-227). A client merging pages of several gears compares \
+             submitted_at as an instant, never as text, then the id as lower-case hex. `limit` \
+             (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
+             its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state \
+             or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with \
+             another state, kind or SKU; 400 for a cursor that does not read; 400 \
+             ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any \
+             other order.",
         )
         .tag("Approval units")
         .authenticated()
@@ -102,8 +123,52 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
+        .query_param_typed(
+            "$orderby",
+            false,
+            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "string",
+        )
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-products/v1/approval-units/counts")
+        .operation_id("bss_products.count_approval_units")
+        .summary("count_approval_units")
+        .description(
+            "Counts the tenant's approval units that the list's narrowing keeps (state, kind and \
+             SKU), under the list's own grant: by_state (pending, approved, rejected, withdrawn), \
+             by_kind (sku_publish, sku_change, sku_retire), each named with 0 when none, and \
+             total, the length of the list under the same narrowing (P-D-227). It reads one \
+             grouped statement, whatever the number of units. It takes nothing but the narrowing. \
+             Refusals: the list's: 400 for an unknown state or a query that does not parse, and \
+             400 for any other key (limit, cursor, $orderby).",
+        )
+        .tag("Approval units")
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "state",
+            false,
+            "Unit state: pending, approved, rejected or withdrawn",
+            "string",
+        )
+        .query_param_typed(
+            "kind",
+            false,
+            "Approval kind: sku_publish, sku_change or sku_retire",
+            "string",
+        )
+        .query_param_typed("ref_id", false, "SKU id (a UUID)", "string")
+        .handler(counts)
+        .json_response_with_schema::<ProductsApprovalUnitCounts>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -271,20 +336,8 @@ async fn list(
     .await?;
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
-    let filter = q
-        .state
-        .as_deref()
-        .map(|s| {
-            UnitState::parse(s)
-                .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
-        })
-        .transpose()?;
-    let filter = repo::UnitListFilter {
-        state: filter,
-        kind: q.kind,
-        ref_id: q.ref_id,
-    };
-    let page = unit_page(&filter, q.limit, q.cursor.as_deref())?;
+    let filter = narrowing(q.state.as_deref(), q.kind, q.ref_id)?;
+    let (page, direction) = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
     let tenant = ctx.subject_tenant_id();
     let list = state
         .db
@@ -294,7 +347,7 @@ async fn list(
             Box::pin(async move {
                 // One page, and all its units' decisions in one read (P-D-224): the same
                 // statements whatever the page's size.
-                let page = repo::page_units(tx, &scope, tenant, &filter, &page)
+                let page = repo::page_units(tx, &scope, tenant, &filter, &page, direction)
                     .await
                     .map_err(|e| match e {
                         repo::UnitListError::Query(e) => TxError::OData(e),
@@ -329,14 +382,55 @@ async fn list(
         .map_err(tx_to_canonical)?;
     Ok(Json(list).into_response())
 }
+/// The unit list's narrowing, which the counts take too (P-D-224, P-D-227): a known state (else
+/// 400 on `state`), a kind as sent and the SKU.
+fn narrowing(
+    state: Option<&str>,
+    kind: Option<String>,
+    ref_id: Option<Uuid>,
+) -> Result<repo::UnitListFilter, CanonicalError> {
+    let state = state
+        .map(|s| {
+            UnitState::parse(s)
+                .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
+        })
+        .transpose()?;
+    Ok(repo::UnitListFilter {
+        state,
+        kind,
+        ref_id,
+    })
+}
+/// The unit list's order (P-D-227): `submitted_at` ascending (also when omitted, P-D-224) or
+/// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
+    let Some(raw) = orderby else {
+        return Ok(toolkit_odata::SortDir::Asc);
+    };
+    let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    match order.0.as_slice() {
+        [] => Ok(toolkit_odata::SortDir::Asc),
+        [key] if key.field == "submitted_at" => Ok(key.dir),
+        _ => Err(toolkit_odata::Error::InvalidOrderByField(raw.to_owned()).into()),
+    }
+}
 /// The unit list's page (P-D-224): `limit`, and `cursor` from a page's `page_info`, which carries a
 /// hash of the narrowing (`state`, `kind` and `ref_id`), so a cursor replayed under another is 400
-/// `FILTER_MISMATCH`, as pricing's list's is (D-458).
+/// `FILTER_MISMATCH`, as pricing's list's is (D-458). The order is not part of the hash
+/// (P-D-227): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so every
+/// cursor minted before the descending order still reads. `$orderby` beside a cursor is the toolkit's 400
+/// `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
 fn unit_page(
     filter: &repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
-) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    orderby: Option<&str>,
+) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+    if cursor.is_some() && orderby.is_some() {
+        return Err(toolkit_odata::Error::OrderWithCursor.into());
+    }
+    let direction = unit_order(orderby)?;
     let narrowing = serde_json::json!({
         "state": filter.state.map(UnitState::as_str),
         "kind": filter.kind,
@@ -354,7 +448,71 @@ fn unit_page(
         }
         query = query.with_cursor(cursor);
     }
-    Ok(query)
+    Ok((query, direction))
+}
+/// `GET /approval-units/counts` (P-D-227): under the list's grant, the list's narrowing, counted
+/// by state and kind in ONE grouped statement.
+async fn counts(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    query: Result<Query<CountsQuery>, QueryRejection>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+    )
+    .await?;
+    let Query(q) =
+        query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
+    let filter = narrowing(q.state.as_deref(), q.kind, q.ref_id)?;
+    let tenant = ctx.subject_tenant_id();
+    let rows = state
+        .db
+        .db()
+        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
+            let (scope, filter) = (scope.clone(), filter.clone());
+            Box::pin(async move {
+                repo::count_units(tx, &scope, tenant, &filter)
+                    .await
+                    .map_err(TxError::Repo)
+            })
+        })
+        .await
+        .map_err(tx_to_canonical)?;
+    let mut by_state = ProductsApprovalUnitStateCounts::default();
+    let mut by_kind = ProductsApprovalUnitKindCounts::default();
+    let mut total = 0_u64;
+    for (state, kind, n) in rows {
+        *match state {
+            UnitState::Pending => &mut by_state.pending,
+            UnitState::Approved => &mut by_state.approved,
+            UnitState::Rejected => &mut by_state.rejected,
+            UnitState::Withdrawn => &mut by_state.withdrawn,
+        } += n;
+        *match kind.as_str() {
+            KIND_SKU_PUBLISH => &mut by_kind.sku_publish,
+            KIND_SKU_CHANGE => &mut by_kind.sku_change,
+            KIND_SKU_RETIRE => &mut by_kind.sku_retire,
+            _ => {
+                return Err(tx_to_canonical(TxError::Repo(
+                    crate::infra::storage::RepoError::CorruptRow(format!(
+                        "approval units of unknown kind {kind}"
+                    )),
+                )));
+            }
+        } += n;
+        total += n;
+    }
+    Ok(Json(ProductsApprovalUnitCounts {
+        by_state,
+        by_kind,
+        total,
+    })
+    .into_response())
 }
 /// Every embedded unit reports the decisions actually stored for all generations.
 async fn with_decisions(

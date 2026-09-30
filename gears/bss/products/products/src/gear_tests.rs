@@ -53,6 +53,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.retire_sku",
         "bss_products.unfence_sku",
         "bss_products.list_approval_units",
+        "bss_products.count_approval_units",
         "bss_products.get_approval_unit",
         "bss_products.approve_unit",
         "bss_products.reject_unit",
@@ -618,4 +619,46 @@ async fn a_registered_usage_type_catalog_is_bounded_by_the_resolver_timeout() {
     .await
     .expect("the list is bounded");
     assert_eq!(listed.unwrap_err().status_code(), 503);
+}
+
+/// P-D-227 (ask 42): the counts op declares its 503, as every products op does, its narrowing and
+/// its answer; the list names its order and its refusals.
+#[tokio::test]
+async fn the_unit_reads_say_how_they_count_and_order() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let counts = &api["paths"]["/bss-products/v1/approval-units/counts"]["get"];
+    assert!(
+        !counts["responses"]["503"].is_null(),
+        "the counts declare 503: {counts}"
+    );
+    let names = |op: &serde_json::Value| -> Vec<String> {
+        op["parameters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["in"] == "query")
+            .map(|p| p["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(counts), ["state", "kind", "ref_id"]);
+    let text = counts["description"].as_str().unwrap_or_default();
+    for said in ["by_state", "by_kind", "total", "one grouped statement"] {
+        assert!(text.contains(said), "the counts say {said}: {text}");
+    }
+    assert_eq!(
+        counts["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ProductsApprovalUnitCounts",
+        "{counts}"
+    );
+    let list = &api["paths"]["/bss-products/v1/approval-units"]["get"];
+    assert!(names(list).iter().any(|n| n == "$orderby"), "{list}");
+    let text = list["description"].as_str().unwrap_or_default();
+    for said in [
+        "submitted_at desc",
+        "ORDER_WITH_CURSOR",
+        "INVALID_ORDERBY_FIELD",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
+    }
+    Ok(())
 }

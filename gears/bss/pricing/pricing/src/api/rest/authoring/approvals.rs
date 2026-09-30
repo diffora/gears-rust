@@ -7,10 +7,12 @@
 //! @cpt-dod:cpt-cf-bss-pricing-dod-terminal-audit-event:p1
 use super::{
     dto::{
-        PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut, PricingApprovalUnitDto,
-        PricingApprovalUnitList, PricingPlanRevisionDto, PricingPlanRevisionSubmitReceipt,
-        PricingPriceBookEntryDto, PricingPriceDto, PricingProposedPrice, PricingPublishChanges,
-        PricingPublishChangesRequest, PricingSubmitReceipt, PricingVoteReceipt, PricingVoteRequest,
+        PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut,
+        PricingApprovalUnitCounts, PricingApprovalUnitDto, PricingApprovalUnitKindCounts,
+        PricingApprovalUnitList, PricingApprovalUnitStateCounts, PricingPlanRevisionDto,
+        PricingPlanRevisionSubmitReceipt, PricingPriceBookEntryDto, PricingPriceDto,
+        PricingProposedPrice, PricingPublishChanges, PricingPublishChangesRequest,
+        PricingSubmitReceipt, PricingVoteReceipt, PricingVoteRequest,
     },
     plans,
     support::{self, DoorError, approval_failure},
@@ -704,26 +706,45 @@ pub fn state_filter(state: Option<&str>) -> Result<Option<UnitState>, CanonicalE
         .map(|s| UnitState::parse(s).ok_or_else(|| support::invalid("state", "UNIT_STATE_INVALID")))
         .transpose()
 }
-/// `GET /approval-units`: one page in submission order (D-458), each unit with every
-/// generation's decisions and the same live impact as the card. The page, its units' items, their
+/// What one read of the unit list asks for: its narrowing, its page, its order and whether it
+/// reads the live impact (D-458, D-470).
+#[derive(Clone)]
+pub struct UnitListRequest {
+    pub filter: approval_repo::UnitListFilter,
+    pub page: toolkit_odata::ODataQuery,
+    /// Submission order, ascending by default; a cursor carries its own.
+    pub direction: toolkit_odata::SortDir,
+    /// `false` (`impact=false`): no plan is read and every unit answers `impact: null`.
+    pub impact: bool,
+}
+/// `GET /approval-units`: one page in submission order (D-458), oldest or newest first (D-470),
+/// each unit with every generation's decisions and, unless the request declines it, the same live
+/// impact as the card. The page, its units' items, their
 /// decisions and the plans their impact names are read set-based: a fixed number of statements
-/// whatever the page's size.
+/// whatever the page's size, and no plan read without the impact.
 /// # Errors
 /// Returns a cursor the pager refuses (400) or storage failures.
 pub async fn list_units(
     tx: &DbTx<'_>,
     scope: &AccessScope,
     tenant: Uuid,
-    filter: &approval_repo::UnitListFilter,
-    query: &toolkit_odata::ODataQuery,
+    request: &UnitListRequest,
 ) -> Result<Response, DoorError> {
-    let page = approval_repo::page_units(tx, scope, tenant, filter, query)
-        .await
-        .map_err(|e| match e {
-            approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
-            approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
-        })?;
+    let page = approval_repo::page_units(
+        tx,
+        scope,
+        tenant,
+        &request.filter,
+        &request.page,
+        request.direction,
+    )
+    .await
+    .map_err(|e| match e {
+        approval_repo::UnitListError::Query(e) => DoorError::Api(e.into()),
+        approval_repo::UnitListError::Repo(e) => DoorError::Repo(e),
+    })?;
     let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
+    // Only the plans' reading depends on the impact (plan review M3); the items stay read.
     let mut touched = approval_repo::items_of_units(tx, scope, tenant, &ids).await?;
     let mut decisions = approval_repo::decisions_of_units(tx, scope, tenant, &ids).await?;
     let mut kinds = Vec::with_capacity(page.items.len());
@@ -737,16 +758,23 @@ pub async fn list_units(
         }
         kinds.push(kind);
     }
-    let reading = crate::infra::prices::PlansReading::load(
-        tx,
-        tenant,
-        &entries,
-        OffsetDateTime::now_utc().date(),
-    )
-    .await?;
+    let reading = if request.impact {
+        Some(
+            crate::infra::prices::PlansReading::load(
+                tx,
+                tenant,
+                &entries,
+                OffsetDateTime::now_utc().date(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     let mut items = Vec::with_capacity(page.items.len());
     for (unit, kind) in page.items.into_iter().zip(kinds) {
         let id = unit.id;
+        let touched = touched.remove(&id).unwrap_or_default();
         let mut dto = PricingApprovalUnitDto::from(unit);
         dto.decisions = decisions
             .remove(&id)
@@ -754,7 +782,9 @@ pub async fn list_units(
             .into_iter()
             .map(Into::into)
             .collect();
-        dto.impact = Some(kind.impact_from(&reading, &touched.remove(&id).unwrap_or_default()));
+        dto.impact = reading
+            .as_ref()
+            .map(|reading| kind.impact_from(reading, &touched));
         items.push(dto);
     }
     Ok(support::response(
@@ -762,6 +792,49 @@ pub async fn list_units(
         &PricingApprovalUnitList {
             items,
             page_info: page.page_info,
+        },
+        None,
+    )?)
+}
+/// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by
+/// kind, in ONE grouped statement.
+/// # Errors
+/// Storage failures; a stored kind pricing does not record is a corrupt row (500), as on every unit
+/// door.
+pub async fn count_units(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    filter: &approval_repo::UnitListFilter,
+) -> Result<Response, DoorError> {
+    let mut by_state = PricingApprovalUnitStateCounts::default();
+    let mut by_kind = PricingApprovalUnitKindCounts::default();
+    let mut total = 0_u64;
+    for (state, kind, n) in approval_repo::count_units(tx, scope, tenant, filter).await? {
+        *match state {
+            UnitState::Pending => &mut by_state.pending,
+            UnitState::Approved => &mut by_state.approved,
+            UnitState::Rejected => &mut by_state.rejected,
+            UnitState::Withdrawn => &mut by_state.withdrawn,
+        } += n;
+        *match Kind::parse(&kind) {
+            Some(Kind::Prices) => &mut by_kind.prices,
+            Some(Kind::PlanRevision) => &mut by_kind.plan_revision,
+            None => {
+                return Err(RepoError::CorruptRow(format!(
+                    "approval units of unknown kind {kind}"
+                ))
+                .into());
+            }
+        } += n;
+        total += n;
+    }
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingApprovalUnitCounts {
+            by_state,
+            by_kind,
+            total,
         },
         None,
     )?)
