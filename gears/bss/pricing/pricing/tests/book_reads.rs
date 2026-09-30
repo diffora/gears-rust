@@ -172,6 +172,38 @@ async fn a_plan_names_only_a_book_its_author_may_read() {
         "{patched:?}"
     );
     assert_eq!(plan_count(&f).await, plans + 2);
+    // The second review of W1a, L2: the PATCH judges the book it names, not the draft's current
+    // one. Under a grant for `eur` alone, moving the `eur` draft to `other` is 403 and writes
+    // nothing; naming `eur` at the draft's current version passes.
+    let only_eur = money_app(&f, Some(vec![eur]), false);
+    let (s, b, _) = request(
+        &only_eur,
+        &f.ctx,
+        "PATCH",
+        &format!("/plan-revisions/{draft}"),
+        json!({"book_id":other}),
+        Some("\"2\""),
+        None,
+    )
+    .await;
+    assert_eq!(s, 403, "{b}");
+    assert!(code_of(&b).contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
+    let revision = ok(&f, &format!("/plan-revisions/{draft}")).await;
+    assert_eq!(
+        revision["version"], 2,
+        "the refused move wrote nothing: {revision}"
+    );
+    let (s, b, _) = request(
+        &only_eur,
+        &f.ctx,
+        "PATCH",
+        &format!("/plan-revisions/{draft}"),
+        json!({"book_id":eur}),
+        Some("\"2\""),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
 }
 
 // ------------------------------------------------------------------ D-440: an entry's prices
