@@ -777,7 +777,11 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         # A plan publishes rev 1 with the flat entry.
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"PLAN-NOCAT-{run}".upper(), "name": f"Plan no category {run}", "book_id": eur},
+            json={
+                "code": f"PLAN-NOCAT-{run}".upper(),
+                "name": f"Plan no category {run}",
+                "book_id": eur,
+            },
             headers=_key(),
         )
         assert r.status_code == 201, r.text

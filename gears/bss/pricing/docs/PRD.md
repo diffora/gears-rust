@@ -383,7 +383,7 @@ deprecated SKU its plan's published revision in effect carries (D-465).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose
-code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag; mutation preconditions are required.
+code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag, and so does every write answer that sets one, declared in the served contract; mutation preconditions are required. Every operation declares its 503, and the operations that read Products hard name REGISTRY_UNAVAILABLE (D-469).
 
 ### 7.2 External Integration Contracts
 

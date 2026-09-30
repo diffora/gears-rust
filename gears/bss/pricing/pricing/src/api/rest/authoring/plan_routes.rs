@@ -53,7 +53,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .param(header("Idempotency-Key"))
         .handler(create_plan)
         .json_response_with_schema::<dto::PricingPlanDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plans")
         .operation_id("bss_pricing.list_plans")
@@ -82,6 +84,7 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(list_plans)
         .json_response_with_schema::<dto::PricingPlanList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plans/{id}")
         .operation_id("bss_pricing.get_plan")
@@ -100,6 +103,7 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .json_response_with_schema::<dto::PricingPlanDto>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/plans/{id}")
         .operation_id("bss_pricing.patch_plan")
@@ -117,7 +121,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .param(header("If-Match"))
         .handler(patch_plan)
         .json_response_with_schema::<dto::PricingPlanDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/plans/{id}/revisions")
         .operation_id("bss_pricing.copy_plan_revision")
@@ -141,7 +147,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::CREATED,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/plans/{id}/clone")
         .operation_id("bss_pricing.clone_plan")
@@ -169,7 +177,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .param(header("Idempotency-Key"))
         .handler(clone_plan)
         .json_response_with_schema::<dto::PricingPlanDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}")
         .operation_id("bss_pricing.get_plan_revision")
@@ -193,14 +203,18 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/plan-revisions/{id}")
         .operation_id("bss_pricing.patch_plan_revision")
         .summary("Change a draft revision")
         .description(
-            "Changes a draft revision's book, remapping each item to the new book's matching \
-             entry, or its sale date, by its author at the version the author read (If-Match). A \
-             named book needs the caller's price_book read on it (D-456). Refusals: 400 \
+            "Changes a draft revision's book or its sale date, by its author at the version the \
+             author read (If-Match). A new book remaps each item to the new book's entry of the \
+             same SKU, charge kind, period and model (D-427), and an item with no such entry keeps \
+             its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the \
+             book unchanged. A named book needs the caller's price_book read on it (D-456). \
+             Refusals: 400 \
              DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; \
              403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant \
              cannot be judged.",
@@ -217,7 +231,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     OperationBuilder::delete("/bss-pricing/v1/plan-revisions/{id}")
         .operation_id("bss_pricing.delete_plan_revision")
@@ -225,8 +241,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Deletes a draft revision of the caller with every item, releasing their SKU \
              references; the last revision of a never-published plan takes the plan with it. \
-             Refusals: 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or \
-             ITEM_CONFIRMATION_PENDING.",
+             Refusals: 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT, \
+             ITEM_CONFIRMATION_PENDING, or STALE_REVISION when a concurrent write changed the \
+             revision or one of its items first.",
         )
         .tag("Pricing")
         .authenticated()
@@ -235,6 +252,7 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(delete_revision)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi)
 }
 async fn create_plan(
@@ -532,9 +550,15 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
              required (D-467), reserving the SKU reference in Products; the Idempotency-Key \
              replays the receipt. A deprecated SKU is added only when the plan's published \
              revision in effect carries it (D-465). Refusals: 400 BODY_UNEXPECTED for treatment, \
-             included_qty or qty_min, ITEM_ENTRY_MISSING, ITEM_ENTRY_SKU_MISMATCH, \
-             ITEM_SKU_DEPRECATED or REVISION_ITEMS_TOO_MANY; 409 REVISION_NOT_DRAFT or \
-             ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
+             included_qty or qty_min, ITEM_ENTRY_MISSING for a missing or null entry, \
+             ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry \
+             of another SKU, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY; 403 \
+             NOT_DRAFT_AUTHOR for a draft of another author; 404 for an unknown revision, or an \
+             unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT, ITEM_SKU_TAKEN, \
+             IDEMPOTENCY_CONFLICT or IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, SKU_RETIRING or \
+             SKU_DRAFT from the item's create op (Products' reserve refusal or its SKU re-read); \
+             Products' own refusal of the SKU read, as Products gave it; 503 \
+             REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()
@@ -548,7 +572,9 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
             StatusCode::CREATED,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plan-items/{id}")
         .operation_id("bss_pricing.get_plan_item")
@@ -570,6 +596,7 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/plan-items/{id}")
         .operation_id("bss_pricing.patch_plan_item")
@@ -589,7 +616,9 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(patch_item)
         .json_response_with_schema::<dto::PricingPlanItemDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::delete("/bss-pricing/v1/plan-items/{id}")
         .operation_id("bss_pricing.delete_plan_item")
@@ -605,6 +634,7 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(delete_item)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     OperationBuilder::get("/bss-pricing/v1/plan-revisions/{id}/checks")
         .operation_id("bss_pricing.get_plan_revision_checks")
@@ -621,6 +651,7 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(get_checks)
         .json_response_with_schema::<dto::PricingPlanChecksDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi)
 }
 async fn create_item(

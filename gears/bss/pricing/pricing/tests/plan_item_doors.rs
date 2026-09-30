@@ -673,6 +673,22 @@ async fn checks_answer_503_when_the_registry_is_down() {
         s, 404,
         "an unknown revision is 404 before any registry read: {b}"
     );
+    // D-469: the item PATCH reads nothing from Products, so an outage never refuses it.
+    let reads = catalog.reads();
+    let (s, b, _) = f
+        .call(
+            "PATCH",
+            &format!("/plan-items/{}", first_item(&f, rev).await),
+            json!({"price_book_entry_id":e}),
+            Some("\"2\""),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(catalog.reads(), reads, "no SKU read");
+}
+async fn first_item(f: &Fixture, revision: Uuid) -> Uuid {
+    items(f, revision).await.remove(0).id
 }
 
 // D-408: a deprecated SKU may stay in a new revision of the same plan that carries it over from

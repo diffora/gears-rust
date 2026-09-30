@@ -10963,6 +10963,29 @@
         ],
         "type": "object"
       },
+      "PricingPlanCheckBlockingPrice": {
+        "description": "A pending price that blocks a check row (D-466): its approval unit, the price and its entry.",
+        "properties": {
+          "price_book_entry_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "price_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "unit_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "unit_id",
+          "price_id",
+          "price_book_entry_id"
+        ],
+        "type": "object"
+      },
       "PricingPlanCheckDto": {
         "description": "One row of a revision's checks (D-408). An `info` row is always ok and never blocks.",
         "properties": {
@@ -10971,6 +10994,13 @@
             "items": {
               "format": "uuid",
               "type": "string"
+            },
+            "type": "array"
+          },
+          "blocked_by_prices": {
+            "description": "The pending prices behind `blocked_by`, one per price, ordered by unit then price (D-466):\nthe units they name are exactly `blocked_by`.",
+            "items": {
+              "$ref": "#/components/schemas/PricingPlanCheckBlockingPrice"
             },
             "type": "array"
           },
@@ -10988,6 +11018,13 @@
           },
           "ok": {
             "type": "boolean"
+          },
+          "subjects": {
+            "description": "The items that turn the row red, in the revision's item order (D-466): empty for a green\nrow and for a plan-wide one (the plan's name, its book, the book's validity, the item\ncount, and the information rows).",
+            "items": {
+              "$ref": "#/components/schemas/PricingPlanCheckSubject"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -10996,7 +11033,35 @@
           "label",
           "detail",
           "info",
-          "blocked_by"
+          "blocked_by",
+          "subjects",
+          "blocked_by_prices"
+        ],
+        "type": "object"
+      },
+      "PricingPlanCheckSubject": {
+        "description": "An item a check row is about (D-466): the item, its SKU and the entry it names.",
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "price_book_entry_id": {
+            "description": "Null for an item that names no entry.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sku_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id",
+          "sku_id"
         ],
         "type": "object"
       },
@@ -11037,6 +11102,7 @@
             ]
           },
           "code": {
+            "description": "The new plan's code, under the rule of `POST /plans` (D-468).",
             "type": "string"
           },
           "name": {
@@ -11065,6 +11131,7 @@
             "type": "string"
           },
           "code": {
+            "description": "1 to 32 characters of `A-Z`, `0-9`, `-` and `_`, starting with a letter or a digit, judged as\nsent (D-468): blank is 400 `PLAN_CODE_REQUIRED`, any other code off the rule 400\n`PLAN_CODE_INVALID`, and a code over 64 characters 400 `FIELD_TOO_LONG` (D-457).",
             "type": "string"
           },
           "name": {
@@ -11087,7 +11154,7 @@
             "type": "string"
           },
           "item_count": {
-            "description": "How many items it holds, every item counted (an included one without an entry too).",
+            "description": "How many items it holds, every item counted (a legacy one without an entry too, D-467).",
             "format": "int32",
             "minimum": 0,
             "type": "integer"
@@ -11226,41 +11293,21 @@
       },
       "PricingPlanItemCreate": {
         "additionalProperties": false,
-        "description": "`POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A null entry\nis an included item with no charge.",
+        "description": "`POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A plan item is a\nSKU and its entry in the plan's book (D-467): the entry is required, and `treatment`,\n`included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`).",
         "properties": {
-          "included_qty": {
-            "description": "Canonical decimal text, for an included usage item.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "price_book_entry_id": {
-            "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "qty_min": {
-            "format": "int32",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "sku_id": {
+            "description": "The entry of the plan's book that prices the SKU; a missing or null one is 400\n`ITEM_ENTRY_MISSING`.",
             "format": "uuid",
             "type": "string"
           },
-          "treatment": {
-            "description": "`paid`, `optional` or `included`.",
+          "sku_id": {
+            "format": "uuid",
             "type": "string"
           }
         },
         "required": [
           "sku_id",
-          "treatment"
+          "price_book_entry_id"
         ],
         "type": "object"
       },
@@ -11278,23 +11325,11 @@
             "format": "uuid",
             "type": "string"
           },
-          "included_qty": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "price_book_entry_id": {
+            "description": "The entry that prices the item; null only for a legacy item stored without one (D-467).",
             "format": "uuid",
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "qty_min": {
-            "format": "int32",
-            "type": [
-              "integer",
               "null"
             ]
           },
@@ -11321,9 +11356,6 @@
             "format": "uuid",
             "type": "string"
           },
-          "treatment": {
-            "$ref": "#/components/schemas/PricingTreatment"
-          },
           "updated_at": {
             "format": "date-time",
             "type": "string"
@@ -11338,7 +11370,6 @@
           "tenant_id",
           "revision_id",
           "sku_id",
-          "treatment",
           "reference_state",
           "version",
           "created_by",
@@ -11349,29 +11380,10 @@
       },
       "PricingPlanItemPatch": {
         "additionalProperties": false,
-        "description": "`PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).",
+        "description": "`PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).\nIt changes the item's entry (D-467): `treatment`, `included_qty` and `qty_min` are refused\n(400 `BODY_UNEXPECTED`), and a null entry is 400 `ITEM_ENTRY_MISSING`.",
         "properties": {
-          "included_qty": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "price_book_entry_id": {
             "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "qty_min": {
-            "format": "int32",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "treatment": {
             "type": [
               "string",
               "null"
@@ -12585,7 +12597,7 @@
         "type": "object"
       },
       "PricingResolveItemDto": {
-        "description": "One item of the revision on the date: its stored fields, its SKU version and resolved invoice\ninputs (D-421), and its chain matrix (D-420).",
+        "description": "One item of the revision on the date: its SKU and entry (D-467), its SKU version and resolved\ninvoice inputs (D-421), and its chain matrix (D-420).",
         "properties": {
           "billing_timing": {
             "$ref": "#/components/schemas/PricingResolveInputDto",
@@ -12612,13 +12624,6 @@
           "gl_code": {
             "$ref": "#/components/schemas/PricingResolveInputDto",
             "description": "The SKU version's, else the tenant `default_gl`."
-          },
-          "included_qty": {
-            "description": "Exact decimal text.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "invoice_line_template": {
             "$ref": "#/components/schemas/PricingResolveInputDto",
@@ -12654,17 +12659,10 @@
             ]
           },
           "price_book_entry_id": {
-            "description": "Null for an included item without an entry, which has no chains.",
+            "description": "Null for a legacy item stored without an entry (D-467), which has no chains.",
             "format": "uuid",
             "type": [
               "string",
-              "null"
-            ]
-          },
-          "qty_min": {
-            "format": "int32",
-            "type": [
-              "integer",
               "null"
             ]
           },
@@ -12686,15 +12684,11 @@
           "tax_category": {
             "$ref": "#/components/schemas/PricingResolveInputDto",
             "description": "The SKU version's, else the tenant `default_tax_category`."
-          },
-          "treatment": {
-            "$ref": "#/components/schemas/PricingTreatment"
           }
         },
         "required": [
           "item_id",
           "sku_id",
-          "treatment",
           "invoice_line_template",
           "gl_code",
           "tax_category",
@@ -12953,15 +12947,6 @@
           "prices"
         ],
         "type": "object"
-      },
-      "PricingTreatment": {
-        "description": "How a plan item is sold.",
-        "enum": [
-          "paid",
-          "optional",
-          "included"
-        ],
-        "type": "string"
       },
       "PricingUnitState": {
         "description": "An approval unit's state.",
@@ -33984,6 +33969,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34030,7 +34025,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -34101,6 +34104,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34147,7 +34160,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -34218,6 +34239,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34371,6 +34402,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34479,6 +34520,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34494,7 +34545,7 @@
     },
     "/bss-pricing/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
+        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the applying vote's rules make: a plan revision's checks, or a usage chain's dated metering (D-402).",
         "operationId": "bss_pricing.approve_unit",
         "parameters": [
           {
@@ -34607,6 +34658,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34735,6 +34796,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34852,6 +34923,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -34957,6 +35038,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35003,7 +35094,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35074,6 +35173,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35120,7 +35229,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35191,6 +35308,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35292,6 +35419,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35406,6 +35543,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35419,7 +35566,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft item's treatment, quantities or entry, never its SKU, at the version the caller read (If-Match). Refusals: 400 for an invalid field; 403 NOT_DRAFT_AUTHOR; 409 REVISION_NOT_DRAFT or STALE_REVISION.",
+        "description": "Changes a draft item's entry, never its SKU, at the version the caller read (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a null entry or an item left without one; 403 NOT_DRAFT_AUTHOR; 409 REVISION_NOT_DRAFT or STALE_REVISION.",
         "operationId": "bss_pricing.patch_plan_item",
         "parameters": [
           {
@@ -35461,7 +35608,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35532,6 +35687,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35547,7 +35712,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}": {
       "delete": {
-        "description": "Deletes a draft revision of the caller with every item, releasing their SKU references; the last revision of a never-published plan takes the plan with it. Refusals: 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or ITEM_CONFIRMATION_PENDING.",
+        "description": "Deletes a draft revision of the caller with every item, releasing their SKU references; the last revision of a never-published plan takes the plan with it. Refusals: 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT, ITEM_CONFIRMATION_PENDING, or STALE_REVISION when a concurrent write changed the revision or one of its items first.",
         "operationId": "bss_pricing.delete_plan_revision",
         "parameters": [
           {
@@ -35633,6 +35798,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35747,6 +35922,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35760,7 +35945,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft revision's book, remapping each item to the new book's matching entry, or its sale date, by its author at the version the author read (If-Match). A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
+        "description": "Changes a draft revision's book or its sale date, by its author at the version the author read (If-Match). A new book remaps each item to the new book's entry of the same SKU, charge kind, period and model (D-427), and an item with no such entry keeps its own, so its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the book unchanged. A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.patch_plan_revision",
         "parameters": [
           {
@@ -35802,7 +35987,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -35873,6 +36066,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35981,6 +36184,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -35996,7 +36209,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/items": {
       "post": {
-        "description": "Adds an item for a SKU to a draft revision with its entry, treatment and quantities, reserving the SKU reference in Products; the Idempotency-Key replays the receipt. A deprecated SKU is added only when the plan's published revision in effect carries it (D-465). Refusals: 400 TREATMENT_INVALID, INCLUDED_QTY_INVALID, QTY_MIN_INVALID, ITEM_ENTRY_SKU_MISMATCH, ITEM_SKU_DEPRECATED or REVISION_ITEMS_TOO_MANY; 409 REVISION_NOT_DRAFT or ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Adds an item to a draft revision: a SKU and its entry in the plan's book, the entry required (D-467), reserving the SKU reference in Products; the Idempotency-Key replays the receipt. A deprecated SKU is added only when the plan's published revision in effect carries it (D-465). Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a missing or null entry, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU or REVISION_ITEMS_TOO_MANY; 403 NOT_DRAFT_AUTHOR for a draft of another author; 404 for an unknown revision, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT, ITEM_SKU_TAKEN, IDEMPOTENCY_CONFLICT or IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, SKU_RETIRING or SKU_DRAFT from the item's create op (Products' reserve refusal or its SKU re-read); Products' own refusal of the SKU read, as Products gave it; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.create_plan_item",
         "parameters": [
           {
@@ -36038,7 +36251,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36109,6 +36330,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36124,7 +36355,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/submit": {
       "post": {
-        "description": "Puts an unlocked draft revision whose checks are all green into a plan_revision approval unit (plan submit); at quorum 0 it applies at once. An applied revision is published, or scheduled when its sale date is after today: it takes effect on that date (D-449). An optional body carries the submitter's note for the approver, stored on the unit as submit_note (D-464): no body, {} and a null note carry none. The receipt's revision says when it was submitted and approved (D-461) and, while it is pending, its vote progress (D-462). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read, and BODY_UNEXPECTED for any other key; 400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
+        "description": "Puts an unlocked draft revision whose checks are all green into a plan_revision approval unit (plan submit); at quorum 0 it applies at once. An applied revision is published, or scheduled when its sale date is after today: it takes effect on that date (D-449). An optional body carries the submitter's note for the approver, stored on the unit as submit_note (D-464): no body, {} and a null note carry none. The receipt's revision says when it was submitted and approved (D-461) and, while it is pending, its vote progress (D-462). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read, and BODY_UNEXPECTED for any other key; 400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 REGISTRY_UNAVAILABLE when Products cannot answer the checks' SKU reads.",
         "operationId": "bss_pricing.submit_plan_revision",
         "parameters": [
           {
@@ -36236,6 +36467,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36282,7 +36523,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36353,6 +36602,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36461,6 +36720,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36474,7 +36743,7 @@
         ]
       },
       "post": {
-        "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs price_book read on that book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a code or a name over its cap; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
+        "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs price_book read on that book (D-456). The name is at most 200 characters and the code 64 (D-457), and the code follows a rule: 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding (D-468); a code stored before the rule keeps reading. Refusals: 400 FIELD_TOO_LONG on a code or a name over its cap, PLAN_CODE_REQUIRED for a blank code, PLAN_CODE_INVALID for a code off the rule, or DATE_INVALID; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
         "operationId": "bss_pricing.create_plan",
         "parameters": [
           {
@@ -36507,7 +36776,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36578,6 +36855,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36694,6 +36981,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36749,7 +37046,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36820,6 +37125,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36835,7 +37150,7 @@
     },
     "/bss-pricing/v1/plans/{id}/clone": {
       "post": {
-        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision (the one in effect: a scheduled revision whose date has come is switched first, D-451): its book, its items and its sale date, without anything of its approval. An available_from in the body overrides the sale date, and null clears it (D-463). The caller also needs price_book read on the source's book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a code or a name over its cap; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
+        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision (the one in effect: a scheduled revision whose date has come is switched first, D-451): its book, its items and its sale date, without anything of its approval. An available_from in the body overrides the sale date, and null clears it (D-463). The caller also needs price_book read on the source's book (D-456). The code is at most 64 characters and the name 200 (D-457), and the new plan's code follows the rule of POST /plans: 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent (D-468); the source's own code, stored before the rule, is never judged. Refusals: 400 FIELD_TOO_LONG on a code or a name over its cap, PLAN_CODE_REQUIRED for a blank code, PLAN_CODE_INVALID for a code off the rule, or DATE_INVALID; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.clone_plan",
         "parameters": [
           {
@@ -36877,7 +37192,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -36948,6 +37271,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -36994,7 +37327,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37065,6 +37406,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37173,6 +37524,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37274,6 +37635,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37388,6 +37759,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37443,7 +37824,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37514,6 +37903,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37631,6 +38030,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37686,7 +38095,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -37757,6 +38174,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -37910,6 +38337,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38012,7 +38449,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38083,6 +38528,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38193,6 +38648,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38307,6 +38772,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38362,7 +38837,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38433,6 +38916,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38541,6 +39034,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38596,7 +39099,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -38667,6 +39178,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38775,6 +39296,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38883,6 +39414,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -38896,7 +39437,7 @@
         ]
       },
       "post": {
-        "description": "Submits the book's draft prices, all of them or the listed price_ids, optionally on a common effective date, as one prices approval unit; at quorum 0 it applies at once. An optional note for the approver is stored on the unit as submit_note (D-464). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+        "description": "Submits the book's draft prices, all of them or the listed price_ids, optionally on a common effective date, as one prices approval unit; at quorum 0 it applies at once. An optional note for the approver is stored on the unit as submit_note (D-464). Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
         "operationId": "bss_pricing.publish_changes",
         "parameters": [
           {
@@ -39009,6 +39550,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39119,6 +39670,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39225,6 +39786,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39280,7 +39851,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39351,6 +39930,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39366,7 +39955,7 @@
     },
     "/bss-pricing/v1/prices/{id}/submit": {
       "post": {
-        "description": "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and the pair goes through POST /price-books/{id}/publish-changes, which completes it (D-405). It takes no body and no note: a note for the approver travels with publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+        "description": "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and the pair goes through POST /price-books/{id}/publish-changes, which completes it (D-405). It takes no body and no note: a note for the approver travels with publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage chain's dated metering read (D-402).",
         "operationId": "bss_pricing.submit_price",
         "parameters": [
           {
@@ -39468,6 +40057,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39594,6 +40193,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39609,7 +40218,7 @@
     },
     "/bss-pricing/v1/resolve": {
       "get": {
-        "description": "Returns, per item of a published or superseded plan revision, or of a scheduled one on or after its sale date, the chain matrix (the default chain and every dimension value) with the price bound on the date, the SKU version in force and the resolved invoice inputs; pins renew a subscription's bindings. A scheduled revision whose date has come resolves as published, on every date, whether or not its switch is persisted yet. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 when Products cannot answer.",
+        "description": "Returns, per item of a published or superseded plan revision, or of a scheduled one on or after its sale date, the chain matrix (the default chain and every dimension value) with the price bound on the date, the SKU version in force and the resolved invoice inputs; pins renew a subscription's bindings. A scheduled revision whose date has come resolves as published, on every date, whether or not its switch is persisted yet. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 REGISTRY_UNAVAILABLE when Products cannot answer.",
         "operationId": "bss_pricing.resolve",
         "parameters": [
           {
@@ -39729,6 +40338,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39834,6 +40453,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [
@@ -39880,7 +40509,15 @@
                 }
               }
             },
-            "description": "Response"
+            "description": "Response",
+            "headers": {
+              "ETag": {
+                "description": "The version to send back as If-Match",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
@@ -39951,6 +40588,16 @@
               }
             },
             "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
           }
         },
         "security": [

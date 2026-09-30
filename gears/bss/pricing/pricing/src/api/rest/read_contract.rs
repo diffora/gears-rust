@@ -138,7 +138,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 \
              REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE \
              for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 \
-             when Products cannot answer.",
+             REGISTRY_UNAVAILABLE when Products cannot answer.",
         )
         .tag("Pricing")
         .authenticated()
@@ -159,6 +159,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(resolve)
         .json_response_with_schema::<PricingResolveDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/prices/{id}")
         .operation_id("bss_pricing.get_price")
@@ -177,6 +178,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(get_price)
         .json_response_with_schema::<PricingPinnedPriceDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     router.layer(Extension(state))
 }
