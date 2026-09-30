@@ -70,7 +70,7 @@ async fn migrate(pg: &Pg, without: Option<&str>) -> Result<MigrationResult, Migr
     let chain = BssPricingGear::default()
         .migrations()
         .into_iter()
-        .filter(|m| Some(m.name()) != without)
+        .filter(|m| Some(m.name()) != without && m.name() != "m20260930_000018_usage_rating_policy")
         .collect();
     run_migrations_for_testing(&pg.db().await, chain).await
 }
@@ -541,7 +541,8 @@ async fn postgres_the_forward_migration_moves_the_model_to_the_entry_and_keeps_e
         "{}",
         added[2]
     );
-    let fresh = Pg::applied().await;
+    let fresh = Pg::empty().await;
+    migrate(&fresh, None).await.unwrap();
     assert_eq!(dump_after, dump(&fresh).await, "upgraded and fresh agree");
 }
 
@@ -550,6 +551,10 @@ async fn postgres_the_forward_migration_moves_the_model_to_the_entry_and_keeps_e
 async fn postgres_an_entry_op_stored_before_the_migration_resumes_after_it() {
     let pg = seeded().await;
     migrate(&pg, None).await.unwrap();
+    // Current application entities require the complete schema after the historical migration assertions.
+    run_migrations_for_testing(&pg.db().await, BssPricingGear::default().migrations())
+        .await
+        .unwrap();
     let state = state_on(DBProvider::new(pg.db().await), Arc::new(Script::default())).await;
     let system = system_actor(TENANT).unwrap();
 
@@ -636,6 +641,10 @@ async fn postgres_an_in_flight_create_for_a_taken_key_meets_it_after_the_model_m
             .contains(&(STORAGE, "graduated".to_owned()))
     );
     let script = Arc::new(Script::default());
+    // Current application entities require the complete schema after the historical migration assertions.
+    run_migrations_for_testing(&pg.db().await, BssPricingGear::default().migrations())
+        .await
+        .unwrap();
     let state = state_on(DBProvider::new(pg.db().await), script.clone()).await;
     let system = system_actor(TENANT).unwrap();
 

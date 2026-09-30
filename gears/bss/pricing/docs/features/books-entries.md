@@ -66,6 +66,33 @@ Holding multiple permissions never bypasses separation of duties.
 - [DECISIONS](../DECISIONS.md), D-384–D-444; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
+D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
+`usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
+or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
+(BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
+reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
+policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
+identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy
+fields. Changed content requires a new entry, then a revision explicitly selecting it.
+
+Policy rows are append-only on both databases and deduplicate by (tenant_id, digest), checking stored
+content on every reuse. Migration 18 adds the nullable entry reference (id, version, digest), an
+all-null-or-all-present check, and a tenant-qualified composite foreign key including digest. The entry
+key is (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+only absent policy uses the empty index token. Hourly and billing-cycle variants coexist; equal content
+cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
+receipts materialize policy content with its identity; legacy/non-usage entries return null.
+
+Tx A persists typed content and operation input schema_version 1 before the remote reserve. Tx B
+inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
+returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
+null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
+original entry reference. Migration assigns no policy to old entries, including published plans;
+they continue to read and resolve. Authoritative meter verification, publication gates and resolve
+policy projection belong to Task 3 and are not delivered by D-502.
+
 ## 2. Actor Flows (CDSL)
 
 ### Author a book and entry
@@ -86,7 +113,7 @@ Holding multiple permissions never bypasses separation of duties.
 
 1. [ ] - `p1` - Validate currency and nonempty validity interval; scope code uniqueness to tenant. - `inst-books-entries-book-and-key-1`
 2. [ ] - `p1` - Derive charge_kind from the current SKU; recurring accepts month/year, usage and one_time require null period; the model must be one the charge kind allows (D-386, D-427). - `inst-books-entries-book-and-key-2`
-3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period/model unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
+3. [ ] - `p1` - Enforce the book/SKU/kind/coalesced-period/model/policy-digest unique index and map races to a conflict. - `inst-books-entries-book-and-key-3`
 4. [ ] - `p1` - PATCH name/validity or permitted entry overrides conditionally; reject currency edits and dimension changes after valued prices exist. - `inst-books-entries-book-and-key-4`
 
 ### dimension-registry
@@ -131,7 +158,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-entry-key-unique`
 
-The database enforces SKU × charge kind × normalized period × model uniqueness inside a book (D-427). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386).
+The database enforces SKU × charge kind × normalized period × model × policy digest uniqueness inside a book (D-427). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386).
 
 Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 

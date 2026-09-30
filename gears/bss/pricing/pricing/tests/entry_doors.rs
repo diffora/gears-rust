@@ -1,6 +1,7 @@
 //! Price book entry authoring protocol branches through the production router.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod entry_support;
+use entry_support::policy_support;
 use entry_support::{Fixture, KINDS, Kind, Script, Target};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -18,8 +19,10 @@ async fn setup(mode: usize) -> (Fixture, Arc<Script>, String, Value) {
         // D-427: an entry is created in a model; `per_unit` is one every charge kind allows.
         if mode == 11 {
             json!({"sku_id":Uuid::new_v4(),"period":"month","model":"per_unit"})
-        } else {
+        } else if mode == 21 {
             json!({"sku_id":Uuid::new_v4(),"model":"per_unit"})
+        } else {
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
         },
     )
 }
@@ -437,7 +440,7 @@ async fn period_and_dimension_refusals_are_400_before_any_reservation() {
         ),
         (
             0,
-            json!({"dimension_key":"zone","model":"per_unit"}),
+            json!({"dimension_key":"zone","model":"per_unit","usage_rating_policy":policy_support::input()}),
             "dimension_key",
             "DIM_NOT_DECLARED",
         ),
@@ -456,7 +459,7 @@ async fn period_and_dimension_refusals_are_400_before_any_reservation() {
         let fixed = if mode == 11 {
             json!({"sku_id":input["sku_id"],"period":"month","model":"per_unit"})
         } else {
-            json!({"sku_id":input["sku_id"],"model":"per_unit"})
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":input["sku_id"],"model":"per_unit"})
         };
         let created = f.call("POST", &path, fixed, None, Some("one")).await;
         assert_eq!(created.0, 201, "{created:?}");

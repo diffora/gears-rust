@@ -265,9 +265,17 @@ async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() {
         .iter()
         .filter(|name| has_enum(component(&api, name)))
         .collect();
-    assert!(
-        enums.is_empty(),
-        "a request body reaches an enum: {enums:?}"
+    assert_eq!(
+        enums.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+        [
+            "AggregationScope",
+            "Fold",
+            "PartialWindow",
+            "RatingWindow",
+            "Reset",
+            "Timezone"
+        ],
+        "D-502 alone introduces closed policy request enums; existing request codes stay unchanged"
     );
     for &(schema, field) in REQUEST_STRING {
         assert!(seen.contains(schema), "{schema} is a request body");

@@ -16,6 +16,7 @@ use bss_pricing::{
         reference_events::{PlanReferenceLost, PriceBookEntryReferenceLost},
     },
 };
+use entry_support::policy_support;
 use entry_support::{Script, app_for, request, test_db, user_of};
 use event_broker::test_support::{EventBrokerHarness, StaticTypesRegistry};
 use event_broker_sdk::{Sequence, TypedEvent, api::EventBrokerApi};
@@ -242,7 +243,7 @@ async fn submit_a_price_at_quorum_zero(state: &Arc<AuthoringState>, tenant: Uuid
     let entry = call(
         "POST",
         format!("/price-books/{}/entries", book.1["id"].as_str().unwrap()),
-        json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+        json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"}),
         None,
         Some("entry"),
     )

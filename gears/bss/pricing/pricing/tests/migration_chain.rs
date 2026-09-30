@@ -158,12 +158,12 @@ async fn m20260926_000013_applies_once_and_refuses_to_revert() {
 }
 
 #[test]
-fn gear_chain_is_the_guard_coord_then_seventeen_ordered_unique_migrations() {
+fn gear_chain_is_the_guard_coord_then_eighteen_ordered_unique_migrations() {
     let names: Vec<_> = Migrator::migrations()
         .iter()
         .map(|m| m.name().to_owned())
         .collect();
-    assert_eq!(names.len(), 19);
+    assert_eq!(names.len(), 20);
     let mut sorted = names.clone();
     sorted.sort();
     sorted.dedup();
@@ -179,6 +179,7 @@ fn gear_chain_is_the_guard_coord_then_seventeen_ordered_unique_migrations() {
     assert_eq!(names[16], "m20260928_000015_book_description");
     assert_eq!(names[17], "m20260928_000016_unit_submit_note");
     assert_eq!(names[18], "m20260929_000017_revision_scheduled");
+    assert_eq!(names[19], "m20260930_000018_usage_rating_policy");
 }
 
 /// D-446: 000017 widens the revision state CHECK and adds the scheduled index. It replays without

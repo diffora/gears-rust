@@ -180,7 +180,41 @@ A book has a tenant-unique code, name, immutable currency and optional valid_fro
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Inside a book there is one entry per (sku_id, charge_kind, period, model), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. The entry's model is required at its create and fixed for its life: usage takes per_unit, graduated, volume or package, and recurring and one_time take flat or per_unit; an unknown model is MODEL_INVALID and one the charge kind does not allow is MODEL_KIND_CHARGEKIND_MISMATCH, both 400 (D-427). Another model for the same SKU, charge kind and period is another entry of the book. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation. The reads of one entry and of a book's entries carry the entry's usage: its prices by state (approved, pending, draft; a rejected price is not counted), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions (D-428).
+Inside a book there is one entry per (sku_id, charge_kind, period, model, usage_policy_digest), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. The entry's model is required at its create and fixed for its life: usage takes per_unit, graduated, volume or package, and recurring and one_time take flat or per_unit; an unknown model is MODEL_INVALID and one the charge kind does not allow is MODEL_KIND_CHARGEKIND_MISMATCH, both 400 (D-427). Another model for the same SKU, charge kind and period is another entry of the book. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation. The reads of one entry and of a book's entries carry the entry's usage: its prices by state (approved, pending, draft; a rejected price is not counted), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions (D-428).
+
+D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
+`usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
+or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
+(BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
+reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
+policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
+identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy
+fields. Changed content requires a new entry, then a revision explicitly selecting it.
+
+Policy rows are append-only on both databases and deduplicate by (tenant_id, digest), checking stored
+content on every reuse. Migration 18 adds the nullable entry reference (id, version, digest), an
+all-null-or-all-present check, and a tenant-qualified composite foreign key including digest. The entry
+key is (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+only absent policy uses the empty index token. Hourly and billing-cycle variants coexist; equal content
+cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
+receipts materialize policy content with its identity; legacy/non-usage entries return null.
+
+Tx A persists typed content and operation input schema_version 1 before the remote reserve. Tx B
+inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
+returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
+null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
+original entry reference. Migration assigns no policy to old entries, including published plans;
+they continue to read and resolve. Authoritative meter verification, publication gates and resolve
+policy projection belong to Task 3 and are not delivered by D-502.
+
+D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
+treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
+Changing a draft's book matches the full (SKU, charge kind, normalized period, model, policy digest)
+key and an equal dimension key. With no equivalent target, the item retains the old entry and
+ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
+legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
 #### `fr-price`
 

@@ -1,6 +1,8 @@
 //! Shared real REST and database fixture for reference execution.
 #![allow(dead_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+#[path = "../policy_support/mod.rs"]
+pub mod policy_support;
 use axum::{Router, body::Body, http::Request};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -899,6 +901,9 @@ impl Target {
                         charge_kind: "usage".into(),
                         period: None,
                         model: "per_unit".into(),
+                        usage_policy_id: None,
+                        usage_policy_version: None,
+                        usage_policy_digest: None,
                         dimension_key: None,
                         invoice_line_override: None,
                         reservation_id: Uuid::new_v4(),
@@ -960,7 +965,9 @@ impl Target {
     pub fn input(&self) -> Value {
         match self.kind {
             // `per_unit` is a model every charge kind allows (D-386, D-427).
-            Kind::Entry => json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            Kind::Entry => {
+                json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
+            }
             Kind::Item => {
                 let (sku, entry) = self
                     .priced

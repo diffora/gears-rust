@@ -67,6 +67,14 @@ pub struct Work {
 /// keeps its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryInput {
+    /// Absent only for operations persisted before D-502; public requests cannot set it.
+    #[serde(default)]
+    pub schema_version: Option<u32>,
+    #[serde(default)]
+    pub usage_rating_policy: Option<Box<crate::infra::usage_policy_wire::UsageRatingPolicyInput>>,
+    /// Later operations preserve the existing reference, including an absent legacy policy.
+    #[serde(default)]
+    pub usage_policy_reference: Option<(Uuid, i64, String)>,
     pub sku_id: Uuid,
     pub period: Option<String>,
     pub dimension_key: Option<String>,
@@ -77,6 +85,9 @@ pub struct EntryInput {
 impl From<PricingPriceBookEntryCreate> for EntryInput {
     fn from(input: PricingPriceBookEntryCreate) -> Self {
         Self {
+            schema_version: Some(1),
+            usage_rating_policy: input.usage_rating_policy.map(Box::new),
+            usage_policy_reference: None,
             sku_id: input.sku_id,
             period: input.period,
             dimension_key: input.dimension_key,
@@ -90,6 +101,13 @@ impl EntryInput {
     #[must_use]
     pub fn of(entry: &price_book_entry::Model) -> Self {
         Self {
+            schema_version: Some(1),
+            usage_rating_policy: None,
+            usage_policy_reference: entry
+                .usage_policy_id
+                .zip(entry.usage_policy_version)
+                .zip(entry.usage_policy_digest.clone())
+                .map(|((id, version), digest)| (id, version, digest)),
             sku_id: entry.sku_id,
             period: entry.period.clone(),
             dimension_key: entry.dimension_key.clone(),
@@ -198,12 +216,17 @@ impl Receipt {
             etag: None,
         })
     }
-    pub fn entry(model: price_book_entry::Model) -> Result<Self, CanonicalError> {
+    pub async fn entry(
+        tx: &impl DBRunner,
+        model: price_book_entry::Model,
+    ) -> Result<Self, CanonicalError> {
         let etag = Some(format!("\"{}\"", model.version));
         Ok(Self {
             status: 201,
             body: serde_json::to_string(
-                &PricingPriceBookEntryDto::try_from(model).map_err(stored_failure)?,
+                &PricingPriceBookEntryDto::load(tx, model)
+                    .await
+                    .map_err(stored_failure)?,
             )
             .map_err(|_| corrupt())?,
             etag,
@@ -852,6 +875,23 @@ async fn write_entry(
         if let Some(model) = taken_model(tx, scope, op, &entry).await? {
             entry.model = model;
         }
+        let Target::PriceBookEntry { input, .. } = Work::read(op)?.target else {
+            return Err(corrupt().into());
+        };
+        if let Some(content) = &input.usage_rating_policy {
+            let policy = crate::infra::storage::repo::usage_policy_repo::intern(
+                tx,
+                scope,
+                op.tenant_id,
+                op.created_by,
+                content,
+                now,
+            )
+            .await?;
+            entry.usage_policy_id = Some(policy.policy_id);
+            entry.usage_policy_version = Some(policy.version.parse().map_err(|_| corrupt())?);
+            entry.usage_policy_digest = Some(policy.digest);
+        }
         price_book_entry_repo::insert(tx, scope, entry).await?;
         return Ok(());
     }
@@ -906,7 +946,9 @@ async fn taken_model(
         price_book_entry_repo::for_book(tx, scope, entry.tenant_id, entry.book_id)
             .await?
             .into_iter()
-            .find(|holder| key(holder) == key(entry))
+            .find(|holder| {
+                key(holder) == key(entry) && holder.usage_policy_digest == entry.usage_policy_digest
+            })
             .map(|holder| holder.model),
     )
 }
@@ -929,7 +971,7 @@ async fn finish_written(
     if effects.contains(&Effect::Rereserve) {
         // Due at once: no door drives this op, so no in-flight grace applies.
         ops::insert(tx, &scope, rereserve_op(ctx, &entry, now, now)?).await?;
-        return Ok(Receipt::entry(entry)?);
+        return Ok(Receipt::entry(tx, entry).await?);
     }
     price_book_entry_repo::set_reference(
         tx,
@@ -954,7 +996,7 @@ async fn finish_written(
         entry.version,
     )
     .await?;
-    Ok(Receipt::entry(entry)?)
+    Ok(Receipt::entry(tx, entry).await?)
 }
 /// A `rereserve_entry` op for a live entry, due at `due`.
 /// # Errors
@@ -1389,6 +1431,28 @@ async fn entry_written(
             ));
         }
     };
+    if op.kind == OpKind::Create.as_str() {
+        let refusal = match (input.schema_version, &input.usage_rating_policy, kind) {
+            (Some(1), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
+                crate::domain::usage_policy::validate_policy_shape(&policy.as_ref().into())
+                    .err()
+                    .map(|e| e.code)
+            }
+            (Some(1), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
+                Some("MISSING_RATING_POLICY")
+            }
+            (Some(1), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
+            (None | Some(1), None, _) => None,
+            _ => return Err(corrupt()),
+        };
+        if let Some(code) = refusal {
+            return Ok((
+                Event::SkuRefused { code: code.into() },
+                None,
+                Some(Receipt::error(support::invalid("usage_rating_policy", code)).await?),
+            ));
+        }
+    }
     let entry = price_book_entry::Model {
         id: op.ref_id,
         tenant_id: op.tenant_id,
@@ -1397,6 +1461,9 @@ async fn entry_written(
         charge_kind: kind.as_str().into(),
         period: input.period,
         model: model.as_str().into(),
+        usage_policy_id: None,
+        usage_policy_version: None,
+        usage_policy_digest: None,
         dimension_key: input.dimension_key,
         invoice_line_override: input.invoice_line_override,
         reservation_id: op.reservation_id.ok_or_else(corrupt)?,

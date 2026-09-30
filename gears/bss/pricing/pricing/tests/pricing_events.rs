@@ -14,6 +14,7 @@ use bss_pricing::infra::{
         repo::{price_book_entry_repo, price_repo},
     },
 };
+use entry_support::policy_support;
 use entry_support::{Fixture, Script};
 use event_broker_sdk::TypedEvent;
 use sea_orm::{ConnectionTrait, Database, DbBackend, EntityTrait, Statement};
@@ -39,7 +40,7 @@ async fn gov(quorum: u32) -> Gov {
         .call(
             "POST",
             &format!("/price-books/{book}/entries"),
-            json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"}),
             None,
             Some("entry"),
         )

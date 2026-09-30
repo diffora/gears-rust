@@ -9,6 +9,7 @@ use bss_pricing::infra::{
         repo::{approval_repo::PricingApprovalStore, price_book_entry_repo, price_repo},
     },
 };
+use entry_support::policy_support;
 use entry_support::{Fixture, Script};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -87,9 +88,11 @@ async fn setup_with(mode: usize, dimension: bool) -> Setup {
     let body = match (mode, dimension) {
         (11, _) => json!({"sku_id":Uuid::new_v4(),"period":"month","model":"flat"}),
         (_, true) => {
-            json!({"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"})
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"dimension_key":"region","model":"per_unit"})
         }
-        _ => json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+        _ => {
+            json!({"usage_rating_policy":policy_support::input(),"sku_id":Uuid::new_v4(),"model":"per_unit"})
+        }
     };
     let (status, entry, _) = f
         .call(

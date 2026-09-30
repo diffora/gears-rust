@@ -106,6 +106,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439 |
 | D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
+| D-502 | H | Immutable usage policies belong to entries and their semantic key | DECIDED 2026-10-01 · Pricing Seam Contracts Task 2; amends D-386, D-401, D-427 |
 
 ## Entries
 
@@ -1097,3 +1098,43 @@ producer surface, not delivery of consumer integration or sale acceptance.
 **Source:** Pricing Seam Contracts plan, Task 1 (G1), revisions 2 and 3. Extends D-419–D-422 without
 changing their REST behavior; uses phase-8 promotion from D-450–D-451. Later tasks own policy storage,
 new-sale gates and receipts. Decision numbers D-470–D-499 remain reserved for concurrent phase-9 work.
+
+#### D-502 [H] Immutable usage policies belong to entries and their semantic key
+
+**Status:** DECIDED 2026-10-01.
+
+D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
+`usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
+or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
+(BillingCycle or CalendarHour with UTC), aggregation_scope (subscription_line or resource),
+reset (rating_window_start), quantity_semantics (meter usage_type_id/version, unit, SUM fold,
+accrual_policy_version), and partial_window (actual_quantity_full_thresholds). Empty or whitespace-only
+meter identifiers, versions, units or accrual versions are `METER_POLICY_MISMATCH`. The server assigns
+policy_id, version 1 and the lowercase SHA-256 canonical content digest; author input refuses these
+identity fields. The entry PATCH cannot change or clear policy. Item and price requests refuse policy
+fields. Changed content requires a new entry, then a revision explicitly selecting it.
+
+Policy rows are append-only on both databases and deduplicate by (tenant_id, digest), checking stored
+content on every reuse. Migration 18 adds the nullable entry reference (id, version, digest), an
+all-null-or-all-present check, and a tenant-qualified composite foreign key including digest. The entry
+key is (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+only absent policy uses the empty index token. Hourly and billing-cycle variants coexist; equal content
+cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
+receipts materialize policy content with its identity; legacy/non-usage entries return null.
+
+Tx A persists typed content and operation input schema_version 1 before the remote reserve. Tx B
+inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
+returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
+null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
+original entry reference. Migration assigns no policy to old entries, including published plans;
+they continue to read and resolve. Authoritative meter verification, publication gates and resolve
+policy projection belong to Task 3 and are not delivered by D-502.
+
+D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
+treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
+Changing a draft's book matches the full (SKU, charge kind, normalized period, model, policy digest)
+key and an equal dimension key. With no equivalent target, the item retains the old entry and
+ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
+legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
+
+**Source:** Pricing Seam Contracts plan revision 3, Task 2. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned.

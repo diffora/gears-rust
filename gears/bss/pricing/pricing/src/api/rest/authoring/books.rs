@@ -300,6 +300,8 @@ pub async fn export(
         )
         .await?,
     );
+    let mut policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     for p in entries {
         let mut prices = grouped.remove(&p.id).unwrap_or_default();
         prices.sort_by(|a, b| {
@@ -312,8 +314,11 @@ pub async fn export(
         });
         // Every price echoes its entry's model (D-427).
         let model = p.model.clone();
+        let policy = policies.remove(&p.id);
+        let mut entry = super::dto::PricingPriceBookEntryDto::try_from(p)?;
+        entry.usage_rating_policy = policy;
         result.push(PricingExportEntry {
-            entry: p.try_into()?,
+            entry,
             prices: prices
                 .into_iter()
                 .map(|m| PricingPriceDto::of(m, &model))

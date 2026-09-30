@@ -124,6 +124,28 @@ async fn check_sku_rules(
     if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
         return Err(support::invalid("period", "ENTRY_PERIOD_INVALID"));
     }
+    if let Ok(kind) = price_book_entry::charge_kind_for(sku.r#type) {
+        match (&input.usage_rating_policy, kind) {
+            (None, price_book_entry::ChargeKind::Usage) => {
+                return Err(support::invalid(
+                    "usage_rating_policy",
+                    "MISSING_RATING_POLICY",
+                ));
+            }
+            (
+                Some(_),
+                price_book_entry::ChargeKind::Recurring | price_book_entry::ChargeKind::OneTime,
+            ) => {
+                return Err(support::invalid(
+                    "usage_rating_policy",
+                    "UNEXPECTED_RATING_POLICY",
+                ));
+            }
+            (Some(policy), _) => crate::domain::usage_policy::validate_policy_shape(&policy.into())
+                .map_err(|e| support::invalid("usage_rating_policy", e.code))?,
+            (None, _) => {}
+        }
+    }
     match price_book_entry::charge_kind_for(sku.r#type) {
         Ok(kind) if !price_book_entry::model_allowed(kind, model) => {
             Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
@@ -289,7 +311,7 @@ pub(super) async fn patch(
     .await?;
     Ok(support::response(
         StatusCode::OK,
-        &PricingPriceBookEntryDto::try_from(m)?,
+        &PricingPriceBookEntryDto::load(tx, m).await?,
         Some(version + 1),
     )?)
 }
@@ -478,16 +500,19 @@ pub(super) async fn read(
     } else {
         std::collections::BTreeMap::new()
     };
+    let mut policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     entries
         .into_iter()
         .map(|m| {
-            let (counted, price) = (
-                usage.remove(&m.id).unwrap_or_default(),
-                current.remove(&m.id),
-            );
-            Ok(super::dto::PricingPriceBookEntryReadDto::of(
-                m, counted, price,
-            )?)
+            let id = m.id;
+            let mut dto = super::dto::PricingPriceBookEntryReadDto::of(
+                m,
+                usage.remove(&id).unwrap_or_default(),
+                current.remove(&id),
+            )?;
+            dto.entry.usage_rating_policy = policies.remove(&id);
+            Ok(dto)
         })
         .collect()
 }
@@ -585,6 +610,8 @@ pub(super) async fn for_sku(
     } else {
         BTreeMap::new()
     };
+    let mut policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     let mut items = Vec::with_capacity(entries.len());
     for e in entries {
         let book = named.get(&e.book_id).ok_or_else(|| {
@@ -592,8 +619,11 @@ pub(super) async fn for_sku(
         })?;
         let current_price = current.remove(&e.id);
         let entry_usage = usage.remove(&e.id).unwrap_or_default().into();
+        let policy = policies.remove(&e.id);
+        let mut entry = PricingPriceBookEntryDto::try_from(e)?;
+        entry.usage_rating_policy = policy;
         items.push(super::dto::PricingSkuEntryDto {
-            entry: e.try_into()?,
+            entry,
             book_code: book.code.clone(),
             book_name: book.name.clone(),
             currency: book.currency.clone(),

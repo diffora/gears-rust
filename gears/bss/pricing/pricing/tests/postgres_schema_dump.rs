@@ -20,8 +20,8 @@ mod schema_dump;
 
 use schema_dump::postgres_dump;
 
-/// Fifteen pricing tables plus coordination and toolkit delivery tables.
-const PRICING_TABLES: usize = 15;
+/// Sixteen pricing tables plus coordination and toolkit delivery tables.
+const PRICING_TABLES: usize = 16;
 
 fn tables_in(dump: &str) -> Vec<String> {
     let mut names: Vec<String> = dump
@@ -98,6 +98,7 @@ async fn the_dump_reaches_every_kind_of_object() {
             "bss.pricing_price_book_entry".to_owned(),
             "bss.pricing_reference_op".to_owned(),
             "bss.pricing_settings".to_owned(),
+            "bss.pricing_usage_rating_policy".to_owned(),
             "public.bss_pricing_outbox_body".to_owned(),
             "public.bss_pricing_outbox_dead_letters".to_owned(),
             "public.bss_pricing_outbox_incoming".to_owned(),
@@ -163,6 +164,11 @@ async fn the_chain_still_produces_the_frozen_schema() {
         "/tests/schema_golden/postgres.txt"
     );
     let fresh = postgres_dump(&pg_support::Pg::applied().await.raw().await).await;
+
+    // Capture a candidate for DDL review before explicitly updating the frozen oracle.
+    if let Ok(path) = std::env::var("SCHEMA_REVIEW_PATH") {
+        std::fs::write(path, &fresh).expect("write schema review candidate");
+    }
 
     if std::env::var("UPDATE_SCHEMA_GOLDEN").is_ok() {
         let dir = std::path::Path::new(golden_path)

@@ -154,6 +154,9 @@ COLUMN bss.pricing_price_book_entry reservation_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry sku_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry updated_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_price_book_entry usage_policy_digest text NULL DEFAULT -
+COLUMN bss.pricing_price_book_entry usage_policy_id uuid NULL DEFAULT -
+COLUMN bss.pricing_price_book_entry usage_policy_version bigint NULL DEFAULT -
 COLUMN bss.pricing_price_book_entry version bigint NOT NULL DEFAULT 1
 COLUMN bss.pricing_reference_op attempts integer NOT NULL DEFAULT 0
 COLUMN bss.pricing_reference_op created_at timestamp with time zone NOT NULL DEFAULT -
@@ -182,6 +185,13 @@ COLUMN bss.pricing_settings tenant_id uuid NOT NULL DEFAULT -
 COLUMN bss.pricing_settings updated_at timestamp with time zone NOT NULL DEFAULT -
 COLUMN bss.pricing_settings updated_by uuid NULL DEFAULT -
 COLUMN bss.pricing_settings version bigint NOT NULL DEFAULT 1
+COLUMN bss.pricing_usage_rating_policy content jsonb NOT NULL DEFAULT -
+COLUMN bss.pricing_usage_rating_policy created_at timestamp with time zone NOT NULL DEFAULT -
+COLUMN bss.pricing_usage_rating_policy created_by uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_usage_rating_policy digest text NOT NULL DEFAULT -
+COLUMN bss.pricing_usage_rating_policy policy_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_usage_rating_policy tenant_id uuid NOT NULL DEFAULT -
+COLUMN bss.pricing_usage_rating_policy version bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_body created_at timestamp with time zone NOT NULL DEFAULT now()
 COLUMN public.bss_pricing_outbox_body id bigint NOT NULL DEFAULT -
 COLUMN public.bss_pricing_outbox_body payload bytea NOT NULL DEFAULT -
@@ -292,6 +302,8 @@ CONSTRAINT bss.pricing_price_book pricing_price_book_check CHECK (((valid_from I
 CONSTRAINT bss.pricing_price_book pricing_price_book_pkey PRIMARY KEY (id)
 CONSTRAINT bss.pricing_price_book pricing_price_book_tenant_id_code_key UNIQUE (tenant_id, code)
 CONSTRAINT bss.pricing_price_book pricing_price_book_tenant_id_id_key UNIQUE (tenant_id, id)
+CONSTRAINT bss.pricing_price_book_entry pricing_entry_policy_complete CHECK ((((usage_policy_id IS NULL) AND (usage_policy_version IS NULL) AND (usage_policy_digest IS NULL)) OR ((usage_policy_id IS NOT NULL) AND (usage_policy_version IS NOT NULL) AND (usage_policy_digest IS NOT NULL) AND (charge_kind = 'usage'::text))))
+CONSTRAINT bss.pricing_price_book_entry pricing_entry_policy_fk FOREIGN KEY (tenant_id, usage_policy_id, usage_policy_version, usage_policy_digest) REFERENCES bss.pricing_usage_rating_policy(tenant_id, policy_id, version, digest)
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_book_id_fkey FOREIGN KEY (book_id) REFERENCES bss.pricing_price_book(id)
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_charge_kind_check CHECK ((charge_kind = ANY (ARRAY['recurring'::text, 'usage'::text, 'one_time'::text])))
 CONSTRAINT bss.pricing_price_book_entry pricing_price_book_entry_check CHECK ((((charge_kind = 'recurring'::text) AND (period IS NOT NULL) AND (period = ANY (ARRAY['month'::text, 'year'::text]))) OR ((charge_kind = ANY (ARRAY['usage'::text, 'one_time'::text])) AND (period IS NULL))))
@@ -305,6 +317,11 @@ CONSTRAINT bss.pricing_reference_op pricing_reference_op_ref_kind_check CHECK ((
 CONSTRAINT bss.pricing_reference_op pricing_reference_op_state_check CHECK ((state = ANY (ARRAY['reserving'::text, 'written'::text, 'cancelling'::text, 'releasing'::text, 'done'::text])))
 CONSTRAINT bss.pricing_settings pricing_settings_default_timing_check CHECK ((default_timing = ANY (ARRAY['advance'::text, 'arrears'::text])))
 CONSTRAINT bss.pricing_settings pricing_settings_pkey PRIMARY KEY (tenant_id)
+CONSTRAINT bss.pricing_usage_rating_policy pricing_usage_rating_policy_digest_check CHECK ((digest ~ '^[0-9a-f]{64}$'::text))
+CONSTRAINT bss.pricing_usage_rating_policy pricing_usage_rating_policy_pkey PRIMARY KEY (tenant_id, policy_id, version)
+CONSTRAINT bss.pricing_usage_rating_policy pricing_usage_rating_policy_tenant_id_digest_key UNIQUE (tenant_id, digest)
+CONSTRAINT bss.pricing_usage_rating_policy pricing_usage_rating_policy_tenant_id_policy_id_version_dig_key UNIQUE (tenant_id, policy_id, version, digest)
+CONSTRAINT bss.pricing_usage_rating_policy pricing_usage_rating_policy_version_check CHECK ((version > 0))
 CONSTRAINT public.bss_pricing_outbox_body bss_pricing_outbox_body_pkey PRIMARY KEY (id)
 CONSTRAINT public.bss_pricing_outbox_dead_letters bss_pricing_outbox_dead_letters_partition_id_fkey FOREIGN KEY (partition_id) REFERENCES bss_pricing_outbox_partitions(id)
 CONSTRAINT public.bss_pricing_outbox_dead_letters bss_pricing_outbox_dead_letters_pkey PRIMARY KEY (id)
@@ -345,7 +362,7 @@ INDEX bss pricing_plan_revision_pkey CREATE UNIQUE INDEX pricing_plan_revision_p
 INDEX bss pricing_plan_revision_published CREATE UNIQUE INDEX pricing_plan_revision_published ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'published'::text)
 INDEX bss pricing_plan_revision_scheduled CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON bss.pricing_plan_revision USING btree (plan_id) WHERE (state = 'scheduled'::text)
 INDEX bss pricing_price_approved_start CREATE UNIQUE INDEX pricing_price_approved_start ON bss.pricing_price USING btree (price_book_entry_id, COALESCE(dim_value, ''::text), effective_from) WHERE (state = 'approved'::text)
-INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text), model)
+INDEX bss pricing_price_book_entry_key CREATE UNIQUE INDEX pricing_price_book_entry_key ON bss.pricing_price_book_entry USING btree (book_id, sku_id, charge_kind, COALESCE(period, ''::text), model, COALESCE(usage_policy_digest, ''::text))
 INDEX bss pricing_price_book_entry_pkey CREATE UNIQUE INDEX pricing_price_book_entry_pkey ON bss.pricing_price_book_entry USING btree (id)
 INDEX bss pricing_price_book_pkey CREATE UNIQUE INDEX pricing_price_book_pkey ON bss.pricing_price_book USING btree (id)
 INDEX bss pricing_price_book_tenant_id_code_key CREATE UNIQUE INDEX pricing_price_book_tenant_id_code_key ON bss.pricing_price_book USING btree (tenant_id, code)
@@ -356,6 +373,9 @@ INDEX bss pricing_price_price_book_entry_id_version_no_key CREATE UNIQUE INDEX p
 INDEX bss pricing_reference_op_due CREATE INDEX pricing_reference_op_due ON bss.pricing_reference_op USING btree (state, next_attempt_at) WHERE (state <> 'done'::text)
 INDEX bss pricing_reference_op_pkey CREATE UNIQUE INDEX pricing_reference_op_pkey ON bss.pricing_reference_op USING btree (op_id)
 INDEX bss pricing_settings_pkey CREATE UNIQUE INDEX pricing_settings_pkey ON bss.pricing_settings USING btree (tenant_id)
+INDEX bss pricing_usage_rating_policy_pkey CREATE UNIQUE INDEX pricing_usage_rating_policy_pkey ON bss.pricing_usage_rating_policy USING btree (tenant_id, policy_id, version)
+INDEX bss pricing_usage_rating_policy_tenant_id_digest_key CREATE UNIQUE INDEX pricing_usage_rating_policy_tenant_id_digest_key ON bss.pricing_usage_rating_policy USING btree (tenant_id, digest)
+INDEX bss pricing_usage_rating_policy_tenant_id_policy_id_version_dig_key CREATE UNIQUE INDEX pricing_usage_rating_policy_tenant_id_policy_id_version_dig_key ON bss.pricing_usage_rating_policy USING btree (tenant_id, policy_id, version, digest)
 INDEX public bss_pricing_outbox_body_pkey CREATE UNIQUE INDEX bss_pricing_outbox_body_pkey ON public.bss_pricing_outbox_body USING btree (id)
 INDEX public bss_pricing_outbox_dead_letters_pkey CREATE UNIQUE INDEX bss_pricing_outbox_dead_letters_pkey ON public.bss_pricing_outbox_dead_letters USING btree (id)
 INDEX public bss_pricing_outbox_incoming_pkey CREATE UNIQUE INDEX bss_pricing_outbox_incoming_pkey ON public.bss_pricing_outbox_incoming USING btree (id)
@@ -376,4 +396,6 @@ INDEX public idx_bss_pricing_outbox_trace_key CREATE INDEX idx_bss_pricing_outbo
 INDEX public idx_bss_pricing_outbox_trace_mail CREATE INDEX idx_bss_pricing_outbox_trace_mail ON public.bss_pricing_outbox_trace USING btree (owner_instance) WHERE ((completed_at IS NOT NULL) AND (notified_at IS NULL))
 INDEX public idx_bss_pricing_outbox_trace_retrying CREATE INDEX idx_bss_pricing_outbox_trace_retrying ON public.bss_pricing_outbox_trace USING btree (owner_instance) WHERE ((completed_at IS NULL) AND (retrying_since IS NOT NULL))
 TRIGGER bss.pricing_audit trg_pricing_audit_append_only CREATE TRIGGER trg_pricing_audit_append_only BEFORE DELETE OR UPDATE ON bss.pricing_audit FOR EACH ROW EXECUTE FUNCTION bss.pricing_audit_append_only()
+TRIGGER bss.pricing_usage_rating_policy pricing_usage_policy_immutable CREATE TRIGGER pricing_usage_policy_immutable BEFORE DELETE OR UPDATE ON bss.pricing_usage_rating_policy FOR EACH ROW EXECUTE FUNCTION bss.pricing_usage_policy_immutable()
 FUNCTION bss pricing_audit_append_only CREATE OR REPLACE FUNCTION bss.pricing_audit_append_only() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'pricing_audit is append-only: DELETE is not permitted'; END IF; IF OLD.seal_state = 'unsealed' AND NEW.seal_state = 'sealed' AND NEW.chain_id IS NOT NULL AND NEW.seq IS NOT NULL AND NEW.row_hash IS NOT NULL AND NEW.audit_id IS NOT DISTINCT FROM OLD.audit_id AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id AND NEW.actor_ref IS NOT DISTINCT FROM OLD.actor_ref AND NEW.action IS NOT DISTINCT FROM OLD.action AND NEW.subject_kind IS NOT DISTINCT FROM OLD.subject_kind AND NEW.subject_id IS NOT DISTINCT FROM OLD.subject_id AND NEW.subject_revision IS NOT DISTINCT FROM OLD.subject_revision AND NEW.error_code IS NOT DISTINCT FROM OLD.error_code AND NEW.attempted_key IS NOT DISTINCT FROM OLD.attempted_key AND NEW.reason IS NOT DISTINCT FROM OLD.reason AND NEW.correlation_id IS NOT DISTINCT FROM OLD.correlation_id AND NEW.written_at IS NOT DISTINCT FROM OLD.written_at AND NEW.session_id IS NOT DISTINCT FROM OLD.session_id AND NEW.ceremony_ref IS NOT DISTINCT FROM OLD.ceremony_ref THEN RETURN NEW; END IF; RAISE EXCEPTION 'pricing_audit is append-only: % is not permitted', TG_OP; END; $function$
+FUNCTION bss pricing_usage_policy_immutable CREATE OR REPLACE FUNCTION bss.pricing_usage_policy_immutable() RETURNS trigger LANGUAGE plpgsql AS $function$ BEGIN RAISE EXCEPTION 'usage rating policies are append-only'; END; $function$

@@ -14,3 +14,5 @@ pub mod price_book;
 pub mod price_book_entry;
 pub mod reference_op;
 pub mod settings;
+
+pub mod usage_rating_policy;

@@ -867,7 +867,8 @@ async fn unschedule_in(
 }
 /// `PATCH /plan-revisions/{id}`: the book and the sale date of an unlocked draft of the caller,
 /// at the version the caller read. A book change remaps every item whose entry has a twin in the
-/// new book (the same SKU, charge kind, period and model, D-427); an unmatched item keeps its old
+/// new book (the same SKU, charge kind, period, model and policy digest, plus equal dimension key,
+/// D-502); an unmatched item keeps its old
 /// entry, which the checks then show foreign (`ITEM_BOOK_FOREIGN`).
 /// A named book is one the caller's `price_book` read admits (`books`, D-456).
 /// # Errors
@@ -925,9 +926,9 @@ pub(super) async fn patch_revision(
         Some(version + 1),
     )?)
 }
-/// Point every item at the new book's entry of the same (SKU, charge kind, period, model), where
-/// there is one; the rest keep their entry. The model is part of an entry's key (D-427): a twin of
-/// another model is another entry, never a match.
+/// Point each item at a target with the same SKU, charge kind, period, model and policy digest,
+/// and a compatible dimension key (D-427, D-502). Without that full match it keeps its old entry,
+/// so the existing foreign-entry check blocks publication instead of changing policy implicitly.
 async fn remap(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -951,6 +952,8 @@ async fn remap(
                 && e.charge_kind == old.charge_kind
                 && e.period == old.period
                 && e.model == old.model
+                && e.usage_policy_digest == old.usage_policy_digest
+                && e.dimension_key == old.dimension_key
         }) else {
             continue;
         };

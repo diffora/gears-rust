@@ -19,3 +19,5 @@ pub mod reference_ticker;
 pub mod reference_events;
 
 pub(crate) mod pricing_reads;
+
+pub mod usage_policy_wire;

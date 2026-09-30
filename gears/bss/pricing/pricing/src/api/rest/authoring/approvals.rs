@@ -546,6 +546,8 @@ async fn proposals(
             stored.insert(m.id, m);
         }
     }
+    let policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &entries).await?;
     let by_id: BTreeMap<Uuid, &entity::price_book_entry::Model> =
         entries.iter().map(|p| (p.id, p)).collect();
     let owners: Vec<(Uuid, Uuid)> = entries.iter().map(|p| (p.id, p.book_id)).collect();
@@ -567,9 +569,13 @@ async fn proposals(
             .cloned()
             .map(|b| PricingPriceDto::of(b, &entry.model))
             .transpose()?;
+        let price = PricingPriceDto::of(m.clone(), &entry.model)?;
+        let policy = policies.get(&entry.id).cloned();
+        let mut entry = PricingPriceBookEntryDto::try_from(entry)?;
+        entry.usage_rating_policy = policy;
         out.push(PricingProposedPrice {
-            price: PricingPriceDto::of(m.clone(), &entry.model)?,
-            entry: PricingPriceBookEntryDto::try_from(entry)?,
+            price,
+            entry,
             chain: r.dim_value.clone().unwrap_or_else(|| "default".into()),
             before,
             pair_partner_id: r.paired_price_id,

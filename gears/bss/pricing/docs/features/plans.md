@@ -72,6 +72,13 @@ Holding multiple permissions never bypasses separation of duties.
 - [DECISIONS](../DECISIONS.md), D-384–D-433; spec means `docs/superpowers/specs/2026-09-24-pricebook-model-design.md` in the main checkout.
 - Source: spec §2 decisions 4–8, 13–17, §2.2, §5–§8, §10, §12–§13; the phase 2 plan supplies delivery boundaries and D-399/D-400.
 
+D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
+treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
+Changing a draft's book matches the full (SKU, charge kind, normalized period, model, policy digest)
+key and an equal dimension key. With no equivalent target, the item retains the old entry and
+ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
+legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
+
 ## 2. Actor Flows (CDSL)
 
 ### Prepare and publish a revision

@@ -19,6 +19,9 @@ pub struct Model {
     /// The entry's pricing model (D-427): fixed for its life, part of its key; every price of
     /// the entry is money in it. `flat`, `per_unit`, `graduated`, `volume` or `package`.
     pub model: String,
+    pub usage_policy_id: Option<Uuid>,
+    pub usage_policy_version: Option<i64>,
+    pub usage_policy_digest: Option<String>,
     pub dimension_key: Option<String>,
     pub invoice_line_override: Option<String>,
     pub reservation_id: Uuid,

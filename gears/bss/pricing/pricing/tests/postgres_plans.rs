@@ -140,6 +140,9 @@ async fn seed_on(pg: &pg_support::Pg) -> Seed {
             charge_kind: "usage".into(),
             period: None,
             model: "per_unit".into(),
+            usage_policy_id: None,
+            usage_policy_version: None,
+            usage_policy_digest: None,
             dimension_key: None,
             invoice_line_override: None,
             reservation_id: Uuid::new_v4(),
@@ -1463,6 +1466,9 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
         price_book_entry::Model {
             id: Uuid::new_v4(),
             sku_id: Uuid::new_v4(),
+            usage_policy_id: None,
+            usage_policy_version: None,
+            usage_policy_digest: None,
             dimension_key: Some("region".into()),
             reservation_id: Uuid::new_v4(),
             ..s.entry.clone()

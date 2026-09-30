@@ -116,6 +116,9 @@ pub async fn entry_of(
             model: bss_pricing::domain::price_book_entry::default_model(kind.parse().unwrap())
                 .as_str()
                 .into(),
+            usage_policy_id: None,
+            usage_policy_version: None,
+            usage_policy_digest: None,
             dimension_key: key.map(str::to_owned),
             invoice_line_override: line.map(str::to_owned),
             reservation_id: Uuid::new_v4(),
@@ -296,5 +299,31 @@ impl ReadFixture {
             },
             fixture,
         }
+    }
+}
+
+/// Stable policy fixture; content identity is independently covered by SDK digest vectors.
+pub fn vm_hour_policy() -> bss_pricing_sdk::terms::UsageRatingPolicy {
+    use bss_pricing_sdk::terms::*;
+    let content = UsageRatingPolicyInput {
+        rating_window: RatingWindow::BillingCycle,
+        aggregation_scope: AggregationScope::SubscriptionLine,
+        reset: Reset::RatingWindowStart,
+        quantity_semantics: QuantitySemantics {
+            meter: MeterRef {
+                usage_type_id: "vm-hours".into(),
+                version: "v1".into(),
+            },
+            unit: "VM\u{b7}hour".into(),
+            fold: Fold::Sum,
+            accrual_policy_version: "integrated-v1".into(),
+        },
+        partial_window: PartialWindow::ActualQuantityFullThresholds,
+    };
+    UsageRatingPolicy {
+        policy_id: Uuid::from_u128(1),
+        version: 1,
+        digest: bss_pricing_sdk::digest::policy_digest(&content),
+        content,
     }
 }
