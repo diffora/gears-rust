@@ -94,6 +94,9 @@ pub async fn put_settings(
     let tenant = ctx.subject_tenant_id();
     let before = settings(tx, scope, tenant).await?;
     check_version(version, before.version)?;
+    // D-457: only a text that differs from the stored one is capped, so settings stored before the
+    // caps never lock (the second review of W1b, L2).
+    super::caps::changed_settings_text(&body, &before)?;
     if !matches!(body.default_timing.as_str(), "advance" | "arrears") {
         return Err(invalid("default_timing", "TIMING_INVALID").into());
     }

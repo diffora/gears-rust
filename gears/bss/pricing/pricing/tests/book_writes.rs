@@ -1194,8 +1194,9 @@ async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
 /// Every text a request writes has an explicit length cap, counted in characters (D-457, the
 /// whole-branch review's PS-09 and PS-10): a code, a dimension key and value 64, a name 200, a
 /// note 2000 (400 `NOTE_TOO_LONG`), a GL code and a tax category 64, an invoice line template
-/// 2000. A longer one is 400 `FIELD_TOO_LONG` on the field, before anything is read or written;
-/// the caps themselves pass, in two-byte characters.
+/// 2000. A longer one is 400 `FIELD_TOO_LONG` on the field and nothing is written: before anything
+/// is read, except the two full-replace PUTs (the settings and the dimension registry), which judge
+/// against the stored row after their If-Match. The caps themselves pass, in two-byte characters.
 #[tokio::test]
 async fn every_text_a_request_writes_has_a_length_cap() {
     use bss_products_sdk::models::SkuType;

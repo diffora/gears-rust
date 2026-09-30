@@ -255,12 +255,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Replaces the tenant settings at the version the caller read (If-Match), currencies \
              included (required; [] offers any currency, D-438), and records the caller and the \
-             time. Rounding is half_up, half_even, half_down, up or down (D-437). The GL code and \
-             the tax category are at most 64 characters and each line template 2000 (D-457). \
-             Refusals: 400 TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, \
-             CURRENCY_INVALID, an invalid line template (LINE_TEMPLATE_EMPTY, \
-             LINE_TEMPLATE_INVALID), or FIELD_TOO_LONG on default_gl, default_tax_category or \
-             invoice_line_templates over its cap; 409 STALE_REVISION.",
+             time. Rounding is half_up, half_even, half_down, up or down (D-437). A GL code or a \
+             tax category other than the stored one is at most 64 characters, and a line template \
+             other than the one stored for its SKU type 2000; a stored text sent back unchanged \
+             passes whatever its length (D-457). Refusals: 400 TIMING_INVALID, ROUNDING_REQUIRED, \
+             ROUNDING_INVALID, SKU_TYPE_INVALID, CURRENCY_INVALID, an invalid line template \
+             (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID), or FIELD_TOO_LONG on a changed \
+             default_gl, default_tax_category or invoice_line_templates over its cap; 409 \
+             STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1665,8 +1667,8 @@ async fn put_settings(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
+    // D-457: the caps are judged against the stored settings (`configuration::put_settings`).
     let body: PricingSettingsPut = preconditions::parse_body(&body)?;
-    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
