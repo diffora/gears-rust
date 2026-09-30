@@ -44,7 +44,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
 | D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 |
-| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465; extended by D-466 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
@@ -102,6 +102,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
 | D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
 | D-465 | M | A revision may carry again a deprecated SKU its plan sells | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2); amends D-408 |
+| D-466 | M | Each check row names its items and its blocking prices | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7); extends D-408 |
 
 ## Entries
 
@@ -277,7 +278,9 @@ D-453 amends this entry: the published revision is the one in effect today (D-44
 
 D-465 amends this entry: "newly added" does not cover a re-add. The item create admits a deprecated SKU that the plan's published revision in effect carries, as the checks do, so an item removed from a draft can be added back; any other deprecated SKU stays ITEM_SKU_DEPRECATED.
 
-**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465.
+D-466 extends this entry: each check row names the items that turn it red and the pending prices behind its blocked_by.
+
+**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465; extended by D-466.
 
 #### D-409 [H] Promotions are deferred (owner, 2026-09-25)
 
@@ -972,3 +975,18 @@ The checks accept a deprecated SKU that the plan's published revision in effect 
 - **The tests.** tests/plan_item_doors.rs: a SKU deprecated after its plan's publication, removed from the copy and added back (201, confirmed, its check green); another deprecated SKU refused; the carried SKU refused in a clone. tests/plan_item_references.rs: the create op, below the door, writes a carried deprecated SKU and refuses another with the door's answer, its op keeping SKU_DEPRECATED. A probe of the door alone turned the door test red and left the op's green; a probe of the op turned both red.
 
 **Source:** Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2). Amends D-408.
+
+#### D-466 [M] Each check row names its items and its blocking prices
+
+**Status:** DECIDED 2026-09-30.
+
+The plan's items table marks the items that a failing check is about (ask 29). A check row named its items only in the prose of detail, and blocked_by named approval units only, so the screen kept a copy of the rules.
+
+- **The fields.** Each row of GET /plan-revisions/{id}/checks, and each row of the REVISION_CHECKS_RED body (whose detail is the red rows as the checks door renders them), gains two fields. code, ok, label, detail, info and blocked_by keep their names and their meaning.
+  - subjects, [PricingPlanCheckSubject { item_id, sku_id, price_book_entry_id }]: the items that turn the row red, in the revision's item order. price_book_entry_id is null for an item that names no entry. A green row names no item. A plan-wide row names none either: PLAN_NAME, PLAN_BOOK, PLAN_BOOK_VALIDITY, PLAN_ITEMS and the information rows DESCRIPTORS and APPROVAL.
+  - blocked_by_prices, [PricingPlanCheckBlockingPrice { unit_id, price_id, price_book_entry_id }]: the pending prices behind blocked_by, one per price, ordered by unit and then by price. blocked_by is built as before: the units that hold a pending price of an entry that an uncovered item names, on any chain, because the default chain can cover a value. The units of blocked_by_prices are exactly blocked_by.
+- **Which items.** An item-level row names the items that its detail lists. ITEM_ENTRY_MISSING, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_LOST, ITEM_BUNDLE_SKU, CHARGE_KIND_SKU_TYPE, ITEM_BOOK_FOREIGN, ITEM_UNCOVERED, INCLUDED_QTY, ITEM_SKU_DEPRECATED, ITEM_SKU_UNAVAILABLE, ITEM_REFERENCE_PENDING and ITEM_REFERENCE_LOST name each item they refuse. METER_DUPLICATE names both items of each pair that meters one usage type. FREQUENCY_MIXED names every recurring item priced in the plan's book, because each bills in one of the mixed periods. Only ITEM_UNCOVERED has a blocked_by, so only it has blocked_by_prices.
+- **The reads.** No read is added: the checks' context already holds each item, the entry it names and that entry's pending prices with their units.
+- **The tests.** src/domain/plan_tests.rs: a table over every code that the checks emit, enumerated from what the checks answer over the table's contexts, each context turning its code red (the information rows stay green) and naming its items; in every context a green row names no item and no price, and each row's blocked_by is exactly the units of its blocked_by_prices; an uncovered entry's pending prices, one row per price. tests/plan_item_doors.rs: ITEM_UNCOVERED names its item and the pending price of a submitted prices unit, and names neither once the unit is approved. tests/plan_revision_approvals.rs: the REVISION_CHECKS_RED body carries both fields and equals the checks door's red rows. Probes that dropped the blocking prices, the mixed periods' items and the DTO's subjects were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7). Extends D-408.

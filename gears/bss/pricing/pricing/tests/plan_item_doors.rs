@@ -517,7 +517,15 @@ async fn checks_read_every_sku_fresh_and_answer_the_sale_date() {
     assert_eq!(catalog.reads(), reads + 1, "one fresh read per item SKU");
     let first = &green["checks"][0];
     assert_eq!(first["code"], "PLAN_NAME");
-    for field in ["ok", "label", "detail", "info", "blocked_by"] {
+    for field in [
+        "ok",
+        "label",
+        "detail",
+        "info",
+        "blocked_by",
+        "subjects",
+        "blocked_by_prices",
+    ] {
         assert!(!first[field].is_null(), "{field}: {first}");
     }
     assert_eq!(row(&green, "APPROVAL")["info"], true);
@@ -561,6 +569,7 @@ async fn checks_name_the_pending_price_unit_that_would_cover_an_item() {
     )
     .await;
     assert_eq!(s, 201, "{b}");
+    let item_id = b["id"].clone();
     let (_, _, tag) = f
         .call("GET", "/approval-policy", json!({}), None, None)
         .await;
@@ -603,6 +612,16 @@ async fn checks_name_the_pending_price_unit_that_would_cover_an_item() {
     let uncovered = row(&red, "ITEM_UNCOVERED");
     assert_eq!(uncovered["ok"], false, "{red}");
     assert_eq!(uncovered["blocked_by"], json!([unit]));
+    // D-466: the row names the item it is about and the pending price behind its unit.
+    assert_eq!(
+        uncovered["subjects"],
+        json!([{"item_id":item_id,"sku_id":storage,"price_book_entry_id":e}])
+    );
+    assert_eq!(
+        uncovered["blocked_by_prices"],
+        json!([{"unit_id":unit,"price_id":price,"price_book_entry_id":e}])
+    );
+    assert_eq!(row(&red, "PLAN_NAME")["subjects"], json!([]), "plan-wide");
     let (s, b, _) = f
         .call_as(
             &f.user(),
@@ -617,6 +636,11 @@ async fn checks_name_the_pending_price_unit_that_would_cover_an_item() {
     let (_, green) = checks(&f, rev).await;
     assert_eq!(row(&green, "ITEM_UNCOVERED")["ok"], true, "{green}");
     assert_eq!(row(&green, "ITEM_UNCOVERED")["blocked_by"], json!([]));
+    assert_eq!(row(&green, "ITEM_UNCOVERED")["subjects"], json!([]));
+    assert_eq!(
+        row(&green, "ITEM_UNCOVERED")["blocked_by_prices"],
+        json!([])
+    );
     assert_eq!(green["ready"], true, "{green}");
 }
 

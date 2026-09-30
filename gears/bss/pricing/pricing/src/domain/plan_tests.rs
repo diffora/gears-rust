@@ -543,6 +543,214 @@ fn the_check_list_is_the_plans_codes_in_order() {
     assert!(ready(&checks(&c, today())), "{:?}", checks(&c, today()));
 }
 
+/// The subject an item of `c` is (D-466): the item, its SKU and the entry it names.
+fn subject_of(c: &PlanContext, n: u128) -> Subject {
+    let it = c.items.iter().find(|i| i.id == id(n)).unwrap();
+    Subject {
+        item_id: it.id,
+        sku_id: it.sku_id,
+        price_book_entry_id: it.price_book_entry_id,
+    }
+}
+
+/// D-466: a table over EVERY check code the checks emit, each with a context that turns it red
+/// (the two information rows are always green), naming the items it reports. The codes are
+/// enumerated from what `checks` answers over the table's contexts, not from a list in the docs;
+/// every other row of each context is judged too: a green row names no item and no price.
+#[test]
+fn every_check_code_names_the_items_that_turn_it_red() {
+    let named = |c: &PlanContext, items: &[u128]| -> Vec<Subject> {
+        items.iter().map(|n| subject_of(c, *n)).collect()
+    };
+    let mut table: Vec<(&str, PlanContext, Vec<u128>)> = Vec::new();
+    let mut unnamed = pro();
+    unnamed.plan.name = "  ".into();
+    table.push(("PLAN_NAME", unnamed, vec![]));
+    let mut bookless = pro();
+    bookless.books.retain(|b| b.id != id(EUR));
+    table.push(("PLAN_BOOK", bookless, vec![]));
+    let mut late = ctx(
+        "P",
+        CONTRACT,
+        vec![item(1, WP_BASIC, Some(E_C1), Treatment::Paid)],
+    );
+    late.revision.available_from = Some(date("2027-01-05"));
+    table.push(("PLAN_BOOK_VALIDITY", late, vec![]));
+    table.push(("PLAN_ITEMS", ctx("P", EUR, vec![]), vec![]));
+    table.push((
+        "ITEM_ENTRY_MISSING",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid),
+                item(2, SUPPORT, None, Treatment::Paid),
+            ],
+        ),
+        vec![2],
+    ));
+    table.push((
+        "ITEM_ENTRY_SKU_MISMATCH",
+        ctx(
+            "P",
+            EUR,
+            vec![item(1, STORAGE_COLD, Some(E_STORAGE), Treatment::Paid)],
+        ),
+        vec![1],
+    ));
+    let mut lost_entry = pro();
+    lost_entry
+        .entries
+        .iter_mut()
+        .find(|e| e.id == id(E_WPB_M))
+        .unwrap()
+        .reference_state = EntryReference::Lost;
+    table.push(("ITEM_ENTRY_LOST", lost_entry, vec![1]));
+    table.push((
+        "ITEM_BUNDLE_SKU",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid),
+                included(2, SUITE, None, None),
+            ],
+        ),
+        vec![2],
+    ));
+    table.push((
+        "CHARGE_KIND_SKU_TYPE",
+        ctx(
+            "P",
+            EUR,
+            vec![item(1, SUPPORT, Some(E_STORAGE), Treatment::Paid)],
+        ),
+        vec![1],
+    ));
+    table.push((
+        "ITEM_BOOK_FOREIGN",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, WP_BASIC, Some(E_P_WPB_M), Treatment::Paid),
+                item(2, STORAGE, Some(E_STORAGE), Treatment::Paid),
+            ],
+        ),
+        vec![1],
+    ));
+    let mut early = pro();
+    early.revision.available_from = Some(date("2025-12-01"));
+    table.push(("ITEM_UNCOVERED", early, vec![1, 2]));
+    table.push(("FREQUENCY_MIXED", basic(), vec![1, 3]));
+    table.push((
+        "METER_DUPLICATE",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, STORAGE, Some(E_STORAGE), Treatment::Paid),
+                item(2, WP_BASIC, Some(E_WPB_M), Treatment::Paid),
+                item(3, STORAGE_COLD, Some(E_STORAGE_COLD), Treatment::Paid),
+            ],
+        ),
+        vec![1, 3],
+    ));
+    table.push((
+        "INCLUDED_QTY",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid),
+                included(2, STORAGE, Some(E_STORAGE), None),
+            ],
+        ),
+        vec![2],
+    ));
+    let mut deprecated = pro();
+    deprecated
+        .skus
+        .iter_mut()
+        .find(|s| s.id == id(WP_BASIC))
+        .unwrap()
+        .lifecycle = Lifecycle::Deprecated;
+    table.push(("ITEM_SKU_DEPRECATED", deprecated, vec![1]));
+    let mut retired = pro();
+    retired
+        .skus
+        .iter_mut()
+        .find(|s| s.id == id(STORAGE))
+        .unwrap()
+        .lifecycle = Lifecycle::Retired;
+    table.push(("ITEM_SKU_UNAVAILABLE", retired, vec![2]));
+    let mut unreserved = pro();
+    unreserved.items[0].reference = Reference {
+        state: ReferenceState::Unreserved,
+        reservation_id: None,
+    };
+    table.push(("ITEM_REFERENCE_PENDING", unreserved, vec![1]));
+    let mut lost = pro();
+    lost.items[1].reference = Reference {
+        state: ReferenceState::Lost,
+        reservation_id: Some(id(97)),
+    };
+    table.push(("ITEM_REFERENCE_LOST", lost, vec![2]));
+    table.push(("DESCRIPTORS", pro(), vec![]));
+    table.push(("APPROVAL", pro(), vec![]));
+
+    let mut emitted = BTreeSet::new();
+    for (code, c, items) in &table {
+        let rows = checks(c, today());
+        emitted.extend(rows.iter().map(|k| k.code));
+        let k = rows
+            .iter()
+            .find(|k| k.code == *code)
+            .unwrap_or_else(|| panic!("{code} is not emitted by its context"));
+        assert_eq!(k.ok, k.info, "{code} is red, or an information row: {k:?}");
+        assert_eq!(k.subjects, named(c, items), "{code}: {k:?}");
+        for other in &rows {
+            if other.ok {
+                assert!(
+                    other.subjects.is_empty() && other.blocked_by_prices.is_empty(),
+                    "{code}'s context: the green {} names nothing: {other:?}",
+                    other.code
+                );
+            }
+            let units: BTreeSet<Uuid> = other.blocked_by_prices.iter().map(|p| p.unit_id).collect();
+            assert_eq!(
+                other.blocked_by,
+                units.into_iter().collect::<Vec<_>>(),
+                "{code}'s context: {} names exactly its prices' units",
+                other.code
+            );
+        }
+    }
+    let tabled: BTreeSet<&str> = table.iter().map(|(code, _, _)| *code).collect();
+    assert_eq!(
+        tabled, emitted,
+        "the table covers every code the checks emit"
+    );
+    let early = &table
+        .iter()
+        .find(|(code, _, _)| *code == "ITEM_UNCOVERED")
+        .unwrap()
+        .1;
+    let uncovered = checks(early, today())
+        .into_iter()
+        .find(|k| k.code == "ITEM_UNCOVERED")
+        .unwrap();
+    assert_eq!(
+        uncovered.blocked_by_prices,
+        vec![BlockingPrice {
+            unit_id: id(AP_STORAGE_V3),
+            price_id: Uuid::from_u128(E_STORAGE * 1000 + 3),
+            price_book_entry_id: id(E_STORAGE),
+        }],
+        "the pending storage price blocks the uncovered storage item"
+    );
+}
+
 #[test]
 fn plan_name_is_required() {
     let mut c = pro();
@@ -694,6 +902,21 @@ fn item_uncovered_names_every_pending_unit_of_the_uncovered_entry() {
     let k = check(&c, "ITEM_UNCOVERED").unwrap();
     assert!(!k.ok);
     assert_eq!(k.blocked_by, vec![id(501), id(502)], "distinct and ordered");
+    // D-466: one row per pending price, ordered by unit then price, each naming its entry.
+    let blocking = |unit: u128, price: u128| BlockingPrice {
+        unit_id: id(unit),
+        price_id: Uuid::from_u128(price),
+        price_book_entry_id: id(31),
+    };
+    assert_eq!(
+        k.blocked_by_prices,
+        vec![
+            blocking(501, 31_002),
+            blocking(501, 31_009),
+            blocking(502, 31_001)
+        ]
+    );
+    assert_eq!(k.subjects, vec![subject_of(&c, 2)]);
     assert!(k.detail.contains("Storage"), "{}", k.detail);
     let green_check = check(&pro(), "ITEM_UNCOVERED").unwrap();
     assert!(green_check.ok);

@@ -138,6 +138,18 @@ async fn checks(f: &Fixture, revision: Uuid) -> Value {
     assert_eq!(s, 200, "{b}");
     b
 }
+/// The red rows of a checks answer, as the `REVISION_CHECKS_RED` body carries them.
+fn checks_red_rows(checks: &Value) -> Value {
+    Value::Array(
+        checks["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["ok"] == false)
+            .cloned()
+            .collect(),
+    )
+}
 fn red_codes(checks: &Value) -> Vec<String> {
     checks["checks"]
         .as_array()
@@ -245,7 +257,13 @@ async fn a_red_revision_is_refused_with_the_checks_doors_red_checks_and_no_unit(
         .map(|c| c["code"].as_str().unwrap())
         .collect();
     assert_eq!(codes, expected, "the same checks as the checks door: {b}");
-    for field in ["label", "detail", "blocked_by"] {
+    for field in [
+        "label",
+        "detail",
+        "blocked_by",
+        "subjects",
+        "blocked_by_prices",
+    ] {
         assert!(!detail[0][field].is_null(), "{field}: {detail}");
     }
     assert!(units(&f).await.is_empty(), "no unit is written");
@@ -262,7 +280,7 @@ async fn a_red_revision_names_the_pending_price_unit_that_blocks_it() {
     let (_, rev) = plan(&f, "pro", eur).await;
     let sku = catalog.sku(SkuType::Usage);
     let e = entry(&f, eur, sku, "usage", None).await;
-    item(&f, rev, sku, Some(e), "paid").await;
+    let it = item(&f, rev, sku, Some(e), "paid").await;
     let (_, _, tag) = f
         .call("GET", "/approval-policy", json!({}), None, None)
         .await;
@@ -303,6 +321,20 @@ async fn a_red_revision_names_the_pending_price_unit_that_blocks_it() {
     let detail: Value = serde_json::from_str(b["detail"].as_str().unwrap()).unwrap();
     assert_eq!(detail[0]["code"], "ITEM_UNCOVERED");
     assert_eq!(detail[0]["blocked_by"], json!([receipt["unit"]["id"]]));
+    // D-466: the refusal's rows carry the checks door's subjects and blocking prices.
+    assert_eq!(
+        detail[0]["subjects"],
+        json!([{"item_id":it.id,"sku_id":sku,"price_book_entry_id":e}])
+    );
+    assert_eq!(
+        detail[0]["blocked_by_prices"],
+        json!([{"unit_id":receipt["unit"]["id"],"price_id":price,"price_book_entry_id":e}])
+    );
+    assert_eq!(
+        detail,
+        checks_red_rows(&checks(&f, rev).await),
+        "the checks door's rows"
+    );
     assert!(
         text(&b).contains(receipt["unit"]["id"].as_str().unwrap()),
         "the field violation names the blocking unit too: {b}"

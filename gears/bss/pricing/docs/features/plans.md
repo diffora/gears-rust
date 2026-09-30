@@ -93,7 +93,7 @@ Holding multiple permissions never bypasses separation of duties.
 1. [x] - `p1` - Read every item SKU fresh and check it is allowed, non-bundle and not newly deprecated (D-408); validate every item reference's receipt (D-413) and the charge treatment. - `inst-plans-revision-checks-1`
 2. [x] - `p1` - Enforce one recurring frequency, unique usage meter and usage-only included_qty; reject foreign-book entries. - `inst-plans-revision-checks-2`
 3. [x] - `p1` - For every registered dimension value, verify sale-date coverage and an open tail through its own or the default chain; check book validity. - `inst-plans-revision-checks-3`
-4. [x] - `p1` - When uncovered, compute blocking pending price unit ids from current prices; return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
+4. [x] - `p1` - When uncovered, compute blocking pending price unit ids from current prices, with the pending prices behind them, and name on every row the items that turn it red (D-466); return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
 
 ### revision-apply
 
@@ -166,7 +166,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-blocked-by`
 
-Checks derive blocked_by from current pending prices of uncovered entries. A red draft creates no plan_revision unit and becomes eligible only after a fresh successful check (spec §6, §8).
+Checks derive blocked_by from current pending prices of uncovered entries, and blocked_by_prices names each of those prices with its unit and entry; every row names the items that turn it red, in the revision's item order, and a plan-wide or green row names none (D-466). A red draft creates no plan_revision unit and becomes eligible only after a fresh successful check (spec §6, §8).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 

@@ -1022,6 +1022,29 @@ fn nullable<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
 ) -> Result<Option<Option<T>>, D::Error> {
     <Option<T> as serde::Deserialize>::deserialize(d).map(Some)
 }
+/// An item a check row is about (D-466): the item, its SKU and the entry it names.
+#[toolkit_macros::api_dto(response)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
+)]
+pub struct PricingPlanCheckSubject {
+    pub item_id: Uuid,
+    pub sku_id: Uuid,
+    /// Null for an item that names no entry.
+    pub price_book_entry_id: Option<Uuid>,
+}
+/// A pending price that blocks a check row (D-466): its approval unit, the price and its entry.
+#[toolkit_macros::api_dto(response)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
+)]
+pub struct PricingPlanCheckBlockingPrice {
+    pub unit_id: Uuid,
+    pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
+}
 /// One row of a revision's checks (D-408). An `info` row is always ok and never blocks.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanCheckDto {
@@ -1033,6 +1056,13 @@ pub struct PricingPlanCheckDto {
     /// The approval units whose pending prices would cover what is uncovered: computed on every
     /// read, never stored (spec §6).
     pub blocked_by: Vec<Uuid>,
+    /// The items that turn the row red, in the revision's item order (D-466): empty for a green
+    /// row and for a plan-wide one (the plan's name, its book, the book's validity, the item
+    /// count, and the information rows).
+    pub subjects: Vec<PricingPlanCheckSubject>,
+    /// The pending prices behind `blocked_by`, one per price, ordered by unit then price (D-466):
+    /// the units they name are exactly `blocked_by`.
+    pub blocked_by_prices: Vec<PricingPlanCheckBlockingPrice>,
 }
 impl From<crate::domain::plan::Check> for PricingPlanCheckDto {
     fn from(c: crate::domain::plan::Check) -> Self {
@@ -1043,6 +1073,24 @@ impl From<crate::domain::plan::Check> for PricingPlanCheckDto {
             detail: c.detail,
             info: c.info,
             blocked_by: c.blocked_by,
+            subjects: c
+                .subjects
+                .into_iter()
+                .map(|s| PricingPlanCheckSubject {
+                    item_id: s.item_id,
+                    sku_id: s.sku_id,
+                    price_book_entry_id: s.price_book_entry_id,
+                })
+                .collect(),
+            blocked_by_prices: c
+                .blocked_by_prices
+                .into_iter()
+                .map(|p| PricingPlanCheckBlockingPrice {
+                    unit_id: p.unit_id,
+                    price_id: p.price_id,
+                    price_book_entry_id: p.price_book_entry_id,
+                })
+                .collect(),
         }
     }
 }

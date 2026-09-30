@@ -17,7 +17,7 @@ use super::{
 };
 use bss_products_sdk::models::{Lifecycle, Sku, SkuType};
 use rust_decimal::Decimal;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -125,6 +125,31 @@ pub struct PlanContext {
     pub quorum: u32,
     pub defaults: Defaults,
 }
+/// An item a check row is about (D-466): the item, its SKU and the entry it names.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
+)]
+pub struct Subject {
+    pub item_id: Uuid,
+    pub sku_id: Uuid,
+    pub price_book_entry_id: Option<Uuid>,
+}
+/// A pending price that blocks a check row (D-466): its approval unit, the price and its entry.
+/// Ordered by unit, then price, as `blocked_by` orders its units.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the wire names of ask 29, each an id of another aggregate (D-466)"
+)]
+pub struct BlockingPrice {
+    pub unit_id: Uuid,
+    pub price_id: Uuid,
+    pub price_book_entry_id: Uuid,
+}
 /// One check row. An `info` row is always ok and never blocks.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +162,12 @@ pub struct Check {
     /// The approval units whose pending prices would cover what is uncovered; computed, never
     /// stored (spec §6).
     pub blocked_by: Vec<Uuid>,
+    /// The items that turn the row red, in the revision's item order (D-466): empty for a green
+    /// row and for a plan-wide one.
+    pub subjects: Vec<Subject>,
+    /// The pending prices behind `blocked_by`, one per price (D-466): the units they name are
+    /// exactly `blocked_by`.
+    pub blocked_by_prices: Vec<BlockingPrice>,
 }
 /// Whether one item is priced on the sale date, in the plan's book.
 #[toolkit_macros::domain_model]
@@ -146,6 +177,8 @@ pub struct ItemCoverage {
     pub detail: String,
     pub version_no: Option<i32>,
     pub blocked_by: Vec<Uuid>,
+    /// The pending prices behind `blocked_by` (D-466).
+    pub blocked_by_prices: Vec<BlockingPrice>,
 }
 
 /// A stored revision as [`effective`] reads it: the columns its effective state depends on.
@@ -305,24 +338,31 @@ fn values_of<'a>(ctx: &'a PlanContext, e: &Entry) -> &'a [String] {
         .and_then(|key| ctx.dimension_values.iter().find(|(k, _)| k == key))
         .map_or(&[], |(_, values)| values.as_slice())
 }
-/// Every approval unit holding a pending price of the entry: the default chain can cover a value,
-/// so a pending default price blocks it as much as the value's own.
-fn pending_units(e: &Entry) -> Vec<Uuid> {
+/// Every pending price of the entry, with the approval unit that holds it: the default chain can
+/// cover a value, so a pending default price blocks it as much as the value's own. Answers the
+/// units, distinct and ordered (`blocked_by`), and the prices behind them (D-466).
+fn pending_units(e: &Entry) -> (Vec<Uuid>, Vec<BlockingPrice>) {
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
-    e.pending
+    let prices: BTreeSet<BlockingPrice> = e
+        .pending
         .iter()
-        .map(|p| p.unit_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
+        .map(|p| BlockingPrice {
+            unit_id: p.unit_id,
+            price_id: p.price_id,
+            price_book_entry_id: e.id,
+        })
+        .collect();
+    let units: BTreeSet<Uuid> = prices.iter().map(|p| p.unit_id).collect();
+    (units.into_iter().collect(), prices.into_iter().collect())
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-4
 }
-fn uncovered(detail: String, blocked_by: Vec<Uuid>) -> ItemCoverage {
+fn uncovered(detail: String, blocking: (Vec<Uuid>, Vec<BlockingPrice>)) -> ItemCoverage {
     ItemCoverage {
         ok: false,
         detail,
         version_no: None,
-        blocked_by,
+        blocked_by: blocking.0,
+        blocked_by_prices: blocking.1,
     }
 }
 
@@ -337,17 +377,21 @@ pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverag
                 detail: "no charge".into(),
                 version_no: None,
                 blocked_by: vec![],
+                blocked_by_prices: vec![],
             }
         } else {
-            uncovered("no price".into(), vec![])
+            uncovered("no price".into(), (vec![], vec![]))
         };
     };
     let Some(b) = book(ctx) else {
-        return uncovered("attach a price book".into(), vec![]);
+        return uncovered("attach a price book".into(), (vec![], vec![]));
     };
     if e.book_id != b.id {
         let other = book_by_id(ctx, e.book_id).map_or("another book", |o| o.book.name.as_str());
-        return uncovered(format!("priced in {other}, not {}", b.book.name), vec![]);
+        return uncovered(
+            format!("priced in {other}, not {}", b.book.name),
+            (vec![], vec![]),
+        );
     }
     let date = sale_date(&ctx.revision, today);
     let values = values_of(ctx, e);
@@ -396,49 +440,69 @@ pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverag
         ),
         version_no,
         blocked_by: vec![],
+        blocked_by_prices: vec![],
     }
 }
 
+/// What one check found: the lines its detail lists, and the items they name (D-466).
+#[derive(Default)]
+struct Found {
+    lines: Vec<String>,
+    items: BTreeSet<Uuid>,
+}
+impl Found {
+    fn add(&mut self, line: impl Into<String>, items: &[Uuid]) {
+        self.lines.push(line.into());
+        self.items.extend(items.iter().copied());
+    }
+    fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
 /// What the item walk found, one list per check.
 #[derive(Default)]
 struct Tally {
-    no_entry: Vec<String>,
-    mismatch: Vec<String>,
-    entry_lost: Vec<String>,
-    bundle: Vec<String>,
-    kind_clash: Vec<String>,
-    foreign: Vec<String>,
-    uncovered: Vec<String>,
+    no_entry: Found,
+    mismatch: Found,
+    entry_lost: Found,
+    bundle: Found,
+    kind_clash: Found,
+    foreign: Found,
+    uncovered: Found,
     blocked: BTreeSet<Uuid>,
-    periods: BTreeSet<String>,
-    meters: Vec<(String, String)>,
-    meter_dup: Vec<String>,
-    included_qty: Vec<String>,
-    deprecated: Vec<String>,
-    unavailable: Vec<String>,
-    pending: Vec<String>,
-    lost: Vec<String>,
+    blocking: BTreeSet<BlockingPrice>,
+    /// Each recurring period with the items that bill in it.
+    periods: BTreeMap<String, Vec<Uuid>>,
+    /// Each metered usage type with the first item that meters it.
+    meters: Vec<(String, String, Uuid)>,
+    meter_dup: Found,
+    included_qty: Found,
+    deprecated: Found,
+    unavailable: Found,
+    pending: Found,
+    lost: Found,
 }
 
 /// Lifecycle and reference, for every item: a fresh SKU read and a receipt (D-408, D-413).
 fn tally_sku_and_reference(ctx: &PlanContext, item: &Item, name: &str, t: &mut Tally) {
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
+    let it = [item.id];
     match sku_of(ctx, item.sku_id).map(|s| s.lifecycle) {
-        None => t.unavailable.push(format!("{name} - not found")),
+        None => t.unavailable.add(format!("{name} - not found"), &it),
         Some(Lifecycle::Draft | Lifecycle::Retiring | Lifecycle::Retired) => {
-            t.unavailable.push(name.to_owned());
+            t.unavailable.add(name, &it);
         }
         Some(Lifecycle::Deprecated) if !ctx.published_sku_ids.contains(&item.sku_id) => {
-            t.deprecated.push(name.to_owned());
+            t.deprecated.add(name, &it);
         }
         Some(Lifecycle::Published | Lifecycle::Deprecated) => {}
     }
     match item.reference.state {
         ReferenceState::Confirmed => {}
         ReferenceState::ConfirmationPending if item.reference.reservation_id.is_some() => {}
-        ReferenceState::Lost => t.lost.push(name.to_owned()),
+        ReferenceState::Lost => t.lost.add(name, &it),
         ReferenceState::Unreserved | ReferenceState::ConfirmationPending => {
-            t.pending.push(name.to_owned());
+            t.pending.add(name, &it);
         }
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
@@ -449,32 +513,38 @@ fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mu
     if let Some(e) = e
         && validate_entry_kind(e.charge_kind, sku.r#type).is_err()
     {
-        t.kind_clash.push(format!(
-            "{name} - entry is {}, SKU is {}",
-            e.charge_kind.as_str(),
-            sku.r#type.as_str()
-        ));
+        t.kind_clash.add(
+            format!(
+                "{name} - entry is {}, SKU is {}",
+                e.charge_kind.as_str(),
+                sku.r#type.as_str()
+            ),
+            &[item.id],
+        );
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     if let Some(meter) = &sku.usage_type_ref
         && (e.is_some() || item.treatment == Treatment::Included)
     {
-        if let Some((_, first)) = t.meters.iter().find(|(m, _)| m == meter) {
-            t.meter_dup.push(format!("{name} <-> {first}"));
+        if let Some((_, first, first_item)) = t.meters.iter().find(|(m, _, _)| m == meter) {
+            t.meter_dup
+                .add(format!("{name} <-> {first}"), &[*first_item, item.id]);
         } else {
-            t.meters.push((meter.clone(), name.to_owned()));
+            t.meters.push((meter.clone(), name.to_owned(), item.id));
         }
     }
     let usage = sku.r#type == SkuType::Usage;
     let needs_quantity = item.treatment == Treatment::Included && usage;
     if needs_quantity && item.included_qty.is_none_or(|q| q < Decimal::ZERO) {
         t.included_qty
-            .push(format!("{name}: set the included quantity"));
+            .add(format!("{name}: set the included quantity"), &[item.id]);
     }
     if item.included_qty.is_some() && !usage {
-        t.included_qty
-            .push(format!("{name}: an included quantity is for usage only"));
+        t.included_qty.add(
+            format!("{name}: an included quantity is for usage only"),
+            &[item.id],
+        );
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
 }
@@ -487,12 +557,13 @@ fn tally_pricing(
     t: &mut Tally,
     today: Date,
 ) {
+    let it = [item.id];
     if e.sku_id != item.sku_id {
         t.mismatch
-            .push(format!("{name} - the entry prices another SKU"));
+            .add(format!("{name} - the entry prices another SKU"), &it);
     }
     if e.reference_state == EntryReferenceState::Lost {
-        t.entry_lost.push(name.to_owned());
+        t.entry_lost.add(name, &it);
     }
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     if e.book_id != ctx.revision.book_id {
@@ -502,22 +573,28 @@ fn tally_pricing(
                 |b| format!("{} ({})", b.book.name, b.book.currency),
             )
         };
-        t.foreign.push(format!(
-            "{name} - priced in {}, the plan reads {}",
-            describe(e.book_id),
-            describe(ctx.revision.book_id)
-        ));
+        t.foreign.add(
+            format!(
+                "{name} - priced in {}, the plan reads {}",
+                describe(e.book_id),
+                describe(ctx.revision.book_id)
+            ),
+            &it,
+        );
         return;
     }
     if e.charge_kind == ChargeKind::Recurring {
         t.periods
-            .insert(e.period.clone().unwrap_or_else(|| "-".to_owned()));
+            .entry(e.period.clone().unwrap_or_else(|| "-".to_owned()))
+            .or_default()
+            .push(item.id);
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     let cov = item_coverage(ctx, item, today);
     if !cov.ok {
-        t.uncovered.push(format!("{name} - {}", cov.detail));
+        t.uncovered.add(format!("{name} - {}", cov.detail), &it);
         t.blocked.extend(cov.blocked_by);
+        t.blocking.extend(cov.blocked_by_prices);
     }
 }
 fn tally(ctx: &PlanContext, today: Date) -> Tally {
@@ -529,7 +606,7 @@ fn tally(ctx: &PlanContext, today: Date) -> Tally {
         if let Some(sku) = sku_of(ctx, item.sku_id) {
             // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
             if sku.r#type == SkuType::Bundle {
-                t.bundle.push(name);
+                t.bundle.add(name, &[item.id]);
                 continue;
             }
             // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
@@ -540,7 +617,7 @@ fn tally(ctx: &PlanContext, today: Date) -> Tally {
         }
         match e {
             Some(e) => tally_pricing(ctx, e, item, &name, &mut t, today),
-            None => t.no_entry.push(name),
+            None => t.no_entry.add(name, &[item.id]),
         }
     }
     t
@@ -554,6 +631,39 @@ fn row(code: &'static str, ok: bool, label: impl Into<String>, detail: impl Into
         detail: detail.into(),
         info: false,
         blocked_by: vec![],
+        subjects: vec![],
+        blocked_by_prices: vec![],
+    }
+}
+/// The items of `ids`, in the revision's item order (D-466).
+fn subjects(ctx: &PlanContext, ids: &BTreeSet<Uuid>) -> Vec<Subject> {
+    ctx.items
+        .iter()
+        .filter(|it| ids.contains(&it.id))
+        .map(|it| Subject {
+            item_id: it.id,
+            sku_id: it.sku_id,
+            price_book_entry_id: it.price_book_entry_id,
+        })
+        .collect()
+}
+/// A row of what the walk `found`: red while it found anything, its detail the lines found (or
+/// `otherwise`), its subjects the items they name.
+fn found_row(
+    ctx: &PlanContext,
+    code: &'static str,
+    label: impl Into<String>,
+    found: &Found,
+    otherwise: &str,
+) -> Check {
+    Check {
+        subjects: subjects(ctx, &found.items),
+        ..row(
+            code,
+            found.is_empty(),
+            label,
+            listed(&found.lines, otherwise),
+        )
     }
 }
 fn listed(found: &[String], otherwise: &str) -> String {
@@ -625,109 +735,129 @@ fn plan_rows(ctx: &PlanContext, sale: Date) -> Vec<Check> {
 }
 fn entry_rows(ctx: &PlanContext, t: &Tally, sale: Date) -> Vec<Check> {
     let currency = currency(ctx).unwrap_or("no book");
-    let mut uncovered = row(
+    let mut uncovered = found_row(
+        ctx,
         "ITEM_UNCOVERED",
-        t.uncovered.is_empty(),
         format!("Every item has an approved, open-ended price from {sale}"),
-        listed(&t.uncovered, &format!("covered in {currency}")),
+        &t.uncovered,
+        &format!("covered in {currency}"),
     );
     uncovered.blocked_by = t.blocked.iter().copied().collect();
+    uncovered.blocked_by_prices = t.blocking.iter().copied().collect();
     vec![
-        row(
+        found_row(
+            ctx,
             "ITEM_ENTRY_MISSING",
-            t.no_entry.is_empty(),
             "Every paid / optional item points at a price",
-            listed(&t.no_entry, "all items priced"),
+            &t.no_entry,
+            "all items priced",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_ENTRY_SKU_MISMATCH",
-            t.mismatch.is_empty(),
             "Every item's entry prices that item's SKU",
-            listed(&t.mismatch, "ok"),
+            &t.mismatch,
+            "ok",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_ENTRY_LOST",
-            t.entry_lost.is_empty(),
             "No item's entry has lost its Products reference",
-            listed(&t.entry_lost, "ok"),
+            &t.entry_lost,
+            "ok",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_BUNDLE_SKU",
-            t.bundle.is_empty(),
             "No bundle SKU sits inside the plan as an item",
-            listed(&t.bundle, "ok"),
+            &t.bundle,
+            "ok",
         ),
-        row(
+        found_row(
+            ctx,
             "CHARGE_KIND_SKU_TYPE",
-            t.kind_clash.is_empty(),
             "Every item charges the way its SKU is typed",
-            listed(&t.kind_clash, "ok"),
+            &t.kind_clash,
+            "ok",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_BOOK_FOREIGN",
-            t.foreign.is_empty(),
             "Every item is priced in the plan's book",
-            listed(&t.foreign, "all from the plan's book"),
+            &t.foreign,
+            "all from the plan's book",
         ),
         uncovered,
     ]
 }
-fn structure_rows(t: &Tally) -> Vec<Check> {
-    let periods: Vec<_> = t.periods.iter().cloned().collect();
+fn structure_rows(ctx: &PlanContext, t: &Tally) -> Vec<Check> {
+    let periods: Vec<_> = t.periods.keys().cloned().collect();
     let frequency = match periods.as_slice() {
         [] => "no recurring items".to_owned(),
         [one] => format!("billed every {one}"),
         many => format!("found {} - one period per plan", many.join(" and ")),
     };
+    // Mixed periods name every recurring item priced in the plan's book: each bills in one of them.
+    let mixed: BTreeSet<Uuid> = if periods.len() > 1 {
+        t.periods.values().flatten().copied().collect()
+    } else {
+        BTreeSet::new()
+    };
     vec![
-        row(
-            "FREQUENCY_MIXED",
-            periods.len() <= 1,
-            "All recurring items share one billing period",
-            frequency,
-        ),
-        row(
+        Check {
+            subjects: subjects(ctx, &mixed),
+            ..row(
+                "FREQUENCY_MIXED",
+                periods.len() <= 1,
+                "All recurring items share one billing period",
+                frequency,
+            )
+        },
+        found_row(
+            ctx,
             "METER_DUPLICATE",
-            t.meter_dup.is_empty(),
             "No two items meter the same usage type",
-            listed(&t.meter_dup, "meters unambiguous"),
+            &t.meter_dup,
+            "meters unambiguous",
         ),
-        row(
+        found_row(
+            ctx,
             "INCLUDED_QTY",
-            t.included_qty.is_empty(),
             "Included usage names a quantity",
-            listed(&t.included_qty, "ok"),
+            &t.included_qty,
+            "ok",
         ),
     ]
 }
-fn sku_rows(t: &Tally) -> Vec<Check> {
+fn sku_rows(ctx: &PlanContext, t: &Tally) -> Vec<Check> {
     vec![
-        row(
+        found_row(
+            ctx,
             "ITEM_SKU_DEPRECATED",
-            t.deprecated.is_empty(),
             "No deprecated SKU enters the plan",
-            listed(
-                &t.deprecated,
-                "a deprecated SKU only stays when carried over within the same plan",
-            ),
+            &t.deprecated,
+            "a deprecated SKU only stays when carried over within the same plan",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_SKU_UNAVAILABLE",
-            t.unavailable.is_empty(),
             "Every item SKU is published or deprecated",
-            listed(&t.unavailable, "ok"),
+            &t.unavailable,
+            "ok",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_REFERENCE_PENDING",
-            t.pending.is_empty(),
             "Every item reference holds a Products receipt",
-            listed(&t.pending, "ok"),
+            &t.pending,
+            "ok",
         ),
-        row(
+        found_row(
+            ctx,
             "ITEM_REFERENCE_LOST",
-            t.lost.is_empty(),
             "No item reference is lost",
-            listed(&t.lost, "ok"),
+            &t.lost,
+            "ok",
         ),
     ]
 }
@@ -770,8 +900,8 @@ pub fn checks(ctx: &PlanContext, today: Date) -> Vec<Check> {
     let t = tally(ctx, today);
     let mut out = plan_rows(ctx, sale);
     out.extend(entry_rows(ctx, &t, sale));
-    out.extend(structure_rows(&t));
-    out.extend(sku_rows(&t));
+    out.extend(structure_rows(ctx, &t));
+    out.extend(sku_rows(ctx, &t));
     out.extend(info_rows(ctx));
     out
 }
