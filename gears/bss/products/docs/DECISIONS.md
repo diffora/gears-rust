@@ -54,9 +54,9 @@
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
-| P-D-222 | H | The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ок"); whole-branch review RS-02 (fix run W1b); keeps pricing D-424 |
+| P-D-222 | H | The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); keeps pricing D-424 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
-| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ок"); whole-branch review RS-03 (fix run W1b) |
+| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b) |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 
@@ -988,7 +988,7 @@ review asked whether a caller could assert it (RS-02). The owner kept the trust 
 - *Rejected alternative:* a PDP role for the system actor (the way account-management's `am.system` goes through its PDP). vhp-core's
   PDP does not know `bss-pricing.system` (D-424's note), so every resolve and every ticker call would be refused until it did.
 
-**Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ок"); whole-branch review RS-02 (fix run W1b). Keeps pricing D-424.
+**Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ok"); whole-branch review RS-02 (fix run W1b). Keeps pricing D-424.
 
 #### P-D-223 [M] A refusal keeps its class and names its resource
 
@@ -1036,7 +1036,7 @@ register.
   list), `test_products_usage_types.py` (an empty list) and `test_products_authz.py` (a reader's list). Each runs in a fresh
   tenant with a few units, so it passes unchanged; a vhp-core change would make them follow `next_cursor`.
 
-**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ок"); whole-branch review RS-03 (fix run W1b).
+**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ok"); whole-branch review RS-03 (fix run W1b).
 
 #### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
 
