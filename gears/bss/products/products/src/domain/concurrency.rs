@@ -147,14 +147,11 @@ impl InternalRevision {
 pub struct ContentTag(u64);
 
 impl ContentTag {
-    /// The tag of a canonical-rendering digest, `None` for a digest shorter
-    /// than the eight bytes the tag reads.
+    /// The tag of a canonical-rendering digest: its first eight bytes, big-endian.
     #[must_use]
-    pub fn of_digest(digest: &[u8]) -> Option<Self> {
-        digest
-            .get(..8)
-            .and_then(|head| <[u8; 8]>::try_from(head).ok())
-            .map(|head| Self(u64::from_be_bytes(head)))
+    pub const fn of_digest(digest: &[u8; 32]) -> Self {
+        let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = *digest;
+        Self(u64::from_be_bytes([b0, b1, b2, b3, b4, b5, b6, b7]))
     }
 
     /// The RFC 9110 strong entity tag: the decimal in double quotes.

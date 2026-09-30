@@ -12,8 +12,22 @@ pub const PRICING_SYSTEM_ACTOR: Uuid = Uuid::from_u128(0x00000000_0000_0f01_0000
 pub struct PricingReferenceRegistry(pub Arc<dyn ReferenceRegistryV1>);
 /// Same reservation rules and error codes as the Products REST reference door.
 /// Missing or foreign-owner batch entries fail the batch; order follows the input.
+///
+/// Every method first checks the caller: `tenant` must be the caller's own tenant, and a system
+/// subject other than pricing's (`bss-pricing.system`, [`PRICING_SYSTEM_ACTOR`]) is refused, both
+/// 403 `REFERENCE_OWNER_MISMATCH`. Pricing's system actor is trusted in-process; any other caller
+/// is judged by the PDP on the SKU (`reference` for the four reference methods, `read` for the two
+/// SKU reads), 403 when it denies and 503 when it cannot answer (products P-D-222). A storage
+/// failure is a 500.
 #[async_trait]
 pub trait ReferenceRegistryV1: Send + Sync {
+    /// Reserve the logical reference `(owner, kind, ref_id)` on the SKU `sku_id`, idempotently: a
+    /// live reservation of the same reference on the same SKU is answered as it stands.
+    ///
+    /// # Errors
+    /// 404 for a SKU the tenant does not hold; 409 `REFERENCE_EXISTS` when the reference is live on
+    /// another SKU (or a concurrent reservation won it twice), `SKU_RETIRING` for a retiring SKU and
+    /// `SKU_FENCED` for a fenced SKU or one that is neither published nor deprecated.
     async fn reserve(
         &self,
         ctx: &SecurityContext,
@@ -22,30 +36,58 @@ pub trait ReferenceRegistryV1: Send + Sync {
         kind: ReferenceKind,
         ref_id: Uuid,
     ) -> Result<ReservationReceipt, CanonicalError>;
+    /// Confirm a reservation, idempotently: a confirmed one is answered `Ok` again.
+    ///
+    /// # Errors
+    /// 404 for a reservation the tenant does not hold; 403 `REFERENCE_OWNER_MISMATCH` for one
+    /// another owner holds; 409 `REFERENCE_RELEASED` for a released one, which never comes back.
     async fn confirm(
         &self,
         ctx: &SecurityContext,
         tenant: Uuid,
         reservation_id: Uuid,
     ) -> Result<(), CanonicalError>;
+    /// Release a reservation, once: a released one is answered `Ok` again and keeps its first
+    /// release's attribution.
+    ///
+    /// # Errors
+    /// 404 for a reservation the tenant does not hold; 403 `REFERENCE_OWNER_MISMATCH` for one
+    /// another owner holds.
     async fn release(
         &self,
         ctx: &SecurityContext,
         tenant: Uuid,
         reservation_id: Uuid,
     ) -> Result<(), CanonicalError>;
+    /// The state of each reservation, in the order asked.
+    ///
+    /// # Errors
+    /// The batch fails as a whole on the first id, in order, that the tenant does not hold (404)
+    /// or that another owner holds (403 `REFERENCE_OWNER_MISMATCH`).
     async fn states(
         &self,
         ctx: &SecurityContext,
         tenant: Uuid,
         reservation_ids: &[Uuid],
     ) -> Result<Vec<(Uuid, ReferenceState)>, CanonicalError>;
+    /// The SKU head a write binds to, in whatever lifecycle it is, draft to retired: the caller
+    /// judges whether that lifecycle admits its write.
+    ///
+    /// # Errors
+    /// 404 for a SKU the tenant does not hold.
     async fn sku_for_write(
         &self,
         ctx: &SecurityContext,
         tenant: Uuid,
         sku_id: Uuid,
     ) -> Result<Sku, CanonicalError>;
+    /// The SKU's version in force on `date`: of the versions effective on or before it, the
+    /// latest date's highest `published_version`. `Ok(None)` when none is in force yet, for a SKU
+    /// never published or a date before its first version.
+    ///
+    /// # Errors
+    /// 404 for a SKU the tenant does not hold; 500 for a stored version whose content does not
+    /// read.
     async fn sku_version_as_of(
         &self,
         ctx: &SecurityContext,

@@ -143,9 +143,18 @@ fn unavailable_is_not_an_unknown_usage_type() {
 
 #[test]
 fn patch_deserialization_distinguishes_omission_null_and_value() {
-    let omitted: SkuPatch = serde_json::from_str("{}").unwrap();
-    let cleared: SkuPatch = serde_json::from_value(serde_json::json!({"gl_code":null, "tax_category":null, "invoice_line_template":null, "billing_timing":null, "usage_type_ref":null, "unit":null})).unwrap();
-    let valued: SkuPatch = serde_json::from_value(serde_json::json!({"gl_code":"40", "tax_category":"tax", "invoice_line_template":"line", "billing_timing":"advance", "usage_type_ref":"meter", "unit":"GB", "type":"usage", "lifecycle":"deprecated"})).unwrap();
+    // The wire contract is `dto::SkuPatchRequest` (RS-51): the domain patch is what it converts to.
+    let patch = |body: serde_json::Value| -> SkuPatch {
+        let request: crate::api::rest::dto::SkuPatchRequest = serde_json::from_value(body).unwrap();
+        SkuPatch::try_from(request).unwrap()
+    };
+    let omitted = patch(serde_json::json!({}));
+    let cleared = patch(
+        serde_json::json!({"gl_code":null, "tax_category":null, "invoice_line_template":null, "billing_timing":null, "usage_type_ref":null, "unit":null}),
+    );
+    let valued = patch(
+        serde_json::json!({"gl_code":"40", "tax_category":"tax", "invoice_line_template":"line", "billing_timing":"advance", "usage_type_ref":"meter", "unit":"GB", "type":"usage", "lifecycle":"deprecated"}),
+    );
     assert_eq!(omitted.gl_code, None);
     assert_eq!(omitted.billing_timing, None);
     let mut original = content(SkuType::Recurring);

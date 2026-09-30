@@ -2,7 +2,7 @@
 use crate::domain::error::DomainError;
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
-use axum::Router;
+
 use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -27,7 +27,8 @@ pub mod skus;
 mod usage;
 pub mod usage_types;
 
-/// The reserved service prefix.
+/// The service prefix every operation's path carries; `register_rest` mounts the operations, each
+/// under its full path, and no router nests under it (RS-65).
 pub const PREFIX: &str = "/bss-products/v1";
 /// Optional replay key header.
 pub const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
@@ -46,11 +47,6 @@ pub struct ApiState {
     /// Where pricing registers its `SkuUsageV1` port (P-D-197), resolved at each SKU read: the
     /// two gears boot in either order.
     pub hub: std::sync::Arc<toolkit::ClientHub>,
-}
-
-/// Shared REST foundation helper.
-pub fn router(host_router: Router) -> Router {
-    host_router.nest(PREFIX, Router::new())
 }
 
 /// Shared REST foundation helper.

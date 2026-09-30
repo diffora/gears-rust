@@ -254,11 +254,13 @@ async fn fence(
             "SKU belongs to a pending unit",
         ));
     }
+    let lifecycle = repo::fence_lifecycle(&s).map_err(TxError::Repo)?;
     if let Some(op) = s.fence_op_id
         && match kind {
-            repo::Fence::Retire => s.lifecycle == "retiring",
+            repo::Fence::Retire => lifecycle == Lifecycle::Retiring,
             repo::Fence::TypeChange => {
-                s.type_change_pending && matches!(s.lifecycle.as_str(), "published" | "deprecated")
+                s.type_change_pending
+                    && matches!(lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
             }
         }
     {
@@ -269,10 +271,6 @@ async fn fence(
         "SKU cannot acquire this fence",
     ))
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "One HTTP command's dependencies remain explicit"
-)]
 /// @cpt-cf-bss-products-fr-approval-units
 async fn run(
     state: Arc<ApiState>,
@@ -334,7 +332,7 @@ async fn run(
     }
     execute(state, scope, ctx, id, kind, patch, date, note, now, claim).await
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Submission captures all values once before transaction retries"
 )]
@@ -370,8 +368,10 @@ async fn execute(
         state.sink.clone(),
         category_tx_config(&state),
     );
+    // The one setting the attempts read, copied once rather than an `Arc<ApiState>` per attempt
+    // (RS-55).
+    let ttl = state.fence_ttl_minutes;
     let receipt = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
-        let state = state.clone();
         let scope = scope.clone();
         let ctx = ctx.clone();
         let patch = patch.clone();
@@ -386,7 +386,7 @@ async fn execute(
             }
             // The authorized SKU anchors unit, policy and reference work.
             let scope = AccessScope::for_tenant(tenant);
-            g::expire(tx, &scope, tenant, id, state.fence_ttl_minutes, now).await?;
+            g::expire(tx, &scope, tenant, id, ttl, now).await?;
             let current = g::find(tx, &scope, tenant, id).await?;
             if !matches!(kind, SubmitKind::Retire)
                 && apply_patch(&SkuContent::from(&current), &patch).usage_type_ref
@@ -473,7 +473,6 @@ async fn execute(
             .await?;
             g::audit(
                 tx,
-                &scope,
                 &ctx,
                 "approval.submit",
                 "approval_unit",
@@ -487,7 +486,6 @@ async fn execute(
             if submitted.applied {
                 g::audit(
                     tx,
-                    &scope,
                     &ctx,
                     "approval.applied",
                     "approval_unit",
@@ -565,7 +563,6 @@ async fn unfence(
                 };
                 g::audit(
                     tx,
-                    &scope,
                     &ctx,
                     "sku.unfence",
                     "sku",

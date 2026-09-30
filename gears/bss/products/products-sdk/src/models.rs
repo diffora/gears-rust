@@ -73,6 +73,24 @@ pub enum BillingTiming {
     Advance,
     Arrears,
 }
+impl BillingTiming {
+    /// The token stored and carried on the wire (RS-48, as `SkuType` and `Lifecycle` have).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Advance => "advance",
+            Self::Arrears => "arrears",
+        }
+    }
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "advance" => Some(Self::Advance),
+            "arrears" => Some(Self::Arrears),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,7 +106,9 @@ pub struct Category {
 }
 
 /// The registry's SKU as the doors return it. Field names are `snake_case` on the wire (the
-/// `api_dto` macro's rule, conv §4); consumers read them as such.
+/// `api_dto` macro's rule, conv §4); consumers read them as such. The instants are RFC 3339
+/// strings, as `SkuDto` writes them (P-D-226): the derive's default would write `time`'s
+/// tuples, which no door sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Sku {
@@ -114,12 +134,21 @@ pub struct Sku {
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
 /// The business content of a SKU — what an approval unit fingerprints (spec §6: never lock,
 /// version, revision or lifecycle fields).
+///
+/// **A storage format, too** (RS-22): this derive writes the append-only `content` of every stored
+/// version and the proposal of every unit, and reads them back. So its serde is compatible
+/// forever: a field added is an `Option` (a stored row without it reads `None`) or carries
+/// `#[serde(default)]`; a field is never renamed without `#[serde(alias)]` of the old name; and
+/// no `deny_unknown_fields`, so a row a later build wrote reads here too. The gear's stored-row
+/// fixtures pin it (`sku_repo_tests::stored_content_fixtures_keep_reading`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SkuContent {
@@ -157,25 +186,57 @@ impl From<&Sku> for SkuContent {
 }
 
 /// One published version of a SKU, appended on publish and on every applied change (spec §2.2).
+/// On the wire as `SkuVersionDto` writes it (P-D-226): the date `YYYY-MM-DD`, the instant RFC 3339.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SkuVersion {
     pub sku_id: Uuid,
     pub published_version: i64,
+    #[serde(with = "iso_date")]
     pub effective_from: Date,
     pub content: SkuContent,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
-/// Payload of `SkuChanged`.
+/// Payload of the `SkuChanged` event, as the registry emits it (P-D-226): `camelCase`, the date
+/// `YYYY-MM-DD`, and the actor whose approval made the change (the PRD's shape).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub struct SkuChangedPayload {
-    pub sku_id: Uuid,
     pub tenant_id: Uuid,
+    pub sku_id: Uuid,
     pub changed: Vec<String>,
+    #[serde(with = "iso_date")]
     pub effective_from: Date,
     pub published_version: i64,
+    pub actor_ref: Uuid,
+}
+
+/// A civil date as `YYYY-MM-DD` on the wire, the doors' and the events' form.
+mod iso_date {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use time::Date;
+
+    const FORMAT: &str = "[year]-[month]-[day]";
+
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde with requires a borrowed field serializer"
+    )]
+    pub fn serialize<S: Serializer>(date: &Date, serializer: S) -> Result<S::Ok, S::Error> {
+        let format = time::format_description::parse_borrowed::<1>(FORMAT)
+            .map_err(serde::ser::Error::custom)?;
+        let text = date.format(&format).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&text)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Date, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let format = time::format_description::parse_borrowed::<1>(FORMAT)
+            .map_err(serde::de::Error::custom)?;
+        Date::parse(&text, &format).map_err(serde::de::Error::custom)
+    }
 }
 
 #[cfg(test)]

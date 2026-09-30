@@ -1441,6 +1441,32 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
     }
     assert_eq!(runs[0], runs[1]);
 }
+/// RS-23 (P-D-226): the SDK's `Sku` and `SkuVersion` read the doors' JSON (instants RFC 3339,
+/// the effective date `YYYY-MM-DD`, as `SkuDto` and `SkuVersionDto` write them) and write it back
+/// unchanged.
+#[tokio::test]
+async fn the_sdk_sku_types_read_the_doors_json() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let card = f.card().await;
+    let sku: bss_products_sdk::models::Sku = serde_json::from_value(card.clone()).unwrap();
+    assert_eq!(sku.id, f.id);
+    assert_eq!(serde_json::to_value(&sku).unwrap(), card);
+    let (status, versions) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}/versions", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{versions}");
+    let read: Vec<bss_products_sdk::models::SkuVersion> =
+        serde_json::from_value(versions.clone()).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(serde_json::to_value(&read).unwrap(), versions);
+}
 #[tokio::test]
 async fn reject_refreshes_drift_and_commits_without_counting_the_rejection() {
     let f = Fixture::new(1).await;

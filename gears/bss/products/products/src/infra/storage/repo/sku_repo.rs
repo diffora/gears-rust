@@ -1,9 +1,5 @@
 //! SKU heads, conditional locks and local reference fences.
 //! @cpt-dod:cpt-cf-bss-products-dod-unit-store:p1
-#![allow(
-    clippy::too_many_arguments,
-    reason = "Repository commands keep the scoped key and compare-and-swap operands explicit"
-)]
 use super::{HeadWrite, category_repo::require_active_category, driver_failure, map_unique};
 use crate::domain::sku::NewSku;
 use crate::infra::storage::{
@@ -23,12 +19,6 @@ fn key(tenant: Uuid, id: Uuid) -> Condition {
     Condition::all()
         .add(sku::Column::TenantId.eq(tenant))
         .add(sku::Column::Id.eq(id))
-}
-fn billing_token(b: BillingTiming) -> &'static str {
-    match b {
-        BillingTiming::Advance => "advance",
-        BillingTiming::Arrears => "arrears",
-    }
 }
 pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
     Ok(Sku {
@@ -50,10 +40,9 @@ pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
         invoice_line_template: m.invoice_line_template,
         billing_timing: m
             .billing_timing
-            .map(|v| match v.as_str() {
-                "advance" => Ok(BillingTiming::Advance),
-                "arrears" => Ok(BillingTiming::Arrears),
-                _ => Err(RepoError::CorruptRow(format!("billing timing {v}"))),
+            .map(|v| {
+                BillingTiming::parse(&v)
+                    .ok_or_else(|| RepoError::CorruptRow(format!("billing timing {v}")))
             })
             .transpose()?,
         usage_type_ref: m.usage_type_ref,
@@ -110,7 +99,7 @@ pub async fn insert_sku(
         gl_code: Set(new.gl_code),
         tax_category: Set(new.tax_category),
         invoice_line_template: Set(new.invoice_line_template),
-        billing_timing: Set(new.billing_timing.map(|v| billing_token(v).to_owned())),
+        billing_timing: Set(new.billing_timing.map(|v| v.as_str().to_owned())),
         usage_type_ref: Set(new.usage_type_ref),
         unit: Set(new.unit),
         type_change_pending: Set(false),
@@ -250,7 +239,7 @@ fn content_update(
         )
         .col_expr(
             sku::Column::BillingTiming,
-            Expr::value(c.billing_timing.map(billing_token)),
+            Expr::value(c.billing_timing.map(BillingTiming::as_str)),
         )
         .col_expr(
             sku::Column::UsageTypeRef,
@@ -460,6 +449,10 @@ pub async fn unfence_sku(
 /// Release the subject's lock and matching fence atomically.
 /// # Errors
 /// Returns scoped storage failures.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the compare-and-swap operands of the lock and the fence stay explicit"
+)]
 pub async fn unlock_and_unfence(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -593,6 +586,14 @@ pub async fn delete_draft_sku(
 #[path = "sku_repo_tests.rs"]
 mod sku_repo_tests;
 
+/// The typed lifecycle of a fence row (RS-63), so a fence check compares [`Lifecycle`] variants
+/// and a typo cannot compile. A stored token outside the set is a corrupt row.
+/// # Errors
+/// `CorruptRow` naming the SKU and the token.
+pub fn fence_lifecycle(row: &sku::Model) -> Result<Lifecycle, RepoError> {
+    Lifecycle::parse(&row.lifecycle)
+        .ok_or_else(|| RepoError::CorruptRow(format!("SKU {} lifecycle {}", row.id, row.lifecycle)))
+}
 /// Read private fence ownership without putting it in business snapshots.
 /// # Errors
 /// Returns scoped storage failures.

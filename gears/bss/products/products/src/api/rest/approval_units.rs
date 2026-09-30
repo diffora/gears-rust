@@ -342,18 +342,7 @@ fn unit_page(
         "kind": filter.kind,
         "ref_id": filter.ref_id,
     });
-    let digest = crate::domain::canonical::content_digest(
-        &crate::domain::canonical::canonical_rendering(&narrowing),
-    );
-    let hash = digest
-        .iter()
-        .take(8)
-        .fold(String::with_capacity(16), |mut hex, b| {
-            const DIGITS: &[u8; 16] = b"0123456789abcdef";
-            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
-            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
-            hex
-        });
+    let hash = super::sku_list::cursor_hash(&narrowing);
     let mut query = toolkit_odata::ODataQuery::new().with_filter_hash(hash.clone());
     if let Some(limit) = limit {
         query = query.with_limit(limit);
@@ -464,33 +453,43 @@ fn proposal(value: &serde_json::Value) -> Result<SkuProposal, TxError> {
     serde_json::from_value(value.clone())
         .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))
 }
-/// Recover only fields changed by the original proposal, leaving untouched live fields visible to refresh.
+/// Recover only fields changed by the original proposal, leaving untouched live fields visible to
+/// refresh. Every field of the patch is written out and every field of the content named, so a
+/// field added to `SkuPatch` or `SkuContent` is a compile error here, never a silent `None` (RS-50).
 fn patch_between(before: &SkuProposal, after: &SkuProposal) -> SkuPatch {
-    let a = &before.content;
-    let b = &after.content;
-    let mut p = SkuPatch {
-        lifecycle: after.lifecycle,
-        ..SkuPatch::default()
-    };
-    macro_rules! field {
-        ($f:ident) => {
-            if a.$f != b.$f {
-                p.$f = Some(b.$f.clone());
-            }
-        };
+    /// The proposal's value where it differs from the one before it.
+    fn changed<T: PartialEq + Clone>(a: &T, b: &T) -> Option<T> {
+        (a != b).then(|| b.clone())
     }
-    field!(name);
-    field!(category_id);
-    field!(description);
-    field!(sellable);
-    field!(gl_code);
-    field!(tax_category);
-    field!(invoice_line_template);
-    field!(billing_timing);
-    field!(usage_type_ref);
-    field!(unit);
-    field!(r#type);
-    p
+    let SkuContent {
+        code: _,
+        name,
+        r#type,
+        category_id,
+        description,
+        sellable,
+        gl_code,
+        tax_category,
+        invoice_line_template,
+        billing_timing,
+        usage_type_ref,
+        unit,
+    } = &before.content;
+    let b = &after.content;
+    SkuPatch {
+        name: changed(name, &b.name),
+        category_id: changed(category_id, &b.category_id),
+        description: changed(description, &b.description),
+        sellable: changed(sellable, &b.sellable),
+        gl_code: changed(gl_code, &b.gl_code),
+        tax_category: changed(tax_category, &b.tax_category),
+        invoice_line_template: changed(invoice_line_template, &b.invoice_line_template),
+        billing_timing: changed(billing_timing, &b.billing_timing),
+        usage_type_ref: changed(usage_type_ref, &b.usage_type_ref),
+        unit: changed(unit, &b.unit),
+        lifecycle: after.lifecycle,
+        r#type: changed(r#type, &b.r#type),
+    }
 }
 async fn subject(
     outbox: &TxOutbox,
@@ -700,7 +699,7 @@ async fn vote(
             };
             let (label, have, need) = match outcome {
                 ApproveOutcome::Refreshed { generation } => {
-                    decision_audit(tx, &scope, &ctx, "refreshed", &unit, found, None, now).await?;
+                    decision_audit(tx, &ctx, Audited::Refreshed, &unit, found, None, now).await?;
                     let mut problem = toolkit::api::canonical_prelude::Problem::from(
                         CanonicalError::from(DomainError::StaleUnit { generation }),
                     );
@@ -727,7 +726,7 @@ async fn vote(
                     None,
                 ),
             };
-            decision_audit(tx, &scope, &ctx, label.as_str(), &unit, found, note, now).await?;
+            decision_audit(tx, &ctx, Audited::Vote(label), &unit, found, note, now).await?;
             if matches!(outcome, ApproveOutcome::Applied) {
                 unit = load(tx, &store, id).await?;
                 g::decided(&outbox, tx, &store, &unit, ctx.subject_id()).await?;
@@ -759,43 +758,40 @@ async fn vote(
     }
 }
 
-/// A decision's audit row (P-D-193) for its outcome `label`, with the SKU lifecycle move it made
+/// What a decision's audit row records: a vote's outcome, or the stale refresh a vote made.
+#[derive(Clone, Copy)]
+enum Audited {
+    Refreshed,
+    Vote(ProductsVoteOutcome),
+}
+impl Audited {
+    /// The audit action, one per outcome in an exhaustive match (RS-21): a new outcome is a
+    /// compile error here, never an `approval.approved` by default.
+    const fn action(self) -> &'static str {
+        match self {
+            Self::Refreshed => "approval.refreshed",
+            Self::Vote(ProductsVoteOutcome::Pending) => "approval.vote",
+            Self::Vote(ProductsVoteOutcome::Applied) => "approval.approved",
+            Self::Vote(ProductsVoteOutcome::Rejected) => "approval.rejected",
+            Self::Vote(ProductsVoteOutcome::Withdrawn) => "approval.withdrawn",
+        }
+    }
+}
+/// A decision's audit row (P-D-193) for what it did, with the SKU lifecycle move it made
 /// (P-D-213): `found` before the decision, and the lifecycle it left, read now.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The row's actor, unit, outcome and move stay explicit at the one decision door"
-)]
 async fn decision_audit(
     tx: &DbTx<'_>,
-    scope: &AccessScope,
     ctx: &SecurityContext,
-    label: &str,
+    audited: Audited,
     unit: &Unit,
     found: bss_products_sdk::models::Lifecycle,
     note: Option<String>,
     now: OffsetDateTime,
 ) -> Result<(), TxError> {
-    let action = match label {
-        "refreshed" => "approval.refreshed",
-        "pending" => "approval.vote",
-        "rejected" => "approval.rejected",
-        "withdrawn" => "approval.withdrawn",
-        _ => "approval.approved",
-    };
+    let action = audited.action();
     let left = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
     let moved = repo::LifecycleMove::between(found, left);
-    g::audit(
-        tx,
-        scope,
-        ctx,
-        action,
-        "approval_unit",
-        unit.id,
-        note,
-        now,
-        moved,
-    )
-    .await
+    g::audit(tx, ctx, action, "approval_unit", unit.id, note, now, moved).await
 }
 
 /// Load the authorized unit's proposed content before external catalog resolution.

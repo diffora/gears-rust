@@ -265,9 +265,11 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         &self,
         ctx: &SecurityContext,
         q: Option<&str>,
-        limit: u32,
+        limit: u64,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
+        // The page is 1 to 200 whatever the caller asks (PS-49: the contract's `limit` is `u64`).
+        let limit = u32::try_from(limit.min(200)).unwrap_or(200);
         let filter = q
             .filter(|s| !s.is_empty())
             .map(|q| format!("startswith(name,'{}')", q.replace('\'', "''")));

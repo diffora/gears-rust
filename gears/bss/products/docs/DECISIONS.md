@@ -58,6 +58,7 @@
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ок"); whole-branch review RS-03 (fix run W1b) |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
+| P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 
 ## Entries
 
@@ -1063,3 +1064,29 @@ register.
   400 `FIELD_TOO_LONG` on `code`.
 
 **Source:** Whole-branch review of 2026-09-29, RS-10, RS-11, RS-37 and RS-38 (fix run W1b; the dispositions' "Length caps").
+
+#### P-D-226 [M] The SDK's SKU types serialize as the wire carries them
+
+**Status:** DECIDED 2026-09-30.
+
+- **The defect.** `bss_products_sdk::models::Sku` says it is the SKU "as the doors return it", but its derived serde wrote
+  `created_at` and `updated_at` as `time`'s tuples, where `SkuDto` sends RFC 3339 strings; `SkuVersion` wrote `effective_from` as
+  `[year, ordinal]` where `SkuVersionDto` sends `YYYY-MM-DD` (RS-23). `SkuChangedPayload` was `snake_case` with a tuple date and no
+  actor, while the `SkuChanged` event the broker emits is `camelCase` (`skuId`, `effectiveFrom` as `YYYY-MM-DD`, `actorRef`), the
+  PRD's shape (RS-24). A consumer that read a door's JSON or an event into these types failed on every one.
+- **The serde.** `Sku`'s instants and `SkuVersion`'s `created_at` use `time::serde::rfc3339`, and `SkuVersion.effective_from` a
+  `YYYY-MM-DD` date, as the DTOs write them. `SkuChangedPayload` is `camelCase`, carries `actorRef`, and writes its date as
+  `YYYY-MM-DD`, field for field the emitted event. `BillingTiming` gains `as_str` and `parse` (RS-48), which the repository and the
+  PATCH DTO now use in place of three copies of its tokens.
+- **Consumers.** Nothing deserializes these types from JSON today: pricing receives `Sku` and `SkuVersion` typed, through the
+  in-process registry, and nothing reads `SkuChangedPayload` (measured over gears-rust and vhp-core's crates). So no reader breaks,
+  and the first one reads what the wire carries.
+- **`SkuContent` is a storage format** (RS-22). Its derive writes the append-only `content` of every stored version and the
+  proposal of every unit, so its serde stays compatible forever: a field added is an `Option` or carries `#[serde(default)]`, a
+  field is never renamed without `#[serde(alias)]`, and there is no `deny_unknown_fields`. Its doc says so, and
+  `sku_repo_tests::stored_content_fixtures_keep_reading` reads fixture rows through the repository: one as this build writes it,
+  one without the optional fields and one with a field this build does not know.
+- **The tests.** `the_sdk_sku_types_read_the_doors_json` reads a SKU card and a version history into the SDK types and writes
+  them back unchanged; `the_sdk_payload_reads_the_emitted_sku_changed_event` does the same for the event.
+
+**Source:** Whole-branch review of 2026-09-29, RS-22, RS-23, RS-24 and RS-48 (fix run W1b).

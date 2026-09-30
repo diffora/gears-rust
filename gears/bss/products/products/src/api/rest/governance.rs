@@ -194,16 +194,16 @@ pub(super) async fn touch(
         .await
         .map_err(tx_to_canonical)
 }
-#[allow(
+/// Audit row identifiers belong to a separate aggregate from the authorized resource: the row is
+/// written under the caller's own tenant, never a PDP-compiled scope, so the function takes none
+/// (RS-53). `lifecycle` is the SKU lifecycle move the act made (P-D-213):
+/// [`repo::LifecycleMove::NONE`] for an act on no SKU (the policy, a reference).
+#[expect(
     clippy::too_many_arguments,
     reason = "Audit inputs explicitly bind subject and actor to the caller transaction"
 )]
-/// Audit row identifiers belong to a separate aggregate from the authorized resource. `lifecycle`
-/// is the SKU lifecycle move the act made (P-D-213): [`repo::LifecycleMove::NONE`] for an act on
-/// no SKU (the policy, a reference).
 pub async fn audit(
     tx: &impl DBRunner,
-    _scope: &AccessScope,
     ctx: &SecurityContext,
     action: &str,
     kind: &str,

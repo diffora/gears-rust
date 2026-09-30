@@ -370,3 +370,27 @@ fn sdk_producer_errors_preserve_any_exposed_database_cause() {
     ));
     assert!(matches!(opaque, events::EventsError::Producer(_)));
 }
+
+/// RS-24 (P-D-226): the SDK's `SkuChangedPayload` reads the `SkuChanged` event the broker emits
+/// (camelCase, the date `YYYY-MM-DD`, the actor) and writes it back unchanged.
+#[test]
+fn the_sdk_payload_reads_the_emitted_sku_changed_event() {
+    let changed = SkuChanged {
+        tenant_id: Uuid::new_v4(),
+        sku_id: Uuid::new_v4(),
+        changed: vec!["gl_code".into(), "name".into()],
+        effective_from: at(9).date(),
+        published_version: 3,
+        actor_ref: Uuid::new_v4(),
+    };
+    let emitted = serde_json::to_value(&changed).unwrap();
+    let payload: bss_products_sdk::models::SkuChangedPayload =
+        serde_json::from_value(emitted.clone()).unwrap();
+    assert_eq!(payload.sku_id, changed.sku_id);
+    assert_eq!(payload.tenant_id, changed.tenant_id);
+    assert_eq!(payload.changed, changed.changed);
+    assert_eq!(payload.effective_from, changed.effective_from);
+    assert_eq!(payload.published_version, changed.published_version);
+    assert_eq!(payload.actor_ref, changed.actor_ref);
+    assert_eq!(serde_json::to_value(&payload).unwrap(), emitted);
+}

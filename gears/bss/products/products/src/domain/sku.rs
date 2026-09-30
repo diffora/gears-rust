@@ -6,7 +6,6 @@ use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;
 use crate::domain::validation::ValidationReport;
 use bss_products_sdk::models::{BillingTiming, Lifecycle, SkuContent, SkuType};
-use serde::Deserialize;
 use uuid::Uuid;
 
 /// Input for a new draft SKU.
@@ -28,78 +27,81 @@ pub struct NewSku {
     pub unit: Option<String>,
 }
 
-/// Preserve explicit null as a present patch value.
-#[allow(clippy::option_option)] // The specified PATCH contract distinguishes three states.
-fn double_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<Option<Option<T>>, D::Error> {
-    Option::<T>::deserialize(d).map(Some)
-}
-
-/// Omitted nullable fields are unchanged; explicit null clears them.
+/// Omitted nullable fields are unchanged; explicit null clears them. The PATCH wire contract is
+/// `dto::SkuPatchRequest` alone; this domain type carries no serde of its own (RS-51).
 #[toolkit_macros::domain_model]
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(clippy::option_option)] // None = omitted; Some(None) = clear; Some(Some(_)) = set.
+#[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::option_option,
+    reason = "None = omitted; Some(None) = clear; Some(Some(_)) = set"
+)]
 pub struct SkuPatch {
     pub name: Option<String>,
     /// `Some(None)` clears the category (P-D-196).
-    #[serde(default, deserialize_with = "double_option")]
     pub category_id: Option<Option<Uuid>>,
     pub description: Option<String>,
     pub sellable: Option<bool>,
-    #[serde(default, deserialize_with = "double_option")]
     pub gl_code: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub tax_category: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub invoice_line_template: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub billing_timing: Option<Option<BillingTiming>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub usage_type_ref: Option<Option<String>>,
-    #[serde(default, deserialize_with = "double_option")]
     pub unit: Option<Option<String>>,
     pub lifecycle: Option<Lifecycle>,
     pub r#type: Option<SkuType>,
 }
 
-/// Apply business fields without changing lifecycle or concurrency metadata.
+/// Apply business fields without changing lifecycle or concurrency metadata. Every field of
+/// the patch is named, so a field added to `SkuPatch` is a compile error here (RS-49).
 #[must_use]
 pub fn apply_patch(c: &SkuContent, p: &SkuPatch) -> SkuContent {
+    let SkuPatch {
+        name,
+        category_id,
+        description,
+        sellable,
+        gl_code,
+        tax_category,
+        invoice_line_template,
+        billing_timing,
+        usage_type_ref,
+        unit,
+        lifecycle: _,
+        r#type,
+    } = p;
     let mut out = c.clone();
-    if let Some(v) = &p.name {
+    if let Some(v) = name {
         out.name.clone_from(v);
     }
-    if let Some(v) = p.category_id {
-        out.category_id = v;
+    if let Some(v) = category_id {
+        out.category_id = *v;
     }
-    if let Some(v) = &p.description {
+    if let Some(v) = description {
         out.description.clone_from(v);
     }
-    if let Some(v) = p.sellable {
-        out.sellable = v;
+    if let Some(v) = sellable {
+        out.sellable = *v;
     }
-    if let Some(v) = &p.gl_code {
+    if let Some(v) = gl_code {
         out.gl_code.clone_from(v);
     }
-    if let Some(v) = &p.tax_category {
+    if let Some(v) = tax_category {
         out.tax_category.clone_from(v);
     }
-    if let Some(v) = &p.invoice_line_template {
+    if let Some(v) = invoice_line_template {
         out.invoice_line_template.clone_from(v);
     }
-    if let Some(v) = p.billing_timing {
-        out.billing_timing = v;
+    if let Some(v) = billing_timing {
+        out.billing_timing = *v;
     }
-    if let Some(v) = &p.usage_type_ref {
+    if let Some(v) = usage_type_ref {
         out.usage_type_ref.clone_from(v);
     }
-    if let Some(v) = &p.unit {
+    if let Some(v) = unit {
         out.unit.clone_from(v);
     }
-    if let Some(v) = p.r#type {
-        out.r#type = v;
+    if let Some(v) = r#type {
+        out.r#type = *v;
     }
     out
 }
@@ -274,31 +276,45 @@ pub const fn lifecycle_edge(from: Lifecycle, to: Lifecycle) -> bool {
     )
 }
 
-/// Return sorted wire field names whose business values changed.
+/// Return sorted wire field names whose business values changed. Every field of `SkuContent` is
+/// named, so a field added to it is a compile error here (RS-49).
 #[must_use]
 pub fn changed_fields(a: &SkuContent, b: &SkuContent) -> Vec<String> {
+    let SkuContent {
+        code,
+        name,
+        r#type,
+        category_id,
+        description,
+        sellable,
+        gl_code,
+        tax_category,
+        invoice_line_template,
+        billing_timing,
+        usage_type_ref,
+        unit,
+    } = a;
     let mut v = Vec::new();
-    macro_rules! diff {
-        ($f:ident) => {
-            if a.$f != b.$f {
-                v.push(stringify!($f).to_owned());
-            }
-        };
-    }
-    diff!(code);
-    diff!(name);
-    if a.r#type != b.r#type {
-        v.push("type".to_owned());
-    }
-    diff!(category_id);
-    diff!(description);
-    diff!(sellable);
-    diff!(gl_code);
-    diff!(tax_category);
-    diff!(invoice_line_template);
-    diff!(billing_timing);
-    diff!(usage_type_ref);
-    diff!(unit);
+    let mut diff = |field: &str, changed: bool| {
+        if changed {
+            v.push(field.to_owned());
+        }
+    };
+    diff("code", *code != b.code);
+    diff("name", *name != b.name);
+    diff("type", *r#type != b.r#type);
+    diff("category_id", *category_id != b.category_id);
+    diff("description", *description != b.description);
+    diff("sellable", *sellable != b.sellable);
+    diff("gl_code", *gl_code != b.gl_code);
+    diff("tax_category", *tax_category != b.tax_category);
+    diff(
+        "invoice_line_template",
+        *invoice_line_template != b.invoice_line_template,
+    );
+    diff("billing_timing", *billing_timing != b.billing_timing);
+    diff("usage_type_ref", *usage_type_ref != b.usage_type_ref);
+    diff("unit", *unit != b.unit);
     v.sort();
     v
 }

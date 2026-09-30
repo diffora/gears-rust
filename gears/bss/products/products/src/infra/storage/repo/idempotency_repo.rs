@@ -134,7 +134,7 @@ fn idempotency_key_of(tenant_id: Uuid, endpoint: &str, client_key: &str) -> Cond
 /// paired response columns — both refused by
 /// `chk_products_idempotency_response_group` at write time, so reaching
 /// either here means a row was written around this gear.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the composite key is three columns and the claim needs the digest, the \
               instant and the fresh expiry beside them, matching the sibling pricing \

@@ -103,7 +103,6 @@ struct ReferenceList {
 }
 
 /// Register the seven SKU operations and their concrete response schemas.
-#[allow(clippy::too_many_lines)] // Keep each operation's complete contract together.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(SKUS)
         .operation_id("bss_products.create_sku")
@@ -893,7 +892,7 @@ async fn sku_references(
 }
 /// Commit audit attribution atomically with the draft mutation, with the lifecycle move it made
 /// (P-D-213).
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "The audit row's actor, subject and move stay explicit at each draft door"
 )]

@@ -160,17 +160,18 @@ async fn reserve(
         _ => return Err(g::validation("kind", "unknown reference kind").into()),
     };
     let db = state.db.db();
+    // The one setting the attempts read, copied once rather than an `Arc<ApiState>` per attempt
+    // (RS-55).
+    let ttl = state.fence_ttl_minutes;
     // A unique loser rolls back before retrying the logical-reference read. A second loss is the
     // 409 after the loop, never the repository's 500 (RS-04).
     for _ in 0..2 {
-        let state_tx = state.clone();
         let scope_tx = scope.clone();
         let ctx_tx = ctx.clone();
         let claim_tx = claim.clone();
         let owner_tx = body.owner.clone();
         let result = db
             .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-                let state = state_tx.clone();
                 let scope = scope_tx.clone();
                 let ctx = ctx_tx.clone();
                 let claim = claim_tx.clone();
@@ -189,7 +190,7 @@ async fn reserve(
                         id,
                         kind,
                         body.ref_id,
-                        state.fence_ttl_minutes,
+                        ttl,
                     )
                     .await?;
                     replay::finish(
@@ -338,8 +339,8 @@ async fn release(
         state.sink.clone(),
         category_tx_config(&state),
     );
+    let ttl = state.fence_ttl_minutes;
     let row = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
-        let state = state.clone();
         let scope = scope.clone();
         let ctx = ctx.clone();
         let principal_owner = principal_owner.clone();
@@ -353,7 +354,7 @@ async fn release(
                     Acting::subject(&ctx),
                     principal_owner.as_deref().unwrap_or_default(),
                     id,
-                    state.fence_ttl_minutes,
+                    ttl,
                 )
                 .await;
             }
@@ -365,7 +366,7 @@ async fn release(
                     what: "reference",
                     id,
                 }))?;
-            g::expire(tx, &scope, tenant, row.sku_id, state.fence_ttl_minutes, now).await?;
+            g::expire(tx, &scope, tenant, row.sku_id, ttl, now).await?;
             if !forced && principal_owner.as_deref() != Some(row.owner_gear.as_str()) {
                 return Err(TxError::Refused(forbidden(
                     ctx.subject_id(),
@@ -390,7 +391,6 @@ async fn release(
             };
             g::audit(
                 tx,
-                &scope,
                 &ctx,
                 if forced {
                     "reference.force_release"
@@ -450,7 +450,7 @@ impl<'a> Acting<'a> {
         Self { ctx, system: false }
     }
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "Explicit reservation identity and transaction context"
 )]
@@ -611,7 +611,6 @@ async fn reference_audit(
     let actor_kind = if acting.system { "system" } else { "subject" };
     g::audit(
         tx,
-        &AccessScope::for_tenant(ctx.subject_tenant_id()),
         ctx,
         action,
         "sku_reference",

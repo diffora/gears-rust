@@ -862,3 +862,59 @@ async fn stale_unlock_cannot_clear_another_units_lock() {
         HeadWrite::Unmatched
     ));
 }
+
+/// RS-22: `SkuContent` is the stored format of every version's append-only `content` (and of every
+/// unit's proposal). Fixture rows keep reading through the repository: one as this build writes it,
+/// one an older build wrote without the optional fields, and one a later build wrote with a field
+/// this build does not know.
+#[tokio::test]
+async fn stored_content_fixtures_keep_reading() {
+    use sea_orm::{ConnectionTrait, Database};
+    let (db, scope, tenant, dsn) = test_db().await;
+    let conn = db.conn().unwrap();
+    let cat = seed_category(&conn, &scope, tenant).await;
+    let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
+        .await
+        .unwrap();
+    let date = time::Date::from_calendar_date(2026, time::Month::September, 1).unwrap();
+    let c = bss_products_sdk::models::SkuContent::from(&s);
+    append_version(&conn, &scope, tenant, s.id, 1, date, &c, now())
+        .await
+        .unwrap();
+    let written = r#"{"code":"COMP-VCPU","name":"vCPU hour","type":"usage","category_id":null,"description":"","sellable":true,"gl_code":"4000","tax_category":"cloud","invoice_line_template":null,"billing_timing":"arrears","usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.bss.usage_type.cpu.v1","unit":"vCPU h"}"#;
+    let older = r#"{"code":"A","name":"A","type":"recurring","category_id":null,"description":"","sellable":true}"#;
+    let later = r#"{"code":"A","name":"A","type":"recurring","category_id":null,"description":"","sellable":true,"a_later_field":1}"#;
+    // The table is append-only (a trigger refuses an UPDATE), so each fixture is a version row of
+    // its own, copied from the one the repository wrote.
+    let raw = Database::connect(&dsn).await.unwrap();
+    for (n, fixture) in [(2, written), (3, older), (4, later)] {
+        raw.execute_unprepared(&format!(
+            "INSERT INTO products_sku_version \
+             (sku_id, tenant_id, published_version, effective_from, content, created_at) \
+             SELECT sku_id, tenant_id, {n}, effective_from, '{fixture}', created_at \
+             FROM products_sku_version WHERE published_version = 1 AND {}",
+            crate::test_support::id_matches("sku_id", s.id)
+        ))
+        .await
+        .unwrap();
+    }
+    raw.close().await.ok();
+    let versions = versions(&conn, &scope, tenant, s.id).await.unwrap();
+    let read: Vec<_> = [2, 3, 4]
+        .iter()
+        .map(|n| {
+            versions
+                .iter()
+                .find(|v| v.published_version == *n)
+                .unwrap()
+                .content
+                .clone()
+        })
+        .collect();
+    let stored: serde_json::Value = serde_json::from_str(written).unwrap();
+    assert_eq!(serde_json::to_value(&read[0]).unwrap(), stored);
+    assert_eq!(read[0].r#type, SkuType::Usage);
+    assert_eq!(read[1].unit, None);
+    assert_eq!(read[1].billing_timing, None);
+    assert_eq!(read[2], read[1]);
+}

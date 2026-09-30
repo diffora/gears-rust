@@ -7,69 +7,6 @@ fn default_leaves_the_runtime_slot_empty() {
     assert!(gear.runtime.load_full().is_none());
 }
 
-/// `register_rest`'s empty-runtime branch returns a router and does not
-/// error — the behaviour that distinguishes this gear from
-/// `simple-user-settings`, whose `register_rest` errors out of an
-/// uninitialised `service` slot.
-///
-/// Calling `register_rest` itself needs a `GearCtx` and a
-/// `dyn OpenApiRegistry`; the former needs a
-/// `tokio_util::sync::CancellationToken`, which this slice's dependency
-/// delta does not carry. What is exercised directly, without either, is
-/// [`crate::api::rest::router`] — the helper both of `register_rest`'s
-/// branches call, and the only place the nesting happens. It is
-/// infallible (`Router -> Router`, no `Result`), which is what makes
-/// `register_rest`'s `Ok(...)` around it unconditional in both branches.
-/// A request under the reserved prefix is answered by **this** gear with
-/// a `404`, and a path outside it is untouched by the nest.
-///
-/// The earlier version of this test built the router and dropped it,
-/// which asserted nothing: it passed just as well if `router` returned
-/// `host_router` unnested, or nested under the wrong prefix, or swapped
-/// its arguments. The prefix reservation is the one behaviour this
-/// module exists to deliver, so it is asserted where it is observable —
-/// through a request — rather than by trusting the type.
-#[tokio::test]
-async fn a_request_under_the_reserved_prefix_is_answered_by_this_gear() {
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use axum::routing::get;
-    use tower::ServiceExt as _;
-
-    let host = Router::new().route("/elsewhere", get(|| async { "host" }));
-    let mounted = crate::api::rest::router(host);
-
-    let under_prefix = mounted
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/bss-products/v1/anything")
-                .body(Body::empty())
-                .expect("build the probe request"),
-        )
-        .await
-        .expect("the router answers");
-    assert_eq!(
-        under_prefix.status(),
-        StatusCode::NOT_FOUND,
-        "the prefix is claimed, so an unmounted path under it is this gear's 404"
-    );
-
-    let outside = mounted
-        .oneshot(
-            Request::builder()
-                .uri("/elsewhere")
-                .body(Body::empty())
-                .expect("build the control request"),
-        )
-        .await
-        .expect("the router answers");
-    assert_eq!(
-        outside.status(),
-        StatusCode::OK,
-        "nesting under the prefix must not shadow the host router's own paths"
-    );
-}
 /// A configured gear registers every implemented operation.
 #[tokio::test]
 async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {

@@ -271,9 +271,11 @@ impl ProductCatalogClientV1 for ProductCatalogRestClient {
         &self,
         ctx: &SecurityContext,
         q: Option<&str>,
-        limit: u32,
+        limit: u64,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
+        // The door serves 1 to 200 (PS-49: the contract's `limit` is `u64`).
+        let limit = u32::try_from(limit.min(u64::from(BROWSE_MAX))).unwrap_or(BROWSE_MAX);
         let filter = search_filter(q);
         let page = self.browse(ctx, filter.as_deref(), limit, cursor).await?;
         Ok(CatalogSkuPage {

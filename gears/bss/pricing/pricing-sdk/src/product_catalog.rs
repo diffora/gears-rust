@@ -107,10 +107,9 @@ pub fn catalog_unreachable(detail: impl Into<String>) -> CanonicalError {
 /// rule (`Api` / `Backend` / `Embedded` / `Extension`) refuses
 /// `#[toolkit::contract]` on this existing name; the IR below is the same
 /// shape the macro would emit (`SafeRead` on every method, tenant
-/// `SecurityContext` off the wire), except `search_skus`'s `limit`: the IR has
-/// no 32-bit unsigned primitive, and the macro would name `u32` as an unknown
-/// type, so the IR declares it `U64`, unsigned as the parameter is (the
-/// registry takes 1 to 200). Do not add a second trait to satisfy the suffix.
+/// `SecurityContext` off the wire): `search_skus`'s `limit` is a `u64`, the
+/// IR's `U64` (the registry takes 1 to 200 and clamps a larger one; PS-49).
+/// Do not add a second trait to satisfy the suffix.
 #[async_trait]
 pub trait ProductCatalogClientV1: Send + Sync {
     /// The SKUs a write names. Ids the registry does not know come back absent,
@@ -134,7 +133,7 @@ pub trait ProductCatalogClientV1: Send + Sync {
         &self,
         ctx: &SecurityContext,
         q: Option<&str>,
-        limit: u32,
+        limit: u64,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError>;
 
@@ -258,7 +257,7 @@ fn search_skus_ir() -> (MethodIr, HttpMethodBindingIr) {
                 optional: true,
                 role: FieldRole::Wire,
             },
-            // `u32` in the trait: the IR's unsigned integer (whole-branch review PS-49).
+            // `u64` in the trait, as the IR declares it (whole-branch review PS-49).
             FieldIr {
                 name: "limit".to_owned(),
                 ty: TypeRef::Primitive(PrimitiveType::U64),

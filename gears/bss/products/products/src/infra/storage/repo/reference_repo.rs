@@ -1,8 +1,4 @@
 //! Live reservations, confirmation and retained release history.
-#![allow(
-    clippy::too_many_arguments,
-    reason = "Reference commands retain their scoped key and release attribution"
-)]
 use super::{HeadWrite, driver_failure, map_unique};
 use crate::domain::references::{RefKind, ReferenceSummary};
 use crate::infra::storage::{RepoError, entity::sku_reference};
@@ -57,6 +53,10 @@ pub async fn find_live_reference(
 /// Insert a fresh attempt after the door's eligibility check in the same serializable transaction.
 /// # Errors
 /// Returns `REFERENCE_EXISTS` or scoped storage failures.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reservation's scoped key, its logical reference and its attribution stay explicit"
+)]
 pub async fn reserve_reference(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -167,6 +167,10 @@ pub async fn find_references(
 /// Release once; retries leave the original attribution unchanged.
 /// # Errors
 /// Returns scoped storage failures.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the release keeps its scoped key and its attribution explicit"
+)]
 pub async fn release_reference(
     runner: &impl DBRunner,
     scope: &AccessScope,

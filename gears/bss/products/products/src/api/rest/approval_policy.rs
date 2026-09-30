@@ -121,8 +121,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
 fn policy_tag(policy: &ApprovalPolicyDto) -> Result<ContentTag, CanonicalError> {
     let value = serde_json::to_value(policy)
         .map_err(|e| CanonicalError::internal(format!("bss-products: policy tag: {e}")).create())?;
-    ContentTag::of_digest(&content_digest(&canonical_rendering(&value)))
-        .ok_or_else(|| CanonicalError::internal("bss-products: policy tag: short digest").create())
+    Ok(ContentTag::of_digest(&content_digest(
+        &canonical_rendering(&value),
+    )))
 }
 /// The policy with its `ETag`.
 fn answer(policy: ApprovalPolicyDto) -> Result<Response, CanonicalError> {
@@ -201,7 +202,6 @@ async fn put(
                     .map_err(TxError::Repo)?;
                 g::audit(
                     tx,
-                    &scope,
                     &ctx,
                     "approval_policy.write",
                     "approval_policy",
@@ -286,7 +286,6 @@ async fn delete(
                 }
                 g::audit(
                     tx,
-                    &scope,
                     &ctx,
                     "approval_policy.reset",
                     "approval_policy",

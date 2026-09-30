@@ -25,7 +25,7 @@ fn version_of(m: sku_version::Model) -> Result<SkuVersion, RepoError> {
 /// Append a version at or after the latest date in the caller's transaction.
 /// # Errors
 /// Returns `VERSION_ORDER`, serialization errors, or scoped storage failures.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "The version key and its content/date are explicit repository operands"
 )]
