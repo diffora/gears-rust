@@ -95,6 +95,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
+| D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
 
 ## Entries
 
@@ -843,3 +844,17 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **Products** gets the same list in its own decision, P-D-224 (fix run W1b).
 
 **Source:** Owner, 2026-09-29 (the dispositions' O2, answered "2"); whole-branch review PS-13 (fix run W1a, a scope addition).
+
+#### D-459 [M] One approve-eligibility predicate for the engine and its readers
+
+**Status:** DECIDED 2026-09-30.
+
+- **The risk.** A read that shows whether its caller may approve a unit, or how many votes the unit has, would copy the rules of the approval library's private rules module: the terminal state, the separation of duties, the duplicate vote and which votes count. A copy drifts: the read says the caller may approve, and the vote door answers 403 SOD_VIOLATION.
+- **The rule.** bss_approval exports one function, approve_eligibility(unit, items, decisions, actor), and its result ApproveEligibility { approvals, refusal }. approvals counts the approve votes of the unit's current generation that are not stale; a reject, a stale vote and a vote of an earlier generation do not count. refusal is none when the actor may approve, else the engine's refusal, in the engine's order: UNIT_ALREADY_DECIDED for a terminal unit, SOD_VIOLATION for its submitter or an item author, DUPLICATE_VOTE for an actor who voted in the current generation. The items are the unit's stored items, which are the current generation's: a stale refresh rewrites them. The rules module stays private.
+- **The engine uses it.** evaluate_approve, which Engine::approve calls once it has loaded the unit at the reviewer's generation, judges through it: its refusal is the vote's error, and an eligible vote pends at approvals + 1 or applies. So the engine answers as before: the library's rule tests keep their expectations, and both gears' door tests pass unchanged.
+- **The readers.** A pending plan revision's progress reads approvals through it (D-462). Products and pricing compute caller_can_approve through it in run 9.3.
+- **The tests.** A table over quorum 0, 1 and 2, a stale vote, a vote of an earlier generation and a decided unit, for the submitter, an item author, a voter of each generation and a fresh reviewer: the predicate's refusal is evaluate_approve's error, and a counted vote's have is approvals + 1. An engine test drives Engine::approve through a quorum-2 unit: a refused submitter, a first vote, a duplicate, a content drift and its refresh, the first reviewer's vote on the new generation, the apply and a vote after it. Before each vote the predicate over the stored rows answers what the vote meets. A probe that counted stale votes turned three tests red.
+
+D-393's engine keeps its rules; this entry makes them one function that the readers call.
+
+**Source:** Phase 9 plan rev 2 (W2, binding: the review's alternative W2; L5 for #40's counts).
