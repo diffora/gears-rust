@@ -1129,14 +1129,27 @@ const DOOR_ACTIONS: &[(&str, &str)] = &[
     ("bss_products.list_usage_types", "author"),
 ];
 
-/// Every operation `routes` serves, from the `OpenAPI` it registers, as the method, the concrete
-/// path this suite calls and the action its door asks (RT-01): an operation without a row in
+/// The router the gear's own `register_rest` serves over the fixture's state, under `enforcer`
+/// (fix run W1c, L1): a door census calls the registered doors, not the suite's `routes`.
+fn registered(
+    f: &Fixture,
+    enforcer: impl authz_resolver_sdk::AuthZResolverApi + 'static,
+) -> Router {
+    crate::gear::BssProductsGear::registered_rest(
+        f.state.clone(),
+        authz_resolver_sdk::PolicyEnforcer::new(Arc::new(enforcer)),
+    )
+    .0
+}
+/// Every operation the gear's own `register_rest` serves, from the `OpenAPI` it registers (fix
+/// run W1c, L1: never the suite's copy of the router list), as the method, the concrete path this
+/// suite calls and the action its door asks (RT-01): an operation without a row in
 /// [`DOOR_ACTIONS`], or a row that names no served operation, fails here. A SKU path names the
 /// fixture's SKU; any other id is fresh.
 fn served_doors(f: &Fixture) -> Vec<(Method, String, &'static str)> {
-    let openapi = toolkit::api::OpenApiRegistryImpl::new();
     // Registering the routes fills the registry; the router itself is not served here.
-    drop(routes(f.state.clone(), &openapi));
+    let (_, openapi) =
+        crate::gear::BssProductsGear::registered_rest(f.state.clone(), flat_in_enforcer(f.tenant));
     let api = serde_json::to_value(
         openapi
             .build_openapi(&toolkit::api::OpenApiInfo::default())
@@ -1192,18 +1205,21 @@ fn action_seen(action: &str) -> usize {
         + 1
 }
 
+/// Every door the gear's own `register_rest` serves (fix run W1c, L1) asks the PDP its own action
+/// and is 403 when it denies, and 401 without a caller; another tenant's SKU and unit are 404.
 #[tokio::test]
 async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
     let f = Fixture::new(1).await;
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let enforcer = authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
-        id: None,
-        allowed: None,
-        tenant: f.tenant,
-        seen: seen.clone(),
-    }));
-    let app = routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
-        .layer(axum::Extension(enforcer));
+    let app = registered(
+        &f,
+        ActionResolver {
+            id: None,
+            allowed: None,
+            tenant: f.tenant,
+            seen: seen.clone(),
+        },
+    );
     let sku_path = format!("/skus/{}", f.id);
     for (method, path, action) in served_doors(&f) {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -1287,15 +1303,15 @@ async fn a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass() {
     use std::sync::atomic::Ordering::Relaxed;
     let f = Fixture::new(1).await;
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let app =
-        routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new()).layer(axum::Extension(
-            authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
-                id: None,
-                allowed: None,
-                tenant: f.tenant,
-                seen: seen.clone(),
-            })),
-        ));
+    let app = registered(
+        &f,
+        ActionResolver {
+            id: None,
+            allowed: None,
+            tenant: f.tenant,
+            seen: seen.clone(),
+        },
+    );
     let subject = |id: Uuid, kind: &str| {
         SecurityContext::builder()
             .subject_id(id)

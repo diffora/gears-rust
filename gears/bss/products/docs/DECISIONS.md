@@ -998,7 +998,7 @@ review asked whether a caller could assert it (RS-02). The owner kept the trust 
   type ended in `.system`, so a REST caller's token set the label. Now `references::Acting` carries the context and whether the
   registry's trusted branch admitted it. A REST door always acts as a subject, and only the registry records the system's act.
 - **The tests.** `a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass` calls every served door (the operations the
-  OpenAPI declares, RT-01) as the actor three ways (both halves, the subject type alone, the id alone): each is 403
+  gear's own `register_rest` serves, RT-01 and fix run W1c's L1) as the actor three ways (both halves, the subject type alone, the id alone): each is 403
   `SYSTEM_ACTOR_RESERVED` and the PDP is never asked. Rating's system subject at the same doors, under a PDP that allows
   nothing, is 403 after the PDP was asked the door's own action.
   `a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts` pins the audit label, for another gear's system subject.

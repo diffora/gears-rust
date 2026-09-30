@@ -453,5 +453,44 @@ impl RestApiCapability for BssProductsGear {
 }
 
 #[cfg(test)]
+impl BssProductsGear {
+    /// The router and the `OpenAPI` that `register_rest` itself serves over `api_state`, under
+    /// `enforcer`: the door censuses read the registered routes, never a copy of the router list,
+    /// so a door added only here cannot escape them (fix run W1c, L1).
+    ///
+    /// # Panics
+    /// If `register_rest` refuses.
+    pub(crate) fn registered_rest(
+        api_state: Arc<crate::api::rest::ApiState>,
+        enforcer: authz_resolver_sdk::PolicyEnforcer,
+    ) -> (Router, toolkit::api::OpenApiRegistryImpl) {
+        struct NoConfig;
+        impl toolkit::config::ConfigProvider for NoConfig {
+            fn get_gear_config(&self, _gear: &str) -> Option<&serde_json::Value> {
+                None
+            }
+        }
+        let gear = Self::default();
+        gear.runtime.store(Some(Arc::new(ProductsRuntime {
+            enforcer: Arc::new(enforcer),
+            api_state,
+            pipeline: tokio::sync::Mutex::new(None),
+        })));
+        let ctx = GearCtx::new(
+            "bss-products",
+            uuid::Uuid::new_v4(),
+            Arc::new(NoConfig),
+            Arc::new(toolkit::ClientHub::new()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let openapi = toolkit::api::OpenApiRegistryImpl::new();
+        let router = gear
+            .register_rest(&ctx, Router::new(), &openapi)
+            .expect("register_rest serves the configured gear");
+        (router, openapi)
+    }
+}
+
+#[cfg(test)]
 #[path = "gear_tests.rs"]
 mod tests;
