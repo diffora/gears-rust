@@ -433,3 +433,58 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
         "the source revision is untouched"
     );
 }
+
+/// D-463: the clone takes an optional `available_from`: omitted, rev 1 keeps the source's sale
+/// date as before; a date overrides it; null clears it ("at publish"); a malformed one is 400
+/// `DATE_INVALID` with nothing written, among the body's refusals: before the 404 of a plan the
+/// tenant does not hold.
+#[tokio::test]
+async fn a_clone_keeps_overrides_or_clears_the_sale_date() {
+    let (f, _) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (p, rev1) = plan(&f, "pro", eur).await;
+    let source = id_of(&p["id"]);
+    let (s, _, _) = f
+        .call(
+            "PATCH",
+            &format!("/plan-revisions/{rev1}"),
+            json!({"available_from":"2031-03-01"}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200);
+    publish(&f, source, rev1).await;
+    for (code, from, expected) in [
+        ("kept", None, json!("2031-03-01")),
+        ("moved", Some(json!("2032-01-15")), json!("2032-01-15")),
+        ("cleared", Some(json!(null)), json!(null)),
+    ] {
+        let mut body = json!({"code":code,"name":code});
+        if let Some(from) = from {
+            body["available_from"] = from;
+        }
+        let (s, b, _) = clone(&f, source, body, Some(code)).await;
+        assert_eq!(s, 201, "{code}: {b}");
+        assert_eq!(b["revisions"][0]["available_from"], expected, "{code}: {b}");
+        let rev = revision(&f, id_of(&b["revisions"][0]["id"])).await;
+        assert_eq!(rev["available_from"], expected, "{code}: stored");
+    }
+    for (key, from_plan) in [("bad", source), ("bad-and-unknown-plan", Uuid::new_v4())] {
+        let (s, b, _) = clone(
+            &f,
+            from_plan,
+            json!({"code":key,"name":key,"available_from":"20310301"}),
+            Some(key),
+        )
+        .await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(text(&b).contains("DATE_INVALID"), "{b}");
+    }
+    assert_eq!(plans(&f).await.len(), 4, "nothing written");
+    assert_eq!(
+        revision(&f, rev1).await["available_from"],
+        "2031-03-01",
+        "the source is unchanged"
+    );
+}

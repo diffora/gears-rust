@@ -53,7 +53,7 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 Publish independent revision structure against book coverage, preserving existing pins; author items, clone and retirement prerequisites.
 Phase 6 adds the reads the SKUs screen needs (D-434): GET /plans?sku_id= lists the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (the scheduled state since D-453), in the shape of GET /plans, which now reads its revisions in one statement for every plan; GET /plan-items/{id} reads one item with its plan and its revision's number and state.
 Phase 8 adds scheduled revisions (D-446 to D-454): an approval before the sale date schedules the revision, the pricing ticker's switch duty and the copy, clone and unschedule doors persist its switch on the date and announce it once, POST /plan-revisions/{id}/unschedule withdraws it to a draft, and every read derives the state a revision reads today.
-Phase 9 adds what the plans screen reads per plan: its current revision, with its item count, item SKUs and author, and the published revision in effect (D-460); each revision's author and when it was submitted and approved (D-461); and a pending revision's vote progress (D-462).
+Phase 9 adds what the plans screen reads per plan: its current revision, with its item count, item SKUs and author, and the published revision in effect (D-460); each revision's author and when it was submitted and approved (D-461); and a pending revision's vote progress (D-462). A plan's create and clone take its sale date (D-463).
 
 Requirements: `cpt-cf-bss-pricing-fr-plans`, `cpt-cf-bss-pricing-fr-reference-protocol`.
 
@@ -198,7 +198,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-clone`
 
-Clone preserves authorable structure while allocating new plan/revision ids and reference attempts: the new plan's draft rev 1 copies the source's published revision (book, availability, items), each item written unreserved and attached after the write (D-413). It does not inherit approval decisions, published state (approved_by_unit_id, published_at) or subscription pins; a source with no published revision is refused CLONE_SOURCE_UNPUBLISHED, and a carried deprecated SKU is red in the new plan's checks (D-408) (spec §3 item 28).
+Clone preserves authorable structure while allocating new plan/revision ids and reference attempts: the new plan's draft rev 1 copies the source's published revision (book, availability, items), each item written unreserved and attached after the write (D-413); an available_from in the body overrides the availability, and null clears it (D-463). It does not inherit approval decisions, published state (approved_by_unit_id, published_at) or subscription pins; a source with no published revision is refused CLONE_SOURCE_UNPUBLISHED, and a carried deprecated SKU is red in the new plan's checks (D-408) (spec §3 item 28).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 

@@ -230,10 +230,11 @@ async fn require_book_read(
         .into())
     }
 }
-/// `POST /plans`: the plan and its draft rev 1 on the named book, in the key's transaction. The
-/// book is one the caller's `price_book` read admits (`books`, D-456).
+/// `POST /plans`: the plan and its draft rev 1 on the named book, with the body's sale date if it
+/// names one (D-463), in the key's transaction. The book is one the caller's `price_book` read
+/// admits (`books`, D-456).
 /// # Errors
-/// 400 `PLAN_CODE_REQUIRED`; 404 for a book the tenant does not hold; 403
+/// 400 `PLAN_CODE_REQUIRED` or `DATE_INVALID`; 404 for a book the tenant does not hold; 403
 /// `PRICE_BOOK_READ_REQUIRED` for one the caller may not read; 409 `PLAN_CODE_TAKEN`; a replayed
 /// or conflicting key.
 pub(super) async fn create(
@@ -252,6 +253,8 @@ pub(super) async fn create(
     if input.code.trim().is_empty() {
         return Err(support::invalid("code", "PLAN_CODE_REQUIRED").into());
     }
+    // D-463: judged as the revision PATCH judges it, among the body's refusals (D-456's order).
+    let available_from = support::date(input.available_from.clone(), "available_from")?;
     let children = AccessScope::for_tenant(tenant);
     if book_repo::find(tx, &children, tenant, input.book_id)
         .await?
@@ -288,7 +291,7 @@ pub(super) async fn create(
             rev_no: 1,
             book_id: input.book_id,
             state: RevisionState::Draft.as_str().into(),
-            available_from: None,
+            available_from,
             pending_unit_id: None,
             approved_by_unit_id: None,
             published_at: None,
@@ -579,11 +582,12 @@ async fn copy_items(
 /// `POST /plans/{id}/clone`: a new plan (its own code and name) whose draft rev 1 copies the
 /// source plan's PUBLISHED revision — the one in effect: a due scheduled revision is switched
 /// first (D-451) — book, sale date and items, under D-413, then drive the
-/// attach ops of its items best-effort and answer 201 with the new plan. Nothing of the source's
-/// approval is copied: no decision, no `approved_by_unit_id` or `published_at`, no pin; a
-/// deprecated SKU is carried, and the new plan's checks show it red (D-408).
+/// attach ops of its items best-effort and answer 201 with the new plan. The body's
+/// `available_from` overrides the copied sale date, and null clears it (D-463). Nothing of the
+/// source's approval is copied: no decision, no `approved_by_unit_id` or `published_at`, no pin;
+/// a deprecated SKU is carried, and the new plan's checks show it red (D-408).
 /// # Errors
-/// 400 `PLAN_CODE_REQUIRED`; 404 for a plan the tenant does not hold; 409
+/// 400 `PLAN_CODE_REQUIRED` or `DATE_INVALID`; 404 for a plan the tenant does not hold; 409
 /// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 403
 /// `PRICE_BOOK_READ_REQUIRED` when the caller's `price_book` read (`books`) does not admit the
 /// book the clone names, the source's (D-456); 409 `PLAN_CODE_TAKEN`; a replayed or conflicting
@@ -654,6 +658,13 @@ async fn clone_in(
     if input.code.trim().is_empty() {
         return Err(support::invalid("code", "PLAN_CODE_REQUIRED").into());
     }
+    // D-463: omitted keeps the source's sale date; a date overrides it; null clears it. Judged as
+    // the revision PATCH judges it, among the body's refusals (D-456's order).
+    let available_from = input
+        .available_from
+        .clone()
+        .map(|from| support::date(from, "available_from"))
+        .transpose()?;
     let children = AccessScope::for_tenant(tenant);
     let from = find_plan(tx, scope, tenant, source).await?;
     let now = time::OffsetDateTime::now_utc();
@@ -694,7 +705,7 @@ async fn clone_in(
             rev_no: 1,
             book_id: published.book_id,
             state: RevisionState::Draft.as_str().into(),
-            available_from: published.available_from,
+            available_from: available_from.unwrap_or(published.available_from),
             pending_unit_id: None,
             approved_by_unit_id: None,
             published_at: None,

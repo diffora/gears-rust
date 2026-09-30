@@ -635,15 +635,27 @@ pub struct PricingPlanCreate {
     pub code: String,
     pub name: String,
     pub book_id: Uuid,
+    /// Rev 1's sale date, `YYYY-MM-DD` (D-463); omitted or null means "at publish". A malformed
+    /// date is 400 `DATE_INVALID`, as the revision PATCH answers it.
+    #[serde(default)]
+    pub available_from: Option<String>,
 }
 /// `POST /plans/{id}/clone`: the new plan's own code and name; its draft rev 1 copies the source's
-/// published revision.
+/// published revision, and its sale date unless the body names one (D-463).
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
+#[allow(
+    clippy::option_option,
+    reason = "the clone distinguishes omission (keep the source's), null (clear) and a new date"
+)]
 pub struct PricingPlanClone {
     pub code: String,
     pub name: String,
+    /// Rev 1's sale date, `YYYY-MM-DD` (D-463): omitted keeps the source's, a date overrides it,
+    /// null clears it ("at publish"). A malformed date is 400 `DATE_INVALID`.
+    #[serde(default, deserialize_with = "nullable_date")]
+    pub available_from: Option<Option<String>>,
 }
 /// `PATCH /plans/{id}`: the plan's name, under If-Match.
 #[toolkit_macros::api_dto(request)]

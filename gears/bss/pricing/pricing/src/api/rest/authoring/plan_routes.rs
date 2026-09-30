@@ -35,12 +35,13 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a plan")
         .description(
             "Creates a plan with a code and a name and its draft revision 1 on a book of the \
-             tenant; the Idempotency-Key replays the answer. The caller also needs price_book \
-             read on that book (D-456). The code is at most 64 characters and the name 200 \
-             (D-457). Refusals: 400 PLAN_CODE_REQUIRED, or FIELD_TOO_LONG on a code or a name \
-             over its cap; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED \
-             for one the caller may not read; 503 when that grant cannot be judged; 409 \
-             PLAN_CODE_TAKEN.",
+             tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \
+             \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs \
+             price_book read on that book (D-456). The code is at most 64 characters and the name \
+             200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a \
+             code or a name over its cap; 404 for a book the tenant does not hold; 403 \
+             PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot \
+             be judged; 409 PLAN_CODE_TAKEN.",
         )
         .tag("Pricing")
         .authenticated()
@@ -145,12 +146,14 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Creates a new plan with its own code and name whose draft revision 1 copies the \
              source's published revision (the one in effect: a scheduled revision whose date has \
-             come is switched first, D-451), without anything of its approval. The caller also \
-             needs price_book read on the source's book (D-456). The code is at most 64 \
-             characters and the name 200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, or \
-             FIELD_TOO_LONG on a code or a name over its cap; 404 for an unknown plan; 409 \
-             CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 PRICE_BOOK_READ_REQUIRED for a book \
-             the caller may not read; 503 when that grant cannot be judged.",
+             come is switched first, D-451): its book, its items and its sale date, without \
+             anything of its approval. An available_from in the body overrides the sale date, \
+             and null clears it (D-463). The caller also needs price_book read on the source's \
+             book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: \
+             400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a code or a name over its \
+             cap; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 \
+             PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant \
+             cannot be judged.",
         )
         .tag("Pricing")
         .authenticated()

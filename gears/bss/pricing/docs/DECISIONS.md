@@ -87,18 +87,19 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-448 | M | The storage writes of a scheduled revision: schedule, switch, unschedule and the due scan | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-449 | M | An approval before the sale date schedules the revision | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2) |
 | D-450 | M | The switch job persists a due switch on its date and announces it once | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review H1, M4, L2, L7 |
-| D-451 | M | The copy, clone and unschedule doors catch a due switch up; one scheduled revision at a time | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M1 |
+| D-451 | M | The copy, clone and unschedule doors catch a due switch up; one scheduled revision at a time | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M1; amended by D-463 |
 | D-452 | M | A scheduled revision can be withdrawn to a draft | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M5 |
 | D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5; amended by D-460, D-461 |
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
-| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
+| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463 |
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
 | D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453 |
 | D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
+| D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
 
 ## Entries
 
@@ -760,7 +761,9 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **Nowhere else (plan rev 2 M1).** The draft's PATCH and DELETE, the item writes, the submit and the apply never meet a scheduled sibling. The open index admits one draft or pending revision per plan, the copy refuses a new draft while a revision waits, and unschedule turns the waiting revision itself into the draft. A catch-up in those writes would be dead code.
 - **The invariant.** No draft or pending revision stands beside a scheduled one. A test drives every door that opens or moves a revision (the copy, the draft's PATCH and DELETE, the submit, the item writes, the votes on the applied unit, the clone and the plan create) and then finds the plan with exactly its published and its scheduled revision.
 
-**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 4, 6; plan review M1).
+D-463 amends this entry: the clone copies the source's sale date unless its body names another date, which overrides it, or null, which clears it.
+
+**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 4, 6; plan review M1). Amended by D-463.
 
 #### D-452 [M] A scheduled revision can be withdrawn to a draft
 
@@ -829,7 +832,9 @@ D-461 amends this entry: the plan list also reads the units its revisions name, 
 - **The tests.** tests/book_reads.rs judges the three doors under a grant narrowed to another book (403) and under a policy that cannot judge (503), with nothing written, and then under a grant that admits the book. A caller holding plan author alone is now refused POST /plans and the clone (tests/plan_doors.rs, tests/plan_clone.rs).
 - **Breaking for a caller** that holds plan author without price_book read on the book: POST /plans, the clone and a book-naming PATCH now answer 403. The vhp-core e2e plan authors hold every pricing action (CATALOG_AUTHOR), and its narrower actors are refused plan author first, so its grants suffice; a new scenario would give one actor every grant but price_book read and expect the three 403s.
 
-**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440.
+D-463 extends this entry: a malformed available_from on POST /plans or the clone is 400 DATE_INVALID, among the body's refusals: after the money's policy (503) and before the 404 of the book or of the source plan.
+
+**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440. Extended by D-463.
 
 #### D-457 [M] Every text a request writes has an explicit length cap
 
@@ -917,3 +922,17 @@ The plan's screen shows how far a pending revision is from its quorum (ask 40).
 - **The tests.** tests/plan_overview.rs: quorum 2 through its votes (approvals moves as the receipt's have does, a duplicate vote adds nothing, a refresh makes the first vote stale and it stops counting, the apply clears the field), quorum 1 and quorum 0 at the submit, a draft; a caller holding plan read only reads it. Probes that counted stale votes, that dropped the progress from the read and from the receipt, were caught.
 
 **Source:** Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5).
+
+#### D-463 [M] A plan's sale date on create and clone
+
+**Status:** DECIDED 2026-09-30.
+
+A new plan's first revision took its sale date only through a second call, the revision PATCH (ask 34). The date decides at approval whether a revision is scheduled or published (D-449).
+
+- **The create.** POST /plans takes an optional available_from, YYYY-MM-DD: rev 1's sale date. Omitted or null means "at publish", as before.
+- **The clone.** POST /plans/{id}/clone takes an optional available_from. Omitted, rev 1 keeps the source's sale date, as before (D-451). A date overrides it. Null clears it: "at publish". The clone request tells the three apart, as the revision PATCH does.
+- **The refusal.** The date is judged as the revision PATCH judges it: a date that does not read is 400 DATE_INVALID on available_from, and nothing is written. It is one of D-456's body refusals: after the money's policy (503), with PLAN_CODE_REQUIRED, before the 404 of the book (the create) or of the source plan (the clone). Like the PATCH, the door refuses only a date that does not read; the checks judge the sale date (D-408).
+- **The texts.** The served texts of the create and the clone name the field and DATE_INVALID.
+- **The tests.** tests/plan_doors.rs: a create with a date, without one, with null, and with a malformed date on a known and on an unknown book (400 both times, nothing written). tests/plan_clone.rs: a clone that keeps, overrides and clears the source's date, and a malformed date on a known and an unknown source plan; the source is unchanged. Probes that dropped the create's date and ignored the clone's override were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10). Amends D-451; extends D-456.
