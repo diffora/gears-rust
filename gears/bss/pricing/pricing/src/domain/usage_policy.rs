@@ -27,6 +27,29 @@ pub fn entry_policy_key(policy: Option<&UsageRatingPolicyInput>) -> Option<Diges
     policy.map(bss_pricing_sdk::digest::policy_digest)
 }
 
+/// Compare the complete immutable declaration and SKU unit with an entry's policy.
+/// # Errors
+/// `METER_POLICY_MISMATCH` means the declaration does not certify these quantities.
+pub fn validate_meter_policy(
+    policy: &bss_pricing_sdk::terms::UsageRatingPolicy,
+    sku_unit: &str,
+    semantics: &bss_pricing_sdk::meter_semantics::MeterSemantics,
+) -> Result<(), RuleError> {
+    validate_policy_shape(&policy.content)?;
+    let q = &policy.content.quantity_semantics;
+    if q.meter != semantics.meter
+        || q.unit != sku_unit
+        || q.unit != semantics.canonical_unit
+        || q.fold != semantics.fold
+        || q.fold != bss_pricing_sdk::terms::Fold::Sum
+        || q.accrual_policy_version != semantics.accrual_policy_version
+        || !semantics.source_integrated
+    {
+        return Err(RuleError::new("METER_POLICY_MISMATCH"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]

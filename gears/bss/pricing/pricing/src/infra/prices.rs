@@ -16,7 +16,7 @@ use crate::{
     },
     infra::{
         plan_revisions::{self, SUBSCRIPTIONS_UNAVAILABLE},
-        reference_registry, reference_work,
+        reference_work,
         storage::{
             RepoError,
             entity::{self, price_book_entry},
@@ -28,7 +28,7 @@ use crate::{
     },
 };
 use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
-use bss_products_sdk::{ReferenceRegistryV1, models::SkuVersion};
+
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -58,6 +58,7 @@ pub struct PriceBookEntryContext {
     pub values: Option<Vec<String>>,
     pub digits: u32,
     pub prices: Vec<entity::price::Model>,
+    pub policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
 }
 impl PriceBookEntryContext {
     /// Read the book currency, the declared dimension values and every price of the entry.
@@ -93,6 +94,13 @@ impl PriceBookEntryContext {
             values,
             digits: book::minor_digits(&book.currency),
             prices,
+            policy: crate::infra::storage::repo::usage_policy_repo::for_entries(
+                tx,
+                tenant,
+                std::slice::from_ref(entry),
+            )
+            .await?
+            .remove(&entry.id),
         })
     }
     /// Every price of the entry in the pure model.
@@ -112,6 +120,16 @@ impl PriceBookEntryContext {
         siblings: &[Price],
         today: Date,
     ) -> Option<RuleError> {
+        if candidate.min_fee.is_some()
+            && self.policy.as_ref().is_some_and(|p| {
+                matches!(
+                    p.content.rating_window,
+                    crate::infra::usage_policy_wire::RatingWindow::CalendarHour { .. }
+                )
+            })
+        {
+            return Some(RuleError::new("UNSUPPORTED_TERMS"));
+        }
         price::validate(
             candidate,
             self.kind,
@@ -137,6 +155,7 @@ pub enum Release {
 /// The subject of one `prices` unit of one book.
 #[derive(Clone)]
 pub struct PricesSubject {
+    pub meter_observations: crate::infra::meter_semantics::Observations,
     /// The caller; dated SKU reads are made on its behalf.
     pub ctx: SecurityContext,
     pub hub: Arc<toolkit::ClientHub>,
@@ -418,6 +437,7 @@ impl PricesSubject {
     ) -> Self {
         let tenant_id = ctx.subject_tenant_id();
         Self {
+            meter_observations: crate::infra::meter_semantics::Observations::default(),
             ctx,
             hub,
             tenant_id,
@@ -447,34 +467,6 @@ impl PricesSubject {
         *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
         invalid("REGISTRY_REFUSED", "Products refused the dated SKU read")
     }
-    async fn version_on(
-        &self,
-        registry: &dyn ReferenceRegistryV1,
-        sku: Uuid,
-        on: Date,
-    ) -> Result<Option<SkuVersion>, ApprovalError> {
-        registry
-            .sku_version_as_of(&self.ctx, self.tenant_id, sku, on)
-            .await
-            .map_err(|e| self.registry_failure(e))
-    }
-    /// The SKU's first version: the latest, then each predecessor until none is older.
-    async fn earliest(
-        &self,
-        registry: &dyn ReferenceRegistryV1,
-        sku: Uuid,
-    ) -> Result<Option<SkuVersion>, ApprovalError> {
-        let Some(mut first) = self.version_on(registry, sku, Date::MAX).await? else {
-            return Ok(None);
-        };
-        while let Some(eve) = first.effective_from.previous_day() {
-            match self.version_on(registry, sku, eve).await? {
-                Some(older) if older.effective_from < first.effective_from => first = older,
-                _ => break,
-            }
-        }
-        Ok(Some(first))
-    }
     fn scope(&self) -> AccessScope {
         AccessScope::for_tenant(self.tenant_id)
     }
@@ -496,9 +488,8 @@ impl PricesSubject {
                 skus.insert(entry.sku_id);
             }
         }
-        let descriptors = plan_revisions::descriptors_or_unavailable(
-            crate::api::rest::authoring::plans::fresh_skus(&self.hub, &self.ctx, skus).await,
-        );
+        let descriptors =
+            plan_revisions::descriptors_or_unavailable(self.meter_observations.skus(skus));
         {
             let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
             review.plans = plans;
@@ -528,26 +519,13 @@ impl PricesSubject {
     }
     /// The SKU's metering in force on a date (D-402). A date before the SKU's first version
     /// reads that first version's metering, never "none".
-    async fn metering(&self, sku: Uuid, on: Date) -> Result<SkuMetering, ApprovalError> {
-        let registry = reference_registry::resolve(&self.hub)
-            .map_err(|_| invalid("REGISTRY_UNAVAILABLE", "Products reference registry"))?;
-        let version = match self.version_on(registry.as_ref(), sku, on).await? {
-            Some(version) => Some(version),
-            None => self.earliest(registry.as_ref(), sku).await?,
-        };
-        Ok(version.map_or(
-            SkuMetering {
-                unit: None,
-                usage_type_ref: None,
-            },
-            |v| SkuMetering {
-                unit: v.content.unit,
-                usage_type_ref: v.content.usage_type_ref,
-            },
-        ))
+    fn metering(&self, sku: Uuid, on: Date) -> Result<SkuMetering, ApprovalError> {
+        self.meter_observations
+            .metering(sku, on)
+            .map_err(|e| self.registry_failure(e))
     }
     /// The pair guard over every link of a usage chain that touches the unit.
-    async fn guard(
+    fn guard(
         &self,
         sku: Uuid,
         chain: &[Price],
@@ -560,8 +538,8 @@ impl PricesSubject {
             if !unit.contains(&successor.id) && !unit.contains(&predecessor.id) {
                 continue;
             }
-            let was = self.metering(sku, predecessor.effective_from).await?;
-            let is = self.metering(sku, successor.effective_from).await?;
+            let was = self.metering(sku, predecessor.effective_from)?;
+            let is = self.metering(sku, successor.effective_from)?;
             price::chain_guard(ChargeKind::Usage, predecessor, &was, successor, &is)
                 .map_err(|e| rule(e, successor.id))?;
         }
@@ -594,6 +572,10 @@ impl PricesSubject {
                 format!("entry {price_book_entry_id}"),
             ));
         }
+        self.meter_observations.check(&entry).map_err(|error| {
+            *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+            invalid("METER_POLICY_REFUSED", format!("entry {}", entry.id))
+        })?;
         let pc = PriceBookEntryContext::load(tx, self.tenant_id, &entry)
             .await
             .map_err(storage)?;
@@ -661,7 +643,7 @@ impl PricesSubject {
         }));
         price::normalize_windows(&mut chain);
         if pc.kind == ChargeKind::Usage {
-            self.guard(entry.sku_id, &chain, &unit).await?;
+            self.guard(entry.sku_id, &chain, &unit)?;
         }
         Ok(Judged {
             stored: pc.prices,
@@ -785,6 +767,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PricesSubject {
             (r.plans.clone(), r.descriptors.clone())
         };
         json!({
+            "meter_evidence": self.meter_observations.audit(),
             "book_id": self.book_id,
             "common_effective_date": common_effective_date.map(date),
             "prices": items

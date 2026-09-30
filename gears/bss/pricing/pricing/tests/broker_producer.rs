@@ -209,6 +209,11 @@ async fn a_bound_producer_delivers_committed_events_retries_dispatch_and_drops_r
 /// A real door's transaction: at quorum zero a price's submit applies it at once and announces
 /// `PricesPublished` and `ApprovalUnitDecided` in its own transaction.
 async fn submit_a_price_at_quorum_zero(state: &Arc<AuthoringState>, tenant: Uuid) {
+    state
+        .hub
+        .register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+            entry_support::policy_support::MeterProvider::default(),
+        ));
     let (app, ctx) = (app_for(state.clone(), tenant), user_of(tenant));
     let call = |method: &'static str,
                 path: String,

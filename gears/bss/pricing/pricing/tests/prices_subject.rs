@@ -118,14 +118,34 @@ impl Setup {
     fn price_book_entry_id(&self) -> Uuid {
         self.entry["id"].as_str().unwrap().parse().unwrap()
     }
-    fn subject(&self) -> PricesSubject {
-        PricesSubject::new(
+    async fn subject(&self) -> PricesSubject {
+        let mut subject = PricesSubject::new(
             self.f.ctx.clone(),
             self.f.state.hub.clone(),
             self.book,
             time::OffsetDateTime::now_utc(),
+        );
+        let conn = self.f.db.conn().unwrap();
+        let entries = price_book_entry_repo::for_book(
+            &conn,
+            &AccessScope::for_tenant(self.tenant()),
+            self.tenant(),
+            self.book,
         )
+        .await
+        .unwrap();
+        subject.meter_observations = bss_pricing::infra::meter_semantics::Observations::capture(
+            &conn,
+            &self.f.state.hub,
+            &self.f.ctx,
+            entries,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        subject
     }
+
     fn store(&self) -> PricingApprovalStore {
         PricingApprovalStore {
             scope: AccessScope::for_tenant(self.tenant()),
@@ -332,7 +352,7 @@ async fn collect_is_business_content_with_the_pair_partner_and_the_chain_predece
     let mut promo = body("2031-03-01");
     promo["temporary_until"] = json!("2031-03-11");
     let pair = s.draft("pair", promo).await;
-    let subject = s.subject();
+    let subject = s.subject().await;
     let promo_id = pair[0];
     let items = s
         .tx(move |tx, _| {
@@ -388,7 +408,7 @@ async fn validate_submit_reruns_the_rules_the_pair_rule_and_book_ownership() {
     promo["temporary_until"] = json!("2031-03-11");
     let pair = s.draft("pair", promo).await;
     // Only the promo half, bypassing collect's pull-in.
-    let subject = s.subject();
+    let subject = s.subject().await;
     let promo_only = pair[0];
     let err = s
         .tx(move |tx, _| {
@@ -409,9 +429,12 @@ async fn validate_submit_reruns_the_rules_the_pair_rule_and_book_ownership() {
     // Another unit approved the same start meanwhile.
     s.approved(9, "2031-05-01", "per_unit", json!({"rate":"0.30"}))
         .await;
-    let err = s.submit(s.subject(), single.clone(), 1).await.unwrap_err();
+    let err = s
+        .submit(s.subject().await, single.clone(), 1)
+        .await
+        .unwrap_err();
     assert_eq!(code(&err), "WINDOW_OVERLAP");
-    let mut foreign = s.subject();
+    let mut foreign = s.subject().await;
     foreign.book_id = Uuid::new_v4();
     let err = s.submit(foreign, pair, 1).await.unwrap_err();
     assert_eq!(code(&err), "PRICE_NOT_IN_BOOK");
@@ -429,13 +452,13 @@ async fn the_chain_guard_reads_sku_metering_as_of_each_start() {
         .await;
     let early = s.draft("early", body("2031-03-01")).await;
     let late = s.draft("late", body("2031-07-01")).await;
-    let err = s.submit(s.subject(), late, 1).await.unwrap_err();
+    let err = s.submit(s.subject().await, late, 1).await.unwrap_err();
     assert_eq!(
         code(&err),
         "CHAIN_MODEL_CHANGED",
         "the unit differs as of each start"
     );
-    assert!(s.submit(s.subject(), early.clone(), 1).await.is_ok());
+    assert!(s.submit(s.subject().await, early.clone(), 1).await.is_ok());
     // D-427: the model cannot change on a chain at all: it is the entry's, and money of another
     // model's shape is refused at the door, before any unit.
     let mut graduated = body("2031-04-01");
@@ -450,7 +473,7 @@ async fn the_chain_guard_reads_sku_metering_as_of_each_start() {
         .versions_down
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let again = s.draft("again", body("2031-02-01")).await;
-    let err = s.submit(s.subject(), again, 1).await.unwrap_err();
+    let err = s.submit(s.subject().await, again, 1).await.unwrap_err();
     assert_eq!(code(&err), "REGISTRY_UNAVAILABLE");
 }
 
@@ -464,7 +487,7 @@ async fn a_recurring_chain_is_not_guarded_and_reads_no_metering() {
     let mut successor = body("2031-03-01");
     successor["price"] = json!({"amount":"12"});
     let ids = s.draft("seat", successor).await;
-    assert!(s.submit(s.subject(), ids, 1).await.is_ok());
+    assert!(s.submit(s.subject().await, ids, 1).await.is_ok());
     assert_eq!(Script::count(&s.script.version_reads), 0);
 }
 
@@ -472,14 +495,17 @@ async fn a_recurring_chain_is_not_guarded_and_reads_no_metering() {
 async fn lock_is_a_conditional_write_and_a_second_unit_is_refused() {
     let s = setup(0).await;
     let ids = s.draft("one", body("2031-03-01")).await;
-    let first = s.submit(s.subject(), ids.clone(), 1).await.unwrap();
+    let first = s.submit(s.subject().await, ids.clone(), 1).await.unwrap();
     let locked = s.price(ids[0]).await;
     assert_eq!(locked.state, "pending");
     assert_eq!(locked.pending_unit_id, Some(first.unit.id));
-    let err = s.submit(s.subject(), ids.clone(), 1).await.unwrap_err();
+    let err = s
+        .submit(s.subject().await, ids.clone(), 1)
+        .await
+        .unwrap_err();
     assert_eq!(code(&err), "PRICE_NOT_DRAFT");
     // A racing unit that validated before the first lock loses the conditional write.
-    let subject = s.subject();
+    let subject = s.subject().await;
     let tenant = s.tenant();
     let price = ids[0];
     let err = s
@@ -534,7 +560,7 @@ async fn apply_normalizes_the_chain_and_marks_the_new_prices_predecessor_keep_fo
     let mut signup = body("2031-06-01");
     signup["eligibility"] = json!("new");
     let ids = s.draft("new", signup).await;
-    let mut subject = s.subject();
+    let mut subject = s.subject().await;
     subject.common_effective_date = Some(day("2031-05-01"));
     let submitted = s.submit(subject, ids.clone(), 0).await.unwrap();
     assert!(submitted.applied, "quorum 0 applies at submit");
@@ -565,7 +591,7 @@ async fn apply_shifts_a_pair_by_one_delta() {
     let mut promo = body("2031-03-01");
     promo["temporary_until"] = json!("2031-03-11");
     let pair = s.draft("pair", promo).await;
-    let mut subject = s.subject();
+    let mut subject = s.subject().await;
     subject.common_effective_date = Some(day("2031-04-01"));
     s.submit(subject, vec![pair[0]], 0).await.unwrap();
     let (p, r) = (s.price(pair[0]).await, s.price(pair[1]).await);
@@ -595,9 +621,11 @@ async fn approving_a_later_default_price_keeps_a_closed_value_price() {
     eu["temporary_until"] = json!("2031-03-11");
     let closed = s.draft("eu", eu).await;
     assert_eq!(closed.len(), 1);
-    s.submit(s.subject(), closed.clone(), 0).await.unwrap();
+    s.submit(s.subject().await, closed.clone(), 0)
+        .await
+        .unwrap();
     let later = s.draft("default", body("2031-03-05")).await;
-    s.submit(s.subject(), later, 0).await.unwrap();
+    s.submit(s.subject().await, later, 0).await.unwrap();
     let eu = s.price(closed[0]).await;
     assert_eq!(eu.state, "approved");
     assert!(eu.closed_explicitly);
@@ -621,14 +649,14 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
     let first = s.draft("first", body("2031-05-01")).await;
     let second = s.draft("second", body("2031-08-01")).await;
     let unit = s
-        .submit(s.subject(), vec![first[0], second[0]], 1)
+        .submit(s.subject().await, vec![first[0], second[0]], 1)
         .await
         .unwrap()
         .unit;
     // Another unit approved one of the starts meanwhile.
     s.approved(9, "2031-08-01", "per_unit", json!({"rate":"0.30"}))
         .await;
-    let err = s.approve(s.subject(), &unit).await.unwrap_err();
+    let err = s.approve(s.subject().await, &unit).await.unwrap_err();
     assert_eq!(code(&err), "APPLY_REFUSED");
     assert_eq!(inner(&err), Some("WINDOW_OVERLAP"), "{err:?}");
     for id in [first[0], second[0]] {
@@ -648,13 +676,17 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
     s.approved(1, "2031-01-01", "per_unit", json!({"rate":"0.20"}))
         .await;
     let ids = s.draft("x", body("2031-09-01")).await;
-    let unit = s.submit(s.subject(), ids.clone(), 1).await.unwrap().unit;
+    let unit = s
+        .submit(s.subject().await, ids.clone(), 1)
+        .await
+        .unwrap()
+        .unit;
     s.script.versions.lock().unwrap().push((
         day("2031-08-01"),
         Some("TB".into()),
         Some("storage".into()),
     ));
-    let err = s.approve(s.subject(), &unit).await.unwrap_err();
+    let err = s.approve(s.subject().await, &unit).await.unwrap_err();
     assert_eq!(inner(&err), Some("CHAIN_MODEL_CHANGED"), "{err:?}");
     assert_eq!(s.price(ids[0]).await.state, "pending");
 }
@@ -663,8 +695,12 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
 async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
     let s = setup(0).await;
     let ids = s.draft("a", body("2031-03-01")).await;
-    let unit = s.submit(s.subject(), ids.clone(), 1).await.unwrap().unit;
-    let mut subject = s.subject();
+    let unit = s
+        .submit(s.subject().await, ids.clone(), 1)
+        .await
+        .unwrap()
+        .unit;
+    let mut subject = s.subject().await;
     subject.release = Release::Rejected;
     let (id, generation) = (unit.id, unit.generation);
     s.tx(move |tx, store| {
@@ -691,8 +727,12 @@ async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
     assert_eq!(rejected.state, "rejected");
     assert!(rejected.pending_unit_id.is_none());
     let other = s.draft("b", body("2031-04-01")).await;
-    let unit = s.submit(s.subject(), other.clone(), 1).await.unwrap().unit;
-    let subject = s.subject();
+    let unit = s
+        .submit(s.subject().await, other.clone(), 1)
+        .await
+        .unwrap()
+        .unit;
+    let subject = s.subject().await;
     let (id, actor) = (unit.id, s.f.ctx.subject_id());
     s.tx(move |tx, store| {
         let subject = subject.clone();
@@ -738,7 +778,7 @@ async fn a_common_date_that_moves_a_return_past_an_approved_change_is_refused() 
     assert_eq!(pair.len(), 2);
     let back = s.price(pair[1]).await;
     assert_eq!(back.return_of_price_id, Some(a), "the return copied A");
-    let mut shifted = s.subject();
+    let mut shifted = s.subject().await;
     shifted.common_effective_date = Some(day("2031-07-01"));
     let err = s.submit(shifted, pair.clone(), 1).await.unwrap_err();
     assert_eq!(
@@ -748,7 +788,7 @@ async fn a_common_date_that_moves_a_return_past_an_approved_change_is_refused() 
     );
     assert_eq!(s.price(pair[0]).await.state, "draft", "no unit, no lock");
     assert!(
-        s.submit(s.subject(), pair, 1).await.is_ok(),
+        s.submit(s.subject().await, pair, 1).await.is_ok(),
         "unshifted, the return still restores A, which is in force on 03-01"
     );
 }
@@ -762,7 +802,7 @@ async fn a_change_approved_after_drafting_makes_the_return_stale_at_submit_and_a
         .draft("pending", promo("2031-02-01", "2031-03-01", "5", None))
         .await;
     let unit = s
-        .submit(s.subject(), pending.clone(), 1)
+        .submit(s.subject().await, pending.clone(), 1)
         .await
         .unwrap()
         .unit;
@@ -772,14 +812,14 @@ async fn a_change_approved_after_drafting_makes_the_return_stale_at_submit_and_a
     let mut increase = body("2031-02-15");
     increase["price"] = json!({"rate":"12"});
     let b = s.draft("b", increase).await;
-    assert!(s.submit(s.subject(), b, 0).await.unwrap().applied);
-    let err = s.approve(s.subject(), &unit).await.unwrap_err();
+    assert!(s.submit(s.subject().await, b, 0).await.unwrap().applied);
+    let err = s.approve(s.subject().await, &unit).await.unwrap_err();
     assert_eq!(code(&err), "APPLY_REFUSED");
     assert_eq!(inner(&err), Some("PAIR_RETURN_STALE"), "{err:?}");
     for id in &pending {
         assert_eq!(s.price(*id).await.state, "pending", "the unit rolled back");
     }
-    let err = s.submit(s.subject(), later, 1).await.unwrap_err();
+    let err = s.submit(s.subject().await, later, 1).await.unwrap_err();
     assert_eq!(code(&err), "PAIR_RETURN_STALE", "B is in force on 04-10");
 }
 
@@ -794,7 +834,7 @@ async fn a_single_closed_price_whose_value_gained_a_chain_is_refused() {
     assert_eq!(closed.len(), 1, "no own price on 03-01: one closed price");
     s.approved_at(9, ("2031-01-15", None), Some("us"), "8")
         .await;
-    let err = s.submit(s.subject(), closed, 1).await.unwrap_err();
+    let err = s.submit(s.subject().await, closed, 1).await.unwrap_err();
     assert_eq!(
         code(&err),
         "PAIR_RETURN_STALE",
@@ -809,11 +849,11 @@ async fn a_single_closed_price_whose_value_gained_a_chain_is_refused() {
         .draft("us", promo("2031-02-01", "2031-03-01", "5", Some("us")))
         .await;
     assert_eq!(closed.len(), 1);
-    let mut shifted = s.subject();
+    let mut shifted = s.subject().await;
     shifted.common_effective_date = Some(day("2031-05-01"));
     let err = s.submit(shifted, closed.clone(), 1).await.unwrap_err();
     assert_eq!(code(&err), "PAIR_RETURN_STALE");
-    assert!(s.submit(s.subject(), closed, 1).await.is_ok());
+    assert!(s.submit(s.subject().await, closed, 1).await.is_ok());
 }
 
 // Behaviour MEDIUM-1: two pairs on one chain in one unit. Both returns were copied from A
@@ -834,7 +874,7 @@ async fn two_pairs_on_one_chain_in_one_unit_are_both_current_and_apply_in_order(
         assert_eq!(s.price(back).await.return_of_price_id, Some(a));
     }
     let ids: Vec<Uuid> = one.iter().chain(&two).copied().collect();
-    let submitted = s.submit(s.subject(), ids, 0).await.unwrap();
+    let submitted = s.submit(s.subject().await, ids, 0).await.unwrap();
     assert!(submitted.applied, "one unit, accepted and applied");
     let mut windows = Vec::new();
     for id in [a, one[0], one[1], two[0], two[1]] {
@@ -879,7 +919,7 @@ async fn a_temporary_nested_in_a_closed_price_returns_to_the_default_after_the_o
             .await;
         assert_eq!(outer.len(), 1, "no own price on 03-01: one closed price");
         assert!(
-            s.submit(s.subject(), outer.clone(), 0)
+            s.submit(s.subject().await, outer.clone(), 0)
                 .await
                 .unwrap()
                 .applied
@@ -899,7 +939,7 @@ async fn a_temporary_nested_in_a_closed_price_returns_to_the_default_after_the_o
             (Some(day("2031-03-01")), true),
             "the return keeps the closed price's end"
         );
-        let mut subject = s.subject();
+        let mut subject = s.subject().await;
         subject.common_effective_date = shift.map(day);
         assert!(s.submit(subject, inner.clone(), 0).await.unwrap().applied);
         let (promo_price, back) = (s.price(inner[0]).await, s.price(inner[1]).await);
@@ -934,7 +974,7 @@ async fn a_temporary_ending_on_the_next_approved_start_is_one_price_ended_by_it(
     assert!(!stored.closed_explicitly);
     assert!(stored.paired_price_id.is_none());
     assert!(
-        s.submit(s.subject(), only.clone(), 0)
+        s.submit(s.subject().await, only.clone(), 0)
             .await
             .unwrap()
             .applied
@@ -959,10 +999,15 @@ async fn a_price_approved_before_an_existing_new_price_is_marked_keep_for_bound(
     let mut signup = body("2031-05-01");
     signup["eligibility"] = json!("new");
     let n = s.draft("n", signup).await;
-    assert!(s.submit(s.subject(), n, 0).await.unwrap().applied);
+    assert!(s.submit(s.subject().await, n, 0).await.unwrap().applied);
     assert!(s.price(p).await.keep_for_bound, "P preceded N");
     let m = s.draft("m", body("2031-03-01")).await;
-    assert!(s.submit(s.subject(), m.clone(), 0).await.unwrap().applied);
+    assert!(
+        s.submit(s.subject().await, m.clone(), 0)
+            .await
+            .unwrap()
+            .applied
+    );
     let m = s.price(m[0]).await;
     assert_eq!(m.effective_to, Some(day("2031-05-01")), "M now precedes N");
     assert!(
@@ -1028,7 +1073,7 @@ async fn a_price_before_the_first_sku_version_is_guarded_by_the_earliest_version
         .await;
     let same = s.draft("same", body("2031-07-01")).await;
     assert!(
-        s.submit(s.subject(), same, 1).await.is_ok(),
+        s.submit(s.subject().await, same, 1).await.is_ok(),
         "before its first version the SKU meters as that version, not as nothing"
     );
     s.script.versions.lock().unwrap().push((
@@ -1037,7 +1082,7 @@ async fn a_price_before_the_first_sku_version_is_guarded_by_the_earliest_version
         Some("storage".into()),
     ));
     let changed = s.draft("changed", body("2031-09-01")).await;
-    let err = s.submit(s.subject(), changed, 1).await.unwrap_err();
+    let err = s.submit(s.subject().await, changed, 1).await.unwrap_err();
     assert_eq!(
         code(&err),
         "CHAIN_MODEL_CHANGED",
@@ -1083,7 +1128,7 @@ async fn a_price_inside_an_approved_promo_window_is_refused_at_draft_submit_and_
         .draft("promo", promo("2031-02-01", "2031-03-01", "5", None))
         .await;
     assert!(
-        s.submit(s.subject(), pair, 0).await.unwrap().applied,
+        s.submit(s.subject().await, pair, 0).await.unwrap().applied,
         "a pending price is neither approved nor of this unit: the promo spans no start"
     );
     let at_draft = s.try_draft("late", increase("2031-02-10", None)).await;
@@ -1156,13 +1201,20 @@ async fn a_promo_across_an_approved_start_is_refused_at_draft_and_at_apply() {
         1,
         "the promo alone, ended by the approved start"
     );
-    let unit = s.submit(s.subject(), alone.clone(), 1).await.unwrap().unit;
+    let unit = s
+        .submit(s.subject().await, alone.clone(), 1)
+        .await
+        .unwrap()
+        .unit;
     let inside = s.draft("inside", increase("2031-02-15", None)).await;
     assert!(
-        s.submit(s.subject(), inside, 0).await.unwrap().applied,
+        s.submit(s.subject().await, inside, 0)
+            .await
+            .unwrap()
+            .applied,
         "the promo is still pending"
     );
-    let err = s.approve(s.subject(), &unit).await.unwrap_err();
+    let err = s.approve(s.subject().await, &unit).await.unwrap_err();
     assert_eq!(code(&err), "APPLY_REFUSED");
     assert_eq!(inner(&err), Some("TEMPORARY_SPANS_A_CHANGE"), "{err:?}");
     assert_eq!(s.price(alone[0]).await.state, "pending", "rolled back");
@@ -1180,10 +1232,18 @@ async fn a_start_on_a_promo_end_is_accepted_and_one_inside_its_own_unit_is_refus
         .draft("us", promo("2031-02-01", "2031-03-01", "4", Some("us")))
         .await;
     assert_eq!(closed.len(), 1, "no own price on 03-01: one closed price");
-    assert!(s.submit(s.subject(), closed, 0).await.unwrap().applied);
+    assert!(
+        s.submit(s.subject().await, closed, 0)
+            .await
+            .unwrap()
+            .applied
+    );
     let on_end = s.draft("on-end", increase("2031-03-01", Some("us"))).await;
     assert!(
-        s.submit(s.subject(), on_end, 0).await.unwrap().applied,
+        s.submit(s.subject().await, on_end, 0)
+            .await
+            .unwrap()
+            .applied,
         "a price starting exactly on the promo's end is accepted"
     );
     assert_eq!(
@@ -1205,7 +1265,7 @@ async fn a_start_on_a_promo_end_is_accepted_and_one_inside_its_own_unit_is_refus
         .await;
     let inside = s.draft("inside", increase("2031-02-15", None)).await;
     let err = s
-        .submit(s.subject(), vec![alone[0], inside[0]], 1)
+        .submit(s.subject().await, vec![alone[0], inside[0]], 1)
         .await
         .unwrap_err();
     assert_eq!(code(&err), "PRICE_INSIDE_TEMPORARY", "a same-unit window");
@@ -1222,7 +1282,7 @@ async fn a_common_date_that_moves_a_promo_across_an_approved_start_is_refused() 
         .draft("outer", promo("2031-02-01", "2031-03-01", "5", None))
         .await;
     assert!(
-        s.submit(s.subject(), outer.clone(), 0)
+        s.submit(s.subject().await, outer.clone(), 0)
             .await
             .unwrap()
             .applied
@@ -1232,7 +1292,7 @@ async fn a_common_date_that_moves_a_promo_across_an_approved_start_is_refused() 
         .await;
     assert_eq!(inner.len(), 2);
     assert_eq!(s.price(inner[1]).await.return_of_price_id, Some(outer[0]));
-    let mut shifted = s.subject();
+    let mut shifted = s.subject().await;
     shifted.common_effective_date = Some(day("2031-01-25"));
     let err = s.submit(shifted, inner.clone(), 1).await.unwrap_err();
     assert_eq!(
@@ -1241,7 +1301,7 @@ async fn a_common_date_that_moves_a_promo_across_an_approved_start_is_refused() 
         "[01-25, 02-04) contains the outer start 02-01"
     );
     assert_eq!(s.price(inner[0]).await.state, "draft", "no unit, no lock");
-    assert!(s.submit(s.subject(), inner, 0).await.unwrap().applied);
+    assert!(s.submit(s.subject().await, inner, 0).await.unwrap().applied);
     for (on, rate) in [
         ("2031-02-15", "3"),
         ("2031-02-25", "5"),

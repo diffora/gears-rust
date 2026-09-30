@@ -274,7 +274,64 @@ unit and rejects any unit.
 | Promotions | deferred (D-409) | Deferred by the owner and not built in phase 3; the planned shape: POST /promotions with name, percent, from_date, to_date, plan_ids (at most 50), apply_to; GET /promotions; GET /promotions/{id} (the current approved version, the open version and the history); PATCH /promotions/{id} under If-Match on the promotion, editing the open draft version or creating it from the current approved one; POST /promotions/{id}/submit, /end-today, /cancel |
 | Migrations | deferred (D-410) | Deferred by the owner and not built in phase 3; the planned shape: POST /plans/{id}/migrations with target_plan_id, target_revision_id, timing (next_renewal or date), at?, scope (all or listed) and subscriptions [{ subscription_id, current_plan_revision_id, current_period_end }] (at most 1000; caller-supplied, D-410) answers the request with its preview and its migration unit; GET /migration-requests/{id}; GET /plans/{id}/migrations |
 
-The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, answer
+D-503 adds exact-version semantic validation to D-502. Pricing consumes
+`pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
+caller, before opening a Pricing transaction. `MeterSemantics` carries the exact meter identity
+and version, canonical unit, SUM fold, accrual-policy version, source-integrated flag and provider
+evidence digest. All quantity fields and the SKU's unit and usage-type identity must agree;
+otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of a latest version.
+
+New entry-create work uses schema version 2 and persists the captured declaration before reservation.
+Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
+Unversioned and version-1 work keep their original recovery rules; they acquire no invented evidence.
+The existing D-401 cancellation of unreserved abandoned creates remains unchanged. A later fresh
+request must resolve its own evidence. Confirmation recovery preserves the original entry and policy.
+
+D-503 validates a usage entry's policy at price and plan-revision submit and final apply.
+Products and meter reads happen outside Pricing transactions, as the acting caller. The subjects
+consume captured results, recheck the entry identity/version in their existing transaction and keep
+provider evidence digests in approval snapshots. Dependency failures remain typed observations until
+the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
+successful command replay precedes dependency observations.
+
+The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
+read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
+column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)
+and an old approval cannot publish it. A scheduled revision is checked at approval; D-450's later
+switch does not revalidate dependencies. New usage approvals require a policy-bearing entry;
+legacy approved prices and published revisions remain readable.
+
+D-503 refuses CalendarHour with any `min_fee` at price create, submit and apply
+(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. A successor,
+temporary pair and return keep their entry and therefore the same policy, window, scope and reset.
+Policy changes require a different entry and an explicitly selected revision. The existing dated
+SKU chain guard uses immutable Products history captured before the transaction.
+
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
+**External production dependency E1 (not delivered by Pricing).** Types Registry owns immutable
+meter declaration storage/lifecycle; Usage Collector owns the semantic read adapter; source/IRM
+owners supply accrual-definition provenance. Their delivery is separate from this Pricing work.
+The consumer port, validation and contract-test provider do not establish authoritative production
+meter semantics. ClientHub must supply a real `UsageMeterSemanticsV1`; there is no successful
+production fallback. Its absence is typed `UnconfiguredMeterSemantics` with canonical
+`UNCONFIGURED_DEPENDENCY`; a configured outage is 503, and denial is 403. None becomes
+`MISSING_RATING_POLICY` or an empty semantic result.
+
+E1 blocks real usage-entry creation, new price/plan publication and usage sales at their semantic
+gates until the authoritative provider is wired. Delivery must identify the implementing gear/adapter
+and its tracked work item, and demonstrate exact-version resolution, canonical unit matching,
+declared SUM/additivity, source integration provenance, historical immutability, caller authorization,
+outage behavior and VM/cloudlet contract vectors against the real provider. These responsibilities
+are required ownership for handoff, not evidence that another team has accepted or implemented the
+work. Pricing's contract tests certify its consumer behavior only; production readiness remains
+blocked until that external evidence exists.
+
 D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
 `usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
 or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
@@ -294,13 +351,13 @@ only absent policy uses the empty index token. Hourly and billing-cycle variants
 cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
 receipts materialize policy content with its identity; legacy/non-usage entries return null.
 
-Tx A persists typed content and operation input schema_version 1 before the remote reserve. Tx B
+Tx A persists typed content (schema version 1 in D-502, version 2 with meter evidence in D-503) before the remote reserve. Tx B
 inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
 returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
-they continue to read and resolve. Authoritative meter verification, publication gates and resolve
-policy projection belong to Task 3 and are not delivered by D-502.
+they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
+policy projection; E1 remains an external production dependency.
 
 D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
 treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.
@@ -309,6 +366,7 @@ key and an equal dimension key. With no equivalent target, the item retains the 
 ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes monthly, and an absent
 legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
+The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, answer
 PricingPriceBookEntryReadDto: the fields of the entry, usage { prices { approved, pending, draft, scheduled, active,
 superseded }, plans, plans_superseded_only } (D-428) and current_price (D-440). prices counts the entry's prices by
 state, a rejected price excluded, and the approved ones by where their window stands today, so approved = scheduled +

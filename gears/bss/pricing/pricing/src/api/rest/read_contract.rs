@@ -356,6 +356,9 @@ fn render(
             });
         }
         items.push(PricingResolveItemDto {
+            usage_rating_policy: r
+                .price_book_entry_id
+                .and_then(|id| stored.policies.get(&id).cloned()),
             item_id: r.item_id,
             sku_id: r.sku_id,
             price_book_entry_id: r.price_book_entry_id,

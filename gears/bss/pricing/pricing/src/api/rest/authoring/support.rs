@@ -166,6 +166,38 @@ pub fn stored_status(status: i32) -> Result<StatusCode, CanonicalError> {
         .and_then(|s| StatusCode::from_u16(s).ok())
         .ok_or_else(|| CanonicalError::internal("invalid stored status").create())
 }
+/// Replay a completed command before detached dependency observations.
+/// # Errors
+/// A conflicting payload or live claim retains its usual canonical refusal.
+pub async fn replay(
+    db: &Db,
+    tenant: Uuid,
+    endpoint: &str,
+    key: &str,
+    digest: &[u8],
+) -> Result<Option<Response>, DoorError> {
+    let conn = db.conn()?;
+    let Some(claim) = repo::idempotency_repo::lookup_idempotency_key(
+        &conn,
+        &AccessScope::for_tenant(tenant),
+        tenant,
+        endpoint,
+        key,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let Some((status, body)) = held(claim, digest)? else {
+        return Ok(None);
+    };
+    Ok(Some(response(
+        stored_status(status)?,
+        &body["body"],
+        body["etag"].as_u64(),
+    )?))
+}
 /// Claim a POST's key inside the mutation transaction, or replay its stored answer.
 /// # Errors
 /// A different payload under the key is `IDEMPOTENCY_CONFLICT`; a live claim is in flight.

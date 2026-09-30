@@ -94,6 +94,7 @@ pub fn price_conflict(code: &str) -> CanonicalError {
 
 /// Everything the transaction reads, as the pure model and the renderer take it.
 pub struct ReadSnapshot {
+    pub policies: BTreeMap<Uuid, crate::infra::usage_policy_wire::UsageRatingPolicy>,
     pub revision: plan_revision::Model,
     /// The revision's state as it reads today (D-447): published, superseded or scheduled.
     pub state: RevisionState,
@@ -203,6 +204,8 @@ async fn read_stored(
         .into_iter()
         .collect();
     let found = price_book_entry_repo::find_many(tx, &children, tenant, &wanted).await?;
+    let policies =
+        crate::infra::storage::repo::usage_policy_repo::for_entries(tx, tenant, &found).await?;
     let held: BTreeSet<Uuid> = found.iter().map(|e| e.id).collect();
     if let Some(lost) = wanted.iter().find(|w| !held.contains(w)) {
         return Err(corrupt(format!("entry {lost} of revision {id}")));
@@ -261,6 +264,7 @@ async fn read_stored(
             ))
         })?;
     Ok(ReadSnapshot {
+        policies,
         revision,
         state,
         currency: book.currency,

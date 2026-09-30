@@ -1138,3 +1138,67 @@ ITEM_BOOK_FOREIGN blocks publication. An hourly entry never silently becomes mon
 legacy policy never becomes a new policy. Explicit item selection chooses the replacement entry.
 
 **Source:** Pricing Seam Contracts plan revision 3, Task 2. Atlas C10 ownership is refined from item to entry; the atlas source remains externally owned.
+
+#### D-503 [H] Exact meter evidence gates usage publication and stays out of historical reads
+
+**Status:** DECIDED 2026-10-01.
+
+D-503 adds exact-version semantic validation to D-502. Pricing consumes
+`pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
+caller, before opening a Pricing transaction. `MeterSemantics` carries the exact meter identity
+and version, canonical unit, SUM fold, accrual-policy version, source-integrated flag and provider
+evidence digest. All quantity fields and the SKU's unit and usage-type identity must agree;
+otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of a latest version.
+
+New entry-create work uses schema version 2 and persists the captured declaration before reservation.
+Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
+Unversioned and version-1 work keep their original recovery rules; they acquire no invented evidence.
+The existing D-401 cancellation of unreserved abandoned creates remains unchanged. A later fresh
+request must resolve its own evidence. Confirmation recovery preserves the original entry and policy.
+
+D-503 validates a usage entry's policy at price and plan-revision submit and final apply.
+Products and meter reads happen outside Pricing transactions, as the acting caller. The subjects
+consume captured results, recheck the entry identity/version in their existing transaction and keep
+provider evidence digests in approval snapshots. Dependency failures remain typed observations until
+the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
+successful command replay precedes dependency observations.
+
+The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
+read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
+column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)
+and an old approval cannot publish it. A scheduled revision is checked at approval; D-450's later
+switch does not revalidate dependencies. New usage approvals require a policy-bearing entry;
+legacy approved prices and published revisions remain readable.
+
+D-503 refuses CalendarHour with any `min_fee` at price create, submit and apply
+(`UNSUPPORTED_TERMS`), and when publishing a revision selecting such approved money. A successor,
+temporary pair and return keep their entry and therefore the same policy, window, scope and reset.
+Policy changes require a different entry and an explicitly selected revision. The existing dated
+SKU chain guard uses immutable Products history captured before the transaction.
+
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
+**External production dependency E1 (not delivered by Pricing).** Types Registry owns immutable
+meter declaration storage/lifecycle; Usage Collector owns the semantic read adapter; source/IRM
+owners supply accrual-definition provenance. Their delivery is separate from this Pricing work.
+The consumer port, validation and contract-test provider do not establish authoritative production
+meter semantics. ClientHub must supply a real `UsageMeterSemanticsV1`; there is no successful
+production fallback. Its absence is typed `UnconfiguredMeterSemantics` with canonical
+`UNCONFIGURED_DEPENDENCY`; a configured outage is 503, and denial is 403. None becomes
+`MISSING_RATING_POLICY` or an empty semantic result.
+
+E1 blocks real usage-entry creation, new price/plan publication and usage sales at their semantic
+gates until the authoritative provider is wired. Delivery must identify the implementing gear/adapter
+and its tracked work item, and demonstrate exact-version resolution, canonical unit matching,
+declared SUM/additivity, source integration provenance, historical immutability, caller authorization,
+outage behavior and VM/cloudlet contract vectors against the real provider. These responsibilities
+are required ownership for handoff, not evidence that another team has accepted or implemented the
+work. Pricing's contract tests certify its consumer behavior only; production readiness remains
+blocked until that external evidence exists.
+
+**Source:** Pricing Seam Contracts plan revision 3, Task 3 (G2). Extends D-393, D-408 and D-502; preserves D-449–D-453 scheduling. The externally owned atlas C01/C10 is not modified by this task.

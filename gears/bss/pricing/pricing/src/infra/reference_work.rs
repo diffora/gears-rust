@@ -67,6 +67,9 @@ pub struct Work {
 /// keeps its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntryInput {
+    /// D-503: exact declaration captured as the authorized caller before Tx A.
+    #[serde(default)]
+    pub meter_evidence: Option<Box<crate::infra::usage_policy_wire::MeterEvidence>>,
     /// Absent only for operations persisted before D-502; public requests cannot set it.
     #[serde(default)]
     pub schema_version: Option<u32>,
@@ -85,7 +88,8 @@ pub struct EntryInput {
 impl From<PricingPriceBookEntryCreate> for EntryInput {
     fn from(input: PricingPriceBookEntryCreate) -> Self {
         Self {
-            schema_version: Some(1),
+            meter_evidence: None,
+            schema_version: Some(2),
             usage_rating_policy: input.usage_rating_policy.map(Box::new),
             usage_policy_reference: None,
             sku_id: input.sku_id,
@@ -101,6 +105,7 @@ impl EntryInput {
     #[must_use]
     pub fn of(entry: &price_book_entry::Model) -> Self {
         Self {
+            meter_evidence: None,
             schema_version: Some(1),
             usage_rating_policy: None,
             usage_policy_reference: entry
@@ -1433,16 +1438,37 @@ async fn entry_written(
     };
     if op.kind == OpKind::Create.as_str() {
         let refusal = match (input.schema_version, &input.usage_rating_policy, kind) {
-            (Some(1), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
-                crate::domain::usage_policy::validate_policy_shape(&policy.as_ref().into())
-                    .err()
-                    .map(|e| e.code)
+            (Some(1 | 2), Some(policy), crate::domain::price_book_entry::ChargeKind::Usage) => {
+                match &input.meter_evidence {
+                    Some(evidence) => {
+                        let content = policy.as_ref().into();
+                        let policy = bss_pricing_sdk::terms::UsageRatingPolicy {
+                            policy_id: Uuid::nil(),
+                            version: 1,
+                            digest: bss_pricing_sdk::digest::policy_digest(&content),
+                            content,
+                        };
+                        crate::infra::meter_semantics::validate(
+                            &policy,
+                            sku,
+                            &evidence.as_ref().into(),
+                        )
+                        .err()
+                        .map(|_| "METER_POLICY_MISMATCH")
+                    }
+                    None if input.schema_version == Some(1) => {
+                        crate::domain::usage_policy::validate_policy_shape(&policy.as_ref().into())
+                            .err()
+                            .map(|e| e.code)
+                    }
+                    None => Some("METER_EVIDENCE_MISSING"),
+                }
             }
-            (Some(1), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
+            (Some(1 | 2), None, crate::domain::price_book_entry::ChargeKind::Usage) => {
                 Some("MISSING_RATING_POLICY")
             }
-            (Some(1), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
-            (None | Some(1), None, _) => None,
+            (Some(1 | 2), Some(_), _) => Some("UNEXPECTED_RATING_POLICY"),
+            (None | Some(1 | 2), None, _) => None,
             _ => return Err(corrupt()),
         };
         if let Some(code) = refusal {

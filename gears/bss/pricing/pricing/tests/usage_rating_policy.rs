@@ -375,6 +375,13 @@ async fn crash_windows_preserve_policy_input_and_confirmed_receipt() {
     for mode in [1, 2] {
         let script = Arc::new(Script::default());
         let f = Fixture::new(script.clone()).await;
+        let provider =
+            Arc::new(plan_support::entry_support::policy_support::MeterProvider::default());
+        f.state
+            .hub
+            .register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(
+                provider.clone(),
+            );
         let (book, _) = f.book().await;
         let path = format!("/price-books/{}/entries", book["id"].as_str().unwrap());
         let body =
@@ -392,7 +399,8 @@ async fn crash_windows_preserve_policy_input_and_confirmed_receipt() {
         let Target::PriceBookEntry { input, .. } = Work::read(&ops[0]).unwrap().target else {
             panic!("entry op")
         };
-        assert_eq!(input.schema_version, Some(1));
+        assert_eq!(input.schema_version, Some(2));
+        assert_eq!(input.meter_evidence.as_ref().unwrap().digest, [7; 32]);
         assert_eq!(
             serde_json::to_value(input.usage_rating_policy).unwrap(),
             policy()
@@ -406,7 +414,24 @@ async fn crash_windows_preserve_policy_input_and_confirmed_receipt() {
         .await
         .unwrap();
         assert_eq!(before.is_some(), mode == 2);
+        provider
+            .failure
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        let provider_calls = provider.calls.load(std::sync::atomic::Ordering::SeqCst);
         script.set(0);
+        if mode == 1 {
+            // The ticker deliberately cancels unreserved creates (D-401). Resume the persisted
+            // user's operation through the door driver to test the captured pre-Tx-B evidence.
+            bss_pricing::infra::reference_work::drive(
+                &f.state,
+                &f.ctx,
+                ops[0].op_id,
+                Arc::new(RecoveryClock(now)),
+                bss_pricing::infra::reference_work::Caller::Door,
+            )
+            .await
+            .unwrap();
+        }
         Ticker::new(f.state.clone(), Arc::new(RecoveryClock(now)), 10, 100)
             .tick()
             .await
@@ -422,6 +447,10 @@ async fn crash_windows_preserve_policy_input_and_confirmed_receipt() {
                 before.usage_policy_id.unwrap().to_string()
             );
         }
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+            provider_calls
+        );
         let calls = Script::count(&script.reserve_calls);
         script
             .skus_down
@@ -920,4 +949,621 @@ async fn rereserve_and_delete_retain_the_original_immutable_policy() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn entry_creation_rejects_a_policy_whose_unit_disagrees_with_the_sku() {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let mut mismatched = policy();
+    mismatched["quantity_semantics"]["unit"] = json!("second");
+    let answer = f
+        .call(
+            "POST",
+            &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+            json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":mismatched}),
+            None,
+            Some("mismatch"),
+        )
+        .await;
+    assert_eq!(answer.0, 400, "{answer:?}");
+    assert!(answer.1.to_string().contains("METER_POLICY_MISMATCH"));
+}
+
+#[test]
+fn complete_meter_evidence_must_match_every_immutable_field_and_sku_unit() {
+    use bss_pricing::domain::usage_policy::validate_meter_policy;
+    use bss_pricing_sdk::{meter_semantics::MeterSemantics, terms::Fold};
+    let policy = seam_support::vm_hour_policy();
+    let evidence = MeterSemantics {
+        meter: policy.content.quantity_semantics.meter.clone(),
+        canonical_unit: "VM\u{b7}hour".into(),
+        fold: Fold::Sum,
+        accrual_policy_version: "integrated-v1".into(),
+        source_integrated: true,
+        digest: [7; 32],
+    };
+    assert!(validate_meter_policy(&policy, "VM\u{b7}hour", &evidence).is_ok());
+    assert_eq!(
+        validate_meter_policy(&policy, "second", &evidence)
+            .unwrap_err()
+            .code,
+        "METER_POLICY_MISMATCH"
+    );
+    for field in ["unit", "version", "identity", "accrual", "integration"] {
+        let mut wrong = evidence.clone();
+        match field {
+            "unit" => wrong.canonical_unit = "second".into(),
+            "version" => wrong.meter.version = "v2".into(),
+            "identity" => wrong.meter.usage_type_id = "other".into(),
+            "accrual" => wrong.accrual_policy_version = "raw-v1".into(),
+            _ => wrong.source_integrated = false,
+        }
+        assert_eq!(
+            validate_meter_policy(&policy, "VM\u{b7}hour", &wrong)
+                .unwrap_err()
+                .code,
+            "METER_POLICY_MISMATCH",
+            "{field}"
+        );
+    }
+    // SUM is the only representable SDK fold; wire input cannot smuggle another declaration.
+    let mut wrong_fold = serde_json::to_value(
+        bss_pricing::infra::usage_policy_wire::UsageRatingPolicyInput::from(&policy.content),
+    )
+    .unwrap();
+    wrong_fold["quantity_semantics"]["fold"] = json!("MAX");
+    assert!(
+        serde_json::from_value::<bss_pricing::infra::usage_policy_wire::UsageRatingPolicyInput>(
+            wrong_fold
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn meter_provider_failure_classes_remain_distinct_and_resolve_as_the_caller() {
+    use bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1;
+    use plan_support::entry_support::policy_support::MeterProvider;
+    use std::sync::atomic::Ordering;
+    for mode in [0, 1, 2] {
+        let f = Fixture::new(Arc::new(Script::default())).await;
+        let (book, _) = f.book().await;
+        let provider = Arc::new(MeterProvider::default());
+        provider.failure.store(mode, Ordering::SeqCst);
+        if mode == 0 {
+            f.state.hub.remove::<dyn UsageMeterSemanticsV1>();
+        } else {
+            f.state
+                .hub
+                .register::<dyn UsageMeterSemanticsV1>(provider.clone());
+        }
+        let answer = f
+            .call(
+                "POST",
+                &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
+                json!({"sku_id":Uuid::new_v4(),"model":"per_unit","usage_rating_policy":policy()}),
+                None,
+                Some("failure"),
+            )
+            .await;
+        assert_eq!(answer.0, [400, 503, 403][usize::from(mode)], "{answer:?}");
+        if mode == 0 {
+            assert!(answer.1.to_string().contains("UNCONFIGURED_DEPENDENCY"));
+        }
+        if mode == 2 {
+            assert!(answer.1.to_string().contains("METER_DENIED"));
+        }
+        assert!(!answer.1.to_string().contains("MISSING_RATING_POLICY"));
+        if mode != 0 {
+            assert_eq!(*provider.callers.lock().unwrap(), vec![f.ctx.subject_id()]);
+        }
+    }
+}
+
+async fn quorum(f: &Fixture, kind: &str, count: u32) {
+    let (_, _, tag) = f
+        .call("GET", "/approval-policy", json!({}), None, None)
+        .await;
+    let r = f
+        .call(
+            "PUT",
+            "/approval-policy",
+            json!({"kind":kind,"quorum":count}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(r.0, 200, "{r:?}");
+}
+async fn draft_price(
+    f: &Fixture,
+    entry: Uuid,
+    from: &str,
+    fee: Option<&str>,
+) -> (u16, Value, String) {
+    f.call(
+        "POST",
+        &format!("/price-book-entries/{entry}/prices"),
+        json!({"price":{"rate":"1"},"min_fee":fee,"eligibility":"all","effective_from":from}),
+        None,
+        Some(&Uuid::new_v4().to_string()),
+    )
+    .await
+}
+async fn submit_price(f: &Fixture, id: Uuid) -> (u16, Value, String) {
+    f.call(
+        "POST",
+        &format!("/prices/{id}/submit"),
+        json!({}),
+        None,
+        Some(&Uuid::new_v4().to_string()),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn hourly_minimum_fee_is_rejected_at_create_submit_and_apply() {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let entry = create_entry(
+        &f,
+        plan_support::id_of(&book["id"]),
+        Uuid::new_v4(),
+        policy(),
+    )
+    .await;
+    let today = time::OffsetDateTime::now_utc().date().to_string();
+    let rejected = draft_price(&f, entry, &today, Some("1")).await;
+    assert_eq!(rejected.0, 400, "{rejected:?}");
+    assert!(rejected.1.to_string().contains("UNSUPPORTED_TERMS"));
+    let draft = draft_price(&f, entry, &today, None).await;
+    assert_eq!(draft.0, 201, "{draft:?}");
+    let id = plan_support::id_of(&draft.1["items"][0]["id"]);
+    let raw = Database::connect(&f.dsn).await.unwrap();
+    raw.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE pricing_price SET min_fee = '1' WHERE id = ?",
+        [id.into()],
+    ))
+    .await
+    .unwrap();
+    let rejected = submit_price(&f, id).await;
+    assert_eq!(rejected.0, 400, "{rejected:?}");
+    assert!(rejected.1.to_string().contains("UNSUPPORTED_TERMS"));
+    raw.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE pricing_price SET min_fee = NULL WHERE id = ?",
+        [id.into()],
+    ))
+    .await
+    .unwrap();
+    let pending = submit_price(&f, id).await;
+    assert_eq!(pending.0, 201, "{pending:?}");
+    raw.execute_raw(Statement::from_sql_and_values(
+        DbBackend::Sqlite,
+        "UPDATE pricing_price SET min_fee = '1' WHERE id = ?",
+        [id.into()],
+    ))
+    .await
+    .unwrap();
+    let reviewer = plan_support::entry_support::user_of(f.ctx.subject_tenant_id());
+    let path = format!(
+        "/approval-units/{}/approve",
+        pending.1["unit"]["id"].as_str().unwrap()
+    );
+    let stale = f
+        .call_as(
+            &reviewer,
+            "POST",
+            &path,
+            json!({"generation":1}),
+            None,
+            Some("stale-fee"),
+        )
+        .await;
+    assert_eq!(stale.0, 400, "{stale:?}");
+    let refused = f
+        .call_as(
+            &reviewer,
+            "POST",
+            &path,
+            json!({"generation":2}),
+            None,
+            Some("apply-fee"),
+        )
+        .await;
+    assert_eq!(refused.0, 409, "{refused:?}");
+    assert!(refused.1.to_string().contains("UNSUPPORTED_TERMS"));
+}
+
+#[tokio::test]
+async fn mixed_windows_survive_publication_successors_pairs_and_offline_history() {
+    use bss_pricing::{api::pricing_read::PricingReadProvider, infra::storage::repo::price_repo};
+    use bss_pricing_sdk::{
+        meter_semantics::UsageMeterSemanticsV1,
+        read::{CatalogRef, PricingReadV1, ResolveQuery},
+        terms::RatingWindow,
+    };
+    use bss_products_sdk::models::{BillingTiming, SkuType};
+    use plan_support::entry_support::policy_support::MeterProvider;
+    use std::sync::atomic::Ordering;
+    let (f, catalog) = plan_support::setup().await;
+    quorum(&f, "prices", 0).await;
+    quorum(&f, "plan_revision", 0).await;
+    let book = plan_support::book(&f, "MIXED").await;
+    let (_, revision) = plan_support::plan(&f, "MIXED", book).await;
+    let today = time::OffsetDateTime::now_utc().date();
+    let mut entries = Vec::new();
+    let mut policies = Vec::new();
+    for (meter, unit, window) in [
+        ("vm-hours", "VM\u{b7}hour", json!({"kind":"billing_cycle"})),
+        (
+            "cloudlet-hours",
+            "cloudlet\u{b7}hour",
+            json!({"kind":"calendar_hour","timezone":"UTC"}),
+        ),
+    ] {
+        let sku = catalog.sku(SkuType::Usage);
+        {
+            let mut skus = catalog.skus.lock().unwrap();
+            let s = skus.get_mut(&sku).unwrap();
+            s.meter = Some(meter.into());
+            s.unit = Some(unit.into());
+        }
+        let mut version = catalog.content(sku);
+        version.gl_code = Some("usage".into());
+        version.tax_category = Some("standard".into());
+        version.invoice_line_template = Some("{sku}".into());
+        version.billing_timing = Some(BillingTiming::Arrears);
+        catalog.version(sku, 1, "2020-01-01", version);
+        let mut input = policy();
+        input["rating_window"] = window;
+        input["quantity_semantics"]["meter"]["usage_type_id"] = json!(meter);
+        input["quantity_semantics"]["unit"] = json!(unit);
+        let entry = create_entry(&f, book, sku, input).await;
+        let draft = draft_price(&f, entry, &today.to_string(), None).await;
+        assert_eq!(draft.0, 201, "{draft:?}");
+        let submitted = submit_price(&f, plan_support::id_of(&draft.1["items"][0]["id"])).await;
+        assert_eq!(submitted.0, 201, "{submitted:?}");
+        assert_eq!(submitted.1["applied"], true);
+        plan_support::item(&f, revision, sku, Some(entry), "paid").await;
+        let read = f
+            .call(
+                "GET",
+                &format!("/price-book-entries/{entry}"),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        entries.push(entry);
+        policies.push(read.1["usage_rating_policy"].clone());
+    }
+    let published = f
+        .call(
+            "POST",
+            &format!("/plan-revisions/{revision}/submit"),
+            json!({}),
+            None,
+            Some("publish-mixed"),
+        )
+        .await;
+    assert_eq!(published.0, 201, "{published:?}");
+    assert_eq!(published.1["revision"]["state"], "published");
+    let cloud = entries[1];
+    let start = (today + time::Duration::days(1)).to_string();
+    let until = (today + time::Duration::days(2)).to_string();
+    for field in [
+        "rating_window",
+        "aggregation_scope",
+        "reset",
+        "usage_rating_policy",
+    ] {
+        let mut body = json!({"price":{"rate":"2"},"effective_from":start,"eligibility":"all"});
+        body[field] = json!("override");
+        let refused = f
+            .call(
+                "POST",
+                &format!("/price-book-entries/{cloud}/prices"),
+                body,
+                None,
+                Some(field),
+            )
+            .await;
+        assert_eq!(refused.0, 400, "{field}: {refused:?}");
+    }
+    let pair = f.call("POST", &format!("/price-book-entries/{cloud}/prices"),
+        json!({"price":{"rate":"2"},"effective_from":start,"temporary_until":until,"eligibility":"all"}), None, Some("pair")).await;
+    assert_eq!(pair.0, 201, "{pair:?}");
+    assert_eq!(pair.1["items"].as_array().unwrap().len(), 2);
+    let applied = f
+        .call(
+            "POST",
+            &format!("/price-books/{book}/publish-changes"),
+            json!({}),
+            None,
+            Some("pair-submit"),
+        )
+        .await;
+    assert_eq!(applied.0, 201, "{applied:?}");
+    let successor = draft_price(
+        &f,
+        cloud,
+        &(today + time::Duration::days(3)).to_string(),
+        None,
+    )
+    .await;
+    assert_eq!(successor.0, 201, "{successor:?}");
+    assert_eq!(
+        submit_price(&f, plan_support::id_of(&successor.1["items"][0]["id"]))
+            .await
+            .0,
+        201
+    );
+    for p in price_repo::for_entry(
+        &f.db.conn().unwrap(),
+        &plan_support::scope(&f),
+        f.ctx.subject_tenant_id(),
+        cloud,
+    )
+    .await
+    .unwrap()
+    {
+        assert_eq!(p.price_book_entry_id, cloud);
+    }
+    let offline = Arc::new(MeterProvider::default());
+    offline.failure.store(1, Ordering::SeqCst);
+    f.state
+        .hub
+        .register::<dyn UsageMeterSemanticsV1>(offline.clone());
+    let provider = PricingReadProvider::new(
+        f.state.clone(),
+        Arc::new(plan_support::entry_support::enforcer_for(
+            f.ctx.subject_tenant_id(),
+        )),
+    );
+    for date in [today, today + time::Duration::days(4)] {
+        let rest =
+            seam_support::resolve(&f, &format!("plan_revision_id={revision}&date={date}")).await;
+        assert_eq!(rest.0, 200, "{rest:?}");
+        let sdk = provider
+            .resolve(
+                &f.ctx,
+                ResolveQuery {
+                    catalog: CatalogRef {
+                        tenant_id: f.ctx.subject_tenant_id(),
+                    },
+                    revision_id: revision,
+                    date,
+                    item_id: None,
+                    pins: vec![],
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(sdk.cells.len(), 2);
+        for (index, entry) in entries.iter().enumerate() {
+            let binding = sdk
+                .cells
+                .iter()
+                .filter_map(|c| c.binding.as_ref())
+                .find(|b| b.price_book_entry_id == *entry)
+                .unwrap();
+            assert_eq!(binding.price.price_book_entry_id, *entry);
+            let stored = binding.usage_rating_policy.as_ref().unwrap();
+            assert_eq!(stored.policy_id.to_string(), policies[index]["policy_id"]);
+            assert_eq!(
+                matches!(stored.content.rating_window, RatingWindow::BillingCycle),
+                index == 0
+            );
+            let item = rest.1["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["price_book_entry_id"] == entry.to_string())
+                .unwrap();
+            assert_eq!(item["usage_rating_policy"], policies[index]);
+        }
+    }
+    assert_eq!(
+        offline.calls.load(Ordering::SeqCst),
+        0,
+        "historical reads never resolve meter semantics"
+    );
+}
+
+#[tokio::test]
+async fn price_and_plan_submit_and_apply_preserve_meter_refusals_outside_transactions() {
+    use bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1;
+    use plan_support::entry_support::policy_support::MeterProvider;
+    use std::sync::atomic::Ordering;
+    for mode in 0..=7 {
+        let f = Fixture::new(Arc::new(Script::default())).await;
+        let meter = Arc::new(MeterProvider {
+            probe_db: Some(f.db.clone()),
+            ..Default::default()
+        });
+        let install = |broken: bool| {
+            meter
+                .failure
+                .store(if broken { mode } else { 0 }, Ordering::SeqCst);
+            if broken && mode == 0 {
+                f.state.hub.remove::<dyn UsageMeterSemanticsV1>();
+            } else {
+                f.state
+                    .hub
+                    .register::<dyn UsageMeterSemanticsV1>(meter.clone());
+            }
+        };
+        install(false);
+        let (book, _) = f.book().await;
+        let book = plan_support::id_of(&book["id"]);
+        let sku = Uuid::new_v4();
+        let entry = create_entry(&f, book, sku, policy()).await;
+        let draft = draft_price(
+            &f,
+            entry,
+            &time::OffsetDateTime::now_utc().date().to_string(),
+            None,
+        )
+        .await;
+        assert_eq!(draft.0, 201, "{draft:?}");
+        let price = plan_support::id_of(&draft.1["items"][0]["id"]);
+        let expected = match mode {
+            1 => 503,
+            2 => 403,
+            _ => 400,
+        };
+        let assert_error = |answer: &(u16, Value, String)| {
+            assert_eq!(answer.0, expected, "mode {mode}: {answer:?}");
+            let text = answer.1.to_string();
+            assert!(!text.contains("MISSING_RATING_POLICY"));
+            if mode == 0 {
+                assert!(text.contains("UNCONFIGURED_DEPENDENCY"));
+            }
+            if mode >= 3 {
+                assert!(text.contains("METER_POLICY_MISMATCH"));
+            }
+        };
+        install(true);
+        assert_error(&submit_price(&f, price).await);
+        install(false);
+        let submitted = submit_price(&f, price).await;
+        assert_eq!(submitted.0, 201, "{submitted:?}");
+        let reviewer = plan_support::entry_support::user_of(f.ctx.subject_tenant_id());
+        let path = format!(
+            "/approval-units/{}/approve",
+            submitted.1["unit"]["id"].as_str().unwrap()
+        );
+        install(true);
+        assert_error(
+            &f.call_as(
+                &reviewer,
+                "POST",
+                &path,
+                json!({"generation":1}),
+                None,
+                Some("price-refused"),
+            )
+            .await,
+        );
+        install(false);
+        let applied = f
+            .call_as(
+                &reviewer,
+                "POST",
+                &path,
+                json!({"generation":1}),
+                None,
+                Some("price-applied"),
+            )
+            .await;
+        assert_eq!(applied.0, 200, "{applied:?}");
+        let (_, revision) = plan_support::plan(&f, "SEMANTICS", book).await;
+        plan_support::item(&f, revision, sku, Some(entry), "paid").await;
+        let path = format!("/plan-revisions/{revision}/submit");
+        install(true);
+        assert_error(
+            &f.call("POST", &path, json!({}), None, Some("plan-refused"))
+                .await,
+        );
+        install(false);
+        let submitted = f
+            .call("POST", &path, json!({}), None, Some("plan-submitted"))
+            .await;
+        assert_eq!(submitted.0, 201, "{submitted:?}");
+        let path = format!(
+            "/approval-units/{}/approve",
+            submitted.1["unit"]["id"].as_str().unwrap()
+        );
+        install(true);
+        assert_error(
+            &f.call_as(
+                &reviewer,
+                "POST",
+                &path,
+                json!({"generation":1}),
+                None,
+                Some("plan-apply-refused"),
+            )
+            .await,
+        );
+        install(false);
+        assert_eq!(
+            f.call_as(
+                &reviewer,
+                "POST",
+                &path,
+                json!({"generation":1}),
+                None,
+                Some("plan-applied")
+            )
+            .await
+            .0,
+            200
+        );
+        install(true);
+        assert_eq!(
+            f.call_as(
+                &reviewer,
+                "POST",
+                &path,
+                json!({"generation":1}),
+                None,
+                Some("plan-applied")
+            )
+            .await
+            .0,
+            200,
+            "replay precedes dependencies"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_new_usage_price_approval_requires_a_policy_bearing_entry() {
+    let (f, catalog) = plan_support::setup().await;
+    let book = plan_support::book(&f, "LEGACY_PRICE").await;
+    let sku = catalog.sku(bss_products_sdk::models::SkuType::Usage);
+    let entry = plan_support::entry(&f, book, sku, "usage", None).await;
+    let draft = draft_price(
+        &f,
+        entry,
+        &time::OffsetDateTime::now_utc().date().to_string(),
+        None,
+    )
+    .await;
+    assert_eq!(draft.0, 201, "{draft:?}");
+    let refusal = submit_price(&f, plan_support::id_of(&draft.1["items"][0]["id"])).await;
+    assert_eq!(refusal.0, 400, "{refusal:?}");
+    assert!(refusal.1.to_string().contains("MISSING_RATING_POLICY"));
+}
+
+#[test]
+fn captured_evidence_digest_uses_strict_lowercase_hex_at_storage_boundaries() {
+    use bss_pricing::infra::usage_policy_wire::MeterEvidence;
+    let evidence = bss_pricing_sdk::meter_semantics::MeterSemantics {
+        meter: seam_support::vm_hour_policy()
+            .content
+            .quantity_semantics
+            .meter,
+        canonical_unit: "VM\u{b7}hour".into(),
+        fold: bss_pricing_sdk::terms::Fold::Sum,
+        accrual_policy_version: "integrated-v1".into(),
+        source_integrated: true,
+        digest: [0xab; 32],
+    };
+    let stored: MeterEvidence = evidence.clone().into();
+    let encoded = serde_json::to_value(&stored).unwrap();
+    assert_eq!(encoded["digest"], "ab".repeat(32));
+    let decoded: MeterEvidence = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        bss_pricing_sdk::meter_semantics::MeterSemantics::from(&decoded),
+        evidence
+    );
+    let mut invalid = encoded;
+    invalid["digest"] = json!("AB".repeat(32));
+    assert!(serde_json::from_value::<MeterEvidence>(invalid).is_err());
 }

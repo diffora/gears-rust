@@ -535,7 +535,7 @@ async fn checks_name_the_pending_price_unit_that_would_cover_an_item() {
     let (_, rev) = plan(&f, "pro", eur).await;
     available_from(&f, rev, "2031-03-01").await;
     let storage = catalog.sku(SkuType::Usage);
-    let e = entry(&f, eur, storage, "usage", None).await;
+    let e = plan_support::policy_entry(&f, eur, storage, "usage", None).await;
     let (s, b, _) = add(
         &f,
         rev,
@@ -802,7 +802,7 @@ async fn a_rejected_or_withdrawn_price_unit_is_no_longer_named_by_the_next_check
     let (_, rev) = plan(&f, "pro", eur).await;
     available_from(&f, rev, "2031-03-01").await;
     let storage = catalog.sku(SkuType::Usage);
-    let e = entry(&f, eur, storage, "usage", None).await;
+    let e = plan_support::policy_entry(&f, eur, storage, "usage", None).await;
     let (s, b, _) = add(
         &f,
         rev,

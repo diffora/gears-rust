@@ -35,6 +35,13 @@ Requirements: `cpt-cf-bss-pricing-fr-resolve`, `cpt-cf-bss-pricing-fr-price-read
 Dependencies: `cpt-cf-bss-pricing-feature-plans`, `cpt-cf-bss-pricing-feature-promotions-migrations`, `cpt-cf-bss-pricing-feature-approvals`.
 Source: PriceBook spec §2.2, §5–§8, §12–§13 and [DECISIONS](../DECISIONS.md) D-384–D-433.
 
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
 ## 2. Actor Flows (CDSL)
 
 ### Resolve a renewal and preserve invoice inputs
@@ -118,9 +125,8 @@ or Products unavailability remains 503; definite Products denials retain their c
 price_id }` values. Its result is a matrix of `ResolvedCell { selection, binding }`; an uncovered
 cell has `binding=None`. Complete bindings carry entry identity, dimension key/requested value,
 dated SKU version/code/name/unit, typed exact-decimal money, invoice inputs with template provenance,
-and `via_default`. Legacy entries carry `usage_rating_policy=None`. The policy value types are the
-minimal dependency of this binding; no policy authoring/storage or semantic-provider port is delivered
-in this task. Missing priced-cell descriptors or a rounding value not representable by the initial
+and `via_default`. Legacy entries carry `usage_rating_policy=None`. D-502 stores immutable entry policies and D-503 projects their materialized
+content here; the semantic provider is required only at new-entry and publication gates. Missing priced-cell descriptors or a rounding value not representable by the initial
 `HalfEven` projection returns the typed `IncompleteCommercialInputs` canonical precondition violation.
 REST retains nullable descriptors and its existing rounding vocabulary and goldens. Neither transport
 computes totals. Both adapters map the shared local snapshot, matrix and invoice inputs explicitly;
@@ -165,6 +171,7 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | revision | items | One per item of the revision, or the one item_id names. |
 | item | item_id, sku_id | The item and its SKU; since D-467 an item carries no treatment, included_qty or qty_min. |
 | item | price_book_entry_id, charge_kind, period, model | The item's entry and its key, model included (the entry's, fixed for its life, D-427); null for a legacy item stored without an entry (D-467), which has no chains. |
+| item | usage_rating_policy | Optional typed entry policy: policy_id, exact version string, digest and content; null for legacy/non-usage entries (D-503). |
 | item | sku_version | { published_version, effective_from } of the SKU version in force on date; null when Products has no version on that date or does not know the SKU. |
 | item | invoice_line_template | { value, source }: the entry's invoice_line_override (source entry), else the SKU version's template (sku), else the tenant template for the charge kind (tenant; an item without an entry takes its SKU version's type); { null, null } when none. |
 | item | gl_code | { value, source }: the SKU version's (sku), else the tenant default_gl (tenant), else { null, null }. |

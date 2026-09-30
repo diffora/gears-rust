@@ -144,7 +144,11 @@ pub async fn catch_up(
 /// treatment and quantities too, so its first vote or reject after D-467 finds its content changed
 /// and refreshes it once, at the next generation (`bss_approval`'s stale refresh).
 #[must_use]
-pub fn content(revision: &plan_revision::Model, items: &[plan_item::Model]) -> Value {
+pub fn content(
+    revision: &plan_revision::Model,
+    items: &[plan_item::Model],
+    entries: &[crate::infra::storage::entity::price_book_entry::Model],
+) -> Value {
     let mut items: Vec<&plan_item::Model> = items.iter().collect();
     items.sort_by_key(|i| i.sku_id);
     json!({
@@ -155,6 +159,8 @@ pub fn content(revision: &plan_revision::Model, items: &[plan_item::Model]) -> V
             .map(|i| json!({
                 "sku_id": i.sku_id,
                 "price_book_entry_id": i.price_book_entry_id,
+                "usage_policy": entries.iter().find(|e| Some(e.id) == i.price_book_entry_id).and_then(|e|
+                    e.usage_policy_id.map(|id| json!({"policy_id":id, "version":e.usage_policy_version.map(|v| v.to_string()), "digest":e.usage_policy_digest}))),
             }))
             .collect::<Vec<_>>(),
     })
@@ -240,6 +246,7 @@ struct Review {
 /// The subject of one `plan_revision` unit.
 #[derive(Clone)]
 pub struct PlanRevisionSubject {
+    pub meter_observations: crate::infra::meter_semantics::Observations,
     /// The caller; the fresh SKU reads are made on its behalf.
     pub ctx: SecurityContext,
     pub hub: Arc<toolkit::ClientHub>,
@@ -294,6 +301,27 @@ fn codes(red: &[PricingPlanCheckDto]) -> String {
 }
 
 impl PlanRevisionSubject {
+    async fn content(
+        &self,
+        tx: &impl DBRunner,
+        revision: &plan_revision::Model,
+        items: &[plan_item::Model],
+    ) -> Result<Value, ApprovalError> {
+        let ids = items
+            .iter()
+            .filter_map(|i| i.price_book_entry_id)
+            .collect::<Vec<_>>();
+        let entries = crate::infra::storage::repo::price_book_entry_repo::find_many(
+            tx,
+            &self.scope(),
+            self.tenant_id,
+            &ids,
+        )
+        .await
+        .map_err(storage)?;
+        Ok(content(revision, items, &entries))
+    }
+
     /// A subject for the caller's tenant.
     #[must_use]
     pub fn new(
@@ -304,6 +332,7 @@ impl PlanRevisionSubject {
     ) -> Self {
         let tenant_id = ctx.subject_tenant_id();
         Self {
+            meter_observations: crate::infra::meter_semantics::Observations::default(),
             ctx,
             hub,
             tenant_id,
@@ -358,8 +387,8 @@ impl PlanRevisionSubject {
     /// The item SKUs, read fresh for the checks (D-408), a rule: the read is hard and made as the
     /// caller, and the descriptors are kept for the snapshot. Only unavailability is
     /// `REGISTRY_UNAVAILABLE`; a definite refusal is answered as Products gave it.
-    async fn skus(&self, ids: impl IntoIterator<Item = Uuid>) -> Result<Vec<Sku>, ApprovalError> {
-        match plans::fresh_skus(&self.hub, &self.ctx, ids).await {
+    fn skus(&self, ids: impl IntoIterator<Item = Uuid>) -> Result<Vec<Sku>, ApprovalError> {
+        match self.meter_observations.skus(ids) {
             Ok(skus) => {
                 {
                     let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
@@ -393,7 +422,44 @@ impl PlanRevisionSubject {
                     ),
                     other => ApprovalError::Store(other.to_string()),
                 })?;
-        context.skus = self.skus(context.items.iter().map(|i| i.sku_id)).await?;
+        let selected = context
+            .items
+            .iter()
+            .filter_map(|i| i.price_book_entry_id)
+            .collect::<Vec<_>>();
+        let entries = crate::infra::storage::repo::price_book_entry_repo::find_many(
+            tx,
+            &self.scope(),
+            self.tenant_id,
+            &selected,
+        )
+        .await
+        .map_err(storage)?;
+        for entry in entries {
+            self.meter_observations.check(&entry).map_err(|error| {
+                self.refuse(error);
+                invalid("METER_POLICY_REFUSED", format!("entry {}", entry.id))
+            })?;
+            let pc = crate::infra::prices::PriceBookEntryContext::load(tx, self.tenant_id, &entry)
+                .await
+                .map_err(storage)?;
+            if pc.policy.as_ref().is_some_and(|p| {
+                matches!(
+                    p.content.rating_window,
+                    crate::infra::usage_policy_wire::RatingWindow::CalendarHour { .. }
+                )
+            }) && pc
+                .prices
+                .iter()
+                .any(|p| p.state == "approved" && p.min_fee.is_some())
+            {
+                return Err(invalid(
+                    "UNSUPPORTED_TERMS",
+                    "CalendarHour with minimum fee",
+                ));
+            }
+        }
+        context.skus = self.skus(context.items.iter().map(|i| i.sku_id))?;
         Ok(plan::checks(&context, today))
     }
 }
@@ -429,15 +495,15 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
                 let old = plan_item_repo::for_revision(tx, &scope, self.tenant_id, published.id)
                     .await
                     .map_err(storage)?;
-                Some(content(&published, &old))
+                Some(self.content(tx, &published, &old).await?)
             }
             None => None,
         };
-        let after = content(&r, &items);
+        let after = self.content(tx, &r, &items).await?;
         // The descriptors are information (D-416): best-effort, never a refusal. The checks'
         // hard reads are `validate_submit`'s and `apply`'s.
         let described = descriptors_or_unavailable(
-            plans::fresh_skus(&self.hub, &self.ctx, items.iter().map(|i| i.sku_id)).await,
+            self.meter_observations.skus(items.iter().map(|i| i.sku_id)),
         );
         {
             let mut review = self.review.lock().unwrap_or_else(PoisonError::into_inner);
@@ -511,6 +577,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for PlanRevisionSubject {
         json!({
             "plan_id": plan_id,
             "plan_code": plan_code,
+            "meter_evidence": self.meter_observations.audit(),
             "revision_id": self.revision_id,
             "rev_no": rev_no,
             "before": item.and_then(|i| i.before.clone()),

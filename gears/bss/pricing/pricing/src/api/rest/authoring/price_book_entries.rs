@@ -104,7 +104,7 @@ async fn check_sku_rules(
     state: &AuthoringState,
     ctx: &SecurityContext,
     input: &PricingPriceBookEntryCreate,
-) -> Result<(), CanonicalError> {
+) -> Result<Option<crate::infra::usage_policy_wire::MeterEvidence>, CanonicalError> {
     let model: price_book_entry::Model = input
         .model
         .parse()
@@ -150,7 +150,12 @@ async fn check_sku_rules(
         Ok(kind) if !price_book_entry::model_allowed(kind, model) => {
             Err(support::invalid("model", "MODEL_KIND_CHARGEKIND_MISMATCH"))
         }
-        _ => Ok(()),
+        _ => match &input.usage_rating_policy {
+            Some(policy) => crate::infra::meter_semantics::resolve(&state.hub, ctx, policy, &sku)
+                .await
+                .map(Some),
+            None => Ok(None),
+        },
     }
 }
 /// A named dimension key must be declared in the tenant's registry (the seed key counts while
@@ -188,7 +193,7 @@ pub(super) async fn create(
     {
         return receipt.response();
     }
-    check_sku_rules(&state, &ctx, &input).await?;
+    let evidence = check_sku_rules(&state, &ctx, &input).await?;
     let result = support::transaction(&state.db.db(), move |tx| {
         let (scope, ctx, key, digest, input, endpoint) = (
             scope.clone(),
@@ -198,6 +203,7 @@ pub(super) async fn create(
             input.clone(),
             endpoint.clone(),
         );
+        let evidence = evidence.clone();
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let now = time::OffsetDateTime::now_utc();
@@ -229,7 +235,10 @@ pub(super) async fn create(
             let work = Work {
                 target: Target::PriceBookEntry {
                     book_id: book,
-                    input: EntryInput::from(input),
+                    input: EntryInput {
+                        meter_evidence: evidence.map(Box::new),
+                        ..EntryInput::from(input)
+                    },
                 },
                 correlation,
                 refusal: None,

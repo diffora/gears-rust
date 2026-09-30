@@ -12,7 +12,7 @@ use bss_products_sdk::{
     models::{ReferenceKind, ReferenceState, ReservationReceipt, Sku, SkuType, SkuVersion},
 };
 use plan_support::entry_support::policy_support;
-use plan_support::{Catalog, Fixture, book, entry, id_of, plan, scope};
+use plan_support::{Catalog, Fixture, book, id_of, plan, policy_entry as entry, scope};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;

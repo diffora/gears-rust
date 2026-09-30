@@ -76,6 +76,9 @@ pub async fn state_on(
     registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
 ) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
     let hub = Arc::new(toolkit::ClientHub::default());
+    hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+        policy_support::MeterProvider::default(),
+    ));
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(registry),
     ));
@@ -195,6 +198,9 @@ impl Fixture {
         registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
     ) -> Self {
         let hub = Arc::new(toolkit::ClientHub::default());
+        hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+            policy_support::MeterProvider::default(),
+        ));
         hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
             bss_products_sdk::PricingReferenceRegistry(registry),
         ));
@@ -648,8 +654,8 @@ impl ReferenceRegistryV1 for Script {
             tax_category: None,
             invoice_line_template: None,
             billing_timing: None,
-            usage_type_ref: None,
-            unit: None,
+            usage_type_ref: Some("vm-hours".into()),
+            unit: Some("VM\u{b7}hour".into()),
             // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
             type_change_pending: mode == 4,
             pending_unit_id: None,

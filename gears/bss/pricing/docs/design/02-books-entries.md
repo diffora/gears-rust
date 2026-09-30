@@ -54,13 +54,26 @@ only absent policy uses the empty index token. Hourly and billing-cycle variants
 cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
 receipts materialize policy content with its identity; legacy/non-usage entries return null.
 
-Tx A persists typed content and operation input schema_version 1 before the remote reserve. Tx B
+Tx A persists typed content (schema version 1 in D-502, version 2 with meter evidence in D-503) before the remote reserve. Tx B
 inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
 returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
-they continue to read and resolve. Authoritative meter verification, publication gates and resolve
-policy projection belong to Task 3 and are not delivered by D-502.
+they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
+policy projection; E1 remains an external production dependency.
+
+D-503 adds exact-version semantic validation to D-502. Pricing consumes
+`pricing-sdk::meter_semantics::UsageMeterSemanticsV1::resolve(ctx, MeterRef)` as the authorized
+caller, before opening a Pricing transaction. `MeterSemantics` carries the exact meter identity
+and version, canonical unit, SUM fold, accrual-policy version, source-integrated flag and provider
+evidence digest. All quantity fields and the SKU's unit and usage-type identity must agree;
+otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of a latest version.
+
+New entry-create work uses schema version 2 and persists the captured declaration before reservation.
+Recovery validates that captured evidence against the reservation's SKU without another meter lookup.
+Unversioned and version-1 work keep their original recovery rules; they acquire no invented evidence.
+The existing D-401 cancellation of unreserved abandoned creates remains unchanged. A later fresh
+request must resolve its own evidence. Confirmation recovery preserves the original entry and policy.
 
 ## 2. Actor Flows (CDSL)
 

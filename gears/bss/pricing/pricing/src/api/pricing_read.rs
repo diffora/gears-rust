@@ -331,7 +331,12 @@ fn project_resolution(s: &ReadSnapshot) -> Result<ResolvedBindings, CanonicalErr
                         kind,
                         recurring_period,
                         via_default: chain.dim_value.is_some() && b.dim_used().is_none(),
-                        usage_rating_policy: None,
+                        usage_rating_policy: s
+                            .policies
+                            .get(&entry.id)
+                            .map(crate::infra::usage_policy_wire::UsageRatingPolicy::typed)
+                            .transpose()
+                            .map_err(DoorError::from)?,
                         invoice: InvoiceInputs {
                             template_digest: template_digest(&template),
                             template,

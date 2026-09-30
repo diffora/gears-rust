@@ -40,6 +40,7 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
         "keep_for_bound": false
     });
     let item = json!({
+        "usage_rating_policy": null,
         "item_id": w.item, "sku_id": w.sku, "price_book_entry_id": w.entry,
         "charge_kind": "recurring",
         "period": "month", "model": "flat", "sku_version": null,

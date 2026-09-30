@@ -203,3 +203,101 @@ pub fn digest_text(digest: bss_pricing_sdk::Digest) -> String {
     }
     text
 }
+
+impl UsageRatingPolicy {
+    /// Integrity-checked SDK projection of a stored policy.
+    /// # Errors
+    /// Invalid identity or content digest is a corrupt stored row.
+    pub fn typed(&self) -> Result<sdk::UsageRatingPolicy, crate::infra::storage::RepoError> {
+        let content: sdk::UsageRatingPolicyInput = (&self.content).into();
+        let digest = bss_pricing_sdk::digest::policy_digest(&content);
+        let version = self.version.parse::<u64>().ok().filter(|v| *v > 0);
+        if self.digest != digest_text(digest) || version.is_none() {
+            return Err(crate::infra::storage::RepoError::CorruptRow(
+                "policy identity".into(),
+            ));
+        }
+        Ok(sdk::UsageRatingPolicy {
+            policy_id: self.policy_id,
+            version: version.ok_or_else(|| {
+                crate::infra::storage::RepoError::CorruptRow("policy version".into())
+            })?,
+            digest,
+            content,
+        })
+    }
+}
+
+/// Captured exact provider declaration, persisted with entry reference work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeterEvidence {
+    pub meter: MeterRef,
+    pub canonical_unit: String,
+    pub fold: Fold,
+    pub accrual_policy_version: String,
+    pub source_integrated: bool,
+    #[serde(with = "evidence_digest")]
+    pub digest: [u8; 32],
+}
+impl From<bss_pricing_sdk::meter_semantics::MeterSemantics> for MeterEvidence {
+    fn from(e: bss_pricing_sdk::meter_semantics::MeterSemantics) -> Self {
+        Self {
+            meter: MeterRef {
+                usage_type_id: e.meter.usage_type_id,
+                version: e.meter.version,
+            },
+            canonical_unit: e.canonical_unit,
+            fold: e.fold.into(),
+            accrual_policy_version: e.accrual_policy_version,
+            source_integrated: e.source_integrated,
+            digest: e.digest,
+        }
+    }
+}
+impl From<&MeterEvidence> for bss_pricing_sdk::meter_semantics::MeterSemantics {
+    fn from(e: &MeterEvidence) -> Self {
+        Self {
+            meter: sdk::MeterRef {
+                usage_type_id: e.meter.usage_type_id.clone(),
+                version: e.meter.version.clone(),
+            },
+            canonical_unit: e.canonical_unit.clone(),
+            fold: e.fold.into(),
+            accrual_policy_version: e.accrual_policy_version.clone(),
+            source_integrated: e.source_integrated,
+            digest: e.digest,
+        }
+    }
+}
+
+/// The provider digest uses the same lowercase hexadecimal boundary representation as policy digests.
+mod evidence_digest {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+    pub(super) fn serialize<S: Serializer>(
+        digest: &[u8; 32],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::digest_text(*digest))
+    }
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        if text.len() != 64
+            || !text
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(D::Error::custom(
+                "expected 64 lowercase hexadecimal characters",
+            ));
+        }
+        let mut digest = [0; 32];
+        for (index, byte) in digest.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
+                .map_err(D::Error::custom)?;
+        }
+        Ok(digest)
+    }
+}

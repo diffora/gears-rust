@@ -5,3 +5,4 @@ pub mod read;
 pub mod terms;
 /// SHA-256 bytes; wire adapters encode these as lowercase hexadecimal.
 pub type Digest = [u8; 32];
+pub mod meter_semantics;

@@ -182,6 +182,45 @@ A book has a tenant-unique code, name, immutable currency and optional valid_fro
 
 Inside a book there is one entry per (sku_id, charge_kind, period, model, usage_policy_digest), with null period normalized for uniqueness. Charge kind is derived from SKU type: recurring uses month or year, usage and one_time have no period. The entry's model is required at its create and fixed for its life: usage takes per_unit, graduated, volume or package, and recurring and one_time take flat or per_unit; an unknown model is MODEL_INVALID and one the charge kind does not allow is MODEL_KIND_CHARGEKIND_MISMATCH, both 400 (D-427). Another model for the same SKU, charge kind and period is another entry of the book. A bundle is never priced. An entry can override invoice-line text and change dimension_key only while no price carries a value. New entries require a published, unfenced SKU, with type re-read after reservation. The reads of one entry and of a book's entries carry the entry's usage: its prices by state (approved, pending, draft; a rejected price is not counted), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions (D-428).
 
+D-503 validates a usage entry's policy at price and plan-revision submit and final apply.
+Products and meter reads happen outside Pricing transactions, as the acting caller. The subjects
+consume captured results, recheck the entry identity/version in their existing transaction and keep
+provider evidence digests in approval snapshots. Dependency failures remain typed observations until
+the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
+successful command replay precedes dependency observations.
+
+The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
+read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
+column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)
+and an old approval cannot publish it. A scheduled revision is checked at approval; D-450's later
+switch does not revalidate dependencies. New usage approvals require a policy-bearing entry;
+legacy approved prices and published revisions remain readable.
+
+D-503 projects the entry's optional typed `usage_rating_policy` on each REST resolve item
+and each SDK binding. The materialized identity/content is loaded from local policy storage alongside
+the selected entry; historical reads never call the meter provider. SDK bindings retain the same
+`price_book_entry_id` as their price. Entry reads and exports retain D-502's optional projection.
+A BillingCycle VM entry beside a CalendarHour cloudlet entry keeps two independent policies;
+there is no plan-wide window or aggregation across subscription lines. Missing legacy policy is null.
+
+**External production dependency E1 (not delivered by Pricing).** Types Registry owns immutable
+meter declaration storage/lifecycle; Usage Collector owns the semantic read adapter; source/IRM
+owners supply accrual-definition provenance. Their delivery is separate from this Pricing work.
+The consumer port, validation and contract-test provider do not establish authoritative production
+meter semantics. ClientHub must supply a real `UsageMeterSemanticsV1`; there is no successful
+production fallback. Its absence is typed `UnconfiguredMeterSemantics` with canonical
+`UNCONFIGURED_DEPENDENCY`; a configured outage is 503, and denial is 403. None becomes
+`MISSING_RATING_POLICY` or an empty semantic result.
+
+E1 blocks real usage-entry creation, new price/plan publication and usage sales at their semantic
+gates until the authoritative provider is wired. Delivery must identify the implementing gear/adapter
+and its tracked work item, and demonstrate exact-version resolution, canonical unit matching,
+declared SUM/additivity, source integration provenance, historical immutability, caller authorization,
+outage behavior and VM/cloudlet contract vectors against the real provider. These responsibilities
+are required ownership for handoff, not evidence that another team has accepted or implemented the
+work. Pricing's contract tests certify its consumer behavior only; production readiness remains
+blocked until that external evidence exists.
+
 D-502 binds an immutable UsageRatingPolicy to each new usage entry. The create requires
 `usage_rating_policy` for usage (`MISSING_RATING_POLICY` otherwise) and refuses it for recurring
 or one-time entries (`UNEXPECTED_RATING_POLICY`). The closed input contains rating_window
@@ -201,13 +240,13 @@ only absent policy uses the empty index token. Hourly and billing-cycle variants
 cannot evade uniqueness through a new UUID. Entry reads, export, write answers and durable create
 receipts materialize policy content with its identity; legacy/non-usage entries return null.
 
-Tx A persists typed content and operation input schema_version 1 before the remote reserve. Tx B
+Tx A persists typed content (schema version 1 in D-502, version 2 with meter evidence in D-503) before the remote reserve. Tx B
 inserts or reuses the policy and writes the entry atomically. A crash cannot change content; replay
 returns the confirmed receipt. Unversioned persisted creates decode as legacy and may recover with
 null policy; new versioned usage creates cannot take that path. Re-reserve and delete preserve the
 original entry reference. Migration assigns no policy to old entries, including published plans;
-they continue to read and resolve. Authoritative meter verification, publication gates and resolve
-policy projection belong to Task 3 and are not delivered by D-502.
+they continue to read and resolve. D-503 adds meter verification, publication gates and resolve
+policy projection; E1 remains an external production dependency.
 
 D-502: a plan item remains a SKU and its selected entry (D-467), with no policy override,
 treatment, included quantity or minimum quantity. Copy/clone within a book preserves entry IDs.

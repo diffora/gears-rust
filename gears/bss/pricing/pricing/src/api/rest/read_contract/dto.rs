@@ -36,6 +36,8 @@ pub struct PricingResolveDto {
 /// invoice inputs (D-421), and its chain matrix (D-420).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingResolveItemDto {
+    /// Immutable policy projected from the selected entry; null for legacy entries.
+    pub usage_rating_policy: Option<crate::infra::usage_policy_wire::UsageRatingPolicy>,
     pub item_id: Uuid,
     pub sku_id: Uuid,
     /// Null for a legacy item stored without an entry (D-467), which has no chains.

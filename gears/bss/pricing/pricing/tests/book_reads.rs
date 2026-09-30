@@ -1408,13 +1408,13 @@ async fn submit_reads(
     f: &Fixture,
     catalog: &Catalog,
     recorder: &toolkit_db::test_support::QueryRecorder,
-    now: time::OffsetDateTime,
+    _now: time::OffsetDateTime,
     quorum: u32,
 ) {
     let mut runs = Vec::new();
     for n in [10_i32, 100] {
         let b = plan_support::book(f, &format!("submit-{quorum}-{n}")).await;
-        let e = stored_entry(f, b, catalog.sku(SkuType::Usage), "per_unit", now).await;
+        let e = plan_support::policy_entry(f, b, catalog.sku(SkuType::Usage), "usage", None).await;
         for i in 1..=n {
             stored_price(f, e, Row::new(i, "draft", today() + days(i64::from(i)))).await;
         }
