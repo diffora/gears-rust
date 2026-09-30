@@ -523,10 +523,11 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Add an item to a draft revision")
         .description(
             "Adds an item for a SKU to a draft revision with its entry, treatment and quantities, \
-             reserving the SKU reference in Products; the Idempotency-Key replays the receipt. \
-             Refusals: 400 TREATMENT_INVALID, INCLUDED_QTY_INVALID, QTY_MIN_INVALID, \
-             ITEM_ENTRY_SKU_MISMATCH or REVISION_ITEMS_TOO_MANY; 409 REVISION_NOT_DRAFT or \
-             ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
+             reserving the SKU reference in Products; the Idempotency-Key replays the receipt. A \
+             deprecated SKU is added only when the plan's published revision in effect carries it \
+             (D-465). Refusals: 400 TREATMENT_INVALID, INCLUDED_QTY_INVALID, QTY_MIN_INVALID, \
+             ITEM_ENTRY_SKU_MISMATCH, ITEM_SKU_DEPRECATED or REVISION_ITEMS_TOO_MANY; 409 \
+             REVISION_NOT_DRAFT or ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()

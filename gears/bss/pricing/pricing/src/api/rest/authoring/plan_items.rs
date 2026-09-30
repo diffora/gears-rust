@@ -104,7 +104,8 @@ async fn entry_fits(
 /// # Errors
 /// 400 `TREATMENT_INVALID`, `INCLUDED_QTY_INVALID`, `QTY_MIN_INVALID`, `ITEM_ENTRY_MISSING`,
 /// `ITEM_BOOK_FOREIGN`, `ITEM_ENTRY_SKU_MISMATCH`, `REVISION_ITEMS_TOO_MANY`,
-/// `ITEM_SKU_DEPRECATED` or `ITEM_BUNDLE_SKU`; 404 for an unknown revision or entry; 409
+/// `ITEM_SKU_DEPRECATED` (a deprecated SKU the plan's published revision in effect does not
+/// carry, D-465) or `ITEM_BUNDLE_SKU`; 404 for an unknown revision or entry; 409
 /// `REVISION_NOT_DRAFT` or `ITEM_SKU_TAKEN`; 403 `NOT_DRAFT_AUTHOR` (D-404); 503 when Products
 /// cannot answer; then [`create`]'s own.
 #[expect(
@@ -131,24 +132,25 @@ pub async fn add(
     qty_min(input.qty_min)?;
     entry_needed(kind, input.price_book_entry_id)?;
     let (judged_scope, judged_ctx, judged) = (scope.clone(), ctx.clone(), input.clone());
-    support::transaction(&state.db.db(), move |tx| {
+    let carried = support::transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (judged_scope.clone(), judged_ctx.clone(), judged.clone());
         Box::pin(async move { admissible(tx, &scope, &ctx, revision, &input).await })
     })
     .await?;
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
-    fresh_sku(&state, &ctx, input.sku_id).await?;
+    fresh_sku(&state, &ctx, input.sku_id, carried).await?;
     create(state, scope, ctx, revision, correlation, key, digest, input).await
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
 }
-/// The revision, the entry and the revision's items, judged in one read.
+/// The revision, the entry and the revision's items, judged in one read. Answers whether the
+/// plan's published revision in effect carries the SKU (D-465), which admits a deprecated one.
 async fn admissible(
     tx: &impl DBRunner,
     scope: &AccessScope,
     ctx: &SecurityContext,
     revision: Uuid,
     input: &PricingPlanItemCreate,
-) -> Result<(), DoorError> {
+) -> Result<bool, DoorError> {
     let tenant = ctx.subject_tenant_id();
     let children = AccessScope::for_tenant(tenant);
     let r = plans::find_revision(tx, scope, tenant, revision).await?;
@@ -163,15 +165,19 @@ async fn admissible(
     if items.len() >= MAX_ITEMS {
         return Err(support::invalid("items", "REVISION_ITEMS_TOO_MANY").into());
     }
-    Ok(())
+    Ok(plans::published_skus(tx, tenant, r.plan_id, plans::today())
+        .await?
+        .contains(&input.sku_id))
 }
-/// The SKU read fresh (D-408): a deprecated SKU cannot be added, and a bundle SKU is never an
-/// item. A registry that cannot answer is 503 with nothing written; a definite Products refusal
-/// is answered as Products gave it.
+/// The SKU read fresh (D-408): a deprecated SKU is added only when the plan's published revision
+/// in effect carries it (`carried`: a re-add is not "newly added", D-465), and a bundle SKU is
+/// never an item. A registry that cannot answer is 503 with nothing written; a definite Products
+/// refusal is answered as Products gave it.
 async fn fresh_sku(
     state: &AuthoringState,
     ctx: &SecurityContext,
     sku: Uuid,
+    carried: bool,
 ) -> Result<(), CanonicalError> {
     let registry =
         reference_registry::resolve(&state.hub).map_err(|e| support::registry_unavailable(&e))?;
@@ -185,7 +191,7 @@ async fn fresh_sku(
                 support::registry_unavailable(&error)
             }
         })?;
-    if sku.lifecycle == Lifecycle::Deprecated {
+    if sku.lifecycle == Lifecycle::Deprecated && !carried {
         return Err(support::invalid("sku_id", "ITEM_SKU_DEPRECATED"));
     }
     if let Some(code) = reference_work::plan_item::type_refusal(sku.r#type) {

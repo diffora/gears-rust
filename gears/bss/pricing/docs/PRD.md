@@ -276,7 +276,7 @@ Persist PricesPublished and ApprovalUnitDecided with state and audit in the tool
 
 **Phase:** 3. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU newly added, while one carried over from the same plan's published revision stays (ITEM_SKU_DEPRECATED, D-408), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units. Clone produces a draft; retirement requires migration. An approved revision whose sale date is after the day of its approval is scheduled: it takes effect on that date, and until then the plan keeps selling its published revision (D-446, D-449, D-450). Grants and the sold-as bundle SKU are deferred (D-411), and so is retirement (D-410).
+A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU newly added, while one carried over from the same plan's published revision stays, and one that revision carries may be added again (ITEM_SKU_DEPRECATED, D-408, D-465), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units. Clone produces a draft; retirement requires migration. An approved revision whose sale date is after the day of its approval is scheduled: it takes effect on that date, and until then the plan keeps selling its published revision (D-446, D-449, D-450). Grants and the sold-as bundle SKU are deferred (D-411), and so is retirement (D-410).
 
 #### `fr-promotions`
 
@@ -378,7 +378,8 @@ submitter's note, `submit_note`, the unit shape products shares (D-445).
 Phase 9 adds what the plans screen reads: each plan's current revision and the one in effect (D-460), who made
 each revision and when it was submitted and approved (D-461), and a pending revision's vote progress (D-462); and
 a plan's create and clone take its sale date (D-463). A plan revision's submit and publish-changes carry the
-submitter's note to the unit's submit_note; a single price's submit takes none (D-464).
+submitter's note to the unit's submit_note; a single price's submit takes none (D-464). A draft may add again a
+deprecated SKU its plan's published revision in effect carries (D-465).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose

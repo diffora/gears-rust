@@ -44,7 +44,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
 | D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 |
-| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
@@ -101,6 +101,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
 | D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
+| D-465 | M | A revision may carry again a deprecated SKU its plan sells | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2); amends D-408 |
 
 ## Entries
 
@@ -274,7 +275,9 @@ Checks, submit and apply read each item's SKU through sku_for_write (D-399). A d
 
 D-453 amends this entry: the published revision is the one in effect today (D-447). Once a scheduled revision is due, it is its plan's published revision and its predecessor is not, before the job persists the switch and after it. So the checks of both revisions answer the same on the two sides of the persist.
 
-**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453.
+D-465 amends this entry: "newly added" does not cover a re-add. The item create admits a deprecated SKU that the plan's published revision in effect carries, as the checks do, so an item removed from a draft can be added back; any other deprecated SKU stays ITEM_SKU_DEPRECATED.
+
+**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465.
 
 #### D-409 [H] Promotions are deferred (owner, 2026-09-25)
 
@@ -954,3 +957,18 @@ The approvals screen shows why a unit was submitted (ask 44). Products' submit d
 - **The tests.** tests/plan_revision_approvals.rs: a note stored and read back; no body, {} and a null note; 2000 two-byte characters pass; 2001 are 400 NOTE_TOO_LONG on a revision and on an unknown one, with nothing written; a stray key alone and beside a note is 400 BODY_UNEXPECTED. The pin that the plan submit takes no body now pins that it takes nothing but a note. tests/approval_doors.rs: publish-changes stores a note and a null one, refuses one over the cap before the 404 of an unknown book, and the price submit refuses a note. Probes that dropped either door's cap were caught.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3). Amends D-445 and products P-D-219's Pricing bullet.
+
+#### D-465 [M] A revision may carry again a deprecated SKU its plan sells
+
+**Status:** DECIDED 2026-09-30.
+
+The checks accept a deprecated SKU that the plan's published revision in effect carries (D-408), but the item door refused every deprecated SKU. So an item removed from a copied draft could not be added back, although the copy had carried it (ask 36).
+
+- **The ruling (O-9b).** The owner ruled on 2026-09-30 that D-408's "newly added" does not cover a re-add. *Counter-argument:* make the check strict instead, so a deprecated SKU never re-enters a draft; not chosen.
+- **The rule.** POST /plan-revisions/{id}/items admits a deprecated SKU when the plan's published revision in effect today (D-447) carries it. Any other deprecated SKU stays 400 ITEM_SKU_DEPRECATED on sku_id. A clone is a new plan with no revision in effect, so its drafts add no deprecated SKU; the SKUs it carried stay red in its checks (D-408).
+- **One source.** plans::published_skus gives the item SKUs of the published revision in effect, from the same function the checks read them with (stored_context). The door judges it in its admissibility read, before any claim or reservation. The create op's SKU re-read (reference_work::observe_sku) judges it on its reserving step, reading the op's revision and its plan on the clock's day, so the create answers what the door answers. A revision that stops carrying the SKU between the two is judged again by the checks at submit and at apply.
+- **Unchanged.** An attach and a rereserve admit a deprecated SKU as before (D-413). A draft, retiring or retired SKU and a bundle SKU stay refused.
+- **The texts.** The served text of the item create names ITEM_SKU_DEPRECATED and the rule.
+- **The tests.** tests/plan_item_doors.rs: a SKU deprecated after its plan's publication, removed from the copy and added back (201, confirmed, its check green); another deprecated SKU refused; the carried SKU refused in a clone. tests/plan_item_references.rs: the create op, below the door, writes a carried deprecated SKU and refuses another with the door's answer, its op keeping SKU_DEPRECATED. A probe of the door alone turned the door test red and left the op's green; a probe of the op turned both red.
+
+**Source:** Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2). Amends D-408.
