@@ -238,7 +238,9 @@ fn property(api: &Value, schema: &str, name: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// D-472 (ask 26): the three entry reads name `next_price`, which has `current_price`'s schema.
+/// D-472 and D-473 (asks 26 and 37): the three entry reads name `next_price`, which has
+/// `current_price`'s schema; the book's entries list declares `as_of` and says what the date
+/// judges, what it refuses and that a price outside the book's validity is not sellable.
 #[tokio::test]
 async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
     let api = served().await;
@@ -272,5 +274,29 @@ async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
             .as_str()
             .unwrap_or_default();
         assert!(said.contains("next_price"), "{schema}: {said}");
+    }
+    let list = "/bss-pricing/v1/price-books/{id}/entries";
+    let as_of = api["paths"][list]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "as_of")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        (as_of["in"].as_str(), as_of["required"].as_bool()),
+        (Some("query"), Some(false)),
+        "{as_of}"
+    );
+    let text = description(&api, "get", list);
+    for said in [
+        "as_of",
+        "DATE_INVALID",
+        "QUERY_INVALID",
+        "not sellable",
+        "valid_from",
+        "valid_until",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
     }
 }

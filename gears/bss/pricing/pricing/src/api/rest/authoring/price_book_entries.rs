@@ -503,7 +503,8 @@ pub(super) async fn shows_money(
 }
 /// `GET /price-book-entries/{id}` and each item of `GET /price-books/{id}/entries` (D-428,
 /// D-440, D-472): the entries with their usage and, when `shown`, their price in force and their
-/// next price — dated on `today`, in a fixed number of statements whatever their number.
+/// next price — all dated on `day`, today or the list's `as_of` (D-473), in a fixed number of
+/// statements whatever their number.
 /// # Errors
 /// Storage failures; a stored token outside its closed set is a corrupt row.
 pub(super) async fn read(
@@ -511,12 +512,12 @@ pub(super) async fn read(
     tenant: Uuid,
     entries: Vec<entity::price_book_entry::Model>,
     shown: bool,
-    today: time::Date,
+    day: time::Date,
 ) -> Result<Vec<super::dto::PricingPriceBookEntryReadDto>, DoorError> {
     let ids: Vec<Uuid> = entries.iter().map(|m| m.id).collect();
-    let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, today).await?;
+    let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, day).await?;
     let mut headlines = if shown {
-        headline(tx, tenant, &entries.iter().collect::<Vec<_>>(), today).await?
+        headline(tx, tenant, &entries.iter().collect::<Vec<_>>(), day).await?
     } else {
         std::collections::BTreeMap::new()
     };

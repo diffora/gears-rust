@@ -382,7 +382,8 @@ submitter's note to the unit's submit_note; a single price's submit takes none (
 deprecated SKU its plan's published revision in effect carries (D-465). The approval units are counted by state and
 kind under the list's narrowing, the list pages newest first on request, and it skips the live impact on request
 (D-470); every unit says whether its reader may approve it, by the engine's own rule (D-471). Each entry read names
-the entry's next price beside its price in force (D-472).
+the entry's next price beside its price in force (D-472), and a book's entries list reads its prices on a date
+(D-473).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose

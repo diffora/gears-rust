@@ -76,7 +76,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-467 |
-| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456; amended by D-472 |
+| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456; amended by D-472, D-473 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
@@ -108,7 +108,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
 | D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469 |
 | D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2) |
-| D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440 |
+| D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
+| D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472 |
 
 ## Entries
 
@@ -626,7 +627,9 @@ D-456 extends this entry: plan create, clone and a book-naming revision PATCH ju
 
 D-472 amends this entry: the entry reads also carry next_price. in_force became price_book_entries::headline, which chooses current_price and next_price from one read of the default chain's approved, pending and draft prices, so no read gains a statement; the golden leaves next_price out as it leaves current_price out.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456. Amended by D-472.
+D-473 amends this entry: GET /price-books/{id}/entries takes as_of, and its one day is that date instead of today. Every price the list answers takes that day: current_price, next_price, each price's status and the usage split. Its refusal order gains the query: 403 for entry read, 503 for the money's policy, 400 QUERY_INVALID then DATE_INVALID, then 404 for the book.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456. Amended by D-472, D-473.
 
 #### D-441 [M] Every book read carries its stats
 
@@ -1139,4 +1142,28 @@ The Price Books screen shows, beside each entry's price in force, the price that
 
 Breaking for a consumer that compares an entry read as a closed object: it gains next_price.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 26); phase 9 plan rev 2 (decision 12; plan review M5, L7). Amends D-434 and D-440.
+D-473 amends this entry: on GET /price-books/{id}/entries the day next_price is judged on is the list's as_of, today by default, so "scheduled" means an approved price that starts after as_of (plan review M5).
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 26); phase 9 plan rev 2 (decision 12; plan review M5, L7). Amends D-434 and D-440. Amended by D-473.
+
+#### D-473 [M] The book's entries list reads its prices on a date
+
+**Status:** DECIDED 2026-10-01.
+
+The Price Books screen shows a book's prices on a date the user picks: what was in force last month, or what will be in force after a scheduled change (ask 37). GET /price-books/{id}/entries took no query and judged every price on today.
+
+- **The parameter.** GET /bss-pricing/v1/price-books/{id}/entries takes as_of, a YYYY-MM-DD date. Without it the day is today (UTC), as before.
+- **One day per answer (D-440, plan review M5).** Every price the list answers is judged on as_of, never partly on today:
+  - current_price is the default chain's approved price in force on as_of;
+  - next_price is the default chain's earliest approved price that starts after as_of, else its newest draft or pending price (D-472). With an as_of after a scheduled start, that price is current_price and next_price is the one after it, or a draft or pending price;
+  - each price's status is its display status on as_of (window_display): the current price is active on it and an approved next price is scheduled;
+  - usage.prices splits the approved prices into scheduled, active and superseded on as_of, from the same grouped count bound to as_of. The plans counts read the stored state and are not dated (D-453).
+- **Outside the book's validity.** An as_of before the book's valid_from, or on or after its valid_until, is not refused: the list answers with the prices in force on that day. domain::book::valid_on says whether the book allows a sale on a date, and the list does not judge it. So a price the list answers on such a day is not sellable, and the served text says so.
+- **Refusals (plan review L6).** list_entries parsed no query and ignored every key. It now reads only as_of: any other key, and as_of twice, is 400 QUERY_INVALID, the house rule of pricing's reads (D-440, D-442). An as_of that is not a YYYY-MM-DD calendar date, an empty one included, is 400 DATE_INVALID on as_of, as resolve's date is. The order is D-440's, with the query in its place: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID, then 400 DATE_INVALID; 404 for a book the tenant does not hold.
+- **Only the list.** The plan names the book's list only (decision 13). GET /price-book-entries/{id} takes no as_of: it still reads no query and stays dated on today. GET /price-book-entries?sku_id= stays dated on today and answers as_of with 400 QUERY_INVALID, as any other key (D-434).
+- **The statements.** as_of changes only the bound date: the list makes the same seven statements with it as without it, for 10 and for 100 entries.
+- **The tests.** tests/book_reads.rs: one entry with four approved default-chain prices, a pending and a draft price, and a value chain's price, read on six days — before every price, in the past, today, the day a price ends, a day after a scheduled start, and after the last scheduled start. On each day current_price, next_price, their statuses and the usage split are the ones of that day, the answer without as_of equals the answer with today's as_of, and the single read with an as_of still answers today. A book valid from today+10 to today+40, read before its valid_from, inside, on its valid_until and after it, answers the prices in force on each day. The refusals: seven malformed dates (DATE_INVALID on as_of) and five other queries (QUERY_INVALID), then the order 403, 503, 400 and 404. The seven statements with and without as_of for 10 and for 100 entries. tests/served_contract.rs: the as_of query parameter, not required, and the list's text naming as_of, DATE_INVALID, QUERY_INVALID, valid_from, valid_until and "not sellable".
+
+Breaking for a caller that sends GET /price-books/{id}/entries a query key: the key was ignored and is now 400 QUERY_INVALID. The deploy notes name it.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 37); phase 9 plan rev 2 (decision 13; plan review M5, L6). Amends D-440 and D-472.

@@ -2290,7 +2290,7 @@ async fn the_next_price_is_shown_only_with_price_book_read_on_its_book() {
 /// widened to the default chain's drafts and pending prices, so the book's entries list keeps its
 /// seven statements for 10 and for 100 entries — the book, its entries, the book under the
 /// money's grant, the three usage reads (the price counts, the plan items that name the entries,
-/// their revisions) and the default chain.
+/// their revisions) and the default chain — with or without `as_of` (D-473).
 // Probed in run 9.4: the next price read one entry at a time.
 #[tokio::test]
 async fn the_entries_list_reads_both_headline_prices_in_seven_statements_for_10_and_100_entries() {
@@ -2314,16 +2314,215 @@ async fn the_entries_list_reads_both_headline_prices_in_seven_statements_for_10_
             stored_price(&f, e, Row::new(3, "draft", t + days(6))).await;
             stored_price(&f, e, Row::new(4, "pending", t + days(7))).await;
         }
-        let path = format!("/price-books/{b}/entries");
-        let seen = statements(&f, &recorder, &path, n).await;
-        assert_eq!(seen.len(), 7, "{path}: {seen:#?}");
-        lists.push(seen);
-        for item in ok(&f, &path).await["items"].as_array().unwrap() {
-            assert!(
-                !item["current_price"].is_null() && !item["next_price"].is_null(),
-                "{path}: {item}"
-            );
+        for query in [String::new(), format!("?as_of={}", t + days(6))] {
+            let path = format!("/price-books/{b}/entries{query}");
+            let seen = statements(&f, &recorder, &path, n).await;
+            assert_eq!(seen.len(), 7, "{path}: {seen:#?}");
+            lists.push(seen);
+            for item in ok(&f, &path).await["items"].as_array().unwrap() {
+                assert!(
+                    !item["current_price"].is_null() && !item["next_price"].is_null(),
+                    "{path}: {item}"
+                );
+            }
         }
     }
-    same("entries", &lists[0], &lists[1]);
+    same("entries", &lists[0], &lists[2]);
+    same("entries on a date", &lists[1], &lists[3]);
+}
+
+// ------------------------------------------------------------------ the entries list on a date (D-473)
+
+/// D-473 (ask 37, plan review M5): `as_of` dates the whole answer of the book's entries list —
+/// the price in force, the next price, each price's status and the usage split are judged on
+/// that one day (D-440) — and today is the default. The single read keeps today.
+// Probed in run 9.4: the next price judged on today under as_of; the usage split judged on today
+// under as_of.
+#[tokio::test]
+async fn the_entries_list_judges_every_price_on_its_as_of_date() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let t = today();
+    let entry = stored_entry(
+        &f,
+        eur,
+        catalog.sku(SkuType::Usage),
+        "per_unit",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await;
+    let mut prices = Vec::new();
+    for row in [
+        Row::new(1, "approved", t - days(30)).to(t - days(10)),
+        Row::new(2, "approved", t - days(10)).to(t + days(10)),
+        Row::new(3, "approved", t + days(10)).to(t + days(20)),
+        Row::new(4, "approved", t + days(20)),
+        Row::new(5, "pending", t + days(25)),
+        Row::new(9, "draft", t + days(30)),
+        // A value chain's price: counted on its own window, never a headline.
+        Row::new(6, "approved", t - days(5)).on("eu"),
+    ] {
+        prices.push(stored_price(&f, entry, row).await);
+    }
+    let id = |i: Option<usize>| i.map_or(Value::Null, |i| json!(prices[i].id.to_string()));
+    // (as_of, the current price, the next price, the approved (scheduled, active, superseded))
+    for (as_of, current, next, split) in [
+        (t - days(40), None, Some(0), (5, 0, 0)),
+        (t - days(20), Some(0), Some(1), (4, 1, 0)),
+        (t, Some(1), Some(2), (2, 2, 1)),
+        // The day a price ends is its successor's.
+        (t + days(10), Some(2), Some(3), (1, 2, 2)),
+        // After a scheduled start (M5): that price is in force, the next is the one after it.
+        (t + days(15), Some(2), Some(3), (1, 2, 2)),
+        // After the last scheduled start: the next is the newest draft or pending price.
+        (t + days(20), Some(3), Some(5), (0, 2, 3)),
+    ] {
+        let body = ok(&f, &format!("/price-books/{eur}/entries?as_of={as_of}")).await;
+        let item = &body["items"][0];
+        assert_eq!(
+            item["current_price"]["id"],
+            id(current),
+            "{as_of}: {item:#}"
+        );
+        assert_eq!(item["next_price"]["id"], id(next), "{as_of}: {item:#}");
+        // The statuses agree with the day: the current price is active on it, the next waits.
+        if current.is_some() {
+            assert_eq!(item["current_price"]["status"], "active", "{as_of}");
+        }
+        if let Some(n) = next {
+            assert_eq!(
+                item["next_price"]["status"],
+                waiting(&prices[n].state),
+                "{as_of}"
+            );
+        }
+        assert_eq!(item["usage"], dated(split, 1, 1, 0, 0), "{as_of}: {item:#}");
+    }
+    // Without as_of the day is today, the same answer as as_of today.
+    assert_eq!(
+        ok(&f, &format!("/price-books/{eur}/entries")).await,
+        ok(&f, &format!("/price-books/{eur}/entries?as_of={t}")).await
+    );
+    // The single read takes no as_of: it stays dated on today.
+    let read = ok(
+        &f,
+        &format!("/price-book-entries/{entry}?as_of={}", t + days(15)),
+    )
+    .await;
+    assert_eq!(read["current_price"]["id"], id(Some(1)), "{read:#}");
+    assert_eq!(read["next_price"]["id"], id(Some(2)), "{read:#}");
+}
+
+/// D-473: a date before the book's `valid_from`, or on or after its `valid_until`, still answers
+/// with the prices in force then (the served text says such a price is not sellable).
+#[tokio::test]
+async fn a_date_outside_the_books_validity_answers_the_prices_in_force_then() {
+    let (f, catalog) = setup().await;
+    let t = today();
+    let (from, until) = (t + days(10), t + days(40));
+    let book = door_book(
+        &f,
+        "VALID",
+        "Valid",
+        "EUR",
+        Some(&from.to_string()),
+        Some(&until.to_string()),
+    )
+    .await;
+    let entry = stored_entry(
+        &f,
+        book,
+        catalog.sku(SkuType::Usage),
+        "per_unit",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await;
+    let first = stored_price(
+        &f,
+        entry,
+        Row::new(1, "approved", t - days(5)).to(t + days(20)),
+    )
+    .await;
+    let second = stored_price(&f, entry, Row::new(2, "approved", t + days(20))).await;
+    let draft = stored_price(&f, entry, Row::new(3, "draft", t + days(50))).await;
+    for (as_of, current, next) in [
+        (t - days(1), &first, &second),
+        (t + days(15), &first, &second),
+        (until, &second, &draft),
+        (t + days(100), &second, &draft),
+    ] {
+        let body = ok(&f, &format!("/price-books/{book}/entries?as_of={as_of}")).await;
+        let item = &body["items"][0];
+        assert_eq!(
+            (&item["current_price"]["id"], &item["next_price"]["id"]),
+            (&json!(current.id.to_string()), &json!(next.id.to_string())),
+            "{as_of}: {item:#}"
+        );
+    }
+}
+
+/// D-473 (plan review L6): `as_of` is a `YYYY-MM-DD` date, else 400 `DATE_INVALID`; any other key,
+/// or `as_of` twice, is 400 `QUERY_INVALID`, the house rule. D-440's order: 403 for entry read,
+/// 503 for the money's policy, 400 for the query, then 404 for the book.
+// Probed in run 9.4: an unknown key ignored; the book judged before the date.
+#[tokio::test]
+async fn the_entries_list_refuses_a_date_it_cannot_read_and_any_other_key() {
+    let (f, _) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let path = format!("/price-books/{eur}/entries");
+    for bad in [
+        "2026-13-01",
+        "2026-02-30",
+        "20260105",
+        "tomorrow",
+        "",
+        "2026-01-05T00:00:00Z",
+        "%202026-01-05",
+    ] {
+        let (s, b, _) = get(&f, &format!("{path}?as_of={bad}")).await;
+        assert_eq!(s, 400, "{bad}: {b}");
+        assert!(
+            code_of(&b).contains("DATE_INVALID") && code_of(&b).contains("as_of"),
+            "{bad}: {b}"
+        );
+    }
+    for query in [
+        "?asof=2026-01-05",
+        "?limit=5",
+        "?as_of=2026-01-05&as_of=2026-01-06",
+        "?status=active",
+        "?$top=5",
+    ] {
+        let (s, b, _) = get(&f, &format!("{path}{query}")).await;
+        assert_eq!(s, 400, "{query}: {b}");
+        assert!(code_of(&b).contains("QUERY_INVALID"), "{query}: {b}");
+    }
+    let bad = "?as_of=tomorrow";
+    let (s, _, _) = request(
+        &f.denied,
+        &f.ctx,
+        "GET",
+        &format!("{path}{bad}"),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 403, "authorization first");
+    let (s, b, _) = request(
+        &money_app(&f, None, true),
+        &f.ctx,
+        "GET",
+        &format!("{path}{bad}"),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 503, "the money's policy before the query: {b}");
+    let unknown = format!("/price-books/{}/entries", Uuid::new_v4());
+    let (s, b, _) = get(&f, &format!("{unknown}{bad}")).await;
+    assert_eq!(s, 400, "the query before the book: {b}");
+    let (s, b, _) = get(&f, &format!("{unknown}?as_of=2026-01-05")).await;
+    assert_eq!(s, 404, "{b}");
 }

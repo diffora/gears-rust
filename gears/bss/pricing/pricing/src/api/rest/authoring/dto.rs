@@ -133,18 +133,18 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
-/// also counted by where their window stands today (D-440): `approved` = `scheduled + active +
-/// superseded`.
+/// also counted by where their window stands on the day of the read (D-440): today, or the
+/// `as_of` of the book's entries list (D-473). `approved` = `scheduled + active + superseded`.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceCounts {
     pub approved: u64,
     pub pending: u64,
     pub draft: u64,
-    /// Approved prices that start after today.
+    /// Approved prices that start after the day.
     pub scheduled: u64,
-    /// Approved prices in force today.
+    /// Approved prices in force on the day.
     pub active: u64,
-    /// Approved prices whose window ended on or before today.
+    /// Approved prices whose window ended on or before the day.
     pub superseded: u64,
 }
 /// An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,
@@ -174,10 +174,11 @@ impl From<crate::infra::usage::EntryUsage> for PricingEntryUsage {
     }
 }
 /// What the two entry reads answer (D-428): the entry's fields, its `usage`, its `current_price`
-/// (D-440): the default chain's approved price in force today, as D-434 chooses and shows it —
-/// and its `next_price` (D-472): the default chain's earliest scheduled price, else its newest
+/// (D-440): the default chain's approved price in force on the day, as D-434 chooses and shows it
+/// — and its `next_price` (D-472): the default chain's earliest scheduled price, else its newest
 /// draft or pending price (the highest `version_no`, then the latest `created_at`). Each is `null`
 /// when there is none, or when the caller does not hold `price_book` read on the entry's book.
+/// The day is today, or the `as_of` of the book's entries list (D-473).
 /// Every other answer that carries an entry (POST, PATCH, the stored receipt, the export,
 /// publish-changes) keeps [`PricingPriceBookEntryDto`].
 #[toolkit_macros::api_dto(response)]
@@ -211,6 +212,13 @@ impl PricingPriceBookEntryReadDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceList {
     pub items: Vec<PricingPriceDto>,
+}
+/// The query of `GET /price-books/{id}/entries` (D-473): an optional `as_of`, the day its prices
+/// are judged on.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingEntryListQuery {
+    pub as_of: Option<String>,
 }
 /// The query of `GET /price-book-entries/{id}/prices`: an optional `status`, one display status
 /// or several comma-separated.
