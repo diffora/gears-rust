@@ -8,7 +8,7 @@ use crate::api::rest::closed_sets::{
     PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
-use crate::infra::storage::{RepoError, entity};
+use crate::infra::storage::{RepoError, entity, repo::approval_repo::UnitInstants};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
@@ -665,11 +665,31 @@ pub struct PricingPlanRevisionHeader {
     /// that waited for it (D-447, D-450); null until then.
     #[serde(with = "time::serde::rfc3339::option")]
     pub published_at: Option<time::OffsetDateTime>,
+    /// Its author (D-461): the one principal who edits it while it is a draft (D-404).
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    /// When it was submitted for approval (D-461): the submission of its pending unit, or of the
+    /// unit that approved it; null for a draft, also one back from a reject, a withdraw or an
+    /// unschedule.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub submitted_at: Option<time::OffsetDateTime>,
+    /// When it was approved (D-461): the decision of the unit that approved it, which a scheduled
+    /// revision needs because its `published_at` is null until its date; null before.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub approved_at: Option<time::OffsetDateTime>,
 }
 impl PricingPlanRevisionHeader {
-    /// The header of `m` with its effective state and `published_at` (D-447).
+    /// The header of `m` with its effective state and `published_at` (D-447), and the instants of
+    /// the unit it names among `units` (D-461).
     #[must_use]
-    pub fn of(m: &entity::plan_revision::Model, effective: &EffectiveRevision) -> Self {
+    pub fn of(
+        m: &entity::plan_revision::Model,
+        effective: &EffectiveRevision,
+        units: &BTreeMap<Uuid, UnitInstants>,
+    ) -> Self {
+        let (submitted_at, approved_at) =
+            unit_instants(m.pending_unit_id, m.approved_by_unit_id, units);
         Self {
             id: m.id,
             rev_no: m.rev_no,
@@ -677,8 +697,29 @@ impl PricingPlanRevisionHeader {
             state: effective.state.into(),
             available_from: m.available_from.map(|d| d.to_string()),
             published_at: effective.published_at,
+            created_by: m.created_by,
+            created_at: m.created_at,
+            submitted_at,
+            approved_at,
         }
     }
+}
+/// When a revision was submitted and approved (D-461), from the unit it names among `units`: the
+/// submission of its pending or approving unit, and the approving unit's decision. A draft names
+/// no unit, so it has neither; a unit that does not read leaves both null.
+fn unit_instants(
+    pending: Option<Uuid>,
+    approved_by: Option<Uuid>,
+    units: &BTreeMap<Uuid, UnitInstants>,
+) -> (Option<time::OffsetDateTime>, Option<time::OffsetDateTime>) {
+    let submitted = pending
+        .or(approved_by)
+        .and_then(|u| units.get(&u))
+        .map(|u| u.submitted_at);
+    let approved = approved_by
+        .and_then(|u| units.get(&u))
+        .and_then(|u| u.decided_at);
+    (submitted, approved)
 }
 /// A plan's current revision as its list row names it (D-460): the draft or pending one, else
 /// the scheduled one, else the published one in effect, chosen over the states the revisions read
@@ -704,12 +745,14 @@ pub struct PricingPlanInEffect {
     pub revision_id: Uuid,
     pub rev_no: i32,
 }
-/// What the plan DTO shows beside its own rows (D-460): the item SKUs of the current revisions,
-/// by revision id. A read fills it from its grouped read; a write from the rows it holds (D-453:
-/// a write answers what it wrote).
+/// What the plan DTO shows beside its own rows (D-460, D-461): the item SKUs of the current
+/// revisions, by revision id, and the instants of the units the revisions name, by unit id. A
+/// read fills it from its two grouped reads; a write from the rows it holds (D-453: a write
+/// answers what it wrote).
 #[derive(Debug, Default, Clone)]
 pub struct PlanReading {
     pub skus: BTreeMap<Uuid, Vec<Uuid>>,
+    pub units: BTreeMap<Uuid, UnitInstants>,
 }
 /// A plan with the headers of its revisions in revision order.
 #[toolkit_macros::api_dto(response)]
@@ -737,8 +780,8 @@ pub struct PricingPlanDto {
 }
 impl PricingPlanDto {
     /// The plan with the headers of `revisions` (all of its own) as they read on `today`, its
-    /// effective `published_rev` (D-447) and its current revision and the one in effect (D-460),
-    /// from `reading`: derived in memory.
+    /// effective `published_rev` (D-447), its current revision and the one in effect (D-460) and
+    /// each header's instants (D-461), from `reading`: derived in memory.
     /// # Errors
     /// `CorruptRow` for a stored token outside its closed set (D-439).
     pub fn of(
@@ -778,7 +821,7 @@ impl PricingPlanDto {
             revisions: revisions
                 .iter()
                 .zip(&effective)
-                .map(|(r, e)| PricingPlanRevisionHeader::of(r, e))
+                .map(|(r, e)| PricingPlanRevisionHeader::of(r, e, &reading.units))
                 .collect(),
             current,
             in_effect,
@@ -795,9 +838,26 @@ pub fn current_revision(
 ) -> Result<Option<Uuid>, RepoError> {
     Ok(plan::current(&effective_revisions(revisions, today)?).map(|r| r.id))
 }
+/// The units `revisions` name (D-461): each one's pending or approving unit.
+#[must_use]
+pub fn named_units(revisions: &[entity::plan_revision::Model]) -> Vec<Uuid> {
+    revisions
+        .iter()
+        .filter_map(|r| r.pending_unit_id.or(r.approved_by_unit_id))
+        .collect()
+}
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanList {
     pub items: Vec<PricingPlanDto>,
+}
+/// A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum
+/// counts (the current generation's, not stale: the approval library's `approve_eligibility`, the
+/// rule the vote door judges by) and the quorum.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanApprovalProgress {
+    pub unit_id: Uuid,
+    pub approvals: u32,
+    pub quorum_required: u32,
 }
 /// A revision with its items (D-407: items are a sub-resource, read with their revision).
 #[toolkit_macros::api_dto(response)]
@@ -824,6 +884,16 @@ pub struct PricingPlanRevisionDto {
     pub created_at: time::OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
+    /// When it was submitted for approval (D-461): the submission of its pending unit, or of the
+    /// unit that approved it; null for a draft.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub submitted_at: Option<time::OffsetDateTime>,
+    /// When it was approved (D-461): the decision of the unit that approved it; null before.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub approved_at: Option<time::OffsetDateTime>,
+    /// The vote progress of a pending revision (D-462), readable under plan read; null for any
+    /// other state.
+    pub approval: Option<PricingPlanApprovalProgress>,
     pub items: Vec<PricingPlanItemDto>,
 }
 impl PricingPlanRevisionDto {
@@ -847,7 +917,9 @@ impl PricingPlanRevisionDto {
         }
         Ok(dto)
     }
-    /// The revision as stored: a write's answer, whose state is the one it just wrote.
+    /// The revision as stored: a write's answer, whose state is the one it just wrote. Its unit
+    /// fields are null, as a draft's are; [`Self::with_units`] fills them for a revision that
+    /// names a unit.
     /// # Errors
     /// `CorruptRow` for a stored token outside its closed set (D-439).
     pub fn of(
@@ -872,11 +944,29 @@ impl PricingPlanRevisionDto {
             created_by: m.created_by,
             created_at: m.created_at,
             updated_at: m.updated_at,
+            submitted_at: None,
+            approved_at: None,
+            approval: None,
             items: items
                 .into_iter()
                 .map(TryInto::try_into)
                 .collect::<Result<_, _>>()?,
         })
+    }
+    /// The instants of the unit the revision names among `units` (D-461), and the vote progress
+    /// `approval` of a pending revision (D-462): kept only while the revision reads `pending`.
+    #[must_use]
+    pub fn with_units(
+        mut self,
+        units: &BTreeMap<Uuid, UnitInstants>,
+        approval: Option<PricingPlanApprovalProgress>,
+    ) -> Self {
+        let (submitted_at, approved_at) =
+            unit_instants(self.pending_unit_id, self.approved_by_unit_id, units);
+        self.submitted_at = submitted_at;
+        self.approved_at = approved_at;
+        self.approval = approval.filter(|_| self.state == PricingRevisionState::Pending);
+        self
     }
 }
 /// `PATCH /plan-revisions/{id}`, draft only: the book and the sale date, never an item list

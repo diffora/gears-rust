@@ -17,9 +17,9 @@
 use super::{
     AuthoringState, configuration,
     dto::{
-        self, PlanReading, PricingPlanChecksDto, PricingPlanClone, PricingPlanCreate,
-        PricingPlanDto, PricingPlanList, PricingPlanPatch, PricingPlanRevisionDto,
-        PricingPlanRevisionPatch,
+        self, PlanReading, PricingPlanApprovalProgress, PricingPlanChecksDto, PricingPlanClone,
+        PricingPlanCreate, PricingPlanDto, PricingPlanList, PricingPlanPatch,
+        PricingPlanRevisionDto, PricingPlanRevisionPatch,
     },
     plan_items,
     support::{self, DoorError},
@@ -104,8 +104,8 @@ pub(super) fn today() -> time::Date {
     time::OffsetDateTime::now_utc().date()
 }
 /// What the plan DTO shows beside the rows of the plans in `revisions` (their revisions, by plan):
-/// the item SKUs of each plan's current revision (D-460), ONE grouped statement whatever the
-/// number of plans.
+/// the item SKUs of each plan's current revision (D-460) and the instants of every unit the
+/// revisions name (D-461), ONE grouped statement each whatever the number of plans.
 async fn plan_reading(
     tx: &impl DBRunner,
     tenant: Uuid,
@@ -113,12 +113,14 @@ async fn plan_reading(
     today: time::Date,
 ) -> Result<PlanReading, DoorError> {
     let children = AccessScope::for_tenant(tenant);
-    let mut current = Vec::new();
+    let (mut current, mut units) = (Vec::new(), Vec::new());
     for own in revisions.values() {
         current.extend(dto::current_revision(own, today)?);
+        units.extend(dto::named_units(own));
     }
     Ok(PlanReading {
         skus: plan_item_repo::skus_of_revisions(tx, &children, tenant, &current).await?,
+        units: approval_repo::unit_instants(tx, &children, tenant, &units).await?,
     })
 }
 async fn plan_body(
@@ -132,16 +134,72 @@ async fn plan_body(
     let reading = plan_reading(tx, tenant, &BTreeMap::from([(m.id, own.clone())]), today).await?;
     Ok(PricingPlanDto::of(m, &own, today, &reading)?)
 }
-/// A revision read: its items, and its state among its plan's revisions as it reads today.
+/// A revision read: its items, its state among its plan's revisions as it reads today, the
+/// instants of the unit it names (D-461) and, while it is pending, its vote progress (D-462).
 async fn revision_body(
     tx: &impl DBRunner,
     tenant: Uuid,
+    reader: Uuid,
     m: plan_revision::Model,
 ) -> Result<PricingPlanRevisionDto, DoorError> {
     let children = AccessScope::for_tenant(tenant);
     let items = plan_item_repo::for_revision(tx, &children, tenant, m.id).await?;
     let siblings = plan_revision_repo::for_plan(tx, &children, tenant, m.plan_id).await?;
-    Ok(PricingPlanRevisionDto::read(&m, &siblings, items, today())?)
+    let dto = PricingPlanRevisionDto::read(&m, &siblings, items, today())?;
+    let Some(named) = m.pending_unit_id.or(m.approved_by_unit_id) else {
+        return Ok(dto);
+    };
+    let Some(unit) = approval_repo::find_unit(tx, &children, tenant, named)
+        .await
+        .map_err(support::approval_failure)?
+    else {
+        return Ok(dto);
+    };
+    let approval = progress(tx, tenant, &unit, reader).await?;
+    Ok(dto.with_units(&instants_of(&unit), approval))
+}
+/// A unit's instants, keyed as the DTOs read them (D-461).
+pub(super) fn instants_of(
+    unit: &bss_approval::Unit,
+) -> BTreeMap<Uuid, approval_repo::UnitInstants> {
+    BTreeMap::from([(
+        unit.id,
+        approval_repo::UnitInstants {
+            id: unit.id,
+            submitted_at: unit.submitted_at,
+            decided_at: unit.decided_at,
+        },
+    )])
+}
+/// A pending unit's vote progress (D-462, O-9a): the approve votes the quorum counts, by the
+/// approval library's `approve_eligibility` over the unit's stored items and decisions (the rule
+/// the vote door judges by; only its counts are shown, so `reader` changes nothing), and the
+/// quorum; `None` for a unit that is not pending. Two statements, read with the tenant's scope
+/// under the revision read's plan read: counts only, no actor.
+pub(super) async fn progress(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    unit: &bss_approval::Unit,
+    reader: Uuid,
+) -> Result<Option<PricingPlanApprovalProgress>, DoorError> {
+    if unit.state != bss_approval::UnitState::Pending {
+        return Ok(None);
+    }
+    let children = AccessScope::for_tenant(tenant);
+    let items = approval_repo::items_of_units(tx, &children, tenant, &[unit.id])
+        .await?
+        .remove(&unit.id)
+        .unwrap_or_default();
+    let decisions = approval_repo::decisions_of_units(tx, &children, tenant, &[unit.id])
+        .await?
+        .remove(&unit.id)
+        .unwrap_or_default();
+    let judged = bss_approval::approve_eligibility(unit, &items, &decisions, reader);
+    Ok(Some(PricingPlanApprovalProgress {
+        unit_id: unit.id,
+        approvals: judged.approvals,
+        quorum_required: unit.quorum_required,
+    }))
 }
 fn etag(version: i64) -> Result<u64, CanonicalError> {
     Ok(
@@ -244,7 +302,7 @@ pub(super) async fn create(
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    // A write answers what it wrote (D-453): an empty draft (D-460).
+    // A write answers what it wrote (D-453): an empty draft that names no unit (D-460, D-461).
     let body = PricingPlanDto::of(p, &[r], today(), &PlanReading::default())?;
     support::answer(
         tx,
@@ -258,11 +316,12 @@ pub(super) async fn create(
     .await
 }
 /// `GET /plans`: the tenant's plans by code, each with its revision headers as they read today
-/// (D-447) and its current revision and the one in effect (D-460); with `sku`, only the plans that
-/// have a draft, pending, scheduled or published revision naming the SKU through an entry (D-434,
-/// the SKU usage's `plans`; the stored state counts, D-446). Three set-based statements whatever
-/// the number of plans (one when there is none): the plans, all their revisions and the current
-/// revisions' items; the derivation is in memory.
+/// (D-447), its current revision and the one in effect (D-460) and each header's instants
+/// (D-461); with `sku`, only the plans that have a draft, pending, scheduled or published revision
+/// naming the SKU through an entry (D-434, the SKU usage's `plans`; the stored state counts,
+/// D-446). Four set-based statements whatever the number of plans (one when there is none): the
+/// plans, all their revisions, the current revisions' items and the units the revisions name;
+/// the derivation is in memory.
 /// # Errors
 /// Storage failures.
 pub(super) async fn list(
@@ -655,6 +714,7 @@ async fn clone_in(
     skus.sort_unstable();
     let reading = PlanReading {
         skus: BTreeMap::from([(r.id, skus)]),
+        units: BTreeMap::new(),
     };
     let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     let response = support::answer(
@@ -670,20 +730,21 @@ async fn clone_in(
     Ok((response, ops))
 }
 
-/// `GET /plan-revisions/{id}`: the revision with its items and its version.
+/// `GET /plan-revisions/{id}`: the revision with its items and its version, the instants of the
+/// unit it names (D-461) and, while it is pending, its vote progress (D-462), for `reader`.
 /// # Errors
 /// 404 for a revision the tenant does not hold.
 pub(super) async fn get_revision(
     tx: &impl DBRunner,
     scope: &AccessScope,
-    tenant: Uuid,
+    (tenant, reader): (Uuid, Uuid),
     id: Uuid,
 ) -> Result<Response, DoorError> {
     let m = find_revision(tx, scope, tenant, id).await?;
     let version = etag(m.version)?;
     Ok(support::response(
         StatusCode::OK,
-        &revision_body(tx, tenant, m).await?,
+        &revision_body(tx, tenant, reader, m).await?,
         Some(version),
     )?)
 }

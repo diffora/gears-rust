@@ -56,14 +56,15 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("List the plans")
         .description(
             "Lists the tenant's plans by code, each with the headers of its revisions as they \
-             read today (a scheduled revision whose date has come reads published, D-447). Each \
-             plan names its current revision (the draft or pending one, else the scheduled one, \
-             else the published one in effect) with its item count, item SKUs and author, and the \
+             read today (a scheduled revision whose date has come reads published, D-447), each \
+             header with its author and when it was submitted and approved (D-461). Each plan names \
+             its current revision (the draft or pending one, else the scheduled one, else the \
+             published one in effect) with its item count, item SKUs and author, and the \
              published revision in effect (D-460). With sku_id, only the plans that have a draft, \
              pending, scheduled or published revision whose items name the SKU through a price \
              book entry (D-434; an included item without an entry does not count), in the same \
              shape: so a plan's current sku_ids, which name every item, may differ from what the \
-             filter keeps. Three statements whatever the number of plans. Refusals: 400 \
+             filter keeps. Four statements whatever the number of plans. Refusals: 400 \
              QUERY_INVALID for a malformed sku_id or any other key.",
         )
         .tag("Pricing")
@@ -82,10 +83,10 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan")
         .description(
-            "Returns one plan with the headers of its revisions as they read today (D-447), its \
-             current revision and the one in effect (D-460), and its version as the ETag a \
-             following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not \
-             hold.",
+            "Returns one plan with the headers of its revisions as they read today (D-447) and \
+             when each was submitted and approved (D-461), its current revision and the one in \
+             effect (D-460), and its version as the ETag a following PATCH sends back as If-Match. \
+             Refusals: 404 for a plan the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -165,9 +166,11 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_plan_revision")
         .summary("Read a plan revision")
         .description(
-            "Returns one plan revision with its items and its state as it reads today (D-447), its \
-             version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a \
-             revision the tenant does not hold.",
+            "Returns one plan revision with its items and its state as it reads today (D-447), \
+             when it was submitted and approved (D-461) and, while it is pending, its vote \
+             progress: the approve votes counted toward the quorum and the quorum, counts only, \
+             under plan read (D-462). Its version is the ETag a following PATCH sends back as \
+             If-Match. Refusals: 404 for a revision the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -438,7 +441,9 @@ async fn get_revision(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { plans::get_revision(tx, &scope, ctx.subject_tenant_id(), id).await })
+        Box::pin(async move {
+            plans::get_revision(tx, &scope, (ctx.subject_tenant_id(), ctx.subject_id()), id).await
+        })
     })
     .await
 }

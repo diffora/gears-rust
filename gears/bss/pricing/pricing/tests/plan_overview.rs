@@ -1,14 +1,22 @@
-//! What the plans list names for the screens (phase 9 run 9.1): each plan's current revision and
-//! the one in effect (D-460), on the reads and on every write answer that carries the plan DTO, in
-//! a fixed number of statements.
+//! What the plans list and the revision reads name for the screens (phase 9 run 9.1): each plan's
+//! current revision and the one in effect (D-460), a revision's who and when (D-461) and a pending
+//! revision's vote progress (D-462), on the reads and on every write answer that carries the same
+//! DTO, in a fixed number of statements.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
+use bss_approval::Store;
 use bss_pricing::infra::storage::{
+    RepoError,
     entity::plan as plan_entity,
-    repo::{plan_repo, plan_revision_repo, price_book_entry_repo, price_repo},
+    repo::{
+        approval_repo::PricingApprovalStore, plan_repo, plan_revision_repo, price_book_entry_repo,
+        price_repo,
+    },
 };
 use bss_products_sdk::models::SkuType;
-use plan_support::{Catalog, Fixture, book, entry, entry_support, id_of, item, plan, scope, setup};
+use plan_support::{
+    Catalog, Fixture, book, entry, entry_support, holding, id_of, item, plan, scope, setup,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use time::{Date, Duration, OffsetDateTime};
@@ -158,6 +166,18 @@ fn in_effect(p: &Value) -> (Value, Value) {
         p["in_effect"]["revision_id"].clone(),
         p["in_effect"]["rev_no"].clone(),
     )
+}
+fn revision_of(p: &Value, rev_no: i64) -> Value {
+    p["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["rev_no"] == rev_no)
+        .unwrap_or_else(|| panic!("no rev {rev_no} in {p}"))
+        .clone()
+}
+async fn unit_of(f: &Fixture, unit: &Value) -> Value {
+    get(f, &format!("/approval-units/{}", unit.as_str().unwrap())).await
 }
 
 // ------------------------------------------------------------------ #27 the current revision
@@ -394,12 +414,12 @@ async fn seeded_plans(f: &Fixture, catalog: &Catalog, eur: Uuid, from: usize, n:
     }
 }
 
-// Probed in run 9.1: a per-plan read of the items is red here.
-/// D-460 (amending D-434 and D-453): `GET /plans` makes three statements whatever the number of
-/// plans: the plans, their revisions and the current revisions' items. The same statements for 10
-/// and for 100 plans.
+// Probed in run 9.1: a per-plan read of the items or the units is red here.
+/// D-460, D-461 (amending D-434 and D-453): `GET /plans` makes four statements whatever the
+/// number of plans: the plans, their revisions, the current revisions' items and the units the
+/// revisions name. The same statements for 10 and for 100 plans.
 #[tokio::test]
-async fn the_plan_list_reads_in_three_statements_for_10_and_100_plans() {
+async fn the_plan_list_reads_in_four_statements_for_10_and_100_plans() {
     let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
     let catalog = Arc::new(Catalog::default());
     let f = Fixture::on(db, tenant, dsn, catalog.clone()).await;
@@ -411,18 +431,287 @@ async fn the_plan_list_reads_in_three_statements_for_10_and_100_plans() {
     for (i, sql) in hundred.iter().enumerate() {
         eprintln!("plan list statement {i}: {sql}");
     }
-    assert_eq!(ten.len(), 3, "{ten:#?}");
+    assert_eq!(ten.len(), 4, "{ten:#?}");
     assert_eq!(ten, hundred, "the same statements, whatever the size");
     let listed = get(&f, "/plans").await;
     for p in listed["items"].as_array().unwrap() {
         assert_eq!(p["current"]["item_count"], 1, "{p}");
+        let header = &p["revisions"][0];
+        assert!(header["submitted_at"].is_string(), "{p}");
     }
+}
+
+// ------------------------------------------------------------------ #33 who and when
+
+fn instants(r: &Value) -> (Value, Value) {
+    (r["submitted_at"].clone(), r["approved_at"].clone())
+}
+
+/// D-461: a header names its author and creation (its row's), when it was submitted (its
+/// pending or approving unit's `submitted_at`) and when it was approved (the approving unit's
+/// `decided_at`, which a scheduled revision needs: its `published_at` is null). A draft, also one
+/// back from a reject, a withdraw or an unschedule, has neither. The revision read carries the
+/// same two instants.
+#[tokio::test]
+async fn a_header_says_who_made_the_revision_and_when_it_was_submitted_and_approved() {
+    let (f, catalog) = setup().await;
+    let pro = live(&f, &catalog, "pro").await;
+    let rev1_unit =
+        get(&f, &format!("/plan-revisions/{}", pro.rev1)).await["approved_by_unit_id"].clone();
+    policy(&f, 1).await;
+    let reviewer = f.user();
+    // Rev 2: submitted, rejected, back to a draft.
+    let rev2 = id_of(&copy(&f, pro.plan, "copy-2").await["id"]);
+    let receipt = submit(&f, rev2, "submit-2").await;
+    let unit2 = receipt["unit"]["id"].clone();
+    let read = get(&f, &format!("/plans/{}", pro.plan)).await;
+    let pending_unit = unit_of(&f, &unit2).await;
+    assert_eq!(
+        instants(&revision_of(&read, 2)),
+        (pending_unit["submitted_at"].clone(), json!(null)),
+        "pending: {read}"
+    );
+    let (s, b) = vote(
+        &f,
+        &reviewer,
+        &unit2,
+        "reject",
+        json!({"generation":1,"note":"no"}),
+        "reject-2",
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let back = get(&f, &format!("/plans/{}", pro.plan)).await;
+    assert_eq!(
+        instants(&revision_of(&back, 2)),
+        (json!(null), json!(null)),
+        "a draft back from a reject: {back}"
+    );
+    // Withdrawn by its submitter: a draft again.
+    let receipt = submit(&f, rev2, "submit-2b").await;
+    let (s, b) = vote(
+        &f,
+        &f.ctx,
+        &receipt["unit"]["id"],
+        "withdraw",
+        json!({}),
+        "withdraw-2",
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let back = get(&f, &format!("/plans/{}", pro.plan)).await;
+    assert_eq!(
+        instants(&revision_of(&back, 2)),
+        (json!(null), json!(null)),
+        "a draft back from a withdraw: {back}"
+    );
+    // Scheduled: approved for a later date, its published_at null.
+    sale_date(&f, rev2, Some(days(3))).await;
+    let receipt = submit(&f, rev2, "submit-2c").await;
+    let unit2 = receipt["unit"]["id"].clone();
+    let (s, b) = vote(
+        &f,
+        &reviewer,
+        &unit2,
+        "approve",
+        json!({"generation":1}),
+        "approve-2",
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let decided = unit_of(&f, &unit2).await;
+    let read = get(&f, &format!("/plans/{}", pro.plan)).await;
+    let scheduled = revision_of(&read, 2);
+    assert_eq!(scheduled["state"], "scheduled");
+    assert_eq!(scheduled["published_at"], json!(null));
+    assert_eq!(
+        instants(&scheduled),
+        (
+            decided["submitted_at"].clone(),
+            decided["decided_at"].clone()
+        ),
+        "scheduled: {read}"
+    );
+    let rev1_decided = unit_of(&f, &rev1_unit).await;
+    assert_eq!(
+        instants(&revision_of(&read, 1)),
+        (
+            rev1_decided["submitted_at"].clone(),
+            rev1_decided["decided_at"].clone()
+        ),
+        "published at quorum 0: approved at its submit: {read}"
+    );
+    let revision_read = get(&f, &format!("/plan-revisions/{rev2}")).await;
+    assert_eq!(
+        instants(&revision_read),
+        instants(&scheduled),
+        "the read agrees"
+    );
+    // Unscheduled: a draft again, its approving unit let go.
+    let (s, b, _) = f
+        .call(
+            "POST",
+            &format!("/plan-revisions/{rev2}/unschedule"),
+            json!({}),
+            None,
+            Some("unschedule-2"),
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(instants(&b), (json!(null), json!(null)), "the answer: {b}");
+    let back = get(&f, &format!("/plans/{}", pro.plan)).await;
+    assert_eq!(
+        instants(&revision_of(&back, 2)),
+        (json!(null), json!(null)),
+        "a draft back from an unschedule: {back}"
+    );
+    // Published at once, and its predecessor superseded: each keeps its own unit's instants.
+    sale_date(&f, rev2, None).await;
+    policy(&f, 0).await;
+    let receipt = submit(&f, rev2, "submit-2d").await;
+    let rev2_unit = unit_of(&f, &receipt["unit"]["id"]).await;
+    let read = get(&f, &format!("/plans/{}", pro.plan)).await;
+    let (first, second) = (revision_of(&read, 1), revision_of(&read, 2));
+    assert_eq!(first["state"], "superseded");
+    assert_eq!(
+        instants(&first),
+        (
+            rev1_decided["submitted_at"].clone(),
+            rev1_decided["decided_at"].clone()
+        )
+    );
+    assert_eq!(second["state"], "published");
+    assert_eq!(
+        instants(&second),
+        (
+            rev2_unit["submitted_at"].clone(),
+            rev2_unit["decided_at"].clone()
+        )
+    );
+    for header in [&first, &second] {
+        assert_eq!(header["created_by"], f.ctx.subject_id().to_string());
+        assert!(header["created_at"].is_string(), "{header}");
+    }
+    let r2 = get(&f, &format!("/plan-revisions/{rev2}")).await;
+    assert_eq!(second["created_at"], r2["created_at"], "the row's own");
+}
+
+// ------------------------------------------------------------------ #40 vote progress
+
+/// A unit's store in the fixture tenant.
+fn store(f: &Fixture) -> PricingApprovalStore {
+    PricingApprovalStore {
+        scope: scope(f),
+        tenant_id: f.ctx.subject_tenant_id(),
+    }
+}
+/// Refresh a unit to `generation` as the engine's stale refresh does, over its items as stored
+/// (so their fingerprint still holds and the next vote is not refreshed again): every vote of an
+/// earlier generation turns stale.
+async fn refreshed(f: &Fixture, unit: Uuid, generation: i32) {
+    let store = store(f);
+    price_repo::transaction(&f.db.db(), move |tx| {
+        let store = store.clone();
+        Box::pin(async move {
+            let failed = |e: bss_approval::ApprovalError| RepoError::Db(e.to_string());
+            let stored = store.unit(tx, unit).await.map_err(failed)?.unwrap();
+            let items = store.items(tx, unit).await.map_err(failed)?;
+            let hash = bss_approval::hash::snapshot_hash(&items, stored.common_effective_date);
+            store
+                .refresh(tx, unit, &items, &stored.snapshot, &hash, generation)
+                .await
+                .map_err(failed)
+        })
+    })
+    .await
+    .unwrap();
+}
+
+/// D-462 (O-9a): a pending revision's read, and every write answer of its DTO, carry `approval`
+/// with its unit and the counts only: the current generation's approve votes that are not stale
+/// (the approval library's predicate, the one the vote door judges by) and the quorum. It moves
+/// with every vote as the receipt's `have` does; a duplicate vote adds nothing; a vote made stale
+/// by a refresh no longer counts. Anything not pending carries `null`. A plan reader without the
+/// approval-unit grant reads it.
+#[tokio::test]
+async fn a_pending_revision_shows_its_vote_progress_and_nothing_else_does() {
+    let (f, catalog) = setup().await;
+    let p = fresh(&f, &catalog, "pro").await;
+    let path = format!("/plan-revisions/{}", p.rev1);
+    assert_eq!(get(&f, &path).await["approval"], json!(null), "a draft");
+    policy(&f, 2).await;
+    let receipt = submit(&f, p.rev1, "submit").await;
+    let unit = receipt["unit"]["id"].clone();
+    let progress =
+        |approvals: u32| json!({"unit_id":unit,"approvals":approvals,"quorum_required":2});
+    assert_eq!(receipt["revision"]["approval"], progress(0), "{receipt}");
+    let reader = holding(&f, "plan:read");
+    let (s, read, _) = f
+        .call_as(&reader, "GET", &path, json!({}), None, None)
+        .await;
+    assert_eq!(s, 200, "{read}");
+    assert_eq!(
+        read["approval"],
+        progress(0),
+        "a plan reader sees the counts"
+    );
+    let (first, second) = (f.user(), f.user());
+    let (s, b) = vote(&f, &first, &unit, "approve", json!({"generation":1}), "a1").await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["have"], 1);
+    assert_eq!(
+        get(&f, &path).await["approval"],
+        progress(1),
+        "as the receipt's have"
+    );
+    let (s, b) = vote(&f, &first, &unit, "approve", json!({"generation":1}), "a2").await;
+    assert_eq!(s, 409, "{b}");
+    assert!(b.to_string().contains("DUPLICATE_VOTE"), "{b}");
+    assert_eq!(
+        get(&f, &path).await["approval"],
+        progress(1),
+        "a duplicate adds nothing"
+    );
+    // A refresh makes the first vote stale: it no longer counts, and its reviewer votes again.
+    refreshed(&f, id_of(&unit), 2).await;
+    assert_eq!(
+        get(&f, &path).await["approval"],
+        progress(0),
+        "a stale vote"
+    );
+    let (s, b) = vote(&f, &first, &unit, "approve", json!({"generation":2}), "a3").await;
+    assert_eq!((s, b["have"].clone()), (200, json!(1)), "{b}");
+    assert_eq!(
+        get(&f, &path).await["approval"],
+        progress(1),
+        "the new generation's vote"
+    );
+    let (s, b) = vote(&f, &second, &unit, "approve", json!({"generation":2}), "a4").await;
+    assert_eq!((s, b["outcome"].clone()), (200, json!("applied")), "{b}");
+    assert_eq!(get(&f, &path).await["approval"], json!(null), "published");
+    // Quorum 1: a pending unit that one vote applies.
+    let q1 = fresh(&f, &catalog, "q1").await;
+    policy(&f, 1).await;
+    let receipt = submit(&f, q1.rev1, "submit-q1").await;
+    assert_eq!(
+        receipt["revision"]["approval"],
+        json!({"unit_id":receipt["unit"]["id"],"approvals":0,"quorum_required":1})
+    );
+    // Quorum 0: applied at the submit, nothing pends.
+    let q0 = fresh(&f, &catalog, "q0").await;
+    policy(&f, 0).await;
+    let receipt = submit(&f, q0.rev1, "submit-q0").await;
+    assert_eq!(receipt["revision"]["state"], "published");
+    assert_eq!(receipt["revision"]["approval"], json!(null), "{receipt}");
 }
 
 // ------------------------------------------------------------------ M7 the write answers
 
-/// D-460 (plan review M7): the plan create and clone and the rename answer the current revision
-/// and the one in effect, from the rows the write holds.
+/// D-460, D-461, D-462 (plan review M7): the new fields are filled on every answer of the two
+/// DTOs, from the rows the write holds: the plan create and clone and the rename answer the
+/// current revision and the one in effect; the submit receipt's revision says when it was
+/// submitted and, applied at once, when it was approved; the copy, the revision PATCH and the
+/// unschedule answer a draft, with neither instant and no progress.
 #[tokio::test]
 async fn every_write_answer_carries_the_new_fields() {
     let (f, catalog) = setup().await;
@@ -436,8 +725,19 @@ async fn every_write_answer_carries_the_new_fields() {
         "the create answers its empty draft: {created}"
     );
     assert_eq!(created["in_effect"], json!(null));
+    let header = &created["revisions"][0];
+    assert_eq!(header["created_by"], f.ctx.subject_id().to_string());
+    assert!(header["created_at"].is_string(), "{header}");
+    assert_eq!(instants(header), (json!(null), json!(null)));
     policy(&f, 0).await;
-    submit(&f, p.rev1, "submit").await;
+    let receipt = submit(&f, p.rev1, "submit").await;
+    let unit = unit_of(&f, &receipt["unit"]["id"]).await;
+    assert_eq!(
+        instants(&receipt["revision"]),
+        (unit["submitted_at"].clone(), unit["decided_at"].clone()),
+        "applied at once: {receipt}"
+    );
+    assert_eq!(receipt["revision"]["approval"], json!(null));
     let (s, renamed, _) = {
         let path = format!("/plans/{}", p.plan);
         let (_, _, tag) = f.call("GET", &path, json!({}), None, None).await;
@@ -448,6 +748,10 @@ async fn every_write_answer_carries_the_new_fields() {
     assert_eq!(renamed["current"]["revision_id"], rev1);
     assert_eq!(renamed["current"]["state"], "published");
     assert_eq!(renamed["in_effect"], json!({"revision_id":rev1,"rev_no":1}));
+    assert_eq!(
+        instants(&renamed["revisions"][0]),
+        (unit["submitted_at"].clone(), unit["decided_at"].clone())
+    );
     let (s, cloned, _) = f
         .call(
             "POST",
@@ -465,4 +769,31 @@ async fn every_write_answer_carries_the_new_fields() {
     );
     assert_eq!(cloned["current"]["sku_ids"], json!([p.sku]));
     assert_eq!(cloned["in_effect"], json!(null));
+    let copied = copy(&f, p.plan, "copy").await;
+    assert_eq!(instants(&copied), (json!(null), json!(null)), "{copied}");
+    assert_eq!(copied["approval"], json!(null));
+    let rev2 = id_of(&copied["id"]);
+    let path = format!("/plan-revisions/{rev2}");
+    let (_, _, tag) = f.call("GET", &path, json!({}), None, None).await;
+    let (s, patched, _) = f
+        .call(
+            "PATCH",
+            &path,
+            json!({"available_from": days(5).to_string()}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{patched}");
+    assert_eq!(instants(&patched), (json!(null), json!(null)));
+    assert_eq!(patched["approval"], json!(null));
+    policy(&f, 1).await;
+    let receipt = submit(&f, rev2, "submit-2").await;
+    let unit2 = unit_of(&f, &receipt["unit"]["id"]).await;
+    assert_eq!(
+        instants(&receipt["revision"]),
+        (unit2["submitted_at"].clone(), json!(null)),
+        "pending: {receipt}"
+    );
+    assert_eq!(receipt["revision"]["approval"]["approvals"], 0);
 }

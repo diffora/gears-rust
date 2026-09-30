@@ -70,7 +70,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
 | D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460 |
+| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461 |
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
@@ -89,7 +89,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-450 | M | The switch job persists a due switch on its date and announces it once | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review H1, M4, L2, L7 |
 | D-451 | M | The copy, clone and unschedule doors catch a due switch up; one scheduled revision at a time | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M1 |
 | D-452 | M | A scheduled revision can be withdrawn to a draft | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M5 |
-| D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5; amended by D-460 |
+| D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5; amended by D-460, D-461 |
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
@@ -97,6 +97,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
 | D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453 |
+| D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453 |
+| D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
 
 ## Entries
 
@@ -523,7 +525,9 @@ D-453 amends this entry: the plan list, by SKU or not, and the item read render 
 
 D-460 amends this entry: each plan of GET /plans, by SKU or not, names its current revision with its item SKUs, read in one grouped statement over the listed plans' current revisions, so the list makes three statements whatever the number of plans. A current revision's sku_ids name every item, while the SKU filter keeps a plan only for an item with an entry, on the stored state: the two may differ.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460.
+D-461 amends this entry: each revision header says when it was submitted and approved, from the units the listed revisions name, read in one grouped statement more, so GET /plans makes four statements whatever the number of plans (one when there is none): the plans, their revisions, the current revisions' items and the units.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460, D-461.
 
 #### D-435 [M] An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216)
 
@@ -782,7 +786,9 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 
 D-460 amends this entry: the plan list derives each plan's current revision and the one in effect in memory as well, and reads the current revisions' items in one statement more, so it makes three statements; the QueryRecorder pins them with due revisions among the plans.
 
-**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 3, 10; plan review M2, L5); phase 8 review (behaviour B2, B3, B4; docs M1, L2). Amended by D-460.
+D-461 amends this entry: the plan list also reads the units its revisions name, one statement more: four. A write answers what it wrote with the unit it holds: the submit receipt's revision carries its unit's instants.
+
+**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 3, 10; plan review M2, L5); phase 8 review (behaviour B2, B3, B4; docs M1, L2). Amended by D-460, D-461.
 
 #### D-454 [M] Resolve serves a scheduled revision from its sale date
 
@@ -881,3 +887,33 @@ The plans screen shows, per plan, the revision being changed or waiting and the 
 - **The tests.** tests/plan_overview.rs: the current revision and the one in effect for a draft only, a pending only, a published only, a draft, a pending and a waiting scheduled revision beside the published one, a due scheduled revision whose switch is not persisted (both name it, and its stored state stays scheduled), and a plan without revisions; the plan read agrees with its list row; sku_ids against the SKU filter; the create, clone and rename answers; the statements for 10 and 100 plans. domain::plan's tests pin the choice over the effective states. Probes that chose the published revision before the scheduled one, and that read the items per plan, were caught.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453.
+
+#### D-461 [M] A revision says who made it and when it was submitted and approved
+
+**Status:** DECIDED 2026-09-30.
+
+The plans screen shows who made each revision and when it was submitted and approved (ask 33). A header carried its state and published_at only, and a scheduled revision has a null published_at until its date.
+
+- **The fields.** PricingPlanRevisionHeader gains created_by and created_at, the row's; the revision read already carries them. Both the header and PricingPlanRevisionDto gain submitted_at and approved_at:
+  - submitted_at is the submission instant of the unit the revision names: its pending unit (pending_unit_id), or the unit that approved it (approved_by_unit_id).
+  - approved_at is the approving unit's decided_at. A scheduled revision needs it, because its published_at is null until its date.
+  - A draft names no unit, so both are null: also a draft back from a reject or a withdraw (its lock is cleared) or from an unschedule (approved_by_unit_id is cleared, D-452). A superseded revision keeps its own unit's instants. A unit that does not read leaves both null.
+- **The reads.** The plan read and list read the units that their revisions name in ONE grouped statement (approval_repo::unit_instants: id, submitted_at and decided_at only), so GET /plans makes four statements whatever the number of plans (D-434, D-453, D-460). The revision read reads the one unit its revision names. The instants are read under plan read: two instants, no actor and no content (the owner's O-9a covers them with D-462).
+- **The write answers.** A write answers what it wrote (D-453). The submit receipt's revision carries its new unit's submitted_at, and approved_at when quorum 0 applied it at once; the copy, the revision PATCH and the unschedule answer a draft, with neither.
+- **The tests.** tests/plan_overview.rs: the header of a pending, a scheduled, a published and a superseded revision against its unit's own read, and of a draft back from a reject, a withdraw and an unschedule; the revision read agrees; created_by and created_at are the row's; the write answers; the list's four statements for 10 and 100 plans. Probes that took submitted_at from the approving unit only, and that dropped the instants from the receipt, were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9). Amends D-434 and D-453.
+
+#### D-462 [M] A pending revision shows its vote progress under plan read
+
+**Status:** DECIDED 2026-09-30.
+
+The plan's screen shows how far a pending revision is from its quorum (ask 40).
+
+- **The grant (O-9a).** The owner ruled on 2026-09-30 that a plan reader may see the vote progress of a pending revision, counts only, without the approval-unit read grant. *Counter-argument:* it tells a reader that a change is in review and how close it is, which before needed the unit grant.
+- **The field.** PricingPlanRevisionDto gains approval, PricingPlanApprovalProgress { unit_id, approvals, quorum_required }, while the revision reads pending, and null in every other state: on GET /plan-revisions/{id} and on every answer of the DTO. A submit receipt of a pending unit carries approvals 0; one applied at once carries null.
+- **The count.** approvals is D-459's count through bss_approval::approve_eligibility over the unit, its stored items and its decisions: the approve votes of the current generation that are not stale, the votes the vote door counts. A duplicate vote adds nothing, and a stale refresh turns earlier votes stale, so they stop counting. quorum_required is the unit's own. No actor id, note or snapshot is shown; the unit's reads keep their grant.
+- **The reads.** The revision read reads its unit, and for a pending one its items and its decisions: at most three statements more, only for a revision that names a unit.
+- **The tests.** tests/plan_overview.rs: quorum 2 through its votes (approvals moves as the receipt's have does, a duplicate vote adds nothing, a refresh makes the first vote stale and it stops counting, the apply clears the field), quorum 1 and quorum 0 at the submit, a draft; a caller holding plan read only reads it. Probes that counted stale votes, that dropped the progress from the read and from the receipt, were caught.
+
+**Source:** Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5).

@@ -53,7 +53,7 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 Publish independent revision structure against book coverage, preserving existing pins; author items, clone and retirement prerequisites.
 Phase 6 adds the reads the SKUs screen needs (D-434): GET /plans?sku_id= lists the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (the scheduled state since D-453), in the shape of GET /plans, which now reads its revisions in one statement for every plan; GET /plan-items/{id} reads one item with its plan and its revision's number and state.
 Phase 8 adds scheduled revisions (D-446 to D-454): an approval before the sale date schedules the revision, the pricing ticker's switch duty and the copy, clone and unschedule doors persist its switch on the date and announce it once, POST /plan-revisions/{id}/unschedule withdraws it to a draft, and every read derives the state a revision reads today.
-Phase 9 adds what the plans screen reads per plan: its current revision, with its item count, item SKUs and author, and the published revision in effect (D-460).
+Phase 9 adds what the plans screen reads per plan: its current revision, with its item count, item SKUs and author, and the published revision in effect (D-460); each revision's author and when it was submitted and approved (D-461); and a pending revision's vote progress (D-462).
 
 Requirements: `cpt-cf-bss-pricing-fr-plans`, `cpt-cf-bss-pricing-fr-reference-protocol`.
 

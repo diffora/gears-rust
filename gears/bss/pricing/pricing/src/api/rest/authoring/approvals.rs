@@ -441,7 +441,9 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
 }
 
 /// `POST /plan-revisions/{id}/submit`: one unlocked draft revision whose checks are all green
-/// becomes a `plan_revision` unit; quorum zero publishes it in the same transaction.
+/// becomes a `plan_revision` unit; quorum zero publishes it in the same transaction. The receipt's
+/// revision says when it was submitted and, applied at once, approved (D-461), and a pending one
+/// its vote progress (D-462).
 /// # Errors
 /// 404 for a revision the tenant does not hold; 409 `REVISION_NOT_DRAFT`; 400
 /// `REVISION_CHECKS_RED` with the red checks and no unit; 409 `ROW_LOCKED_PENDING` for a lost
@@ -482,10 +484,16 @@ pub async fn submit_revision(db: &Db, cmd: Command, id: Uuid) -> Result<Response
             let children = AccessScope::for_tenant(cmd.tenant());
             let r = plans::find_revision(tx, &children, cmd.tenant(), id).await?;
             let items = plan_item_repo::for_revision(tx, &children, cmd.tenant(), id).await?;
+            // A write answers what it wrote (D-453): the unit in hand names its instants (D-461)
+            // and, still pending, its progress (D-462).
+            let approval =
+                plans::progress(tx, cmd.tenant(), &submitted.unit, cmd.ctx.subject_id()).await?;
+            let revision = PricingPlanRevisionDto::of(&r, items)?
+                .with_units(&plans::instants_of(&submitted.unit), approval);
             let receipt = PricingPlanRevisionSubmitReceipt {
                 applied: submitted.applied,
                 unit: unit_dto(tx, &cmd.store(), submitted.unit).await?,
-                revision: PricingPlanRevisionDto::of(&r, items)?,
+                revision,
             };
             support::answer(
                 tx,
