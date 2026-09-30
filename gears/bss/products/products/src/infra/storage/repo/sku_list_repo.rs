@@ -175,6 +175,17 @@ pub struct SetFilter {
 
 /// `id` in `ids`, with ONE bind whatever the set's size: a JSON array read by `json_each` on
 /// `SQLite` (a UUID is stored as 16 bytes there, hence `unhex`), a `uuid[]` on Postgres.
+//
+// Raw SQL, on purpose (whole-branch review RS-26): sea-query's `is_in` binds one parameter per id,
+// so a set of pricing's usage (thousands of SKUs) would meet the dialects' bind limits and make
+// the statement's text vary with its size, and sea-query spells neither a `uuid[]` cast nor a
+// `json_each` subselect. The ids stay bound, and the select around this condition stays
+// `.secure().scope_with(scope)`, so the tenant scope is untouched.
+// Upstream gears use the same pattern in repository code: account-management
+// `infra/lease/manager.rs` (`Expr::cust("NOW()")`, `INTERVAL`) and
+// `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
+// `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
+// would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
 fn membership(backend: DbBackend, ids: &[Uuid]) -> Condition {
     let expr = if backend == DbBackend::Postgres {
         let array = format!(
@@ -210,6 +221,15 @@ pub const PG_FOLD_COLLATION: &str = "und-x-icu";
 
 /// `lower(expr)`, folded through [`PG_FOLD_COLLATION`] on Postgres and through the database's own
 /// `lower()` (ASCII only) on `SQLite`.
+//
+// Raw SQL, on purpose (whole-branch review RS-26): sea-query has no `COLLATE` on an expression,
+// and the fold must name the ICU collation, or a `C`-locale database folds ASCII only (P-D-210).
+// The folded text stays a bound value.
+// Upstream gears use the same pattern in repository code: account-management
+// `infra/lease/manager.rs` (`Expr::cust("NOW()")`, `INTERVAL`) and
+// `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
+// `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
+// would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
 fn folded(backend: DbBackend, expr: Expr) -> Expr {
     if backend == DbBackend::Postgres {
         Expr::cust_with_expr(format!(r#"lower($1 COLLATE "{PG_FOLD_COLLATION}")"#), expr)

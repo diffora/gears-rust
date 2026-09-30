@@ -21,6 +21,17 @@ pub mod settings_repo;
 /// sorts after `…00.5Z`, and `…00.41868Z` after `…00.418681Z`, P-D-213), the maximum of a
 /// fixed-width key that pads the fraction to nine digits, so the text sorts as time. Pricing
 /// writes every instant in UTC (`Z`); `NULL` stays out of the maximum.
+//
+// Raw SQL, on purpose (whole-branch review PS-02): the maximum must compare as time on both
+// dialects, and neither half has a portable spelling in sea-query: Postgres renders the
+// `timestamptz` maximum with `to_char … AT TIME ZONE 'UTC'`, and `SQLite`, which stores RFC 3339
+// text with a fraction of any width, pads that fraction with `substr`/`rtrim` so the text sorts
+// as time. The instant is the only operand, and it stays an expression of the scoped select.
+// Upstream gears use the same pattern in repository code: account-management
+// `infra/lease/manager.rs` (`Expr::cust("NOW()")`, `INTERVAL`) and
+// `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
+// `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
+// would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
 #[must_use]
 pub fn latest(
     backend: sea_orm::DbBackend,
