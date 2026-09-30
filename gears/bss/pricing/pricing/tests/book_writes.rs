@@ -1028,7 +1028,10 @@ struct Named {
 fn ascii(n: usize) -> String {
     "x".repeat(n)
 }
-/// Every door's requests with one text over its cap.
+/// Every door's requests with one text over its cap. A text that must name a stored row (a price's
+/// `dim_value`, an entry's `dimension_key`, the registry PATCH's `key` and `remove`) is not capped
+/// (the second review of W1a, L1): its refusal is the registry's own, and
+/// `dimension_values::a_stored_text_over_its_cap_never_locks_the_dimension_registry` covers it.
 async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
     let tag_of = |path: String| async move { f.call("GET", &path, json!({}), None, None).await.2 };
     let settings = |field: &str, value: Value| {
@@ -1123,12 +1126,6 @@ async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
         )
         .note(),
         Capped::new(
-            "POST",
-            format!("/price-book-entries/{entry}/prices"),
-            price(("dim_value", json!(ascii(65)))),
-            "dim_value",
-        ),
-        Capped::new(
             "PATCH",
             format!("/prices/{draft}"),
             json!({"note":ascii(2001)}),
@@ -1137,36 +1134,16 @@ async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
         .at(price_tag)
         .note(),
         Capped::new(
-            "PATCH",
-            format!("/prices/{draft}"),
-            json!({"dim_value":ascii(65)}),
-            "dim_value",
-        )
-        .at(price_tag),
-        Capped::new(
             "POST",
             format!("/price-books/{book}/entries"),
             entry_body(("invoice_line_override", json!(ascii(2001)))),
             "invoice_line_override",
         ),
         Capped::new(
-            "POST",
-            format!("/price-books/{book}/entries"),
-            entry_body(("dimension_key", json!(ascii(65)))),
-            "dimension_key",
-        ),
-        Capped::new(
             "PATCH",
             format!("/price-book-entries/{entry}"),
             json!({"invoice_line_override":ascii(2001)}),
             "invoice_line_override",
-        )
-        .at(&entry_tag),
-        Capped::new(
-            "PATCH",
-            format!("/price-book-entries/{entry}"),
-            json!({"dimension_key":ascii(65)}),
-            "dimension_key",
         )
         .at(&entry_tag),
         Capped::new(
@@ -1207,22 +1184,8 @@ async fn over_the_caps(f: &Fixture, named: &Named) -> Vec<Capped> {
         Capped::new(
             "PATCH",
             "/dimension-keys",
-            json!({"key":ascii(65),"add":["eu","us"]}),
-            "key",
-        )
-        .at(&dimensions_tag),
-        Capped::new(
-            "PATCH",
-            "/dimension-keys",
             json!({"key":"region","add":[ascii(65),"eu"]}),
             "add",
-        )
-        .at(&dimensions_tag),
-        Capped::new(
-            "PATCH",
-            "/dimension-keys",
-            json!({"key":"region","remove":[ascii(65)]}),
-            "remove",
         )
         .at(&dimensions_tag),
     ]

@@ -1708,8 +1708,8 @@ async fn put_dimensions(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
+    // The caps are judged against the stored registry, in the transaction (D-457: only new text).
     let body: PricingDimensions = preconditions::parse_body(&body)?;
-    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {

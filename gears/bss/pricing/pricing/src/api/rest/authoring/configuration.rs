@@ -292,6 +292,13 @@ pub async fn put_dimensions(
         if !keys.insert(item.key.clone()) {
             return Err(invalid("items", "DIM_KEY_DUPLICATE").into());
         }
+        // D-457: only the key or values the stored registry does not hold are capped, so a row
+        // stored before the caps never locks the registry.
+        let held = old
+            .iter()
+            .find(|(key, _, _)| *key == item.key)
+            .map(|(_, values, _)| values.as_slice());
+        super::caps::new_dimension_text(&item.key, &item.values, held)?;
         if let Some(e) = dimension::validate(&item.key, &item.values).first() {
             return Err(invalid("items", e.code).into());
         }

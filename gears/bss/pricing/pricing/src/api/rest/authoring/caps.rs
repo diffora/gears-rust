@@ -1,9 +1,14 @@
 //! The length caps of D-457 on the request bodies, judged by each door right after it parses its
-//! body, before it reads or writes anything. A field the body does not carry is not judged.
+//! body, before it reads or writes anything. A field the body does not carry is not judged, and
+//! only new text is: a text that must name a stored row (a dimension key or value an entry, a
+//! price or a PATCH of the registry names, a value it removes) is never capped, so a row stored
+//! before the caps never locks its registry (the second review of W1a, L1). The PUT of the
+//! registry caps only the keys and values the stored registry does not hold, against the stored
+//! rows ([`new_dimension_text`]).
 use super::dto::{
-    PriceBookCreate, PriceBookPatch, PricingDimensionKeyPatch, PricingDimensions, PricingPlanClone,
-    PricingPlanCreate, PricingPlanPatch, PricingPriceBookEntryCreate, PricingPriceBookEntryPatch,
-    PricingPriceCreate, PricingPricePatch, PricingSettingsPut,
+    PriceBookCreate, PriceBookPatch, PricingDimensionKeyPatch, PricingPlanClone, PricingPlanCreate,
+    PricingPlanPatch, PricingPriceBookEntryCreate, PricingPriceBookEntryPatch, PricingPriceCreate,
+    PricingPricePatch, PricingSettingsPut,
 };
 use super::support::invalid_because;
 use crate::domain::caps::{
@@ -12,7 +17,7 @@ use crate::domain::caps::{
 use toolkit_canonical_errors::CanonicalError;
 
 /// 400 `FIELD_TOO_LONG` on `field` for a text longer than `max` characters.
-fn field(name: &str, text: &str, max: usize) -> Result<(), CanonicalError> {
+pub(super) fn field(name: &str, text: &str, max: usize) -> Result<(), CanonicalError> {
     if over(text, max) {
         Err(invalid_because(
             name,
@@ -77,27 +82,22 @@ impl Capped for PricingPlanPatch {
         field("name", &self.name, NAME_MAX_CHARS)
     }
 }
+// A price's `dim_value` names a value of its entry's key (400 `DIM_VALUE_UNKNOWN` otherwise), so
+// it is not new text and has no cap of its own.
 impl Capped for PricingPriceCreate {
     fn caps(&self) -> Result<(), CanonicalError> {
-        if let Some(value) = &self.dim_value {
-            field("dim_value", value, CODE_MAX_CHARS)?;
-        }
         note(self.note.as_deref())
     }
 }
 impl Capped for PricingPricePatch {
     fn caps(&self) -> Result<(), CanonicalError> {
-        if let Some(Some(value)) = &self.dim_value {
-            field("dim_value", value, CODE_MAX_CHARS)?;
-        }
         note(self.note.as_ref().and_then(Option::as_deref))
     }
 }
+// An entry's `dimension_key` names a declared key (400 `DIM_NOT_DECLARED` otherwise), so it is not
+// new text and has no cap of its own.
 impl Capped for PricingPriceBookEntryCreate {
     fn caps(&self) -> Result<(), CanonicalError> {
-        if let Some(key) = &self.dimension_key {
-            field("dimension_key", key, CODE_MAX_CHARS)?;
-        }
         self.invoice_line_override
             .as_deref()
             .map_or(Ok(()), |line| {
@@ -107,9 +107,6 @@ impl Capped for PricingPriceBookEntryCreate {
 }
 impl Capped for PricingPriceBookEntryPatch {
     fn caps(&self) -> Result<(), CanonicalError> {
-        if let Some(Some(key)) = &self.dimension_key {
-            field("dimension_key", key, CODE_MAX_CHARS)?;
-        }
         match &self.invoice_line_override {
             Some(Some(line)) => field("invoice_line_override", line, TEMPLATE_MAX_CHARS),
             _ => Ok(()),
@@ -129,18 +126,28 @@ impl Capped for PricingSettingsPut {
             .try_for_each(|line| field("invoice_line_templates", line, TEMPLATE_MAX_CHARS))
     }
 }
-impl Capped for PricingDimensions {
-    fn caps(&self) -> Result<(), CanonicalError> {
-        self.items.iter().try_for_each(|item| {
-            field("key", &item.key, CODE_MAX_CHARS)?;
-            each("values", &item.values, CODE_MAX_CHARS)
-        })
-    }
+/// The PUT of the registry (`PricingDimensions`, judged in `configuration::put_dimensions` against
+/// the stored registry): 400 `FIELD_TOO_LONG` on `key` for a key the registry does not hold, and on
+/// `values` for a value its key does not hold, longer than a code's cap. A key or value already
+/// stored passes whatever its length.
+pub(super) fn new_dimension_text(
+    key: &str,
+    values: &[String],
+    stored: Option<&[String]>,
+) -> Result<(), CanonicalError> {
+    let Some(held) = stored else {
+        field("key", key, CODE_MAX_CHARS)?;
+        return each("values", values, CODE_MAX_CHARS);
+    };
+    values
+        .iter()
+        .filter(|value| !held.contains(value))
+        .try_for_each(|value| field("values", value, CODE_MAX_CHARS))
 }
+// The PATCH names a stored key (400 `DIM_NOT_DECLARED` otherwise) and removes stored values (400
+// `DIM_VALUE_UNKNOWN` otherwise): only the values it adds are new text.
 impl Capped for PricingDimensionKeyPatch {
     fn caps(&self) -> Result<(), CanonicalError> {
-        field("key", &self.key, CODE_MAX_CHARS)?;
-        each("add", &self.add, CODE_MAX_CHARS)?;
-        each("remove", &self.remove, CODE_MAX_CHARS)
+        each("add", &self.add, CODE_MAX_CHARS)
     }
 }

@@ -427,3 +427,65 @@ async fn the_reads_and_writes_count_the_values_in_the_same_statements_for_10_and
         );
     }
 }
+
+/// Second review of W1a, L1 (D-457): only writes of new text are judged. A key and values stored
+/// before the caps, longer than 64 characters, that an entry and a price use, never lock the
+/// registry: the PUT that keeps them passes, a PATCH names the key and removes an unused long
+/// value, and only a key or value the stored registry does not hold is capped.
+#[tokio::test]
+async fn a_stored_text_over_its_cap_never_locks_the_dimension_registry() {
+    use bss_pricing::infra::storage::{entity::dimension_key, repo::dimension_repo};
+    let (f, catalog) = setup().await;
+    let long = |c: char| c.to_string().repeat(65);
+    let (key_k, used_v, unused_u) = (long('k'), long('v'), long('u'));
+    dimension_repo::insert(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        dimension_key::Model {
+            tenant_id: f.ctx.subject_tenant_id(),
+            key: key_k.clone(),
+            values: json!([used_v, unused_u, "eu"]),
+            version: 1,
+        },
+    )
+    .await
+    .unwrap();
+    let b = book(&f, "eur").await;
+    let entry = keyed_entry(&f, &catalog, b, &key_k).await;
+    valued_price(&f, entry, 1, &used_v, "approved").await;
+    // A PUT carries the stored key and its used value (leaving either out is 409), and adds a
+    // short value: it passes.
+    let (_, tag) = registry(&f).await;
+    let (s, body, tag) = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":key_k,"values":[used_v, unused_u, "eu", "us"]}]}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{body}");
+    // A value the registry does not hold is still capped.
+    let (s, body, _) = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":key_k,"values":[used_v, "eu", long('w')]}]}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{body}");
+    assert!(body.to_string().contains("FIELD_TOO_LONG"), "{body}");
+    // A PATCH names the stored key and removes the unused long value.
+    let (s, body, tag) = patch(&f, json!({"key":key_k,"remove":[unused_u]}), Some(&tag)).await;
+    assert_eq!(s, 200, "{body}");
+    // It adds a short value, but never a long new one.
+    let (s, body, tag) = patch(&f, json!({"key":key_k,"add":["apac"]}), Some(&tag)).await;
+    assert_eq!(s, 200, "{body}");
+    let (s, body, _) = patch(&f, json!({"key":key_k,"add":[long('x')]}), Some(&tag)).await;
+    assert_eq!(s, 400, "{body}");
+    assert!(body.to_string().contains("FIELD_TOO_LONG"), "{body}");
+    assert!(body.to_string().contains("\"add\""), "{body}");
+}
