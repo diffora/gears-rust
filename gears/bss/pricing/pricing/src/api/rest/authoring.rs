@@ -118,10 +118,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Creates a price book of the tenant with a code, a name, one currency, an optional \
              validity window and an optional description of at most 2000 characters (D-444); the \
              Idempotency-Key replays the first answer. The currency must be one the tenant \
-             settings offer, when they offer any (D-438). Refusals: 400 BOOK_CODE_REQUIRED, \
-             BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID or \
-             BOOK_DESCRIPTION_TOO_LONG; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
-             IDEMPOTENCY_CONFLICT.",
+             settings offer, when they offer any (D-438). The code is at most 64 characters and \
+             the name 200 (D-457). Refusals: 400 BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, \
+             BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID, BOOK_DESCRIPTION_TOO_LONG, or \
+             FIELD_TOO_LONG on a code or a name over its cap; 409 CURRENCY_NOT_OFFERED, \
+             BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
         )
         .tag("Pricing")
         .authenticated()
@@ -155,9 +156,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Rename, re-date or describe a price book")
         .description(
             "Changes a book's name, validity window or description at the version the caller read \
-             (If-Match); an omitted description is kept and null clears it (D-444). Refusals: 400 \
-             BOOK_NAME_REQUIRED, BOOK_VALIDITY_INVALID or BOOK_DESCRIPTION_TOO_LONG; 404 for an \
-             unknown book; 409 STALE_REVISION.",
+             (If-Match); an omitted description is kept and null clears it (D-444). The name is \
+             at most 200 characters (D-457). Refusals: 400 BOOK_NAME_REQUIRED, \
+             BOOK_VALIDITY_INVALID, BOOK_DESCRIPTION_TOO_LONG, or FIELD_TOO_LONG on a name over \
+             its cap; 404 for an unknown book; 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -253,10 +255,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Replaces the tenant settings at the version the caller read (If-Match), currencies \
              included (required; [] offers any currency, D-438), and records the caller and the \
-             time. Rounding is half_up, half_even, half_down, up or down (D-437). Refusals: 400 \
-             TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, \
-             CURRENCY_INVALID or an invalid line template (LINE_TEMPLATE_EMPTY, \
-             LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
+             time. Rounding is half_up, half_even, half_down, up or down (D-437). The GL code and \
+             the tax category are at most 64 characters and each line template 2000 (D-457). \
+             Refusals: 400 TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, \
+             CURRENCY_INVALID, an invalid line template (LINE_TEMPLATE_EMPTY, \
+             LINE_TEMPLATE_INVALID), or FIELD_TOO_LONG on default_gl, default_tax_category or \
+             invoice_line_templates over its cap; 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -288,9 +292,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Write the dimension registry")
         .description(
             "Replaces the tenant's dimension keys and values at the content the caller read \
-             (If-Match). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID or \
-             DIM_KEY_DUPLICATE; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry \
-             names or a value a price uses (naming it); 409 STALE_REVISION.",
+             (If-Match). A key or a value the stored registry does not hold is at most 64 \
+             characters; one it holds passes whatever its length (D-457). Refusals: 400 \
+             DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID, DIM_KEY_DUPLICATE, or \
+             FIELD_TOO_LONG on a new key or value over its cap; 409 DIMENSION_KEY_IN_USE or \
+             DIM_VALUE_IN_USE for a key an entry names or a value a price uses (naming it); 409 \
+             STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -307,9 +314,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Adds and removes values of one declared key (stored, or the seed key while nothing \
              is stored) at the content the caller read (If-Match); keys themselves are added and \
-             removed by the PUT (D-436). Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, \
-             DIM_VALUE_UNKNOWN, DIM_VALUE_INVALID or DIM_VALUES_FEW; 409 DIM_VALUE_IN_USE naming \
-             the value a price uses, or STALE_REVISION.",
+             removed by the PUT (D-436). A value it adds is at most 64 characters (D-457). \
+             Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, DIM_VALUE_UNKNOWN, \
+             DIM_VALUE_INVALID, DIM_VALUES_FEW, or FIELD_TOO_LONG on an added value over its cap; \
+             409 DIM_VALUE_IN_USE naming the value a price uses, or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -325,13 +333,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Add a SKU to a price book")
         .description(
             "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), \
-             reserving the SKU reference in Products before the write and confirming it after; the \
-             Idempotency-Key replays the receipt. Refusals: 400 MODEL_INVALID, \
-             MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), \
-             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, \
-             period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, \
-             SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 \
-             REGISTRY_UNAVAILABLE.",
+             reserving the SKU reference in Products before the write and confirming it after; \
+             the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 \
+             characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH \
+             (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, \
+             DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN \
+             (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, \
+             SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or \
+             CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()
@@ -428,9 +437,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Change a price book entry")
         .description(
             "Changes an entry's invoice-line override or its dimension key at the version the \
-             caller read (If-Match). Refusals: 400 DIM_NOT_DECLARED or an invalid line template; \
-             404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, \
-             INVOICE_LINE_LOCKED for an override change once the entry has an approved or \
+             caller read (If-Match). The override is at most 2000 characters (D-457). Refusals: \
+             400 DIM_NOT_DECLARED, an invalid line template, or FIELD_TOO_LONG on an override \
+             over its cap; 404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the \
+             key, INVOICE_LINE_LOCKED for an override change once the entry has an approved or \
              pending price (D-426), or STALE_REVISION.",
         )
         .tag("Pricing")
@@ -671,9 +681,10 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Records an approving vote on the generation the reviewer saw; the vote that reaches \
              the quorum applies the unit (a plan revision whose sale date is after today is \
-             scheduled for that date, D-449). Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 \
-             SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, \
-             UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
+             scheduled for that date, D-449). The vote's note is at most 2000 characters. \
+             Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION \
+             for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or \
+             APPLY_REFUSED.",
         )
         .tag("Pricing")
         .authenticated()
@@ -689,11 +700,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.reject_unit")
         .summary("Reject an approval unit")
         .description(
-            "Rejects a pending unit on the generation the reviewer saw, with a note. A plan \
-             revision returns to draft. The prices of a prices unit stay rejected, with their \
-             review history, and are not edited again: a replacement is a new draft price \
-             (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, \
-             GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
+            "Rejects a pending unit on the generation the reviewer saw, with a note of at most \
+             2000 characters. A plan revision returns to draft. The prices of a prices unit stay \
+             rejected, with their review history, and are not edited again: a replacement is a \
+             new draft price (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, \
+             NOTE_TOO_LONG, GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or \
+             UNIT_ALREADY_DECIDED.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1248,10 +1260,11 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a draft price")
         .description(
             "Adds a draft price to an entry's chain, and a temporary price's return partner with \
-             it; the Idempotency-Key replays the answer. The money is in the entry's model and the \
-             price carries no model of its own (D-427). Refusals: 400 for a rule the price breaks \
-             (for example PRICE_MISSING for money of another model's shape, AMOUNT_INVALID, \
-             WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY); 409 \
+             it; the Idempotency-Key replays the answer. The money is in the entry's model and \
+             the price carries no model of its own (D-427). The note is at most 2000 characters \
+             (D-457). Refusals: 400 for a rule the price breaks (for example PRICE_MISSING for \
+             money of another model's shape, AMOUNT_INVALID, WINDOW_START_IN_PAST, \
+             DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY), or NOTE_TOO_LONG; 409 \
              ENTRY_REFERENCE_LOST.",
         )
         .tag("Pricing")
@@ -1282,7 +1295,8 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              own dates, a temporary price's chain (dim_value), an end on any other price and a \
              null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks \
              (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or \
-             TEMPORARY_SPANS_A_CHANGE); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
+             TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters \
+             (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
              its partner) or STALE_REVISION.",
         )
         .tag("Pricing")
