@@ -70,13 +70,13 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
 | D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461 |
+| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461, D-472 |
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-467 |
-| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456 |
+| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456; amended by D-472 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
@@ -108,6 +108,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
 | D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469 |
 | D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2) |
+| D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440 |
 
 ## Entries
 
@@ -548,7 +549,9 @@ D-460 amends this entry: each plan of GET /plans, by SKU or not, names its curre
 
 D-461 amends this entry: each revision header says when it was submitted and approved, from the units the listed revisions name, read in one grouped statement more, so GET /plans makes four statements whatever the number of plans (one when there is none): the plans, their revisions, the current revisions' items and the units.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460, D-461.
+D-472 amends this entry: each entry of the SKU's list also carries next_price, chosen and shown with current_price by one function from one read, which is widened to the default chain's pending and draft prices, so the list still makes seven statements.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460, D-461, D-472.
 
 #### D-435 [M] An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216)
 
@@ -621,7 +624,9 @@ Breaking for a consumer that compares usage as a closed object: it gains three f
 
 D-456 extends this entry: plan create, clone and a book-naming revision PATCH judge the same second price_book read on the book the plan names.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456.
+D-472 amends this entry: the entry reads also carry next_price. in_force became price_book_entries::headline, which chooses current_price and next_price from one read of the default chain's approved, pending and draft prices, so no read gains a statement; the golden leaves next_price out as it leaves current_price out.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456. Amended by D-472.
 
 #### D-441 [M] Every book read carries its stats
 
@@ -1106,3 +1111,32 @@ The approvals screen shows the Approve action only to a reviewer the vote door w
 - **The tests.** tests/approval_doors.rs: a prices unit at quorum 3, authored by one user and submitted by another, a vote in generation 1, a refresh to generation 2, a vote in generation 2; for an item's author, the submitter, the voter of this generation, a fresh reviewer and the voter of the earlier generation, the flag on the card and in the list (which agree) is exactly whether the vote door answers 200 (403 SOD_VIOLATION twice, 409 DUPLICATE_VOTE, then pending and applied); on the decided unit it is false for everyone and the door answers 409 UNIT_ALREADY_DECIDED; the submit and vote receipts answer false for their caller. The submitter's reject answers 200 while the submitter's flag, and the author's, is false. tests/served_contract.rs: the field is a required boolean whose text says Approve only and 403, and the list's and the card's texts name it.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2, binding; plan review M2). Uses D-459.
+
+#### D-472 [M] An entry names its next price
+
+**Status:** DECIDED 2026-10-01.
+
+The Price Books screen shows, beside each entry's price in force, the price that comes next (ask 26). It read that price one entry at a time, from each entry's prices list.
+
+- **The value.** The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, and the SKU's entry list, GET /price-book-entries?sku_id= (D-434), carry next_price beside current_price, a PricingPriceDto or null. It is the default chain's earliest scheduled price: an approved price that starts after the day the answer is judged on, today. Else it is the default chain's newest draft or pending price, else null.
+  - "Earliest" is the lowest effective_from. Two approved prices of one chain never share a start (the pricing_price_approved_start index); if they did, the highest version_no would win, as it wins in force.
+  - "Newest" is the highest version_no, then the latest created_at, then the highest id (plan review L7). version_no is unique per entry (UNIQUE (price_book_entry_id, version_no)), so the later keys only make the order total.
+  - A draft or pending price is named whatever its effective_from, even a start that has passed.
+  - A rejected price is never the next price, and neither is a dimension value's price: next_price is the default chain's, as current_price is (D-434).
+  - Its status is its display status on the same day: scheduled for an approved price, draft or pending otherwise.
+- **The money.** next_price follows D-434's rule, as current_price does. It is shown only when the caller's price_book read, judged a second time, admits the entry's book, and it is null otherwise. An unavailable policy fails the read with 503.
+- **One read (plan review L7).** The read that current_price is chosen from is widened, not doubled. price_repo::default_chain (approved_default_chain before) reads the default chain's approved, pending and draft prices of the entries in the same ONE statement, where it read the approved ones. So no entry read gains a statement; only the rows read grow, by the chains' drafts and pending prices.
+  - The book's entry list makes seven statements whatever the number of entries: the book, its entries, the book under the money's grant, the three usage reads (the price counts, the plan items that name the entries, and their revisions, a read skipped when no item names an entry) and the default chain.
+  - The SKU's entry list keeps D-434's seven statements.
+  - price_book_entries::headline (in_force before, D-440) chooses both prices. It decodes only the approved rows, which alone can be in force; next_of chooses the next price.
+- **The frozen contract.** The contract goldens leave next_price out, as they leave current_price out (D-440): a frozen document holds no value of today. tests/book_reads.rs pins it.
+- **The tests.** tests/book_reads.rs:
+  - Twelve chain shapes: a scheduled price after the current one, stored before an earlier scheduled one; only drafts, where the higher version wins though it was written earlier and starts earlier; only pending prices; drafts and pending prices beside a rejected one; nothing after the current price; no price; only a rejected price; a scheduled price with nothing in force; value chains beside the default; a value chain's scheduled price beside the default's draft; a temporary pair in force, whose return is next; and a temporary pair to come, whose temporary price is next. For each, the book's list, the single read and the SKU's entries agree, and each headline price is the very price the entry's prices list answers.
+  - The money: next_price is null, never absent, with entry read alone and with a price_book grant on another book, on each of the three reads.
+  - The book's entry list in seven statements for 10 and for 100 entries.
+
+  tests/served_contract.rs: the three texts name next_price, and its schema is current_price's. tests/entry_doors.rs: a new entry reads next_price null. tests/postgres_plans.rs: default_chain reads the default chain's approved and draft prices, and no value chain's or rejected price.
+
+Breaking for a consumer that compares an entry read as a closed object: it gains next_price.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 26); phase 9 plan rev 2 (decision 12; plan review M5, L7). Amends D-434 and D-440.

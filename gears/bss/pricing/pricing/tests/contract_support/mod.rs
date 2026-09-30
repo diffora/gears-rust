@@ -1939,13 +1939,15 @@ pub async fn document(w: &World, golden: &str) -> Value {
     json!({ "golden": golden, "proves": proves, "exchanges": exchanges })
 }
 
-/// Drop what an authoring read computes from today (D-440): the entry reads' `current_price` and
-/// their approved prices by date (`scheduled`, `active`, `superseded`). The calendar is fixed and
-/// a frozen document holds no value of today; `tests/book_reads.rs` pins those fields.
+/// Drop what an authoring read computes from today (D-440, D-472): the entry reads'
+/// `current_price` and `next_price` and their approved prices by date (`scheduled`, `active`,
+/// `superseded`). The calendar is fixed and a frozen document holds no value of today;
+/// `tests/book_reads.rs` pins those fields.
 fn undated(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             fields.remove("current_price");
+            fields.remove("next_price");
             if let Some(Value::Object(prices)) = fields
                 .get_mut("usage")
                 .and_then(|usage| usage.get_mut("prices"))

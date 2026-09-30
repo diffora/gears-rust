@@ -173,17 +173,20 @@ impl From<crate::infra::usage::EntryUsage> for PricingEntryUsage {
         }
     }
 }
-/// What the two entry reads answer (D-428): the entry's fields, its `usage` and its
-/// `current_price` (D-440): the default chain's approved price in force today, as D-434 chooses
-/// and shows it — `null` when none is, or when the caller does not hold `price_book` read on the
-/// entry's book. Every other answer that carries an entry (POST, PATCH, the stored receipt, the
-/// export, publish-changes) keeps [`PricingPriceBookEntryDto`].
+/// What the two entry reads answer (D-428): the entry's fields, its `usage`, its `current_price`
+/// (D-440): the default chain's approved price in force today, as D-434 chooses and shows it —
+/// and its `next_price` (D-472): the default chain's earliest scheduled price, else its newest
+/// draft or pending price (the highest `version_no`, then the latest `created_at`). Each is `null`
+/// when there is none, or when the caller does not hold `price_book` read on the entry's book.
+/// Every other answer that carries an entry (POST, PATCH, the stored receipt, the export,
+/// publish-changes) keeps [`PricingPriceBookEntryDto`].
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryReadDto {
     #[serde(flatten)]
     pub entry: PricingPriceBookEntryDto,
     pub usage: PricingEntryUsage,
     pub current_price: Option<PricingPriceDto>,
+    pub next_price: Option<PricingPriceDto>,
 }
 impl PricingPriceBookEntryReadDto {
     /// # Errors
@@ -192,11 +195,13 @@ impl PricingPriceBookEntryReadDto {
         m: entity::price_book_entry::Model,
         usage: crate::infra::usage::EntryUsage,
         current_price: Option<PricingPriceDto>,
+        next_price: Option<PricingPriceDto>,
     ) -> Result<Self, RepoError> {
         Ok(Self {
             entry: m.try_into()?,
             usage: usage.into(),
             current_price,
+            next_price,
         })
     }
 }
@@ -274,9 +279,10 @@ pub struct PricingPriceBookReadDto {
     pub stats: PricingPriceBookStats,
 }
 /// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its
-/// book's code, name and currency, its usage (D-428), and the default chain's price in force
-/// today — `null` when none is, or when the caller does not hold `price_book` read (the export's
-/// grant).
+/// book's code, name and currency, its usage (D-428), the default chain's price in force today
+/// and its `next_price` (D-472), chosen as the entry reads choose it (the highest `version_no`
+/// orders the drafts and pending prices) — each `null` when there is none, or when the caller
+/// does not hold `price_book` read (the export's grant).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSkuEntryDto {
     #[serde(flatten)]
@@ -286,6 +292,7 @@ pub struct PricingSkuEntryDto {
     pub currency: String,
     pub usage: PricingEntryUsage,
     pub current_price: Option<PricingPriceDto>,
+    pub next_price: Option<PricingPriceDto>,
 }
 /// `GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.
 #[toolkit_macros::api_dto(response)]

@@ -1501,9 +1501,10 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
         }
     };
     let default_approved = price_of(s.entry.id, "approved", None);
+    let default_draft = price_of(s.entry.id, "draft", None);
     let rows = [
         default_approved.clone(),
-        price_of(s.entry.id, "draft", None),
+        default_draft.clone(),
         price_of(keyed.id, "approved", Some("eu")),
         price_of(keyed.id, "rejected", Some("eu")),
         price_of(keyed.id, "pending", Some("us")),
@@ -1511,13 +1512,16 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     for p in rows {
         price_repo::insert(&conn, &s.scope, p).await.unwrap();
     }
-    let chain =
-        price_repo::approved_default_chain(&conn, &s.scope, s.tenant, &[s.entry.id, keyed.id])
-            .await
-            .unwrap();
+    let chain = price_repo::default_chain(&conn, &s.scope, s.tenant, &[s.entry.id, keyed.id])
+        .await
+        .unwrap();
+    // D-472: the default chain's approved, pending and draft prices, in id order; never a value
+    // chain's price nor a rejected one.
+    let mut default_chain = vec![default_approved.id, default_draft.id];
+    default_chain.sort();
     assert_eq!(
         chain.iter().map(|p| p.id).collect::<Vec<_>>(),
-        [default_approved.id]
+        default_chain
     );
     assert_eq!(
         price_book_entry_repo::named_keys(&conn, s.tenant)

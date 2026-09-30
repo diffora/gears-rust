@@ -10,7 +10,10 @@ use book_support::{
     stored_book, stored_entry, stored_price, today, unit_on,
 };
 use bss_approval::UnitState;
-use bss_pricing::infra::storage::entity::price;
+use bss_pricing::infra::storage::{
+    entity::price,
+    repo::{price_book_entry_repo, price_repo},
+};
 use bss_products_sdk::models::SkuType;
 use plan_support::{
     Catalog, Fixture, entry_support, holding, id_of, item, plan, publish, request, setup, stranger,
@@ -1985,4 +1988,342 @@ async fn impact_false_serves_no_impact_and_reads_no_plan() {
     let (s, bad, _) = get(&f, &format!("/approval-units?book_id={b}&impact=maybe")).await;
     assert_eq!(s, 400, "{bad}");
     assert!(code_of(&bad).contains("QUERY_INVALID"), "{bad}");
+}
+
+// ------------------------------------------------------------------ the next price (D-472)
+
+/// The display status of a price that waits for its day: an approved price is scheduled, a draft
+/// or a pending one shows its state.
+fn waiting(state: &str) -> &str {
+    if state == "approved" {
+        "scheduled"
+    } else {
+        state
+    }
+}
+/// A temporary approved price of `entry` from `from` until `until` and its return from `until` to
+/// `base`, linked as the pair builder links them (`domain::price::temporary`): the return names
+/// the temporary price as its pair and `base` as the price it returns to. The temporary half's
+/// own link to its return is left out (the pair's two links are circular foreign keys, and the
+/// reads never follow them). `(temporary, return)`.
+async fn stored_pair(
+    f: &Fixture,
+    entry: Uuid,
+    base: &price::Model,
+    version_no: i32,
+    window: (time::Date, time::Date),
+) -> (price::Model, price::Model) {
+    let (conn, scope) = (f.db.conn().unwrap(), plan_support::scope(f));
+    let e = price_book_entry_repo::find(&conn, &scope, f.ctx.subject_tenant_id(), entry)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut temporary = entry_support::price(&e);
+    temporary.id = Uuid::now_v7();
+    temporary.version_no = version_no;
+    temporary.state = "approved".into();
+    temporary.effective_from = window.0;
+    temporary.effective_to = Some(window.1);
+    temporary.temporary_until = Some(window.1);
+    let temporary = price_repo::insert(&conn, &scope, temporary).await.unwrap();
+    let mut back = entry_support::price(&e);
+    back.id = Uuid::now_v7();
+    back.version_no = version_no + 1;
+    back.state = "approved".into();
+    back.effective_from = window.1;
+    back.paired_price_id = Some(temporary.id);
+    back.return_of_price_id = Some(base.id);
+    let back = price_repo::insert(&conn, &scope, back).await.unwrap();
+    (temporary, back)
+}
+/// The item of `entry` in a list answer, or the answer itself when it is a single read.
+fn the_entry(body: Value, entry: Uuid) -> Value {
+    if body["items"].is_array() {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == entry.to_string())
+            .unwrap()
+            .clone()
+    } else {
+        body
+    }
+}
+
+/// A chain's shape: its name, its rows, the index of its current price and of its next price.
+type Shape = (&'static str, Vec<Row>, Option<usize>, Option<usize>);
+/// A shape as stored: its name, its entry, its SKU, its current price and its next price.
+type Expected = (
+    String,
+    Uuid,
+    Uuid,
+    Option<price::Model>,
+    Option<price::Model>,
+);
+
+/// D-472 (ask 26): each entry read names the default chain's next price: its earliest scheduled
+/// price, else its newest draft or pending price (the highest `version_no`, then the latest
+/// `created_at`), else null. A value chain never counts, nor a rejected price. The book's list,
+/// the single read and the SKU's entries agree, and each headline price is the very price the
+/// entry's prices list answers.
+// Probed in run 9.4: the scheduled price chosen by storage order; a draft beating a scheduled
+// price; the newest draft by created_at; a value chain's price as the next one.
+#[tokio::test]
+async fn an_entry_names_its_next_price_in_each_chain_shape() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let t = today();
+    let earlier = time::OffsetDateTime::now_utc() - days(1);
+    let shapes: Vec<Shape> = vec![
+        (
+            "a scheduled price after the current one",
+            vec![
+                Row::new(1, "approved", t - days(10)).to(t + days(10)),
+                // Stored before the earlier start: the earliest start wins, not the first row.
+                Row::new(3, "approved", t + days(20)),
+                Row::new(2, "approved", t + days(10)).to(t + days(20)),
+                // A draft or a pending price comes only after every scheduled one.
+                Row::new(9, "draft", t + days(30)),
+                Row::new(8, "pending", t + days(25)),
+            ],
+            Some(0),
+            Some(2),
+        ),
+        (
+            "only drafts",
+            vec![
+                Row::new(1, "draft", t + days(5)),
+                // The highest version_no wins, though written earlier and starting earlier.
+                Row::new(2, "draft", t + days(3)).updated(earlier),
+            ],
+            None,
+            Some(1),
+        ),
+        (
+            "only pending prices",
+            vec![
+                Row::new(3, "pending", t + days(2)),
+                Row::new(2, "pending", t + days(9)),
+            ],
+            None,
+            Some(0),
+        ),
+        (
+            "drafts and pending prices",
+            vec![
+                Row::new(4, "pending", t + days(8)),
+                Row::new(5, "draft", t + days(2)),
+                // A rejected price never counts, whatever its version.
+                Row::new(6, "rejected", t + days(1)),
+            ],
+            None,
+            Some(1),
+        ),
+        (
+            "nothing after the current one",
+            vec![Row::new(1, "approved", t - days(5))],
+            Some(0),
+            None,
+        ),
+        ("no price", vec![], None, None),
+        (
+            "only a rejected price",
+            vec![Row::new(1, "rejected", t + days(1))],
+            None,
+            None,
+        ),
+        (
+            "a scheduled price and nothing in force",
+            vec![
+                Row::new(1, "approved", t + days(3)),
+                Row::new(2, "draft", t + days(4)),
+            ],
+            None,
+            Some(0),
+        ),
+        (
+            "value chains beside the default",
+            vec![
+                Row::new(1, "approved", t - days(5)),
+                Row::new(2, "approved", t + days(5)).on("eu"),
+                Row::new(3, "draft", t + days(6)).on("eu"),
+                Row::new(4, "pending", t + days(7)).on("apac"),
+            ],
+            Some(0),
+            None,
+        ),
+        (
+            "a value chain's scheduled price beside the default's draft",
+            vec![
+                Row::new(1, "draft", t + days(3)),
+                Row::new(2, "approved", t + days(2)).on("eu"),
+            ],
+            None,
+            Some(0),
+        ),
+    ];
+    let mut expected: Vec<Expected> = Vec::new();
+    for (shape, rows, current, next) in shapes {
+        let sku = catalog.sku(SkuType::Usage);
+        let e = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
+        let mut stored = Vec::new();
+        for row in rows {
+            stored.push(stored_price(&f, e, row).await);
+        }
+        expected.push((
+            shape.to_owned(),
+            e,
+            sku,
+            current.map(|i| stored[i].clone()),
+            next.map(|i| stored[i].clone()),
+        ));
+    }
+    // A temporary pair in force: the temporary price is current and its return is next. A pair
+    // still to come: the base price is current and the temporary price is next.
+    for (shape, window) in [
+        ("a temporary pair in force", (t - days(2), t + days(3))),
+        ("a temporary pair to come", (t + days(4), t + days(8))),
+    ] {
+        let sku = catalog.sku(SkuType::Usage);
+        let e = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
+        let base = stored_price(&f, e, Row::new(1, "approved", t - days(30)).to(window.0)).await;
+        let (temporary, back) = stored_pair(&f, e, &base, 2, window).await;
+        let (current, next) = if window.0 <= t {
+            (temporary, back)
+        } else {
+            (base, temporary)
+        };
+        expected.push((shape.to_owned(), e, sku, Some(current), Some(next)));
+    }
+    let listed = ok(&f, &format!("/price-books/{eur}/entries")).await;
+    for (shape, e, sku, current, next) in &expected {
+        let item = the_entry(listed.clone(), *e);
+        assert!(
+            item.as_object().unwrap().contains_key("next_price"),
+            "{shape}: null, never absent: {item}"
+        );
+        let prices = ok(&f, &format!("/price-book-entries/{e}/prices")).await;
+        let answered = |p: &Option<price::Model>| {
+            p.as_ref().map_or(Value::Null, |p| {
+                prices["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|i| i["id"] == p.id.to_string())
+                    .unwrap()
+                    .clone()
+            })
+        };
+        assert_eq!(
+            item["current_price"],
+            answered(current),
+            "{shape}: {item:#}"
+        );
+        assert_eq!(item["next_price"], answered(next), "{shape}: {item:#}");
+        if let Some(n) = next {
+            assert_eq!(item["next_price"]["status"], waiting(&n.state), "{shape}");
+        }
+        let headline = |b: &Value| (b["current_price"].clone(), b["next_price"].clone());
+        let read = ok(&f, &format!("/price-book-entries/{e}")).await;
+        assert_eq!(headline(&read), headline(&item), "{shape}: the single read");
+        let across = ok(&f, &format!("/price-book-entries?sku_id={sku}")).await;
+        assert_eq!(
+            headline(&the_entry(across, *e)),
+            headline(&item),
+            "{shape}: the SKU's entries"
+        );
+    }
+}
+
+/// D-472: the next price is money, shown as the price in force is (D-434): null, never absent,
+/// without `price_book` read on the entry's book, on each of the three entry reads.
+// Probed in run 9.4: the next price shown without the money's grant.
+#[tokio::test]
+async fn the_next_price_is_shown_only_with_price_book_read_on_its_book() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let other = plan_support::book(&f, "other").await;
+    let t = today();
+    let sku = catalog.sku(SkuType::Usage);
+    let entry = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
+    stored_price(&f, entry, Row::new(1, "approved", t - days(1))).await;
+    let next = stored_price(&f, entry, Row::new(2, "approved", t + days(1))).await;
+    let paths = [
+        format!("/price-book-entries/{entry}"),
+        format!("/price-books/{eur}/entries"),
+        format!("/price-book-entries?sku_id={sku}"),
+    ];
+    for path in &paths {
+        assert_eq!(
+            the_entry(ok(&f, path).await, entry)["next_price"]["id"],
+            next.id.to_string(),
+            "{path}"
+        );
+    }
+    let entry_reader = holding(&f, "price_book_entry:read");
+    for path in &paths {
+        let (status, body, _) = f
+            .call_as(&entry_reader, "GET", path, json!({}), None, None)
+            .await;
+        assert_eq!(status, 200, "{path}: {body}");
+        let item = the_entry(body, entry);
+        assert!(
+            item.as_object().unwrap().contains_key("next_price") && item["next_price"].is_null(),
+            "{path}: {item}"
+        );
+    }
+    for (app, shown) in [
+        (money_app(&f, Some(vec![other]), false), false),
+        (money_app(&f, Some(vec![eur]), false), true),
+    ] {
+        for path in &paths {
+            let (status, body, _) = request(&app, &f.ctx, "GET", path, json!({}), None, None).await;
+            assert_eq!(status, 200, "{path}: {body}");
+            let item = the_entry(body, entry);
+            assert_eq!(item["next_price"].is_null(), !shown, "{path}: {item}");
+        }
+    }
+}
+
+/// D-472 (plan review L7): the next price comes from the read the price in force comes from,
+/// widened to the default chain's drafts and pending prices, so the book's entries list keeps its
+/// seven statements for 10 and for 100 entries — the book, its entries, the book under the
+/// money's grant, the three usage reads (the price counts, the plan items that name the entries,
+/// their revisions) and the default chain.
+// Probed in run 9.4: the next price read one entry at a time.
+#[tokio::test]
+async fn the_entries_list_reads_both_headline_prices_in_seven_statements_for_10_and_100_entries() {
+    let (f, catalog, recorder) = recorded().await;
+    let t = today();
+    let mut lists = Vec::new();
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("headline-{n}")).await;
+        // Two entries in a plan's draft, so the usage reads the items' revisions too.
+        let (_, revision) = plan(&f, &format!("headline-{n}"), b).await;
+        for i in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = plan_support::entry(&f, b, sku, "usage", None).await;
+            if i < 2 {
+                item(&f, revision, sku, Some(e), "paid").await;
+            }
+            stored_price(&f, e, Row::new(1, "approved", t - days(1))).await;
+            if i % 2 == 0 {
+                stored_price(&f, e, Row::new(2, "approved", t + days(5))).await;
+            }
+            stored_price(&f, e, Row::new(3, "draft", t + days(6))).await;
+            stored_price(&f, e, Row::new(4, "pending", t + days(7))).await;
+        }
+        let path = format!("/price-books/{b}/entries");
+        let seen = statements(&f, &recorder, &path, n).await;
+        assert_eq!(seen.len(), 7, "{path}: {seen:#?}");
+        lists.push(seen);
+        for item in ok(&f, &path).await["items"].as_array().unwrap() {
+            assert!(
+                !item["current_price"].is_null() && !item["next_price"].is_null(),
+                "{path}: {item}"
+            );
+        }
+    }
+    same("entries", &lists[0], &lists[1]);
 }

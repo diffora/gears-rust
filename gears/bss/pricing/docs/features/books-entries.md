@@ -163,7 +163,7 @@ Requirement: `cpt-cf-bss-pricing-fr-settings`; PRD AC #13.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-export`
 
-Export returns the book and all its scoped entries/prices as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16). One entry's prices read alone, each with its status today, in the export's chain order, under price_book read on the entry's book as well as entry read; the entry reads carry the price in force and the approved prices by date (D-440).
+Export returns the book and all its scoped entries/prices as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16). One entry's prices read alone, each with its status today, in the export's chain order, under price_book read on the entry's book as well as entry read; the entry reads carry the price in force and the approved prices by date (D-440), and the next price: the default chain's earliest scheduled price, else its newest draft or pending price (D-472).
 
 Requirement: `cpt-cf-bss-pricing-fr-book-export`; PRD AC #12.
 

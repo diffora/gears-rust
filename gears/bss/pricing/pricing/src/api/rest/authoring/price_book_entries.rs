@@ -401,48 +401,90 @@ pub(super) async fn delete(
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
-/// The default chain's approved price in force on `today` of each of `entries` (D-434, D-440): no
-/// dimension value, started on or before the day and not ended, chosen as resolve chooses a price
-/// in force (the latest start, then the latest version), from ONE read of the entries' approved
-/// default-chain prices; an entry with none has no key. The caller has judged whose money it may
-/// show: every entry given is shown.
+/// The two prices an entry read headlines (D-440, D-472), each `None` when there is none.
+#[derive(Default)]
+pub(super) struct Headline {
+    /// The default chain's approved price in force on the day.
+    pub current: Option<super::dto::PricingPriceDto>,
+    /// The default chain's next price after the day ([`next_of`]).
+    pub next: Option<super::dto::PricingPriceDto>,
+}
+/// The default chain's next price after `day` (D-472), of one entry's default-chain prices: its
+/// earliest approved price that starts after the day (a scheduled price; two approved prices of
+/// a chain never share a start, and the highest `version_no` would win as it wins in force), else
+/// its newest draft or pending price — the highest `version_no`, then the latest `created_at`,
+/// then the highest id — else `None`. A rejected price is never one.
+fn next_of<'a>(
+    chain: &[&'a entity::price::Model],
+    day: time::Date,
+) -> Option<&'a entity::price::Model> {
+    let is = |p: &entity::price::Model, state: PriceState| p.state == state.as_str();
+    chain
+        .iter()
+        .copied()
+        .filter(|p| is(p, PriceState::Approved) && p.effective_from > day)
+        .min_by(|a, b| {
+            a.effective_from
+                .cmp(&b.effective_from)
+                .then(b.version_no.cmp(&a.version_no))
+        })
+        .or_else(|| {
+            chain
+                .iter()
+                .copied()
+                .filter(|p| is(p, PriceState::Draft) || is(p, PriceState::Pending))
+                .max_by_key(|p| (p.version_no, p.created_at, p.id))
+        })
+}
+/// The headline prices of each of `entries` on `day` (D-434, D-440, D-472), from ONE read of the
+/// entries' default-chain approved, pending and draft prices (no dimension value, never a
+/// rejected price): the price in force — started on or before the day and not ended, chosen as
+/// resolve chooses a price in force (the latest start, then the latest version) — and the next
+/// price ([`next_of`]), each with its status on the day; an entry with neither has no key. The
+/// caller has judged whose money it may show: every entry given is shown.
 /// # Errors
 /// Storage failures; a stored token outside its closed set is a corrupt row.
-pub(super) async fn in_force(
+pub(super) async fn headline(
     tx: &impl DBRunner,
     tenant: Uuid,
     entries: &[&entity::price_book_entry::Model],
-    today: time::Date,
-) -> Result<std::collections::BTreeMap<Uuid, super::dto::PricingPriceDto>, DoorError> {
+    day: time::Date,
+) -> Result<std::collections::BTreeMap<Uuid, Headline>, DoorError> {
     use crate::infra::storage::RepoError;
     let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
     let stored =
-        price_repo::approved_default_chain(tx, &AccessScope::for_tenant(tenant), tenant, &ids)
-            .await?;
+        price_repo::default_chain(tx, &AccessScope::for_tenant(tenant), tenant, &ids).await?;
     // Each entry's chain by key, grouped once: linear in the book, not entries x prices (PS-38).
     let mut chains: std::collections::BTreeMap<Uuid, Vec<&entity::price::Model>> =
         std::collections::BTreeMap::new();
     for p in &stored {
         chains.entry(p.price_book_entry_id).or_default().push(p);
     }
-    let mut current = std::collections::BTreeMap::new();
+    let mut out = std::collections::BTreeMap::new();
     for e in entries {
         let model = price_book_entry_repo::model_of(e)?;
         let chain: Vec<&entity::price::Model> = chains.get(&e.id).cloned().unwrap_or_default();
-        let prices = chain
+        // Only the approved prices are decoded: they alone can be in force.
+        let approved = chain
             .iter()
+            .filter(|p| p.state == PriceState::Approved.as_str())
             .map(|p| price_repo::to_domain(p, model))
             .collect::<Result<Vec<_>, RepoError>>()?;
-        if let Some(found) = crate::domain::price::own_version_at(&prices, e.id, today, None)
-            && let Some(row) = chain.into_iter().find(|p| p.id == found.id)
-        {
-            current.insert(
-                e.id,
-                super::dto::PricingPriceDto::at(row.clone(), &e.model, today)?,
-            );
+        let current = crate::domain::price::own_version_at(&approved, e.id, day, None)
+            .and_then(|found| chain.iter().find(|p| p.id == found.id));
+        let shown = |p: Option<&&entity::price::Model>| {
+            p.map(|p| super::dto::PricingPriceDto::at((*p).clone(), &e.model, day))
+                .transpose()
+        };
+        let found = Headline {
+            current: shown(current)?,
+            next: shown(next_of(&chain, day).as_ref())?,
+        };
+        if found.current.is_some() || found.next.is_some() {
+            out.insert(e.id, found);
         }
     }
-    Ok(current)
+    Ok(out)
 }
 /// Whether the caller's `price_book` read — `books`, or `None` without that grant — admits the
 /// tenant's `book`: the money's second judgement (D-434), ONE read.
@@ -460,8 +502,8 @@ pub(super) async fn shows_money(
     })
 }
 /// `GET /price-book-entries/{id}` and each item of `GET /price-books/{id}/entries` (D-428,
-/// D-440): the entries with their usage and, when `shown`, their price in force — dated on
-/// `today`, in a fixed number of statements whatever their number.
+/// D-440, D-472): the entries with their usage and, when `shown`, their price in force and their
+/// next price — dated on `today`, in a fixed number of statements whatever their number.
 /// # Errors
 /// Storage failures; a stored token outside its closed set is a corrupt row.
 pub(super) async fn read(
@@ -473,20 +515,23 @@ pub(super) async fn read(
 ) -> Result<Vec<super::dto::PricingPriceBookEntryReadDto>, DoorError> {
     let ids: Vec<Uuid> = entries.iter().map(|m| m.id).collect();
     let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, today).await?;
-    let mut current = if shown {
-        in_force(tx, tenant, &entries.iter().collect::<Vec<_>>(), today).await?
+    let mut headlines = if shown {
+        headline(tx, tenant, &entries.iter().collect::<Vec<_>>(), today).await?
     } else {
         std::collections::BTreeMap::new()
     };
     entries
         .into_iter()
         .map(|m| {
-            let (counted, price) = (
+            let (counted, prices) = (
                 usage.remove(&m.id).unwrap_or_default(),
-                current.remove(&m.id),
+                headlines.remove(&m.id).unwrap_or_default(),
             );
             Ok(super::dto::PricingPriceBookEntryReadDto::of(
-                m, counted, price,
+                m,
+                counted,
+                prices.current,
+                prices.next,
             )?)
         })
         .collect()
@@ -537,8 +582,8 @@ pub(super) async fn prices(
 }
 /// `GET /price-book-entries?sku_id=` (D-434): the tenant's entries of one SKU across its books,
 /// each with its book's code, name and currency, its usage (D-428, dated on `today`, D-440), and
-/// the default chain's price in force today when `books` — the scope the caller's `price_book`
-/// read gives, or `None` without that grant — admits the entry's book. The entries are read under
+/// the default chain's price in force today and its next price (D-472) when `books` — the scope
+/// the caller's `price_book` read gives, or `None` without that grant — admits the entry's book. The entries are read under
 /// the caller's entry scope, the books' names and the usage tenant-scoped (facts of an entry the
 /// caller may read). A fixed number of set-based statements, whatever the number of entries; an
 /// unknown SKU is an empty list, never a 404 (pricing does not know which SKUs exist).
@@ -571,7 +616,7 @@ pub(super) async fn for_sku(
     let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
     let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, today).await?;
     // The money: only the entries whose book the caller's price_book read admits.
-    let mut current = if let Some(books) = books {
+    let mut headlines = if let Some(books) = books {
         let readable: BTreeSet<Uuid> = book_repo::find_many(tx, books, tenant, &book_ids)
             .await?
             .into_iter()
@@ -581,7 +626,7 @@ pub(super) async fn for_sku(
             .iter()
             .filter(|e| readable.contains(&e.book_id))
             .collect();
-        in_force(tx, tenant, &shown, today).await?
+        headline(tx, tenant, &shown, today).await?
     } else {
         BTreeMap::new()
     };
@@ -590,7 +635,7 @@ pub(super) async fn for_sku(
         let book = named.get(&e.book_id).ok_or_else(|| {
             RepoError::CorruptRow(format!("entry {} names lost book {}", e.id, e.book_id))
         })?;
-        let current_price = current.remove(&e.id);
+        let prices = headlines.remove(&e.id).unwrap_or_default();
         let entry_usage = usage.remove(&e.id).unwrap_or_default().into();
         items.push(super::dto::PricingSkuEntryDto {
             entry: e.try_into()?,
@@ -598,7 +643,8 @@ pub(super) async fn for_sku(
             book_name: book.name.clone(),
             currency: book.currency.clone(),
             usage: entry_usage,
-            current_price,
+            current_price: prices.current,
+            next_price: prices.next,
         });
     }
     items.sort_by(|a, b| sku_entry_order(a).cmp(&sku_entry_order(b)));

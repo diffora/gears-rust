@@ -72,11 +72,14 @@ async fn create_replay_current_kind_unique_key_and_delete() {
             "plans_superseded_only": 0,
         }))
     );
-    // No price is in force (D-440).
-    assert_eq!(
-        read.as_object_mut().unwrap().remove("current_price"),
-        Some(Value::Null)
-    );
+    // No price is in force (D-440), and none is next (D-472).
+    for headline in ["current_price", "next_price"] {
+        assert_eq!(
+            read.as_object_mut().unwrap().remove(headline),
+            Some(Value::Null),
+            "{headline}"
+        );
+    }
     assert_eq!(read, first.1);
     assert_eq!(
         f.call(

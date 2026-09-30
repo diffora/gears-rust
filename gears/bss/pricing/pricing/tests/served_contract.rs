@@ -227,3 +227,50 @@ async fn every_unit_says_whether_its_reader_may_approve_it() {
         "the flag says what it judges: {said}"
     );
 }
+
+/// A property of a component schema, found on the schema or on one part of its `allOf` (a
+/// flattened DTO).
+fn property(api: &Value, schema: &str, name: &str) -> Value {
+    let schema = &api["components"]["schemas"][schema];
+    std::iter::once(schema)
+        .chain(schema["allOf"].as_array().into_iter().flatten())
+        .find_map(|part| part["properties"].get(name).cloned())
+        .unwrap_or(Value::Null)
+}
+
+/// D-472 (ask 26): the three entry reads name `next_price`, which has `current_price`'s schema.
+#[tokio::test]
+async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
+    let api = served().await;
+    for path in [
+        "/bss-pricing/v1/price-book-entries/{id}",
+        "/bss-pricing/v1/price-books/{id}/entries",
+        "/bss-pricing/v1/price-book-entries",
+    ] {
+        let text = description(&api, "get", path);
+        assert!(
+            text.contains("next_price") && text.contains("version_no"),
+            "{path}: {text}"
+        );
+    }
+    for schema in ["PricingPriceBookEntryReadDto", "PricingSkuEntryDto"] {
+        let (mut next, mut current) = (
+            property(&api, schema, "next_price"),
+            property(&api, schema, "current_price"),
+        );
+        for field in [&mut next, &mut current] {
+            if let Some(fields) = field.as_object_mut() {
+                fields.remove("description");
+            }
+        }
+        assert!(!next.is_null(), "{schema} carries next_price");
+        assert_eq!(
+            next, current,
+            "{schema}: next_price has current_price's schema"
+        );
+        let said = api["components"]["schemas"][schema]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(said.contains("next_price"), "{schema}: {said}");
+    }
+}

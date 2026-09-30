@@ -210,10 +210,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              and period, each with its usage (D-428): its prices by state (a rejected price is not \
              counted; the approved ones also as scheduled, active and superseded today, D-440), \
              the distinct plans whose draft, pending, scheduled or published revisions name it, \
-             and the distinct plans that name it only through superseded revisions; and its \
-             current_price, the default chain's approved price in force today, shown to a caller \
-             who also holds price_book read on the book and null otherwise (D-434, D-440). \
-             Refusals: 404 for a book the tenant does not hold.",
+             and the distinct plans that name it only through superseded revisions; its \
+             current_price, the default chain's approved price in force today; and its \
+             next_price, the default chain's earliest price scheduled after today, else its \
+             newest draft or pending price (the highest version_no), else null (D-472). Both \
+             prices are shown to a caller who also holds price_book read on the book and are null \
+             otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -381,10 +383,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Where a SKU is priced")
         .description(
             "Lists the tenant's price book entries of one SKU across its books (D-434), each with \
-             its book's code, name and currency, its usage (D-428) and current_price: the default \
-             chain's approved price in force today, shown to a caller who also holds price_book \
-             read (the export's grant) and null otherwise. Refusals: 400 QUERY_INVALID without \
-             exactly one well-formed sku_id, or with any other key.",
+             its book's code, name and currency, its usage (D-428), its current_price, the \
+             default chain's approved price in force today, and its next_price, the default \
+             chain's earliest price scheduled after today, else its newest draft or pending price \
+             (the highest version_no), else null (D-472). Both prices are shown to a caller who \
+             also holds price_book read (the export's grant) and are null otherwise. Refusals: \
+             400 QUERY_INVALID without exactly one well-formed sku_id, or with any other key.",
         )
         .tag("Pricing")
         .authenticated()
@@ -403,10 +407,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              sends back as If-Match, its usage (D-428): its prices by state (a rejected price is \
              not counted; the approved ones also as scheduled, active and superseded today, \
              D-440), the distinct plans whose draft, pending, scheduled or published revisions \
-             name it, and the distinct plans that name it only through superseded revisions; and \
-             its current_price, the default chain's approved price in force today, shown to a \
-             caller who also holds price_book read on its book and null otherwise (D-434, D-440). \
-             Refusals: 404 ENTRY_NOT_FOUND.",
+             name it, and the distinct plans that name it only through superseded revisions; its \
+             current_price, the default chain's approved price in force today; and its \
+             next_price, the default chain's earliest price scheduled after today, else its \
+             newest draft or pending price (the highest version_no), else null (D-472). Both \
+             prices are shown to a caller who also holds price_book read on its book and are null \
+             otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1789,7 +1795,8 @@ async fn list_entries(
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let entries = books::entries(tx, &scope, tenant, id).await?;
-            // D-428, D-440: every entry's usage and price in force in a fixed number of reads.
+            // D-428, D-440, D-472: every entry's usage, price in force and next price in a fixed
+            // number of reads.
             let shown = price_book_entries::shows_money(tx, books.as_ref(), tenant, id).await?;
             let body = PricingPriceBookEntryList {
                 items: price_book_entries::read(tx, tenant, entries, shown, today).await?,
