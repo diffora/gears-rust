@@ -3,7 +3,6 @@
 use super::*;
 use crate::domain::{
     money::PriceData,
-    plan::Treatment,
     price::{self, Eligibility, Price, PriceState},
     price_book_entry::{ChargeKind, Model},
     test_support::{date, dec},
@@ -81,13 +80,6 @@ fn item_of(n: u128, e: Option<Entry>) -> Item {
     Item {
         id: id(n),
         sku_id: id(n + 1),
-        treatment: if e.is_some() {
-            Treatment::Paid
-        } else {
-            Treatment::Included
-        },
-        included_qty: None,
-        qty_min: None,
         entry: e,
     }
 }
@@ -838,7 +830,6 @@ fn an_item_without_an_entry_has_no_chains() {
     let r = resolve(&c, "2026-10-05", &[]);
     assert_eq!(r.len(), 2);
     assert_eq!(r[0].item_id, id(OTHER_ITEM));
-    assert_eq!(r[0].treatment, Treatment::Included);
     assert!(r[0].chains.is_empty());
     assert_eq!(r[0].price_book_entry_id, None);
     assert_eq!(r[0].charge_kind, None);
@@ -846,23 +837,19 @@ fn an_item_without_an_entry_has_no_chains() {
     assert_eq!(r[1].item_id, id(ITEM));
 }
 
+/// D-467: an item is its SKU and its entry, and resolves as such.
 #[test]
-fn the_item_carries_its_stored_fields() {
-    let mut it = item_of(
+fn the_item_carries_its_sku_and_its_entry() {
+    let it = item_of(
         ITEM,
         Some(entry(vec![all(1, "10.00", "2026-09-01", None)], &[])),
     );
-    it.treatment = Treatment::Optional;
-    it.included_qty = Some(dec("2.50"));
-    it.qty_min = Some(3);
     let r = resolve(&ctx(vec![it], &[]), "2026-10-05", &[]);
     assert_eq!(r[0].sku_id, id(ITEM + 1));
-    assert_eq!(r[0].treatment, Treatment::Optional);
-    assert_eq!(
-        r[0].included_qty.map(|q| q.to_string()).as_deref(),
-        Some("2.50")
-    );
-    assert_eq!(r[0].qty_min, Some(3));
+    assert_eq!(r[0].price_book_entry_id, Some(id(ENTRY)));
+    assert_eq!(r[0].charge_kind, Some(ChargeKind::Recurring));
+    assert_eq!(r[0].period.as_deref(), Some("month"));
+    assert_eq!(r[0].model, Some(Model::Flat));
 }
 
 // ---------- D-421: resolved invoice inputs with their source ----------

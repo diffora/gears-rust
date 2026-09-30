@@ -522,12 +522,13 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.create_plan_item")
         .summary("Add an item to a draft revision")
         .description(
-            "Adds an item for a SKU to a draft revision with its entry, treatment and quantities, \
-             reserving the SKU reference in Products; the Idempotency-Key replays the receipt. A \
-             deprecated SKU is added only when the plan's published revision in effect carries it \
-             (D-465). Refusals: 400 TREATMENT_INVALID, INCLUDED_QTY_INVALID, QTY_MIN_INVALID, \
-             ITEM_ENTRY_SKU_MISMATCH, ITEM_SKU_DEPRECATED or REVISION_ITEMS_TOO_MANY; 409 \
-             REVISION_NOT_DRAFT or ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
+            "Adds an item to a draft revision: a SKU and its entry in the plan's book, the entry \
+             required (D-467), reserving the SKU reference in Products; the Idempotency-Key \
+             replays the receipt. A deprecated SKU is added only when the plan's published \
+             revision in effect carries it (D-465). Refusals: 400 BODY_UNEXPECTED for treatment, \
+             included_qty or qty_min, ITEM_ENTRY_MISSING, ITEM_ENTRY_SKU_MISMATCH, \
+             ITEM_SKU_DEPRECATED or REVISION_ITEMS_TOO_MANY; 409 REVISION_NOT_DRAFT or \
+             ITEM_SKU_TAKEN; 503 REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()
@@ -568,9 +569,11 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.patch_plan_item")
         .summary("Change a plan item")
         .description(
-            "Changes a draft item's treatment, quantities or entry, never its SKU, at the version \
-             the caller read (If-Match). Refusals: 400 for an invalid field; 403 NOT_DRAFT_AUTHOR; \
-             409 REVISION_NOT_DRAFT or STALE_REVISION.",
+            "Changes a draft item's entry, never its SKU, at the version the caller read \
+             (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 \
+             BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a \
+             null entry or an item left without one; 403 NOT_DRAFT_AUTHOR; 409 \
+             REVISION_NOT_DRAFT or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -638,6 +641,7 @@ async fn create_item(
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
+    plan_items::judge_body(&payload, true)?;
     let input: dto::PricingPlanItemCreate = preconditions::parse_body(&body)?;
     plan_items::add(state, scope, ctx, id, correlation, key, digest, input).await
 }
@@ -686,6 +690,8 @@ async fn patch_item(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
+    let payload: serde_json::Value = preconditions::parse_body(&body)?;
+    plan_items::judge_body(&payload, false)?;
     let input: dto::PricingPlanItemPatch = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());

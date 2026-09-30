@@ -203,13 +203,28 @@ async fn a_copy_carries_the_published_book_availability_and_items_and_attaches_t
             copy["price_book_entry_id"],
             json!(source.price_book_entry_id.map(|e| e.to_string()))
         );
-        assert_eq!(copy["treatment"], source.treatment);
+        assert!(copy.get("treatment").is_none(), "D-467: {copy}");
         assert_eq!(
             copy["reference_state"], "unreserved",
             "D-413: written unreserved"
         );
         assert_eq!(copy["reservation_id"], json!(null));
     }
+    // D-467: a copy is a new row, `paid` and no quantity; the legacy included item, stored
+    // without an entry, stays one (its draft's checks show it ITEM_ENTRY_MISSING).
+    let stored: Vec<_> = items(&f, id_of(&r["id"]))
+        .await
+        .into_iter()
+        .map(|i| (i.sku_id, i.treatment, i.included_qty, i.qty_min))
+        .collect();
+    assert!(
+        stored.contains(&(paid.sku_id, "paid".to_owned(), None, None)),
+        "{stored:?}"
+    );
+    assert!(
+        stored.contains(&(free.sku_id, "included".to_owned(), None, None)),
+        "{stored:?}"
+    );
     assert_eq!(
         f.call("POST", &path, json!({}), None, Some("copy")).await,
         copied,

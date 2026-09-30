@@ -65,7 +65,7 @@ Feature algorithm: `cpt-cf-bss-pricing-algo-read-contract-events-period-slices-a
 
 1. [ ] - `p1` - Split the period at every price boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
 2. [ ] - `p1` - Prorate recurring slices by calendar days; rate usage by reading timestamp with tier counters per slice. - `inst-read-contract-events-period-slices-and-quote-2`
-3. [ ] - `p1` - Deduct included quantities, aggregate per price/subscription/period and apply the coverage-prorated min_fee once per price; not built in pricing, Rating applies the floor (D-415). - `inst-read-contract-events-period-slices-and-quote-3`
+3. [ ] - `p1` - Aggregate per price/subscription/period (no plan carries an included quantity to deduct since D-467) and apply the coverage-prorated min_fee once per price; not built in pricing, Rating applies the floor (D-415). - `inst-read-contract-events-period-slices-and-quote-3`
 4. [ ] - `p1` - Apply period-start promotion after floors, then the bound rounding/currency policy; quote returns totals while resolve never does; quote is not built (D-415). - `inst-read-contract-events-period-slices-and-quote-4`
 
 ### typed-events
@@ -90,7 +90,7 @@ The spec consumer paths GET /pricing/v1/resolve and GET /pricing/v1/prices/{id} 
 - GET /bss-pricing/v1/resolve?plan_revision_id=&date=&item_id=&pins= (label plan, action read; D-419). plan_revision_id and date (YYYY-MM-DD) are required; item_id resolves that one item only; pins is comma-separated, each pin price_id (the price's own chain) or price_id:dim_value (a default-chain price that value was bound to), at most 1 000. Only a published or superseded revision resolves, and a scheduled one on a date on or after its sale date, judged by the state the revision reads today (D-447, D-454): a due revision resolves as published on every date, before and after its switch is persisted. Refusals: 409 REVISION_NOT_PUBLISHED (a draft or pending revision); 409 REVISION_NOT_YET_AVAILABLE (a scheduled revision on a date before its sale date); 400 DATE_INVALID; 400 PIN_FOREIGN for the whole request (a pin that names no approved price of an entry an item of this revision names, or a :dim_value pin on a price that is not a default-chain price; the value itself is not checked against today's registry); 400 PIN_DUPLICATE (two pins for one item and value); 400 PINS_TOO_MANY; 404 for an unknown or another tenant's revision, before any Products read, and for an item_id the revision does not have. Each item's SKU version is read as of date as pricing's system actor, only after the caller has passed plan:read and the revision was found in its tenant (D-424), so a consumer needs pricing plan:read and never products read: 503 REGISTRY_UNAVAILABLE when Products cannot answer, Products' own status and code on a definite refusal, and sku_version null for a SKU Products does not know (D-421). A chain that no price covers is not a refusal: it is uncovered (D-420, PRD AC #18).
 - GET /bss-pricing/v1/prices/{id} (label price, action read; D-422): an approved price of the tenant, whatever its window (closed, followed by a later price, keep_for_bound), with its entry's SKU, charge kind, period, model (D-427), book and currency; stored facts only, no status or other value computed from today, no authoring internals (version, pending_unit_id, note, created_by). A draft, pending or rejected price, an unknown id and another tenant's id are 404 with one body; an id that is not an id is 400 ID_INVALID. Every refusal names the type of what it refused: each GET /resolve refusal is a cf.bss.pricing.plan.v1~ resource error, each GET /prices/{id} refusal a cf.bss.pricing.price.v1~ one.
 
-GET /pricing/v1/quote is a Studio preview with quantities and optional-item choices; it is not built, and the Studio is not wired to the API (D-415). Both reads are tenant-scoped and deny-by-default, and write nothing: no binding, no audit row, no idempotency key.
+GET /pricing/v1/quote is a Studio preview with quantities (no plan item is optional since D-467); it is not built, and the Studio is not wired to the API (D-415). Both reads are tenant-scoped and deny-by-default, and write nothing: no binding, no audit row, no idempotency key.
 
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
@@ -106,8 +106,8 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | revision | rounding_policy | The tenant default_rounding: half_up, half_even, half_down, up or down since D-437; a value stored before it reads as stored. |
 | revision | date | The date resolved (YYYY-MM-DD). |
 | revision | items | One per item of the revision, or the one item_id names. |
-| item | item_id, sku_id, treatment, included_qty, qty_min | The item as stored; included_qty is exact decimal text or null. |
-| item | price_book_entry_id, charge_kind, period, model | The item's entry and its key, model included (the entry's, fixed for its life, D-427); null for an included item without an entry, which has no chains. |
+| item | item_id, sku_id | The item and its SKU; since D-467 an item carries no treatment, included_qty or qty_min. |
+| item | price_book_entry_id, charge_kind, period, model | The item's entry and its key, model included (the entry's, fixed for its life, D-427); null for a legacy item stored without an entry (D-467), which has no chains. |
 | item | sku_version | { published_version, effective_from } of the SKU version in force on date; null when Products has no version on that date or does not know the SKU. |
 | item | invoice_line_template | { value, source }: the entry's invoice_line_override (source entry), else the SKU version's template (sku), else the tenant template for the charge kind (tenant; an item without an entry takes its SKU version's type); { null, null } when none. |
 | item | gl_code | { value, source }: the SKU version's (sku), else the tenant default_gl (tenant), else { null, null }. |
@@ -127,7 +127,7 @@ Resolution is a per-item matrix of default and value chains (D-420) with each it
 | binding | ends_on | Where the binding ends for its holder (D-425): temporary_until for a temporary price, the stored end of an explicitly closed price, null when it has none. A consumer slices a period at ends_on, never at effective_to. |
 | binding | keep_for_bound | Whether the price is kept for pinned subscriptions (the predecessor of a new price). |
 
-In the served OpenAPI, the revision's state, treatment, charge_kind, period, model, each input's source and eligibility are enums of exactly the tokens above; rounding_policy stays a string, because no CHECK guards default_rounding (D-439). The pinned price read's charge_kind, period, model and eligibility are the same enums.
+In the served OpenAPI, the revision's state, charge_kind, period, model, each input's source and eligibility are enums of exactly the tokens above; rounding_policy stays a string, because no CHECK guards default_rounding (D-439). The pinned price read's charge_kind, period, model and eligibility are the same enums.
 
 The pinned price read returns one approved price's stored facts with its entry's SKU, charge kind, period, model (D-427), book and currency (D-422). Pricing prices are read forever; consumer pins persist outside this gear. Events use toolkit outbox envelopes, not a second pricing schema.
 
@@ -172,7 +172,7 @@ The sole definitions live in [features/read-contract-events.md](../features/read
 3. PRD AC #18 / `cpt-cf-bss-pricing-dod-binding-sku-version`: Given an October 1 GL change already applied to the current SKU, when September resolves then it binds the earlier version; October binds the new one and prior pins do not change.
 4. PRD AC #19 / `cpt-cf-bss-pricing-dod-price-read-forever`: Given a closed price id from an old invoice, when read then its original money is returned; unknown/foreign ids reveal no price.
 5. PRD AC #20 / `cpt-cf-bss-pricing-dod-period-slices` (not built, D-415): Given a temporary price ending October 11 inside October 5–November 5, when preview runs then two slices appear; their common-price floors are not charged twice.
-6. PRD AC #20 / `cpt-cf-bss-pricing-dod-quote-totals` (not built, D-415): Given valid quantities and a promotion, when quote runs then totals apply included quantities before prorated floor and promotion afterward; invalid quantities fail without changing pins.
+6. PRD AC #20 / `cpt-cf-bss-pricing-dod-quote-totals` (not built, D-415): Given valid quantities and a promotion, when quote runs then totals apply the prorated floor and the promotion afterward (no included quantity since D-467); invalid quantities fail without changing pins.
 7. PRD AC #14 / `cpt-cf-bss-pricing-dod-events-typed-outbox`: Given approve/reject/withdraw/quorum-zero outcomes, when committed then each has its terminal event and only successful apply has its domain publication; rollback has neither.
 8. PRD AC #19 / `cpt-cf-bss-pricing-dod-consumer-golden-contracts`: Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate.
 

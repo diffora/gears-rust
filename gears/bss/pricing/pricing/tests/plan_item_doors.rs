@@ -10,7 +10,7 @@ use bss_pricing::{
 };
 use bss_products_sdk::models::{Lifecycle, ReferenceKind, SkuType};
 use plan_support::{
-    Fixture, book, entry, holding, id_of, item, item_with_qty, items, lock, ops_for, plan, publish,
+    Catalog, Fixture, book, entry, holding, id_of, item, items, lock, ops_for, plan, publish,
     request, scope, setup, stranger, text,
 };
 use serde_json::{Value, json};
@@ -26,6 +26,16 @@ async fn add(f: &Fixture, revision: Uuid, body: Value, key: &str) -> (u16, Value
         Some(key),
     )
     .await
+}
+/// A fresh usage SKU and its entry of `book`, written directly: an item's create body names both
+/// (D-467).
+async fn priced(f: &Fixture, catalog: &Catalog, book: Uuid) -> (Uuid, Uuid) {
+    let sku = catalog.sku(SkuType::Usage);
+    (sku, entry(f, book, sku, "usage", None).await)
+}
+/// The create body of an item: a SKU and its entry (D-467).
+fn body(sku: Uuid, entry: Uuid) -> Value {
+    json!({"sku_id":sku,"price_book_entry_id":entry})
 }
 async fn checks(f: &Fixture, revision: Uuid) -> (u16, Value) {
     let (s, b, _) = f
@@ -83,7 +93,7 @@ async fn an_item_is_added_through_its_door_confirmed_and_its_key_replays() {
     let (_, rev) = plan(&f, "pro", eur).await;
     let seats = catalog.sku(SkuType::Recurring);
     let e = entry(&f, eur, seats, "recurring", Some("month")).await;
-    let body = json!({"sku_id":seats,"price_book_entry_id":e,"treatment":"paid","qty_min":1});
+    let body = body(seats, e);
     let path = format!("/plan-revisions/{rev}/items");
     assert_eq!(
         f.call("POST", &path, body.clone(), None, None).await.0,
@@ -98,14 +108,16 @@ async fn an_item_is_added_through_its_door_confirmed_and_its_key_replays() {
     assert_eq!(it["revision_id"], rev.to_string());
     assert_eq!(it["sku_id"], seats.to_string());
     assert_eq!(it["price_book_entry_id"], e.to_string());
-    assert_eq!(it["treatment"], "paid");
-    assert_eq!(it["qty_min"], 1);
+    for removed in ["treatment", "included_qty", "qty_min"] {
+        assert!(it.get(removed).is_none(), "D-467, no {removed}: {it}");
+    }
     assert_eq!(it["created_by"], f.ctx.subject_id().to_string());
     assert_eq!(add(&f, rev, body, "one").await, created, "the key replays");
+    let other_entry = entry(&f, eur, seats, "recurring", Some("year")).await;
     let other = add(
         &f,
         rev,
-        json!({"sku_id":seats,"price_book_entry_id":e,"treatment":"optional"}),
+        json!({"sku_id":seats,"price_book_entry_id":other_entry}),
         "one",
     )
     .await;
@@ -141,62 +153,29 @@ async fn item_door_refusals_are_answered_before_any_reservation() {
     catalog.age(old, Lifecycle::Deprecated);
     let seats_eur = entry(&f, eur, seats, "recurring", Some("month")).await;
     let seats_other = entry(&f, other, seats, "recurring", Some("month")).await;
+    let storage_eur = entry(&f, eur, storage, "usage", None).await;
+    let old_eur = entry(&f, eur, old, "usage", None).await;
+    let bundle_eur = entry(&f, eur, bundle, "one_time", None).await;
     for (body, status, code) in [
         (
-            json!({"sku_id":seats,"price_book_entry_id":seats_other,"treatment":"paid"}),
+            json!({"sku_id":seats,"price_book_entry_id":seats_other}),
             400,
             "ITEM_BOOK_FOREIGN",
         ),
         (
-            json!({"sku_id":storage,"price_book_entry_id":seats_eur,"treatment":"paid"}),
+            json!({"sku_id":storage,"price_book_entry_id":seats_eur}),
             400,
             "ITEM_ENTRY_SKU_MISMATCH",
         ),
+        (json!({"sku_id":storage}), 400, "ITEM_ENTRY_MISSING"),
         (
-            json!({"sku_id":storage,"treatment":"paid"}),
+            json!({"sku_id":storage,"price_book_entry_id":null}),
             400,
             "ITEM_ENTRY_MISSING",
         ),
-        (
-            json!({"sku_id":storage,"price_book_entry_id":null,"treatment":"optional"}),
-            400,
-            "ITEM_ENTRY_MISSING",
-        ),
-        (
-            json!({"sku_id":old,"treatment":"included","included_qty":"5"}),
-            400,
-            "ITEM_SKU_DEPRECATED",
-        ),
-        (
-            json!({"sku_id":bundle,"treatment":"included"}),
-            400,
-            "ITEM_BUNDLE_SKU",
-        ),
-        (
-            json!({"sku_id":storage,"treatment":"free"}),
-            400,
-            "TREATMENT_INVALID",
-        ),
-        (
-            json!({"sku_id":storage,"treatment":"included","included_qty":"-1"}),
-            400,
-            "INCLUDED_QTY_INVALID",
-        ),
-        (
-            json!({"sku_id":storage,"treatment":"included","included_qty":"1e3"}),
-            400,
-            "INCLUDED_QTY_INVALID",
-        ),
-        (
-            json!({"sku_id":storage,"treatment":"included","qty_min":-1}),
-            400,
-            "QTY_MIN_INVALID",
-        ),
-        (
-            json!({"sku_id":storage,"price_book_entry_id":Uuid::new_v4(),"treatment":"paid"}),
-            404,
-            "ENTRY_NOT_FOUND",
-        ),
+        (body(old, old_eur), 400, "ITEM_SKU_DEPRECATED"),
+        (body(bundle, bundle_eur), 400, "ITEM_BUNDLE_SKU"),
+        (body(storage, Uuid::new_v4()), 404, "ENTRY_NOT_FOUND"),
     ] {
         let key = Uuid::new_v4().to_string();
         let (s, b, _) = add(&f, rev, body.clone(), &key).await;
@@ -205,22 +184,9 @@ async fn item_door_refusals_are_answered_before_any_reservation() {
     }
     assert_eq!(catalog.reserves(), 0, "no refusal cost a reservation");
     assert!(items(&f, rev).await.is_empty());
-    let ok = add(
-        &f,
-        rev,
-        json!({"sku_id":storage,"treatment":"included","included_qty":"2.5"}),
-        "ok",
-    )
-    .await;
+    let ok = add(&f, rev, body(storage, storage_eur), "ok").await;
     assert_eq!(ok.0, 201, "{ok:?}");
-    assert_eq!(ok.1["included_qty"], "2.5");
-    let taken = add(
-        &f,
-        rev,
-        json!({"sku_id":storage,"treatment":"included"}),
-        "taken",
-    )
-    .await;
+    let taken = add(&f, rev, body(storage, storage_eur), "taken").await;
     assert_eq!(taken.0, 409, "{taken:?}");
     assert!(text(&taken.1).contains("ITEM_SKU_TAKEN"), "{taken:?}");
     assert_eq!(
@@ -230,52 +196,70 @@ async fn item_door_refusals_are_answered_before_any_reservation() {
     );
 }
 
-// Surface S-3: an included quantity is the domain's decimal. A canonical text too long for it
-// (30 integer digits) is 400 INCLUDED_QTY_INVALID at both item doors, never an item that every
-// later checks read and submit answers 500 for.
+/// D-467 (owner, 2026-09-30): a plan item is a SKU and its entry. Each of `treatment`,
+/// `included_qty` and `qty_min` is 400 `BODY_UNEXPECTED` on that key at both item doors, with
+/// nothing reserved or written; the create needs its entry (400 `ITEM_ENTRY_MISSING`), and so does
+/// the PATCH, which refuses a null one.
 #[tokio::test]
-async fn an_included_quantity_beyond_the_decimal_is_refused_at_both_item_doors() {
+async fn the_item_doors_refuse_treatment_and_the_quantities() {
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
     let (_, rev) = plan(&f, "pro", eur).await;
-    let storage = catalog.sku(SkuType::Usage);
-    let huge = format!("1{}", "0".repeat(29));
-    assert_eq!(huge.len(), 30);
-    let (s, b, _) = add(
-        &f,
-        rev,
-        json!({"sku_id":storage,"treatment":"included","included_qty":huge}),
-        "huge",
-    )
-    .await;
-    assert_eq!(s, 400, "{b}");
-    assert!(text(&b).contains("INCLUDED_QTY_INVALID"), "{b}");
-    assert_eq!(catalog.reserves(), 0, "the refusal cost no reservation");
+    let (storage, e) = priced(&f, &catalog, eur).await;
+    for (key, value) in [
+        ("treatment", json!("paid")),
+        ("included_qty", json!("10")),
+        ("qty_min", json!(1)),
+        ("treatment", json!(null)),
+    ] {
+        let mut create = body(storage, e);
+        create[key] = value.clone();
+        let (s, b, _) = add(&f, rev, create, &format!("{key}-{value}")).await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(text(&b).contains("BODY_UNEXPECTED"), "{key}: {b}");
+        assert!(text(&b).contains(key), "the field names the key: {b}");
+    }
+    assert_eq!(catalog.reserves(), 0, "no refusal cost a reservation");
     assert!(items(&f, rev).await.is_empty());
-    let widest = "9".repeat(28);
-    let (s, b, _) = add(
-        &f,
-        rev,
-        json!({"sku_id":storage,"treatment":"included","included_qty":widest}),
-        "widest",
-    )
-    .await;
-    assert_eq!(s, 201, "28 digits are a decimal: {b}");
-    let path = format!("/plan-items/{}", b["id"].as_str().unwrap());
-    let tag = format!("\"{}\"", b["version"]);
+    let (s, b, _) = add(&f, rev, json!({"sku_id":storage}), "no-entry").await;
+    assert_eq!(s, 400, "{b}");
+    assert!(text(&b).contains("ITEM_ENTRY_MISSING"), "{b}");
+    let (s, it, tag) = add(&f, rev, body(storage, e), "ok").await;
+    assert_eq!(s, 201, "{it}");
+    let path = format!("/plan-items/{}", it["id"].as_str().unwrap());
+    for (key, value) in [
+        ("treatment", json!("optional")),
+        ("included_qty", json!("250")),
+        ("qty_min", json!(0)),
+    ] {
+        let (s, b, _) = f
+            .call("PATCH", &path, json!({ key: value }), Some(&tag), None)
+            .await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(text(&b).contains("BODY_UNEXPECTED"), "{key}: {b}");
+    }
     let (s, b, _) = f
         .call(
             "PATCH",
             &path,
-            json!({"included_qty":huge}),
+            json!({"price_book_entry_id":null}),
             Some(&tag),
             None,
         )
         .await;
     assert_eq!(s, 400, "{b}");
-    assert!(text(&b).contains("INCLUDED_QTY_INVALID"), "{b}");
-    let (s, b) = checks(&f, rev).await;
-    assert_eq!(s, 200, "the stored quantity still reads: {b}");
+    assert!(text(&b).contains("ITEM_ENTRY_MISSING"), "{b}");
+    let stored = items(&f, rev).await.remove(0);
+    assert_eq!(
+        (
+            stored.treatment.as_str(),
+            stored.included_qty,
+            stored.qty_min,
+            stored.version
+        ),
+        ("paid", None, None, 2),
+        "a new row stores paid and no quantity; the refused PATCHes wrote nothing"
+    );
 }
 
 #[tokio::test]
@@ -284,10 +268,11 @@ async fn a_revision_holds_at_most_two_hundred_items_at_the_door_and_at_the_write
     let eur = book(&f, "eur").await;
     let (_, rev) = plan(&f, "pro", eur).await;
     for _ in 0..200 {
-        item(&f, rev, catalog.sku(SkuType::Usage), None, "included").await;
+        let (sku, e) = priced(&f, &catalog, eur).await;
+        item(&f, rev, sku, Some(e), "paid").await;
     }
-    let extra = catalog.sku(SkuType::Usage);
-    let body = json!({"sku_id":extra,"treatment":"included","included_qty":"1"});
+    let (extra, extra_entry) = priced(&f, &catalog, eur).await;
+    let body = body(extra, extra_entry);
     let (s, b, _) = add(&f, rev, body.clone(), "extra").await;
     assert_eq!(s, 400, "{b}");
     assert!(text(&b).contains("REVISION_ITEMS_TOO_MANY"), "{b}");
@@ -321,8 +306,8 @@ async fn items_are_added_only_to_an_unlocked_draft_by_its_author() {
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
     let (_, rev) = plan(&f, "pro", eur).await;
-    let body =
-        json!({"sku_id":catalog.sku(SkuType::Usage),"treatment":"included","included_qty":"1"});
+    let (sku, e) = priced(&f, &catalog, eur).await;
+    let body = body(sku, e);
     let colleague = f.user();
     let (s, b, _) = f
         .call_as(
@@ -358,21 +343,33 @@ async fn an_item_is_edited_under_if_match_only_as_a_draft_by_its_revision_author
     let (s, it, _) = add(
         &f,
         rev,
-        json!({"sku_id":seats,"price_book_entry_id":month,"treatment":"paid"}),
+        json!({"sku_id":seats,"price_book_entry_id":month}),
         "seats",
     )
     .await;
     assert_eq!(s, 201, "{it}");
     let path = format!("/plan-items/{}", it["id"].as_str().unwrap());
     assert_eq!(
-        f.call("PATCH", &path, json!({"qty_min":2}), None, None)
-            .await
-            .0,
+        f.call(
+            "PATCH",
+            &path,
+            json!({"price_book_entry_id":year}),
+            None,
+            None
+        )
+        .await
+        .0,
         400,
         "If-Match is required"
     );
     let stale = f
-        .call("PATCH", &path, json!({"qty_min":2}), Some("\"9\""), None)
+        .call(
+            "PATCH",
+            &path,
+            json!({"price_book_entry_id":year}),
+            Some("\"9\""),
+            None,
+        )
         .await;
     assert_eq!(stale.0, 409, "{stale:?}");
     assert!(text(&stale.1).contains("STALE_REVISION"), "{stale:?}");
@@ -382,7 +379,7 @@ async fn an_item_is_edited_under_if_match_only_as_a_draft_by_its_revision_author
             &colleague,
             "PATCH",
             &path,
-            json!({"qty_min":2}),
+            json!({"price_book_entry_id":year}),
             Some("\"2\""),
             None,
         )
@@ -397,9 +394,8 @@ async fn an_item_is_edited_under_if_match_only_as_a_draft_by_its_revision_author
             "ITEM_ENTRY_SKU_MISMATCH",
         ),
         (json!({"price_book_entry_id":null}), "ITEM_ENTRY_MISSING"),
-        (json!({"treatment":"free"}), "TREATMENT_INVALID"),
-        (json!({"included_qty":"x"}), "INCLUDED_QTY_INVALID"),
-        (json!({"qty_min":-3}), "QTY_MIN_INVALID"),
+        (json!({"treatment":"optional"}), "BODY_UNEXPECTED"),
+        (json!({"qty_min":2}), "BODY_UNEXPECTED"),
     ] {
         let (s, b, _) = f
             .call("PATCH", &path, body.clone(), Some("\"2\""), None)
@@ -411,43 +407,27 @@ async fn an_item_is_edited_under_if_match_only_as_a_draft_by_its_revision_author
         .call(
             "PATCH",
             &path,
-            json!({"treatment":"optional","price_book_entry_id":year,"qty_min":2}),
+            json!({"price_book_entry_id":year}),
             Some("\"2\""),
             None,
         )
         .await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(tag, "\"3\"");
-    assert_eq!(
-        (&b["treatment"], &b["price_book_entry_id"], &b["qty_min"]),
-        (&json!("optional"), &json!(year.to_string()), &json!(2))
-    );
+    assert_eq!(b["price_book_entry_id"], json!(year.to_string()));
     assert_eq!(b["sku_id"], seats.to_string(), "the SKU never changes");
     assert_eq!(b["reference_state"], "confirmed");
-    let (s, b, tag) = f
-        .call(
-            "PATCH",
-            &path,
-            json!({"treatment":"included","price_book_entry_id":null,"qty_min":null}),
-            Some("\"3\""),
-            None,
-        )
-        .await;
-    assert_eq!(s, 200, "{b}");
+    let (s, b, tag) = f.call("PATCH", &path, json!({}), Some("\"3\""), None).await;
+    assert_eq!(s, 200, "an empty PATCH keeps the entry: {b}");
     assert_eq!(tag, "\"4\"");
-    assert_eq!(
-        (&b["price_book_entry_id"], &b["qty_min"]),
-        (&json!(null), &json!(null))
-    );
+    assert_eq!(b["price_book_entry_id"], json!(year.to_string()));
     let gone = f
         .call_as(&colleague, "DELETE", &path, json!({}), None, None)
         .await;
     assert_eq!(gone.0, 403, "D-404: {gone:?}");
     assert!(text(&gone.1).contains("NOT_DRAFT_AUTHOR"), "{gone:?}");
     lock(&f, rev).await;
-    let locked = f
-        .call("PATCH", &path, json!({"qty_min":1}), Some("\"4\""), None)
-        .await;
+    let locked = f.call("PATCH", &path, json!({}), Some("\"4\""), None).await;
     assert_eq!(locked.0, 409, "{locked:?}");
     assert!(text(&locked.1).contains("REVISION_NOT_DRAFT"), "{locked:?}");
     let locked = f.call("DELETE", &path, json!({}), None, None).await;
@@ -457,7 +437,7 @@ async fn an_item_is_edited_under_if_match_only_as_a_draft_by_its_revision_author
         .call(
             "PATCH",
             &format!("/plan-items/{}", Uuid::new_v4()),
-            json!({"qty_min":1}),
+            json!({}),
             Some("\"1\""),
             None,
         )
@@ -470,13 +450,8 @@ async fn an_item_delete_writes_a_delete_op_and_releases_its_reference() {
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
     let (_, rev) = plan(&f, "pro", eur).await;
-    let (s, it, _) = add(
-        &f,
-        rev,
-        json!({"sku_id":catalog.sku(SkuType::Usage),"treatment":"included","included_qty":"1"}),
-        "one",
-    )
-    .await;
+    let (sku, e) = priced(&f, &catalog, eur).await;
+    let (s, it, _) = add(&f, rev, body(sku, e), "one").await;
     assert_eq!(s, 201, "{it}");
     let id = id_of(&it["id"]);
     let path = format!("/plan-items/{id}");
@@ -504,7 +479,7 @@ async fn checks_read_every_sku_fresh_and_answer_the_sale_date() {
     let (s, b, _) = add(
         &f,
         rev,
-        json!({"sku_id":storage,"price_book_entry_id":e,"treatment":"paid"}),
+        json!({"sku_id":storage,"price_book_entry_id":e}),
         "one",
     )
     .await;
@@ -564,7 +539,7 @@ async fn checks_name_the_pending_price_unit_that_would_cover_an_item() {
     let (s, b, _) = add(
         &f,
         rev,
-        json!({"sku_id":storage,"price_book_entry_id":e,"treatment":"paid"}),
+        json!({"sku_id":storage,"price_book_entry_id":e}),
         "one",
     )
     .await;
@@ -657,13 +632,7 @@ async fn a_book_change_leaves_an_unmatched_item_foreign_in_the_checks() {
         (seats, seats_eur, "seats"),
         (storage, storage_eur, "storage"),
     ] {
-        let (s, b, _) = add(
-            &f,
-            rev,
-            json!({"sku_id":sku,"price_book_entry_id":e,"treatment":"paid"}),
-            key,
-        )
-        .await;
+        let (s, b, _) = add(&f, rev, json!({"sku_id":sku,"price_book_entry_id":e}), key).await;
         assert_eq!(s, 201, "{b}");
     }
     let (_, before) = checks(&f, rev).await;
@@ -690,13 +659,8 @@ async fn checks_answer_503_when_the_registry_is_down() {
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
     let (_, rev) = plan(&f, "pro", eur).await;
-    let (s, b, _) = add(
-        &f,
-        rev,
-        json!({"sku_id":catalog.sku(SkuType::Usage),"treatment":"included","included_qty":"1"}),
-        "one",
-    )
-    .await;
+    let (sku, e) = priced(&f, &catalog, eur).await;
+    let (s, b, _) = add(&f, rev, body(sku, e), "one").await;
     assert_eq!(s, 201, "{b}");
     catalog
         .down
@@ -719,7 +683,9 @@ async fn a_copy_keeps_a_carried_over_deprecated_sku_green_and_a_new_one_is_refus
     let eur = book(&f, "eur").await;
     let (p, rev1) = plan(&f, "pro", eur).await;
     let old = catalog.sku(SkuType::Usage);
-    item_with_qty(&f, rev1, old, "10").await;
+    let old_eur = entry(&f, eur, old, "usage", None).await;
+    approved(&f, old_eur, "2020-01-01").await;
+    item(&f, rev1, old, Some(old_eur), "paid").await;
     publish(&f, id_of(&p["id"]), rev1).await;
     catalog.age(old, Lifecycle::Deprecated);
     let (s, copied, _) = f
@@ -746,15 +712,9 @@ async fn a_copy_keeps_a_carried_over_deprecated_sku_green_and_a_new_one_is_refus
         "the attach confirmed: {b}"
     );
     assert_eq!(b["ready"], true, "{b}");
-    let another = catalog.sku(SkuType::Usage);
+    let (another, another_eur) = priced(&f, &catalog, eur).await;
     catalog.age(another, Lifecycle::Deprecated);
-    let (s, b, _) = add(
-        &f,
-        rev2,
-        json!({"sku_id":another,"treatment":"included","included_qty":"1"}),
-        "new",
-    )
-    .await;
+    let (s, b, _) = add(&f, rev2, body(another, another_eur), "new").await;
     assert_eq!(s, 400, "{b}");
     assert!(text(&b).contains("ITEM_SKU_DEPRECATED"), "{b}");
 }
@@ -764,13 +724,8 @@ async fn item_and_check_doors_need_the_plan_permissions() {
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
     let (_, rev) = plan(&f, "pro", eur).await;
-    let (s, it, _) = add(
-        &f,
-        rev,
-        json!({"sku_id":catalog.sku(SkuType::Usage),"treatment":"included","included_qty":"1"}),
-        "one",
-    )
-    .await;
+    let (sku, e) = priced(&f, &catalog, eur).await;
+    let (s, it, _) = add(&f, rev, body(sku, e), "one").await;
     assert_eq!(s, 201, "{it}");
     let item_path = format!("/plan-items/{}", it["id"].as_str().unwrap());
     let checks_path = format!("/plan-revisions/{rev}/checks");
@@ -803,17 +758,11 @@ async fn item_and_check_doors_need_the_plan_permissions() {
         (
             "POST",
             format!("/plan-revisions/{rev}/items"),
-            json!({"sku_id":Uuid::new_v4(),"treatment":"included"}),
+            body(Uuid::new_v4(), e),
             None,
             Some("k"),
         ),
-        (
-            "PATCH",
-            item_path.clone(),
-            json!({"qty_min":1}),
-            Some("\"2\""),
-            None,
-        ),
+        ("PATCH", item_path.clone(), json!({}), Some("\"2\""), None),
         ("DELETE", item_path.clone(), json!({}), None, None),
     ] {
         let (s, b, _) = request(&f.app, &reader, method, &path, body.clone(), tag, key).await;
@@ -841,7 +790,7 @@ async fn a_rejected_or_withdrawn_price_unit_is_no_longer_named_by_the_next_check
     let (s, b, _) = add(
         &f,
         rev,
-        json!({"sku_id":storage,"price_book_entry_id":e,"treatment":"paid"}),
+        json!({"sku_id":storage,"price_book_entry_id":e}),
         "one",
     )
     .await;
@@ -927,11 +876,12 @@ async fn a_deprecated_sku_the_plan_sells_may_be_added_again_and_no_other() {
     let eur = book(&f, "eur").await;
     let (p, rev1) = plan(&f, "pro", eur).await;
     let plan_id = id_of(&p["id"]);
-    let carried = catalog.sku(SkuType::Usage);
-    item_with_qty(&f, rev1, carried, "10").await;
+    let (carried, carried_eur) = priced(&f, &catalog, eur).await;
+    approved(&f, carried_eur, "2020-01-01").await;
+    item(&f, rev1, carried, Some(carried_eur), "paid").await;
     publish(&f, plan_id, rev1).await;
     catalog.age(carried, Lifecycle::Deprecated);
-    let another = catalog.sku(SkuType::Usage);
+    let (another, another_eur) = priced(&f, &catalog, eur).await;
     catalog.age(another, Lifecycle::Deprecated);
     let (s, copied, _) = f
         .call(
@@ -955,21 +905,14 @@ async fn a_deprecated_sku_the_plan_sells_may_be_added_again_and_no_other() {
         )
         .await;
     assert_eq!(s, 204, "{b}");
-    let again = json!({"sku_id":carried,"treatment":"included","included_qty":"10"});
-    let (s, b, _) = add(&f, rev2, again, "again").await;
+    let (s, b, _) = add(&f, rev2, body(carried, carried_eur), "again").await;
     assert_eq!(s, 201, "the published revision in effect carries it: {b}");
     assert_eq!(b["sku_id"], carried.to_string());
     assert_eq!(b["reference_state"], "confirmed", "{b}");
     let (s, b) = checks(&f, rev2).await;
     assert_eq!(s, 200, "{b}");
     assert_eq!(row(&b, "ITEM_SKU_DEPRECATED")["ok"], true, "{b}");
-    let (s, b, _) = add(
-        &f,
-        rev2,
-        json!({"sku_id":another,"treatment":"included","included_qty":"1"}),
-        "another",
-    )
-    .await;
+    let (s, b, _) = add(&f, rev2, body(another, another_eur), "another").await;
     assert_eq!(s, 400, "{b}");
     assert!(text(&b).contains("ITEM_SKU_DEPRECATED"), "{b}");
     let (s, cloned, _) = f
@@ -994,13 +937,7 @@ async fn a_deprecated_sku_the_plan_sells_may_be_added_again_and_no_other() {
         )
         .await;
     assert_eq!(s, 204, "{b}");
-    let (s, b, _) = add(
-        &f,
-        clone_rev1,
-        json!({"sku_id":carried,"treatment":"included","included_qty":"10"}),
-        "clone-again",
-    )
-    .await;
+    let (s, b, _) = add(&f, clone_rev1, body(carried, carried_eur), "clone-again").await;
     assert_eq!(
         s, 400,
         "a clone is a new plan with no revision in effect: {b}"

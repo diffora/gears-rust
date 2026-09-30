@@ -4,8 +4,7 @@ use crate::api::rest::closed_sets::{
     PricingBillingTiming, PricingChargeKind, PricingDecisionKind, PricingEligibility,
     PricingEntryReferenceState, PricingItemReferenceState, PricingModel, PricingPeriod,
     PricingPriceState, PricingPriceStatus, PricingReferenceOpKind, PricingReferenceOpRefKind,
-    PricingReferenceOpState, PricingRevisionState, PricingTreatment, PricingUnitState,
-    PricingVoteOutcome,
+    PricingReferenceOpState, PricingRevisionState, PricingUnitState, PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
 use crate::infra::storage::{RepoError, entity, repo::approval_repo::UnitInstants};
@@ -548,19 +547,17 @@ pub struct PricingPriceBookEntryPatch {
     pub invoice_line_override: Option<Option<String>>,
 }
 
-/// `POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A null entry
-/// is an included item with no charge.
+/// `POST /plan-revisions/{id}/items`: one item, one op with its own key (D-407). A plan item is a
+/// SKU and its entry in the plan's book (D-467): the entry is required, and `treatment`,
+/// `included_qty` and `qty_min` are refused (400 `BODY_UNEXPECTED`).
 #[toolkit_macros::api_dto(request)]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPlanItemCreate {
     pub sku_id: Uuid,
-    pub price_book_entry_id: Option<Uuid>,
-    /// `paid`, `optional` or `included`.
-    pub treatment: String,
-    /// Canonical decimal text, for an included usage item.
-    pub included_qty: Option<String>,
-    pub qty_min: Option<i32>,
+    /// The entry of the plan's book that prices the SKU; a missing or null one is 400
+    /// `ITEM_ENTRY_MISSING`.
+    pub price_book_entry_id: Uuid,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanItemDto {
@@ -568,10 +565,8 @@ pub struct PricingPlanItemDto {
     pub tenant_id: Uuid,
     pub revision_id: Uuid,
     pub sku_id: Uuid,
+    /// The entry that prices the item; null only for a legacy item stored without one (D-467).
     pub price_book_entry_id: Option<Uuid>,
-    pub treatment: PricingTreatment,
-    pub included_qty: Option<String>,
-    pub qty_min: Option<i32>,
     /// None until a reserve answers: a copied item attaches after its write (D-413).
     pub reservation_id: Option<Uuid>,
     pub reference_state: PricingItemReferenceState,
@@ -592,12 +587,6 @@ impl TryFrom<entity::plan_item::Model> for PricingPlanItemDto {
             revision_id: m.revision_id,
             sku_id: m.sku_id,
             price_book_entry_id: m.price_book_entry_id,
-            treatment: PricingTreatment::stored(
-                &m.treatment,
-                &format_args!("plan item {id} treatment"),
-            )?,
-            included_qty: m.included_qty,
-            qty_min: m.qty_min,
             reservation_id: m.reservation_id,
             reference_state: PricingItemReferenceState::stored(
                 &m.reference_state,
@@ -742,7 +731,7 @@ pub struct PricingPlanCurrent {
     pub rev_no: i32,
     /// The state it reads today (D-447): `draft`, `pending`, `scheduled` or `published`.
     pub state: PricingRevisionState,
-    /// How many items it holds, every item counted (an included one without an entry too).
+    /// How many items it holds, every item counted (a legacy one without an entry too, D-467).
     pub item_count: u32,
     /// The SKUs of its items, one per item, in ascending order. They may differ from the plans
     /// `GET /plans?sku_id=` keeps, which need an item with an entry and read the stored state
@@ -997,19 +986,16 @@ pub struct PricingPlanRevisionPatch {
     pub available_from: Option<Option<String>>,
 }
 /// `PATCH /plan-items/{id}`, draft only: never a SKU change (the SKU is the item's reference).
+/// It changes the item's entry (D-467): `treatment`, `included_qty` and `qty_min` are refused
+/// (400 `BODY_UNEXPECTED`), and a null entry is 400 `ITEM_ENTRY_MISSING`.
 #[toolkit_macros::api_dto(request)]
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
 #[allow(
     clippy::option_option,
-    reason = "PATCH distinguishes omission, null clearing and a new value"
+    reason = "PATCH tells omission from an explicit null, which it refuses"
 )]
 pub struct PricingPlanItemPatch {
-    pub treatment: Option<String>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub included_qty: Option<Option<String>>,
-    #[serde(default, deserialize_with = "nullable")]
-    pub qty_min: Option<Option<i32>>,
     #[serde(default, deserialize_with = "nullable")]
     pub price_book_entry_id: Option<Option<Uuid>>,
 }

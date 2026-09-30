@@ -16,13 +16,14 @@ use super::{
     price_book_entry::{ChargeKind, ReferenceState as EntryReferenceState, validate_entry_kind},
 };
 use bss_products_sdk::models::{Lifecycle, Sku, SkuType};
-use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 // `scheduled`: approved, and waiting for its sale date (D-446).
 string_enum!(RevisionState {Draft=>"draft", Pending=>"pending", Scheduled=>"scheduled", Published=>"published", Superseded=>"superseded"});
+// The stored `treatment` column (D-467): no read shows it and no rule reads it. A row written from
+// D-467 on is `paid` (`stored_treatment`); `optional` and `included` are legacy rows.
 string_enum!(Treatment {Paid=>"paid", Optional=>"optional", Included=>"included"});
 // A copied item starts `unreserved` and attaches after its write (D-413).
 string_enum!(ReferenceState {Unreserved=>"unreserved", ConfirmationPending=>"confirmation_pending", Confirmed=>"confirmed", Lost=>"lost"});
@@ -57,17 +58,26 @@ pub struct Reference {
     pub state: ReferenceState,
     pub reservation_id: Option<Uuid>,
 }
-/// One plan item. A null entry is an included item with no charge.
+/// One plan item: a SKU and its entry in the plan's book (D-467). A null entry is a legacy row,
+/// an included item stored before D-467: the checks show it `ITEM_ENTRY_MISSING`.
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub id: Uuid,
     pub sku_id: Uuid,
     pub price_book_entry_id: Option<Uuid>,
-    pub treatment: Treatment,
-    pub included_qty: Option<Decimal>,
-    pub qty_min: Option<i32>,
     pub reference: Reference,
+}
+/// The `treatment` a row written from D-467 on stores: `paid` for an item that names an entry,
+/// and `included` only for a copy of a legacy item stored without one, the one entry-less row the
+/// column's CHECK admits. The quantities it stores are always null.
+#[must_use]
+pub const fn stored_treatment(entry: Option<Uuid>) -> Treatment {
+    if entry.is_some() {
+        Treatment::Paid
+    } else {
+        Treatment::Included
+    }
 }
 /// A pending price and the approval unit that holds it: a candidate for `blocked_by`.
 #[toolkit_macros::domain_model]
@@ -371,17 +381,7 @@ fn uncovered(detail: String, blocking: (Vec<Uuid>, Vec<BlockingPrice>)) -> ItemC
 #[must_use]
 pub fn item_coverage(ctx: &PlanContext, item: &Item, today: Date) -> ItemCoverage {
     let Some(e) = entry(ctx, item.price_book_entry_id) else {
-        return if item.treatment == Treatment::Included {
-            ItemCoverage {
-                ok: true,
-                detail: "no charge".into(),
-                version_no: None,
-                blocked_by: vec![],
-                blocked_by_prices: vec![],
-            }
-        } else {
-            uncovered("no price".into(), (vec![], vec![]))
-        };
+        return uncovered("no price".into(), (vec![], vec![]));
     };
     let Some(b) = book(ctx) else {
         return uncovered("attach a price book".into(), (vec![], vec![]));
@@ -476,7 +476,6 @@ struct Tally {
     /// Each metered usage type with the first item that meters it.
     meters: Vec<(String, String, Uuid)>,
     meter_dup: Found,
-    included_qty: Found,
     deprecated: Found,
     unavailable: Found,
     pending: Found,
@@ -507,7 +506,8 @@ fn tally_sku_and_reference(ctx: &PlanContext, item: &Item, name: &str, t: &mut T
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
 }
-/// Structure (the prototype's walk up to its entry): charge kind, meter and included quantity.
+/// Structure (the prototype's walk up to its entry): charge kind and meter. An item without an
+/// entry meters nothing: it is `ITEM_ENTRY_MISSING` (D-467).
 fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mut Tally) {
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     if let Some(e) = e
@@ -525,7 +525,7 @@ fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mu
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
     if let Some(meter) = &sku.usage_type_ref
-        && (e.is_some() || item.treatment == Treatment::Included)
+        && e.is_some()
     {
         if let Some((_, first, first_item)) = t.meters.iter().find(|(m, _, _)| m == meter) {
             t.meter_dup
@@ -533,18 +533,6 @@ fn tally_structure(sku: &Sku, e: Option<&Entry>, item: &Item, name: &str, t: &mu
         } else {
             t.meters.push((meter.clone(), name.to_owned(), item.id));
         }
-    }
-    let usage = sku.r#type == SkuType::Usage;
-    let needs_quantity = item.treatment == Treatment::Included && usage;
-    if needs_quantity && item.included_qty.is_none_or(|q| q < Decimal::ZERO) {
-        t.included_qty
-            .add(format!("{name}: set the included quantity"), &[item.id]);
-    }
-    if item.included_qty.is_some() && !usage {
-        t.included_qty.add(
-            format!("{name}: an included quantity is for usage only"),
-            &[item.id],
-        );
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-2
 }
@@ -611,9 +599,6 @@ fn tally(ctx: &PlanContext, today: Date) -> Tally {
             }
             // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
             tally_structure(sku, e, item, &name, &mut t);
-        }
-        if item.treatment == Treatment::Included && item.price_book_entry_id.is_none() {
-            continue;
         }
         match e {
             Some(e) => tally_pricing(ctx, e, item, &name, &mut t, today),
@@ -748,7 +733,7 @@ fn entry_rows(ctx: &PlanContext, t: &Tally, sale: Date) -> Vec<Check> {
         found_row(
             ctx,
             "ITEM_ENTRY_MISSING",
-            "Every paid / optional item points at a price",
+            "Every item points at a price",
             &t.no_entry,
             "all items priced",
         ),
@@ -819,13 +804,6 @@ fn structure_rows(ctx: &PlanContext, t: &Tally) -> Vec<Check> {
             "No two items meter the same usage type",
             &t.meter_dup,
             "meters unambiguous",
-        ),
-        found_row(
-            ctx,
-            "INCLUDED_QTY",
-            "Included usage names a quantity",
-            &t.included_qty,
-            "ok",
         ),
     ]
 }

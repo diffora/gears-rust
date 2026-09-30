@@ -982,7 +982,7 @@ async fn postgres_an_item_add_reaching_its_write_after_the_lock_is_refused() {
     let mut add = Box::pin(p.a.call(
         "POST",
         &path,
-        json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"}),
+        json!({"sku_id":sku,"price_book_entry_id":entry}),
         None,
         Some("add"),
     ));
@@ -1038,7 +1038,7 @@ async fn postgres_an_item_add_committed_inside_a_submit_is_carried_by_the_unit()
         p.a.call(
             "POST",
             &add_path(revision),
-            json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"}),
+            json!({"sku_id":sku,"price_book_entry_id":entry}),
             None,
             Some("add"),
         )
@@ -1068,7 +1068,7 @@ async fn postgres_an_item_add_racing_a_publishing_submit_never_lands_after_the_l
     for round in 0..6 {
         let (_, revision, book) = green_plan(&p, &format!("race-{round}")).await;
         let (sku, entry) = priced(&p.a, &p.catalog, book).await;
-        let add_body = json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"});
+        let add_body = json!({"sku_id":sku,"price_book_entry_id":entry});
         let (add_key, submit_key) = (format!("add-{round}"), format!("submit-{round}"));
         let (submit_at, add_at) = (submit_path(revision), add_path(revision));
         let submit =
@@ -1175,7 +1175,7 @@ async fn postgres_an_item_create_and_a_copied_items_attach_round_trip_through_th
     let (plan, revision) = plan_support::plan(&p.a, "trip", book).await;
     let plan = id_of(&plan["id"]);
     let (sku, entry) = priced(&p.a, &p.catalog, book).await;
-    let body = json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"});
+    let body = json!({"sku_id":sku,"price_book_entry_id":entry});
     let (s, created, _) =
         p.a.call("POST", &add_path(revision), body.clone(), None, Some("add"))
             .await;

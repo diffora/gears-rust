@@ -21,9 +21,6 @@
           {
             "item_id": "<item:pro-1/pro>",
             "sku_id": "<sku:pro>",
-            "treatment": "paid",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": "<entry:pro>",
             "charge_kind": "recurring",
             "period": "month",
@@ -77,9 +74,6 @@
           {
             "item_id": "<item:pro-1/storage>",
             "sku_id": "<sku:storage>",
-            "treatment": "paid",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": "<entry:storage>",
             "charge_kind": "usage",
             "period": null,
@@ -209,9 +203,6 @@
           {
             "item_id": "<item:pro-1/legacy>",
             "sku_id": "<sku:legacy>",
-            "treatment": "included",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": null,
             "charge_kind": null,
             "period": null,
@@ -261,9 +252,6 @@
           {
             "item_id": "<item:pro-2/egress>",
             "sku_id": "<sku:egress>",
-            "treatment": "optional",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": "<entry:egress>",
             "charge_kind": "usage",
             "period": null,
@@ -384,9 +372,6 @@
           {
             "item_id": "<item:pro-2/backup>",
             "sku_id": "<sku:backup>",
-            "treatment": "included",
-            "included_qty": "100",
-            "qty_min": null,
             "price_book_entry_id": null,
             "charge_kind": null,
             "period": null,

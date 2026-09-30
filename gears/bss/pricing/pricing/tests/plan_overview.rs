@@ -328,8 +328,8 @@ async fn the_current_revision_and_the_one_in_effect_over_every_state_mix() {
     assert_eq!(stored.state, "scheduled", "the read derived, never wrote");
 }
 
-/// D-460: `item_count` and `sku_ids` count every item of the current revision, an included item
-/// without an entry too, while `GET /plans?sku_id=` keeps a plan only for an item with an entry,
+/// D-460: `item_count` and `sku_ids` count every item of the current revision, a legacy item
+/// stored without an entry too (D-467), while `GET /plans?sku_id=` keeps a plan only for an item with an entry,
 /// judged on the stored state (D-434): the two may differ. `created_by` is the current
 /// revision's author, not the plan's.
 #[tokio::test]
@@ -337,7 +337,7 @@ async fn the_current_revisions_skus_count_every_item_and_may_differ_from_the_sku
     let (f, catalog) = setup().await;
     let p = fresh(&f, &catalog, "pro").await;
     let included = catalog.sku(SkuType::Usage);
-    plan_support::item_with_qty(&f, p.rev1, included, "5").await;
+    let legacy = plan_support::item_with_qty(&f, p.rev1, included, "5").await;
     let listed = get(&f, "/plans").await;
     let row = &listed["items"][0];
     assert_eq!(row["current"]["item_count"], 2, "{row}");
@@ -353,6 +353,17 @@ async fn the_current_revisions_skus_count_every_item_and_may_differ_from_the_sku
         by_included["items"].as_array().unwrap().is_empty(),
         "the SKU filter needs an entry, the current revision names every item: {by_included}"
     );
+    // D-467: the legacy item is ITEM_ENTRY_MISSING, so its author removes it before the submit.
+    let (s, b, _) = f
+        .call(
+            "DELETE",
+            &format!("/plan-items/{}", legacy.id),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 204, "{b}");
     // The copy is authored by another principal: `current.created_by` follows the revision.
     policy(&f, 0).await;
     submit(&f, p.rev1, "rev1").await;
@@ -374,8 +385,8 @@ async fn the_current_revisions_skus_count_every_item_and_may_differ_from_the_sku
         other.subject_id().to_string()
     );
     assert_eq!(
-        read["current"]["item_count"], 2,
-        "the copy carries both items"
+        read["current"]["item_count"], 1,
+        "the copy carries the priced item"
     );
     assert_eq!(read["created_by"], f.ctx.subject_id().to_string());
 }

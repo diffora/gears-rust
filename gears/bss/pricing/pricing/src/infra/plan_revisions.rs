@@ -3,7 +3,7 @@
 //! door's serializable transaction.
 //!
 //! The fingerprinted `after` is the revision's business content only: its book, its sale date
-//! and its items (SKU, entry, treatment, included quantity, minimum quantity), in SKU order —
+//! and its items (SKU and entry, D-467), in SKU order —
 //! never a version, a lock or an item's reference columns, which the reference machine moves
 //! while the unit is pending. The item SKUs' current descriptors are read fresh for the reviewer
 //! and kept beside `after`, never in it: a GL change must not refresh a pending unit (D-408).
@@ -139,7 +139,10 @@ pub async fn catch_up(
     Ok(Some(switched))
 }
 
-/// A revision's business content, the unit's `after` (and `before` for the published one).
+/// A revision's business content, the unit's `after` (and `before` for the published one): each
+/// item is its SKU and its entry (D-467). A unit submitted before D-467 fingerprinted each item's
+/// treatment and quantities too, so its first vote or reject after D-467 finds its content changed
+/// and refreshes it once, at the next generation (`bss_approval`'s stale refresh).
 #[must_use]
 pub fn content(revision: &plan_revision::Model, items: &[plan_item::Model]) -> Value {
     let mut items: Vec<&plan_item::Model> = items.iter().collect();
@@ -152,9 +155,6 @@ pub fn content(revision: &plan_revision::Model, items: &[plan_item::Model]) -> V
             .map(|i| json!({
                 "sku_id": i.sku_id,
                 "price_book_entry_id": i.price_book_entry_id,
-                "treatment": i.treatment,
-                "included_qty": i.included_qty,
-                "qty_min": i.qty_min,
             }))
             .collect::<Vec<_>>(),
     })

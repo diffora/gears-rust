@@ -224,7 +224,7 @@ async fn a_plan_revision_is_submitted_and_applied_through_an_in_process_registry
         .call(
             "POST",
             &format!("/plan-revisions/{revision}/items"),
-            json!({"sku_id":sku,"price_book_entry_id":priced,"treatment":"paid"}),
+            json!({"sku_id":sku,"price_book_entry_id":priced}),
             None,
             Some("item"),
         )

@@ -99,7 +99,7 @@ Not built (D-415): the owner dropped quote and the Studio wiring; consumers read
 
 1. [ ] - `p1` - Split the period at every price boundary inside the bound chain, including a temporary end. - `inst-read-contract-events-period-slices-and-quote-1`
 2. [ ] - `p1` - Prorate recurring slices by calendar days; rate usage by reading timestamp with tier counters per slice. - `inst-read-contract-events-period-slices-and-quote-2`
-3. [ ] - `p1` - Deduct included quantities, aggregate per price/subscription/period and apply the coverage-prorated min_fee once per price; not built in pricing, Rating applies the floor (D-415). - `inst-read-contract-events-period-slices-and-quote-3`
+3. [ ] - `p1` - Aggregate per price/subscription/period (no plan carries an included quantity to deduct since D-467) and apply the coverage-prorated min_fee once per price; not built in pricing, Rating applies the floor (D-415). - `inst-read-contract-events-period-slices-and-quote-3`
 4. [ ] - `p1` - Apply period-start promotion after floors, then the bound rounding/currency policy; quote returns totals while resolve never does; quote is not built (D-415). - `inst-read-contract-events-period-slices-and-quote-4`
 
 ### typed-events
@@ -171,7 +171,7 @@ Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
 Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. This DoD stays unticked.
 
-Quote adds quantities and optional-item choices to selection, included quantities, price floors and promotions. It is read-only and separate from resolve, with exact tier-edge and rounding goldens (spec §7.1).
+Quote adds quantities to selection, price floors and promotions (no optional item and no included quantity since D-467). It is read-only and separate from resolve, with exact tier-edge and rounding goldens (spec §7.1).
 
 Requirement: `cpt-cf-bss-pricing-fr-quote`; PRD AC #20.
 
@@ -200,7 +200,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.
 | `cpt-cf-bss-pricing-dod-binding-sku-version` | AC #18; `cpt-cf-bss-pricing-fr-resolve` | Given an October 1 GL change already applied to the current SKU, when September resolves then it binds the earlier version; October binds the new one and prior pins do not change. |
 | `cpt-cf-bss-pricing-dod-price-read-forever` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given a closed price id from an old invoice, when read then its original money is returned; unknown/foreign ids reveal no price. |
 | `cpt-cf-bss-pricing-dod-period-slices` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Not built (D-415). Given a temporary price ending October 11 inside October 5–November 5, when preview runs then two slices appear; their common-price floors are not charged twice. |
-| `cpt-cf-bss-pricing-dod-quote-totals` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Not built (D-415). Given valid quantities and a promotion, when quote runs then totals apply included quantities before prorated floor and promotion afterward; invalid quantities fail without changing pins. |
+| `cpt-cf-bss-pricing-dod-quote-totals` | AC #20; `cpt-cf-bss-pricing-fr-quote` | Not built (D-415). Given valid quantities and a promotion, when quote runs then totals apply the prorated floor and the promotion afterward (no included quantity since D-467); invalid quantities fail without changing pins. |
 | `cpt-cf-bss-pricing-dod-events-typed-outbox` | AC #14; `cpt-cf-bss-pricing-fr-events` | Given approve/reject/withdraw/quorum-zero outcomes, when committed then each has its terminal event and only successful apply has its domain publication; rollback has neither. |
 | `cpt-cf-bss-pricing-dod-consumer-golden-contracts` | AC #19; `cpt-cf-bss-pricing-fr-price-read` | Given stored contract fixtures including negative tenant/uncovered cases, when either backend serves the public paths then responses match; a shape drift fails the contract gate. |
 

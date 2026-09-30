@@ -557,9 +557,13 @@ async fn copy_items(
                 revision_id: target,
                 sku_id: from.sku_id,
                 price_book_entry_id: from.price_book_entry_id,
-                treatment: from.treatment,
-                included_qty: from.included_qty,
-                qty_min: from.qty_min,
+                // D-467: a copy is a new row: `paid` and no quantity; a legacy item without an
+                // entry stays one, so the draft's checks show it ITEM_ENTRY_MISSING.
+                treatment: plan::stored_treatment(from.price_book_entry_id)
+                    .as_str()
+                    .into(),
+                included_qty: None,
+                qty_min: None,
                 reservation_id: None,
                 reference_state: ReferenceState::Unreserved.as_str().into(),
                 version: 1,
@@ -1203,14 +1207,6 @@ fn item_of(m: &plan_item::Model) -> Result<plan::Item, DoorError> {
         id: m.id,
         sku_id: m.sku_id,
         price_book_entry_id: m.price_book_entry_id,
-        treatment: m.treatment.parse().map_err(|_| bad("treatment"))?,
-        included_qty: m
-            .included_qty
-            .as_deref()
-            .map(str::parse)
-            .transpose()
-            .map_err(|_| bad("included_qty"))?,
-        qty_min: m.qty_min,
         reference: plan::Reference {
             state: m
                 .reference_state

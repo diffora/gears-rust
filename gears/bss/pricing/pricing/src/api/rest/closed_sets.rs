@@ -6,7 +6,7 @@
 //! error); a stored token is read back with `stored`, where a token outside the set — its column's
 //! CHECK forbids one — is `CorruptRow` naming the row, a 500, never a panic.
 use crate::domain::{
-    plan::{ReferenceState as ItemReference, RevisionState, Treatment},
+    plan::{ReferenceState as ItemReference, RevisionState},
     price::{DisplayStatus, Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState as EntryReference},
     reference_op::OpKind,
@@ -115,10 +115,6 @@ closed_set!(
         Active => "active",
         Superseded => "superseded",
     }
-);
-closed_set!(
-    /// How a plan item is sold.
-    PricingTreatment from Treatment { Paid => "paid", Optional => "optional", Included => "included" }
 );
 closed_set!(
     /// Where a plan item's SKU reference stands with Products.

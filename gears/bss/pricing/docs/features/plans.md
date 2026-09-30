@@ -31,7 +31,7 @@
   - [Computed blocking units](#computed-blocking-units)
   - [Independent revision approval](#independent-revision-approval)
   - [Item references](#item-references)
-  - [Included items](#included-items)
+  - [Items and grants](#items-and-grants)
   - [Clone into a fresh draft](#clone-into-a-fresh-draft)
   - [Retirement requires migration](#retirement-requires-migration)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
@@ -79,7 +79,7 @@ Holding multiple permissions never bypasses separation of duties.
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-flow-plans`
 
 1. [x] - `p1` - Product Manager copies published structure into a new draft revision, or starts a new plan. - `inst-plans-flow-1`
-2. [x] - `p1` - Select one book, items, included quantities and availability; add each item through the item sub-resource, which reserves its reference before the write (D-407), while a copied item attaches its reference after the copy is written (D-413). Grants and the sold-as bundle SKU are deferred by the owner (D-411). - `inst-plans-flow-2`
+2. [x] - `p1` - Select one book, items (each a SKU and its entry in the book, D-467) and availability; add each item through the item sub-resource, which reserves its reference before the write (D-407), while a copied item attaches its reference after the copy is written (D-413). Grants and the sold-as bundle SKU are deferred by the owner (D-411). - `inst-plans-flow-2`
 3. [x] - `p1` - Read checks for the sale date and all dimension values; show ITEM_UNCOVERED and computed blocked_by price units when coverage is missing. - `inst-plans-flow-3`
 4. [x] - `p1` - After checks pass, submit a separate plan_revision unit; revalidate on apply. - `inst-plans-flow-4`
 5. [x] - `p1` - On approval publish the revision, supersede the previous published revision and advance plan.published_rev atomically; existing subscription pins remain unchanged. - `inst-plans-flow-5`
@@ -90,8 +90,8 @@ Holding multiple permissions never bypasses separation of duties.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-checks`
 
-1. [x] - `p1` - Read every item SKU fresh and check it is allowed, non-bundle and not newly deprecated (D-408); validate every item reference's receipt (D-413) and the charge treatment. - `inst-plans-revision-checks-1`
-2. [x] - `p1` - Enforce one recurring frequency, unique usage meter and usage-only included_qty; reject foreign-book entries. - `inst-plans-revision-checks-2`
+1. [x] - `p1` - Read every item SKU fresh and check it is allowed, non-bundle and not newly deprecated (D-408); validate every item reference's receipt (D-413) and that every item names an entry (ITEM_ENTRY_MISSING, D-467). - `inst-plans-revision-checks-1`
+2. [x] - `p1` - Enforce one recurring frequency and a unique usage meter among the items with an entry; reject foreign-book entries. - `inst-plans-revision-checks-2`
 3. [x] - `p1` - For every registered dimension value, verify sale-date coverage and an open tail through its own or the default chain; check book validity. - `inst-plans-revision-checks-3`
 4. [x] - `p1` - When uncovered, compute blocking pending price unit ids from current prices, with the pending prices behind them, and name on every row the items that turn it red (D-466); return checks, never persist blocked_by or create a unit while red. - `inst-plans-revision-checks-4`
 
@@ -150,7 +150,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-item-rules`
 
-Validate recurring frequency, duplicate usage meters, treatment and usage-only included quantities. Reject bundle items, a deprecated SKU newly added (one carried over from the same plan's published revision stays, D-408, and one that revision carries may be added again, D-465) and foreign-book entries using the named spec errors (spec §5).
+Validate recurring frequency, duplicate usage meters and an entry for every item (D-467). Reject bundle items, a deprecated SKU newly added (one carried over from the same plan's published revision stays, D-408, and one that revision carries may be added again, D-465) and foreign-book entries using the named spec errors (spec §5).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
@@ -186,11 +186,11 @@ A new plan_item reference, added through the item sub-resource, uses reserve, SK
 
 Requirement: `cpt-cf-bss-pricing-fr-reference-protocol`; PRD AC #11.
 
-### Included items
+### Items and grants
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-plan-grants`
 
-Included items have no entry charge, and usage included_qty is applied before money floors at quote/rating time; no phase schedule or prepaid-grant system returns (spec §3 item 25, §5). Revision grants are deferred by the owner (D-411).
+A plan item is a SKU and its entry in the plan's book: no included item, no optional item and no quantity remain, and no phase schedule or prepaid-grant system returns (spec §3 item 25, §5; D-467). Rows stored before D-467 keep reading with those fields hidden. Revision grants are deferred by the owner (D-411).
 
 Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 
@@ -222,7 +222,7 @@ Requirement: `cpt-cf-bss-pricing-fr-plans`; PRD AC #15.
 | `cpt-cf-bss-pricing-dod-plan-blocked-by` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given pending price unit ap-12 covering a gap, when revision checks run then they name ap-12; rejection or withdrawal changes the next check rather than leaving a stored dependency. |
 | `cpt-cf-bss-pricing-dod-plan-revision-unit` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given an approved repricing and rejected revision, when both outcomes are read then the old revision uses the new book money and the rejected revision is not published. |
 | `cpt-cf-bss-pricing-dod-plan-reference-protocol` | AC #11; `cpt-cf-bss-pricing-fr-reference-protocol` | Given a plan_item reservation and confirmation outage, when the draft commits then the reference stays protective and retryable; bundle items remain forbidden. |
-| `cpt-cf-bss-pricing-dod-plan-grants` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given a revision with an included usage item, when structure is read then its included quantity survives; an included quantity on recurring is refused. |
+| `cpt-cf-bss-pricing-dod-plan-grants` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given a revision, when its structure is read then each item is a SKU and its entry, with no treatment, included quantity or minimum quantity, and an item create or PATCH that carries one of them is refused; a legacy included item reads with a null entry and is ITEM_ENTRY_MISSING in a draft (D-467). Grants are deferred (D-411). |
 | `cpt-cf-bss-pricing-dod-plan-clone` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Given a published source, when clone succeeds then the destination is a separate draft; duplicate tenant code is refused and changing the clone leaves the source unchanged. |
 | `cpt-cf-bss-pricing-dod-plan-retire-migration` | AC #15; `cpt-cf-bss-pricing-fr-plans` | Deferred (D-410). Given subscriptions pinned to a retiring plan, when only the request is approved then movement is not reported complete; an invalid target blocks the request. |
 

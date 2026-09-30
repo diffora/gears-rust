@@ -240,15 +240,22 @@ async fn an_item_create_reserves_a_plan_item_writes_and_confirms() {
     let c = f.caller();
     let sku = Uuid::new_v4();
     let e = entry(&f, t.book, sku).await;
-    let input = json!({"sku_id":sku,"price_book_entry_id":e.id,"treatment":"paid","qty_min":1});
+    let input = json!({"sku_id":sku,"price_book_entry_id":e.id});
     let created = t.create(&c, input.clone(), "one").await;
     assert_eq!(created.0, 201, "{created:?}");
     assert_eq!(created.1["reference_state"], "confirmed");
     assert_eq!(created.1["revision_id"], t.revision.to_string());
     assert_eq!(created.1["sku_id"], sku.to_string());
     assert_eq!(created.1["price_book_entry_id"], e.id.to_string());
-    assert_eq!(created.1["treatment"], "paid");
-    assert_eq!(created.1["qty_min"], 1);
+    // D-467: a plan item is a SKU and its entry; the new row stores `paid` and no quantity.
+    for removed in ["treatment", "included_qty", "qty_min"] {
+        assert!(created.1.get(removed).is_none(), "{removed}: {created:?}");
+    }
+    let row = stored_item(&f, id_of(&created.1["id"])).await.unwrap();
+    assert_eq!(
+        (row.treatment.as_str(), row.included_qty, row.qty_min),
+        ("paid", None, None)
+    );
     assert_eq!(created.2, "\"2\"", "written, then confirmed");
     assert_eq!(t.create(&c, input, "one").await, created, "the key replays");
     assert_eq!(
@@ -449,7 +456,7 @@ async fn a_book_change_between_reserve_and_write_makes_the_entry_foreign() {
         &f,
         &script,
         &t,
-        json!({"sku_id":sku,"price_book_entry_id":e.id,"treatment":"paid"}),
+        json!({"sku_id":sku,"price_book_entry_id":e.id}),
         async {
             let conn = f.db.conn().unwrap();
             let mut r =
@@ -483,7 +490,7 @@ async fn the_write_refuses_an_entry_of_another_book_or_sku_or_an_unknown_one() {
         let answer = t
             .create(
                 &f.caller(),
-                json!({"sku_id":sku,"price_book_entry_id":entry_id,"treatment":"optional"}),
+                json!({"sku_id":sku,"price_book_entry_id":entry_id}),
                 "one",
             )
             .await;
@@ -833,6 +840,9 @@ async fn the_create_ops_re_read_admits_a_deprecated_sku_its_plan_sells() {
     let tenant = f.ctx.subject_tenant_id();
     let now = time::OffsetDateTime::now_utc();
     let carried = Uuid::new_v4();
+    let carried_entry = entry(&f, t.book, carried).await.id;
+    let other = Uuid::new_v4();
+    let other_entry = entry(&f, t.book, other).await.id;
     plan_item_repo::insert(
         &f.db.conn().unwrap(),
         &scope(&f),
@@ -841,9 +851,9 @@ async fn the_create_ops_re_read_admits_a_deprecated_sku_its_plan_sells() {
             tenant_id: tenant,
             revision_id: t.revision,
             sku_id: carried,
-            price_book_entry_id: None,
-            treatment: "included".into(),
-            included_qty: Some("1".into()),
+            price_book_entry_id: Some(carried_entry),
+            treatment: "paid".into(),
+            included_qty: None,
             qty_min: None,
             reservation_id: Some(Uuid::new_v4()),
             reference_state: "confirmed".into(),
@@ -879,8 +889,8 @@ async fn the_create_ops_re_read_admits_a_deprecated_sku_its_plan_sells() {
     .await
     .unwrap()
     .id;
-    let create = |sku: Uuid, key: &'static str| {
-        let input = json!({"sku_id":sku,"treatment":"included"});
+    let create = |sku: Uuid, entry: Uuid, key: &'static str| {
+        let input = json!({"sku_id":sku,"price_book_entry_id":entry});
         let digest = bss_pricing::api::rest::preconditions::request_digest(&input).unwrap();
         let body: bss_pricing::api::rest::authoring::dto::PricingPlanItemCreate =
             serde_json::from_value(input).unwrap();
@@ -895,13 +905,12 @@ async fn the_create_ops_re_read_admits_a_deprecated_sku_its_plan_sells() {
             body,
         )
     };
-    let written = entry_support::answer(create(carried, "carried").await).await;
+    let written = entry_support::answer(create(carried, carried_entry, "carried").await).await;
     assert_eq!(written.0, 201, "{written:?}");
     let item = stored_item(&f, id_of(&written.1["id"])).await.unwrap();
     assert_eq!(item.revision_id, rev2);
     assert_eq!(item.reference_state, "confirmed", "{item:?}");
-    let other = Uuid::new_v4();
-    let refused = entry_support::answer(create(other, "other").await).await;
+    let refused = entry_support::answer(create(other, other_entry, "other").await).await;
     assert_eq!(refused.0, 400, "{refused:?}");
     assert!(
         refused.1.to_string().contains("ITEM_SKU_DEPRECATED"),

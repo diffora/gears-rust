@@ -511,7 +511,7 @@ async fn a_plan_item_reads_with_its_revision_and_plan() {
     assert_eq!(b["state"], "draft");
     assert_eq!(b["sku_id"], sku.to_string());
     assert_eq!(b["price_book_entry_id"], e.to_string());
-    assert_eq!(b["treatment"], "paid");
+    assert!(b.get("treatment").is_none(), "D-467: {b}");
     assert_eq!(b["reference_state"], "confirmed");
     assert_eq!(b["version"], 1);
     // The tag is the one the PATCH takes.
@@ -519,7 +519,7 @@ async fn a_plan_item_reads_with_its_revision_and_plan() {
         .call(
             "PATCH",
             &format!("/plan-items/{}", stored.id),
-            json!({"treatment":"optional"}),
+            json!({"price_book_entry_id":e}),
             Some(&tag),
             None,
         )

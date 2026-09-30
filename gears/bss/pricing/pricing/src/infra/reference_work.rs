@@ -102,23 +102,19 @@ impl EntryInput {
 /// kept apart from the request `PricingPlanItemCreate`, whose `deny_unknown_fields` would make a
 /// stored op corrupt the day a field of the wire is renamed or removed. Its JSON is the request
 /// body's, field for field; it denies no unknown field, and a field added later takes
-/// `#[serde(default)]`.
+/// `#[serde(default)]`. An op stored before D-467 also carries `treatment`, `included_qty` and
+/// `qty_min`, which are ignored: its item is written as every item is from D-467 on
+/// (`plan::stored_treatment`, no quantity), and one without an entry stays a legacy entry-less row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemInput {
     pub sku_id: Uuid,
     pub price_book_entry_id: Option<Uuid>,
-    pub treatment: String,
-    pub included_qty: Option<String>,
-    pub qty_min: Option<i32>,
 }
 impl From<PricingPlanItemCreate> for ItemInput {
     fn from(input: PricingPlanItemCreate) -> Self {
         Self {
             sku_id: input.sku_id,
-            price_book_entry_id: input.price_book_entry_id,
-            treatment: input.treatment,
-            included_qty: input.included_qty,
-            qty_min: input.qty_min,
+            price_book_entry_id: Some(input.price_book_entry_id),
         }
     }
 }

@@ -194,12 +194,10 @@ async fn a_green_revision_submits_under_its_key_and_quorum_zero_publishes_it_at_
         json!({
             "book_id": revision(&f, g.revision).await["book_id"],
             "available_from": null,
-            "items": [{
-                "sku_id": g.sku, "price_book_entry_id": g.entry, "treatment": "paid",
-                "included_qty": null, "qty_min": null,
-            }],
+            "items": [{"sku_id": g.sku, "price_book_entry_id": g.entry}],
         }),
-        "the fingerprinted content is the business content only: {snapshot}"
+        "the fingerprinted content is the business content only, an item its SKU and its \
+         entry (D-467): {snapshot}"
     );
     assert_eq!(
         snapshot["before"],

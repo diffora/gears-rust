@@ -123,9 +123,9 @@ async fn a_clone_copies_the_published_revision_into_a_new_draft_rev_1_and_attach
             copy["price_book_entry_id"],
             json!(source_item.price_book_entry_id.map(|e| e.to_string()))
         );
-        assert_eq!(copy["treatment"], source_item.treatment);
-        assert_eq!(copy["included_qty"], json!(source_item.included_qty));
-        assert_eq!(copy["qty_min"], json!(source_item.qty_min));
+        for removed in ["treatment", "included_qty", "qty_min"] {
+            assert!(copy.get(removed).is_none(), "D-467, no {removed}: {copy}");
+        }
         assert_eq!(copy["created_by"], reviewer.subject_id().to_string());
         // D-413: written unreserved, then attached by the door's best-effort drive.
         assert_eq!(copy["reference_state"], "confirmed", "{copy}");
@@ -398,11 +398,13 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
             .clone()
     };
     let (seats_copy, storage_copy) = (copy_of(seats), copy_of(storage));
+    // D-467: the legacy included copy, stored without an entry, is given one.
+    let storage_entry = entry(&f, eur, storage, "usage", None).await;
     let (s, b, _) = f
         .call(
             "PATCH",
             &format!("/plan-items/{}", storage_copy["id"].as_str().unwrap()),
-            json!({"included_qty":"250"}),
+            json!({"price_book_entry_id":storage_entry}),
             Some(&format!("\"{}\"", storage_copy["version"])),
             None,
         )
@@ -421,7 +423,10 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
     let changed = revision(&f, draft).await;
     assert_eq!(changed["available_from"], "2031-06-01");
     assert_eq!(changed["items"].as_array().unwrap().len(), 1, "{changed}");
-    assert_eq!(changed["items"][0]["included_qty"], "250");
+    assert_eq!(
+        changed["items"][0]["price_book_entry_id"],
+        json!(storage_entry.to_string())
+    );
     assert_eq!(
         plan_body(&f, source).await,
         plan_before,

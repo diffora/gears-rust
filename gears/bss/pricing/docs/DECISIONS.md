@@ -24,13 +24,13 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-385 | H | One registered dimension, independent value chains | DECIDED 2026-09-25 · §2 decision 4; §5; §14 |
 | D-386 | H | SKU type defines the entry key and allowed models | DECIDED 2026-09-25 · §2 decision 5; §5; amended by D-427 |
 | D-387 | H | Tier bands are half-open | DECIDED 2026-09-25 · §5 tier bands; §10 |
-| D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5 |
+| D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5; amended by D-467 |
 | D-389 | H | Descriptors bind from durable SKU versions | DECIDED 2026-09-25 · §2 decision 14; §2.2; §7.1 |
 | D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5 |
 | D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs; amended by D-443 |
 | D-392 | H | Publish changes is a selected book batch | DECIDED 2026-09-25 · §2 decision 7; §6; §8 |
 | D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6 |
-| D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8; amended by D-450 |
+| D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8; amended by D-450, D-467 |
 | D-395 | H | Promotions are versioned and migrations are requests | DECIDED 2026-09-25 · §5; §6; §11 phase 3 |
 | D-396 | H | One replay store and optimistic conditional writes | DECIDED 2026-09-25 · §2.2; §3 items 23 and 27; §7.2 |
 | D-397 | H | Consumer pins replace cohorts and catalog versions | DECIDED 2026-09-25 · §2 decision 6; §7.1; §12 |
@@ -43,21 +43,21 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-404 | H | A draft belongs to its author | DECIDED 2026-09-25 · Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8) |
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
-| D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 |
+| D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2; amended by D-467 |
 | D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465; extended by D-466 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
 | D-412 | M | The phase 2 schema is edited in place until the first deployment | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 15; closed by D-427 |
-| D-413 | H | A copied item attaches its reference after the write | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write; amended by D-451 |
+| D-413 | H | A copied item attaches its reference after the write | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write; amended by D-451, D-467 |
 | D-414 | H | A revision's references outlive it | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 14 |
 | D-415 | H | Quote is not built; the Studio is not wired to the API (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; deviation from spec §7.1 and §11 phase 4 |
 | D-416 | H | Descriptors are read best-effort; the reads a rule needs stay hard | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F2, surface S-1, docs F1 and F2) |
 | D-417 | M | The last revision of a never-published plan takes the plan with it | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F1, surface S-2) |
 | D-418 | H | A plan revision is submitted under plan:submit | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief |
-| D-419 | H | Resolve answers one revision on one date, with the caller's pins | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b, L4, L7; amended by D-454 |
-| D-420 | H | The matrix and the walk: a binding is always in force | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); owner, 2026-09-26 (no promotion rule; rule 4 as recommended); spec §2.4, §5, §7.1; plan review H2, M4, L1 |
-| D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7 |
+| D-419 | H | Resolve answers one revision on one date, with the caller's pins | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b, L4, L7; amended by D-454, D-467 |
+| D-420 | H | The matrix and the walk: a binding is always in force | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); owner, 2026-09-26 (no promotion rule; rule 4 as recommended); spec §2.4, §5, §7.1; plan review H2, M4, L1; amended by D-467 |
+| D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7; amended by D-467 |
 | D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 |
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
 | D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421 |
@@ -75,7 +75,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-467 |
 | D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
@@ -103,6 +103,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
 | D-465 | M | A revision may carry again a deprecated SKU its plan sells | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2); amends D-408 |
 | D-466 | M | Each check row names its items and its blocking prices | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7); extends D-408 |
+| D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439 |
 
 ## Entries
 
@@ -134,7 +135,9 @@ All tier bands use [from, to). Quantity 1000 belongs to the band beginning at 10
 
 Aggregate every bound value and slice rated by the same price, deduct included quantities, then apply its floor prorated by the fraction of the period covered, before promotions. Two values sharing a default price share one floor. Separate valued prices carry separate floors. No plan cap or plan minimum survives. Pricing stores and validates min_fee; Rating applies the floor (D-415).
 
-**Source:** §2 decision 13; §5.
+D-467 amends this entry: no plan carries an included quantity any more, so no quantity is deducted before the floor; the floor and proration stay Rating's.
+
+**Source:** §2 decision 13; §5. Amended by D-467.
 
 #### D-389 [H] Descriptors bind from durable SKU versions
 
@@ -172,7 +175,9 @@ bss-approval owns the shared engine shape; pricing owns prefixed tables and subj
 
 Phase 3 publishes immutable revisions containing one book, paid/optional/included items, minimal Grants and optional sold-as bundle. Validate recurring frequency, meter uniqueness, usage-only included quantities, SKU lifecycle, foreign-book entries, book validity and coverage per value. blocked_by is computed from pending price units. Clone makes a draft; publishing a revision never moves existing pins, and neither does the switch of a scheduled revision on its date (D-450). Grants and the sold-as bundle are deferred (D-411), and so is retirement (D-410).
 
-**Source:** §5 plans; §6; §8. Amended by D-450.
+D-467 amends this entry: a revision's items are SKUs, each with its entry in the plan's book; there are no paid, optional or included treatments and no included or minimum quantity, so neither "usage-only included quantities" nor any check keyed on a treatment remains.
+
+**Source:** §5 plans; §6; §8. Amended by D-450, D-467.
 
 #### D-395 [H] Promotions are versioned and migrations are requests
 
@@ -266,7 +271,9 @@ On one chain (entry, dim_value), a proposed price that is neither temporary nor 
 
 An item added by POST /plan-revisions/{id}/items reserves kind plan_item with ref_id = the item id, through phase 2's create op (D-401: the op before the reserve, the SKU re-read, the write, the confirm; a 503 writes nothing). plan_item is the only new reference kind of phase 3: the sold_as kind waits with the sold-as bundle (D-411). Items are POST /plan-revisions/{id}/items and PATCH or DELETE /plan-items/{id}, not a list inside PATCH /plan-revisions/{id}. This deviates from spec §7.2 on purpose: an added item is one op with its own Idempotency-Key and its own recovery, and a removed item is one delete op with its own recovery (the DELETE takes no key).
 
-**Source:** Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 (items inside the revision PATCH).
+D-467 amends this entry: the item create takes sku_id and price_book_entry_id, both required, and the item PATCH takes only price_book_entry_id; treatment, included_qty and qty_min are 400 BODY_UNEXPECTED at both doors.
+
+**Source:** Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 (items inside the revision PATCH). Amended by D-467.
 
 #### D-408 [H] Plan checks read every SKU fresh; descriptors are information, never content
 
@@ -322,7 +329,9 @@ The chain has never been deployed. This phase edits m20260926_000006 (reference 
 
 POST /plans/{id}/revisions (copy) and POST /plans/{id}/clone write the revision and every copied item in ONE transaction with reference_state = unreserved and reservation_id NULL, plus one attach op per item. The attach op has the rereserve shape: reserve, then confirm; a losing refusal (a SKU fenced, retiring or retired at the reserve, or a lifecycle or type the SKU re-read refuses) marks the item's reference lost, and any other refusal, such as one of the caller's own grant for the reserve or the re-read, is retried and the ticker finishes the op as the system actor. Products authorizes the system actor to the tenant, so a refusal given to the system actor itself (a SKU Products no longer knows, say) is about the SKU and would never change: it marks the item lost, never an attach retried forever (phase 3 second review B-1). This deviates from "reserve before write" on purpose: the copied SKU is already protected by the SOURCE revision's live reference, which scheduled, published and superseded revisions never release, so no retire or type fence can slip in between. Products admits a deprecated SKU for a reservation, so a carried-over deprecated SKU attaches. The door drives the attach ops best-effort, stopping at the first that fails, and answers 201; the ticker finishes the rest. Submit and apply require every item reference to be confirmed, or confirmation_pending with a receipt; otherwise the checks show ITEM_REFERENCE_PENDING or ITEM_REFERENCE_LOST. POST …/items alone keeps D-401's create op. The source is the revision in effect: both doors switch a due scheduled revision first (D-451), and a copy is refused while a revision waits for its date.
 
-**Source:** Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write. Amended by D-451.
+D-467 amends this entry: a copied item is a new row, written paid with no quantity; a legacy item stored without an entry is copied without one (the column's CHECK then keeps it included), so the draft's checks show it ITEM_ENTRY_MISSING.
+
+**Source:** Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write. Amended by D-451, D-467.
 
 #### D-414 [H] A revision's references outlive it
 
@@ -370,7 +379,7 @@ POST /plan-revisions/{id}/submit checks the plan label's own submit action, plan
 
 GET /bss-pricing/v1/resolve?plan_revision_id=&date=&item_id=&pins= (label plan, action read); it is spec §7.1's /pricing/v1/resolve below the gear's base. Only a published or superseded revision resolves, and a scheduled one from its sale date (D-454); a draft or pending one is 409 REVISION_NOT_PUBLISHED, and a scheduled one before its date 409 REVISION_NOT_YET_AVAILABLE. The state is the one the revision reads today (D-447). date is required, YYYY-MM-DD (400 DATE_INVALID). item_id is optional: resolve that one item only (404 if the revision has no such item); a consumer with many pins splits its request by item. pins is optional and comma-separated, each pin either price_id or price_id:dim_value: the first pins the price's own chain; the second pins a DEFAULT-chain price that the value dim_value was bound to. A pin must name an approved price of the tenant, of an entry an item of this revision names; with :dim_value it must be a default-chain price of that entry, and the value is NOT checked against today's registry (a value may have been removed since). Otherwise the whole request is 400 PIN_FOREIGN. Two pins for one (item, value) are 400 PIN_DUPLICATE; more than 1 000 pins are 400 PINS_TOO_MANY. Resolve is a read: it writes nothing (no audit row, no idempotency key, no binding) and returns no totals and no promotion (D-409, D-415).
 
-**Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b (a removed value is not checked against the registry), L4 (the pin bound and the split by item) and L7. Amended by D-454.
+**Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b (a removed value is not checked against the registry), L4 (the pin bound and the split by item) and L7. Amended by D-454, D-467: a resolved item carries no treatment, included_qty or qty_min.
 
 #### D-420 [H] The matrix and the walk: a binding is always in force
 
@@ -385,7 +394,7 @@ Per item, the chains are the default chain and one per value registered today fo
 
 Read precisely: a price reached by the walk is no longer in force on date when it starts after date, or when its own end has passed. Its own end is read from the stored fields normalisation does not rewrite: temporary_until for a temporary price, else the stored end of an explicitly closed price (closed_explicitly), else none (amended by D-425, phase 4 review C-1). It is never a temporary price's stored effective_to: normalisation cuts that at the start of a pair nested inside the temporary price, and that start is a successor the walk did not take. An explicit close that a later pair cuts is stored as min(end, next) and binds until that stored end; no new column keeps the original end. The start of a successor the walk did not take does not end a price for the pin: a price stopped before a new successor stays the binding, and keep_for_bound marks exactly such a price. keep_for_bound predecessors stay readable and bindable; the resolve context carries the set of keep_for_bound price ids (the domain Price has no such field; plan review L1) and the binding reports it. Each binding reports its own end as ends_on (D-425).
 
-**Source:** Phase 4 plan rev 3 (Run 4.2); the owner, 2026-09-26 (Q1: no promotion-specific renewal rule; Q2: rule 4 as recommended); spec §2.4 addendum, §5, §7.1, §12; plan review H2, M4, L1. Amended by D-425 (phase 4 review, fix run 8): the own end, and ends_on.
+**Source:** Phase 4 plan rev 3 (Run 4.2); the owner, 2026-09-26 (Q1: no promotion-specific renewal rule; Q2: rule 4 as recommended); spec §2.4 addendum, §5, §7.1, §12; plan review H2, M4, L1. Amended by D-425 (phase 4 review, fix run 8): the own end, and ends_on. Amended by D-467: only a legacy item stored without an entry has no chains.
 
 #### D-421 [H] The binding carries resolved invoice inputs with their source
 
@@ -395,7 +404,7 @@ Each item's SKU version is read as of date through sku_version_as_of (the detach
 
 Read precisely: settings.invoice_line_templates is keyed by SKU type (recurring, usage, one_time, bundle; PUT /settings refuses any other key). A charge kind's name is its SKU type's, so the entry's charge kind is the key; an item without an entry takes its SKU version's type, as the prototype does. A source that is absent or blank falls through to the next one; when none is left the field is { value: null, source: null } (the prototype's built-in "{sku}" line is not adopted). billing_timing always has a value: the tenant default_timing is advance until the settings are written.
 
-**Source:** Phase 4 plan rev 3 (Run 4.2); PRD AC #13 (fr-settings); spec §7.1 (what a pin carries), decision 14; plan review H3 and L7. Amended by D-424 (phase 4 review, fix run 8): the SKU version read is made as pricing's system actor.
+**Source:** Phase 4 plan rev 3 (Run 4.2); PRD AC #13 (fr-settings); spec §7.1 (what a pin carries), decision 14; plan review H3 and L7. Amended by D-424 (phase 4 review, fix run 8): the SKU version read is made as pricing's system actor. Amended by D-467: the item returns no stored treatment or quantity.
 
 #### D-422 [H] The pinned price read serves approved money forever
 
@@ -588,7 +597,9 @@ Breaking: the PUT's body (currencies required), and a GET answer is a PUT body o
 - **Response fields that stay string.** default_rounding and resolve's rounding_policy: no CHECK guards the column (D-437), and a legacy value reads back as stored. A normalizing migration with a CHECK is not made here: the phase takes only ADD COLUMN migrations, a CHECK on an existing SQLite column needs a table rebuild, and the deployment pre-flight (D-437) is the gate. A unit's kind and ref_type: the shared approval tables (bss_approval::ddl) have no CHECK on them, for the same reason. A check's code is a code vocabulary that the check builders write as literals, and a proposal's chain is a dimension value or default; neither is a closed set of stored values.
 - **Proof.** tests/response_enums.rs reads the served spec: every listed field has its enum with the exact values in order and its nullability, no request body reaches an enum, and the fields above stay plain strings. An entry row poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500, and the gear goes on serving. Unit tests pin each set's schema, wire and stored tokens as one list.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).
+D-467 amends this entry: a plan item's treatment is no longer on any response or request, so its enum and TREATMENT_INVALID are gone; the column's CHECK stays and still holds the stored rows.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5). Amended by D-467.
 
 #### D-440 [M] An entry's prices, its price in force and its approved prices by date
 
@@ -985,8 +996,33 @@ The plan's items table marks the items that a failing check is about (ask 29). A
 - **The fields.** Each row of GET /plan-revisions/{id}/checks, and each row of the REVISION_CHECKS_RED body (whose detail is the red rows as the checks door renders them), gains two fields. code, ok, label, detail, info and blocked_by keep their names and their meaning.
   - subjects, [PricingPlanCheckSubject { item_id, sku_id, price_book_entry_id }]: the items that turn the row red, in the revision's item order. price_book_entry_id is null for an item that names no entry. A green row names no item. A plan-wide row names none either: PLAN_NAME, PLAN_BOOK, PLAN_BOOK_VALIDITY, PLAN_ITEMS and the information rows DESCRIPTORS and APPROVAL.
   - blocked_by_prices, [PricingPlanCheckBlockingPrice { unit_id, price_id, price_book_entry_id }]: the pending prices behind blocked_by, one per price, ordered by unit and then by price. blocked_by is built as before: the units that hold a pending price of an entry that an uncovered item names, on any chain, because the default chain can cover a value. The units of blocked_by_prices are exactly blocked_by.
-- **Which items.** An item-level row names the items that its detail lists. ITEM_ENTRY_MISSING, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_LOST, ITEM_BUNDLE_SKU, CHARGE_KIND_SKU_TYPE, ITEM_BOOK_FOREIGN, ITEM_UNCOVERED, INCLUDED_QTY, ITEM_SKU_DEPRECATED, ITEM_SKU_UNAVAILABLE, ITEM_REFERENCE_PENDING and ITEM_REFERENCE_LOST name each item they refuse. METER_DUPLICATE names both items of each pair that meters one usage type. FREQUENCY_MIXED names every recurring item priced in the plan's book, because each bills in one of the mixed periods. Only ITEM_UNCOVERED has a blocked_by, so only it has blocked_by_prices.
+- **Which items.** An item-level row names the items that its detail lists. ITEM_ENTRY_MISSING, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_LOST, ITEM_BUNDLE_SKU, CHARGE_KIND_SKU_TYPE, ITEM_BOOK_FOREIGN, ITEM_UNCOVERED, ITEM_SKU_DEPRECATED, ITEM_SKU_UNAVAILABLE, ITEM_REFERENCE_PENDING and ITEM_REFERENCE_LOST name each item they refuse. METER_DUPLICATE names both items of each pair that meters one usage type. FREQUENCY_MIXED names every recurring item priced in the plan's book, because each bills in one of the mixed periods. Only ITEM_UNCOVERED has a blocked_by, so only it has blocked_by_prices.
 - **The reads.** No read is added: the checks' context already holds each item, the entry it names and that entry's pending prices with their units.
 - **The tests.** src/domain/plan_tests.rs: a table over every code that the checks emit, enumerated from what the checks answer over the table's contexts, each context turning its code red (the information rows stay green) and naming its items; in every context a green row names no item and no price, and each row's blocked_by is exactly the units of its blocked_by_prices; an uncovered entry's pending prices, one row per price. tests/plan_item_doors.rs: ITEM_UNCOVERED names its item and the pending price of a submitted prices unit, and names neither once the unit is approved. tests/plan_revision_approvals.rs: the REVISION_CHECKS_RED body carries both fields and equals the checks door's red rows. Probes that dropped the blocking prices, the mixed periods' items and the DTO's subjects were caught.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7). Extends D-408.
+
+#### D-467 [H] A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity
+
+**Status:** DECIDED 2026-09-30.
+
+The owner asked for how long an included quantity is included, and learned that it had no defined period, no proration and no rollover rule. The owner then removed the field for now, and with it the treatment and the minimum quantity. A plan item is now a SKU and its entry in the plan's book.
+
+- **The API.** POST /plan-revisions/{id}/items takes sku_id and price_book_entry_id, and both are required: a missing or null entry is 400 ITEM_ENTRY_MISSING on price_book_entry_id. PATCH /plan-items/{id} takes only price_book_entry_id; a null one is 400 ITEM_ENTRY_MISSING, and so is a PATCH that leaves an item without an entry. At both doors a body that carries treatment, included_qty or qty_min is 400 BODY_UNEXPECTED on that key, the rule for a stray key, judged with the body, before any read; any other key the body does not know is refused by its parse, as before. TREATMENT_INVALID, INCLUDED_QTY_INVALID and QTY_MIN_INVALID are gone.
+- **The reads.** No read shows the three fields: the item read and every item answer (PricingPlanItemDto), the revision read, GET /resolve (PricingResolveItemDto) and the snapshots of the units submitted from now on. The treatment's closed set (PricingTreatment) is gone from the served spec.
+- **Storage.** There is no migration: the columns and their CHECKs stay. Every row written from now on stores treatment = 'paid', included_qty = NULL and qty_min = NULL (plan::stored_treatment): the item create op, the copy and the clone, and the item PATCH, which rewrites the row it changes in that shape. The one exception is the copy of a legacy item stored without an entry: its entry stays null, so the column's CHECK keeps its treatment 'included', with no quantity. A create op stored before D-467 carries the old fields in its input; they are ignored.
+- **Legacy rows.** Rows stored before D-467 keep reading, with the fields hidden. A legacy included item answers price_book_entry_id: null, and resolves with no chains. Published history is not rewritten: a published or superseded revision keeps its rows as stored.
+- **The checks.** INCLUDED_QTY and every branch keyed on a treatment or a quantity go. FREQUENCY_MIXED, METER_DUPLICATE and ITEM_UNCOVERED stay. An item without an entry is ITEM_ENTRY_MISSING, whatever it was stored as, and meters nothing; so a legacy included item in a draft is ITEM_ENTRY_MISSING, and its author removes it or gives it an entry. The row's label is "Every item points at a price".
+- **The units pending at the deploy.** The fingerprinted content of a plan revision is its book, its sale date and its items by SKU, each item its SKU and its entry; before D-467 it also held each item's treatment and quantities. Pricing re-derives a unit's content on every vote, so every plan_revision unit pending at the deploy finds its content changed once. Measured in tests/plan_items_legacy.rs:
+  - the first approve or reject refreshes the unit at the next generation, records no vote, and answers 400 UNIT_STALE with the new generation; the votes of the older generation stop counting;
+  - a unit whose revision holds only priced items (the stand's qty_min item) then applies on the approve of the new generation;
+  - a unit whose revision holds a legacy included item is refused at the apply of the new generation, 409 APPLY_REFUSED with REVISION_CHECKS_RED: ITEM_ENTRY_MISSING, and nothing is published; the reject of the new generation returns the revision to a draft, whose author fixes it. No unit is left that can be neither approved nor rejected.
+- **The frozen read contract (D-419 to D-422).** treatment, included_qty and qty_min leave each resolved item; the consumer goldens under tests/contract/ were recorded again, and they differ only by these keys. The pinned price read (D-422) is unchanged. No code outside pricing reads the three fields; the ledger's treatment is another concept, and pricing-sdk has none.
+- **Cross-gear effects.**
+  - No optional (add-on) and no included items remain in pricing plans.
+  - Main's orders PRDs assumed optional items: the orders-lifecycle PRD's add-on selection on the order line (gears/bss/orders-lifecycle/docs/PRD.md, the submit gate's add-on bounds and the resolved open question on add-on selection) and the orders-changes PRD's "Add-On Selection on the Order Line". They are named here and not edited.
+  - Rating's T-D-38 floor is applied "after included quantities", and that step has no operand now; Rating's register records the amendment (gears/bss/rating/docs/DECISIONS.md).
+  - The vhp-core e2e sends and asserts treatment; it follows in run 9.5.
+- **The tests.** src/domain/plan_tests.rs: the checks without a treatment, an entry-less item ITEM_ENTRY_MISSING and metering nothing, the check list without INCLUDED_QTY. tests/plan_item_doors.rs: each key refused at both doors with nothing reserved or written, the entry required, a null entry refused, a new row stored paid with no quantity. tests/plan_item_references.rs: the create op writes paid with no quantity. tests/plan_items_legacy.rs seeds the stand's shapes (an included item in a draft, in a pending revision and in a published one; a qty_min item pending and published; two pending units whose content carries the old fields) and reads, resolves, copies, checks, approves and rejects them as above. tests/response_enums.rs: no plan item schema carries the keys, and the create requires its entry. Probes that let a key through, copied the source's treatment and quantities, fingerprinted the treatment again, spared an entry-less item from ITEM_ENTRY_MISSING, kept the PATCHed row's shape and wrote a quantity from the create op were caught.
+
+**Source:** Owner, 2026-09-30 (the phase 9 plan's section "plan items lose treatment, included_qty and qty_min"); phase 9 plan rev 2 (run 9.2). Amends D-388, D-394, D-407, D-413, D-419, D-420, D-421 and D-439.
