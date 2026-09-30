@@ -1054,8 +1054,10 @@ register.
   several pages and must follow `next_cursor`. The in-gear tests that read the list whole follow it
   (`sku_governance_tests::Fixture::all_units`); the gears-rust e2e reads no products list. The vhp-core e2e reads page 1
   in `tests/bss-products/test_products_approvals.py` (the pending queue, twice), `test_products_isolation.py` (another tenant's
-  list), `test_products_usage_types.py` (an empty list) and `test_products_authz.py` (a reader's list). Each runs in a fresh
-  tenant with a few units, so it passes unchanged; a vhp-core change would make them follow `next_cursor`.
+  list), `test_products_usage_types.py` (an empty list) and `test_products_authz.py` (a reader's list), and through the helper
+  `tests/lib/products.py` `units_of` (`GET /approval-units?ref_id=`, its `items`: one SKU's units), which
+  `test_products_approvals.py` calls three times. Each runs in a fresh tenant with a few units, so it passes unchanged; a
+  vhp-core change would make them follow `next_cursor`.
 
 **Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ok"); whole-branch review RS-03 (fix run W1b).
 
