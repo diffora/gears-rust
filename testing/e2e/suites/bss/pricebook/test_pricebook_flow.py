@@ -399,7 +399,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # A plan on the book, sold from the price's start, with the entry as a paid item: red.
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"plan-{run}", "name": f"Plan {run}", "book_id": book},
+            json={"code": f"PLAN-{run}".upper(), "name": f"Plan {run}", "book_id": book},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -523,7 +523,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # A clone is a new plan whose draft rev 1 reads the same book.
         r = api.post(
             f"{PRICING}/plans/{plan}/clone",
-            json={"code": f"plan-{run}-clone", "name": f"Plan {run} clone"},
+            json={"code": f"PLAN-{run}-CLONE".upper(), "name": f"Plan {run} clone"},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -777,7 +777,7 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         # A plan publishes rev 1 with the flat entry.
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"plan-nocat-{run}", "name": f"Plan no category {run}", "book_id": eur},
+            json={"code": f"PLAN-NOCAT-{run}".upper(), "name": f"Plan no category {run}", "book_id": eur},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -1074,7 +1074,7 @@ def test_where_a_sku_is_priced_and_sold_and_the_settings_offer_currencies(api):
         assert r.json()["applied"] is True, r.text
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"plan-sold-{run}", "name": f"Plan sold {run}", "book_id": eur},
+            json={"code": f"PLAN-SOLD-{run}".upper(), "name": f"Plan sold {run}", "book_id": eur},
             headers=_key(),
         )
         assert r.status_code == 201, r.text

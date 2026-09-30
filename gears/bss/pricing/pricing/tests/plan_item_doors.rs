@@ -919,7 +919,7 @@ async fn a_deprecated_sku_the_plan_sells_may_be_added_again_and_no_other() {
         .call(
             "POST",
             &format!("/plans/{plan_id}/clone"),
-            json!({"code":"clone","name":"Clone"}),
+            json!({"code":"CLONE","name":"Clone"}),
             None,
             Some("clone"),
         )

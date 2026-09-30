@@ -767,7 +767,7 @@ async fn every_write_answer_carries_the_new_fields() {
         .call(
             "POST",
             &format!("/plans/{}/clone", p.plan),
-            json!({"code":"clone","name":"Clone"}),
+            json!({"code":"CLONE","name":"Clone"}),
             None,
             Some("clone"),
         )

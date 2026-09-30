@@ -92,8 +92,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5; amended by D-460, D-461 |
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
-| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463 |
-| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b |
+| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463, D-468 |
+| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468 |
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
 | D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453 |
@@ -104,6 +104,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-465 | M | A revision may carry again a deprecated SKU its plan sells | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2); amends D-408 |
 | D-466 | M | Each check row names its items and its blocking prices | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7); extends D-408 |
 | D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439 |
+| D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
 
 ## Entries
 
@@ -854,7 +855,9 @@ D-461 amends this entry: the plan list also reads the units its revisions name, 
 
 D-463 extends this entry: a malformed available_from on POST /plans or the clone is 400 DATE_INVALID, among the body's refusals: after the money's policy (503) and before the 404 of the book or of the source plan.
 
-**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440. Extended by D-463.
+D-468 extends this entry: a new plan's code off the rule is 400 PLAN_CODE_INVALID, among the body's refusals, after PLAN_CODE_REQUIRED and before DATE_INVALID.
+
+**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440. Extended by D-463, D-468.
 
 #### D-457 [M] Every text a request writes has an explicit length cap
 
@@ -867,7 +870,9 @@ D-463 extends this entry: a malformed available_from on POST /plans or the clone
 - **The tests.** tests/book_writes.rs sends one text over each cap, door by door, and each is 400 with its code and field, with nothing written; the caps themselves pass in two-byte characters. tests/approval_doors.rs does the same for the vote note.
 - **Products** applies the same caps in its own decision, P-D-225 (fix run W1b). The vhp-core e2e would add one refusal: a book created with a 65-character code is 400 FIELD_TOO_LONG on code.
 
-**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2).
+D-468 extends this entry: a new plan's code also follows a rule of at most 32 characters; the 64-character cap is judged first.
+
+**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2). Extended by D-468.
 
 #### D-458 [M] The approval-unit list pages and reads its page set-based
 
@@ -1026,3 +1031,20 @@ The owner asked for how long an included quantity is included, and learned that 
 - **The tests.** src/domain/plan_tests.rs: the checks without a treatment, an entry-less item ITEM_ENTRY_MISSING and metering nothing, the check list without INCLUDED_QTY. tests/plan_item_doors.rs: each key refused at both doors with nothing reserved or written, the entry required, a null entry refused, a new row stored paid with no quantity. tests/plan_item_references.rs: the create op writes paid with no quantity. tests/plan_items_legacy.rs seeds the stand's shapes (an included item in a draft, in a pending revision and in a published one; a qty_min item pending and published; two pending units whose content carries the old fields) and reads, resolves, copies, checks, approves and rejects them as above. tests/response_enums.rs: no plan item schema carries the keys, and the create requires its entry. Probes that let a key through, copied the source's treatment and quantities, fingerprinted the treatment again, spared an entry-less item from ITEM_ENTRY_MISSING, kept the PATCHed row's shape and wrote a quantity from the create op were caught.
 
 **Source:** Owner, 2026-09-30 (the phase 9 plan's section "plan items lose treatment, included_qty and qty_min"); phase 9 plan rev 2 (run 9.2). Amends D-388, D-394, D-407, D-413, D-419, D-420, D-421 and D-439.
+
+#### D-468 [M] A new plan's code follows a declared rule
+
+**Status:** DECIDED 2026-09-30.
+
+A plan's code had a blank check and a length cap only (D-457), stored as sent, so `PRO`, `pro` and `PRO ` could coexist under the exact unique index (ask 39). The owner asked for a rule (the scope addition to run 9.2).
+
+- **The rule.** On POST /plans and POST /plans/{id}/clone the new plan's code matches `^[A-Z0-9][A-Z0-9_-]{0,31}$`: 1 to 32 characters (domain::plan::CODE_MAX) of upper-case ASCII letters, digits, `-` and `_`, starting with a letter or a digit (domain::plan::code_follows_the_rule). Otherwise the answer is 400 PLAN_CODE_INVALID on field code, and nothing is written.
+- **As sent.** The code is judged as sent, with no trim and no case folding: `pro`, `PRO ` and ` PRO` are all invalid, and a valid code is stored as sent.
+- **The order.** The length cap comes first, with the body, before any read: a code of 65 characters or more is still 400 FIELD_TOO_LONG (D-457). Then a blank code is 400 PLAN_CODE_REQUIRED, as before. Then the rule: a code of 33 to 64 characters, or any other code off the rule, is 400 PLAN_CODE_INVALID. Then the rest, in D-456's order: DATE_INVALID, the book's or the source plan's 404, PRICE_BOOK_READ_REQUIRED, and 409 PLAN_CODE_TAKEN.
+- **Stored codes are grandfathered.** There is no migration. A code stored before the rule keeps reading and is never judged again: the plan reads, lists, is renamed (the plan PATCH takes a name only and judges no code) and is cloned, and only the clone's new code is judged. The Benidorm stand holds 113 lower-case codes such as `plan-6dfd4733` from the e2e. Uniqueness stays exact, as before; because every new code is upper-case, no two plans created from now on can differ in case alone.
+- **Out of scope.** The codes of books, SKUs and categories.
+- **The texts.** The served texts of both doors name the rule and PLAN_CODE_INVALID in their refusal lists.
+- **The e2e.** The gears-rust e2e creates upper-case plan and clone codes. The vhp-core e2e (tests/e2e/tests/lib/pricing.py create_plan, and its clone codes) creates lower-case codes; it is fixed in run 9.5 and must land with this image.
+- **The tests.** tests/plan_codes.rs: valid codes (one character, a digit, `-` and `_`, 32 characters) stored as sent; each invalid shape refused with its code and nothing written (lower and mixed case, a trailing, a leading and an inner space, a leading `-` or `_`, a dot, a non-ASCII letter, 33 and 64 characters: PLAN_CODE_INVALID; empty and blank: PLAN_CODE_REQUIRED; 65 characters: FIELD_TOO_LONG); the order against the book's 404, a malformed date and an over-long name; the clone under the same rule, before the source's 404; a grandfathered lower-case plan that reads, is renamed and clones to a valid code, and a new upper-case code beside a stored lower-case one. The suites' plan fixtures now create upper-case codes. Probes that dropped the rule, judged a blank code by the rule, skipped the clone's code and admitted lower case were caught.
+
+**Source:** Owner, 2026-09-30 (ask 39; backend asks validation 3, "confirm there is no charset rule"; phase 9 plan rev 2 L8 had moved it to Out as an open question). Extends D-456 (the order of the body's refusals) and D-457 (the code's cap).

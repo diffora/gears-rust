@@ -32,6 +32,25 @@ string_enum!(ReferenceState {Unreserved=>"unreserved", ConfirmationPending=>"con
 pub const KIND_PLAN_REVISION: &str = "plan_revision";
 /// The most items one revision holds (`REVISION_ITEMS_TOO_MANY`).
 pub const MAX_ITEMS: usize = 200;
+/// The longest plan code a new plan takes (D-468).
+pub const CODE_MAX: usize = 32;
+
+/// Whether `code` is a plan code a new plan may take (D-468): `^[A-Z0-9][A-Z0-9_-]{0,31}$`, 1 to
+/// [`CODE_MAX`] characters, upper-case ASCII letters, digits, `-` and `_`, starting with a letter
+/// or a digit. It is judged as sent: no trim, no case folding. A code stored before the rule is
+/// never judged again.
+#[must_use]
+pub fn code_follows_the_rule(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    let first = bytes
+        .first()
+        .is_some_and(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    first
+        && bytes.len() <= CODE_MAX
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_'))
+}
 
 /// The plan's identity.
 #[toolkit_macros::domain_model]

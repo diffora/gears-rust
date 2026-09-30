@@ -533,7 +533,7 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
         .call(
             "POST",
             &format!("/plans/{}/clone", pro.plan),
-            json!({"code":"copy","name":"Copy"}),
+            json!({"code":"COPY","name":"Copy"}),
             None,
             Some("clone"),
         )
@@ -544,7 +544,7 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"new","name":"New","book_id":pro.book}),
+            json!({"code":"NEW","name":"New","book_id":pro.book}),
             None,
             Some("new"),
         )
@@ -914,7 +914,7 @@ async fn the_clone_door_catches_up_and_clones_the_revision_in_effect() {
         .call(
             "POST",
             &format!("/plans/{}/clone", pro.plan),
-            json!({"code":"copy","name":"Copy"}),
+            json!({"code":"COPY","name":"Copy"}),
             None,
             Some("clone"),
         )

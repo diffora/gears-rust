@@ -621,6 +621,9 @@ pub(super) struct PricingPlanQuery {
 #[derive(Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PricingPlanCreate {
+    /// 1 to 32 characters of `A-Z`, `0-9`, `-` and `_`, starting with a letter or a digit, judged as
+    /// sent (D-468): blank is 400 `PLAN_CODE_REQUIRED`, any other code off the rule 400
+    /// `PLAN_CODE_INVALID`, and a code over 64 characters 400 `FIELD_TOO_LONG` (D-457).
     pub code: String,
     pub name: String,
     pub book_id: Uuid,
@@ -639,6 +642,7 @@ pub struct PricingPlanCreate {
     reason = "the clone distinguishes omission (keep the source's), null (clear) and a new date"
 )]
 pub struct PricingPlanClone {
+    /// The new plan's code, under the rule of `POST /plans` (D-468).
     pub code: String,
     pub name: String,
     /// Rev 1's sale date, `YYYY-MM-DD` (D-463): omitted keeps the source's, a date overrides it,

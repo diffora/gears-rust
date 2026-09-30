@@ -37,9 +37,12 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Creates a plan with a code and a name and its draft revision 1 on a book of the \
              tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \
              \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs \
-             price_book read on that book (D-456). The code is at most 64 characters and the name \
-             200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a \
-             code or a name over its cap; 404 for a book the tenant does not hold; 403 \
+             price_book read on that book (D-456). The name is at most 200 characters and the code \
+             64 (D-457), and the code follows a rule: 1 to 32 characters of A-Z, 0-9, - and _, \
+             starting with a letter or a digit, judged as sent with no trim or case folding \
+             (D-468); a code stored before the rule keeps reading. Refusals: 400 FIELD_TOO_LONG on a code or a name over its cap, \
+             PLAN_CODE_REQUIRED for a blank code, PLAN_CODE_INVALID for a code off the rule, or \
+             DATE_INVALID; 404 for a book the tenant does not hold; 403 \
              PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot \
              be judged; 409 PLAN_CODE_TAKEN.",
         )
@@ -149,9 +152,12 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              come is switched first, D-451): its book, its items and its sale date, without \
              anything of its approval. An available_from in the body overrides the sale date, \
              and null clears it (D-463). The caller also needs price_book read on the source's \
-             book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: \
-             400 PLAN_CODE_REQUIRED, DATE_INVALID, or FIELD_TOO_LONG on a code or a name over its \
-             cap; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 \
+             book (D-456). The code is at most 64 characters and the name 200 (D-457), and the \
+             new plan's code follows the rule of POST /plans: 1 to 32 characters of A-Z, 0-9, - \
+             and _, starting with a letter or a digit, judged as sent (D-468); the source's own \
+             code, stored before the rule, is never judged. Refusals: 400 FIELD_TOO_LONG on a code \
+             or a name over its cap, PLAN_CODE_REQUIRED for a blank code, PLAN_CODE_INVALID for a \
+             code off the rule, or DATE_INVALID; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 \
              PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant \
              cannot be judged.",
         )

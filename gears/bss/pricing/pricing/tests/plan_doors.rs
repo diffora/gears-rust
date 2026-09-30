@@ -16,7 +16,7 @@ use uuid::Uuid;
 async fn a_plan_is_created_with_a_draft_revision_one_on_its_book_and_its_key_replays() {
     let (f, _) = setup().await;
     let eur = book(&f, "eur").await;
-    let body = json!({"code":"pro","name":"Pro","book_id":eur});
+    let body = json!({"code":"PRO","name":"Pro","book_id":eur});
     assert_eq!(
         f.call("POST", "/plans", body.clone(), None, None).await.0,
         400,
@@ -28,7 +28,7 @@ async fn a_plan_is_created_with_a_draft_revision_one_on_its_book_and_its_key_rep
     assert_eq!(created.0, 201, "{created:?}");
     assert_eq!(created.2, "\"1\"");
     let p = &created.1;
-    assert_eq!(p["code"], "pro");
+    assert_eq!(p["code"], "PRO");
     assert_eq!(p["name"], "Pro");
     assert_eq!(p["published_rev"], json!(null));
     assert_eq!(p["created_by"], f.ctx.subject_id().to_string());
@@ -47,7 +47,7 @@ async fn a_plan_is_created_with_a_draft_revision_one_on_its_book_and_its_key_rep
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro2","name":"Pro","book_id":eur}),
+            json!({"code":"PRO2","name":"Pro","book_id":eur}),
             None,
             Some("one"),
         )
@@ -102,7 +102,7 @@ async fn a_plan_needs_a_code_of_its_own_and_a_book_of_its_tenant() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Pro","book_id":Uuid::new_v4()}),
+            json!({"code":"PRO","name":"Pro","book_id":Uuid::new_v4()}),
             None,
             Some("nobook"),
         )
@@ -113,7 +113,7 @@ async fn a_plan_needs_a_code_of_its_own_and_a_book_of_its_tenant() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Again","book_id":eur}),
+            json!({"code":"PRO","name":"Again","book_id":eur}),
             None,
             Some("again"),
         )
@@ -144,7 +144,7 @@ async fn a_plan_is_renamed_under_if_match() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(tag, "\"2\"");
     assert_eq!(b["name"], "Professional");
-    assert_eq!(b["code"], "pro");
+    assert_eq!(b["code"], "PRO");
     let unknown = f
         .call(
             "PATCH",
@@ -623,7 +623,7 @@ async fn deleting_a_never_published_plans_last_revision_deletes_the_plan_and_fre
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Pro again","book_id":eur}),
+            json!({"code":"PRO","name":"Pro again","book_id":eur}),
             None,
             Some("again"),
         )
@@ -680,7 +680,7 @@ async fn a_draft_delete_leaves_a_plan_with_a_published_revision_as_it_was() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Pro again","book_id":eur}),
+            json!({"code":"PRO","name":"Pro again","book_id":eur}),
             None,
             Some("again"),
         )
@@ -882,7 +882,7 @@ async fn plan_doors_need_the_plan_permissions_and_hide_other_tenants() {
         (
             "POST",
             "/plans".to_owned(),
-            json!({"code":"x","name":"x","book_id":eur}),
+            json!({"code":"X","name":"x","book_id":eur}),
             None,
             Some("k"),
         ),
@@ -1056,7 +1056,7 @@ async fn a_plan_is_created_with_its_sale_date() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"dated","name":"Dated","book_id":eur,"available_from":"2031-03-01"}),
+            json!({"code":"DATED","name":"Dated","book_id":eur,"available_from":"2031-03-01"}),
             None,
             Some("dated"),
         )
@@ -1075,7 +1075,7 @@ async fn a_plan_is_created_with_its_sale_date() {
         .await;
     assert_eq!(read.1["available_from"], "2031-03-01", "stored: {read:?}");
     for (code, from) in [("omitted", None), ("null", Some(json!(null)))] {
-        let mut body = json!({"code":code,"name":code,"book_id":eur});
+        let mut body = json!({"code":code.to_uppercase(),"name":code,"book_id":eur});
         if let Some(from) = from {
             body["available_from"] = from;
         }
@@ -1092,7 +1092,7 @@ async fn a_plan_is_created_with_its_sale_date() {
             .call(
                 "POST",
                 "/plans",
-                json!({"code":key,"name":key,"book_id":book_id,"available_from":"2031-13-01"}),
+                json!({"code":key.to_uppercase(),"name":key,"book_id":book_id,"available_from":"2031-13-01"}),
                 None,
                 Some(key),
             )

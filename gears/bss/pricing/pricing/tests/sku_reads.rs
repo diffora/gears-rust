@@ -370,7 +370,7 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
         .iter()
         .map(|p| p["code"].as_str().unwrap())
         .collect();
-    assert_eq!(codes, ["a-live", "c-draft"], "{b}");
+    assert_eq!(codes, ["A-LIVE", "C-DRAFT"], "{b}");
     // One response schema: each plan as GET /plans answers it, with its revision headers.
     let (_, all, _) = get(&f, "/plans").await;
     let whole = |code: &str| {
@@ -382,12 +382,12 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
             .unwrap()
             .clone()
     };
-    assert_eq!(b["items"][0], whole("a-live"));
-    assert_eq!(b["items"][1], whole("c-draft"));
+    assert_eq!(b["items"][0], whole("A-LIVE"));
+    assert_eq!(b["items"][1], whole("C-DRAFT"));
     assert_eq!(b["items"][1]["id"], draft["id"]);
     assert_eq!(all["items"].as_array().unwrap().len(), 5);
     assert_eq!(
-        whole("b-history")["revisions"].as_array().unwrap().len(),
+        whole("B-HISTORY")["revisions"].as_array().unwrap().len(),
         2,
         "the plain list keeps every revision header"
     );

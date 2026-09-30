@@ -230,11 +230,29 @@ async fn require_book_read(
         .into())
     }
 }
+/// A new plan's code (D-468): blank is 400 `PLAN_CODE_REQUIRED`, as before; then a code that does
+/// not follow the rule ([`plan::code_follows_the_rule`]) is 400 `PLAN_CODE_INVALID`, judged as
+/// sent. The door's length cap (`FIELD_TOO_LONG`, 64, D-457) is judged before this, with the body.
+fn judge_code(code: &str) -> Result<(), DoorError> {
+    if code.trim().is_empty() {
+        return Err(support::invalid("code", "PLAN_CODE_REQUIRED").into());
+    }
+    if !plan::code_follows_the_rule(code) {
+        return Err(support::invalid_because(
+            "code",
+            "PLAN_CODE_INVALID",
+            "a plan code is 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or \
+             a digit",
+        )
+        .into());
+    }
+    Ok(())
+}
 /// `POST /plans`: the plan and its draft rev 1 on the named book, with the body's sale date if it
 /// names one (D-463), in the key's transaction. The book is one the caller's `price_book` read
 /// admits (`books`, D-456).
 /// # Errors
-/// 400 `PLAN_CODE_REQUIRED` or `DATE_INVALID`; 404 for a book the tenant does not hold; 403
+/// 400 `PLAN_CODE_REQUIRED`, `PLAN_CODE_INVALID` (D-468) or `DATE_INVALID`; 404 for a book the tenant does not hold; 403
 /// `PRICE_BOOK_READ_REQUIRED` for one the caller may not read; 409 `PLAN_CODE_TAKEN`; a replayed
 /// or conflicting key.
 pub(super) async fn create(
@@ -250,9 +268,7 @@ pub(super) async fn create(
     if let Some(replay) = support::claim(tx, tenant, endpoint, key, digest).await? {
         return Ok(replay);
     }
-    if input.code.trim().is_empty() {
-        return Err(support::invalid("code", "PLAN_CODE_REQUIRED").into());
-    }
+    judge_code(&input.code)?;
     // D-463: judged as the revision PATCH judges it, among the body's refusals (D-456's order).
     let available_from = support::date(input.available_from.clone(), "available_from")?;
     let children = AccessScope::for_tenant(tenant);
@@ -591,8 +607,8 @@ async fn copy_items(
 /// source's approval is copied: no decision, no `approved_by_unit_id` or `published_at`, no pin;
 /// a deprecated SKU is carried, and the new plan's checks show it red (D-408).
 /// # Errors
-/// 400 `PLAN_CODE_REQUIRED` or `DATE_INVALID`; 404 for a plan the tenant does not hold; 409
-/// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 403
+/// 400 `PLAN_CODE_REQUIRED`, `PLAN_CODE_INVALID` (D-468) or `DATE_INVALID`; 404 for a plan the
+/// tenant does not hold; 409 `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 403
 /// `PRICE_BOOK_READ_REQUIRED` when the caller's `price_book` read (`books`) does not admit the
 /// book the clone names, the source's (D-456); 409 `PLAN_CODE_TAKEN`; a replayed or conflicting
 /// key.
@@ -659,9 +675,7 @@ async fn clone_in(
     if let Some(replay) = support::claim(tx, tenant, &endpoint, key, digest).await? {
         return Ok((replay, Vec::new()));
     }
-    if input.code.trim().is_empty() {
-        return Err(support::invalid("code", "PLAN_CODE_REQUIRED").into());
-    }
+    judge_code(&input.code)?;
     // D-463: omitted keeps the source's sale date; a date overrides it; null clears it. Judged as
     // the revision PATCH judges it, among the body's refusals (D-456's order).
     let available_from = input
