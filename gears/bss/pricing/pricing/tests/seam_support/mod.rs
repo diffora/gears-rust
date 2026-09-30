@@ -1,0 +1,300 @@
+//! Shared stored read fixtures for REST and SDK conformance.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+#![allow(dead_code)]
+use crate::plan_support;
+use crate::plan_support::{Catalog, Fixture, book, id_of, item, plan, publish, scope, setup};
+use bss_pricing::infra::storage::{
+    entity::{price, price_book_entry},
+    repo::{price_book_entry_repo, price_repo},
+};
+use bss_products_sdk::models::{BillingTiming, SkuType};
+use serde_json::{Value, json};
+use std::sync::Arc;
+use uuid::Uuid;
+pub fn date(text: &str) -> time::Date {
+    time::Date::parse(text, &time::format_description::well_known::Iso8601::DATE).unwrap()
+}
+/// One stored price row; the defaults are an approved open flat price of the default chain. Its
+/// model is its entry's (D-427): `entry_of` gives a recurring entry `flat`, a usage one `per_unit`.
+#[derive(Clone)]
+pub struct Row {
+    pub dim: Option<&'static str>,
+    pub price: Value,
+    pub min_fee: Option<&'static str>,
+    pub from: &'static str,
+    pub to: Option<&'static str>,
+    pub eligibility: &'static str,
+    pub state: &'static str,
+    pub keep: bool,
+    pub closed: bool,
+    pub temporary_until: Option<&'static str>,
+    pub version_no: i32,
+}
+impl Default for Row {
+    fn default() -> Self {
+        Self {
+            dim: None,
+            price: json!({"amount":"30.00"}),
+            min_fee: None,
+            from: "2026-09-01",
+            to: None,
+            eligibility: "all",
+            state: "approved",
+            keep: false,
+            closed: false,
+            temporary_until: None,
+            version_no: 1,
+        }
+    }
+}
+pub fn flat(amount: &str) -> Value {
+    json!({ "amount": amount })
+}
+/// Write one price of `entry` straight through the repository.
+pub async fn put(f: &Fixture, entry: Uuid, row: Row) -> Uuid {
+    let now = time::OffsetDateTime::now_utc();
+    let pending_unit_id = if row.state == "pending" {
+        Some(plan_support::unit_of_kind(f, "prices").await)
+    } else {
+        None
+    };
+    price_repo::insert(
+        &f.db.conn().unwrap(),
+        &scope(f),
+        price::Model {
+            id: Uuid::now_v7(),
+            tenant_id: f.ctx.subject_tenant_id(),
+            price_book_entry_id: entry,
+            version_no: row.version_no,
+            dim_value: row.dim.map(str::to_owned),
+            price_json: row.price,
+            min_fee: row.min_fee.map(str::to_owned),
+            eligibility: row.eligibility.into(),
+            effective_from: date(row.from),
+            effective_to: row.to.map(date),
+            keep_for_bound: row.keep,
+            closed_explicitly: row.closed,
+            temporary_until: row.temporary_until.map(date),
+            paired_price_id: None,
+            return_of_price_id: None,
+            state: row.state.into(),
+            pending_unit_id,
+            approved_by_unit_id: None,
+            note: Some("authoring note".into()),
+            created_by: f.ctx.subject_id(),
+            approved_at: None,
+            version: 3,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap()
+    .id
+}
+/// An entry of `book` for `sku`, written directly, with a dimension key and an invoice-line
+/// override when asked.
+pub async fn entry_of(
+    f: &Fixture,
+    book: Uuid,
+    sku: Uuid,
+    kind: &str,
+    shape: (Option<&str>, Option<&str>, Option<&str>),
+) -> Uuid {
+    let (period, key, line) = shape;
+    let now = time::OffsetDateTime::now_utc();
+    price_book_entry_repo::insert(
+        &f.db.conn().unwrap(),
+        &scope(f),
+        price_book_entry::Model {
+            id: Uuid::now_v7(),
+            tenant_id: f.ctx.subject_tenant_id(),
+            book_id: book,
+            sku_id: sku,
+            charge_kind: kind.into(),
+            period: period.map(str::to_owned),
+            model: bss_pricing::domain::price_book_entry::default_model(kind.parse().unwrap())
+                .as_str()
+                .into(),
+            dimension_key: key.map(str::to_owned),
+            invoice_line_override: line.map(str::to_owned),
+            reservation_id: Uuid::new_v4(),
+            reference_state: "confirmed".into(),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap()
+    .id
+}
+/// Register one dimension key through its door.
+pub async fn dimension(f: &Fixture, key: &str, values: &[&str]) {
+    let (_, _, tag) = f
+        .call("GET", "/dimension-keys", json!({}), None, None)
+        .await;
+    let (s, b, _) = f
+        .call(
+            "PUT",
+            "/dimension-keys",
+            json!({"items":[{"key":key,"values":values}]}),
+            Some(&tag),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+}
+/// Write the tenant settings through their door.
+pub async fn settings(f: &Fixture, body: Value) {
+    let (_, _, tag) = f.call("GET", "/settings", json!({}), None, None).await;
+    let (s, b, _) = f.call("PUT", "/settings", body, Some(&tag), None).await;
+    assert_eq!(s, 200, "{b}");
+}
+pub async fn resolve(f: &Fixture, query: &str) -> (u16, Value) {
+    let (s, b, tag) = f
+        .call("GET", &format!("/resolve?{query}"), json!({}), None, None)
+        .await;
+    assert_eq!(tag, "", "a resolve answer carries no ETag");
+    (s, b)
+}
+pub async fn resolve_as(
+    f: &Fixture,
+    ctx: &toolkit_security::SecurityContext,
+    query: &str,
+) -> (u16, Value) {
+    let (s, b, _) = f
+        .call_as(
+            ctx,
+            "GET",
+            &format!("/resolve?{query}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    (s, b)
+}
+/// Rows of the tables a mutation writes: audit, idempotency, outbox and reference ops.
+pub async fn written(f: &Fixture) -> Vec<i64> {
+    use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+    let db = Database::connect(&f.dsn).await.unwrap();
+    let mut counts = Vec::new();
+    for table in [
+        "pricing_audit",
+        "pricing_idempotency",
+        "bss_pricing_outbox_body",
+        "pricing_reference_op",
+    ] {
+        let row = db
+            .query_one_raw(Statement::from_string(
+                DbBackend::Sqlite,
+                format!("SELECT COUNT(*) AS n FROM {table}"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        counts.push(row.try_get::<i64>("", "n").unwrap());
+    }
+    counts
+}
+
+/// A published plan: one monthly recurring SKU priced €30 from 2026-09-01, as one paid item.
+pub struct World {
+    pub f: Fixture,
+    pub catalog: Arc<Catalog>,
+    pub book: Uuid,
+    pub plan: Uuid,
+    pub revision: Uuid,
+    pub sku: Uuid,
+    pub entry: Uuid,
+    pub item: Uuid,
+    pub price: Uuid,
+}
+pub async fn world() -> World {
+    let (f, catalog) = setup().await;
+    let book = book(&f, "eur").await;
+    let sku = catalog.sku(SkuType::Recurring);
+    let entry = entry_of(&f, book, sku, "recurring", (Some("month"), None, None)).await;
+    let price = put(&f, entry, Row::default()).await;
+    let (created, revision) = plan(&f, "pro", book).await;
+    let plan = id_of(&created["id"]);
+    let item = item(&f, revision, sku, Some(entry), "paid").await.id;
+    publish(&f, plan, revision).await;
+    World {
+        f,
+        catalog,
+        book,
+        plan,
+        revision,
+        sku,
+        entry,
+        item,
+        price,
+    }
+}
+
+use bss_pricing::api::pricing_read::PricingReadProvider;
+use bss_pricing_sdk::read::{CatalogRef, PriceQuery, ResolveQuery};
+use toolkit_security::SecurityContext;
+
+pub struct ReadFixture {
+    pub provider: PricingReadProvider,
+    pub ctx: SecurityContext,
+    pub denied_ctx: SecurityContext,
+    pub price_query: PriceQuery,
+    pub resolve_query: ResolveQuery,
+    pub fixture: Fixture,
+}
+impl ReadFixture {
+    pub async fn new() -> Self {
+        let (fixture, catalog) = setup().await;
+        let book = book(&fixture, "eur").await;
+        let sku = catalog.sku(SkuType::Usage);
+        let entry = entry_of(&fixture, book, sku, "usage", (None, None, None)).await;
+        let price_id = put(
+            &fixture,
+            entry,
+            Row {
+                price: json!({"rate":"0.047"}),
+                ..Row::default()
+            },
+        )
+        .await;
+        let (created, revision_id) = plan(&fixture, "seam", book).await;
+        item(&fixture, revision_id, sku, Some(entry), "paid").await;
+        publish(&fixture, id_of(&created["id"]), revision_id).await;
+        let mut content = catalog.content(sku);
+        content.unit = Some("cloudlet_hour".into());
+        content.gl_code = Some("usage".into());
+        content.tax_category = Some("standard".into());
+        content.invoice_line_template = Some("{sku}".into());
+        content.billing_timing = Some(BillingTiming::Arrears);
+        catalog.version(sku, 1, "2026-09-01", content);
+        let ctx = fixture.ctx.clone();
+        let catalog = CatalogRef {
+            tenant_id: ctx.subject_tenant_id(),
+        };
+        let provider = PricingReadProvider::new(
+            fixture.state.clone(),
+            Arc::new(plan_support::entry_support::enforcer_for(catalog.tenant_id)),
+        );
+        Self {
+            provider,
+            ctx,
+            denied_ctx: plan_support::holding(&fixture, "denied"),
+            price_query: PriceQuery {
+                catalog: catalog.clone(),
+                price_id,
+            },
+            resolve_query: ResolveQuery {
+                catalog,
+                revision_id,
+                date: date("2026-09-15"),
+                item_id: None,
+                pins: vec![],
+            },
+            fixture,
+        }
+    }
+}

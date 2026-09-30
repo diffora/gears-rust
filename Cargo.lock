@@ -2006,6 +2006,7 @@ dependencies = [
  "cf-gears-authz-resolver-sdk",
  "cf-gears-bss-approval",
  "cf-gears-bss-coord",
+ "cf-gears-bss-pricing-sdk",
  "cf-gears-bss-products-sdk",
  "cf-gears-event-broker",
  "cf-gears-event-broker-sdk",
@@ -2046,7 +2047,11 @@ dependencies = [
  "cf-gears-toolkit-canonical-errors",
  "cf-gears-toolkit-contract",
  "cf-gears-toolkit-security",
+ "rust_decimal",
+ "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
+ "time",
  "uuid",
 ]
 

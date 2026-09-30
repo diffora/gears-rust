@@ -433,3 +433,35 @@ async fn no_operation_declares_a_422() {
 
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
+
+#[tokio::test]
+async fn init_registers_pricing_read_beside_sku_usage_and_checks_pdp() {
+    use bss_pricing_sdk::read::{CatalogRef, PriceQuery, PricingReadV1};
+    let harness = rest_support::Harness::new().await.unwrap();
+    let port = harness.ctx.client_hub().get::<dyn PricingReadV1>().unwrap();
+    assert!(
+        harness
+            .ctx
+            .client_hub()
+            .get::<dyn bss_products_sdk::sku_usage::SkuUsageV1>()
+            .is_ok()
+    );
+    let tenant = uuid::Uuid::new_v4();
+    let reader = toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::new_v4())
+        .subject_tenant_id(tenant)
+        .subject_type("user")
+        .build()
+        .unwrap();
+    let error = port
+        .price(
+            &reader,
+            PriceQuery {
+                catalog: CatalogRef { tenant_id: tenant },
+                price_id: uuid::Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.status_code(), 503, "the configured PDP is down");
+}

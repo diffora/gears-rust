@@ -232,6 +232,11 @@ Deferred by the owner: approved migration requests without executing subscriptio
 **ID**: `cpt-cf-bss-pricing-component-read-contract`
 
 Phase 4: resolve matrix, renewal walk, period bindings and durable pin reads; the Studio quote is not built (D-415); versioned Products reads at binding time.
+D-501 adds the delivered `PricingReadV1` SDK with explicit authorized catalog tenants, typed complete
+bindings and canonical JSON digests over the shared read snapshot. `current_revision` catches up due
+scheduled revisions before returning the published pointer. REST's preview and approved-price goldens
+remain unchanged; [slice 07](design/07-read-contract-events.md) defines the exact producer surface.
+Acceptance, holds and usage-policy persistence are later deliveries.
 
 ### 3.3 API Contracts
 

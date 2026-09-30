@@ -2,3 +2,5 @@
 
 pub mod rest;
 pub mod sku_usage;
+
+pub mod pricing_read;

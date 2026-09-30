@@ -1067,3 +1067,33 @@ The generated client of the pricing-mfe did not type a 503 (ask 30): no pricing 
 - **The tests.** tests/served_contract.rs reads the served spec: a 503 problem on each of the 51 ops; REGISTRY_UNAVAILABLE in the text of exactly the eight; the item create's, the revision PATCH's and the revision delete's texts, and the plan code rule's (D-468). tests/module_test.rs pins the ETag on the success answers of the eight reads and the nineteen writes, and nowhere else. Probes that dropped one op's 503, named the registry on the reject, dropped the unschedule's ETag and dropped STALE_REVISION from the delete's text were caught.
 
 **Source:** Owner, 2026-09-30 (validation 3 item 2, approved); phase 9 plan rev 2 (M1 and W1, binding: 503 on every op; decisions 8 and 9; L8: the contracts notes correct served texts to match the code).
+
+#### D-501 [H] Authorized SDK reads share the frozen preview snapshot and canonical JSON digests
+
+**Status:** DECIDED 2026-09-30.
+
+Pricing provides `PricingReadV1::{resolve, price, current_revision}` through ClientHub. Queries name
+an explicit catalog tenant, authorized against PDP-derived constraints under plan:read or price:read;
+a subject name grants nothing. The existing REST matrix and approved-price shape remain frozen.
+A shared snapshot owns local loading, resolution and dated Products evidence outside the transaction;
+the SDK requires complete commercial inputs and reports `IncompleteCommercialInputs` when a priced
+cell cannot supply them, while REST preserves nullable historical previews. Missing legacy entry policy
+remains `None`. Minimal invoice/policy projection types support the exact read signature, without
+publishing later acceptance, hold or meter-provider methods.
+
+Current-revision lookup persists due scheduled switches through the existing audited outbox transaction
+before reading the published pointer; a future revision remains waiting. All three methods are SafeRead
+and require no command idempotency key; switch persistence remains idempotent.
+
+Money SHA-256 covers canonical JSON `{domain:"pricing.money.v1",payload:{currency,model,minimum_fee}}`,
+including every model operand and excluding identity and mutable closing metadata. Selected-binding
+SHA-256 uses `pricing.bindings.v1` and every binding field, dated unit, entry identity, requested dimension,
+policy reference/content and invoice input. The exact template uses `pricing.template.v1`; policy content
+uses `pricing.policy.v1`. Numeric values are normalized strings, optional fields explicit null, keys
+ordered by UTF-16, and tier order retained. Rust and Node verify one frozen fixture. Slice 07 defines
+the projection, read failures and compatibility boundary in full. This is the first Pricing-owned
+producer surface, not delivery of consumer integration or sale acceptance.
+
+**Source:** Pricing Seam Contracts plan, Task 1 (G1), revisions 2 and 3. Extends D-419–D-422 without
+changing their REST behavior; uses phase-8 promotion from D-450–D-451. Later tasks own policy storage,
+new-sale gates and receipts. Decision numbers D-470–D-499 remain reserved for concurrent phase-9 work.

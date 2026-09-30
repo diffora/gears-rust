@@ -95,6 +95,63 @@ GET /pricing/v1/quote is a Studio preview with quantities (no plan item is optio
 [DESIGN §3.3](../DESIGN.md#33-api-contracts) fixes canonical errors and route prefixes.
 Each mounted route must appear in all four censuses with authz and precondition expectations.
 
+The delivered in-process surface (D-501) is `pricing-sdk::read::PricingReadV1`, registered as
+`dyn PricingReadV1` in ClientHub beside Products' existing `SkuUsageV1` provider:
+
+```rust
+async fn resolve(&self, ctx: &SecurityContext, query: ResolveQuery)
+    -> Result<ResolvedBindings, CanonicalError>;
+async fn price(&self, ctx: &SecurityContext, query: PriceQuery)
+    -> Result<ImmutablePrice, CanonicalError>;
+async fn current_revision(&self, ctx: &SecurityContext, query: PlanQuery)
+    -> Result<RevisionRef, CanonicalError>;
+```
+
+Every query carries `catalog: CatalogRef { tenant_id }`. This is the target catalog, not an
+assertion of permission or a replacement for the caller's tenant. The provider authenticates the
+context and obtains PDP constraints for `plan:read` (resolve/current revision) or `price:read`.
+The gate checks the explicit catalog tenant against those constraints; unknown/nonapproved/foreign
+price IDs disclose no price. A system-looking subject has no authorization bypass. Configured PDP
+or Products unavailability remains 503; definite Products denials retain their canonical error.
+
+`ResolveQuery` names revision, date, optional item and `PricePin { item_id, dimension_value,
+price_id }` values. Its result is a matrix of `ResolvedCell { selection, binding }`; an uncovered
+cell has `binding=None`. Complete bindings carry entry identity, dimension key/requested value,
+dated SKU version/code/name/unit, typed exact-decimal money, invoice inputs with template provenance,
+and `via_default`. Legacy entries carry `usage_rating_policy=None`. The policy value types are the
+minimal dependency of this binding; no policy authoring/storage or semantic-provider port is delivered
+in this task. Missing priced-cell descriptors or a rounding value not representable by the initial
+`HalfEven` projection returns the typed `IncompleteCommercialInputs` canonical precondition violation.
+REST retains nullable descriptors and its existing rounding vocabulary and goldens. Neither transport
+computes totals. Both adapters map the shared local snapshot, matrix and invoice inputs explicitly;
+dated Products reads occur only after the local read transaction finishes.
+
+`current_revision` catches up a due scheduled revision using the existing atomic switch/audit/outbox
+path before reading `published_rev`. A future revision stays scheduled. Retries announce a switch only
+once; no running ticker is required. It is classified `SafeRead` (no commercial command or idempotency
+key), although catch-up may persist the already-approved switch. Other read methods write nothing.
+
+The digest helpers implement restricted RFC 8785 canonical JSON, wrapped as `{domain,payload}` before
+SHA-256. Domains delivered here are `pricing.money.v1`, `pricing.bindings.v1`, `pricing.policy.v1` and
+`pricing.template.v1`. Money payload is `{currency, model, minimum_fee}` with every model operand,
+excluding IDs, all dates, closing observations and its own digest. Binding payload is
+`{plan_id, revision_id, bindings:[{selection,binding}]}` and contains every declared binding field,
+including entry, requested dimensions, dated unit, complete price observation, policy identity/version/
+content and invoice template/digest/provenance. Policy payload is its content, excluding record ID and
+version. Template payload is the exact string. `selected_bindings_digest` rejects duplicate, unknown,
+uncovered or inconsistent selections, then sorts by item UUID and requested dimension (null first).
+
+All numeric meaning uses strings: normalized plain decimals, base-10 integer versions, lowercase UUIDs
+and lowercase hexadecimal digest references. Optional fields are explicit null. Objects sort keys by
+UTF-16 code units; arrays preserve order (tier order is significant); strings use JSON escaping without
+Unicode normalization. Rust types exclude malformed Unicode and numeric JSON from the private encoder;
+no public untyped evidence or new REST wire DTO is introduced. Future wire adapters must reject duplicate
+keys and invalid typed values before projection. A single checked-in fixture contains canonical text
+and SHA-256 vectors verified independently by Rust and Node, including full bindings, policy versions,
+changed units/templates, maximum u64, control characters and supplementary Unicode keys. Timestamp
+normalization vectors specify UTC RFC3339 with nine fractional digits for later timestamp-bearing types;
+Task 1 itself introduces no acceptance or BillingTerms methods.
+
 ## 6. Data Model
 
 Resolution is a per-item matrix of default and value chains (D-420) with each item's SKU version and resolved invoice inputs (D-421); it carries no totals, and the active promotion (id, version) is deferred with promotions (D-409). The resolve response, field by field (the golden contracts freeze it):

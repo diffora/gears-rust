@@ -187,6 +187,11 @@ Requirement: `cpt-cf-bss-pricing-fr-events`; PRD AC #14.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-consumer-golden-contracts`
 
+D-501 adds real SDK provider tests for explicit catalog/PDP authorization, typed complete matrices,
+permanent approved money and scheduled-revision catch-up without a ticker. Rust and Node verify the
+same frozen canonical JSON/digest fixture; a deliberate encoder key-order mutation proves the digest
+assertions fail. Existing REST fixture bytes remain unchanged.
+
 Golden responses cover resolve matrix, renewal eligibility, descriptor dates and forever-readable prices; promotion versions are deferred with promotions (D-409) and are not part of this DoD until they return. Rating and Subscriptions consume these in separate plans; fixtures-crate deletion occurs in phase 4 (spec §10–§12).
 
 Requirement: `cpt-cf-bss-pricing-fr-price-read`; PRD AC #19.

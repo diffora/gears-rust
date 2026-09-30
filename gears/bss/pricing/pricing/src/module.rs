@@ -138,6 +138,10 @@ impl Gear for BssPricingGear {
             .register::<dyn bss_products_sdk::sku_usage::SkuUsageV1>(Arc::new(
                 crate::api::sku_usage::PricingSkuUsage::new(state.clone(), (*enforcer).clone()),
             ));
+        ctx.client_hub()
+            .register::<dyn bss_pricing_sdk::read::PricingReadV1>(Arc::new(
+                crate::api::pricing_read::PricingReadProvider::new(state.clone(), enforcer.clone()),
+            ));
         self.runtime
             .store(Some(Arc::new(PricingRuntime { enforcer, state })));
         Ok(())

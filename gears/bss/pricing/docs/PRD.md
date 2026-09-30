@@ -302,6 +302,11 @@ An approved migration_request records target plan/revision, subscription ids, ne
 
 GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts plan_revision_id, date, an optional item_id and optional pins (price_id, or price_id:dim_value for a default-chain price a value was bound to) and returns, for a published or superseded revision, or a scheduled one on or after its sale date (D-454), each item's full default/value chain matrix without totals; the active promotion (id, version) is deferred with promotions (D-409). New subscriptions bind the price in force, the value's own chain else the default. Renewal walks a pinned chain through all successors, stopping before the first new successor; a binding is always a price in force on the date, and a default-chain pin moves to the value's own later all price (D-420). Each binding carries ends_on, its own end (a temporary price's end or an explicit close, else null), and the consumer slices a period at ends_on, never at the stored effective_to (D-425). A chain that no price covers is explicit uncovered, never refused and never an invented price. Usage binds lazily per (item, dim_value); at a binding's ends_on inside a period the consumer resolves again with the pin on that date. Each item binds its SKU version from Products versions?as_of at the date, read as pricing's system actor, so a consumer needs only pricing's grants (D-424), and resolved invoice inputs with their source (entry, SKU or tenant): invoice-line template, GL code, tax category and billing timing, with rounding policy and currency scale (D-421). Each item carries its entry's model, null without an entry; a binding carries none (D-427).
 
+D-501 delivers the matching authorized SDK matrix through `PricingReadV1::resolve`, with an explicit
+catalog tenant and typed complete bindings. Missing priced-cell commercial inputs are a typed failure;
+REST's nullable preview stays compatible. `current_revision` returns the revision in effect after
+persisting any due approved switch. Acceptance and consumer integration remain separate work.
+
 #### `fr-price-read`
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-price-read`
@@ -309,6 +314,10 @@ GET /bss-pricing/v1/resolve (spec §7.1's /pricing/v1/resolve, D-419) accepts pl
 **Phase:** 4. **Source:** spec §2.2, §5–§7, §12–§13; D-422.
 
 GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) serves an approved price forever, including closed, superseded and keep_for_bound prices, with its entry's SKU, charge kind, period, model (D-427), book and currency: stored facts only, nothing computed from today. A draft, pending or rejected price, an unknown id and another tenant's id answer the same 404. The consumer retains price id, dimension value and used chain, SKU version/meter/unit, descriptors, timing, rounding, currency scale and promotion version (deferred with promotions, D-409) in its binding; later descriptor changes do not rewrite earlier pins.
+
+`PricingReadV1::price` (D-501) exposes these approved facts as exact decimal models with a financial
+content digest that excludes mutable closure metadata. The selected-binding digest separately freezes
+the dated unit, entry and requested dimension, policy projection and complete invoice inputs.
 
 #### `fr-quote`
 
