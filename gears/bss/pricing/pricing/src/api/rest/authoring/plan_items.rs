@@ -107,7 +107,7 @@ async fn entry_fits(
 /// `ITEM_SKU_DEPRECATED` or `ITEM_BUNDLE_SKU`; 404 for an unknown revision or entry; 409
 /// `REVISION_NOT_DRAFT` or `ITEM_SKU_TAKEN`; 403 `NOT_DRAFT_AUTHOR` (D-404); 503 when Products
 /// cannot answer; then [`create`]'s own.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
 )]
@@ -173,7 +173,8 @@ async fn fresh_sku(
     ctx: &SecurityContext,
     sku: Uuid,
 ) -> Result<(), CanonicalError> {
-    let registry = reference_registry::resolve(&state.hub).map_err(|_| support::unavailable())?;
+    let registry =
+        reference_registry::resolve(&state.hub).map_err(|e| support::registry_unavailable(&e))?;
     let sku = registry
         .sku_for_write(ctx, ctx.subject_tenant_id(), sku)
         .await
@@ -181,7 +182,7 @@ async fn fresh_sku(
             if reference_work::definite_refusal(&error) {
                 error
             } else {
-                support::unavailable()
+                support::registry_unavailable(&error)
             }
         })?;
     if sku.lifecycle == Lifecycle::Deprecated {
@@ -244,7 +245,8 @@ pub(super) async fn patch(
     )?)
 }
 /// `GET /plan-items/{id}` (D-434): the item with its revision's number and state and its plan,
-/// its version as the `ETag` a following PATCH sends back as If-Match.
+/// its version as the `ETag` a following PATCH sends back as If-Match. The state is the one the
+/// revision reads today among its plan's revisions (D-447).
 /// # Errors
 /// 404 for an item the tenant does not hold.
 pub(super) async fn get(
@@ -256,8 +258,16 @@ pub(super) async fn get(
     let m = plan_item_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| support::missing_what("plan_item"))?;
-    let r =
-        plans::find_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.revision_id).await?;
+    let children = AccessScope::for_tenant(tenant);
+    let r = plans::find_revision(tx, &children, tenant, m.revision_id).await?;
+    let siblings = plan_revision_repo::for_plan(tx, &children, tenant, r.plan_id).await?;
+    let state = super::dto::effective_revisions(&siblings, plans::today())?
+        .into_iter()
+        .find(|e| e.id == r.id)
+        .map_or_else(
+            || PricingRevisionState::stored(&r.state, &format_args!("revision {} state", r.id)),
+            |e| Ok(e.state.into()),
+        )?;
     let version = crate::api::rest::preconditions::RowVersion::from_stored(m.version)
         .map_err(CanonicalError::from)?
         .get();
@@ -267,10 +277,7 @@ pub(super) async fn get(
             item: m.try_into()?,
             plan_id: r.plan_id,
             rev_no: r.rev_no,
-            state: PricingRevisionState::stored(
-                &r.state,
-                &format_args!("revision {} state", r.id),
-            )?,
+            state,
         },
         Some(version),
     )?)
@@ -287,7 +294,7 @@ enum Begun {
 /// revision that is missing (404) or no longer an unlocked draft (409 `REVISION_NOT_DRAFT`).
 /// # Errors
 /// The canonical refusal, conflict or unavailability of any step.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
 )]
@@ -348,7 +355,7 @@ pub async fn create(
             let work = Work {
                 target: Target::PlanItem {
                     revision_id: revision,
-                    input: Some(input),
+                    input: Some(input.into()),
                 },
                 correlation,
                 refusal: None,
@@ -446,6 +453,7 @@ pub async fn drive_best_effort(state: &Arc<AuthoringState>, ctx: &SecurityContex
             tracing::warn!(
                 op_id=%op_id,
                 error=%error,
+                diagnostic=error.diagnostic().unwrap_or_default(),
                 left = ops.len() - done,
                 "pricing plan item reference work deferred to the ticker"
             );

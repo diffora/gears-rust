@@ -8,6 +8,11 @@ use uuid::Uuid;
 /// The gear owns authorization and scope, and must use the supplied runner for
 /// persistence. Lock acquisition is conditional; application revalidates the
 /// environment and publishes domain effects in that same transaction.
+///
+/// An effect that may act only after the commit (an outbox wake) never passes
+/// through the engine: the gear builds the subject for its transaction, the
+/// subject keeps what `apply` produced, and the gear acts on it once the
+/// transaction has committed (pricing D-455, products P-D-221).
 #[async_trait::async_trait]
 pub trait ApprovalSubject<R: DBRunner + Sync>: Send + Sync {
     /// The approval kind used for policy lookup.

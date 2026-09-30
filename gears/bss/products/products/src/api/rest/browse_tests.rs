@@ -68,3 +68,34 @@ async fn browse_validates_filters_and_query_shape_without_wire_422() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+/// RS-41: one browse asks the PDP once, for both kinds; the door and the provider asked it once
+/// each.
+#[tokio::test]
+async fn one_browse_asks_the_pdp_once() {
+    let tenant = Uuid::new_v4();
+    let (db, _, _, _dsn) = test_db().await;
+    let (_app, state) =
+        rest_app_on_db(tenant, super::router, resolved_usage_types(), "test", db).await;
+    let (enforcer, asked) = counting_flat_in_enforcer(tenant);
+    let app = super::router(state, &toolkit::api::OpenApiRegistryImpl::new())
+        .layer(axum::Extension(enforcer));
+    for query in ["kind=sku", "kind=tax_category"] {
+        asked.store(0, std::sync::atomic::Ordering::Relaxed);
+        let response = request(
+            &app,
+            tenant,
+            Method::GET,
+            &format!("/bss-products/v1/browse?{query}"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "{query}");
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "{query}"
+        );
+    }
+}

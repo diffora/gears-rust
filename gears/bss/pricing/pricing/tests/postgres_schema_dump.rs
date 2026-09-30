@@ -104,6 +104,8 @@ async fn the_dump_reaches_every_kind_of_object() {
             "public.bss_pricing_outbox_outgoing".to_owned(),
             "public.bss_pricing_outbox_partitions".to_owned(),
             "public.bss_pricing_outbox_processor".to_owned(),
+            // The toolkit outbox's traced-batch table (main `0089c5398`).
+            "public.bss_pricing_outbox_trace".to_owned(),
             "public.bss_pricing_outbox_vacuum_counter".to_owned(),
             "public.event_broker_producer_registrations".to_owned()
         ]

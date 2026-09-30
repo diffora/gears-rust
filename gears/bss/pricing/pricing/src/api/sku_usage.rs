@@ -73,7 +73,7 @@ impl SkuUsageV1 for PricingSkuUsage {
         })
         .await
         .map_err(|error| {
-            tracing::warn!(error = %error, "bss-pricing: SKU usage could not be read");
+            tracing::warn!(error = %error, diagnostic = error.diagnostic().unwrap_or_default(), "bss-pricing: SKU usage could not be read");
             sku_usage_unavailable("pricing could not read the SKU usage")
         })
     }
@@ -92,7 +92,7 @@ impl SkuUsageV1 for PricingSkuUsage {
         })
         .await
         .map_err(|error| {
-            tracing::warn!(error = %error, "bss-pricing: SKU usage sets could not be read");
+            tracing::warn!(error = %error, diagnostic = error.diagnostic().unwrap_or_default(), "bss-pricing: SKU usage sets could not be read");
             sku_usage_unavailable("pricing could not read the SKU usage sets")
         })
     }

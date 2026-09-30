@@ -223,6 +223,7 @@ impl Harness {
             ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
             ("PATCH", "/bss-pricing/v1/dimension-keys"),
             ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+            ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -269,13 +270,13 @@ impl Harness {
 // PUT /approval-policy config:settings true false
 
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
-// POST /plans plan:author false true
+// POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
 // GET /plan-revisions/{id} plan:read false false
-// PATCH /plan-revisions/{id} plan:author true false
+// PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
 // Run 3.3 items and checks: method | path | resource:action | If-Match | Idempotency-Key
@@ -286,8 +287,11 @@ impl Harness {
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit plan:submit false true
-// POST /plans/{id}/clone plan:author false true
+// POST /plans/{id}/clone plan:author (then price_book:read, D-456) false true
 
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
 // GET /prices/{id} price:read false false
+
+// Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/unschedule plan:submit false true

@@ -16,7 +16,7 @@ use crate::{
         storage::{
             RepoError,
             entity::{self, price_book_entry},
-            repo::{price_book_entry_repo, price_repo},
+            repo::{self, price_book_entry_repo, price_repo},
         },
     },
 };
@@ -130,7 +130,7 @@ async fn live_entry(
     let entry = price_book_entry_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(support::missing_entry)?;
-    if entry.reference_state == "lost" {
+    if entry.reference_state == crate::domain::price_book_entry::ReferenceState::Lost.as_str() {
         return Err(support::conflict("ENTRY_REFERENCE_LOST").into());
     }
     Ok(entry)
@@ -140,7 +140,7 @@ async fn live_entry(
 /// two writers that read the same maximum; the loser recomputes in a fresh transaction.
 /// # Errors
 /// Returns the canonical refusal of the last attempt.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity, replay operands and input belong to one transaction"
 )]
@@ -188,14 +188,14 @@ pub async fn create(
         .await;
         match result {
             Err(DoorError::Repo(RepoError::Conflict {
-                code: "PRICE_VERSION_TAKEN",
+                code: repo::PRICE_VERSION_TAKEN,
             })) if attempt < VERSION_ATTEMPTS => attempt += 1,
             other => return other.map_err(Into::into),
         }
     }
 }
 
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity, replay operands and input belong to one transaction"
 )]
@@ -301,10 +301,6 @@ async fn create_in(
 /// which a concurrent writer may take first.
 /// # Errors
 /// Returns the canonical refusal of the last attempt.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Conditional resource identity and audit context are explicit"
-)]
 pub async fn patch(
     db: &toolkit_db::Db,
     scope: AccessScope,
@@ -326,7 +322,7 @@ pub async fn patch(
         .await;
         match result {
             Err(DoorError::Repo(RepoError::Conflict {
-                code: "PRICE_VERSION_TAKEN",
+                code: repo::PRICE_VERSION_TAKEN,
             })) if attempt < VERSION_ATTEMPTS => attempt += 1,
             other => return other.map_err(Into::into),
         }
@@ -342,10 +338,6 @@ fn unlocked_draft(m: &entity::price::Model) -> bool {
 /// # Errors
 /// Returns `PRICE_NOT_DRAFT`, `NOT_DRAFT_AUTHOR`, `STALE_REVISION`, `TEMPORARY_PRICE_FIXED` or a
 /// pure-rule refusal.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Conditional resource identity and audit context are explicit"
-)]
 async fn patch_in(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -497,13 +489,26 @@ async fn redate(
     };
     let partner = partner_of(tx, ctx, &next).await?;
     let shape = judged_shape(&dates, promo, end, partner.as_ref())?;
-    shaped(&mut next, &shape[0])?;
+    // `price::temporary` answers the promo, alone or with its return (PS-35).
+    let (first, returned) = match shape.as_slice() {
+        [promo] => (promo, None),
+        [promo, returned] => (promo, Some(returned)),
+        _ => {
+            return Err(CanonicalError::internal(format!(
+                "a temporary price split into {} prices",
+                shape.len()
+            ))
+            .create()
+            .into());
+        }
+    };
+    shaped(&mut next, first)?;
     let written = Written {
         ctx,
         correlation,
         now: dates.now,
     };
-    next.version = reconcile(tx, &written, &next, partner, shape.get(1)).await?;
+    next.version = reconcile(tx, &written, &next, partner, returned).await?;
     Ok(support::response(
         StatusCode::OK,
         &PricingPriceDto::of(next, dates.pc.model.as_str())?,

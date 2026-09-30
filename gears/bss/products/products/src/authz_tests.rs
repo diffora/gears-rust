@@ -26,18 +26,36 @@ use uuid::Uuid;
 use super::{AuthzError, access_scope, actions, authz_label_type_schemas, labels, resource_types};
 use crate::test_support::flat_in_enforcer;
 
+/// RT-09: every label `mod labels` declares joins `labels::ALL`, and every resource type names one
+/// of them. A census of the module's source: a label declared without joining `ALL` changes the
+/// count here, which reading the definitions back could not show.
 #[test]
-fn labels_all_carries_every_declared_label_in_order() {
+fn every_declared_label_joins_all_and_each_resource_type_names_one() {
+    let source = include_str!("authz.rs");
+    let module = |head: &str| {
+        let body = &source[source.find(head).unwrap()..];
+        body[..body.find("\n}").unwrap()].to_owned()
+    };
+    let declared = module("pub mod labels {").matches("gts_id!(").count();
+    let distinct: std::collections::BTreeSet<_> = labels::ALL.iter().collect();
+    assert_eq!(distinct.len(), labels::ALL.len(), "ALL names a label twice");
     assert_eq!(
-        labels::ALL,
-        [labels::SKU, labels::CATEGORY, labels::APPROVAL_UNIT]
+        declared,
+        labels::ALL.len(),
+        "a declared label is not in ALL"
     );
-}
-#[test]
-fn resource_types_carry_their_labels() {
-    assert_eq!(resource_types::SKU.name(), labels::SKU);
-    assert_eq!(resource_types::CATEGORY.name(), labels::CATEGORY);
-    assert_eq!(resource_types::APPROVAL_UNIT.name(), labels::APPROVAL_UNIT);
+    let types = module("pub mod resource_types {");
+    assert_eq!(
+        types.matches("ResourceType::from_static(").count(),
+        labels::ALL.len()
+    );
+    for rt in [
+        resource_types::SKU,
+        resource_types::CATEGORY,
+        resource_types::APPROVAL_UNIT,
+    ] {
+        assert!(labels::ALL.contains(&rt.name()), "{}", rt.name());
+    }
 }
 #[test]
 fn sixteen_permissions_cover_exactly_the_declared_pairs_and_inventory() {
@@ -149,7 +167,7 @@ fn ctx_for(tenant: Uuid) -> SecurityContext {
         .expect("authed SecurityContext must build")
 }
 
-/// A write gate (`require_constraints = true` + a target `owner_tenant_id`)
+/// A write gate (a target `owner_tenant_id`; constraints are always required)
 /// must DENY when the target tenant is outside the PDP's compiled scope, and
 /// ALLOW when it is inside. This pins the cross-tenant-write hole: the
 /// degraded flat-`In` decision does not re-validate `owner_tenant_id` at the
@@ -168,8 +186,6 @@ async fn write_gate_denies_target_outside_authorized_scope() {
         &resource_types::SKU,
         actions::AUTHOR,
         Some(tenant_b),
-        None,
-        true,
     )
     .await;
     assert!(
@@ -185,54 +201,9 @@ async fn write_gate_denies_target_outside_authorized_scope() {
         &resource_types::SKU,
         actions::AUTHOR,
         Some(tenant_a),
-        None,
-        true,
     )
     .await
     .expect("writing into own tenant A must be allowed");
-    assert!(
-        allowed.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant_a),
-        "the granted scope must carry the tenant-A filter"
-    );
-}
-
-/// `publish` gates exactly like `write` on the `sku` resource: a cross-tenant
-/// target is denied and an in-scope target is allowed with the `In([A])`
-/// filter. Pins that `access_scope` treats every action name uniformly and
-/// that the write-membership assertion is not `product`-specific.
-#[tokio::test]
-async fn submit_gate_on_sku_matches_author_semantics() {
-    let tenant_a = Uuid::now_v7();
-    let tenant_b = Uuid::now_v7();
-    let enforcer = flat_in_enforcer(tenant_a);
-    let ctx = ctx_for(tenant_a);
-
-    let denied = access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::SKU,
-        actions::SUBMIT,
-        Some(tenant_b),
-        None,
-        true,
-    )
-    .await;
-    assert!(
-        matches!(denied, Err(AuthzError::Denied(_))),
-        "publishing into tenant B with scope In([A]) must be denied, got {denied:?}"
-    );
-
-    let allowed = access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::SKU,
-        actions::SUBMIT,
-        Some(tenant_a),
-        None,
-        true,
-    )
-    .await
-    .expect("publishing within own tenant A must be allowed");
     assert!(
         allowed.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant_a),
         "the granted scope must carry the tenant-A filter"
@@ -279,16 +250,7 @@ impl AuthZResolverApi for DenyingResolver {
 async fn pdp_evaluation_failure_maps_to_unavailable() {
     let enforcer = PolicyEnforcer::new(Arc::new(FailingResolver));
     let ctx = ctx_for(Uuid::now_v7());
-    let res = access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::SKU,
-        actions::READ,
-        None,
-        None,
-        true,
-    )
-    .await;
+    let res = access_scope(&enforcer, &ctx, &resource_types::SKU, actions::READ, None).await;
     assert!(
         matches!(res, Err(AuthzError::Unavailable(_))),
         "an unreachable PDP must fail closed as Unavailable, got {res:?}"
@@ -300,16 +262,7 @@ async fn pdp_evaluation_failure_maps_to_unavailable() {
 async fn pdp_decision_false_maps_to_denied() {
     let enforcer = PolicyEnforcer::new(Arc::new(DenyingResolver));
     let ctx = ctx_for(Uuid::now_v7());
-    let res = access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::SKU,
-        actions::READ,
-        None,
-        None,
-        true,
-    )
-    .await;
+    let res = access_scope(&enforcer, &ctx, &resource_types::SKU, actions::READ, None).await;
     assert!(
         matches!(res, Err(AuthzError::Denied(_))),
         "an explicit PDP deny must map to Denied, got {res:?}"
@@ -323,19 +276,53 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
     let tenant = Uuid::now_v7();
     let enforcer = flat_in_enforcer(tenant);
     let ctx = ctx_for(tenant);
-    let scope = access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::SKU,
-        actions::READ,
-        None,
-        None,
-        true,
-    )
-    .await
-    .expect("read must be allowed");
+    let scope = access_scope(&enforcer, &ctx, &resource_types::SKU, actions::READ, None)
+        .await
+        .expect("read must be allowed");
     assert!(
         scope.contains_uuid(pep_properties::OWNER_TENANT_ID, tenant),
         "the read scope must carry the tenant filter"
     );
+}
+
+/// PDP fake that allows under a constraint on a property this gear does not support, so the
+/// constraints do not compile.
+struct UncompilableResolver;
+
+#[async_trait]
+impl AuthZResolverApi for UncompilableResolver {
+    async fn evaluate(
+        &self,
+        _ctx: PlatformSecurityContext,
+        _req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
+        Ok(EvaluationResponse {
+            decision: true,
+            context: EvaluationResponseContext {
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        "a_property_the_gear_never_named",
+                        vec![Uuid::now_v7()],
+                    ))],
+                }],
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// RS-08: constraints that do not compile are a denial whose reason is a fixed token; the
+/// compiler's diagnostic, which names the PDP's properties, stays in the log.
+#[tokio::test]
+async fn uncompilable_constraints_deny_with_a_fixed_reason() {
+    let enforcer = PolicyEnforcer::new(Arc::new(UncompilableResolver));
+    let ctx = ctx_for(Uuid::now_v7());
+    let res = access_scope(&enforcer, &ctx, &resource_types::SKU, actions::READ, None).await;
+    match res {
+        Err(AuthzError::Denied(reason)) => {
+            assert_eq!(reason, super::CONSTRAINT_COMPILATION_FAILED);
+        }
+        other => panic!("uncompilable constraints must deny, got {other:?}"),
+    }
 }

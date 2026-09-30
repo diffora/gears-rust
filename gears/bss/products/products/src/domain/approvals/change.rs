@@ -138,7 +138,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuChange {
             .await
             .map_err(store_err)?;
             events::enqueue_typed(
-                &b.sink,
+                &b.outbox,
                 tx,
                 broker::SkuChanged {
                     tenant_id: b.tenant_id,

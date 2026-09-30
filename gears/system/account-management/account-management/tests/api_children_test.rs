@@ -323,7 +323,7 @@ async fn list_children_recursive_returns_descendants_with_ancestors() {
     assert_eq!(chain[0]["name"], "alpha");
     assert!(
         chain[0]["tenant_type"].is_string(),
-        "typed seed resolves the ancestor type: {chain:?}"
+        "typed seed must resolve the ancestor type"
     );
     assert_eq!(
         by_name["alpha-junior"]["id"].as_str().expect("id"),
@@ -585,5 +585,41 @@ async fn list_children_cursor_is_bound_to_the_mode_it_was_minted_in() {
         cross_back.status(),
         StatusCode::BAD_REQUEST,
         "direct cursor in recursive mode"
+    );
+}
+
+#[tokio::test]
+async fn list_children_legacy_cursor_is_rejected_only_in_recursive_mode() {
+    // A direct-listing cursor issued before mode binding has no filter
+    // fingerprint. Pagination skips a missing fingerprint, so recursive
+    // mode must reject it itself; the direct listing keeps accepting it.
+    let h = setup_sqlite().await.expect("sqlite");
+    let (root, ..) = seed_two_levels(&h).await;
+    let services = build_services(&h);
+    let router = build_test_router(&services);
+
+    let minted = first_cursor(&router, root, false).await;
+    let mut cursor = toolkit_odata::CursorV1::decode(&minted).expect("decode");
+    cursor.f = None;
+    let legacy = cursor.encode().expect("encode");
+
+    let send = |recursive: bool| {
+        let flag = if recursive { "&recursive=true" } else { "" };
+        json_request(
+            "GET",
+            &format!(
+                "/account-management/v1/tenants/{root}/children?limit=1&cursor={legacy}{flag}"
+            ),
+            None,
+            ctx_for(root),
+        )
+    };
+    let recursive = router.clone().oneshot(send(true)).await.expect("router");
+    assert_eq!(recursive.status(), StatusCode::BAD_REQUEST);
+    let direct = router.clone().oneshot(send(false)).await.expect("router");
+    assert_eq!(
+        direct.status(),
+        StatusCode::OK,
+        "legacy cursors keep working in direct mode"
     );
 }

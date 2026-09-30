@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::runtime::{Endpoint, GearInstance, GearManager};
+use crate::runtime::{Endpoint, GearInstance, GearManager, GrpcServiceNameConflict};
 
 /// Compute a content token for an `OpenAPI` document, used to detect changes.
 ///
@@ -32,8 +32,9 @@ fn openapi_spec_hash(spec: &str) -> String {
 
 // Re-export all types from contracts - this is the single source of truth
 pub use cf_system_sdks::directory::{
-    DirectoryClient, DirectoryInvalidArgument, DirectoryNotFound, GrpcServiceInfo, InstanceState,
-    LabelSelector, RegisterInstanceInfo, ServiceEndpoint, ServiceInstanceInfo,
+    DirectoryClient, DirectoryInvalidArgument, DirectoryNotFound, DirectoryPermissionDenied,
+    DirectoryServiceNameConflict, GrpcServiceInfo, InstanceState, LabelSelector,
+    RegisterInstanceInfo, ServiceEndpoint, ServiceInstanceInfo,
 };
 
 /// Project the live runtime [`crate::runtime::InstanceState`] onto the domain
@@ -233,8 +234,24 @@ impl DirectoryClient for LocalDirectoryClient {
             instance = instance.with_labels(info.labels);
         }
 
-        // Register the instance with the manager
-        self.mgr.register_instance(Arc::new(instance));
+        // Register the instance, enforcing single-gear ownership of every gRPC
+        // service name it advertises atomically (check + insert under one lock)
+        // so two gears cannot race to claim the same name. A conflict is a typed
+        // sentinel the gRPC boundary maps to a status whose code reflects whether
+        // the conflict is recoverable (`recoverable` is carried across).
+        self.mgr.register_instance(Arc::new(instance)).map_err(
+            |GrpcServiceNameConflict {
+                 service_name,
+                 owner,
+                 recoverable,
+             }| {
+                anyhow::Error::from(DirectoryServiceNameConflict {
+                    service_name,
+                    owner,
+                    recoverable,
+                })
+            },
+        )?;
 
         Ok(())
     }
@@ -378,7 +395,7 @@ mod tests {
         let instance_id = Uuid::new_v4();
         // Register an instance first
         let inst = Arc::new(GearInstance::new("test_gear", instance_id));
-        dir.register_instance(inst);
+        dir.register_instance(inst).unwrap();
 
         // Verify it exists
         assert_eq!(dir.instances_of("test_gear").len(), 1);
@@ -402,7 +419,7 @@ mod tests {
         let instance_id = Uuid::new_v4();
         // Register an instance first
         let inst = Arc::new(GearInstance::new("test_gear", instance_id));
-        dir.register_instance(inst);
+        dir.register_instance(inst).unwrap();
 
         // Verify initial state is Registered
         let instances = dir.instances_of("test_gear");

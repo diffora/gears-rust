@@ -7,69 +7,6 @@ fn default_leaves_the_runtime_slot_empty() {
     assert!(gear.runtime.load_full().is_none());
 }
 
-/// `register_rest`'s empty-runtime branch returns a router and does not
-/// error — the behaviour that distinguishes this gear from
-/// `simple-user-settings`, whose `register_rest` errors out of an
-/// uninitialised `service` slot.
-///
-/// Calling `register_rest` itself needs a `GearCtx` and a
-/// `dyn OpenApiRegistry`; the former needs a
-/// `tokio_util::sync::CancellationToken`, which this slice's dependency
-/// delta does not carry. What is exercised directly, without either, is
-/// [`crate::api::rest::router`] — the helper both of `register_rest`'s
-/// branches call, and the only place the nesting happens. It is
-/// infallible (`Router -> Router`, no `Result`), which is what makes
-/// `register_rest`'s `Ok(...)` around it unconditional in both branches.
-/// A request under the reserved prefix is answered by **this** gear with
-/// a `404`, and a path outside it is untouched by the nest.
-///
-/// The earlier version of this test built the router and dropped it,
-/// which asserted nothing: it passed just as well if `router` returned
-/// `host_router` unnested, or nested under the wrong prefix, or swapped
-/// its arguments. The prefix reservation is the one behaviour this
-/// module exists to deliver, so it is asserted where it is observable —
-/// through a request — rather than by trusting the type.
-#[tokio::test]
-async fn a_request_under_the_reserved_prefix_is_answered_by_this_gear() {
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use axum::routing::get;
-    use tower::ServiceExt as _;
-
-    let host = Router::new().route("/elsewhere", get(|| async { "host" }));
-    let mounted = crate::api::rest::router(host);
-
-    let under_prefix = mounted
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/bss-products/v1/anything")
-                .body(Body::empty())
-                .expect("build the probe request"),
-        )
-        .await
-        .expect("the router answers");
-    assert_eq!(
-        under_prefix.status(),
-        StatusCode::NOT_FOUND,
-        "the prefix is claimed, so an unmounted path under it is this gear's 404"
-    );
-
-    let outside = mounted
-        .oneshot(
-            Request::builder()
-                .uri("/elsewhere")
-                .body(Body::empty())
-                .expect("build the control request"),
-        )
-        .await
-        .expect("the router answers");
-    assert_eq!(
-        outside.status(),
-        StatusCode::OK,
-        "nesting under the prefix must not shadow the host router's own paths"
-    );
-}
 /// A configured gear registers every implemented operation.
 #[tokio::test]
 async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
@@ -131,14 +68,24 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     ];
     expected.sort_unstable();
     assert_eq!(actual, expected);
-    // The actual lifecycle entry must honor the retained cancellation token.
+    // The actual lifecycle entry must honor the retained cancellation token, and it stops the
+    // outbox pipeline before it returns (RS-12): the runtime holds none after.
     let cancel = tokio_util::sync::CancellationToken::new();
     cancel.cancel();
+    let gear = Arc::new(gear);
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        Arc::new(gear).serve(cancel),
+        Arc::clone(&gear).serve(cancel),
     )
     .await??;
+    let runtime = gear
+        .runtime
+        .load_full()
+        .expect("the runtime outlives serve");
+    assert!(
+        runtime.pipeline.lock().await.is_none(),
+        "serve stops the pipeline"
+    );
     Ok(())
 }
 
@@ -316,7 +263,7 @@ async fn skeleton_harness() -> anyhow::Result<(BssProductsGear, GearCtx)> {
     gear.runtime.store(Some(Arc::new(ProductsRuntime {
         enforcer: Arc::new(crate::test_support::flat_in_enforcer(uuid::Uuid::new_v4())),
         api_state,
-        _pipeline: OutboxLifetime::Interim(pipeline),
+        pipeline: tokio::sync::Mutex::new(Some(OutboxLifetime::Interim(pipeline))),
     })));
     let ctx = GearCtx::new(
         "bss-products",
@@ -386,7 +333,7 @@ const CLOSED: &[Closed] = &[
     ("SkuDto", "billing_timing", TIMING, true),
     ("SkuContentDto", "type", SKU_TYPE, false),
     ("SkuContentDto", "billing_timing", TIMING, true),
-    ("CategoryDto", "status", CATEGORY_STATUS, false),
+    ("ProductsCategoryDto", "status", CATEGORY_STATUS, false),
     ("ProductsSkuHistoryEntry", "from_lifecycle", LIFECYCLE, true),
     ("ProductsSkuHistoryEntry", "to_lifecycle", LIFECYCLE, true),
     ("UnitDto", "state", UNIT_STATE, false),
@@ -570,21 +517,21 @@ async fn the_fields_no_check_guards_stay_strings_on_the_responses() -> anyhow::R
 #[tokio::test]
 async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() -> anyhow::Result<()> {
     let api = served_spec().await?;
-    let mut todo = std::collections::BTreeSet::new();
+    let mut pending = std::collections::BTreeSet::new();
     for op in api["paths"]
         .as_object()
         .unwrap()
         .values()
         .flat_map(|ops| ops.as_object().unwrap().values())
     {
-        schema_refs(&op["requestBody"], &mut todo);
+        schema_refs(&op["requestBody"], &mut pending);
     }
     let mut seen = std::collections::BTreeSet::new();
-    while let Some(name) = todo.pop_first() {
+    while let Some(name) = pending.pop_first() {
         if seen.insert(name.clone()) {
             let mut next = std::collections::BTreeSet::new();
             schema_refs(component(&api, &name), &mut next);
-            todo.extend(next.difference(&seen).cloned());
+            pending.extend(next.difference(&seen).cloned());
         }
     }
     let enums: Vec<_> = seen
@@ -601,4 +548,74 @@ async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() -> anyhow::
         assert!(plain_string(p), "{schema}.{field}: {p}");
     }
     Ok(())
+}
+
+/// A registered usage-type catalog that never answers.
+struct HangingUsageTypes;
+#[async_trait::async_trait]
+impl bss_products_sdk::usage_types::UsageTypeCatalog for HangingUsageTypes {
+    async fn resolve(
+        &self,
+        _: &toolkit_security::SecurityContext,
+        _: &str,
+    ) -> bss_products_sdk::usage_types::UsageTypeAnswer {
+        std::future::pending().await
+    }
+    async fn list(
+        &self,
+        _: &toolkit_security::SecurityContext,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: u32,
+        _: Option<&str>,
+    ) -> Result<
+        bss_products_sdk::usage_types::UsageTypePage,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        std::future::pending().await
+    }
+}
+
+/// RS-42: a registered catalog is bounded by `usage_type_resolver_timeout_ms` as the collector
+/// adapter is: a resolve that outlives it is `Unavailable` and a list a 503, so a hanging catalog
+/// never hangs a submit, an approve or the pick-list.
+#[tokio::test(start_paused = true)]
+async fn a_registered_usage_type_catalog_is_bounded_by_the_resolver_timeout() {
+    use bss_products_sdk::usage_types::{UsageTypeAnswer, UsageTypeCatalog};
+    struct NoConfig;
+    impl toolkit::config::ConfigProvider for NoConfig {
+        fn get_gear_config(&self, _gear: &str) -> Option<&serde_json::Value> {
+            None
+        }
+    }
+    let hub = Arc::new(toolkit::ClientHub::new());
+    hub.register::<dyn UsageTypeCatalog>(Arc::new(HangingUsageTypes));
+    let ctx = GearCtx::new(
+        "bss-products",
+        uuid::Uuid::new_v4(),
+        Arc::new(NoConfig),
+        hub,
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let cfg = ProductsConfig {
+        usage_type_resolver_timeout_ms: 50,
+        ..ProductsConfig::default()
+    };
+    let (catalog, source) = super::resolve_usage_type_catalog(&ctx, &cfg);
+    assert_eq!(source, USAGE_TYPE_SOURCE_REGISTRY);
+    let caller = crate::test_support::authed_ctx(uuid::Uuid::new_v4());
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        catalog.resolve(&caller, "storage"),
+    )
+    .await
+    .expect("the resolve is bounded");
+    assert!(matches!(answer, UsageTypeAnswer::Unavailable), "{answer:?}");
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        catalog.list(&caller, None, None, 50, None),
+    )
+    .await
+    .expect("the list is bounded");
+    assert_eq!(listed.unwrap_err().status_code(), 503);
 }

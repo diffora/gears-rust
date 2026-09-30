@@ -1,8 +1,8 @@
 //! Usage counts (D-428, run 5.3): the two entry reads carry `usage` — the entry's prices by
-//! state, the distinct plans whose draft, pending or published revisions name it, and the plans
-//! that name it only through superseded revisions — with a fixed number of statements however
-//! many entries a book holds; and the SKU usage port pricing fills for Products (P-D-197) adds the
-//! counts up per SKU, with plans distinct across the SKU's entries.
+//! state, the distinct plans whose draft, pending, scheduled or published revisions name it, and
+//! the plans that name it only through superseded revisions — with a fixed number of statements
+//! however many entries a book holds; and the SKU usage port pricing fills for Products (P-D-197)
+//! adds the counts up per SKU, with plans distinct across the SKU's entries.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_support;
 use bss_pricing::api::sku_usage::PricingSkuUsage;

@@ -4,8 +4,8 @@ use super::{KIND_SKU_PUBLISH, apply_error, invalid, json, sku, store_err};
 use crate::{
     domain::{recognized::UsageTypeAnswer, sku::validate_publish},
     infra::{
-        broker::{self, EventSink},
-        events,
+        broker,
+        events::{self, TxOutbox},
         storage::repo,
     },
 };
@@ -20,7 +20,9 @@ use uuid::Uuid;
 pub struct SkuPublish {
     pub scope: AccessScope,
     pub tenant_id: Uuid,
-    pub sink: EventSink,
+    /// The attempt's handle (P-D-221): the events `apply` enqueues wake the outbox's sequencer
+    /// once the door's transaction commits.
+    pub outbox: TxOutbox,
     pub actor: Uuid,
     pub now: OffsetDateTime,
     pub usage_type: Option<UsageTypeAnswer>,
@@ -147,7 +149,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuPublish {
             .await
             .map_err(store_err)?;
             events::enqueue_typed(
-                &self.sink,
+                &self.outbox,
                 tx,
                 broker::SkuPublished {
                     tenant_id: self.tenant_id,

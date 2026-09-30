@@ -387,6 +387,71 @@ impl std::fmt::Display for DirectoryInvalidArgument {
 
 impl std::error::Error for DirectoryInvalidArgument {}
 
+/// Sentinel error (wrapped via `anyhow::Error`) signalling a **permanent**
+/// authorization refusal: retrying the identical request can never turn a "no"
+/// into a "yes". Carries the gRPC `PermissionDenied` code across the
+/// [`DirectoryClient`] boundary (otherwise lost when a `tonic::Status` is
+/// stringified) so the presence loop stops retrying and logs loudly instead of
+/// spinning at `warn!`. Reached when the peer is not authorized for the gear, its
+/// namespace / trust domain is not allowlisted, or a service name is *pinned* to
+/// another gear (a non-recoverable [`DirectoryServiceNameConflict`]; a recoverable
+/// one is `FailedPrecondition`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryPermissionDenied {
+    /// Human-readable description of why the call was refused.
+    pub message: String,
+}
+
+impl DirectoryPermissionDenied {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for DirectoryPermissionDenied {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "directory: permission denied: {}", self.message)
+    }
+}
+
+impl std::error::Error for DirectoryPermissionDenied {}
+
+/// Sentinel error signalling "a gRPC service name in this registration is already
+/// owned by a *different* gear" (single-gear ownership is enforced atomically in
+/// `GearManager::register_instance`). The gRPC boundary logs the conflicting
+/// `service_name` / `owner` server-side and returns a static-message status whose
+/// code depends on [`recoverable`](Self::recoverable):
+///
+/// - `recoverable` → `Status::failed_precondition`: another gear merely
+///   *currently advertises* the name; it clears when that gear deregisters, so
+///   the registrant retries.
+/// - not `recoverable` → `Status::permission_denied`: the name is pinned to
+///   another gear by the ownership map; retrying can never reassign it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryServiceNameConflict {
+    /// The gRPC service name that is already owned.
+    pub service_name: String,
+    /// The gear that currently owns `service_name`.
+    pub owner: String,
+    /// Whether waiting could clear the conflict (see the type docs). `true` for
+    /// a current-advertiser conflict, `false` for a pinned-ownership conflict.
+    pub recoverable: bool,
+}
+
+impl std::fmt::Display for DirectoryServiceNameConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "directory: gRPC service name '{}' already owned by gear '{}'",
+            self.service_name, self.owner
+        )
+    }
+}
+
+impl std::error::Error for DirectoryServiceNameConflict {}
+
 /// Directory API trait for service discovery and instance management
 ///
 /// This trait defines the contract for interacting with the gear directory.

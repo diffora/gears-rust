@@ -21,6 +21,17 @@ pub mod settings_repo;
 /// sorts after `…00.5Z`, and `…00.41868Z` after `…00.418681Z`, P-D-213), the maximum of a
 /// fixed-width key that pads the fraction to nine digits, so the text sorts as time. Pricing
 /// writes every instant in UTC (`Z`); `NULL` stays out of the maximum.
+//
+// Raw SQL, on purpose (whole-branch review PS-02): the maximum must compare as time on both
+// dialects, and neither half has a portable spelling in sea-query: Postgres renders the
+// `timestamptz` maximum with `to_char … AT TIME ZONE 'UTC'`, and `SQLite`, which stores RFC 3339
+// text with a fraction of any width, pads that fraction with `substr`/`rtrim` so the text sorts
+// as time. The instant is the only operand, and it stays an expression of the scoped select.
+// Upstream gears use the same pattern in repository code: account-management
+// `infra/lease/manager.rs` (`Expr::cust("NOW()")`, `INTERVAL`) and
+// `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
+// `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
+// would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
 #[must_use]
 pub fn latest(
     backend: sea_orm::DbBackend,
@@ -62,6 +73,9 @@ pub fn driver_failure(context: String, error: ScopeError) -> RepoError {
         other => RepoError::Db(format!("{context}: {other}")),
     }
 }
+/// The conflict of a price's `(entry, version_no)` key: the create and the PATCH retry on it with
+/// the entry's next number, matched on this one symbol, never a second literal (PS-41).
+pub const PRICE_VERSION_TAKEN: &str = "PRICE_VERSION_TAKEN";
 /// Identify named Postgres constraints and `SQLite` unique column/index diagnostics.
 #[must_use]
 pub fn unique_code(message: &str) -> Option<&'static str> {
@@ -76,7 +90,7 @@ pub fn unique_code(message: &str) -> Option<&'static str> {
     } else if message.contains("pricing_price_price_book_entry_id_version_no_key")
         || message.contains("pricing_price.price_book_entry_id, pricing_price.version_no")
     {
-        Some("PRICE_VERSION_TAKEN")
+        Some(PRICE_VERSION_TAKEN)
     } else if message.contains("pricing_dimension_key_pkey")
         || message.contains("pricing_dimension_key.tenant_id, pricing_dimension_key.key")
     {
@@ -85,10 +99,11 @@ pub fn unique_code(message: &str) -> Option<&'static str> {
         plan_unique_code(message)
     }
 }
-/// The phase 3 keys. Postgres names the index or constraint; `SQLite` names the columns, which a
-/// partial index shares with its siblings: the two single-column revision indexes read alike there
-/// and are told apart by `plan_revision_repo`, which knows the state it wrote. Longer column
-/// lists are matched before the single column they begin with.
+/// The phase 3 keys, and phase 8's scheduled index (D-446). Postgres names the index or
+/// constraint; `SQLite` names the columns, which a partial index shares with its siblings: the
+/// three single-column revision indexes read alike there and are told apart by
+/// `plan_revision_repo`, which knows the state it wrote. Longer column lists are matched before the
+/// single column they begin with.
 fn plan_unique_code(message: &str) -> Option<&'static str> {
     if message.contains("pricing_plan_code")
         || message.contains("pricing_plan.tenant_id, pricing_plan.code")
@@ -102,6 +117,8 @@ fn plan_unique_code(message: &str) -> Option<&'static str> {
         Some("REVISION_DRAFT_EXISTS")
     } else if message.contains("pricing_plan_revision_published") {
         Some("REVISION_PUBLISHED_EXISTS")
+    } else if message.contains("pricing_plan_revision_scheduled") {
+        Some("REVISION_SCHEDULED_EXISTS")
     } else if message.contains("pricing_plan_item_sku")
         || message.contains("pricing_plan_item.revision_id, pricing_plan_item.sku_id")
     {

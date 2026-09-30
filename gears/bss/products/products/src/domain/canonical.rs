@@ -42,9 +42,17 @@ use serde_json::{Number, Value as JsonValue};
 /// beside their digests would put a second, unmanaged copy of what callers
 /// sent next to the audit trail that is supposed to be the one place it
 /// lives.
+///
+/// A SHA-256 digest is always 32 bytes, and the type says so (RS-52): a reader of the tag needs no
+/// "short digest" branch that cannot happen.
 #[must_use]
-pub fn content_digest(canonical: &str) -> Vec<u8> {
-    sha256(&SHA256, canonical.as_bytes()).as_ref().to_vec()
+pub fn content_digest(canonical: &str) -> [u8; 32] {
+    let digest = sha256(&SHA256, canonical.as_bytes());
+    let mut out = [0_u8; 32];
+    for (slot, byte) in out.iter_mut().zip(digest.as_ref()) {
+        *slot = *byte;
+    }
+    out
 }
 
 /// Render `value` canonically.

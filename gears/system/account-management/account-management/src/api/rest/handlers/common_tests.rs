@@ -150,7 +150,7 @@ fn parse_recursive_flag_rejects_anything_else_as_validation() {
         let mut q = HashMap::new();
         q.insert("recursive".to_owned(), bad.to_owned());
         let err = parse_recursive_flag(&q).expect_err(bad);
-        assert_eq!(err.code(), "validation", "value {bad:?} must be a 400");
+        assert_eq!(err.code(), "validation", "value `{bad}` must be a 400");
     }
 }
 
@@ -165,16 +165,53 @@ fn parse_recursive_flag_ignores_other_keys() {
 #[test]
 fn bind_cursor_to_children_mode_separates_the_two_modes() {
     // No `$filter`: the extractor leaves `filter_hash` unset.
-    let direct = bind_cursor_to_children_mode(ODataQuery::new(), false);
-    let recursive = bind_cursor_to_children_mode(ODataQuery::new(), true);
+    let direct = bind_cursor_to_children_mode(ODataQuery::new(), false).expect("direct");
+    let recursive = bind_cursor_to_children_mode(ODataQuery::new(), true).expect("recursive");
     assert_eq!(direct.filter_hash.as_deref(), Some("children"));
     assert_eq!(recursive.filter_hash.as_deref(), Some("recursive:"));
 
     // With `$filter`: direct keeps the extractor's hash verbatim.
     let filtered = ODataQuery::new().with_filter_hash("abc123".to_owned());
-    let direct = bind_cursor_to_children_mode(filtered.clone(), false);
-    let recursive = bind_cursor_to_children_mode(filtered, true);
+    let direct = bind_cursor_to_children_mode(filtered.clone(), false).expect("direct");
+    let recursive = bind_cursor_to_children_mode(filtered, true).expect("recursive");
     assert_eq!(direct.filter_hash.as_deref(), Some("abc123"));
     assert_eq!(recursive.filter_hash.as_deref(), Some("recursive:abc123"));
     assert_ne!(direct.filter_hash, recursive.filter_hash);
+}
+
+fn cursor_with_fingerprint(f: Option<&str>) -> toolkit_odata::CursorV1 {
+    toolkit_odata::CursorV1 {
+        k: vec![
+            "2026-01-01T00:00:00Z".to_owned(),
+            "00000000-0000-0000-0000-000000000001".to_owned(),
+        ],
+        o: toolkit_odata::SortDir::Asc,
+        s: "+created_at,+id".to_owned(),
+        f: f.map(str::to_owned),
+        d: "fwd".to_owned(),
+    }
+}
+
+#[test]
+fn bind_cursor_to_children_mode_rejects_a_legacy_cursor_in_recursive_mode() {
+    // A direct-listing cursor minted before mode binding has no `f`.
+    let legacy = ODataQuery::new().with_cursor(cursor_with_fingerprint(None));
+    let err = bind_cursor_to_children_mode(legacy, true).expect_err("recursive must reject");
+    assert_eq!(err.code(), "validation");
+    assert!(err.to_string().contains("FILTER_MISMATCH"), "{err}");
+}
+
+#[test]
+fn bind_cursor_to_children_mode_keeps_legacy_cursors_working_in_direct_mode() {
+    let legacy = ODataQuery::new().with_cursor(cursor_with_fingerprint(None));
+    let bound = bind_cursor_to_children_mode(legacy, false).expect("direct keeps accepting");
+    assert_eq!(bound.filter_hash.as_deref(), Some("children"));
+}
+
+#[test]
+fn bind_cursor_to_children_mode_passes_a_fingerprinted_cursor_to_pagination() {
+    // A fingerprinted cursor is left to the pagination check, which
+    // compares it with the bound hash.
+    let bound = ODataQuery::new().with_cursor(cursor_with_fingerprint(Some("recursive:")));
+    assert!(bind_cursor_to_children_mode(bound, true).is_ok());
 }

@@ -16,6 +16,15 @@ INDEX idx_bss_pricing_outbox_outgoing_body_id
 INDEX idx_bss_pricing_outbox_outgoing_partition_seq
   ON bss_pricing_outbox_outgoing
   DDL CREATE UNIQUE INDEX idx_bss_pricing_outbox_outgoing_partition_seq ON bss_pricing_outbox_outgoing (partition_id, seq)
+INDEX idx_bss_pricing_outbox_trace_key
+  ON bss_pricing_outbox_trace
+  DDL CREATE INDEX idx_bss_pricing_outbox_trace_key ON bss_pricing_outbox_trace (trace)
+INDEX idx_bss_pricing_outbox_trace_mail
+  ON bss_pricing_outbox_trace
+  DDL CREATE INDEX idx_bss_pricing_outbox_trace_mail ON bss_pricing_outbox_trace (owner_instance)
+INDEX idx_bss_pricing_outbox_trace_retrying
+  ON bss_pricing_outbox_trace
+  DDL CREATE INDEX idx_bss_pricing_outbox_trace_retrying ON bss_pricing_outbox_trace (owner_instance)
 INDEX idx_pricing_audit_actor
   ON pricing_audit
   DDL CREATE INDEX idx_pricing_audit_actor ON pricing_audit (tenant_id, actor_ref, written_at)
@@ -40,6 +49,9 @@ INDEX pricing_plan_revision_open
 INDEX pricing_plan_revision_published
   ON pricing_plan_revision
   DDL CREATE UNIQUE INDEX pricing_plan_revision_published ON pricing_plan_revision (plan_id) WHERE state = 'published'
+INDEX pricing_plan_revision_scheduled
+  ON pricing_plan_revision
+  DDL CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON pricing_plan_revision (plan_id) WHERE state = 'scheduled'
 INDEX pricing_price_approved_start
   ON pricing_price
   DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
@@ -57,6 +69,7 @@ TABLE bss_pricing_outbox_body
   COLUMN id INTEGER NULL DEFAULT - PK 1
   COLUMN payload BLOB NOT NULL DEFAULT - PK 0
   COLUMN payload_type TEXT NOT NULL DEFAULT - PK 0
+  COLUMN trace TEXT NULL DEFAULT - PK 0
 TABLE bss_pricing_outbox_dead_letters
   COLUMN attempts INTEGER NOT NULL DEFAULT - PK 0
   COLUMN completed_at TEXT NULL DEFAULT - PK 0
@@ -70,6 +83,7 @@ TABLE bss_pricing_outbox_dead_letters
   COLUMN payload_type TEXT NOT NULL DEFAULT - PK 0
   COLUMN seq INTEGER NOT NULL DEFAULT - PK 0
   COLUMN status TEXT NOT NULL DEFAULT 'pending' PK 0
+  COLUMN trace TEXT NULL DEFAULT - PK 0
   FK partition_id -> bss_pricing_outbox_partitions.id
 TABLE bss_pricing_outbox_incoming
   COLUMN body_id INTEGER NOT NULL DEFAULT - PK 0
@@ -98,6 +112,20 @@ TABLE bss_pricing_outbox_processor
   COLUMN partition_id INTEGER NULL DEFAULT - PK 1
   COLUMN processed_seq INTEGER NOT NULL DEFAULT 0 PK 0
   FK partition_id -> bss_pricing_outbox_partitions.id
+TABLE bss_pricing_outbox_trace
+  COLUMN attempts INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN completed_at TEXT NULL DEFAULT - PK 0
+  COLUMN created_at TEXT NOT NULL DEFAULT datetime('now') PK 0
+  COLUMN entities INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN failures INTEGER NOT NULL DEFAULT 0 PK 0
+  COLUMN id INTEGER NULL DEFAULT - PK 1
+  COLUMN last_error TEXT NULL DEFAULT - PK 0
+  COLUMN notified_at TEXT NULL DEFAULT - PK 0
+  COLUMN owner_instance TEXT NOT NULL DEFAULT - PK 0
+  COLUMN pending INTEGER NOT NULL DEFAULT - PK 0
+  COLUMN queue TEXT NOT NULL DEFAULT - PK 0
+  COLUMN retrying_since TEXT NULL DEFAULT - PK 0
+  COLUMN trace TEXT NOT NULL DEFAULT - PK 0
 TABLE bss_pricing_outbox_vacuum_counter
   COLUMN counter INTEGER NOT NULL DEFAULT 0 PK 0
   COLUMN partition_id INTEGER NULL DEFAULT - PK 1
@@ -245,7 +273,7 @@ TABLE pricing_plan_revision
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
-  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','published','superseded'))
+  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','scheduled','published','superseded'))
   CONSTRAINT pricing_plan_revision_no UNIQUE (plan_id, rev_no)
   FK approved_by_unit_id -> pricing_approval_unit.id
   FK book_id -> pricing_price_book.id

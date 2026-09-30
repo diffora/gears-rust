@@ -282,6 +282,15 @@ pub const PG_FOLD_COLLATION: &str = "und-x-icu";
 
 /// `lower(expr)`, folded through [`PG_FOLD_COLLATION`] on Postgres and through the database's own
 /// `lower()` (ASCII only) on `SQLite`.
+//
+// Raw SQL, on purpose (whole-branch review PS-29): sea-query has no `COLLATE` on an expression,
+// and the fold must name the ICU collation, or a `C`-locale database folds ASCII only (products
+// P-D-210). The folded text stays a bound value.
+// Upstream gears use the same pattern in repository code: account-management
+// `infra/lease/manager.rs` (`Expr::cust("NOW()")`, `INTERVAL`) and
+// `infra/storage/repo_impl/retention.rs` (`make_interval`, `julianday`), and settings-service
+// `infra/storage/search_repo.rs` (`LIKE … ESCAPE`, the JSON null checks). A toolkit-db helper
+// would be a change to a foreign crate, proposed upstream on its own (owner, O3/O4).
 fn folded(backend: sea_orm::DbBackend, expr: Expr) -> Expr {
     if backend == sea_orm::DbBackend::Postgres {
         Expr::cust_with_expr(format!(r#"lower($1 COLLATE "{PG_FOLD_COLLATION}")"#), expr)

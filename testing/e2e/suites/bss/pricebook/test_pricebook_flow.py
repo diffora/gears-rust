@@ -375,7 +375,9 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # A draft price, submitted into a prices unit that waits for one reviewer.
         _set_quorum(api, "prices", 1)
         _set_quorum(api, "plan_revision", 0)
-        start = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+        # Priced and sold from today (UTC): a plan revision approved before its sale date waits
+        # for that date (D-449), and this flow publishes each revision at once.
+        start = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
         r = api.post(
             f"{PRICING}/price-book-entries/{entry}/prices",
             json={
@@ -438,7 +440,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         checks = _checks(api, rev1)
         assert checks["ready"] is True, checks
         assert _check(checks, "ITEM_UNCOVERED")["blocked_by"] == [], checks
-        assert _usage(api, entry) == _entry_usage(scheduled=1, plans=1)
+        assert _usage(api, entry) == _entry_usage(active=1, plans=1)
 
         # Quorum 0 for plan_revision: the submit publishes rev 1 at once.
         r = api.post(f"{PRICING}/plan-revisions/{rev1}/submit", json={}, headers=_key())
@@ -501,7 +503,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
             (sku, "confirmed")
         ], copied
         # The published rev 1 and its draft copy name the entry: one plan.
-        assert _usage(api, entry) == _entry_usage(scheduled=1, plans=1)
+        assert _usage(api, entry) == _entry_usage(active=1, plans=1)
         r = api.post(f"{PRICING}/plan-revisions/{rev2}/submit", json={}, headers=_key())
         assert r.status_code == 201, r.text
         assert r.json()["revision"]["state"] == "published", r.text
@@ -509,7 +511,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         r = api.get(f"{PRICING}/plans/{plan}")
         assert r.json()["published_rev"] == 2, r.text
         # Rev 1 superseded is history; rev 2 published still names the entry: still one plan.
-        assert _usage(api, entry) == _entry_usage(scheduled=1, plans=1)
+        assert _usage(api, entry) == _entry_usage(active=1, plans=1)
 
         # The superseded rev 1 still resolves, and a renewal pinned to the price binds it again.
         superseded = _resolve(api, rev1, start)
@@ -534,7 +536,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert [i["sku_id"] for i in draft["items"]] == [sku], draft
 
         # The clone's draft names the entry too: two plans, on the entry read and the book list.
-        counted = _entry_usage(scheduled=1, plans=2)
+        counted = _entry_usage(active=1, plans=2)
         assert _usage(api, entry) == counted
         r = api.get(f"{PRICING}/price-books/{book}/entries")
         assert r.status_code == 200, r.text
@@ -727,7 +729,9 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         dollar = r.json()
 
         # A price carries no model, and its money must fit its entry's.
-        start = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+        # Priced and sold from today (UTC): a plan revision approved before its sale date waits
+        # for that date (D-449), and this flow publishes each revision at once.
+        start = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
         for body, refusal in (
             ({"model": "flat", "price": {"amount": "30.00"}}, None),
             ({"price": {"rate": "2.50"}}, "PRICE_MISSING"),
@@ -750,8 +754,8 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         r = api.get(f"{PRICING}/price-books/{eur}/entries")
         assert r.status_code == 200, r.text
         assert {e["id"]: (e["model"], e["usage"]) for e in r.json()["items"]} == {
-            flat["id"]: ("flat", _entry_usage(scheduled=1)),
-            per_unit["id"]: ("per_unit", _entry_usage(scheduled=1)),
+            flat["id"]: ("flat", _entry_usage(active=1)),
+            per_unit["id"]: ("per_unit", _entry_usage(active=1)),
         }, r.text
 
         # The SKU reads: three entries in two currencies, prices by state, no plan yet.
@@ -812,8 +816,8 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         assert r.json()["price_book_entry_id"] == per_unit["id"], r.text
 
         # The plan names both entries: each entry counts it, the SKU counts it once.
-        assert _usage(api, flat["id"]) == _entry_usage(scheduled=1, plans=1)
-        assert _usage(api, per_unit["id"]) == _entry_usage(scheduled=1, plans=1)
+        assert _usage(api, flat["id"]) == _entry_usage(active=1, plans=1)
+        assert _usage(api, per_unit["id"]) == _entry_usage(active=1, plans=1)
         assert _usage(api, dollar["id"]) == _entry_usage(draft=1)
         planned = _sku_usage(3, ["EUR", "USD"], approved=2, draft=1, plans=1)
         card, row = _sku_reads(api, sku, code)
@@ -826,8 +830,8 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         assert r.status_code == 201, r.text
         assert r.json()["revision"]["state"] == "published", r.text
         assert _revision(api, rev1)["state"] == "superseded"
-        assert _usage(api, flat["id"]) == _entry_usage(scheduled=1, superseded_only=1)
-        assert _usage(api, per_unit["id"]) == _entry_usage(scheduled=1, plans=1)
+        assert _usage(api, flat["id"]) == _entry_usage(active=1, superseded_only=1)
+        assert _usage(api, per_unit["id"]) == _entry_usage(active=1, plans=1)
         card, row = _sku_reads(api, sku, code)
         assert (card["usage"], row["usage"]) == (planned, planned), (card, row)
 

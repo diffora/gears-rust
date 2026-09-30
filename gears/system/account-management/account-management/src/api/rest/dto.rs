@@ -510,7 +510,9 @@ pub struct TenantAncestorDto {
     pub name: String,
     /// Chained GTS tenant-type identifier; omitted on a transient
     /// types-registry blip (same policy as `TenantDto.tenant_type`).
+    /// Absent or a string, never `null` — the schema says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub tenant_type: Option<String>,
 }
 
@@ -558,6 +560,7 @@ pub struct TenantDto {
     /// `GET /tenants/{tenant_id}/children?recursive=true` -- omitted
     /// from every other response (the key is absent, not `null`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     pub ancestors: Option<Vec<TenantAncestorDto>>,
 }
 

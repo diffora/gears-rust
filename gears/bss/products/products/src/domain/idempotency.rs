@@ -60,7 +60,7 @@ use crate::domain::canonical::content_digest;
 ///   `null` renders the two identically. Each door states which of its own
 ///   fields that applies to.
 #[must_use]
-pub fn payload_digest(payload: &JsonValue) -> Vec<u8> {
+pub fn payload_digest(payload: &JsonValue) -> [u8; 32] {
     content_digest(&canonical_rendering(payload))
 }
 

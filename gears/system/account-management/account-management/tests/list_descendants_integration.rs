@@ -236,8 +236,8 @@ async fn repo_list_descendants_status_constrained_scope_hides_children_of_hidden
         .expect("constrained");
     assert!(
         constrained.items.is_empty(),
-        "p is status-hidden, so neither p nor its child may be listed: {:?}",
-        ids_of(&constrained.items)
+        "p is status-hidden, so neither p nor its child may be listed; got {} rows",
+        constrained.items.len()
     );
 
     // Without the status list both rows are visible (suspended is not
@@ -296,6 +296,27 @@ async fn repo_list_descendants_contains_name_matches_across_levels() {
         .expect("list");
 
     assert_eq!(ids_of(&page.items), vec![t.xc]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repo_list_descendants_contains_is_ascii_case_insensitive_on_sqlite() {
+    // The contract states it per backend: SQLite's `LIKE` ignores ASCII
+    // case, Postgres does not (pinned in `list_descendants_integration_pg`).
+    let h = setup_sqlite().await.expect("sqlite");
+    let t = BarrierTopology::new();
+    seed_barrier_topology(&h.provider, &t).await.expect("seed");
+
+    let upper = h
+        .repo
+        .list_descendants(
+            &respect_scope(t.root),
+            &relaxed_scope(t.root),
+            t.root,
+            &contains_name("X"),
+        )
+        .await
+        .expect("upper");
+    assert_eq!(sorted(ids_of(&upper.items)), sorted(vec![t.x, t.xc]));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

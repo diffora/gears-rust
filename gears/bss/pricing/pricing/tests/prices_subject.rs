@@ -39,6 +39,16 @@ fn code(e: &TestErr) -> String {
         TestErr::Db => "DB".into(),
     }
 }
+/// The subject's own code a refusal carries as data: an apply refusal's or a submit refusal's
+/// (PT-05), never a substring of its rendering.
+fn inner(e: &TestErr) -> Option<&'static str> {
+    match e {
+        TestErr::Approval(
+            ApprovalError::ApplyRefused { code, .. } | ApprovalError::InvalidSubmit { code, .. },
+        ) => Some(code),
+        TestErr::Approval(_) | TestErr::Db => None,
+    }
+}
 fn day(s: &str) -> Date {
     Date::parse(s, &time::format_description::well_known::Iso8601::DATE).unwrap()
 }
@@ -617,7 +627,7 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
         .await;
     let err = s.approve(s.subject(), &unit).await.unwrap_err();
     assert_eq!(code(&err), "APPLY_REFUSED");
-    assert!(format!("{err:?}").contains("WINDOW_OVERLAP"), "{err:?}");
+    assert_eq!(inner(&err), Some("WINDOW_OVERLAP"), "{err:?}");
     for id in [first[0], second[0]] {
         assert_eq!(
             s.price(id).await.state,
@@ -642,10 +652,7 @@ async fn apply_refuses_the_whole_unit_when_the_environment_changed() {
         Some("storage".into()),
     ));
     let err = s.approve(s.subject(), &unit).await.unwrap_err();
-    assert!(
-        format!("{err:?}").contains("CHAIN_MODEL_CHANGED"),
-        "{err:?}"
-    );
+    assert_eq!(inner(&err), Some("CHAIN_MODEL_CHANGED"), "{err:?}");
     assert_eq!(s.price(ids[0]).await.state, "pending");
 }
 
@@ -660,7 +667,7 @@ async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
     s.tx(move |tx, store| {
         let subject = subject.clone();
         Box::pin(async move {
-            Engine::reject(
+            let outcome = Engine::reject(
                 &store,
                 &subject,
                 tx,
@@ -671,6 +678,7 @@ async fn rejected_prices_stay_rejected_and_withdrawn_prices_return_to_draft() {
                 time::OffsetDateTime::now_utc(),
             )
             .await?;
+            assert_eq!(outcome, bss_approval::RejectOutcome::Rejected);
             Ok(())
         })
     })
@@ -764,7 +772,7 @@ async fn a_change_approved_after_drafting_makes_the_return_stale_at_submit_and_a
     assert!(s.submit(s.subject(), b, 0).await.unwrap().applied);
     let err = s.approve(s.subject(), &unit).await.unwrap_err();
     assert_eq!(code(&err), "APPLY_REFUSED");
-    assert!(format!("{err:?}").contains("PAIR_RETURN_STALE"), "{err:?}");
+    assert_eq!(inner(&err), Some("PAIR_RETURN_STALE"), "{err:?}");
     for id in &pending {
         assert_eq!(s.price(*id).await.state, "pending", "the unit rolled back");
     }
@@ -1153,10 +1161,7 @@ async fn a_promo_across_an_approved_start_is_refused_at_draft_and_at_apply() {
     );
     let err = s.approve(s.subject(), &unit).await.unwrap_err();
     assert_eq!(code(&err), "APPLY_REFUSED");
-    assert!(
-        format!("{err:?}").contains("TEMPORARY_SPANS_A_CHANGE"),
-        "{err:?}"
-    );
+    assert_eq!(inner(&err), Some("TEMPORARY_SPANS_A_CHANGE"), "{err:?}");
     assert_eq!(s.price(alone[0]).await.state, "pending", "rolled back");
 }
 

@@ -233,7 +233,8 @@ pub async fn unsuspend_tenant(
 ///
 /// Surfaces a canonical `Problem` envelope. Notable codes:
 /// `validation` (400 — malformed `$filter` / `$orderby`, `recursive` not
-/// `true`/`false`, or a cursor replayed with a different `$filter` or mode),
+/// `true`/`false`, a cursor replayed with a different `$filter` or mode, or
+/// a fingerprint-less legacy cursor replayed in recursive mode),
 /// `cross_tenant_denied` (403), parent tenant `not_found` (404),
 /// `service_unavailable` (503 — PDP failure, or the DB unavailable for the
 /// parent read), `internal` (500 — the page query itself failed: the
@@ -258,7 +259,7 @@ pub async fn list_tenant_children(
     let query = bind_cursor_to_children_mode(
         clamp_listing_top(query, svc.max_list_children_top()),
         recursive,
-    );
+    )?;
     // @cpt-begin:cpt-cf-account-management-flow-tenant-hierarchy-management-list-children:p1:inst-flow-listch-ancestors
     if recursive {
         let page = svc.list_descendants(&ctx, tenant_id, &query).await?;

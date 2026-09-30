@@ -40,7 +40,7 @@ fn blank_code_or_name_is_a_violation() {
     assert!(has(&r, "code", "VALIDATION") && has(&r, "name", "VALIDATION"));
     n.code = "x".repeat(65);
     n.name = "ok".into();
-    assert!(has(&validate_new(&n), "code", "VALIDATION"));
+    assert!(has(&validate_new(&n), "code", "FIELD_TOO_LONG"));
 }
 #[test]
 fn usage_needs_a_meter_and_a_resolved_type_bundle_has_none() {
@@ -65,6 +65,12 @@ fn usage_needs_a_meter_and_a_resolved_type_bundle_has_none() {
         "unit",
         "BUNDLE_HAS_NO_METER"
     ));
+    // RT-06: the meter half, on its own.
+    let mut metered = content(SkuType::Bundle);
+    metered.usage_type_ref = Some("storage".into());
+    let report = validate_publish(&metered, None);
+    assert!(has(&report, "usage_type_ref", "BUNDLE_HAS_NO_METER"));
+    assert!(!has(&report, "unit", "BUNDLE_HAS_NO_METER"));
 }
 #[test]
 fn the_type_is_frozen_once_a_price_book_entry_exists() {
@@ -143,9 +149,18 @@ fn unavailable_is_not_an_unknown_usage_type() {
 
 #[test]
 fn patch_deserialization_distinguishes_omission_null_and_value() {
-    let omitted: SkuPatch = serde_json::from_str("{}").unwrap();
-    let cleared: SkuPatch = serde_json::from_value(serde_json::json!({"gl_code":null, "tax_category":null, "invoice_line_template":null, "billing_timing":null, "usage_type_ref":null, "unit":null})).unwrap();
-    let valued: SkuPatch = serde_json::from_value(serde_json::json!({"gl_code":"40", "tax_category":"tax", "invoice_line_template":"line", "billing_timing":"advance", "usage_type_ref":"meter", "unit":"GB", "type":"usage", "lifecycle":"deprecated"})).unwrap();
+    // The wire contract is `dto::SkuPatchRequest` (RS-51): the domain patch is what it converts to.
+    let patch = |body: serde_json::Value| -> SkuPatch {
+        let request: crate::api::rest::dto::SkuPatchRequest = serde_json::from_value(body).unwrap();
+        SkuPatch::try_from(request).unwrap()
+    };
+    let omitted = patch(serde_json::json!({}));
+    let cleared = patch(
+        serde_json::json!({"gl_code":null, "tax_category":null, "invoice_line_template":null, "billing_timing":null, "usage_type_ref":null, "unit":null}),
+    );
+    let valued = patch(
+        serde_json::json!({"gl_code":"40", "tax_category":"tax", "invoice_line_template":"line", "billing_timing":"advance", "usage_type_ref":"meter", "unit":"GB", "type":"usage", "lifecycle":"deprecated"}),
+    );
     assert_eq!(omitted.gl_code, None);
     assert_eq!(omitted.billing_timing, None);
     let mut original = content(SkuType::Recurring);

@@ -1,5 +1,4 @@
 //! Domain fixtures, isolated from production.
-#![allow(clippy::expect_used, clippy::unwrap_used)]
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use time::Date;

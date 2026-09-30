@@ -56,6 +56,7 @@ fn census() -> census::Routes {
         ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
         ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -78,7 +79,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 50);
+    assert_eq!(registered.len(), 51);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 6);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -87,15 +88,90 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert!(permissions.is_empty());
 }
 
+/// Fix run W1c M1 (D-424, products P-D-222): pricing's system actor acts in-process only. A REST
+/// caller whose context carries it in either half (the subject type `bss-pricing.system` or the
+/// id `PRICING_SYSTEM_ACTOR`; a token's claims can carry both) is refused at every door the real
+/// `register_rest` serves, 403 `SYSTEM_ACTOR_RESERVED`, before the PDP is asked. Another system
+/// subject (Rating's, which calls resolve) passes the edge and meets the PDP, here one that cannot
+/// answer (503).
+#[tokio::test]
+async fn no_rest_door_serves_pricings_system_actor() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let harness = rest_support::Harness::new().await.unwrap();
+    let (app, openapi) = harness.router(axum::Router::new()).unwrap();
+    let tenant = uuid::Uuid::new_v4();
+    let subject = |id: uuid::Uuid, kind: &str| {
+        toolkit_security::SecurityContext::builder()
+            .subject_id(id)
+            .subject_tenant_id(tenant)
+            .subject_type(kind)
+            .build()
+            .unwrap()
+    };
+    let pricing = bss_products_sdk::PRICING_SYSTEM_ACTOR;
+    let asserted = [
+        subject(pricing, "bss-pricing.system"),
+        subject(uuid::Uuid::new_v4(), "bss-pricing.system"),
+        subject(pricing, "user"),
+    ];
+    let rating = subject(uuid::Uuid::new_v4(), "bss-rating.system");
+    let doors: Vec<(String, String)> = openapi
+        .operation_specs
+        .iter()
+        .map(|e| {
+            let (method, path) = e.key().split_once(':').unwrap();
+            (method.to_owned(), path.to_owned())
+        })
+        .collect();
+    assert_eq!(doors.len(), 51, "every served door");
+    for (method, template) in doors {
+        let path = template
+            .replace("{id}", &uuid::Uuid::new_v4().to_string())
+            .replace("{kind}", "prices");
+        let callers = asserted.iter().map(|c| (c, true));
+        for (ctx, refused) in callers.chain([(&rating, false)]) {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.as_str())
+                        .uri(&path)
+                        .extension(ctx.clone())
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            let who = (ctx.subject_id(), ctx.subject_type());
+            if refused {
+                assert_eq!(status, 403, "{method} {path} as {who:?}: {body}");
+                assert_eq!(
+                    body["context"]["reason"], "SYSTEM_ACTOR_RESERVED",
+                    "{method} {path} as {who:?}: {body}"
+                );
+            } else {
+                assert_eq!(status, 503, "{method} {path} as {who:?}: {body}");
+            }
+        }
+    }
+}
+
 #[test]
 fn the_authentication_and_authz_parsers_have_positive_controls() {
-    // One per route (50), and more: `require_authenticated(` is also its own definition;
+    // One per route (51), and more: `require_authenticated(` is also its own definition;
     // `authz::access_scope(` is also the SKU usage port, which authorizes the Products caller it
     // serves (D-428), and the money's second judgement, price_book read, in the one helper the
     // SKU's entry list, the two entry reads and an entry's prices call (D-434, D-440).
     for (needle, more) in [("require_authenticated(", 1), ("authz::access_scope(", 2)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        assert_eq!(census::production_count(needle), 50 + more, "{needle}");
+        assert_eq!(census::production_count(needle), 51 + more, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(
@@ -105,7 +181,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 50);
+    assert_eq!(census::source_routes().len(), 51);
 }
 
 #[test]
@@ -174,13 +250,13 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // PUT /approval-policy config:settings true false
 
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
-// POST /plans plan:author false true
+// POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
 // GET /plan-revisions/{id} plan:read false false
-// PATCH /plan-revisions/{id} plan:author true false
+// PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
 // Run 3.3 items and checks: method | path | resource:action | If-Match | Idempotency-Key
@@ -191,7 +267,7 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit plan:submit false true
-// POST /plans/{id}/clone plan:author false true
+// POST /plans/{id}/clone plan:author (then price_book:read, D-456) false true
 
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
@@ -205,3 +281,6 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 
 // Run 7.1 (D-440): method | path | resource:action | If-Match | Idempotency-Key
 // GET /price-book-entries/{id}/prices price_book_entry:read (then price_book:read) false false
+
+// Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
+// POST /plan-revisions/{id}/unschedule plan:submit false true

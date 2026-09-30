@@ -1,21 +1,21 @@
 //! The shared-Postgres harness's own guards, executed.
 //!
-//! **No Docker and no server**, deliberately. What is asserted here is the
-//! prune's *decision* — a pure question about a database name and a process id —
+//! **No server**, deliberately. What is asserted in the ordinary suite is the
+//! prune's *decision*, a pure question about a database name and a process id,
 //! and standing a container up to ask it would make the harness's only test
-//! depend on the harness it is testing. `#[ignore]` is therefore absent too:
-//! these run in the ordinary suite, which is where a guard about not destroying
-//! a concurrent run's data belongs.
+//! depend on the harness it is testing. These run in the ordinary suite, which
+//! is where a guard about not destroying a concurrent run's data belongs.
 //!
 //! Why the guard exists at all is in `pg_support`'s module doc: the previous
 //! rule — skip whatever has a live connection — was disproven by inspection, and
 //! two concurrent `cargo test` invocations could drop each other's databases
 //! mid-run.
 //!
-//! These two tests are the whole of what this gear's Postgres tier contributes
-//! to the default gate. Everything else in the tier needs Docker and is
-//! `#[ignore]`d, so a run with no daemon still executes the one decision that
-//! can destroy data.
+//! One case asks the daemon about a name it does not know, on a thread of its
+//! own and bounded (RT-07): a wedged daemon is an unanswered question, which is
+//! the answer the case expects, and never hangs the default gate. The check that
+//! the harness's own container is live depends on this host's Docker state, not
+//! on code, so it is `#[ignore]`d like the rest of the tier that needs Docker.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -126,17 +126,23 @@ fn a_running_runs_database_is_left_alone_and_a_finished_ones_is_not() {
 #[test]
 fn a_container_the_daemon_cannot_speak_for_is_never_judged_a_corpse() {
     let unknown = format!("bss-products-pg-harness-absent-{}", std::process::id());
-    assert_eq!(
-        pg_support::container_verdict(&unknown),
-        None,
-        "an unanswerable question must stay unanswered, never resolve to a corpse"
-    );
+    // A daemon that does not answer within the bound left the question unanswered, as `None`.
+    if let Ok(verdict) = verdict_within(&unknown, std::time::Duration::from_secs(10)) {
+        assert_eq!(
+            verdict, None,
+            "an unanswerable question must stay unanswered, never resolve to a corpse"
+        );
+    }
+}
 
-    // And the live case, so this is not a test that would pass with
-    // `container_verdict` hard-wired to `None`: this harness's own container is
-    // running whenever the Postgres tier has been used on this host. Skipped
-    // rather than asserted when it is absent, because a developer who has never
-    // run the tier is not a failure.
+/// The live case, so the case above is not one that would pass with `container_verdict`
+/// hard-wired to `None`: this harness's own container is running whenever the Postgres tier has
+/// been used on this host. Skipped rather than asserted when it is absent, because a developer
+/// who has never run the tier is not a failure. It reads this host's Docker state, so it is not
+/// in the ordinary suite (RT-07).
+#[test]
+#[ignore = "requires Docker: reads the state of the Postgres tier's harness container"]
+fn the_harness_container_is_live_when_the_tier_has_run() {
     if let Some(verdict) = pg_support::container_verdict(pg_support::HARNESS_CONTAINER) {
         assert_eq!(
             verdict,
@@ -144,4 +150,18 @@ fn a_container_the_daemon_cannot_speak_for_is_never_judged_a_corpse() {
             "the harness container exists and is not live; the tier's own runs left a corpse"
         );
     }
+}
+
+/// `container_verdict` of `name`, asked on a thread of its own: an error when the daemon did not
+/// answer within `bound`. The thread is left behind on a timeout; the test process ends with it.
+fn verdict_within(
+    name: &str,
+    bound: std::time::Duration,
+) -> Result<Option<pg_support::Verdict>, std::sync::mpsc::RecvTimeoutError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let name = name.to_owned();
+    std::thread::spawn(move || {
+        tx.send(pg_support::container_verdict(&name)).ok();
+    });
+    rx.recv_timeout(bound)
 }

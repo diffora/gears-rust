@@ -25,8 +25,8 @@ const PRICE_STATUS: &[&str] = &[
 ];
 const TREATMENT: &[&str] = &["paid", "optional", "included"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
-const REVISION: &[&str] = &["draft", "pending", "published", "superseded"];
-const RESOLVED_REVISION: &[&str] = &["published", "superseded"];
+const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "superseded"];
+const RESOLVED_REVISION: &[&str] = &["published", "superseded", "scheduled"];
 const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach"];
 const OP_STATE: &[&str] = &["reserving", "written", "cancelling", "releasing", "done"];
 const OP_REF_KIND: &[&str] = &["price_book_entry", "plan_item"];
@@ -249,21 +249,21 @@ fn has_enum(node: &Value) -> bool {
 #[tokio::test]
 async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() {
     let api = served().await;
-    let mut todo = BTreeSet::new();
+    let mut pending = BTreeSet::new();
     for op in api["paths"]
         .as_object()
         .unwrap()
         .values()
         .flat_map(|ops| ops.as_object().unwrap().values())
     {
-        refs(&op["requestBody"], &mut todo);
+        refs(&op["requestBody"], &mut pending);
     }
     let mut seen = BTreeSet::new();
-    while let Some(name) = todo.pop_first() {
+    while let Some(name) = pending.pop_first() {
         if seen.insert(name.clone()) {
             let mut next = BTreeSet::new();
             refs(component(&api, &name), &mut next);
-            todo.extend(next.difference(&seen).cloned());
+            pending.extend(next.difference(&seen).cloned());
         }
     }
     let enums: Vec<_> = seen

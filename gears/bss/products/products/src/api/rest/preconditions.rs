@@ -69,9 +69,7 @@
 
 use axum::http::HeaderMap;
 use axum::http::header::IF_MATCH;
-use toolkit::api::operation_builder::{
-    ParamLocation, ParamSpec, ResponseHeaderSpec, ResponseHeaderType,
-};
+use toolkit::api::operation_builder::{ParamSpec, ResponseHeaderSpec, ResponseHeaderType};
 
 use crate::domain::concurrency::{ContentTag, InternalRevision};
 use crate::domain::error::DomainError;
@@ -152,17 +150,11 @@ mod preconditions_tests;
 
 /// Required revision precondition in `OpenAPI`.
 pub(crate) fn if_match_param() -> ParamSpec {
-    ParamSpec {
-        name: "If-Match".to_owned(),
-        location: ParamLocation::Header,
-        required: true,
-        description: Some("Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.".to_owned()),
-        param_type: "string".to_owned(),
-        // Scalar: every parameter this gear declares is single-valued.
-        // `array` arrived upstream for `?tag=a&tag=b` repeats, which no route
-        // here has.
-        array: false,
-    }
+    // A scalar string header: `ParamSpec::header` defaults to single-valued
+    // `string`, which every parameter this gear declares is.
+    ParamSpec::header("If-Match")
+        .required(true)
+        .description("Send the ETag returned by the last read. Missing or malformed: 400; stale: 409 STALE_REVISION.")
 }
 
 /// The `ETag` response header in `OpenAPI`: the tag a following write sends back as `If-Match`.

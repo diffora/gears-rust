@@ -243,13 +243,17 @@ pub(super) fn register_tenants_routes(mut router: Router, openapi: &dyn OpenApiR
              Cursor-paginated with `(created_at ASC, id ASC)` as the effective sort so rows \
              sharing a `created_at` timestamp stay disambiguated across pages; a cursor is \
              bound to the mode it was minted in, and replaying it with a different \
-             `recursive` value is 400 `FILTER_MISMATCH`, like a changed `$filter`. \
+             `recursive` value is 400 `FILTER_MISMATCH`, like a changed `$filter` (a \
+             cursor issued before mode binding existed is accepted by the direct listing \
+             only). \
              Soft-deleted rows are hidden by default -- opt in with \
              `?$filter=status eq 'deleted'`. AM-internal `provisioning` rows are never \
              surfaced. The parent must exist and be SDK-visible, otherwise the call \
              collapses to `not_found`. `$filter` operators: `name` -- `eq`, `ne`, `in`, \
              `contains(name,'...')`, `startswith(name,'...')`, `endswith(name,'...')` \
-             (case-sensitive; `%` and `_` in the literal are escaped); `status`, \
+             (on PostgreSQL: case-sensitive, and `%` / `_` in the literal match only \
+             themselves; on SQLite: case-insensitive for ASCII letters, and `%`, `_` and \
+             `\\` in the literal are not matched literally); `status`, \
              `tenant_type` -- `eq`, `ne`, `in`; `id`, `tenant_type_uuid` -- `eq`, `ne`, \
              `in`; `self_managed` -- `eq`, `ne`; `created_at`, `updated_at` -- `eq`, `ne`, \
              `gt`, `ge`, `lt`, `le`, `in`; `and`, `or`, `not`, parentheses. The generated \

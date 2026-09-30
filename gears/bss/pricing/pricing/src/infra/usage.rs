@@ -45,7 +45,8 @@ impl From<EntryPriceCounts> for PriceCounts {
 pub struct EntryUsage {
     /// The entry's prices by state, and its approved ones by date.
     pub prices: EntryPriceCounts,
-    /// The distinct plans with a draft, pending or published revision whose items name the entry.
+    /// The distinct plans with a draft, pending, scheduled or published revision whose items name
+    /// the entry.
     pub plans: u64,
     /// The distinct plans that name the entry only through superseded revisions.
     pub plans_superseded_only: u64,
@@ -54,7 +55,7 @@ pub struct EntryUsage {
 #[derive(Default)]
 struct Tally {
     prices: EntryPriceCounts,
-    /// Plans with a draft, pending or published revision naming the entry.
+    /// Plans with a draft, pending, scheduled or published revision naming the entry.
     live: BTreeSet<Uuid>,
     /// Plans with a superseded revision naming the entry.
     superseded: BTreeSet<Uuid>,

@@ -158,15 +158,15 @@ async fn persisted<E: TypedEvent + Clone + PartialEq + std::fmt::Debug>(
     event: E,
 ) {
     let expected = event.clone();
-    let sink = sink.clone();
-    db.transaction_with_retry::<(), TxError, _, _>(
+    events::transaction::<(), TxError, _, _>(
+        db,
+        sink,
         TxConfig::default(),
         |_| None,
-        move |tx| {
-            let sink = sink.clone();
+        move |tx, outbox| {
             let event = event.clone();
             Box::pin(async move {
-                enqueue_typed(&sink, tx, event).await?;
+                enqueue_typed(&outbox, tx, event).await?;
                 Ok(())
             })
         },
@@ -224,23 +224,21 @@ async fn every_event_round_trips_through_the_interim_outbox_and_rollback_leaves_
         published_version: 2,
         actor_ref: actor,
     };
-    let failed_sink = sink.clone();
     let failed_event = changed.clone();
-    let result = db
-        .db()
-        .transaction_with_retry::<(), TxError, _, _>(
-            TxConfig::default(),
-            |_| None,
-            move |tx| {
-                let sink = failed_sink.clone();
-                let event = failed_event.clone();
-                Box::pin(async move {
-                    enqueue_typed(&sink, tx, event).await?;
-                    Err(TxError::Rollback)
-                })
-            },
-        )
-        .await;
+    let result = events::transaction::<(), TxError, _, _>(
+        &db.db(),
+        &sink,
+        TxConfig::default(),
+        |_| None,
+        move |tx, outbox| {
+            let event = failed_event.clone();
+            Box::pin(async move {
+                enqueue_typed(&outbox, tx, event).await?;
+                Err(TxError::Rollback)
+            })
+        },
+    )
+    .await;
     assert!(matches!(result, Err(TxError::Rollback)));
     assert_eq!(enqueued_event_count(&dsn, SkuChanged::TYPE_ID).await, 0);
     persisted(
@@ -305,11 +303,6 @@ async fn every_event_round_trips_through_the_interim_outbox_and_rollback_leaves_
         u16::from_le_bytes([tenant.as_bytes()[14], tenant.as_bytes()[15]]) % events::PARTITIONS,
     );
     assert_eq!(crate::test_support::raw_i64(&dsn,&format!("SELECT COUNT(*) AS v FROM (SELECT body_id, partition_id FROM bss_products_outbox_incoming UNION SELECT body_id, partition_id FROM bss_products_outbox_outgoing) b JOIN bss_products_outbox_partitions p ON p.id=b.partition_id WHERE p.partition={partition} AND p.queue='bss_products_events'")).await,5);
-    let approval = bss_approval::ApprovalError::from(events::EventsError::from(
-        toolkit_db::outbox::OutboxError::Database(sea_orm::DbErr::Custom("retry probe".into())),
-    ));
-    let tx_error = crate::api::rest::TxError::from(approval);
-    assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
     handle.stop().await;
 }
 
@@ -330,7 +323,7 @@ async fn interim_outbox_retains_driver_error() {
         .unwrap();
     crate::test_support::drop_table(&dsn, "bss_products_outbox_body").await;
     let error = enqueue_typed(
-        &EventSink::Interim(Arc::clone(handle.outbox())),
+        &events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
         &db.conn().unwrap(),
         SkuPublished {
             tenant_id: tenant,
@@ -348,14 +341,19 @@ async fn interim_outbox_retains_driver_error() {
             .is_some(),
         "{error}"
     );
+    handle.stop().await;
+}
+
+/// RT-15: an outbox enqueue's database error reaches the retry classifier typed, the interim
+/// outbox's and the SDK producer's alike; one copy of the check, beside the SDK producer's.
+#[test]
+fn an_interim_outbox_database_error_reaches_the_retry_classifier() {
     let approval = bss_approval::ApprovalError::from(events::EventsError::from(
         toolkit_db::outbox::OutboxError::Database(sea_orm::DbErr::Custom("retry probe".into())),
     ));
     let tx_error = crate::api::rest::TxError::from(approval);
     assert!(crate::api::rest::contention_db_err(&tx_error).is_some());
-    handle.stop().await;
 }
-
 #[test]
 fn sdk_producer_errors_preserve_any_exposed_database_cause() {
     let sdk_error = event_broker_sdk::EventBrokerError::OffsetManager(
@@ -371,4 +369,28 @@ fn sdk_producer_errors_preserve_any_exposed_database_cause() {
         "producer outbox enqueue: opaque upstream error".into(),
     ));
     assert!(matches!(opaque, events::EventsError::Producer(_)));
+}
+
+/// RS-24 (P-D-226): the SDK's `SkuChangedPayload` reads the `SkuChanged` event the broker emits
+/// (camelCase, the date `YYYY-MM-DD`, the actor) and writes it back unchanged.
+#[test]
+fn the_sdk_payload_reads_the_emitted_sku_changed_event() {
+    let changed = SkuChanged {
+        tenant_id: Uuid::new_v4(),
+        sku_id: Uuid::new_v4(),
+        changed: vec!["gl_code".into(), "name".into()],
+        effective_from: at(9).date(),
+        published_version: 3,
+        actor_ref: Uuid::new_v4(),
+    };
+    let emitted = serde_json::to_value(&changed).unwrap();
+    let payload: bss_products_sdk::models::SkuChangedPayload =
+        serde_json::from_value(emitted.clone()).unwrap();
+    assert_eq!(payload.sku_id, changed.sku_id);
+    assert_eq!(payload.tenant_id, changed.tenant_id);
+    assert_eq!(payload.changed, changed.changed);
+    assert_eq!(payload.effective_from, changed.effective_from);
+    assert_eq!(payload.published_version, changed.published_version);
+    assert_eq!(payload.actor_ref, changed.actor_ref);
+    assert_eq!(serde_json::to_value(&payload).unwrap(), emitted);
 }

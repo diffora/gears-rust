@@ -1,13 +1,9 @@
 //! Live reservations, confirmation and retained release history.
-#![allow(
-    clippy::too_many_arguments,
-    reason = "Reference commands retain their scoped key and release attribution"
-)]
 use super::{HeadWrite, driver_failure, map_unique};
 use crate::domain::references::{RefKind, ReferenceSummary};
 use crate::infra::storage::{RepoError, entity::sku_reference};
-use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::sea_query::{Expr, ExprTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
 use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -57,6 +53,10 @@ pub async fn find_live_reference(
 /// Insert a fresh attempt after the door's eligibility check in the same serializable transaction.
 /// # Errors
 /// Returns `REFERENCE_EXISTS` or scoped storage failures.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the reservation's scoped key, its logical reference and its attribution stay explicit"
+)]
 pub async fn reserve_reference(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -142,9 +142,35 @@ pub async fn find_reference(
         .await
         .map_err(|e| driver_failure("find reference".into(), e))
 }
+/// The attempts of `ids` the tenant holds, released tombstones included, in ONE read (RS-13); an
+/// id the tenant does not hold is absent.
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn find_references(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<SkuReference>, RepoError> {
+    sku_reference::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku_reference::Column::TenantId.eq(tenant_id))
+                .add(sku_reference::Column::Id.is_in(ids.iter().copied())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("find references".into(), e))
+}
 /// Release once; retries leave the original attribution unchanged.
 /// # Errors
 /// Returns scoped storage failures.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the release keeps its scoped key and its attribution explicit"
+)]
 pub async fn release_reference(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -211,22 +237,58 @@ pub async fn list_references(
         .await
         .map_err(|e| driver_failure("list references".into(), e))
 }
-/// Summarize live price book entries/plans and the reserved subset.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ReferenceCount {
+    owner_gear: String,
+    ref_kind: String,
+    state: String,
+    n: i64,
+}
+/// Summarize live price book entries/plans and the reserved subset, in ONE grouped count by
+/// `(owner_gear, ref_kind, state)` (RS-15): a SKU card reads a handful of rows, however many
+/// entries name the SKU.
 /// # Errors
-/// Returns scoped storage failures or an unknown stored reference kind.
+/// Returns scoped storage failures, an unknown stored reference kind or a negative count.
 pub async fn reference_summary(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     sku_id: Uuid,
 ) -> Result<ReferenceSummary, RepoError> {
+    let counts = sku_reference::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku_reference::Column::TenantId.eq(tenant_id))
+                .add(sku_reference::Column::SkuId.eq(sku_id))
+                .add(sku_reference::Column::State.ne("released")),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(sku_reference::Column::OwnerGear)
+                .column(sku_reference::Column::RefKind)
+                .column(sku_reference::Column::State)
+                .column_as(
+                    Expr::col((sku_reference::Entity, sku_reference::Column::Id)).count(),
+                    "n",
+                )
+                .group_by(sku_reference::Column::OwnerGear)
+                .group_by(sku_reference::Column::RefKind)
+                .group_by(sku_reference::Column::State)
+                .into_model::<ReferenceCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count references".into(), e))?;
     let mut summary = ReferenceSummary::default();
-    for r in live_references(runner, scope, tenant_id, sku_id).await? {
+    for r in counts {
+        let n = u32::try_from(r.n)
+            .map_err(|_| RepoError::CorruptRow(format!("a reference count {}", r.n)))?;
         match r.ref_kind.as_str() {
             "price_book_entry" => {
-                summary.price_book_entries = summary.price_book_entries.saturating_add(1);
+                summary.price_book_entries = summary.price_book_entries.saturating_add(n);
             }
-            "plan_item" | "sold_as" => summary.plans = summary.plans.saturating_add(1),
+            "plan_item" | "sold_as" => summary.plans = summary.plans.saturating_add(n),
             _ => {
                 return Err(RepoError::CorruptRow(format!(
                     "reference kind {}",
@@ -236,11 +298,11 @@ pub async fn reference_summary(
         }
         let owner = summary.by_owner.entry(r.owner_gear).or_default();
         let kind = owner.entry(r.ref_kind).or_default();
-        *kind = kind.saturating_add(1);
+        *kind = kind.saturating_add(n);
         if r.state == "reserved" {
             let reserved = owner.entry("reserved".into()).or_default();
-            *reserved = reserved.saturating_add(1);
-            summary.reserved = summary.reserved.saturating_add(1);
+            *reserved = reserved.saturating_add(n);
+            summary.reserved = summary.reserved.saturating_add(n);
         }
     }
     Ok(summary)

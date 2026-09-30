@@ -21,7 +21,6 @@ toolkit-macros = { workspace = true }
 bss-products-sdk = { workspace = true }
 bss-approval = { workspace = true }
 event-broker-sdk = { workspace = true, features = ["db", "outbox"] }
-account-management = { workspace = true }
 coord = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -56,7 +55,10 @@ toolkit-canonical-errors = { workspace = true }
 toolkit-db = { workspace = true, features = ["pg", "sqlite", "test-support"] }
 # The events suite decodes the interim envelope with the broker SDK's own decoder
 # (`producer::ProducerOutboxEnvelope`), which the `outbox` feature exposes.
-event-broker-sdk = { workspace = true, features = ["db", "outbox", "test-util"] }
+event-broker-sdk = { workspace = true, features = ["db", "outbox"] }
+# The bound-producer suite (`tests/broker_producer.rs`) drives a real in-process broker: the
+# gear's own harness (`test_support::EventBrokerHarness`), which replaced the SDK's mock.
+cf-gears-event-broker = { path = "../../../system/event-broker/event-broker", features = ["test-utils"] }
 toml = { workspace = true }
 # The shipped binary keeps a parsed body's key order (file-parser pulls in `preserve_order`);
 # the tests run in that order too, so the key-order digest test can fail (behaviour LOW-4).

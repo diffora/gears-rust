@@ -15,9 +15,11 @@ use serde::Deserialize;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
+// `Products`-prefixed like the gear's other shared names: settings-service serves its own
+// `CategoryDto`, and the toolkit refuses two definitions under one component name at boot.
 /// Wire representation of the registry Category.
 #[toolkit_macros::api_dto(response)]
-pub struct CategoryDto {
+pub struct ProductsCategoryDto {
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub code: String,
@@ -27,7 +29,7 @@ pub struct CategoryDto {
     pub status: ProductsCategoryStatus,
     pub version: i64,
 }
-impl TryFrom<Category> for CategoryDto {
+impl TryFrom<Category> for ProductsCategoryDto {
     type Error = RepoError;
     fn try_from(value: Category) -> Result<Self, RepoError> {
         Ok(Self {
@@ -164,13 +166,6 @@ impl From<SkuVersion> for SkuVersionDto {
     }
 }
 
-fn parse_billing(value: &str) -> Option<BillingTiming> {
-    match value {
-        "advance" => Some(BillingTiming::Advance),
-        "arrears" => Some(BillingTiming::Arrears),
-        _ => None,
-    }
-}
 /// Parse one enum token, retaining the wire field in validation failures.
 pub(crate) fn parse_token<T>(
     value: &str,
@@ -184,7 +179,7 @@ pub(crate) fn parse_token<T>(
     })
 }
 /// Preserve explicit null as a present patch value.
-#[allow(clippy::option_option)] // PATCH has three states.
+#[expect(clippy::option_option, reason = "a PATCH field has three states")]
 fn double_option<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Option<Option<T>>, D::Error> {
@@ -211,7 +206,7 @@ pub struct CategoryPatchRequest {
 #[toolkit_macros::api_dto(response)]
 pub struct ProductsCategoryItem {
     #[serde(flatten)]
-    pub category: CategoryDto,
+    pub category: ProductsCategoryDto,
     pub sku_count: u64,
 }
 #[toolkit_macros::api_dto(response)]
@@ -375,7 +370,7 @@ impl TryFrom<SkuRequest> for NewSku {
             billing_timing: v
                 .billing_timing
                 .as_deref()
-                .map(|s| parse_token(s, "billing_timing", parse_billing))
+                .map(|s| parse_token(s, "billing_timing", BillingTiming::parse))
                 .transpose()?,
             usage_type_ref: v.usage_type_ref,
             unit: v.unit,
@@ -383,7 +378,10 @@ impl TryFrom<SkuRequest> for NewSku {
     }
 }
 #[toolkit_macros::api_dto(request)]
-#[allow(clippy::option_option)] // None = omitted; Some(None) = clear; Some(Some(_)) = set.
+#[expect(
+    clippy::option_option,
+    reason = "None = omitted; Some(None) = clear; Some(Some(_)) = set"
+)]
 pub struct SkuPatchRequest {
     pub name: Option<String>,
     /// Omitted keeps the category, `null` clears it (P-D-196), a value sets it.
@@ -430,7 +428,7 @@ impl TryFrom<SkuPatchRequest> for SkuPatch {
         });
         let billing_timing = v.billing_timing.map(|o| {
             o.and_then(|s| {
-                let parsed = parse_billing(&s);
+                let parsed = BillingTiming::parse(&s);
                 if parsed.is_none() {
                     parse(&s, "billing_timing");
                 }
@@ -511,9 +509,12 @@ pub struct DecisionDto {
     pub at: OffsetDateTime,
     pub stale: bool,
 }
+/// One page of the unit list (P-D-224): its units, and the toolkit pager's `page_info`, whose
+/// `next_cursor` continues it.
 #[toolkit_macros::api_dto(response)]
 pub struct UnitList {
     pub items: Vec<UnitDto>,
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(request)]
 pub struct VoteRequest {

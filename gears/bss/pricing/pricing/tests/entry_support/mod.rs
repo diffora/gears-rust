@@ -236,6 +236,31 @@ impl Fixture {
     ) -> (u16, Value, String) {
         request(&self.app, &self.ctx, method, path, body, tag, key).await
     }
+    /// Every approval unit `GET /approval-units?{query}` lists, as the fixture's user: the list
+    /// pages (D-458), so a whole read follows `page_info.next_cursor` to its last page.
+    pub async fn all_units(&self, query: &str) -> Vec<Value> {
+        let mut items = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut path = format!("/approval-units?{query}");
+            if let Some(cursor) = &cursor {
+                // A cursor is base64url: it needs no escaping in a query.
+                path.push_str(if query.is_empty() {
+                    "cursor="
+                } else {
+                    "&cursor="
+                });
+                path.push_str(cursor);
+            }
+            let (s, b, _) = self.call("GET", &path, json!({}), None, None).await;
+            assert_eq!(s, 200, "{path}: {b}");
+            items.extend(b["items"].as_array().unwrap().iter().cloned());
+            match b["page_info"]["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return items,
+            }
+        }
+    }
     /// A second router over its own connection to the same database file.
     pub async fn second_app(&self) -> Router {
         let db = toolkit_db::connect_db(

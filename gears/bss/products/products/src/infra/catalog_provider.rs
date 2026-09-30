@@ -4,7 +4,7 @@ use crate::{
     api::rest::authz_error_to_canonical,
     authz::{access_scope, actions, resource_types},
     domain::{error::DomainError, validation::ValidationReport},
-    infra::storage::{entity::sku, repo},
+    infra::storage::{RepoError, entity::sku, repo},
 };
 use async_trait::async_trait;
 use authz_resolver_sdk::PolicyEnforcer;
@@ -43,8 +43,6 @@ impl BrowseCatalogProvider {
             &resource_types::SKU,
             actions::READ,
             None,
-            None,
-            true,
         )
         .await
         .map_err(|e| {
@@ -56,15 +54,16 @@ impl BrowseCatalogProvider {
         })
     }
 
-    /// Browse the served lifecycle set with a validated `OData` predicate.
+    /// Browse the served lifecycle set with a validated `OData` predicate, under the scope the
+    /// caller already holds: the browse door asks the PDP once (RS-41).
     pub(crate) async fn browse(
         &self,
-        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant: Uuid,
         filter: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
-        let scope = self.scope(ctx).await?;
         let limit = limit.min(200);
         if limit == 0 {
             return Err(invalid("limit", "limit must be at least one"));
@@ -88,13 +87,10 @@ impl BrowseCatalogProvider {
             limit: u64::from(limit),
             after_code: cursor.filter(|s| !s.is_empty()).map(str::to_owned),
         };
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
-        let mut rows = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &query)
+        let conn = self.db.conn().map_err(|e| no_connection(&e))?;
+        let mut rows = repo::list_skus(&conn, scope, tenant, &query)
             .await
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
+            .map_err(|e| read_failure(&e))?;
         let more = rows.len() > limit as usize;
         rows.truncate(limit as usize);
         let next_cursor = if more {
@@ -108,6 +104,89 @@ impl BrowseCatalogProvider {
         })
     }
 }
+
+/// A connection this read could not take (`Db::conn` refuses only inside a transaction): the
+/// repository's logged 500, its text off the wire (RS-09).
+fn no_connection(e: &toolkit_db::DbError) -> CanonicalError {
+    crate::api::rest::repo_error_to_canonical(&RepoError::Db(format!("catalog connection: {e}")))
+}
+
+/// A repository failure behind a catalog read. A pool that could not hand out a connection is the
+/// catalog that did not answer, a 503 with a fixed detail; any other failure (a statement, a row
+/// that does not read) is the repository's logged 500. The driver's text stays in the log, never
+/// in a wire detail (RS-07, RS-09).
+fn read_failure(e: &RepoError) -> CanonicalError {
+    if let RepoError::Driver {
+        source: sea_orm::DbErr::ConnectionAcquire(_) | sea_orm::DbErr::Conn(_),
+        ..
+    } = e
+    {
+        tracing::error!(error = %e, "bss-products: the catalog's database did not answer");
+        return catalog_unreachable("the product catalog's database did not answer");
+    }
+    crate::api::rest::repo_error_to_canonical(e)
+}
+
+impl BrowseCatalogProvider {
+    /// The published and deprecated SKUs of `ids`, in code order, read set-based (RS-40): one
+    /// statement per [`IDS_PER_READ`] distinct ids, where it read each id on its own.
+    async fn skus_by_id(
+        &self,
+        scope: &AccessScope,
+        tenant: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<CatalogSku>, CanonicalError> {
+        let distinct: Vec<Uuid> = ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let conn = self.db.conn().map_err(|e| no_connection(&e))?;
+        let mut rows = Vec::with_capacity(distinct.len());
+        for chunk in distinct.chunks(IDS_PER_READ) {
+            let query = repo::SkuQuery {
+                catalog_filter: Some(
+                    Condition::all()
+                        .add(sku::Column::Id.is_in(chunk.iter().copied()))
+                        .add(sku::Column::Lifecycle.is_in(["published", "deprecated"])),
+                ),
+                lifecycle: None,
+                limit: u64::try_from(chunk.len()).unwrap_or(u64::MAX),
+                after_code: None,
+            };
+            rows.extend(
+                repo::list_skus(&conn, scope, tenant, &query)
+                    .await
+                    .map_err(|e| read_failure(&e))?,
+            );
+        }
+        rows.sort_by(|a, b| a.code.cmp(&b.code));
+        Ok(rows.into_iter().map(catalog_sku_of).collect())
+    }
+
+    /// The tenant's tax-category dictionary: the distinct codes its published SKUs carry, in one
+    /// read (RS-14).
+    pub(crate) async fn tax_categories(
+        &self,
+        scope: &AccessScope,
+        tenant: Uuid,
+    ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
+        let conn = self.db.conn().map_err(|e| no_connection(&e))?;
+        Ok(repo::distinct_tax_categories(&conn, scope, tenant)
+            .await
+            .map_err(|e| read_failure(&e))?
+            .into_iter()
+            .map(|code| CatalogTaxCategory {
+                display_name: code.clone(),
+                code,
+            })
+            .collect())
+    }
+}
+
+/// The ids one `get_skus` statement binds: well under either dialect's bound-parameter limit.
+const IDS_PER_READ: usize = 1000;
 
 pub(crate) fn invalid(field: &str, detail: impl Into<String>) -> CanonicalError {
     let mut report = ValidationReport::new();
@@ -180,74 +259,36 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         ids: &[Uuid],
     ) -> Result<Vec<CatalogSku>, CanonicalError> {
         let scope = self.scope(ctx).await?;
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
-        let mut rows = Vec::new();
-        let mut seen = BTreeSet::new();
-        for &id in ids {
-            if !seen.insert(id) {
-                continue;
-            }
-            if let Some(s) = repo::find_sku(&conn, &scope, ctx.subject_tenant_id(), id)
-                .await
-                .map_err(|e| catalog_unreachable(e.to_string()))?
-                && matches!(s.lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
-            {
-                rows.push(s);
-            }
-        }
-        rows.sort_by(|a, b| a.code.cmp(&b.code));
-        Ok(rows.into_iter().map(catalog_sku_of).collect())
+        self.skus_by_id(&scope, ctx.subject_tenant_id(), ids).await
     }
     async fn search_skus(
         &self,
         ctx: &SecurityContext,
         q: Option<&str>,
-        limit: u32,
+        limit: u64,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
+        // The page is 1 to 200 whatever the caller asks (PS-49: the contract's `limit` is `u64`).
+        let limit = u32::try_from(limit.min(200)).unwrap_or(200);
         let filter = q
             .filter(|s| !s.is_empty())
             .map(|q| format!("startswith(name,'{}')", q.replace('\'', "''")));
-        self.browse(ctx, filter.as_deref(), limit, cursor).await
+        let scope = self.scope(ctx).await?;
+        self.browse(
+            &scope,
+            ctx.subject_tenant_id(),
+            filter.as_deref(),
+            limit,
+            cursor,
+        )
+        .await
     }
     async fn list_tax_categories(
         &self,
         ctx: &SecurityContext,
     ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
         let scope = self.scope(ctx).await?;
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| catalog_unreachable(e.to_string()))?;
-        let mut query = repo::SkuQuery {
-            catalog_filter: None,
-            lifecycle: Some(Lifecycle::Published),
-            limit: 200,
-            after_code: None,
-        };
-        let mut codes = BTreeSet::new();
-        loop {
-            let mut rows = repo::list_skus(&conn, &scope, ctx.subject_tenant_id(), &query)
-                .await
-                .map_err(|e| catalog_unreachable(e.to_string()))?;
-            let more = rows.len() > 200;
-            rows.truncate(200);
-            query.after_code = rows.last().map(|s| s.code.clone());
-            codes.extend(rows.into_iter().filter_map(|s| s.tax_category));
-            if !more {
-                break;
-            }
-        }
-        Ok(codes
-            .into_iter()
-            .map(|code| CatalogTaxCategory {
-                display_name: code.clone(),
-                code,
-            })
-            .collect())
+        self.tax_categories(&scope, ctx.subject_tenant_id()).await
     }
 }
 #[cfg(test)]

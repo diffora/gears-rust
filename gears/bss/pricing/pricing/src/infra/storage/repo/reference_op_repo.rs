@@ -14,6 +14,9 @@ use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
+/// A racing driver moved the op first: the op's compare-and-swap refuses with it, and the
+/// reference work tells the lost race apart by this one symbol (whole-branch review PS-42).
+pub const REFERENCE_OP_CONTENDED: &str = "REFERENCE_OP_CONTENDED";
 /// Insert before reserve, or with deletion, in the caller's transaction.
 /// # Errors
 /// Returns scoped storage failures with their original database type.
@@ -111,7 +114,7 @@ pub async fn transition(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("transition reference op".into(), e))?;
-    matched(result.rows_affected, "REFERENCE_OP_CONTENDED")
+    matched(result.rows_affected, REFERENCE_OP_CONTENDED)
 }
 /// Find bounded, due, unfinished work; failed work remains eligible indefinitely.
 /// # Errors

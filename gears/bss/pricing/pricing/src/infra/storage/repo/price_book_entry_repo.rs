@@ -85,6 +85,32 @@ pub async fn find(
         .await
         .map_err(|e| driver_failure("find price book entry".into(), e))
 }
+/// The tenant's entries among `ids`, by id, in ONE statement whatever their number; an id the
+/// tenant does not hold has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn find_many(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::Id.is_in(ids.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list price book entries by id".into(), e))
+}
 /// List tenant rows in stable identity order.
 /// # Errors
 /// Returns typed database failures.
@@ -325,11 +351,18 @@ pub async fn priced_skus(
     scope: &AccessScope,
     tenant: Uuid,
 ) -> Result<Vec<Uuid>, RepoError> {
-    distinct_skus(runner, scope, tenant, Condition::all(), "list priced SKUs").await
+    distinct_skus(
+        runner,
+        scope,
+        tenant,
+        Condition::all(),
+        "list the SKUs of price book entries",
+    )
+    .await
 }
-/// The SKUs whose entries (under `scope`) a plan item of a draft, pending or published revision
-/// names: the SKUs whose usage counts a plan (D-428), in ONE statement (P-D-212). The items and
-/// revisions are read tenant-scoped, as the usage count reads them.
+/// The SKUs whose entries (under `scope`) a plan item of a draft, pending, scheduled or published
+/// revision names: the SKUs whose usage counts a plan (D-428), in ONE statement (P-D-212). The
+/// items and revisions are read tenant-scoped, as the usage count reads them.
 /// # Errors
 /// Returns typed database failures.
 pub async fn in_plan_skus(
@@ -363,14 +396,14 @@ pub async fn in_plan_skus(
         scope,
         tenant,
         Condition::all().add(Expr::exists(live_item)),
-        "list in-plan SKUs",
+        "list the SKUs of price book entries in a plan",
     )
     .await
 }
 /// Change the reference receipt/state at the observed version.
 /// # Errors
 /// Returns a version conflict or a typed database failure.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "tenant identity, version and receipt are the conditional write operands"
 )]

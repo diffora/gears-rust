@@ -22,7 +22,7 @@ use crate::{
         validation::ValidationReport,
     },
     infra::storage::{
-        RepoError,
+        RepoError, RepoRefusal,
         repo::{self, HeadWrite},
     },
 };
@@ -103,11 +103,17 @@ struct ReferenceList {
 }
 
 /// Register the seven SKU operations and their concrete response schemas.
-#[allow(clippy::too_many_lines)] // Keep each operation's complete contract together.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::post(SKUS)
         .operation_id("bss_products.create_sku")
         .summary("Create a draft SKU")
+        .description(
+            "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters \
+             (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, \
+             invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 \
+             FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; \
+             409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -144,6 +150,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::patch(format!("{SKUS}/{{id}}"))
         .operation_id("bss_products.update_sku_draft")
         .summary("Edit a draft SKU")
+        .description(
+            "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts \
+             it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, \
+             400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, \
+             ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        )
         .tag(TAG)
         .authenticated()
         .no_license_required()
@@ -274,24 +286,20 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     router.layer(Extension(state))
 }
 
-/// Authorize reads without an owner hint and writes against the subject tenant.
+/// Authorize reads without an owner hint and writes against the subject tenant. The call site names
+/// the action it asks (`actions::READ` or `actions::AUTHOR`), not a `bool` (RS-54); a write
+/// anchors to the subject's tenant.
 async fn scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
-    write: bool,
+    action: &'static str,
 ) -> Result<AccessScope, CanonicalError> {
     access_scope(
         enforcer,
         ctx,
         &resource_types::SKU,
-        if write {
-            actions::AUTHOR
-        } else {
-            actions::READ
-        },
-        write.then(|| ctx.subject_tenant_id()),
-        None,
-        true,
+        action,
+        (action != actions::READ).then(|| ctx.subject_tenant_id()),
     )
     .await
     .map_err(|e| {
@@ -310,35 +318,43 @@ fn response(status: StatusCode, s: Sku) -> Response {
     )
         .into_response()
 }
-/// Translate only known repository business refusals, retaining all driver errors. A SKU without
-/// a category (P-D-196) resolves none, so only a named category can be missing.
+/// Translate the repository's refusals a SKU write can meet, retaining all driver errors. A SKU
+/// without a category (P-D-196) resolves none, so only a named category can be missing. The
+/// refusals a SKU write cannot meet stay a repository failure (RS-16: an exhaustive match).
 fn write_error(e: RepoError, category_id: Option<Uuid>) -> TxError {
-    match e {
-        RepoError::Db(code) if code == "CATEGORY_NOT_FOUND" => match category_id {
-            Some(id) => TxError::Refused(DomainError::NotFound {
-                what: "category",
-                id,
-            }),
-            None => TxError::Repo(RepoError::Db(code)),
-        },
-        RepoError::Db(code)
-            if matches!(
-                code.as_str(),
-                "SKU_CODE_TAKEN" | "SKU_NAME_TAKEN" | "CATEGORY_RETIRED"
-            ) =>
-        {
-            let (code, detail) = match code.as_str() {
-                "SKU_CODE_TAKEN" => ("SKU_CODE_TAKEN", "a SKU with this code exists"),
-                "SKU_NAME_TAKEN" => ("SKU_NAME_TAKEN", "a SKU with this name exists"),
-                _ => ("CATEGORY_RETIRED", "the category is retired"),
+    let (code, detail) = match e {
+        RepoError::Refused(RepoRefusal::CategoryNotFound) => {
+            return match category_id {
+                Some(id) => TxError::Refused(DomainError::NotFound {
+                    what: "category",
+                    id,
+                }),
+                None => TxError::Repo(e),
             };
-            TxError::Refused(DomainError::Conflict {
-                code,
-                detail: detail.into(),
-            })
         }
-        other => TxError::Repo(other),
-    }
+        RepoError::Refused(RepoRefusal::SkuCodeTaken) => {
+            ("SKU_CODE_TAKEN", "a SKU with this code exists")
+        }
+        RepoError::Refused(RepoRefusal::SkuNameTaken) => {
+            ("SKU_NAME_TAKEN", "a SKU with this name exists")
+        }
+        RepoError::Refused(RepoRefusal::CategoryRetired) => {
+            ("CATEGORY_RETIRED", "the category is retired")
+        }
+        RepoError::Refused(
+            RepoRefusal::CategoryCodeTaken
+            | RepoRefusal::CategoryDefaultTaken
+            | RepoRefusal::ReferenceExists
+            | RepoRefusal::VersionOrder,
+        )
+        | RepoError::Db(_)
+        | RepoError::Driver { .. }
+        | RepoError::CorruptRow(_) => return TxError::Repo(e),
+    };
+    TxError::Refused(DomainError::Conflict {
+        code,
+        detail: detail.into(),
+    })
 }
 /// P-D-184: a configured catalog's definite unknown refuses; silence allows draft save. A catalog
 /// that refuses the caller (P-D-207) is not a verdict on the ref either, so the save proceeds; the
@@ -378,7 +394,7 @@ async fn create_sku(
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
-    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let payload = json_body(body)?;
     let claim = replay::input(&state, &headers, "/bss-products/v1/skus".into(), &payload)?;
     if let Some(response) = replay::lookup(
@@ -491,13 +507,14 @@ async fn update_sku_draft(
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
-    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let expected = if_match(&headers)?.get();
     let patch_tx = SkuPatch::try_from(json_body(body)?).map_err(DomainError::Validation)?;
     let mut report = ValidationReport::new();
     if patch_tx.name.as_deref() == Some("") {
         report.violate("VALIDATION", "name", "name must not be blank");
     }
+    crate::domain::sku::check_patch(&mut report, &patch_tx);
     if patch_tx.lifecycle.is_some_and(|s| s != Lifecycle::Draft) {
         report.violate(
             "VALIDATION",
@@ -612,7 +629,7 @@ async fn delete_sku_draft(
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
     // Authorization first, then the precondition (as the draft PATCH).
-    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let expected = if_match(&headers)?.get();
     let now = OffsetDateTime::now_utc();
     state
@@ -687,7 +704,7 @@ async fn get_sku(
     Path(id): Path<Uuid>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
+    let scope = scope(&enforcer, &ctx, actions::READ).await?;
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let s = find(&conn, &scope, ctx.subject_tenant_id(), id)
@@ -754,9 +771,9 @@ fn as_of_date(query: RawQuery) -> Result<Date, CanonicalError> {
     if date.is_none() {
         offenders.push((
             KEY,
-            match dates.len() {
-                0 => format!("`{KEY}` (YYYY-MM-DD) is required"),
-                1 => format!("`{KEY}` is a date YYYY-MM-DD, not `{}`", dates[0]),
+            match dates.as_slice() {
+                [] => format!("`{KEY}` (YYYY-MM-DD) is required"),
+                [one] => format!("`{KEY}` is a date YYYY-MM-DD, not `{one}`"),
                 _ => format!("`{KEY}` is given more than once"),
             },
             "INVALID_QUERY_PARAMS",
@@ -796,7 +813,7 @@ async fn sku_versions(
     query: RawQuery,
 ) -> Result<Json<Vec<SkuVersionDto>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
+    let scope = scope(&enforcer, &ctx, actions::READ).await?;
     no_query(query)?;
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
@@ -817,7 +834,7 @@ async fn sku_version_as_of(
     query: RawQuery,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
+    let scope = scope(&enforcer, &ctx, actions::READ).await?;
     let as_of = as_of_date(query)?;
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
@@ -849,7 +866,7 @@ async fn sku_references(
     q: Result<Query<ReferenceQuery>, QueryRejection>,
 ) -> Result<Json<ReferenceList>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
+    let scope = scope(&enforcer, &ctx, actions::READ).await?;
     let q = query(q)?;
     let tenant = ctx.subject_tenant_id();
     super::governance::touch(&state, &scope, ctx.subject_tenant_id(), id).await?;
@@ -875,7 +892,7 @@ async fn sku_references(
 }
 /// Commit audit attribution atomically with the draft mutation, with the lifecycle move it made
 /// (P-D-213).
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "The audit row's actor, subject and move stay explicit at each draft door"
 )]

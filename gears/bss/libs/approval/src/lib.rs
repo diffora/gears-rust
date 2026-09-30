@@ -8,11 +8,13 @@ pub mod ddl;
 pub mod engine;
 pub mod hash;
 pub mod model;
-pub mod rules;
+mod rules;
 pub mod store;
 pub mod subject;
 
-pub use engine::{ApproveOutcome, Engine, SubmitRequest, Submitted};
-pub use model::{ApprovalError, Decision, ItemRef, Policy, Unit, UnitState, Verdict};
+pub use engine::{ApproveOutcome, Engine, InTransaction, RejectOutcome, SubmitRequest, Submitted};
+pub use model::{
+    ApprovalError, Decision, ItemRef, NOTE_MAX_CHARS, Policy, Unit, UnitState, Verdict,
+};
 pub use store::Store;
 pub use subject::ApprovalSubject;

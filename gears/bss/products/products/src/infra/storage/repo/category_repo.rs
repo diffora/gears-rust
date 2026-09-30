@@ -2,7 +2,7 @@
 use super::{HeadWrite, driver_failure, map_unique};
 use crate::domain::category::{CategoryPatch, NewCategory};
 use crate::infra::storage::{
-    RepoError,
+    RepoError, RepoRefusal,
     entity::{category, sku},
 };
 use bss_products_sdk::models::Category;
@@ -484,7 +484,7 @@ pub(crate) async fn require_active_category(
 ) -> Result<(), RepoError> {
     match find_category(runner, scope, tenant, id).await? {
         Some(c) if c.status == "active" => Ok(()),
-        Some(_) => Err(RepoError::Db("CATEGORY_RETIRED".into())),
-        None => Err(RepoError::Db("CATEGORY_NOT_FOUND".into())),
+        Some(_) => Err(RepoError::Refused(RepoRefusal::CategoryRetired)),
+        None => Err(RepoError::Refused(RepoRefusal::CategoryNotFound)),
     }
 }

@@ -59,6 +59,11 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
         "pricing_plan_revision_published",
         "(plan_id) WHERE (state = 'published'::text)",
     ),
+    // D-446 (m20260929_000017): one scheduled revision per plan.
+    (
+        "pricing_plan_revision_scheduled",
+        "(plan_id) WHERE (state = 'scheduled'::text)",
+    ),
     ("pricing_plan_item_sku", "(revision_id, sku_id)"),
 ];
 /// The unique keys DESIGN §3.7 declares, inline or as a partial unique index, by the columns (and
@@ -76,6 +81,10 @@ const DESIGN_UNIQUE: &[(&str, &str)] = &[
     (
         "pricing_plan_revision",
         "(plan_id) WHERE (state = 'published'::text)",
+    ),
+    (
+        "pricing_plan_revision",
+        "(plan_id) WHERE (state = 'scheduled'::text)",
     ),
     ("pricing_plan_item", "(revision_id, sku_id)"),
 ];

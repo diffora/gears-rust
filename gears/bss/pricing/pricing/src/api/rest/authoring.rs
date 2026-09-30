@@ -2,6 +2,7 @@
 mod approvals;
 mod book_list;
 mod books;
+mod caps;
 pub(crate) mod configuration;
 pub mod dto;
 pub mod plan_items;
@@ -20,6 +21,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
+use caps::Capped;
 use dto::{
     PriceBookCreate, PriceBookDto, PriceBookExport, PriceBookPatch, PricingDimensionKeyPatch,
     PricingDimensionRegistry, PricingDimensions, PricingPriceBookEntryList,
@@ -116,10 +118,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Creates a price book of the tenant with a code, a name, one currency, an optional \
              validity window and an optional description of at most 2000 characters (D-444); the \
              Idempotency-Key replays the first answer. The currency must be one the tenant \
-             settings offer, when they offer any (D-438). Refusals: 400 BOOK_CODE_REQUIRED, \
-             BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID or \
-             BOOK_DESCRIPTION_TOO_LONG; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or \
-             IDEMPOTENCY_CONFLICT.",
+             settings offer, when they offer any (D-438). The code is at most 64 characters and \
+             the name 200 (D-457). Refusals: 400 BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, \
+             BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID, BOOK_DESCRIPTION_TOO_LONG, or \
+             FIELD_TOO_LONG on a code or a name over its cap; 409 CURRENCY_NOT_OFFERED, \
+             BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
         )
         .tag("Pricing")
         .authenticated()
@@ -153,9 +156,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Rename, re-date or describe a price book")
         .description(
             "Changes a book's name, validity window or description at the version the caller read \
-             (If-Match); an omitted description is kept and null clears it (D-444). Refusals: 400 \
-             BOOK_NAME_REQUIRED, BOOK_VALIDITY_INVALID or BOOK_DESCRIPTION_TOO_LONG; 404 for an \
-             unknown book; 409 STALE_REVISION.",
+             (If-Match); an omitted description is kept and null clears it (D-444). The name is \
+             at most 200 characters (D-457). Refusals: 400 BOOK_NAME_REQUIRED, \
+             BOOK_VALIDITY_INVALID, BOOK_DESCRIPTION_TOO_LONG, or FIELD_TOO_LONG on a name over \
+             its cap; 404 for an unknown book; 409 STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -177,10 +181,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              Refusals, in order: 403 without the book write grant; 400 for a missing or malformed \
              If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 \
              BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, \
-             pending or published revision on the book, as stats.plans counts it, D-441); 409 \
-             BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only \
-             counts it): the delete succeeds exactly when stats.entries, stats.plans and \
-             stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
+             pending, scheduled or published revision on the book, as stats.plans counts it, \
+             D-441); 409 BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as \
+             stats.plans_superseded_only counts it): the delete succeeds exactly when \
+             stats.entries, stats.plans and stats.plans_superseded_only are 0. A row added by a \
+             concurrent writer is the same 409.",
         )
         .tag("Pricing")
         .authenticated()
@@ -198,8 +203,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
              and period, each with its usage (D-428): its prices by state (a rejected price is not \
              counted; the approved ones also as scheduled, active and superseded today, D-440), \
-             the distinct plans whose draft, pending or published revisions name it, and the \
-             distinct plans that name it only through superseded revisions; and its \
+             the distinct plans whose draft, pending, scheduled or published revisions name it, \
+             and the distinct plans that name it only through superseded revisions; and its \
              current_price, the default chain's approved price in force today, shown to a caller \
              who also holds price_book read on the book and null otherwise (D-434, D-440). \
              Refusals: 404 for a book the tenant does not hold.",
@@ -250,10 +255,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Replaces the tenant settings at the version the caller read (If-Match), currencies \
              included (required; [] offers any currency, D-438), and records the caller and the \
-             time. Rounding is half_up, half_even, half_down, up or down (D-437). Refusals: 400 \
-             TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, \
-             CURRENCY_INVALID or an invalid line template (LINE_TEMPLATE_EMPTY, \
-             LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
+             time. Rounding is half_up, half_even, half_down, up or down (D-437). A GL code or a \
+             tax category other than the stored one is at most 64 characters, and a line template \
+             other than the one stored for its SKU type 2000; a stored text sent back unchanged \
+             passes whatever its length (D-457). Refusals: 400 TIMING_INVALID, ROUNDING_REQUIRED, \
+             ROUNDING_INVALID, SKU_TYPE_INVALID, CURRENCY_INVALID, an invalid line template \
+             (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID), or FIELD_TOO_LONG on a changed \
+             default_gl, default_tax_category or invoice_line_templates over its cap; 409 \
+             STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -285,9 +294,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Write the dimension registry")
         .description(
             "Replaces the tenant's dimension keys and values at the content the caller read \
-             (If-Match). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID or \
-             DIM_KEY_DUPLICATE; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry \
-             names or a value a price uses (naming it); 409 STALE_REVISION.",
+             (If-Match). A key or a value the stored registry does not hold is at most 64 \
+             characters; one it holds passes whatever its length (D-457). Refusals: 400 \
+             DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID, DIM_KEY_DUPLICATE, or \
+             FIELD_TOO_LONG on a new key or value over its cap; 409 DIMENSION_KEY_IN_USE or \
+             DIM_VALUE_IN_USE for a key an entry names or a value a price uses (naming it); 409 \
+             STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -304,9 +316,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Adds and removes values of one declared key (stored, or the seed key while nothing \
              is stored) at the content the caller read (If-Match); keys themselves are added and \
-             removed by the PUT (D-436). Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, \
-             DIM_VALUE_UNKNOWN, DIM_VALUE_INVALID or DIM_VALUES_FEW; 409 DIM_VALUE_IN_USE naming \
-             the value a price uses, or STALE_REVISION.",
+             removed by the PUT (D-436). A value it adds is at most 64 characters (D-457). \
+             Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, DIM_VALUE_UNKNOWN, \
+             DIM_VALUE_INVALID, DIM_VALUES_FEW, or FIELD_TOO_LONG on an added value over its cap; \
+             409 DIM_VALUE_IN_USE naming the value a price uses, or STALE_REVISION.",
         )
         .tag("Pricing")
         .authenticated()
@@ -322,13 +335,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Add a SKU to a price book")
         .description(
             "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), \
-             reserving the SKU reference in Products before the write and confirming it after; the \
-             Idempotency-Key replays the receipt. Refusals: 400 MODEL_INVALID, \
-             MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), \
-             ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, \
-             period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, \
-             SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 \
-             REGISTRY_UNAVAILABLE.",
+             reserving the SKU reference in Products before the write and confirming it after; \
+             the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 \
+             characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH \
+             (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, \
+             DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN \
+             (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, \
+             SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or \
+             CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         )
         .tag("Pricing")
         .authenticated()
@@ -369,10 +383,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Returns one price book entry of the tenant, its version as the ETag a following PATCH \
              sends back as If-Match, its usage (D-428): its prices by state (a rejected price is \
              not counted; the approved ones also as scheduled, active and superseded today, \
-             D-440), the distinct plans whose draft, pending or published revisions name it, and \
-             the distinct plans that name it only through superseded revisions; and its \
-             current_price, the default chain's approved price in force today, shown to a caller \
-             who also holds price_book read on its book and null otherwise (D-434, D-440). \
+             D-440), the distinct plans whose draft, pending, scheduled or published revisions \
+             name it, and the distinct plans that name it only through superseded revisions; and \
+             its current_price, the default chain's approved price in force today, shown to a \
+             caller who also holds price_book read on its book and null otherwise (D-434, D-440). \
              Refusals: 404 ENTRY_NOT_FOUND.",
         )
         .tag("Pricing")
@@ -425,9 +439,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .summary("Change a price book entry")
         .description(
             "Changes an entry's invoice-line override or its dimension key at the version the \
-             caller read (If-Match). Refusals: 400 DIM_NOT_DECLARED or an invalid line template; \
-             404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, \
-             INVOICE_LINE_LOCKED for an override change once the entry has an approved or \
+             caller read (If-Match). The override is at most 2000 characters (D-457). Refusals: \
+             400 DIM_NOT_DECLARED, an invalid line template, or FIELD_TOO_LONG on an override \
+             over its cap; 404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the \
+             key, INVOICE_LINE_LOCKED for an override change once the entry has an approved or \
              pending price (D-426), or STALE_REVISION.",
         )
         .tag("Pricing")
@@ -523,9 +538,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Submit a plan revision")
         .description(
             "Puts an unlocked draft revision whose checks are all green into a plan_revision \
-             approval unit (plan submit); at quorum 0 it publishes at once. Refusals: 400 \
-             REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or \
-             ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
+             approval unit (plan submit); at quorum 0 it applies at once. An applied revision is \
+             published, or scheduled when its sale date is after today: it takes effect on that \
+             date (D-449). Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 \
+             REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' \
+             SKU reads.",
         )
         .tag("Pricing")
         .authenticated()
@@ -536,6 +553,31 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .json_response_with_schema::<dto::PricingPlanRevisionSubmitReceipt>(
             openapi,
             StatusCode::CREATED,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/unschedule")
+        .operation_id("bss_pricing.unschedule_plan_revision")
+        .summary("Withdraw a scheduled revision")
+        .description(
+            "Returns a plan revision that is approved and waiting for its sale date to an \
+             unlocked draft of its author (plan submit, D-452): its items and their SKU \
+             references stay, the applied unit stays in the history, and no event is sent. A \
+             revision whose date has come is switched first and is then in effect. The \
+             Idempotency-Key replays the answer. Refusals: 404 for a revision the tenant does \
+             not hold; 409 REVISION_IN_EFFECT for a published revision, REVISION_NOT_SCHEDULED \
+             for any other.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "Plan revision id")
+        .param(header("Idempotency-Key"))
+        .handler(unschedule_plan_revision)
+        .json_response_with_schema::<dto::PricingPlanRevisionDto>(
+            openapi,
+            StatusCode::OK,
             "Response",
         )
         .standard_errors(openapi)
@@ -587,9 +629,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.list_approval_units")
         .summary("List the approval units")
         .description(
-            "Lists the tenant's approval units, filtered by state, kind and referenced aggregate, \
-             each with its stored snapshot and live impact. Refusals: 400 UNIT_STATE_INVALID or \
-             QUERY_INVALID.",
+            "One page of the tenant's approval units in submission order (D-458), filtered by \
+             state, kind and referenced aggregate, each with its stored snapshot, its decisions \
+             and its live impact. `limit` (default 200, clamped at 500) and `cursor` from \
+             `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 \
+             FILTER_MISMATCH for a cursor replayed with another state, kind or referenced \
+             aggregate; 400 for a cursor that does not read.",
         )
         .tag("Pricing")
         .authenticated()
@@ -598,6 +643,13 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .query_param("kind", false, "Approval kind")
         .query_param("ref_id", false, "Referenced aggregate id")
         .query_param("book_id", false, "Price book id")
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size (default 200, clamped at 500)",
+            "integer",
+        )
+        .query_param_typed("cursor", false, "Continuation from page_info", "string")
         .handler(list_approval_units)
         .json_response_with_schema::<dto::PricingApprovalUnitList>(
             openapi,
@@ -630,9 +682,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Approve an approval unit")
         .description(
             "Records an approving vote on the generation the reviewer saw; the vote that reaches \
-             the quorum applies the unit. Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 \
-             SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, \
-             UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
+             the quorum applies the unit (a plan revision whose sale date is after today is \
+             scheduled for that date, D-449). The vote's note is at most 2000 characters. \
+             Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION \
+             for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or \
+             APPLY_REFUSED.",
         )
         .tag("Pricing")
         .authenticated()
@@ -648,11 +702,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.reject_unit")
         .summary("Reject an approval unit")
         .description(
-            "Rejects a pending unit on the generation the reviewer saw, with a note. A plan \
-             revision returns to draft. The prices of a prices unit stay rejected, with their \
-             review history, and are not edited again: a replacement is a new draft price \
-             (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, \
-             GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
+            "Rejects a pending unit on the generation the reviewer saw, with a note of at most \
+             2000 characters. A plan revision returns to draft. The prices of a prices unit stay \
+             rejected, with their review history, and are not edited again: a replacement is a \
+             new draft price (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, \
+             NOTE_TOO_LONG, GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or \
+             UNIT_ALREADY_DECIDED.",
         )
         .tag("Pricing")
         .authenticated()
@@ -814,6 +869,32 @@ async fn submit_plan_revision(
     };
     approvals::submit_revision(&state.db.db(), cmd, id).await
 }
+async fn unschedule_plan_revision(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(id): Path<Uuid>,
+    corr: Option<Extension<correlation::CorrelationId>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    // D-452: withdrawing an approved change is plan submit's (D-418), not plan author's.
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::PLAN,
+        actions::SUBMIT,
+        Some(OwnerTenant(ctx.subject_tenant_id())),
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let correlation = correlation::require_correlation(corr)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    plans::unschedule(state, scope, ctx, correlation, id, key, digest).await
+}
 async fn list_publish_changes(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -900,21 +981,55 @@ async fn list_approval_units(
         (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
         (a, b) => a.or(b),
     };
+    let filter = crate::infra::storage::repo::approval_repo::UnitListFilter {
+        state: state_filter,
+        kind: query.kind,
+        ref_id: reference,
+    };
+    let page = unit_page(&filter, query.limit, query.cursor.as_deref())?;
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, kind) = (scope.clone(), ctx.clone(), query.kind.clone());
+        let (scope, ctx, filter, page) = (scope.clone(), ctx.clone(), filter.clone(), page.clone());
         Box::pin(async move {
-            approvals::list_units(
-                tx,
-                &scope,
-                ctx.subject_tenant_id(),
-                state_filter,
-                kind.as_deref(),
-                reference,
-            )
-            .await
+            approvals::list_units(tx, &scope, ctx.subject_tenant_id(), &filter, &page).await
         })
     })
     .await
+}
+/// The unit list's page (D-458): `limit`, and `cursor` from a page's `page_info`, which carries a
+/// hash of the narrowing (`state`, `kind` and the referenced aggregate), so a cursor replayed
+/// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442).
+fn unit_page(
+    filter: &crate::infra::storage::repo::approval_repo::UnitListFilter,
+    limit: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    let digest = preconditions::request_digest(&serde_json::json!({
+        "state": filter.state.map(bss_approval::UnitState::as_str),
+        "kind": filter.kind,
+        "ref_id": filter.ref_id,
+    }))
+    .map_err(CanonicalError::from)?;
+    let hash = digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, b| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            hex.push(char::from(DIGITS[usize::from(b >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(b & 0x0f)]));
+            hex
+        });
+    let mut query = toolkit_odata::ODataQuery::new().with_filter_hash(hash.clone());
+    if let Some(limit) = limit {
+        query = query.with_limit(limit);
+    }
+    if let Some(token) = cursor {
+        let cursor = toolkit_odata::CursorV1::decode(token).map_err(CanonicalError::from)?;
+        if cursor.f.as_deref() != Some(hash.as_str()) {
+            return Err(toolkit_odata::Error::FilterMismatch.into());
+        }
+        query = query.with_cursor(cursor);
+    }
+    Ok(query)
 }
 async fn get_approval_unit(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1147,10 +1262,11 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Create a draft price")
         .description(
             "Adds a draft price to an entry's chain, and a temporary price's return partner with \
-             it; the Idempotency-Key replays the answer. The money is in the entry's model and the \
-             price carries no model of its own (D-427). Refusals: 400 for a rule the price breaks \
-             (for example PRICE_MISSING for money of another model's shape, AMOUNT_INVALID, \
-             WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY); 409 \
+             it; the Idempotency-Key replays the answer. The money is in the entry's model and \
+             the price carries no model of its own (D-427). The note is at most 2000 characters \
+             (D-457). Refusals: 400 for a rule the price breaks (for example PRICE_MISSING for \
+             money of another model's shape, AMOUNT_INVALID, WINDOW_START_IN_PAST, \
+             DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY), or NOTE_TOO_LONG; 409 \
              ENTRY_REFERENCE_LOST.",
         )
         .tag("Pricing")
@@ -1181,7 +1297,8 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              own dates, a temporary price's chain (dim_value), an end on any other price and a \
              null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks \
              (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or \
-             TEMPORARY_SPANS_A_CHANGE); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
+             TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters \
+             (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or \
              its partner) or STALE_REVISION.",
         )
         .tag("Pricing")
@@ -1236,6 +1353,7 @@ async fn create_price(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPriceCreate = preconditions::parse_body(&body)?;
+    input.caps()?;
     prices::create(
         &state.db.db(),
         scope,
@@ -1271,6 +1389,7 @@ async fn patch_price(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPricePatch = preconditions::parse_body(&body)?;
+    input.caps()?;
     prices::patch(&state.db.db(), scope, ctx, correlation, id, version, input).await
 }
 async fn delete_price(
@@ -1324,6 +1443,7 @@ async fn create_book(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let body: PriceBookCreate = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         let (key, digest) = (key.clone(), digest.clone());
@@ -1393,6 +1513,7 @@ async fn patch_book(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let body: PriceBookPatch = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(
@@ -1546,6 +1667,7 @@ async fn put_settings(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
+    // D-457: the caps are judged against the stored settings (`configuration::put_settings`).
     let body: PricingSettingsPut = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
@@ -1602,6 +1724,7 @@ async fn put_dimensions(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
+    // The caps are judged against the stored registry, in the transaction (D-457: only new text).
     let body: PricingDimensions = preconditions::parse_body(&body)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
@@ -1633,6 +1756,7 @@ async fn patch_dimensions(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let body: PricingDimensionKeyPatch = preconditions::parse_body(&body)?;
+    body.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, body) = (scope.clone(), ctx.clone(), body.clone());
         Box::pin(async move {
@@ -1710,7 +1834,8 @@ async fn create_entry(
     let key = preconditions::idempotency_key(&headers)?;
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
-    let input = preconditions::parse_body(&body)?;
+    let input: dto::PricingPriceBookEntryCreate = preconditions::parse_body(&body)?;
+    input.caps()?;
     price_book_entries::create(state, scope, ctx, id, correlation, key, digest, input).await
 }
 
@@ -1867,6 +1992,7 @@ async fn patch_entry(
     let correlation = correlation::require_correlation(corr)?;
     let version = preconditions::if_match(&headers)?.get();
     let input: dto::PricingPriceBookEntryPatch = preconditions::parse_body(&body)?;
+    input.caps()?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (scope.clone(), ctx.clone(), input.clone());
         Box::pin(async move {

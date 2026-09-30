@@ -76,7 +76,7 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
     let base = SkuPublish {
         scope: scope.clone(),
         tenant_id: tenant,
-        sink: EventSink::Interim(Arc::clone(handle.outbox())),
+        outbox: events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
         actor: sku.created_by,
         now: at(9),
         usage_type: None,
@@ -487,8 +487,8 @@ async fn subjects_publish_change_refuse_corrupt_reference_and_withdraw() {
 fn a_missing_category_is_a_refusal_at_the_store_and_a_404_from_the_subject() {
     use crate::domain::error::DomainError;
     use toolkit::api::canonical_prelude::CanonicalError;
-    let raced = super::store_err(crate::infra::storage::RepoError::Db(
-        "CATEGORY_NOT_FOUND".into(),
+    let raced = super::store_err(crate::infra::storage::RepoError::Refused(
+        crate::infra::storage::RepoRefusal::CategoryNotFound,
     ));
     assert!(
         matches!(

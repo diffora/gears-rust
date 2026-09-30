@@ -2,9 +2,9 @@
 use super::*;
 use crate::domain::category::NewCategory;
 use crate::domain::sku::NewSku;
-use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::*;
 use crate::infra::storage::repo::{HeadWrite, insert_category};
+use crate::infra::storage::{RepoError, RepoRefusal};
 use crate::test_support::test_db;
 use bss_products_sdk::models::{Lifecycle, SkuType};
 use time::OffsetDateTime;
@@ -58,12 +58,30 @@ async fn duplicate_code_and_name_are_refused_by_the_database_with_their_own_code
     )
     .await
     .unwrap();
-    assert!(
-        matches!(insert_sku(&conn, &scope, tenant, new_sku("STORAGE", "Other", cat.id), tenant, now()).await, Err(RepoError::Db(c)) if c == "SKU_CODE_TAKEN")
-    );
-    assert!(
-        matches!(insert_sku(&conn, &scope, tenant, new_sku("OTHER", "Storage", cat.id), tenant, now()).await, Err(RepoError::Db(c)) if c == "SKU_NAME_TAKEN")
-    );
+    assert!(matches!(
+        insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            new_sku("STORAGE", "Other", cat.id),
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::SkuCodeTaken))
+    ));
+    assert!(matches!(
+        insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            new_sku("OTHER", "Storage", cat.id),
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::SkuNameTaken))
+    ));
 }
 #[tokio::test]
 async fn the_lock_is_conditional_and_the_second_taker_gets_false() {
@@ -215,7 +233,10 @@ async fn versions_append_and_resolve_as_of() {
         .await
         .unwrap(); // same day: allowed, the higher version wins
     assert!(
-        matches!(append_version(&conn, &scope, tenant, s.id, 4, d("2026-09-20"), &c3, now()).await, Err(RepoError::Db(code)) if code == "VERSION_ORDER"),
+        matches!(
+            append_version(&conn, &scope, tenant, s.id, 4, d("2026-09-20"), &c3, now()).await,
+            Err(RepoError::Refused(RepoRefusal::VersionOrder))
+        ),
         "no insertion before the latest date"
     );
     assert_eq!(
@@ -305,9 +326,22 @@ async fn categories_are_ordered_revision_guarded_and_retire_only_when_unused() {
             .collect::<Vec<_>>(),
         vec![first.id, cat.id]
     );
-    assert!(
-        matches!(insert_category(&conn,&scope,tenant,NewCategory {code:"z".into(),name:"Z2".into(),is_default:false,sort_order:0},now()).await,Err(RepoError::Db(c)) if c=="CATEGORY_CODE_TAKEN")
-    );
+    assert!(matches!(
+        insert_category(
+            &conn,
+            &scope,
+            tenant,
+            NewCategory {
+                code: "z".into(),
+                name: "Z2".into(),
+                is_default: false,
+                sort_order: 0
+            },
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::CategoryCodeTaken))
+    ));
     let patch = crate::domain::category::CategoryPatch {
         name: Some("Renamed".into()),
         ..Default::default()
@@ -349,9 +383,18 @@ async fn categories_are_ordered_revision_guarded_and_retire_only_when_unused() {
             .unwrap(),
         Some(HeadWrite::Written(_))
     ));
-    assert!(
-        matches!(insert_sku(&conn,&scope,tenant,new_sku("b","b",first.id),tenant,now()).await,Err(RepoError::Db(c)) if c=="CATEGORY_RETIRED")
-    );
+    assert!(matches!(
+        insert_sku(
+            &conn,
+            &scope,
+            tenant,
+            new_sku("b", "b", first.id),
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::CategoryRetired))
+    ));
     assert!(
         retire_category_if_unused(&conn, &scope, tenant, uuid::Uuid::new_v4(), now())
             .await
@@ -398,9 +441,21 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
     )
     .await
     .unwrap();
-    assert!(
-        matches!(reserve_reference(&conn,&scope,tenant,s.id,"pricing",RefKind::PriceBookEntry,ref_id,tenant,now()).await,Err(RepoError::Db(c)) if c=="REFERENCE_EXISTS")
-    );
+    assert!(matches!(
+        reserve_reference(
+            &conn,
+            &scope,
+            tenant,
+            s.id,
+            "pricing",
+            RefKind::PriceBookEntry,
+            ref_id,
+            tenant,
+            now()
+        )
+        .await,
+        Err(RepoError::Refused(RepoRefusal::ReferenceExists))
+    ));
     for kind in [Fence::Retire, Fence::TypeChange] {
         assert!(matches!(
             fence_sku(
@@ -737,17 +792,16 @@ async fn sku_queries_use_filters_cursor_and_scope_and_content_writes_increment_v
         .unwrap(),
         HeadWrite::Unmatched
     ));
+    // RT-05: with no category, the category lookup cannot refuse first, so the insert's own scope
+    // guard is what refuses the tenant outside the scope.
+    let uncategorized = NewSku {
+        category_id: None,
+        ..new_sku("C", "C", cat)
+    };
+    let refused = insert_sku(&conn, &foreign, tenant, uncategorized, tenant, now()).await;
     assert!(
-        insert_sku(
-            &conn,
-            &foreign,
-            tenant,
-            new_sku("C", "C", cat),
-            tenant,
-            now()
-        )
-        .await
-        .is_err()
+        matches!(&refused, Err(RepoError::Db(m)) if m.starts_with("SKU scope:")),
+        "{refused:?}"
     );
     let mut content = bss_products_sdk::models::SkuContent::from(&a);
     content.name = "Applied".into();
@@ -806,4 +860,60 @@ async fn stale_unlock_cannot_clear_another_units_lock() {
             .unwrap(),
         HeadWrite::Unmatched
     ));
+}
+
+/// RS-22: `SkuContent` is the stored format of every version's append-only `content` (and of every
+/// unit's proposal). Fixture rows keep reading through the repository: one as this build writes it,
+/// one an older build wrote without the optional fields, and one a later build wrote with a field
+/// this build does not know.
+#[tokio::test]
+async fn stored_content_fixtures_keep_reading() {
+    use sea_orm::{ConnectionTrait, Database};
+    let (db, scope, tenant, dsn) = test_db().await;
+    let conn = db.conn().unwrap();
+    let cat = seed_category(&conn, &scope, tenant).await;
+    let s = insert_sku(&conn, &scope, tenant, new_sku("A", "A", cat), tenant, now())
+        .await
+        .unwrap();
+    let date = time::Date::from_calendar_date(2026, time::Month::September, 1).unwrap();
+    let c = bss_products_sdk::models::SkuContent::from(&s);
+    append_version(&conn, &scope, tenant, s.id, 1, date, &c, now())
+        .await
+        .unwrap();
+    let written = r#"{"code":"COMP-VCPU","name":"vCPU hour","type":"usage","category_id":null,"description":"","sellable":true,"gl_code":"4000","tax_category":"cloud","invoice_line_template":null,"billing_timing":"arrears","usage_type_ref":"gts.cf.core.uc.usage_record.v1~cf.bss.usage_type.cpu.v1","unit":"vCPU h"}"#;
+    let older = r#"{"code":"A","name":"A","type":"recurring","category_id":null,"description":"","sellable":true}"#;
+    let later = r#"{"code":"A","name":"A","type":"recurring","category_id":null,"description":"","sellable":true,"a_later_field":1}"#;
+    // The table is append-only (a trigger refuses an UPDATE), so each fixture is a version row of
+    // its own, copied from the one the repository wrote.
+    let raw = Database::connect(&dsn).await.unwrap();
+    for (n, fixture) in [(2, written), (3, older), (4, later)] {
+        raw.execute_unprepared(&format!(
+            "INSERT INTO products_sku_version \
+             (sku_id, tenant_id, published_version, effective_from, content, created_at) \
+             SELECT sku_id, tenant_id, {n}, effective_from, '{fixture}', created_at \
+             FROM products_sku_version WHERE published_version = 1 AND {}",
+            crate::test_support::id_matches("sku_id", s.id)
+        ))
+        .await
+        .unwrap();
+    }
+    raw.close().await.ok();
+    let versions = versions(&conn, &scope, tenant, s.id).await.unwrap();
+    let read: Vec<_> = [2, 3, 4]
+        .iter()
+        .map(|n| {
+            versions
+                .iter()
+                .find(|v| v.published_version == *n)
+                .unwrap()
+                .content
+                .clone()
+        })
+        .collect();
+    let stored: serde_json::Value = serde_json::from_str(written).unwrap();
+    assert_eq!(serde_json::to_value(&read[0]).unwrap(), stored);
+    assert_eq!(read[0].r#type, SkuType::Usage);
+    assert_eq!(read[1].unit, None);
+    assert_eq!(read[1].billing_timing, None);
+    assert_eq!(read[2], read[1]);
 }

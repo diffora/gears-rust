@@ -8,6 +8,11 @@
 //! 201, and the ticker finishes what it could not. A draft revision belongs to its author (D-404):
 //! only its `created_by` edits or deletes it and its items.
 //!
+//! Every read renders a revision's state as it reads today (D-447), derived in memory from the
+//! stored rows; no read writes. The three doors that can meet a due scheduled revision — the
+//! copy, the clone and the unschedule door — persist its switch first (D-451), with the job's
+//! event and audit row.
+//!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-plan-clone:p1
 use super::{
     AuthoringState, configuration,
@@ -25,7 +30,8 @@ use crate::{
         price::PriceState,
     },
     infra::{
-        reference_registry, reference_work,
+        events::TxOutbox,
+        plan_revisions, reference_registry, reference_work,
         storage::{
             RepoError,
             entity::{plan as plan_entity, plan_item, plan_revision, price_book_entry},
@@ -91,6 +97,11 @@ pub(super) fn editable(r: &plan_revision::Model, ctx: &SecurityContext) -> Resul
     }
     Ok(())
 }
+/// Today, the UTC date of now: the day every read derives a revision's state on (D-447), as the
+/// checks judge a sale date on it.
+pub(super) fn today() -> time::Date {
+    time::OffsetDateTime::now_utc().date()
+}
 async fn plan_body(
     tx: &impl DBRunner,
     tenant: Uuid,
@@ -98,16 +109,18 @@ async fn plan_body(
 ) -> Result<PricingPlanDto, DoorError> {
     let revisions =
         plan_revision_repo::for_plan(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanDto::of(m, &revisions)?)
+    Ok(PricingPlanDto::of(m, &revisions, today())?)
 }
+/// A revision read: its items, and its state among its plan's revisions as it reads today.
 async fn revision_body(
     tx: &impl DBRunner,
     tenant: Uuid,
     m: plan_revision::Model,
 ) -> Result<PricingPlanRevisionDto, DoorError> {
-    let items =
-        plan_item_repo::for_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanRevisionDto::of(&m, items)?)
+    let children = AccessScope::for_tenant(tenant);
+    let items = plan_item_repo::for_revision(tx, &children, tenant, m.id).await?;
+    let siblings = plan_revision_repo::for_plan(tx, &children, tenant, m.plan_id).await?;
+    Ok(PricingPlanRevisionDto::read(&m, &siblings, items, today())?)
 }
 fn etag(version: i64) -> Result<u64, CanonicalError> {
     Ok(
@@ -117,21 +130,39 @@ fn etag(version: i64) -> Result<u64, CanonicalError> {
     )
 }
 
-/// `POST /plans`: the plan and its draft rev 1 on the named book, in the key's transaction.
+/// The book a plan names is one its author may read (D-456, extending D-440's money rule):
+/// `books` is the caller's `price_book` read, `None` without that grant. A book of the tenant it
+/// does not admit is 403 `PRICE_BOOK_READ_REQUIRED`.
 /// # Errors
-/// 400 `PLAN_CODE_REQUIRED`; 404 for a book the tenant does not hold; 409 `PLAN_CODE_TAKEN`; a
-/// replayed or conflicting key.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "authorized context, replay identity and input belong to one transaction"
-)]
+/// That refusal; storage failures.
+async fn require_book_read(
+    tx: &impl DBRunner,
+    books: Option<&AccessScope>,
+    tenant: Uuid,
+    book: Uuid,
+) -> Result<(), DoorError> {
+    if super::price_book_entries::shows_money(tx, books, tenant, book).await? {
+        Ok(())
+    } else {
+        Err(support::forbidden_because(
+            "PRICE_BOOK_READ_REQUIRED",
+            "a plan names a book: authoring it takes price_book read on that book",
+        )
+        .into())
+    }
+}
+/// `POST /plans`: the plan and its draft rev 1 on the named book, in the key's transaction. The
+/// book is one the caller's `price_book` read admits (`books`, D-456).
+/// # Errors
+/// 400 `PLAN_CODE_REQUIRED`; 404 for a book the tenant does not hold; 403
+/// `PRICE_BOOK_READ_REQUIRED` for one the caller may not read; 409 `PLAN_CODE_TAKEN`; a replayed
+/// or conflicting key.
 pub(super) async fn create(
     tx: &impl DBRunner,
-    scope: &AccessScope,
+    (scope, books): (&AccessScope, Option<&AccessScope>),
     ctx: &SecurityContext,
     correlation: Uuid,
-    key: &str,
-    digest: &[u8],
+    (key, digest): (&str, &[u8]),
     input: PricingPlanCreate,
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
@@ -149,6 +180,7 @@ pub(super) async fn create(
     {
         return Err(support::missing().into());
     }
+    require_book_read(tx, books, tenant, input.book_id).await?;
     let now = time::OffsetDateTime::now_utc();
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     let p = plan_repo::insert(
@@ -191,7 +223,7 @@ pub(super) async fn create(
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r])?;
+    let body = PricingPlanDto::of(p, &[r], today())?;
     support::answer(
         tx,
         tenant,
@@ -203,10 +235,11 @@ pub(super) async fn create(
     )
     .await
 }
-/// `GET /plans`: the tenant's plans by code, each with its revision headers; with `sku`, only
-/// the plans that have a draft, pending or published revision naming the SKU through an entry
-/// (D-434, the SKU usage's `plans`). Two set-based statements whatever the number of plans: the
-/// plans, then all their revisions.
+/// `GET /plans`: the tenant's plans by code, each with its revision headers as they read today
+/// (D-447); with `sku`, only the plans that have a draft, pending, scheduled or published revision
+/// naming the SKU through an entry (D-434, the SKU usage's `plans`; the stored state counts,
+/// D-446). Two set-based statements whatever the number of plans: the plans, then all their
+/// revisions; the derivation is in memory.
 /// # Errors
 /// Storage failures.
 pub(super) async fn list(
@@ -220,6 +253,7 @@ pub(super) async fn list(
         None => plan_repo::list(tx, scope, tenant).await?,
     };
     let ids: Vec<Uuid> = plans.iter().map(|p| p.id).collect();
+    let today = today();
     let mut revisions: std::collections::BTreeMap<Uuid, Vec<plan_revision::Model>> =
         std::collections::BTreeMap::new();
     for r in
@@ -232,7 +266,7 @@ pub(super) async fn list(
             .into_iter()
             .map(|p| {
                 let own = revisions.remove(&p.id).unwrap_or_default();
-                PricingPlanDto::of(p, &own)
+                PricingPlanDto::of(p, &own, today)
             })
             .collect::<Result<_, _>>()?,
     })
@@ -286,11 +320,12 @@ pub(super) async fn patch(
 }
 
 /// `POST /plans/{id}/revisions`: copy the published revision into a new draft (D-413), then drive
-/// the attach ops of its items best-effort and answer 201 with the answer the key recorded.
+/// the attach ops of its items best-effort and answer 201 with the answer the key recorded. A due
+/// scheduled revision is switched first (D-451), so the copy is of the revision in effect.
 /// # Errors
 /// 404 for an unknown plan; 409 `REVISION_DRAFT_EXISTS` while a draft or pending revision exists;
-/// 409 `PLAN_UNPUBLISHED` when there is no published revision to copy; a replayed or conflicting
-/// key.
+/// 409 `REVISION_SCHEDULED` while a revision waits for its sale date (D-451); 409
+/// `PLAN_UNPUBLISHED` when there is no published revision to copy; a replayed or conflicting key.
 pub(super) async fn copy(
     state: Arc<AuthoringState>,
     scope: AccessScope,
@@ -301,28 +336,36 @@ pub(super) async fn copy(
     digest: Vec<u8>,
 ) -> Result<Response, CanonicalError> {
     let original_ctx = ctx.clone();
-    let (response, ops) = support::transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
-        Box::pin(
-            async move { copy_in(tx, &scope, &ctx, correlation, plan_id, &key, &digest).await },
-        )
-    })
-    .await?;
+    let db = state.db.db();
+    let (response, ops) =
+        support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+            let (scope, ctx, key, digest) =
+                (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+            Box::pin(async move {
+                copy_in(
+                    tx,
+                    &outbox,
+                    &scope,
+                    &ctx,
+                    correlation,
+                    plan_id,
+                    (&key, &digest),
+                )
+                .await
+            })
+        })
+        .await?;
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(response)
 }
-#[allow(
-    clippy::too_many_arguments,
-    reason = "authorized context, replay identity and the plan belong to one transaction"
-)]
 async fn copy_in(
-    tx: &impl DBRunner,
+    tx: &(impl DBRunner + Sync),
+    outbox: &TxOutbox,
     scope: &AccessScope,
     ctx: &SecurityContext,
     correlation: Uuid,
     plan_id: Uuid,
-    key: &str,
-    digest: &[u8],
+    (key, digest): (&str, &[u8]),
 ) -> Result<(Response, Vec<Uuid>), DoorError> {
     let tenant = ctx.subject_tenant_id();
     let endpoint = format!("/bss-pricing/v1/plans/{plan_id}/revisions");
@@ -331,6 +374,9 @@ async fn copy_in(
     }
     let children = AccessScope::for_tenant(tenant);
     let p = find_plan(tx, scope, tenant, plan_id).await?;
+    let now = time::OffsetDateTime::now_utc();
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
+    plan_revisions::catch_up(tx, outbox, tenant, p.id, now, correlation).await?;
     let revisions = plan_revision_repo::for_plan(tx, &children, tenant, p.id).await?;
     let open = [
         RevisionState::Draft.as_str(),
@@ -339,6 +385,14 @@ async fn copy_in(
     if revisions.iter().any(|r| open.contains(&r.state.as_str())) {
         return Err(support::conflict("REVISION_DRAFT_EXISTS").into());
     }
+    // D-451: one scheduled revision at a time, and nothing after it: withdraw it or wait.
+    if revisions
+        .iter()
+        .any(|r| r.state == RevisionState::Scheduled.as_str())
+    {
+        return Err(support::conflict("REVISION_SCHEDULED").into());
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     let source = revisions
         .iter()
@@ -351,7 +405,6 @@ async fn copy_in(
         .unwrap_or(0)
         .checked_add(1)
         .ok_or_else(|| support::conflict("REVISION_NO_TAKEN"))?;
-    let now = time::OffsetDateTime::now_utc();
     let r = plan_revision_repo::insert(
         tx,
         &children,
@@ -394,10 +447,6 @@ async fn copy_in(
 /// transaction (D-413): each copy is written `unreserved` with no receipt and authored by the
 /// caller, with one attach op per copy. Answers the copies and their op ids, for the door to drive
 /// after its commit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the copy's context, both revisions and its clock belong to one transaction"
-)]
 async fn copy_items(
     tx: &impl DBRunner,
     children: &AccessScope,
@@ -443,21 +492,24 @@ async fn copy_items(
 }
 
 /// `POST /plans/{id}/clone`: a new plan (its own code and name) whose draft rev 1 copies the
-/// source plan's PUBLISHED revision — book, sale date and items — under D-413, then drive the
+/// source plan's PUBLISHED revision — the one in effect: a due scheduled revision is switched
+/// first (D-451) — book, sale date and items, under D-413, then drive the
 /// attach ops of its items best-effort and answer 201 with the new plan. Nothing of the source's
 /// approval is copied: no decision, no `approved_by_unit_id` or `published_at`, no pin; a
 /// deprecated SKU is carried, and the new plan's checks show it red (D-408).
 /// # Errors
 /// 400 `PLAN_CODE_REQUIRED`; 404 for a plan the tenant does not hold; 409
-/// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 409 `PLAN_CODE_TAKEN`;
-/// a replayed or conflicting key.
-#[allow(
+/// `CLONE_SOURCE_UNPUBLISHED` when the source has no published revision; 403
+/// `PRICE_BOOK_READ_REQUIRED` when the caller's `price_book` read (`books`) does not admit the
+/// book the clone names, the source's (D-456); 409 `PLAN_CODE_TAKEN`; a replayed or conflicting
+/// key.
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized context, replay identity and input belong to one transaction"
 )]
 pub(super) async fn clone(
     state: Arc<AuthoringState>,
-    scope: AccessScope,
+    (scope, books): (AccessScope, Option<AccessScope>),
     ctx: SecurityContext,
     correlation: Uuid,
     source: Uuid,
@@ -466,29 +518,43 @@ pub(super) async fn clone(
     input: PricingPlanClone,
 ) -> Result<Response, CanonicalError> {
     let original_ctx = ctx.clone();
-    let (response, ops) = support::transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
-        let input = input.clone();
-        Box::pin(async move {
-            clone_in(
-                tx,
-                &scope,
-                &ctx,
-                correlation,
-                source,
-                (&key, &digest),
-                input,
-            )
-            .await
+    let db = state.db.db();
+    let (response, ops) =
+        support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+            let (scope, books, ctx, key, digest) = (
+                scope.clone(),
+                books.clone(),
+                ctx.clone(),
+                key.clone(),
+                digest.clone(),
+            );
+            let input = input.clone();
+            Box::pin(async move {
+                clone_in(
+                    tx,
+                    &outbox,
+                    (&scope, books.as_ref()),
+                    &ctx,
+                    correlation,
+                    source,
+                    (&key, &digest),
+                    input,
+                )
+                .await
+            })
         })
-    })
-    .await?;
+        .await?;
     plan_items::drive_best_effort(&state, &original_ctx, &ops).await;
     Ok(response)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "authorized context, replay identity and input belong to one transaction"
+)]
 async fn clone_in(
-    tx: &impl DBRunner,
-    scope: &AccessScope,
+    tx: &(impl DBRunner + Sync),
+    outbox: &TxOutbox,
+    (scope, books): (&AccessScope, Option<&AccessScope>),
     ctx: &SecurityContext,
     correlation: Uuid,
     source: Uuid,
@@ -505,13 +571,18 @@ async fn clone_in(
     }
     let children = AccessScope::for_tenant(tenant);
     let from = find_plan(tx, scope, tenant, source).await?;
+    let now = time::OffsetDateTime::now_utc();
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
+    plan_revisions::catch_up(tx, outbox, tenant, from.id, now, correlation).await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     let published = plan_revision_repo::for_plan(tx, &children, tenant, from.id)
         .await?
         .into_iter()
         .find(|r| r.state == RevisionState::Published.as_str())
         .ok_or_else(|| support::conflict("CLONE_SOURCE_UNPUBLISHED"))?;
-    let now = time::OffsetDateTime::now_utc();
+    // The clone names the source's book: its author must be able to read it (D-456).
+    require_book_read(tx, books, tenant, published.book_id).await?;
     let p = plan_repo::insert(
         tx,
         scope,
@@ -553,7 +624,7 @@ async fn clone_in(
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     support::audit(tx, ctx, correlation, "plan.clone", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r])?;
+    let body = PricingPlanDto::of(p, &[r], today())?;
     let response = support::answer(
         tx,
         tenant,
@@ -584,16 +655,106 @@ pub(super) async fn get_revision(
         Some(version),
     )?)
 }
+/// `POST /plan-revisions/{id}/unschedule` (D-452): a scheduled revision whose sale date has not
+/// come returns to an unlocked draft — `approved_by_unit_id` cleared, its items and their
+/// references kept — and the door answers the draft, its version the `ETag` its PATCH takes. The
+/// order is the authorization (the handler's `plan:submit`), the key's claim, the plan's
+/// catch-up (D-451), then the state: a due revision has just been switched and is in effect. The
+/// applied unit stays applied; no event. A refusal rolls the catch-up back with it; the job
+/// persists that switch.
+/// # Errors
+/// 404 for a revision the tenant does not hold; 409 `REVISION_IN_EFFECT` for a published revision;
+/// 409 `REVISION_NOT_SCHEDULED` for a draft, pending or superseded one; a replayed or conflicting
+/// key.
+pub(super) async fn unschedule(
+    state: Arc<AuthoringState>,
+    scope: AccessScope,
+    ctx: SecurityContext,
+    correlation: Uuid,
+    id: Uuid,
+    key: String,
+    digest: Vec<u8>,
+) -> Result<Response, CanonicalError> {
+    let db = state.db.db();
+    support::transaction_with_events(&db, &state.outbox, move |tx, outbox| {
+        let (scope, ctx, key, digest) = (scope.clone(), ctx.clone(), key.clone(), digest.clone());
+        Box::pin(async move {
+            unschedule_in(tx, &outbox, &scope, &ctx, correlation, id, (&key, &digest)).await
+        })
+    })
+    .await
+}
+async fn unschedule_in(
+    tx: &(impl DBRunner + Sync),
+    outbox: &TxOutbox,
+    scope: &AccessScope,
+    ctx: &SecurityContext,
+    correlation: Uuid,
+    id: Uuid,
+    (key, digest): (&str, &[u8]),
+) -> Result<Response, DoorError> {
+    let tenant = ctx.subject_tenant_id();
+    let endpoint = format!("/bss-pricing/v1/plan-revisions/{id}/unschedule");
+    if let Some(replay) = support::claim(tx, tenant, &endpoint, key, digest).await? {
+        return Ok(replay);
+    }
+    let children = AccessScope::for_tenant(tenant);
+    let r = find_revision(tx, scope, tenant, id).await?;
+    let now = time::OffsetDateTime::now_utc();
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
+    plan_revisions::catch_up(tx, outbox, tenant, r.plan_id, now, correlation).await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-4
+    let r = find_revision(tx, &children, tenant, id).await?;
+    if r.state == RevisionState::Published.as_str() {
+        return Err(support::conflict("REVISION_IN_EFFECT").into());
+    }
+    if r.state != RevisionState::Scheduled.as_str() {
+        return Err(support::conflict("REVISION_NOT_SCHEDULED").into());
+    }
+    plan_revision_repo::unschedule(tx, &children, tenant, id, now).await?;
+    let draft = plan_revision::Model {
+        state: RevisionState::Draft.as_str().into(),
+        approved_by_unit_id: None,
+        version: r.version + 1,
+        updated_at: now,
+        ..r
+    };
+    support::audit(
+        tx,
+        ctx,
+        correlation,
+        "plan_revision.unschedule",
+        id,
+        draft.version,
+    )
+    .await?;
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-4
+    let items = plan_item_repo::for_revision(tx, &children, tenant, id).await?;
+    let body = PricingPlanRevisionDto::of(&draft, items)?;
+    support::answer(
+        tx,
+        tenant,
+        &endpoint,
+        key,
+        StatusCode::OK,
+        &body,
+        Some(etag(draft.version)?),
+    )
+    .await
+}
 /// `PATCH /plan-revisions/{id}`: the book and the sale date of an unlocked draft of the caller,
 /// at the version the caller read. A book change remaps every item whose entry has a twin in the
 /// new book (the same SKU, charge kind, period and model, D-427); an unmatched item keeps its old
 /// entry, which the checks then show foreign (`ITEM_BOOK_FOREIGN`).
+/// A named book is one the caller's `price_book` read admits (`books`, D-456).
 /// # Errors
 /// 404; 409 `REVISION_NOT_DRAFT`; 403 `NOT_DRAFT_AUTHOR`; 409 `STALE_REVISION`; 400
-/// `DATE_INVALID`; 404 for a book the tenant does not hold.
+/// `DATE_INVALID`; 404 for a book the tenant does not hold; 403 `PRICE_BOOK_READ_REQUIRED` for
+/// one the caller may not read.
 pub(super) async fn patch_revision(
     tx: &impl DBRunner,
-    scope: &AccessScope,
+    (scope, books): (&AccessScope, Option<&AccessScope>),
     ctx: &SecurityContext,
     correlation: Uuid,
     id: Uuid,
@@ -618,6 +779,7 @@ pub(super) async fn patch_revision(
         {
             return Err(support::missing().into());
         }
+        require_book_read(tx, books, tenant, book).await?;
         if book != m.book_id {
             remap(tx, &children, ctx, correlation, book, &mut items, now).await?;
         }
@@ -748,14 +910,14 @@ pub(super) async fn checks(
     id: Uuid,
 ) -> Result<Response, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
+    let today = today();
     let mut context = support::transaction(&state.db.db(), move |tx| {
         let scope = scope.clone();
-        Box::pin(async move { stored_context(tx, &scope, tenant, id).await })
+        Box::pin(async move { stored_context(tx, &scope, tenant, id, today).await })
     })
     .await?;
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
     context.skus = fresh_skus(&state.hub, &ctx, context.items.iter().map(|i| i.sku_id)).await?;
-    let today = time::OffsetDateTime::now_utc().date();
     let rows = plan::checks(&context, today);
     let ready = plan::ready(&rows);
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-3
@@ -777,7 +939,8 @@ pub async fn fresh_skus(
     ctx: &SecurityContext,
     skus: impl IntoIterator<Item = Uuid>,
 ) -> Result<Vec<Sku>, CanonicalError> {
-    let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
+    let registry =
+        reference_registry::resolve(hub).map_err(|e| support::registry_unavailable(&e))?;
     let wanted: BTreeSet<Uuid> = skus.into_iter().collect();
     let mut found = Vec::with_capacity(wanted.len());
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
@@ -789,7 +952,7 @@ pub async fn fresh_skus(
             Ok(read) => found.push(read),
             Err(error) if error.status_code() == 404 => {}
             Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(_) => return Err(support::unavailable()),
+            Err(error) => return Err(support::registry_unavailable(&error)),
         }
     }
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
@@ -799,7 +962,10 @@ fn corrupt(what: String) -> DoorError {
     RepoError::CorruptRow(what).into()
 }
 /// Everything the checks read from storage, with no SKU yet: the checks door and the
-/// `plan_revision` subject build the checks' context through this one function.
+/// `plan_revision` subject build the checks' context through this one function. The plan's
+/// revisions are read as they read on `today` (D-447), so the published revision whose SKUs a
+/// deprecated SKU may be carried from is the one in effect, before the job persists a due switch
+/// as after it.
 /// # Errors
 /// 404 for a revision the tenant does not hold; storage failures.
 pub async fn stored_context(
@@ -807,6 +973,7 @@ pub async fn stored_context(
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
+    today: time::Date,
 ) -> Result<PlanContext, DoorError> {
     let children = AccessScope::for_tenant(tenant);
     let r = find_revision(tx, scope, tenant, id).await?;
@@ -850,10 +1017,18 @@ pub async fn stored_context(
             .map_err(|_| corrupt(format!("dimension {} values", d.key)))?;
         dimension_values.push((d.key, values));
     }
-    let published = plan_revision_repo::for_plan(tx, &children, tenant, p.id)
-        .await?
-        .into_iter()
-        .find(|x| x.state == RevisionState::Published.as_str());
+    let revisions = super::dto::effective_revisions(
+        &plan_revision_repo::for_plan(tx, &children, tenant, p.id).await?,
+        today,
+    )?;
+    let state = revisions
+        .iter()
+        .find(|x| x.id == r.id)
+        .map(|x| x.state)
+        .ok_or_else(|| corrupt(format!("revision {} is not among its plan's", r.id)))?;
+    let published = revisions
+        .iter()
+        .find(|x| x.state == RevisionState::Published);
     let published_sku_ids = match published {
         Some(published) => plan_item_repo::for_revision(tx, &children, tenant, published.id)
             .await?
@@ -876,10 +1051,7 @@ pub async fn stored_context(
             id: r.id,
             rev_no: r.rev_no,
             book_id: r.book_id,
-            state: r
-                .state
-                .parse()
-                .map_err(|_| corrupt(format!("revision {} state", r.id)))?,
+            state,
             available_from: r.available_from,
         },
         items,

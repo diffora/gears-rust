@@ -2,6 +2,7 @@
 use super::{KIND_SKU_RETIRE, apply_error, invalid, publish::SkuPublish, store_err};
 use crate::infra::{broker, events, storage::repo};
 use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
+use bss_products_sdk::models::Lifecycle;
 use time::Date;
 use toolkit_db::DbTx;
 use uuid::Uuid;
@@ -29,7 +30,9 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuRetire {
                 .await
                 .map_err(store_err)?
                 .ok_or_else(|| invalid("NOT_FOUND", "id", i.item_id.to_string()))?;
-            if s.lifecycle != "retiring" || s.fence_op_id != Some(self.fence_op_id) {
+            if repo::fence_lifecycle(&s).map_err(store_err)? != Lifecycle::Retiring
+                || s.fence_op_id != Some(self.fence_op_id)
+            {
                 return Err(invalid(
                     "SKU_FENCED",
                     "lifecycle",
@@ -65,7 +68,7 @@ impl<'a> ApprovalSubject<DbTx<'a>> for SkuRetire {
                 });
             }
             events::enqueue_typed(
-                &b.sink,
+                &b.outbox,
                 tx,
                 broker::SkuRetired {
                     tenant_id: b.tenant_id,

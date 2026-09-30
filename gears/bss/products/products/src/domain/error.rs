@@ -111,6 +111,11 @@ impl From<bss_approval::ApprovalError> for DomainError {
             bss_approval::ApprovalError::ApplyRefused { code, detail } => {
                 Self::Conflict { code, detail }
             }
+            // The unit's 404, as the doors' own pre-load answers it.
+            bss_approval::ApprovalError::UnitNotFound { unit_id } => Self::NotFound {
+                what: "approval_unit",
+                id: unit_id,
+            },
             other => Self::Approval(ApprovalRefusal {
                 code: other.code(),
                 detail: other.to_string(),

@@ -14,7 +14,7 @@ use bss_products::{
         broker::EventSink,
         events,
         storage::{
-            RepoError,
+            RepoError, RepoRefusal,
             repo::{self, Fence, HeadWrite},
         },
     },
@@ -342,7 +342,7 @@ async fn concurrent_approvers_retry_typed_serialization_and_apply_once() {
         actor: f.tenant,
         now: now(),
         usage_type: None,
-        sink: EventSink::Interim(Arc::clone(handle.outbox())),
+        outbox: events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
     };
     let store = repo::ProductsApprovalStore {
         scope: f.scope.clone(),
@@ -526,7 +526,7 @@ async fn category_retire_vs_insert_serializes_and_retries() {
                             .await
                             {
                                 Ok(_) => Ok(true),
-                                Err(RepoError::Db(code)) if code == "CATEGORY_RETIRED" => Ok(false),
+                                Err(RepoError::Refused(RepoRefusal::CategoryRetired)) => Ok(false),
                                 Err(e) => Err(e.into()),
                             }
                         }

@@ -193,7 +193,9 @@ impl ProductsConfig {
     }
 
     /// Boot-time validation: a zero resolver timeout would answer every
-    /// usage-type resolve `Unavailable`, so it is refused before anything runs.
+    /// usage-type resolve `Unavailable`, and a zero fence TTL would make every
+    /// fence no pending unit holds expirable the moment it exists (RS-62), so
+    /// both are refused before anything runs.
     ///
     /// # Errors
     ///
@@ -203,6 +205,13 @@ impl ProductsConfig {
             return Err(
                 "usage_type_resolver_timeout_ms = 0 admits nothing at all: every usage-type \
                  resolve would time out before it is asked"
+                    .to_owned(),
+            );
+        }
+        if self.fence_ttl_minutes == 0 {
+            return Err(
+                "fence_ttl_minutes = 0 admits nothing at all: every read's orphan-fence recovery \
+                 would lift a fence the moment it exists"
                     .to_owned(),
             );
         }

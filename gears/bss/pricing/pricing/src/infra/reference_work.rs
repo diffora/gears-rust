@@ -95,6 +95,30 @@ impl EntryInput {
         }
     }
 }
+/// A plan item's persisted create input (whole-branch review PS-19): what its create writes,
+/// kept apart from the request `PricingPlanItemCreate`, whose `deny_unknown_fields` would make a
+/// stored op corrupt the day a field of the wire is renamed or removed. Its JSON is the request
+/// body's, field for field; it denies no unknown field, and a field added later takes
+/// `#[serde(default)]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemInput {
+    pub sku_id: Uuid,
+    pub price_book_entry_id: Option<Uuid>,
+    pub treatment: String,
+    pub included_qty: Option<String>,
+    pub qty_min: Option<i32>,
+}
+impl From<PricingPlanItemCreate> for ItemInput {
+    fn from(input: PricingPlanItemCreate) -> Self {
+        Self {
+            sku_id: input.sku_id,
+            price_book_entry_id: input.price_book_entry_id,
+            treatment: input.treatment,
+            included_qty: input.included_qty,
+            qty_min: input.qty_min,
+        }
+    }
+}
 /// The work input of each kind: what its create writes, and where its Idempotency-Key lives.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,7 +129,7 @@ pub enum Target {
     /// delete find the item by the op's `ref_id`.
     PlanItem {
         revision_id: Uuid,
-        input: Option<PricingPlanItemCreate>,
+        input: Option<ItemInput>,
     },
 }
 /// The reference an op works for: its kind, its id and the SKU it reserves.
@@ -202,6 +226,11 @@ impl Receipt {
 }
 fn corrupt() -> CanonicalError {
     CanonicalError::internal("invalid durable pricing reference work").create()
+}
+/// An observation the op's state does not admit: the op, its state and the event, kept in the
+/// diagnostic apart from every other corrupt record (PS-04).
+fn illegal(op: &entity::Model, error: &reference_op::IllegalTransition) -> CanonicalError {
+    CanonicalError::internal(format!("pricing reference op {}: {error}", op.op_id)).create()
 }
 /// A stored token outside its closed set in the answer being written (D-439): a storage failure.
 fn stored_failure(error: crate::infra::storage::RepoError) -> CanonicalError {
@@ -332,7 +361,7 @@ async fn advance(
         .ok_or_else(corrupt)?;
     if current != *observed {
         return Err(RepoError::Conflict {
-            code: "REFERENCE_OP_CONTENDED",
+            code: ops::REFERENCE_OP_CONTENDED,
         }
         .into());
     }
@@ -345,16 +374,13 @@ async fn advance(
         },
         event,
     )
-    .map_err(|_| corrupt())?;
+    .map_err(|e| illegal(observed, &e))?;
     let retry = effects.contains(&Effect::Retry);
     let attempts = if retry {
         observed.attempts.saturating_add(1)
     } else {
         observed.attempts
     };
-    if retry && attempts >= 10 {
-        tracing::warn!(op_id=%observed.op_id, attempts, "pricing reference operation still requires recovery");
-    }
     let now = clock.now();
     ops::transition(
         tx,
@@ -372,8 +398,10 @@ async fn advance(
             } else {
                 now + IN_FLIGHT_GRACE
             },
+            // A retry names the registry's unavailability, unless the op already recorded the
+            // refusal it met (a cancelling create's): `next` reads that refusal back from here.
             last_error: if retry {
-                Some("REGISTRY_UNAVAILABLE".into())
+                next.refusal.or_else(|| Some("REGISTRY_UNAVAILABLE".into()))
             } else {
                 next.refusal
             },
@@ -387,7 +415,7 @@ async fn advance(
 /// the state, the kind's durable event and the audit record commit together.
 async fn mark_lost(
     tx: &(impl DBRunner + Sync),
-    outbox: &super::events::EventSink,
+    outbox: &super::events::TxOutbox,
     ctx: &SecurityContext,
     work: &Work,
     op: &entity::Model,
@@ -402,7 +430,7 @@ async fn mark_lost(
 /// state, the durable `PriceBookEntryReferenceLost` event and the audit record commit together.
 async fn mark_entry_lost(
     tx: &(impl DBRunner + Sync),
-    outbox: &super::events::EventSink,
+    outbox: &super::events::TxOutbox,
     ctx: &SecurityContext,
     work: &Work,
     op: &entity::Model,
@@ -429,7 +457,7 @@ async fn mark_entry_lost(
     )
     .await?;
     super::reference_events::lost(outbox, tx, &entry, ctx.subject_id(), now).await?;
-    entry.reference_state = "lost".into();
+    entry.reference_state = ReferenceState::Lost.as_str().into();
     entry.version += 1;
     support::audit(
         tx,
@@ -490,10 +518,10 @@ async fn abandon(
     op: &entity::Model,
     mut work: Work,
     clock: Arc<dyn Clock>,
-) -> Result<(), CanonicalError> {
+) -> Result<(), DoorError> {
     work.outcome = Some(CANCELLED.into());
     let op = op.clone();
-    support::transaction(&state.db.db(), move |tx| {
+    support::transaction_door(&state.db.db(), move |tx| {
         let (op, work, clock) = (op.clone(), work.clone(), clock.clone());
         Box::pin(async move {
             advance(tx, &op, &work, Event::ReservationUnknown, clock.as_ref()).await?;
@@ -544,9 +572,24 @@ fn gate(caller: Caller, op: &entity::Model, work: &Work, current: OpState) -> Ga
         Gate::Observe
     }
 }
-/// Whether a failed transaction's error is the lost compare-and-swap of a racing driver.
-fn contended(error: &CanonicalError) -> bool {
-    error_code(error).as_deref() == Some("REFERENCE_OP_CONTENDED")
+/// Whether a failed transaction's error is the lost compare-and-swap of a racing driver, read
+/// from the typed error before it is rendered (whole-branch review PS-42).
+fn contended(error: &DoorError) -> bool {
+    matches!(
+        error,
+        DoorError::Repo(RepoError::Conflict {
+            code: ops::REFERENCE_OP_CONTENDED
+        })
+    )
+}
+/// The code of a failed transaction's typed error: a repository conflict's own, or the reason of
+/// a refusal the gear built with its code (PS-42). Anything else has none.
+fn door_code(error: &DoorError) -> Option<String> {
+    match error {
+        DoorError::Repo(RepoError::Conflict { code }) => Some((*code).to_owned()),
+        DoorError::Api(error) => error_code(error),
+        DoorError::Repo(_) | DoorError::Generation { .. } => None,
+    }
 }
 /// Drive a durable op until terminal completion or the next scheduled retry.
 ///
@@ -578,7 +621,7 @@ pub async fn drive(
             Gate::Cancelled => return Err(support::unavailable()),
             Gate::Finished => return Ok(work.receipt.or(work.refusal)),
             Gate::Abandon => match abandon(state, &op, work, clock.clone()).await {
-                Err(error) if !contended(&error) => return Err(error),
+                Err(error) if !contended(&error) => return Err(error.into()),
                 _ => continue,
             },
             Gate::Observe => {}
@@ -622,10 +665,10 @@ async fn step(
         Err(error)
             if refuses_the_write(parse_ref_kind(op)?, &error) && current == OpState::Reserving =>
         {
-            cancel(state, op, work, error, clock).await
+            cancel(state, op, work, error.into(), clock).await
         }
         Err(error) if !contended(&error) => {
-            cancel_then(state, caller, op, work, current, clock, error).await
+            cancel_then(state, caller, op, work, current, clock, error.into()).await
         }
         _ => Ok(()),
     }
@@ -651,14 +694,28 @@ async fn cancel_then(
         Ok(()) => Err(error),
         Err(lost) if contended(&lost) => Ok(()),
         Err(failed) => {
-            tracing::warn!(op_id=%op.op_id, error=%failed, "pricing create not cancelled before its error answer");
+            let failed = CanonicalError::from(failed);
+            tracing::warn!(op_id=%op.op_id, error=%failed, diagnostic=failed.diagnostic().unwrap_or_default(), "pricing create not cancelled before its error answer");
             Err(error)
         }
     }
 }
+/// The one warning of an op retried ten times or more, naming what an operator needs to find it
+/// (PS-54).
 fn warn_past_threshold(op: &entity::Model) {
     if op.attempts >= 10 {
-        tracing::warn!(op_id=%op.op_id, attempts=op.attempts, "pricing reference operation retry threshold reached");
+        tracing::warn!(
+            op_id = %op.op_id,
+            attempts = op.attempts,
+            tenant_id = %op.tenant_id,
+            kind = %op.kind,
+            state = %op.state,
+            ref_kind = %op.ref_kind,
+            ref_id = %op.ref_id,
+            sku_id = %op.sku_id,
+            last_error = op.last_error.as_deref().unwrap_or_default(),
+            "pricing reference operation retry threshold reached"
+        );
     }
 }
 /// The door got no definite answer before the write (the reserve, or the SKU re-read after a
@@ -673,12 +730,13 @@ async fn give_up(
     match abandon(state, op, work, clock).await {
         Ok(()) => Err(support::unavailable()),
         Err(error) if contended(&error) => Ok(()),
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
 }
-/// A local refusal of Tx B that cancels the op (and releases its reservation), per kind.
-fn refuses_the_write(kind: RefKind, error: &CanonicalError) -> bool {
-    let Some(code) = error_code(error) else {
+/// A local refusal of Tx B that cancels the op (and releases its reservation), per kind, judged
+/// on the typed error before it is rendered (PS-42).
+fn refuses_the_write(kind: RefKind, error: &DoorError) -> bool {
+    let Some(code) = door_code(error) else {
         return false;
     };
     match kind {
@@ -703,17 +761,16 @@ async fn commit_observation(
     event: Event,
     write: Option<Write>,
     clock: Arc<dyn Clock>,
-) -> Result<(), CanonicalError> {
-    let (op, ctx, outbox) = (op.clone(), ctx.clone(), state.outbox.clone());
-    support::transaction(&state.db.db(), move |tx| {
-        let (op, work, ctx, clock, event, write, outbox) = (
+) -> Result<(), DoorError> {
+    let (op, ctx, db) = (op.clone(), ctx.clone(), state.db.db());
+    support::transaction_door_with_events(&db, &state.outbox, move |tx, outbox| {
+        let (op, work, ctx, clock, event, write) = (
             op.clone(),
             work.clone(),
             ctx.clone(),
             clock.clone(),
             event.clone(),
             write.clone(),
-            outbox.clone(),
         );
         Box::pin(
             async move { commit(tx, &outbox, &ctx, &op, work, event, write, clock.as_ref()).await },
@@ -721,13 +778,13 @@ async fn commit_observation(
     })
     .await
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "the observed op, its work and the observation are the transaction's operands"
 )]
 async fn commit(
     tx: &(impl DBRunner + Sync),
-    outbox: &super::events::EventSink,
+    outbox: &super::events::TxOutbox,
     ctx: &SecurityContext,
     op: &entity::Model,
     mut work: Work,
@@ -742,7 +799,7 @@ async fn commit(
         != Some(op)
     {
         return Err(RepoError::Conflict {
-            code: "REFERENCE_OP_CONTENDED",
+            code: ops::REFERENCE_OP_CONTENDED,
         }
         .into());
     }
@@ -755,7 +812,7 @@ async fn commit(
         },
         event.clone(),
     )
-    .map_err(|_| corrupt())?;
+    .map_err(|e| illegal(op, &e))?;
     match write {
         Some(Write::Entry(entry)) => write_entry(tx, &scope, op, entry, now).await?,
         Some(Write::Item(item)) => plan_item::write(tx, &scope, item).await?,
@@ -1000,6 +1057,18 @@ pub fn definite_refusal(error: &CanonicalError) -> bool {
 fn unknown_reservation(error: &CanonicalError) -> bool {
     error.status_code() == 404
 }
+/// A registry call the op retries: the op keeps only a code, so the call's own error is logged
+/// here (PS-05).
+fn unanswered(op: &entity::Model, call: &str, error: &CanonicalError) {
+    tracing::warn!(
+        op_id = %op.op_id,
+        call,
+        status = error.status_code(),
+        error = %error,
+        diagnostic = error.diagnostic().unwrap_or_default(),
+        "pricing reference registry call will be retried"
+    );
+}
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
     ctx: &SecurityContext,
@@ -1025,51 +1094,21 @@ async fn observe(
         // A definite refusal before any receipt: nothing was reserved.
         return Ok((Event::Released, None, None));
     }
-    let Ok(registry) = registry else {
-        return Ok(unavailable());
+    let registry = match registry {
+        Ok(registry) => registry,
+        Err(error) => {
+            unanswered(op, "registry lookup", &error);
+            return Ok(unavailable());
+        }
     };
-    let tenant = op.tenant_id;
     match current {
         OpState::Reserving if op.reservation_id.is_none() => {
-            match registry
-                .reserve(
-                    ctx,
-                    tenant,
-                    op.sku_id,
-                    products_kind(parse_ref_kind(op)?),
-                    op.ref_id,
-                )
-                .await
-            {
-                Ok(receipt) => Ok((
-                    Event::Reserved {
-                        id: receipt.reservation_id,
-                    },
-                    None,
-                    None,
-                )),
-                Err(error) if definite_refusal(&error) => {
-                    let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
-                    if retries_a_refusal(op, ctx) && !LOSING_REFUSALS.contains(&code.as_str()) {
-                        // Only a SKU that admits no reservation loses a live entry or a copied
-                        // item: an attach has the rereserve shape (D-413). Any other refusal (the
-                        // door caller's own grant, say) is retried, and the ticker finishes it as
-                        // the system actor; a refusal given to the system actor ends an attach.
-                        return Ok(unavailable());
-                    }
-                    Ok((
-                        Event::ReserveRefused { code },
-                        None,
-                        Some(Receipt::error(error).await?),
-                    ))
-                }
-                Err(_) => Ok(unavailable()),
-            }
+            observe_reserve(registry.as_ref(), ctx, op).await
         }
         OpState::Reserving => observe_sku(registry.as_ref(), ctx, op).await,
         OpState::Written => {
             let event = match registry
-                .confirm(ctx, tenant, op.reservation_id.ok_or_else(corrupt)?)
+                .confirm(ctx, op.tenant_id, op.reservation_id.ok_or_else(corrupt)?)
                 .await
             {
                 Ok(()) => Event::Confirmed,
@@ -1081,48 +1120,107 @@ async fn observe(
                 {
                     Event::ReleasedOnConfirm
                 }
-                Err(_) => Event::ConfirmFailed,
+                Err(error) => {
+                    unanswered(op, "confirm", &error);
+                    Event::ConfirmFailed
+                }
             };
             Ok((event, None, None))
         }
         OpState::Cancelling | OpState::Releasing => {
-            let result = match op.reservation_id {
-                // A reservation Products does not know holds nothing: it counts as released.
-                Some(id) => match registry.release(ctx, tenant, id).await {
-                    Err(error) if unknown_reservation(&error) => Ok(()),
-                    other => other,
-                },
-                // The reserve outcome was never learned. Reserve is idempotent per logical
-                // reference, so it answers the reservation the lost call made (or makes one),
-                // and releasing that leaves none. A definite refusal means none can exist:
-                // a fence requires zero live references.
-                None => match registry
-                    .reserve(
-                        ctx,
-                        tenant,
-                        op.sku_id,
-                        products_kind(parse_ref_kind(op)?),
-                        op.ref_id,
-                    )
-                    .await
-                {
-                    Ok(receipt) => registry.release(ctx, tenant, receipt.reservation_id).await,
-                    Err(error) if definite_refusal(&error) => Ok(()),
-                    Err(error) => Err(error),
-                },
-            };
-            Ok((
-                if result.is_ok() {
-                    Event::Released
-                } else {
-                    Event::ReleaseFailed
-                },
-                None,
-                None,
-            ))
+            observe_release(registry.as_ref(), ctx, op).await
         }
         OpState::Done => Err(corrupt()),
     }
+}
+/// A create's first reserve, before it knows a reservation id.
+async fn observe_reserve(
+    registry: &dyn ReferenceRegistryV1,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+) -> Result<Observation, CanonicalError> {
+    match registry
+        .reserve(
+            ctx,
+            op.tenant_id,
+            op.sku_id,
+            products_kind(parse_ref_kind(op)?),
+            op.ref_id,
+        )
+        .await
+    {
+        Ok(receipt) => Ok((
+            Event::Reserved {
+                id: receipt.reservation_id,
+            },
+            None,
+            None,
+        )),
+        Err(error) if definite_refusal(&error) => {
+            let code = error_code(&error).unwrap_or_else(|| "SKU_REFUSED".into());
+            if retries_a_refusal(op, ctx) && !LOSING_REFUSALS.contains(&code.as_str()) {
+                // Only a SKU that admits no reservation loses a live entry or a copied item: an
+                // attach has the rereserve shape (D-413). Any other refusal (the door caller's
+                // own grant, say) is retried, and the ticker finishes it as the system actor; a
+                // refusal given to the system actor ends an attach.
+                unanswered(op, "reserve", &error);
+                return Ok((Event::RegistryUnavailable, None, None));
+            }
+            Ok((
+                Event::ReserveRefused { code },
+                None,
+                Some(Receipt::error(error).await?),
+            ))
+        }
+        Err(error) => {
+            unanswered(op, "reserve", &error);
+            Ok((Event::RegistryUnavailable, None, None))
+        }
+    }
+}
+/// A cancellation's or a removal's release of its reservation.
+async fn observe_release(
+    registry: &dyn ReferenceRegistryV1,
+    ctx: &SecurityContext,
+    op: &entity::Model,
+) -> Result<Observation, CanonicalError> {
+    let tenant = op.tenant_id;
+    let result = match op.reservation_id {
+        // A reservation Products does not know holds nothing: it counts as released.
+        Some(id) => match registry.release(ctx, tenant, id).await {
+            Err(error) if unknown_reservation(&error) => Ok(()),
+            other => other,
+        },
+        // The reserve outcome was never learned. Reserve is idempotent per logical reference, so
+        // it answers the reservation the lost call made (or makes one), and releasing that leaves
+        // none. A definite refusal means none can exist: a fence requires zero live references.
+        None => match registry
+            .reserve(
+                ctx,
+                tenant,
+                op.sku_id,
+                products_kind(parse_ref_kind(op)?),
+                op.ref_id,
+            )
+            .await
+        {
+            Ok(receipt) => registry.release(ctx, tenant, receipt.reservation_id).await,
+            Err(error) if definite_refusal(&error) => Ok(()),
+            Err(error) => Err(error),
+        },
+    };
+    if let Err(error) = &result {
+        unanswered(op, "release", error);
+    }
+    Ok((
+        if result.is_ok() {
+            Event::Released
+        } else {
+            Event::ReleaseFailed
+        },
+        None,
+        None,
+    ))
 }
 
 async fn observe_sku(
@@ -1139,6 +1237,7 @@ async fn observe_sku(
         // lifecycle answer below refuses it (D-413 "the rereserve shape"), or, for an attach, a
         // refusal given to the system actor itself (`retries_a_refusal`).
         Err(error) if definite_refusal(&error) && retries_a_refusal(op, ctx) => {
+            unanswered(op, "SKU re-read", &error);
             return Ok((Event::RegistryUnavailable, None, None));
         }
         Err(error) if definite_refusal(&error) => {
@@ -1150,7 +1249,10 @@ async fn observe_sku(
                 Some(Receipt::error(error).await?),
             ));
         }
-        Err(_) => return Ok((Event::RegistryUnavailable, None, None)),
+        Err(error) => {
+            unanswered(op, "SKU re-read", &error);
+            return Ok((Event::RegistryUnavailable, None, None));
+        }
     };
     let kind = parse_ref_kind(op)?;
     // The lifecycle rules of every kind: a draft, retiring or retired SKU takes no reference,

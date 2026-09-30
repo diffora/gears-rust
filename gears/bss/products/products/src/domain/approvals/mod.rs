@@ -43,38 +43,35 @@ pub(crate) mod publish;
 pub use publish::SkuPublish;
 pub(crate) mod retire;
 
-use crate::infra::storage::{RepoError, repo};
+use crate::infra::storage::{RepoError, RepoRefusal, repo};
 use bss_approval::ApprovalError;
 use toolkit_db::{DbTx, secure::AccessScope};
 use uuid::Uuid;
 
-/// Keep contention errors typed all the way to the transaction boundary.
+/// Keep contention errors typed all the way to the transaction boundary. A repository refusal an
+/// apply can meet is the apply's refusal with its code; the rest cannot follow from an apply's
+/// writes and stay a store failure, with the refusal named (RS-16: an exhaustive match, not a
+/// string list).
 pub(crate) fn store_err(error: RepoError) -> ApprovalError {
     match error {
         RepoError::Driver { source, .. } => ApprovalError::Db(source),
-        RepoError::Db(ref code)
-            if matches!(
-                code.as_str(),
-                "SKU_NAME_TAKEN"
-                    | "SKU_CODE_TAKEN"
-                    | "CATEGORY_RETIRED"
-                    | "CATEGORY_NOT_FOUND"
-                    | "VERSION_ORDER"
-            ) =>
-        {
-            let code = match code.as_str() {
-                "SKU_NAME_TAKEN" => "SKU_NAME_TAKEN",
-                "SKU_CODE_TAKEN" => "SKU_CODE_TAKEN",
-                "CATEGORY_RETIRED" => "CATEGORY_RETIRED",
-                "CATEGORY_NOT_FOUND" => "CATEGORY_NOT_FOUND",
-                _ => "VERSION_ORDER",
-            };
-            ApprovalError::ApplyRefused {
-                code,
-                detail: error.to_string(),
-            }
-        }
-        other => ApprovalError::Store(other.to_string()),
+        RepoError::Refused(
+            refusal @ (RepoRefusal::SkuNameTaken
+            | RepoRefusal::SkuCodeTaken
+            | RepoRefusal::CategoryRetired
+            | RepoRefusal::CategoryNotFound
+            | RepoRefusal::VersionOrder),
+        ) => ApprovalError::ApplyRefused {
+            code: refusal.code(),
+            detail: error.to_string(),
+        },
+        RepoError::Refused(
+            RepoRefusal::CategoryCodeTaken
+            | RepoRefusal::CategoryDefaultTaken
+            | RepoRefusal::ReferenceExists,
+        )
+        | RepoError::Db(_)
+        | RepoError::CorruptRow(_) => ApprovalError::Store(error.to_string()),
     }
 }
 /// The refusal of a category a SKU's content names (P-D-196), with the draft doors' answers: a
@@ -89,12 +86,10 @@ async fn require_category(
     repo::category_repo::require_active_category(tx, scope, tenant, id)
         .await
         .map_err(|error| match error {
-            RepoError::Db(ref code) if code == "CATEGORY_NOT_FOUND" => {
-                ApprovalError::ApplyRefused {
-                    code: "CATEGORY_NOT_FOUND",
-                    detail: id.to_string(),
-                }
-            }
+            RepoError::Refused(RepoRefusal::CategoryNotFound) => ApprovalError::ApplyRefused {
+                code: "CATEGORY_NOT_FOUND",
+                detail: id.to_string(),
+            },
             other => store_err(other),
         })
 }
