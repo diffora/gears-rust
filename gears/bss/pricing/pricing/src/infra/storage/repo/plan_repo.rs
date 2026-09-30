@@ -56,6 +56,32 @@ pub async fn find(
         .await
         .map_err(|e| driver_failure("find plan".into(), e))
 }
+/// The tenant's plans among `ids`, by id, in ONE statement whatever their number; an id the
+/// tenant does not hold has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn find_many(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::Id.is_in(ids.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list plans by id".into(), e))
+}
 /// List the tenant's plans by code.
 /// # Errors
 /// Returns typed database failures.
@@ -73,10 +99,10 @@ pub async fn list(
         .await
         .map_err(|e| driver_failure("list plans".into(), e))
 }
-/// The tenant's plans, by code, that have a draft, pending or published revision whose items
-/// name an entry of `sku` — the plans the SKU's usage counts (D-428, D-434) — in ONE statement
-/// whatever their number. An included item without an entry names no entry and does not count.
-/// The revisions, items and entries are read tenant-scoped.
+/// The tenant's plans, by code, that have a draft, pending, scheduled or published revision whose
+/// items name an entry of `sku` — the plans the SKU's usage counts (D-428, D-434) — in ONE
+/// statement whatever their number. An included item without an entry names no entry and does not
+/// count. The revisions, items and entries are read tenant-scoped.
 /// # Errors
 /// Returns typed database failures.
 pub async fn naming_sku(
@@ -175,6 +201,29 @@ pub async fn set_published(
         .await
         .map_err(|e| driver_failure("publish plan projection".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
+}
+/// Advance the revision number a due switch publishes (D-448), in the caller's transaction.
+/// `published_rev` is a projection of the revisions, not an edit of the plan: neither the plan's
+/// `version` nor its `updated_at` moves, so an If-Match read before the switch stays good and a
+/// read that derives the switch (D-447) shows the same plan row as one after it (plan rev 2 L6).
+/// # Errors
+/// `PLAN_NOT_FOUND` for a plan the tenant does not hold; database failures keep their type.
+pub async fn advance_published(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+    published_rev: i32,
+) -> Result<(), RepoError> {
+    let result = e::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(e::Column::PublishedRev, Expr::value(Some(published_rev)))
+        .filter(key(tenant, id))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("advance the plan's published projection".into(), e))?;
+    matched(result.rows_affected, "PLAN_NOT_FOUND")
 }
 /// Delete a plan that was never published and has no revision left, at the version the caller
 /// read, in the caller's transaction (D-417): its code is free again.

@@ -32,8 +32,8 @@ pub fn validate(book: &Book) -> Vec<RuleError> {
 pub fn currency_code(text: &str) -> bool {
     text.len() == 3 && text.bytes().all(|b| b.is_ascii_uppercase())
 }
-/// The most characters a book's description holds (D-444).
-pub const DESCRIPTION_MAX_CHARS: usize = 2000;
+/// The most characters a book's description holds (D-444): a note's cap (D-457).
+pub const DESCRIPTION_MAX_CHARS: usize = super::caps::NOTE_MAX_CHARS;
 /// A book's description: at most [`DESCRIPTION_MAX_CHARS`] characters (Unicode scalar values).
 /// # Errors
 /// `BOOK_DESCRIPTION_TOO_LONG` for a longer one.

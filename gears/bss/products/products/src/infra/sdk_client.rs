@@ -41,8 +41,6 @@ impl ProductsClient for LocalProductsClient {
             &resource_types::SKU,
             actions::READ,
             None,
-            None,
-            true,
         )
         .await
         .map_err(|e| {

@@ -24,8 +24,21 @@ pub const USAGE_TYPE_SOURCE_UNCONFIGURED: &str = "unconfigured";
 pub(crate) struct ProductsRuntime {
     pub enforcer: Arc<authz_resolver_sdk::PolicyEnforcer>,
     pub api_state: Arc<crate::api::rest::ApiState>,
-    // Held until the runtime drops, keeping the outbox workers alive.
-    pub _pipeline: OutboxLifetime,
+    /// The running outbox pipeline, taken and stopped once by `serve` after the cancel (RS-12):
+    /// its workers run on a token of their own, so dropping nothing would leave them running past
+    /// the stop window.
+    pub pipeline: tokio::sync::Mutex<Option<OutboxLifetime>>,
+}
+
+impl ProductsRuntime {
+    /// Stop the outbox pipeline, once; a second call finds nothing to stop.
+    pub(crate) async fn stop(&self) {
+        match self.pipeline.lock().await.take() {
+            Some(OutboxLifetime::Broker(handle)) => handle.stop().await,
+            Some(OutboxLifetime::Interim(handle)) => handle.stop().await,
+            None => {}
+        }
+    }
 }
 
 /// Register the one products SDK client against the same runtime dependencies.
@@ -80,13 +93,17 @@ impl BssProductsGear {
         ))
     }
 
-    /// Keep runtime resources alive until cooperative shutdown.
+    /// Keep runtime resources alive until cooperative shutdown, then stop the outbox pipeline
+    /// (RS-12, as pricing's `serve` does).
     pub(crate) async fn serve(
         self: Arc<Self>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<()> {
-        let _runtime = self.runtime.load_full();
+        let runtime = self.runtime.load_full();
         cancel.cancelled().await;
+        if let Some(runtime) = runtime {
+            runtime.stop().await;
+        }
         Ok(())
     }
 }
@@ -108,7 +125,10 @@ impl toolkit::contracts::DatabaseCapability for BssProductsGear {
         // chain (P-D-199): they come from `outbox_migrations()`, imported
         // rather than gear-authored. Appended, never declared: no `CreateProductsOutbox`-shaped
         // migration exists anywhere in `crate::infra::storage::migrations`.
-        #[allow(clippy::expect_used)]
+        #[expect(
+            clippy::expect_used,
+            reason = "OUTBOX_TABLE_PREFIX is a fixed, valid identifier; `migrations()` cannot fail"
+        )]
         let outbox_migrations =
             toolkit_db::outbox::outbox_migrations_with_prefix(OUTBOX_TABLE_PREFIX).expect(
                 "OUTBOX_TABLE_PREFIX is a fixed compile-time identifier, validated once here \
@@ -160,7 +180,15 @@ fn resolve_usage_type_catalog(
         .client_hub()
         .get::<dyn bss_products_sdk::usage_types::UsageTypeCatalog>()
     {
-        (registered, USAGE_TYPE_SOURCE_REGISTRY)
+        // The collector adapter bounds its own calls; a registered catalog is bounded here by
+        // the same setting (RS-42).
+        (
+            Arc::new(crate::infra::usage_types::TimedUsageTypes::new(
+                registered,
+                cfg.usage_type_resolver_timeout(),
+            )),
+            USAGE_TYPE_SOURCE_REGISTRY,
+        )
     } else if let Ok(client) = ctx
         .client_hub()
         .get::<dyn usage_collector_sdk::UsageCollectorClientV1>()
@@ -371,7 +399,7 @@ impl Gear for BssProductsGear {
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             api_state,
-            _pipeline: pipeline,
+            pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })));
         Ok(())
     }
@@ -421,6 +449,45 @@ impl RestApiCapability for BssProductsGear {
                 .layer(axum::Extension((*rt.enforcer).clone())));
         }
         Ok(router)
+    }
+}
+
+#[cfg(test)]
+impl BssProductsGear {
+    /// The router and the `OpenAPI` that `register_rest` itself serves over `api_state`, under
+    /// `enforcer`: the door censuses read the registered routes, never a copy of the router list,
+    /// so a door added only here cannot escape them (fix run W1c, L1).
+    ///
+    /// # Panics
+    /// If `register_rest` refuses.
+    pub(crate) fn registered_rest(
+        api_state: Arc<crate::api::rest::ApiState>,
+        enforcer: authz_resolver_sdk::PolicyEnforcer,
+    ) -> (Router, toolkit::api::OpenApiRegistryImpl) {
+        struct NoConfig;
+        impl toolkit::config::ConfigProvider for NoConfig {
+            fn get_gear_config(&self, _gear: &str) -> Option<&serde_json::Value> {
+                None
+            }
+        }
+        let gear = Self::default();
+        gear.runtime.store(Some(Arc::new(ProductsRuntime {
+            enforcer: Arc::new(enforcer),
+            api_state,
+            pipeline: tokio::sync::Mutex::new(None),
+        })));
+        let ctx = GearCtx::new(
+            "bss-products",
+            uuid::Uuid::new_v4(),
+            Arc::new(NoConfig),
+            Arc::new(toolkit::ClientHub::new()),
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let openapi = toolkit::api::OpenApiRegistryImpl::new();
+        let router = gear
+            .register_rest(&ctx, Router::new(), &openapi)
+            .expect("register_rest serves the configured gear");
+        (router, openapi)
     }
 }
 

@@ -2,14 +2,14 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 mod entry_support;
 use bss_pricing::infra::storage::{
-    entity::price,
+    entity::{approval_unit, price},
     repo::{price_book_entry_repo, price_repo},
 };
 use entry_support::{Fixture, Script};
 use sea_orm::EntityTrait;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use toolkit_db::secure::{AccessScope, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -433,6 +433,222 @@ async fn content_drift_refreshes_the_generation_and_earlier_votes_go_stale() {
     assert_eq!(b["outcome"], "applied");
 }
 
+/// A reject on content that drifted under the unit refreshes it as an approve does (the approval
+/// engine's reject, X-02): 400 `UNIT_STALE` with the new generation, committed with the key's
+/// answer, no vote recorded and the price still pending; the reviewer then rejects generation 2.
+#[tokio::test]
+async fn a_reject_on_drifted_content_answers_unit_stale_and_commits_the_refresh() {
+    let g = gov(1).await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    let unit = &receipt["unit"];
+    let tenant = g.f.ctx.subject_tenant_id();
+    price::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .col_expr(
+            price::Column::PriceJson,
+            sea_orm::sea_query::Expr::value(json!({"rate":"0.12"})),
+        )
+        .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
+            &price::Column::Id,
+            price["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
+        )))
+        .exec(&g.f.db.conn().unwrap())
+        .await
+        .unwrap();
+    let reviewer = g.f.user();
+    let stale = g
+        .vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":1,"note":"too cheap"}),
+            "r1",
+        )
+        .await;
+    assert_eq!(stale.0, 400, "{stale:?}");
+    assert!(code(&stale.1).contains("UNIT_STALE"), "{stale:?}");
+    assert_eq!(stale.1["context"]["generation"], 2);
+    assert_eq!(
+        g.vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":1,"note":"too cheap"}),
+            "r1",
+        )
+        .await,
+        stale,
+        "the refresh committed with its answer; the key replays it"
+    );
+    let card = g.card(unit).await;
+    assert_eq!(card["generation"], 2);
+    assert_eq!(card["state"], "pending");
+    assert_eq!(card["decisions"], json!([]), "the refresh records no vote");
+    assert_eq!(g.price(&price["id"]).await.state, "pending");
+    let (status, b, _) = g
+        .vote(
+            &reviewer,
+            unit,
+            "reject",
+            json!({"generation":2,"note":"still too cheap"}),
+            "r2",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "rejected");
+    assert_eq!(g.price(&price["id"]).await.state, "rejected");
+}
+
+/// A stored `prices` unit whose `added_partner` does not read as a list of ids is a corrupt row: the
+/// vote is a 500 and writes nothing, never judged as though no partner was pulled in (PS-06).
+#[tokio::test]
+async fn a_unit_whose_added_partner_does_not_read_is_a_corrupt_row_at_the_vote() {
+    let g = gov(1).await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    let unit = &receipt["unit"];
+    let id: Uuid = unit["id"].as_str().unwrap().parse().unwrap();
+    let tenant = g.f.ctx.subject_tenant_id();
+    let conn = g.f.db.conn().unwrap();
+    let mut snapshot = approval_unit::Entity::find_by_id(id)
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .one(&conn)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    snapshot["added_partner"] = json!("not a list");
+    approval_unit::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .col_expr(
+            approval_unit::Column::Snapshot,
+            sea_orm::sea_query::Expr::value(snapshot),
+        )
+        .filter(
+            sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(&approval_unit::Column::Id, id)),
+        )
+        .exec(&conn)
+        .await
+        .unwrap();
+    let (status, b, _) = g
+        .vote(&g.f.user(), unit, "approve", json!({"generation":1}), "v")
+        .await;
+    assert_eq!(status, 500, "{b}");
+    let card = g.card(unit).await;
+    assert_eq!(card["state"], "pending", "{card}");
+    assert_eq!(card["decisions"], json!([]));
+    assert_eq!(g.price(&price["id"]).await.state, "pending");
+}
+
+/// A vote's refusal that names the generation (400 `GENERATION_MISMATCH`, and the committed
+/// `UNIT_STALE` with its replay) is an RFC 9457 problem: `application/problem+json`, as every other
+/// refusal of the gear (PS-07).
+#[tokio::test]
+async fn a_votes_generation_refusals_are_problem_json() {
+    use tower::ServiceExt;
+    let g = gov(2).await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    let unit = receipt["unit"]["id"].as_str().unwrap().to_owned();
+    let raw = |body: Value, key: &'static str| {
+        let (app, ctx, unit) = (g.f.app.clone(), g.f.user(), unit.clone());
+        async move {
+            let response = app
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri(format!("/bss-pricing/v1/approval-units/{unit}/approve"))
+                        .extension(ctx)
+                        .header("content-type", "application/json")
+                        .header("idempotency-key", key)
+                        .body(axum::body::Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            (
+                response.status().as_u16(),
+                response
+                    .headers()
+                    .get("content-type")
+                    .map(|v| v.to_str().unwrap().to_owned()),
+            )
+        }
+    };
+    let problem = Some("application/problem+json".to_owned());
+    assert_eq!(
+        raw(json!({"generation":0}), "mismatch").await,
+        (400, problem.clone())
+    );
+    let tenant = g.f.ctx.subject_tenant_id();
+    price::Entity::update_many()
+        .secure()
+        .scope_with(&AccessScope::for_tenant(tenant))
+        .col_expr(
+            price::Column::PriceJson,
+            sea_orm::sea_query::Expr::value(json!({"rate":"0.13"})),
+        )
+        .filter(sea_orm::Condition::all().add(sea_orm::ColumnTrait::eq(
+            &price::Column::Id,
+            price["id"].as_str().unwrap().parse::<Uuid>().unwrap(),
+        )))
+        .exec(&g.f.db.conn().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        raw(json!({"generation":1}), "stale").await,
+        (400, problem.clone())
+    );
+    assert_eq!(
+        raw(json!({"generation":1}), "stale").await,
+        (400, problem),
+        "the replayed UNIT_STALE too"
+    );
+}
+
+/// A vote's note is at most 2000 characters on approve and on reject (the approval engine's cap,
+/// X-01): a longer one is 400 `NOTE_TOO_LONG` on `note` and records nothing; 2000 two-byte
+/// characters pass.
+#[tokio::test]
+async fn a_vote_note_longer_than_2000_characters_is_refused() {
+    let g = gov(2).await;
+    let price = &g.draft("a", body("2031-03-01")).await[0];
+    let (_, receipt, _) = g.submit_as(&g.f.ctx, price, "submit").await;
+    let unit = &receipt["unit"];
+    let long = "n".repeat(2001);
+    for action in ["approve", "reject"] {
+        let (status, b, _) = g
+            .vote(
+                &g.f.user(),
+                unit,
+                action,
+                json!({"generation":1,"note":long}),
+                &format!("long-{action}"),
+            )
+            .await;
+        assert_eq!(status, 400, "{action}: {b}");
+        assert!(code(&b).contains("NOTE_TOO_LONG"), "{action}: {b}");
+        assert!(code(&b).contains("\"note\""), "{action}: {b}");
+    }
+    let card = g.card(unit).await;
+    assert_eq!(card["decisions"], json!([]), "nothing was recorded");
+    let (status, b, _) = g
+        .vote(
+            &g.f.user(),
+            unit,
+            "approve",
+            json!({"generation":1,"note":"\u{e9}".repeat(2000)}),
+            "at-cap",
+        )
+        .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "pending");
+}
+
 #[tokio::test]
 async fn a_vote_must_name_the_generation_it_saw() {
     let g = gov(2).await;
@@ -743,10 +959,7 @@ async fn a_changed_usage_structure_is_refused_at_submit_with_400() {
         "draft",
         "no unit was created"
     );
-    let (_, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(list["items"], json!([]));
+    assert_eq!(g.f.all_units("").await, Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -1126,10 +1339,7 @@ async fn simultaneous_claims_of_one_key_record_one_unit() {
         other == first || (other.0 == 409 && code(&other.1).contains("IDEMPOTENCY_KEY_IN_FLIGHT")),
         "the other claim replays or waits: {other:?}"
     );
-    let (_, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(list["items"].as_array().unwrap().len(), 1, "one act");
+    assert_eq!(g.f.all_units("").await.len(), 1, "one act");
 }
 
 #[tokio::test]
@@ -1285,11 +1495,11 @@ async fn a_common_date_past_an_approved_change_answers_400_pair_return_stale() {
     assert_eq!(status, 400, "{b}");
     assert!(code(&b).contains("PAIR_RETURN_STALE"), "{b}");
     assert_eq!(g.price(&pair[0]["id"]).await.state, "draft");
-    let (status, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(status, 200, "{list}");
-    assert_eq!(list["items"], json!([]), "no unit was recorded");
+    assert_eq!(
+        g.f.all_units("").await,
+        Vec::<Value>::new(),
+        "no unit was recorded"
+    );
 }
 
 // Docs F10 (D-392): the queue list and the publish-changes listing carry the same impact
@@ -1314,16 +1524,13 @@ async fn the_queue_list_and_the_publish_listing_carry_impact() {
     );
     let (status, receipt, _) = g.f.call("POST", &path, json!({}), None, Some("all")).await;
     assert_eq!(status, 201, "{receipt}");
-    let (status, list, _) =
-        g.f.call("GET", "/approval-units", json!({}), None, None)
-            .await;
-    assert_eq!(status, 200, "{list}");
+    let list = g.f.all_units("").await;
     let card = g.card(&receipt["unit"]).await;
     assert_eq!(
-        list["items"][0]["impact"],
+        list[0]["impact"],
         json!({"prices":3,"entries":1,"plans":[],"subscriptions":unavailable})
     );
-    assert_eq!(list["items"][0]["impact"], card["impact"]);
+    assert_eq!(list[0]["impact"], card["impact"]);
 }
 
 // Behaviour LOW-3 (D-404): an entry delete cannot take another author's draft with it. Bob, who

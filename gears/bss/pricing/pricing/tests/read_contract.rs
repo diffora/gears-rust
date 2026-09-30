@@ -190,7 +190,7 @@ async fn written(f: &Fixture) -> Vec<i64> {
     for table in [
         "pricing_audit",
         "pricing_idempotency",
-        "bss_pricing_outbox_incoming",
+        "bss_pricing_outbox_body",
         "pricing_reference_op",
     ] {
         let row = db

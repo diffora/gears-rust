@@ -182,3 +182,77 @@ async fn a_new_book_takes_an_offered_currency() {
     assert_eq!(s, 200);
     assert_eq!(create_book(&f, "gbp2", "GBP").await.0, 201);
 }
+
+/// Fix run W1c L2 (D-457): only a changed text is judged. Settings stored before the caps, with a
+/// GL code, a tax category and an invoice line template each over its cap, never lock the
+/// settings: a PUT that sends them back unchanged and changes only the rounding passes. A PUT that
+/// changes one of them to another text over its cap is 400 `FIELD_TOO_LONG` on that field, and
+/// nothing is written.
+#[tokio::test]
+async fn a_stored_text_over_its_cap_never_locks_the_settings() {
+    use bss_pricing::infra::storage::{entity::settings, repo::settings_repo};
+    let (f, _) = setup().await;
+    let tenant = f.ctx.subject_tenant_id();
+    let long = |c: char, n: usize| c.to_string().repeat(n);
+    let (gl, tax, line) = (long('g', 65), long('t', 65), long('l', 2001));
+    let now = time::OffsetDateTime::now_utc();
+    settings_repo::insert(
+        &f.db.conn().unwrap(),
+        &plan_support::scope(&f),
+        settings::Model {
+            tenant_id: tenant,
+            default_timing: "advance".into(),
+            default_rounding: "half_even".into(),
+            default_gl: Some(gl.clone()),
+            default_tax_category: Some(tax.clone()),
+            invoice_line_templates: json!({ "usage": line }),
+            version: 1,
+            created_at: now,
+            updated_at: now,
+            currencies: json!([]),
+            updated_by: None,
+        },
+    )
+    .await
+    .unwrap();
+    let stored = |rounding: &str| {
+        json!({
+            "default_timing": "advance",
+            "default_rounding": rounding,
+            "default_gl": gl,
+            "default_tax_category": tax,
+            "invoice_line_templates": { "usage": line },
+            "currencies": [],
+        })
+    };
+    let (s, saved, _) = put(&f, stored("half_up")).await;
+    assert_eq!(s, 200, "{saved}");
+    assert_eq!(saved["default_rounding"], "half_up");
+    assert_eq!(saved["default_gl"], json!(gl), "kept as stored");
+    for (field, value) in [
+        ("default_gl", json!(long('h', 65))),
+        ("default_tax_category", json!(long('u', 65))),
+        (
+            "invoice_line_templates",
+            json!({ "usage": long('m', 2001) }),
+        ),
+        (
+            "invoice_line_templates",
+            json!({ "usage": line, "recurring": line }),
+        ),
+    ] {
+        let mut changed = stored("half_up");
+        changed[field] = value.clone();
+        let (s, b, _) = put(&f, changed).await;
+        assert_eq!(s, 400, "{field} {value}: {b}");
+        assert_eq!(
+            b["context"]["field_violations"][0]["reason"], "FIELD_TOO_LONG",
+            "{field}: {b}"
+        );
+        assert_eq!(
+            b["context"]["field_violations"][0]["field"], field,
+            "{field}: {b}"
+        );
+    }
+    assert_eq!(read(&f).await.0["version"], 2, "no refusal wrote anything");
+}

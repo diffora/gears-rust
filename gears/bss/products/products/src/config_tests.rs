@@ -225,3 +225,17 @@ fn the_resolver_timeout_defaults_to_two_seconds() {
         std::time::Duration::from_secs(2)
     );
 }
+
+/// RS-62: a zero fence TTL makes every fence no pending unit holds expirable the moment it exists,
+/// so it is refused at boot like a zero resolver timeout.
+#[test]
+fn a_zero_fence_ttl_is_refused_at_boot() {
+    let cfg = ProductsConfig {
+        fence_ttl_minutes: 0,
+        ..ProductsConfig::default()
+    };
+    let message = cfg
+        .validate()
+        .expect_err("a zero fence TTL must be refused at boot");
+    assert!(message.contains("fence_ttl_minutes"), "{message}");
+}

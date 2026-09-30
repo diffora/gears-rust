@@ -68,11 +68,11 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(PricingRevisionState),
-        ["draft", "pending", "published", "superseded"]
+        ["draft", "pending", "scheduled", "published", "superseded"]
     );
     assert_eq!(
         tokens!(PricingResolvedRevisionState),
-        ["published", "superseded"]
+        ["published", "superseded", "scheduled"]
     );
     assert_eq!(
         tokens!(PricingReferenceOpKind),

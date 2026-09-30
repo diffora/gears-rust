@@ -49,6 +49,9 @@ INDEX pricing_plan_revision_open
 INDEX pricing_plan_revision_published
   ON pricing_plan_revision
   DDL CREATE UNIQUE INDEX pricing_plan_revision_published ON pricing_plan_revision (plan_id) WHERE state = 'published'
+INDEX pricing_plan_revision_scheduled
+  ON pricing_plan_revision
+  DDL CREATE UNIQUE INDEX pricing_plan_revision_scheduled ON pricing_plan_revision (plan_id) WHERE state = 'scheduled'
 INDEX pricing_price_approved_start
   ON pricing_price
   DDL CREATE UNIQUE INDEX pricing_price_approved_start ON pricing_price (price_book_entry_id, coalesce(dim_value, ''), effective_from) WHERE state = 'approved'
@@ -270,7 +273,7 @@ TABLE pricing_plan_revision
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN updated_at TEXT NOT NULL DEFAULT - PK 0
   COLUMN version INTEGER NOT NULL DEFAULT 1 PK 0
-  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','published','superseded'))
+  CONSTRAINT chk_pricing_plan_revision_state CHECK (state IN ('draft','pending','scheduled','published','superseded'))
   CONSTRAINT pricing_plan_revision_no UNIQUE (plan_id, rev_no)
   FK approved_by_unit_id -> pricing_approval_unit.id
   FK book_id -> pricing_price_book.id

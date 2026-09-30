@@ -152,7 +152,7 @@ Foundation's RFC-9457 Problem mapping; generation errors include the current/new
 | `POST /skus/{id}/changes` | products:submit; proposed content/lifecycle plus effective_from (default today) on published/deprecated SKU; type changes first fence. The optional `note` is the submitter's reason, at most 2000 characters (P-D-213, P-D-219). |
 | `POST /skus/{id}/retire` | products:submit; commit guarded fence then submit/resume sku_retire. The optional body `{ note }` as on submit (P-D-219). |
 | `POST /skus/{id}/unfence` | products:author; explicit recovery of an expired orphan only, never a pending unit's barrier. |
-| `GET /approval-units?state&kind&ref_id` | products:read; tenant queue, ordered by submitted_at with a stable id tie-break. |
+| `GET /approval-units?state&kind&ref_id&limit&cursor` | products:read; one page of the tenant queue (P-D-224), ordered by submitted_at with a stable id tie-break; `limit` 200 by default, clamped at 500, `cursor` from `page_info`, bound to the narrowing. |
 | `GET /approval-units/{id}` | products:read; stored snapshot, generation, decisions (including stale) and live recomputation; a GET does not replace or refresh the stored snapshot. A unit whose draft was deleted after its rejection or withdrawal answers `impact_live: null` (P-D-206). Both unit reads carry `submit_note` (P-D-219). |
 | `POST /approval-units/{id}/approve` | products:approve; generation required, SoD enforced. |
 | `POST /approval-units/{id}/reject` | products:approve; generation and note required; one rejection closes the unit. |

@@ -60,25 +60,13 @@ pub(super) fn settled(
     claim: idem::IdempotencyClaim,
     digest: &[u8],
 ) -> Result<Option<Receipt>, CanonicalError> {
-    match claim {
-        idem::IdempotencyClaim::Claimed => Ok(None),
-        idem::IdempotencyClaim::Answered {
-            payload_hash,
-            response_body,
-            ..
-        } => {
-            if payload_hash != digest {
-                return Err(support::conflict("IDEMPOTENCY_CONFLICT"));
-            }
-            serde_json::from_value(response_body)
-                .map(Some)
+    // The op's answer is stored as its whole receipt (D-429).
+    support::held(claim, digest)?
+        .map(|(_, receipt)| {
+            serde_json::from_value(receipt)
                 .map_err(|_| CanonicalError::internal("invalid entry receipt").create())
-        }
-        idem::IdempotencyClaim::InFlight { payload_hash, .. } if payload_hash != digest => {
-            Err(support::conflict("IDEMPOTENCY_CONFLICT"))
-        }
-        _ => Err(support::conflict("IDEMPOTENCY_KEY_IN_FLIGHT")),
-    }
+        })
+        .transpose()
 }
 /// The key's stored answer, read without claiming it: a replay or an in-flight duplicate is
 /// answered from the store alone, before any Products call.
@@ -122,7 +110,7 @@ async fn check_sku_rules(
         .parse()
         .map_err(|_| support::invalid("model", "MODEL_INVALID"))?;
     let registry = crate::infra::reference_registry::resolve(&state.hub)
-        .map_err(|_| support::unavailable())?;
+        .map_err(|e| support::registry_unavailable(&e))?;
     let sku = registry
         .sku_for_write(ctx, ctx.subject_tenant_id(), input.sku_id)
         .await
@@ -130,7 +118,7 @@ async fn check_sku_rules(
             if reference_work::definite_refusal(&error) {
                 error
             } else {
-                support::unavailable()
+                support::registry_unavailable(&error)
             }
         })?;
     if !price_book_entry::period_valid(sku.r#type, input.period.as_deref()) {
@@ -158,7 +146,7 @@ async fn check_dimension(
     }
     Ok(())
 }
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "authorized door identity and replay operands"
 )]
@@ -319,7 +307,9 @@ pub(super) async fn delete(
             let tenant = ctx.subject_tenant_id();
             let m = find(tx, &scope, tenant, id).await?;
             // A pending create must complete before deletion, otherwise its confirm could lose its entry.
-            if m.reference_state == "confirmation_pending" {
+            if m.reference_state
+                == crate::domain::price_book_entry::ReferenceState::ConfirmationPending.as_str()
+            {
                 return Err(support::conflict("ENTRY_CONFIRMATION_PENDING").into());
             }
             // D-408: an entry a plan item names is in use, whatever its revision's state: a draft
@@ -333,8 +323,10 @@ pub(super) async fn delete(
             // the entry (a rejected price's history stays in its unit's snapshot).
             let prices = price_repo::for_entry(tx, &scope, tenant, id).await?;
             if prices.iter().any(|price| {
-                !matches!(price.state.as_str(), "draft" | "rejected")
-                    || price.pending_unit_id.is_some()
+                !matches!(
+                    price.state.parse(),
+                    Ok(PriceState::Draft | PriceState::Rejected)
+                ) || price.pending_unit_id.is_some()
             }) {
                 return Err(support::conflict("ENTRY_PRICES_IN_USE").into());
             }
@@ -405,7 +397,7 @@ pub(super) async fn delete(
     )
     .await
     {
-        tracing::warn!(op_id=%op_id, error=%error, "pricing entry release deferred to the ticker");
+        tracing::warn!(op_id=%op_id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing entry release deferred to the ticker");
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -427,13 +419,16 @@ pub(super) async fn in_force(
     let stored =
         price_repo::approved_default_chain(tx, &AccessScope::for_tenant(tenant), tenant, &ids)
             .await?;
+    // Each entry's chain by key, grouped once: linear in the book, not entries x prices (PS-38).
+    let mut chains: std::collections::BTreeMap<Uuid, Vec<&entity::price::Model>> =
+        std::collections::BTreeMap::new();
+    for p in &stored {
+        chains.entry(p.price_book_entry_id).or_default().push(p);
+    }
     let mut current = std::collections::BTreeMap::new();
     for e in entries {
         let model = price_book_entry_repo::model_of(e)?;
-        let chain: Vec<&entity::price::Model> = stored
-            .iter()
-            .filter(|p| p.price_book_entry_id == e.id)
-            .collect();
+        let chain: Vec<&entity::price::Model> = chains.get(&e.id).cloned().unwrap_or_default();
         let prices = chain
             .iter()
             .map(|p| price_repo::to_domain(p, model))

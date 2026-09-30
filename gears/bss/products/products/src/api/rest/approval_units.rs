@@ -11,7 +11,7 @@ use super::{
     unit_tx_to_canonical,
 };
 use crate::{
-    authz::actions,
+    authz::{actions, resource_types},
     domain::{
         approvals::{
             KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE, SkuProposal, Subject,
@@ -21,7 +21,10 @@ use crate::{
         recognized::UsageTypeAnswer,
         sku::SkuPatch,
     },
-    infra::storage::repo,
+    infra::{
+        events::{self, TxOutbox},
+        storage::repo,
+    },
 };
 use authz_resolver_sdk::PolicyEnforcer;
 use axum::{
@@ -34,7 +37,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_approval::{
-    ApprovalError, ApprovalSubject, ApproveOutcome, Engine, Store, Unit, UnitState,
+    ApprovalError, ApprovalSubject, ApproveOutcome, Engine, RejectOutcome, Store, Unit, UnitState,
 };
 use bss_products_sdk::models::SkuContent;
 use std::sync::Arc;
@@ -51,6 +54,10 @@ struct ListQuery {
     state: Option<String>,
     kind: Option<String>,
     ref_id: Option<Uuid>,
+    /// Page size (P-D-224): 200 by default, clamped at 500.
+    limit: Option<u64>,
+    /// The opaque continuation of a page's `page_info.next_cursor`.
+    cursor: Option<String>,
 }
 #[derive(Clone, Copy)]
 enum Vote {
@@ -64,6 +71,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::get("/bss-products/v1/approval-units")
         .operation_id("bss_products.list_approval_units")
         .summary("list_approval_units")
+        .description(
+            "One page of the tenant's approval units in submission order (P-D-224), filtered by \
+             state, kind and SKU, each with its stored snapshot and the decisions of every \
+             generation. `limit` (default 200, clamped at 500) and `cursor` from `page_info` \
+             page it. Refusals: 400 for an unknown state or a query that does not parse; 400 \
+             FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a \
+             cursor that does not read.",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()
@@ -80,6 +95,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "string",
         )
         .query_param_typed("ref_id", false, "SKU id (a UUID)", "string")
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size (default 200, clamped at 500)",
+            "integer",
+        )
+        .query_param_typed("cursor", false, "Continuation from page_info", "string")
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -110,6 +132,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/approval-units/{id}/approve")
         .operation_id("bss_products.approve_unit")
         .summary("approve_unit")
+        .description(
+            "Approves the unit at the generation its reviewer saw. The note is at most 2000 \
+             characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a \
+             longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
+             SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()
@@ -129,6 +157,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/approval-units/{id}/reject")
         .operation_id("bss_products.reject_unit")
         .summary("reject_unit")
+        .description(
+            "Rejects the unit at the generation its reviewer saw; a reject needs a note. The \
+             note is at most 2000 characters (the approval engine's cap). Refusals include 400 \
+             NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 \
+             GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 \
+             DUPLICATE_VOTE.",
+        )
         .tag("Approval units")
         .authenticated()
         .no_license_required()
@@ -174,7 +209,13 @@ async fn approve(
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::APPROVE, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::APPROVE,
+    )
+    .await?;
     let body = json_body(body)?;
     vote(state, scope, ctx, id, Vote::Approve, Some(body), headers).await
 }
@@ -187,7 +228,13 @@ async fn reject(
     body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::APPROVE, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::APPROVE,
+    )
+    .await?;
     let body = json_body(body)?;
     vote(state, scope, ctx, id, Vote::Reject, Some(body), headers).await
 }
@@ -199,7 +246,13 @@ async fn withdraw(
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SUBMIT, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::SUBMIT,
+    )
+    .await?;
     vote(state, scope, ctx, id, Vote::Withdraw, None, headers).await
 }
 async fn list(
@@ -209,7 +262,13 @@ async fn list(
     query: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::READ, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+    )
+    .await?;
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = q
@@ -220,31 +279,82 @@ async fn list(
                 .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
         })
         .transpose()?;
-    let items = state
+    let filter = repo::UnitListFilter {
+        state: filter,
+        kind: q.kind,
+        ref_id: q.ref_id,
+    };
+    let page = unit_page(&filter, q.limit, q.cursor.as_deref())?;
+    let tenant = ctx.subject_tenant_id();
+    let list = state
         .db
         .db()
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let scope = scope.clone();
-            let kind = q.kind.clone();
-            let tenant = ctx.subject_tenant_id();
+            let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
             Box::pin(async move {
-                let store = repo::ProductsApprovalStore {
-                    scope: scope.clone(),
-                    tenant_id: tenant,
-                };
-                let units = repo::list_units(tx, &scope, tenant, filter, kind.as_deref(), q.ref_id)
+                // One page, and all its units' decisions in one read (P-D-224): the same
+                // statements whatever the page's size.
+                let page = repo::page_units(tx, &scope, tenant, &filter, &page)
+                    .await
+                    .map_err(|e| match e {
+                        repo::UnitListError::Query(e) => TxError::OData(e),
+                        repo::UnitListError::Repo(e) => TxError::Repo(e),
+                    })?;
+                let ids: Vec<Uuid> = page.items.iter().map(|u| u.id).collect();
+                let mut decisions = repo::decisions_of_units(tx, &scope, tenant, &ids)
                     .await
                     .map_err(TxError::Repo)?;
-                let mut items = Vec::with_capacity(units.len());
-                for unit in units {
-                    items.push(with_decisions(tx, &store, unit).await?);
-                }
-                Ok(items)
+                let items = page
+                    .items
+                    .into_iter()
+                    .map(|unit| {
+                        let id = unit.id;
+                        let mut dto = UnitDto::from(unit);
+                        dto.decisions = decisions
+                            .remove(&id)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(Into::into)
+                            .collect();
+                        dto
+                    })
+                    .collect();
+                Ok(UnitList {
+                    items,
+                    page_info: page.page_info,
+                })
             })
         })
         .await
         .map_err(tx_to_canonical)?;
-    Ok(Json(UnitList { items }).into_response())
+    Ok(Json(list).into_response())
+}
+/// The unit list's page (P-D-224): `limit`, and `cursor` from a page's `page_info`, which carries a
+/// hash of the narrowing (`state`, `kind` and `ref_id`), so a cursor replayed under another is 400
+/// `FILTER_MISMATCH`, as pricing's list's is (D-458).
+fn unit_page(
+    filter: &repo::UnitListFilter,
+    limit: Option<u64>,
+    cursor: Option<&str>,
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    let narrowing = serde_json::json!({
+        "state": filter.state.map(UnitState::as_str),
+        "kind": filter.kind,
+        "ref_id": filter.ref_id,
+    });
+    let hash = super::sku_list::cursor_hash(&narrowing);
+    let mut query = toolkit_odata::ODataQuery::new().with_filter_hash(hash.clone());
+    if let Some(limit) = limit {
+        query = query.with_limit(limit);
+    }
+    if let Some(token) = cursor {
+        let cursor = toolkit_odata::CursorV1::decode(token).map_err(CanonicalError::from)?;
+        if cursor.f.as_deref() != Some(hash.as_str()) {
+            return Err(toolkit_odata::Error::FilterMismatch.into());
+        }
+        query = query.with_cursor(cursor);
+    }
+    Ok(query)
 }
 /// Every embedded unit reports the decisions actually stored for all generations.
 async fn with_decisions(
@@ -270,7 +380,13 @@ async fn get(
     Path(id): Path<Uuid>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::READ, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+    )
+    .await?;
     let ttl = state.fence_ttl_minutes;
     let card = state
         .db
@@ -337,36 +453,46 @@ fn proposal(value: &serde_json::Value) -> Result<SkuProposal, TxError> {
     serde_json::from_value(value.clone())
         .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))
 }
-/// Recover only fields changed by the original proposal, leaving untouched live fields visible to refresh.
+/// Recover only fields changed by the original proposal, leaving untouched live fields visible to
+/// refresh. Every field of the patch is written out and every field of the content named, so a
+/// field added to `SkuPatch` or `SkuContent` is a compile error here, never a silent `None` (RS-50).
 fn patch_between(before: &SkuProposal, after: &SkuProposal) -> SkuPatch {
-    let a = &before.content;
-    let b = &after.content;
-    let mut p = SkuPatch {
-        lifecycle: after.lifecycle,
-        ..SkuPatch::default()
-    };
-    macro_rules! field {
-        ($f:ident) => {
-            if a.$f != b.$f {
-                p.$f = Some(b.$f.clone());
-            }
-        };
+    /// The proposal's value where it differs from the one before it.
+    fn changed<T: PartialEq + Clone>(a: &T, b: &T) -> Option<T> {
+        (a != b).then(|| b.clone())
     }
-    field!(name);
-    field!(category_id);
-    field!(description);
-    field!(sellable);
-    field!(gl_code);
-    field!(tax_category);
-    field!(invoice_line_template);
-    field!(billing_timing);
-    field!(usage_type_ref);
-    field!(unit);
-    field!(r#type);
-    p
+    let SkuContent {
+        code: _,
+        name,
+        r#type,
+        category_id,
+        description,
+        sellable,
+        gl_code,
+        tax_category,
+        invoice_line_template,
+        billing_timing,
+        usage_type_ref,
+        unit,
+    } = &before.content;
+    let b = &after.content;
+    SkuPatch {
+        name: changed(name, &b.name),
+        category_id: changed(category_id, &b.category_id),
+        description: changed(description, &b.description),
+        sellable: changed(sellable, &b.sellable),
+        gl_code: changed(gl_code, &b.gl_code),
+        tax_category: changed(tax_category, &b.tax_category),
+        invoice_line_template: changed(invoice_line_template, &b.invoice_line_template),
+        billing_timing: changed(billing_timing, &b.billing_timing),
+        usage_type_ref: changed(usage_type_ref, &b.usage_type_ref),
+        unit: changed(unit, &b.unit),
+        lifecycle: after.lifecycle,
+        r#type: changed(r#type, &b.r#type),
+    }
 }
 async fn subject(
-    state: &ApiState,
+    outbox: &TxOutbox,
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     ctx: &SecurityContext,
@@ -377,7 +503,7 @@ async fn subject(
     let base = SkuPublish {
         scope: sku_scope.clone(),
         tenant_id: store.tenant_id,
-        sink: state.sink.clone(),
+        outbox: outbox.clone(),
         actor: ctx.subject_id(),
         now: OffsetDateTime::now_utc(),
         usage_type: usage,
@@ -440,45 +566,6 @@ async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuCo
             .map_err(|e| TxError::from(ApprovalError::Store(e.to_string())))
     }
 }
-/// Rejects obey the same content-generation barrier without applying or resolving the catalog.
-async fn refresh_reject(
-    tx: &DbTx<'_>,
-    store: &repo::ProductsApprovalStore,
-    subject: &Subject,
-    unit: &Unit,
-    seen: i32,
-) -> Result<Option<i32>, TxError> {
-    if unit.state != UnitState::Pending {
-        return Err(ApprovalError::AlreadyDecided.into());
-    }
-    if unit.generation != seen {
-        return Err(ApprovalError::GenerationMismatch {
-            seen,
-            current: unit.generation,
-        }
-        .into());
-    }
-    let items = subject.collect(tx, &[unit.ref_id]).await?;
-    let hash = bss_approval::hash::snapshot_hash(&items, unit.common_effective_date);
-    if hash == unit.snapshot_hash {
-        return Ok(None);
-    }
-    if !store.bump_version(tx, unit.id, unit.version).await? {
-        return Err(ApprovalError::Contended.into());
-    }
-    let generation = unit.generation + 1;
-    store
-        .refresh(
-            tx,
-            unit.id,
-            &items,
-            &subject.snapshot(&items, unit.common_effective_date),
-            &hash,
-            generation,
-        )
-        .await?;
-    Ok(Some(generation))
-}
 /// @cpt-cf-bss-products-fr-concurrency-idempotency
 async fn vote(
     state: Arc<ApiState>,
@@ -534,133 +621,133 @@ async fn vote(
     }
     let seen = body.as_ref().map(|b| b.generation);
     let note = body.and_then(|b| b.note);
-    let db = state.db.db();
-    let result = db
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let state = state.clone();
-            let scope = scope.clone();
-            let ctx = ctx.clone();
-            let usage = usage.clone();
-            let resolved_ref = resolved_ref.clone();
-            let note = note.clone();
-            let claim = claim.clone();
-            Box::pin(async move {
-                let store = repo::ProductsApprovalStore {
-                    scope: scope.clone(),
-                    tenant_id: ctx.subject_tenant_id(),
-                };
-                let mut unit = load(tx, &store, id).await?;
-                if let Some(response) =
-                    replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
-                {
-                    return Ok(response);
-                }
-                if unit.state != UnitState::Pending {
-                    return Err(ApprovalError::AlreadyDecided.into());
-                }
-                let sub = subject(&state, tx, &store, &ctx, &unit, usage).await?;
-                // P-D-213: the SKU's lifecycle before the decision, and after it below.
-                let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
-                let now = OffsetDateTime::now_utc();
-                let outcome = match action {
-                    Vote::Approve => {
-                        if unit.kind != KIND_SKU_RETIRE
-                            && proposed(&sub, tx, &unit).await?.usage_type_ref != resolved_ref
-                        {
-                            return Err(g::conflict(
-                                "STALE_REVISION",
-                                "meter changed during resolution; retry",
-                            ));
-                        }
-                        Engine::approve(
-                            &store,
-                            &sub,
-                            tx,
-                            id,
-                            ctx.subject_id(),
-                            seen.ok_or_else(|| {
-                                TxError::Refused(g::validation("generation", "required"))
-                            })?,
-                            note.as_deref(),
-                            now,
-                        )
-                        .await?
+    let (db, sink, config) = (
+        state.db.db(),
+        state.sink.clone(),
+        category_tx_config(&state),
+    );
+    let result = events::transaction(&db, &sink, config, contention_db_err, move |tx, outbox| {
+        let scope = scope.clone();
+        let ctx = ctx.clone();
+        let usage = usage.clone();
+        let resolved_ref = resolved_ref.clone();
+        let note = note.clone();
+        let claim = claim.clone();
+        Box::pin(async move {
+            let store = repo::ProductsApprovalStore {
+                scope: scope.clone(),
+                tenant_id: ctx.subject_tenant_id(),
+            };
+            let mut unit = load(tx, &store, id).await?;
+            if let Some(response) =
+                replay::begin(tx, ctx.subject_tenant_id(), claim.as_ref()).await?
+            {
+                return Ok(response);
+            }
+            if unit.state != UnitState::Pending {
+                return Err(ApprovalError::AlreadyDecided.into());
+            }
+            let sub = subject(&outbox, tx, &store, &ctx, &unit, usage).await?;
+            // P-D-213: the SKU's lifecycle before the decision, and after it below.
+            let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+            let now = OffsetDateTime::now_utc();
+            let outcome = match action {
+                Vote::Approve => {
+                    if unit.kind != KIND_SKU_RETIRE
+                        && proposed(&sub, tx, &unit).await?.usage_type_ref != resolved_ref
+                    {
+                        return Err(g::conflict(
+                            "STALE_REVISION",
+                            "meter changed during resolution; retry",
+                        ));
                     }
-                    Vote::Reject => {
-                        let note = note
-                            .as_deref()
-                            .filter(|s| !s.trim().is_empty())
-                            .ok_or(ApprovalError::NoteRequired)?;
-                        let seen = seen.ok_or_else(|| {
+                    Engine::approve(
+                        &store,
+                        &sub,
+                        tx,
+                        id,
+                        ctx.subject_id(),
+                        seen.ok_or_else(|| {
                             TxError::Refused(g::validation("generation", "required"))
-                        })?;
-                        if let Some(generation) =
-                            refresh_reject(tx, &store, &sub, &unit, seen).await?
-                        {
-                            ApproveOutcome::Refreshed { generation }
-                        } else {
-                            Engine::reject(&store, &sub, tx, id, ctx.subject_id(), seen, note, now)
-                                .await?;
-                            ApproveOutcome::Applied
-                        }
-                    }
-                    Vote::Withdraw => {
-                        Engine::withdraw(&store, &sub, tx, id, ctx.subject_id(), now).await?;
-                        ApproveOutcome::Applied
-                    }
-                };
-                let (label, have, need) = match outcome {
-                    ApproveOutcome::Refreshed { generation } => {
-                        decision_audit(tx, &scope, &ctx, "refreshed", &unit, found, None, now)
-                            .await?;
-                        let mut problem = toolkit::api::canonical_prelude::Problem::from(
-                            CanonicalError::from(DomainError::StaleUnit { generation }),
-                        );
-                        problem.context["generation"] = serde_json::json!(generation);
-                        return replay::finish(
-                            tx,
-                            ctx.subject_tenant_id(),
-                            claim.as_ref(),
-                            StatusCode::BAD_REQUEST,
-                            &problem,
-                        )
-                        .await;
-                    }
-                    ApproveOutcome::Pending { have, need } => {
-                        (ProductsVoteOutcome::Pending, Some(have), Some(need))
-                    }
-                    ApproveOutcome::Applied => (
-                        match action {
-                            Vote::Approve => ProductsVoteOutcome::Applied,
-                            Vote::Reject => ProductsVoteOutcome::Rejected,
-                            Vote::Withdraw => ProductsVoteOutcome::Withdrawn,
-                        },
-                        None,
-                        None,
-                    ),
-                };
-                decision_audit(tx, &scope, &ctx, label.as_str(), &unit, found, note, now).await?;
-                if matches!(outcome, ApproveOutcome::Applied) {
-                    unit = load(tx, &store, id).await?;
-                    g::decided(&state, tx, &store, &unit, ctx.subject_id()).await?;
+                        })?,
+                        note.as_deref(),
+                        now,
+                    )
+                    .await?
                 }
-                let receipt = VoteReceipt {
-                    have,
-                    need,
-                    outcome: label,
-                    unit: with_decisions(tx, &store, unit).await?,
-                };
-                replay::finish(
-                    tx,
-                    ctx.subject_tenant_id(),
-                    claim.as_ref(),
-                    StatusCode::OK,
-                    &receipt,
-                )
-                .await
-            })
+                Vote::Reject => {
+                    let note = note
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                        .ok_or(ApprovalError::NoteRequired)?;
+                    let seen = seen
+                        .ok_or_else(|| TxError::Refused(g::validation("generation", "required")))?;
+                    // A stale unit is refreshed without applying or resolving the catalog.
+                    match Engine::reject(&store, &sub, tx, id, ctx.subject_id(), seen, note, now)
+                        .await?
+                    {
+                        RejectOutcome::Refreshed { generation } => {
+                            ApproveOutcome::Refreshed { generation }
+                        }
+                        RejectOutcome::Rejected => ApproveOutcome::Applied,
+                    }
+                }
+                Vote::Withdraw => {
+                    Engine::withdraw(&store, &sub, tx, id, ctx.subject_id(), now).await?;
+                    ApproveOutcome::Applied
+                }
+            };
+            let (label, have, need) = match outcome {
+                ApproveOutcome::Refreshed { generation } => {
+                    decision_audit(tx, &ctx, Audited::Refreshed, &unit, found, None, now).await?;
+                    let mut problem = toolkit::api::canonical_prelude::Problem::from(
+                        CanonicalError::from(DomainError::StaleUnit { generation }),
+                    );
+                    problem.context["generation"] = serde_json::json!(generation);
+                    return replay::finish(
+                        tx,
+                        ctx.subject_tenant_id(),
+                        claim.as_ref(),
+                        StatusCode::BAD_REQUEST,
+                        &problem,
+                    )
+                    .await;
+                }
+                ApproveOutcome::Pending { have, need } => {
+                    (ProductsVoteOutcome::Pending, Some(have), Some(need))
+                }
+                ApproveOutcome::Applied => (
+                    match action {
+                        Vote::Approve => ProductsVoteOutcome::Applied,
+                        Vote::Reject => ProductsVoteOutcome::Rejected,
+                        Vote::Withdraw => ProductsVoteOutcome::Withdrawn,
+                    },
+                    None,
+                    None,
+                ),
+            };
+            decision_audit(tx, &ctx, Audited::Vote(label), &unit, found, note, now).await?;
+            if matches!(outcome, ApproveOutcome::Applied) {
+                unit = load(tx, &store, id).await?;
+                g::decided(&outbox, tx, &store, &unit, ctx.subject_id()).await?;
+            }
+            let receipt = VoteReceipt {
+                have,
+                need,
+                outcome: label,
+                unit: with_decisions(tx, &store, unit).await?,
+            };
+            replay::finish(
+                tx,
+                ctx.subject_tenant_id(),
+                claim.as_ref(),
+                StatusCode::OK,
+                &receipt,
+            )
+            .await
         })
-        .await;
+    })
+    .await;
     match result {
         Ok(receipt) => Ok(receipt),
         Err(TxError::GenerationMismatch { seen, current }) => Ok(g::generation_problem(
@@ -671,43 +758,40 @@ async fn vote(
     }
 }
 
-/// A decision's audit row (P-D-193) for its outcome `label`, with the SKU lifecycle move it made
+/// What a decision's audit row records: a vote's outcome, or the stale refresh a vote made.
+#[derive(Clone, Copy)]
+enum Audited {
+    Refreshed,
+    Vote(ProductsVoteOutcome),
+}
+impl Audited {
+    /// The audit action, one per outcome in an exhaustive match (RS-21): a new outcome is a
+    /// compile error here, never an `approval.approved` by default.
+    const fn action(self) -> &'static str {
+        match self {
+            Self::Refreshed => "approval.refreshed",
+            Self::Vote(ProductsVoteOutcome::Pending) => "approval.vote",
+            Self::Vote(ProductsVoteOutcome::Applied) => "approval.approved",
+            Self::Vote(ProductsVoteOutcome::Rejected) => "approval.rejected",
+            Self::Vote(ProductsVoteOutcome::Withdrawn) => "approval.withdrawn",
+        }
+    }
+}
+/// A decision's audit row (P-D-193) for what it did, with the SKU lifecycle move it made
 /// (P-D-213): `found` before the decision, and the lifecycle it left, read now.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The row's actor, unit, outcome and move stay explicit at the one decision door"
-)]
 async fn decision_audit(
     tx: &DbTx<'_>,
-    scope: &AccessScope,
     ctx: &SecurityContext,
-    label: &str,
+    audited: Audited,
     unit: &Unit,
     found: bss_products_sdk::models::Lifecycle,
     note: Option<String>,
     now: OffsetDateTime,
 ) -> Result<(), TxError> {
-    let action = match label {
-        "refreshed" => "approval.refreshed",
-        "pending" => "approval.vote",
-        "rejected" => "approval.rejected",
-        "withdrawn" => "approval.withdrawn",
-        _ => "approval.approved",
-    };
+    let action = audited.action();
     let left = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
     let moved = repo::LifecycleMove::between(found, left);
-    g::audit(
-        tx,
-        scope,
-        ctx,
-        action,
-        "approval_unit",
-        unit.id,
-        note,
-        now,
-        moved,
-    )
-    .await
+    g::audit(tx, ctx, action, "approval_unit", unit.id, note, now, moved).await
 }
 
 /// Load the authorized unit's proposed content before external catalog resolution.
@@ -717,14 +801,15 @@ async fn review_content(
     ctx: &SecurityContext,
     id: Uuid,
 ) -> Result<Option<SkuContent>, CanonicalError> {
-    let s = state.clone();
     let scope = scope.clone();
     let ctx_tx = ctx.clone();
-    state
-        .db
-        .db()
-        .transaction_with_retry(category_tx_config(state), contention_db_err, move |tx| {
-            let s = s.clone();
+    // It enqueues nothing, but the subject it reads through takes the attempt's handle (P-D-221).
+    events::transaction(
+        &state.db.db(),
+        &state.sink,
+        category_tx_config(state),
+        contention_db_err,
+        move |tx, outbox| {
             let scope = scope.clone();
             let ctx = ctx_tx.clone();
             Box::pin(async move {
@@ -739,10 +824,11 @@ async fn review_content(
                 if unit.kind == KIND_SKU_RETIRE {
                     return Ok(None);
                 }
-                let sub = subject(&s, tx, &store, &ctx, &unit, None).await?;
+                let sub = subject(&outbox, tx, &store, &ctx, &unit, None).await?;
                 Ok(Some(proposed(&sub, tx, &unit).await?))
             })
-        })
-        .await
-        .map_err(tx_to_canonical)
+        },
+    )
+    .await
+    .map_err(tx_to_canonical)
 }

@@ -10398,16 +10398,21 @@
         "type": "object"
       },
       "PricingApprovalUnitList": {
+        "description": "One page of the unit list (D-458): its units, and the toolkit pager's `page_info`, whose\n`next_cursor` continues it.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/PricingApprovalUnitDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo"
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -10728,7 +10733,7 @@
         "type": "string"
       },
       "PricingEntryUsage": {
-        "description": "An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,\npending or published revision whose items name it; `plans_superseded_only`, the distinct plans\nthat name it only through superseded revisions (they still keep it `ENTRY_IN_USE`).",
+        "description": "An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,\npending, scheduled or published revision whose items name it; `plans_superseded_only`, the\ndistinct plans that name it only through superseded revisions (they still keep it\n`ENTRY_IN_USE`).",
         "properties": {
           "plans": {
             "format": "int64",
@@ -11056,7 +11061,7 @@
             "type": "string"
           },
           "published_rev": {
-            "description": "The revision number the last applied `plan_revision` unit published.",
+            "description": "The revision number the plan sells today (D-447): the last one published, or the number of\na scheduled revision whose date has come, before its switch is persisted. It never counts\na revision that is still waiting for its date.",
             "format": "int32",
             "type": [
               "integer",
@@ -11268,7 +11273,7 @@
               },
               "state": {
                 "$ref": "#/components/schemas/PricingRevisionState",
-                "description": "The revision's state."
+                "description": "The revision's state as it reads today (D-447): a scheduled revision whose date has come\nreads `published`, and the one it replaces `superseded`, before the switch is persisted."
               }
             },
             "required": [
@@ -11360,6 +11365,7 @@
             "type": "string"
           },
           "published_at": {
+            "description": "When it took effect (D-447): its approval's instant, or 00:00 UTC of its sale date for a\nrevision that waited for it; null until then.",
             "format": "date-time",
             "type": [
               "string",
@@ -11371,7 +11377,8 @@
             "type": "integer"
           },
           "state": {
-            "$ref": "#/components/schemas/PricingRevisionState"
+            "$ref": "#/components/schemas/PricingRevisionState",
+            "description": "The state as it reads today (D-447); `scheduled` is approved and waiting for its sale date."
           },
           "tenant_id": {
             "format": "uuid",
@@ -11419,6 +11426,7 @@
             "type": "string"
           },
           "published_at": {
+            "description": "When it took effect: its approval's instant, or 00:00 UTC of its sale date for a revision\nthat waited for it (D-447, D-450); null until then.",
             "format": "date-time",
             "type": [
               "string",
@@ -11430,7 +11438,8 @@
             "type": "integer"
           },
           "state": {
-            "$ref": "#/components/schemas/PricingRevisionState"
+            "$ref": "#/components/schemas/PricingRevisionState",
+            "description": "The state as it reads today (D-447)."
           }
         },
         "required": [
@@ -11680,7 +11689,7 @@
         "description": "What the two book reads answer (D-441): the book's fields and its `stats`. The write answers\n(POST, PATCH, the stored receipt), the export and publish-changes keep [`PriceBookDto`]."
       },
       "PricingPriceBookStats": {
-        "description": "A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,\npending or published revision on the book (`plans`), and those that name it only through\nsuperseded revisions (`plans_superseded_only`, what the delete refuses as\n`BOOK_IN_PLAN_HISTORY`); its prices by state; its `prices` units in review; and the latest\nchange of the book, its entries, their prices and its units. `DELETE /price-books/{id}`\nsucceeds exactly when `entries`, `plans` and `plans_superseded_only` are 0 (D-444).",
+        "description": "A book's stats (D-441): its entries and their distinct SKUs; the distinct plans with a draft,\npending, scheduled or published revision on the book (`plans`), and those that name it only\nthrough superseded revisions (`plans_superseded_only`, what the delete refuses as\n`BOOK_IN_PLAN_HISTORY`); its prices by state; its `prices` units in review; and the latest\nchange of the book, its entries, their prices and its units. `DELETE /price-books/{id}`\nsucceeds exactly when `entries`, `plans` and `plans_superseded_only` are 0 (D-444).",
         "properties": {
           "entries": {
             "format": "int64",
@@ -12337,7 +12346,7 @@
           },
           "state": {
             "$ref": "#/components/schemas/PricingResolvedRevisionState",
-            "description": "No other revision resolves."
+            "description": "The revision's state as it reads today (D-447): `published`, `superseded`, or `scheduled`\nfor a revision asked on or after its sale date while that date has not come yet (D-454). No\nother revision resolves."
           }
         },
         "required": [
@@ -12542,10 +12551,11 @@
         "type": "string"
       },
       "PricingResolvedRevisionState": {
-        "description": "The state of a revision that resolves: no other does (D-419).",
+        "description": "The state of a revision that resolves, as it reads today (D-447): a published or\nsuperseded one on every date (D-419), a scheduled one from its sale date on (D-454). No\nother resolves.",
         "enum": [
           "published",
-          "superseded"
+          "superseded",
+          "scheduled"
         ],
         "type": "string"
       },
@@ -12554,6 +12564,7 @@
         "enum": [
           "draft",
           "pending",
+          "scheduled",
           "published",
           "superseded"
         ],
@@ -18624,16 +18635,21 @@
         "type": "object"
       },
       "UnitList": {
+        "description": "One page of the unit list (P-D-224): its units, and the toolkit pager's `page_info`, whose\n`next_cursor` continues it.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/UnitDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo"
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -34018,7 +34034,7 @@
     },
     "/bss-pricing/v1/approval-units": {
       "get": {
-        "description": "Lists the tenant's approval units, filtered by state, kind and referenced aggregate, each with its stored snapshot and live impact. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID.",
+        "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions and its live impact. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read.",
         "operationId": "bss_pricing.list_approval_units",
         "parameters": [
           {
@@ -34052,6 +34068,24 @@
             "description": "Price book id",
             "in": "query",
             "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info",
+            "in": "query",
+            "name": "cursor",
             "required": false,
             "schema": {
               "type": "string"
@@ -34261,7 +34295,7 @@
     },
     "/bss-pricing/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit. Refusals: 400 GENERATION_MISMATCH or UNIT_STALE; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
+        "description": "Records an approving vote on the generation the reviewer saw; the vote that reaches the quorum applies the unit (a plan revision whose sale date is after today is scheduled for that date, D-449). The vote's note is at most 2000 characters. Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or APPLY_REFUSED.",
         "operationId": "bss_pricing.approve_unit",
         "parameters": [
           {
@@ -34389,7 +34423,7 @@
     },
     "/bss-pricing/v1/approval-units/{id}/reject": {
       "post": {
-        "description": "Rejects a pending unit on the generation the reviewer saw, with a note. A plan revision returns to draft. The prices of a prices unit stay rejected, with their review history, and are not edited again: a replacement is a new draft price (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
+        "description": "Rejects a pending unit on the generation the reviewer saw, with a note of at most 2000 characters. A plan revision returns to draft. The prices of a prices unit stay rejected, with their review history, and are not edited again: a replacement is a new draft price (POST /price-book-entries/{id}/prices). Refusals: 400 NOTE_REQUIRED, NOTE_TOO_LONG, GENERATION_MISMATCH or UNIT_STALE; 409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
         "operationId": "bss_pricing.reject_unit",
         "parameters": [
           {
@@ -34737,7 +34771,7 @@
         ]
       },
       "patch": {
-        "description": "Adds and removes values of one declared key (stored, or the seed key while nothing is stored) at the content the caller read (If-Match); keys themselves are added and removed by the PUT (D-436). Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, DIM_VALUE_UNKNOWN, DIM_VALUE_INVALID or DIM_VALUES_FEW; 409 DIM_VALUE_IN_USE naming the value a price uses, or STALE_REVISION.",
+        "description": "Adds and removes values of one declared key (stored, or the seed key while nothing is stored) at the content the caller read (If-Match); keys themselves are added and removed by the PUT (D-436). A value it adds is at most 64 characters (D-457). Refusals: 400 DIM_NOT_DECLARED, DIM_VALUE_DUPLICATE, DIM_VALUE_UNKNOWN, DIM_VALUE_INVALID, DIM_VALUES_FEW, or FIELD_TOO_LONG on an added value over its cap; 409 DIM_VALUE_IN_USE naming the value a price uses, or STALE_REVISION.",
         "operationId": "bss_pricing.patch_dimension_values",
         "parameters": [
           {
@@ -34854,7 +34888,7 @@
         ]
       },
       "put": {
-        "description": "Replaces the tenant's dimension keys and values at the content the caller read (If-Match). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID or DIM_KEY_DUPLICATE; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry names or a value a price uses (naming it); 409 STALE_REVISION.",
+        "description": "Replaces the tenant's dimension keys and values at the content the caller read (If-Match). A key or a value the stored registry does not hold is at most 64 characters; one it holds passes whatever its length (D-457). Refusals: 400 DIM_KEY_INVALID, DIM_VALUES_FEW, DIM_VALUE_INVALID, DIM_KEY_DUPLICATE, or FIELD_TOO_LONG on a new key or value over its cap; 409 DIMENSION_KEY_IN_USE or DIM_VALUE_IN_USE for a key an entry names or a value a price uses (naming it); 409 STALE_REVISION.",
         "operationId": "bss_pricing.put_dimensions",
         "parameters": [
           {
@@ -35413,7 +35447,7 @@
         ]
       },
       "get": {
-        "description": "Returns one plan revision with its items, its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
+        "description": "Returns one plan revision with its items and its state as it reads today (D-447), its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
         "operationId": "bss_pricing.get_plan_revision",
         "parameters": [
           {
@@ -35527,7 +35561,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft revision's book, remapping each item to the new book's matching entry, or its sale date, by its author at the version the author read (If-Match). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION.",
+        "description": "Changes a draft revision's book, remapping each item to the new book's matching entry, or its sale date, by its author at the version the author read (If-Match). A named book needs the caller's price_book read on it (D-456). Refusals: 400 DATE_INVALID; 403 NOT_DRAFT_AUTHOR; 404; 409 REVISION_NOT_DRAFT or STALE_REVISION; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.patch_plan_revision",
         "parameters": [
           {
@@ -35891,7 +35925,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/submit": {
       "post": {
-        "description": "Puts an unlocked draft revision whose checks are all green into a plan_revision approval unit (plan submit); at quorum 0 it publishes at once. Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
+        "description": "Puts an unlocked draft revision whose checks are all green into a plan_revision approval unit (plan submit); at quorum 0 it applies at once. An applied revision is published, or scheduled when its sale date is after today: it takes effect on that date (D-449). Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' SKU reads.",
         "operationId": "bss_pricing.submit_plan_revision",
         "parameters": [
           {
@@ -36006,9 +36040,126 @@
         ]
       }
     },
+    "/bss-pricing/v1/plan-revisions/{id}/unschedule": {
+      "post": {
+        "description": "Returns a plan revision that is approved and waiting for its sale date to an unlocked draft of its author (plan submit, D-452): its items and their SKU references stay, the applied unit stays in the history, and no event is sent. A revision whose date has come is switched first and is then in effect. The Idempotency-Key replays the answer. Refusals: 404 for a revision the tenant does not hold; 409 REVISION_IN_EFFECT for a published revision, REVISION_NOT_SCHEDULED for any other.",
+        "operationId": "bss_pricing.unschedule_plan_revision",
+        "parameters": [
+          {
+            "description": "Plan revision id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required authoring precondition",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPlanRevisionDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Withdraw a scheduled revision",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "Lists the tenant's plans by code, each with the headers of its revisions. With sku_id, only the plans that have a draft, pending or published revision whose items name the SKU through a price book entry (D-434; an included item without an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a malformed sku_id or any other key.",
+        "description": "Lists the tenant's plans by code, each with the headers of its revisions as they read today (a scheduled revision whose date has come reads published, D-447). With sku_id, only the plans that have a draft, pending, scheduled or published revision whose items name the SKU through a price book entry (D-434; an included item without an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a malformed sku_id or any other key.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
@@ -36114,7 +36265,7 @@
         ]
       },
       "post": {
-        "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant; the Idempotency-Key replays the answer. Refusals: 400 PLAN_CODE_REQUIRED; 404 for a book the tenant does not hold; 409 PLAN_CODE_TAKEN.",
+        "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant; the Idempotency-Key replays the answer. The caller also needs price_book read on that book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, or FIELD_TOO_LONG on a code or a name over its cap; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
         "operationId": "bss_pricing.create_plan",
         "parameters": [
           {
@@ -36233,7 +36384,7 @@
     },
     "/bss-pricing/v1/plans/{id}": {
       "get": {
-        "description": "Returns one plan with the headers of its revisions, its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
+        "description": "Returns one plan with the headers of its revisions as they read today (D-447), its version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not hold.",
         "operationId": "bss_pricing.get_plan",
         "parameters": [
           {
@@ -36347,7 +36498,7 @@
         ]
       },
       "patch": {
-        "description": "Renames a plan at the version the caller read (If-Match). Refusals: 404 for a plan the tenant does not hold; 409 STALE_REVISION.",
+        "description": "Renames a plan at the version the caller read (If-Match). The name is at most 200 characters (D-457). Refusals: 400 FIELD_TOO_LONG on a name over its cap; 404 for a plan the tenant does not hold; 409 STALE_REVISION.",
         "operationId": "bss_pricing.patch_plan",
         "parameters": [
           {
@@ -36475,7 +36626,7 @@
     },
     "/bss-pricing/v1/plans/{id}/clone": {
       "post": {
-        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision, without anything of its approval. Refusals: 400 PLAN_CODE_REQUIRED; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN.",
+        "description": "Creates a new plan with its own code and name whose draft revision 1 copies the source's published revision (the one in effect: a scheduled revision whose date has come is switched first, D-451), without anything of its approval. The caller also needs price_book read on the source's book (D-456). The code is at most 64 characters and the name 200 (D-457). Refusals: 400 PLAN_CODE_REQUIRED, or FIELD_TOO_LONG on a code or a name over its cap; 404 for an unknown plan; 409 CLONE_SOURCE_UNPUBLISHED or PLAN_CODE_TAKEN; 403 PRICE_BOOK_READ_REQUIRED for a book the caller may not read; 503 when that grant cannot be judged.",
         "operationId": "bss_pricing.clone_plan",
         "parameters": [
           {
@@ -36603,7 +36754,7 @@
     },
     "/bss-pricing/v1/plans/{id}/revisions": {
       "post": {
-        "description": "Copies the plan's published revision (book, sale date and items) into a new draft revision and attaches each copied item's SKU reference. Refusals: 404 for an unknown plan; 409 REVISION_DRAFT_EXISTS while a draft or pending revision exists, PLAN_UNPUBLISHED without a published one.",
+        "description": "Copies the plan's published revision (book, sale date and items) into a new draft revision and attaches each copied item's SKU reference; a scheduled revision whose date has come is switched first, so the copy is of the revision in effect (D-451). Refusals: 404 for an unknown plan; 409 REVISION_DRAFT_EXISTS while a draft or pending revision exists, REVISION_SCHEDULED while a revision waits for its sale date, PLAN_UNPUBLISHED without a published one.",
         "operationId": "bss_pricing.copy_plan_revision",
         "parameters": [
           {
@@ -36927,7 +37078,7 @@
         ]
       },
       "get": {
-        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on its book and null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
+        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on its book and null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
         "operationId": "bss_pricing.get_entry",
         "parameters": [
           {
@@ -37041,7 +37192,7 @@
         ]
       },
       "patch": {
-        "description": "Changes an entry's invoice-line override or its dimension key at the version the caller read (If-Match). Refusals: 400 DIM_NOT_DECLARED or an invalid line template; 404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, INVOICE_LINE_LOCKED for an override change once the entry has an approved or pending price (D-426), or STALE_REVISION.",
+        "description": "Changes an entry's invoice-line override or its dimension key at the version the caller read (If-Match). The override is at most 2000 characters (D-457). Refusals: 400 DIM_NOT_DECLARED, an invalid line template, or FIELD_TOO_LONG on an override over its cap; 404 ENTRY_NOT_FOUND; 409 DIMENSION_KEY_IN_USE while a price uses the key, INVOICE_LINE_LOCKED for an override change once the entry has an approved or pending price (D-426), or STALE_REVISION.",
         "operationId": "bss_pricing.patch_entry",
         "parameters": [
           {
@@ -37284,7 +37435,7 @@
         ]
       },
       "post": {
-        "description": "Adds a draft price to an entry's chain, and a temporary price's return partner with it; the Idempotency-Key replays the answer. The money is in the entry's model and the price carries no model of its own (D-427). Refusals: 400 for a rule the price breaks (for example PRICE_MISSING for money of another model's shape, AMOUNT_INVALID, WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY); 409 ENTRY_REFERENCE_LOST.",
+        "description": "Adds a draft price to an entry's chain, and a temporary price's return partner with it; the Idempotency-Key replays the answer. The money is in the entry's model and the price carries no model of its own (D-427). The note is at most 2000 characters (D-457). Refusals: 400 for a rule the price breaks (for example PRICE_MISSING for money of another model's shape, AMOUNT_INVALID, WINDOW_START_IN_PAST, DIM_VALUE_UNKNOWN or PRICE_INSIDE_TEMPORARY), or NOTE_TOO_LONG; 409 ENTRY_REFERENCE_LOST.",
         "operationId": "bss_pricing.create_price",
         "parameters": [
           {
@@ -37412,7 +37563,7 @@
     },
     "/bss-pricing/v1/price-books": {
       "get": {
-        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
+        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
         "operationId": "bss_pricing.list_books",
         "parameters": [
           {
@@ -37619,7 +37770,7 @@
         }
       },
       "post": {
-        "description": "Creates a price book of the tenant with a code, a name, one currency, an optional validity window and an optional description of at most 2000 characters (D-444); the Idempotency-Key replays the first answer. The currency must be one the tenant settings offer, when they offer any (D-438). Refusals: 400 BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID or BOOK_DESCRIPTION_TOO_LONG; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
+        "description": "Creates a price book of the tenant with a code, a name, one currency, an optional validity window and an optional description of at most 2000 characters (D-444); the Idempotency-Key replays the first answer. The currency must be one the tenant settings offer, when they offer any (D-438). The code is at most 64 characters and the name 200 (D-457). Refusals: 400 BOOK_CODE_REQUIRED, BOOK_NAME_REQUIRED, BOOK_CURRENCY_INVALID, BOOK_VALIDITY_INVALID, BOOK_DESCRIPTION_TOO_LONG, or FIELD_TOO_LONG on a code or a name over its cap; 409 CURRENCY_NOT_OFFERED, BOOK_CODE_TAKEN or IDEMPOTENCY_CONFLICT.",
         "operationId": "bss_pricing.create_book",
         "parameters": [
           {
@@ -37738,7 +37889,7 @@
     },
     "/bss-pricing/v1/price-books/{id}": {
       "delete": {
-        "description": "Deletes a book no entry and no plan revision names, at the version the caller read (If-Match), with an audit row (D-444). Units that named it stay readable, their cards without the book; the create's Idempotency-Key still replays its answer for a day. Refusals, in order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, pending or published revision on the book, as stats.plans counts it, D-441); 409 BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only counts it): the delete succeeds exactly when stats.entries, stats.plans and stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
+        "description": "Deletes a book no entry and no plan revision names, at the version the caller read (If-Match), with an audit row (D-444). Units that named it stay readable, their cards without the book; the create's Idempotency-Key still replays its answer for a day. Refusals, in order: 403 without the book write grant; 400 for a missing or malformed If-Match; 404 for a book the tenant does not hold; 409 STALE_REVISION; 409 BOOK_HAS_ENTRIES (an entry of any state); 409 BOOK_IN_PLAN (a plan with a draft, pending, scheduled or published revision on the book, as stats.plans counts it, D-441); 409 BOOK_IN_PLAN_HISTORY (only superseded revisions name it, as stats.plans_superseded_only counts it): the delete succeeds exactly when stats.entries, stats.plans and stats.plans_superseded_only are 0. A row added by a concurrent writer is the same 409.",
         "operationId": "bss_pricing.delete_book",
         "parameters": [
           {
@@ -37960,7 +38111,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a book's name, validity window or description at the version the caller read (If-Match); an omitted description is kept and null clears it (D-444). Refusals: 400 BOOK_NAME_REQUIRED, BOOK_VALIDITY_INVALID or BOOK_DESCRIPTION_TOO_LONG; 404 for an unknown book; 409 STALE_REVISION.",
+        "description": "Changes a book's name, validity window or description at the version the caller read (If-Match); an omitted description is kept and null clears it (D-444). The name is at most 200 characters (D-457). Refusals: 400 BOOK_NAME_REQUIRED, BOOK_VALIDITY_INVALID, BOOK_DESCRIPTION_TOO_LONG, or FIELD_TOO_LONG on a name over its cap; 404 for an unknown book; 409 STALE_REVISION.",
         "operationId": "bss_pricing.patch_book",
         "parameters": [
           {
@@ -38088,7 +38239,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on the book and null otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
+        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on the book and null otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {
@@ -38194,7 +38345,7 @@
         ]
       },
       "post": {
-        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID or DIM_NOT_DECLARED; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.create_entry",
         "parameters": [
           {
@@ -38878,7 +39029,7 @@
         ]
       },
       "patch": {
-        "description": "Changes an unlocked draft price of its author at the version the author read (If-Match). The temporary half of a draft takes effective_from and temporary_until: its pair is built again over the new dates in the same transaction (D-443) - its return re-derived in place, deleted when the chain's next price starts on the new end or nothing of the chain is in force there, or created when a price is to be returned to - and both halves are judged as the create judges them; the answer is the edited price, its paired_price_id naming its partner now, or null. A return's own dates, a temporary price's chain (dim_value), an end on any other price and a null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or TEMPORARY_SPANS_A_CHANGE); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or its partner) or STALE_REVISION.",
+        "description": "Changes an unlocked draft price of its author at the version the author read (If-Match). The temporary half of a draft takes effective_from and temporary_until: its pair is built again over the new dates in the same transaction (D-443) - its return re-derived in place, deleted when the chain's next price starts on the new end or nothing of the chain is in force there, or created when a price is to be returned to - and both halves are judged as the create judges them; the answer is the edited price, its paired_price_id naming its partner now, or null. A return's own dates, a temporary price's chain (dim_value), an end on any other price and a null end are 400 TEMPORARY_PRICE_FIXED. Refusals: 400 for a rule the change breaks (for example WINDOW_END_INVALID, WINDOW_START_IN_PAST or TEMPORARY_SPANS_A_CHANGE), or NOTE_TOO_LONG on a note over 2000 characters (D-457); 403 NOT_DRAFT_AUTHOR; 409 PRICE_NOT_DRAFT (the price or its partner) or STALE_REVISION.",
         "operationId": "bss_pricing.patch_price",
         "parameters": [
           {
@@ -39249,11 +39400,11 @@
     },
     "/bss-pricing/v1/resolve": {
       "get": {
-        "description": "Returns, per item of a published or superseded plan revision, the chain matrix (the default chain and every dimension value) with the price bound on the date, the SKU version in force and the resolved invoice inputs; pins renew a subscription's bindings. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 REVISION_NOT_PUBLISHED; Products' own refusal of a SKU read; 503 when Products cannot answer.",
+        "description": "Returns, per item of a published or superseded plan revision, or of a scheduled one on or after its sale date, the chain matrix (the default chain and every dimension value) with the price bound on the date, the SKU version in force and the resolved invoice inputs; pins renew a subscription's bindings. A scheduled revision whose date has come resolves as published, on every date, whether or not its switch is persisted yet. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 when Products cannot answer.",
         "operationId": "bss_pricing.resolve",
         "parameters": [
           {
-            "description": "A published or superseded plan revision",
+            "description": "A published or superseded plan revision, or a scheduled one from its sale date",
             "in": "query",
             "name": "plan_revision_id",
             "required": true,
@@ -39487,7 +39638,7 @@
         ]
       },
       "put": {
-        "description": "Replaces the tenant settings at the version the caller read (If-Match), currencies included (required; [] offers any currency, D-438), and records the caller and the time. Rounding is half_up, half_even, half_down, up or down (D-437). Refusals: 400 TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, CURRENCY_INVALID or an invalid line template (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID); 409 STALE_REVISION.",
+        "description": "Replaces the tenant settings at the version the caller read (If-Match), currencies included (required; [] offers any currency, D-438), and records the caller and the time. Rounding is half_up, half_even, half_down, up or down (D-437). A GL code or a tax category other than the stored one is at most 64 characters, and a line template other than the one stored for its SKU type 2000; a stored text sent back unchanged passes whatever its length (D-457). Refusals: 400 TIMING_INVALID, ROUNDING_REQUIRED, ROUNDING_INVALID, SKU_TYPE_INVALID, CURRENCY_INVALID, an invalid line template (LINE_TEMPLATE_EMPTY, LINE_TEMPLATE_INVALID), or FIELD_TOO_LONG on a changed default_gl, default_tax_category or invoice_line_templates over its cap; 409 STALE_REVISION.",
         "operationId": "bss_pricing.put_settings",
         "parameters": [
           {
@@ -39921,6 +40072,7 @@
     },
     "/bss-products/v1/approval-units": {
       "get": {
+        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot and the decisions of every generation. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it. Refusals: 400 for an unknown state or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read.",
         "operationId": "bss_products.list_approval_units",
         "parameters": [
           {
@@ -39945,6 +40097,24 @@
             "description": "SKU id (a UUID)",
             "in": "query",
             "name": "ref_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info",
+            "in": "query",
+            "name": "cursor",
             "required": false,
             "schema": {
               "type": "string"
@@ -40153,6 +40323,7 @@
     },
     "/bss-products/v1/approval-units/{id}/approve": {
       "post": {
+        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 DUPLICATE_VOTE.",
         "operationId": "bss_products.approve_unit",
         "parameters": [
           {
@@ -40280,6 +40451,7 @@
     },
     "/bss-products/v1/approval-units/{id}/reject": {
       "post": {
+        "description": "Rejects the unit at the generation its reviewer saw; a reject needs a note. The note is at most 2000 characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 DUPLICATE_VOTE.",
         "operationId": "bss_products.reject_unit",
         "parameters": [
           {
@@ -40808,7 +40980,7 @@
         }
       },
       "post": {
-        "description": "A flat category; one may be the tenant's default. Creating one with `is_default: true` moves the default to it: the previous default is cleared in the same write (P-D-218). Refusals: 409 CATEGORY_CODE_TAKEN, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default first.",
+        "description": "A flat category; one may be the tenant's default. Creating one with `is_default: true` moves the default to it: the previous default is cleared in the same write (P-D-218). The code is at most 64 characters and the name 200 (P-D-225). Refusals: 400 FIELD_TOO_LONG on a code or a name over its cap; 409 CATEGORY_CODE_TAKEN, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default first.",
         "operationId": "bss_products.create_category",
         "parameters": [
           {
@@ -41013,7 +41185,7 @@
         ]
       },
       "patch": {
-        "description": "Edits a category under If-Match. `is_default: true` moves the tenant's default to it: the previous default is cleared in the same write, gets a new version and its own audit row (P-D-218); a retired category never becomes the default (P-D-220). Refusals: 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a retired category, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default first.",
+        "description": "Edits a category under If-Match. `is_default: true` moves the tenant's default to it: the previous default is cleared in the same write, gets a new version and its own audit row (P-D-218); a retired category never becomes the default (P-D-220). The name is at most 200 characters (P-D-225). Refusals: 400 FIELD_TOO_LONG on a name over its cap; 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a retired category, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default first.",
         "operationId": "bss_products.update_category",
         "parameters": [
           {
@@ -41248,6 +41420,7 @@
     },
     "/bss-products/v1/references/{id}": {
       "delete": {
+        "description": "Releases a reference: its owner gear releases its own, and an operator forces the release with `force: true` and a reason of at most 2000 characters (P-D-225), which the audit row and the `ReferenceForceReleased` event carry. Refusals: 400 for a forced release without a reason, 400 FIELD_TOO_LONG on a reason over its cap; 403 REFERENCE_OWNER_MISMATCH; 404.",
         "operationId": "bss_products.release_reference",
         "parameters": [
           {
@@ -41685,6 +41858,7 @@
         }
       },
       "post": {
+        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.create_sku",
         "parameters": [
           {
@@ -42172,6 +42346,7 @@
         ]
       },
       "patch": {
+        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.update_sku_draft",
         "parameters": [
           {
@@ -42299,6 +42474,7 @@
     },
     "/bss-products/v1/skus/{id}/changes": {
       "post": {
+        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. Refusals include 400 FIELD_TOO_LONG on a text over its cap and 400 NOTE_TOO_LONG on the note.",
         "operationId": "bss_products.change_sku",
         "parameters": [
           {
@@ -43361,7 +43537,7 @@
     },
     "/bss-products/v1/usage-types": {
       "get": {
-        "description": "The usage-type catalog the publish gate resolves against, read as the caller (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; `limit` defaults to 50 and is clamped at 200. Over the usage collector, `q` searches at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses the caller; 400 for a malformed query, for a search cursor (one cut with `q`) replayed with another `q` or `kind` or without `q`, and for a cursor cut without `q` replayed under any `q` (without `q`, such a cursor passes to the collector unchecked); 501 when no catalog is configured; 503 when the configured one does not answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A configured catalog with no types answers 200 with no items.",
+        "description": "The usage-type catalog the publish gate resolves against, read as the caller (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses the caller; 400 for a malformed query, a `kind` outside counter and gauge, for a search cursor (one cut with `q`) replayed with another `q` or `kind` or without `q`, and for a cursor cut without `q` replayed under any `q` (without `q`, such a cursor passes to the collector unchecked); 501 when no catalog is configured; 503 when the configured one does not answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A configured catalog with no types answers 200 with no items.",
         "operationId": "bss_products.list_usage_types",
         "parameters": [
           {

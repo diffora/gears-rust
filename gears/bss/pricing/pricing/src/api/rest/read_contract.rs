@@ -129,13 +129,16 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.resolve")
         .summary("Resolve a plan revision on a date")
         .description(
-            "Returns, per item of a published or superseded plan revision, the chain matrix (the \
-             default chain and every dimension value) with the price bound on the date, the SKU \
-             version in force and the resolved invoice inputs; pins renew a subscription's \
-             bindings. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, \
+            "Returns, per item of a published or superseded plan revision, or of a scheduled one \
+             on or after its sale date, the chain matrix (the default chain and every dimension \
+             value) with the price bound on the date, the SKU version in force and the resolved \
+             invoice inputs; pins renew a subscription's bindings. A scheduled revision whose date \
+             has come resolves as published, on every date, whether or not its switch is \
+             persisted yet. No totals. Refusals: 400 QUERY_INVALID, DATE_INVALID, PIN_FOREIGN, \
              PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 \
-             REVISION_NOT_PUBLISHED; Products' own refusal of a SKU read; 503 when Products cannot \
-             answer.",
+             REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE \
+             for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 \
+             when Products cannot answer.",
         )
         .tag("Pricing")
         .authenticated()
@@ -143,7 +146,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .query_param(
             "plan_revision_id",
             true,
-            "A published or superseded plan revision",
+            "A published or superseded plan revision, or a scheduled one from its sale date",
         )
         .query_param("date", true, "The date resolved, YYYY-MM-DD")
         .query_param("item_id", false, "Resolve this one item of the revision")
@@ -352,6 +355,8 @@ fn pin(text: &str) -> Result<Pin, CanonicalError> {
 /// Everything the transaction reads, as the pure model and the renderer take it.
 struct Stored {
     revision: plan_revision::Model,
+    /// The revision's state as it reads today (D-447): published, superseded or scheduled.
+    state: RevisionState,
     currency: String,
     context: ResolveContext,
     /// Every price of the entries the items name, as stored: a binding renders its row.
@@ -360,11 +365,11 @@ struct Stored {
     rounding: String,
 }
 
-/// `GET /resolve` below its door (D-419, D-420, D-421).
+/// `GET /resolve` below its door (D-419, D-420, D-421, D-454).
 /// # Errors
 /// 404 for a revision the tenant does not hold or an `item_id` the revision lacks; 409
-/// `REVISION_NOT_PUBLISHED`; 400 for the pins; Products' definite refusal as it gave it; 503
-/// `REGISTRY_UNAVAILABLE` when Products cannot answer.
+/// `REVISION_NOT_PUBLISHED` or `REVISION_NOT_YET_AVAILABLE`; 400 for the pins; Products' definite
+/// refusal as it gave it; 503 `REGISTRY_UNAVAILABLE` when Products cannot answer.
 async fn resolution(
     state: &AuthoringState,
     scope: AccessScope,
@@ -372,10 +377,10 @@ async fn resolution(
     request: ResolveRequest,
 ) -> Result<Response, CanonicalError> {
     let tenant = ctx.subject_tenant_id();
-    let (revision, item) = (request.revision, request.item);
+    let (revision, item, date) = (request.revision, request.item, request.date);
     let stored = support::transaction_door(&state.db.db(), move |tx| {
         let scope = scope.clone();
-        Box::pin(async move { read_stored(tx, &scope, tenant, revision, item).await })
+        Box::pin(async move { read_stored(tx, &scope, tenant, revision, item, date).await })
     })
     .await
     .map_err(|e| read_failure(e, plan_conflict))?;
@@ -401,29 +406,47 @@ async fn resolution(
 fn corrupt(what: String) -> DoorError {
     RepoError::CorruptRow(what).into()
 }
-/// The one read transaction of a resolve.
+/// The one read transaction of a resolve. The revision is judged by the state it reads today
+/// among its plan's revisions (D-447): a published or superseded one resolves on every date
+/// (D-419) — a scheduled one whose date has come reads published, so its answer does not change
+/// when the switch is persisted — and a scheduled one still waiting resolves from its sale date
+/// on (D-454).
 async fn read_stored(
     tx: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
     id: Uuid,
     item: Option<Uuid>,
+    date: Date,
 ) -> Result<Stored, DoorError> {
     // @cpt-begin:cpt-cf-bss-pricing-flow-read-contract-events:p1:inst-read-contract-events-flow-2
     let children = AccessScope::for_tenant(tenant);
     let revision = plan_revision_repo::find(tx, scope, tenant, id)
         .await?
         .ok_or_else(|| plan_missing("plan_revision"))?;
-    let state: RevisionState = revision
-        .state
-        .parse()
-        .map_err(|_| corrupt(format!("revision {id} state")))?;
-    if !matches!(state, RevisionState::Published | RevisionState::Superseded) {
-        return Err(plan_conflict("REVISION_NOT_PUBLISHED").into());
-    }
     plan_repo::find(tx, &children, tenant, revision.plan_id)
         .await?
         .ok_or_else(|| corrupt(format!("revision {id} has no plan")))?;
+    // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-5
+    let siblings = plan_revision_repo::for_plan(tx, &children, tenant, revision.plan_id).await?;
+    let today = time::OffsetDateTime::now_utc().date();
+    let state = super::authoring::dto::effective_revisions(&siblings, today)?
+        .into_iter()
+        .find(|e| e.id == id)
+        .map(|e| e.state)
+        .ok_or_else(|| corrupt(format!("revision {id} is not among its plan's")))?;
+    match state {
+        RevisionState::Published | RevisionState::Superseded => {}
+        RevisionState::Scheduled => {
+            if revision.available_from.is_none_or(|from| date < from) {
+                return Err(plan_conflict("REVISION_NOT_YET_AVAILABLE").into());
+            }
+        }
+        RevisionState::Draft | RevisionState::Pending => {
+            return Err(plan_conflict("REVISION_NOT_PUBLISHED").into());
+        }
+    }
+    // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-5
     let rows = plan_item_repo::for_revision(tx, &children, tenant, revision.id).await?;
     if item.is_some_and(|wanted| !rows.iter().any(|r| r.id == wanted)) {
         return Err(plan_missing("plan_item").into());
@@ -440,14 +463,23 @@ async fn read_stored(
     let mut entries: BTreeMap<Uuid, resolve::Entry> = BTreeMap::new();
     let mut prices = BTreeMap::new();
     let mut keep_for_bound = BTreeSet::new();
-    for entry_id in rows.iter().filter_map(|r| r.price_book_entry_id) {
-        if entries.contains_key(&entry_id) {
-            continue;
-        }
-        let e = price_book_entry_repo::find(tx, &children, tenant, entry_id)
-            .await?
-            .ok_or_else(|| corrupt(format!("entry {entry_id} of revision {id}")))?;
-        let of_entry = price_repo::for_entry(tx, &children, tenant, e.id).await?;
+    // The items' entries and all their prices in two statements, whatever the number of items
+    // (PS-15).
+    let wanted: Vec<Uuid> = rows
+        .iter()
+        .filter_map(|r| r.price_book_entry_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let found = price_book_entry_repo::find_many(tx, &children, tenant, &wanted).await?;
+    let held: BTreeSet<Uuid> = found.iter().map(|e| e.id).collect();
+    if let Some(lost) = wanted.iter().find(|w| !held.contains(w)) {
+        return Err(corrupt(format!("entry {lost} of revision {id}")));
+    }
+    let mut grouped =
+        price_repo::by_entry(price_repo::for_entries(tx, &children, tenant, &wanted).await?);
+    for e in found {
+        let of_entry = grouped.remove(&e.id).unwrap_or_default();
         keep_for_bound.extend(of_entry.iter().filter(|p| p.keep_for_bound).map(|p| p.id));
         let model = price_book_entry_repo::model_of(&e)?;
         let domain = of_entry
@@ -507,6 +539,7 @@ async fn read_stored(
         })?;
     Ok(Stored {
         revision,
+        state,
         currency: book.currency,
         context: ResolveContext {
             items,
@@ -542,7 +575,8 @@ async fn versions_as_of(
     if wanted.is_empty() {
         return Ok(found);
     }
-    let registry = reference_registry::resolve(hub).map_err(|_| support::unavailable())?;
+    let registry =
+        reference_registry::resolve(hub).map_err(|e| support::registry_unavailable(&e))?;
     let actor = reference_ticker::system_actor(tenant)?;
     for sku in wanted {
         match registry.sku_version_as_of(&actor, tenant, sku, date).await {
@@ -552,7 +586,7 @@ async fn versions_as_of(
             Ok(None) => {}
             Err(error) if error.status_code() == 404 => {}
             Err(error) if reference_work::definite_refusal(&error) => return Err(error),
-            Err(_) => return Err(support::unavailable()),
+            Err(error) => return Err(support::registry_unavailable(&error)),
         }
     }
     Ok(found)
@@ -656,7 +690,7 @@ fn render(
         plan_id: stored.revision.plan_id,
         rev_no: stored.revision.rev_no,
         state: PricingResolvedRevisionState::stored(
-            &stored.revision.state,
+            stored.state.as_str(),
             &format_args!("revision {} state", stored.revision.id),
         )
         .map_err(stored_failure)?,

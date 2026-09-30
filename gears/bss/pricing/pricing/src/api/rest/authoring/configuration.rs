@@ -94,6 +94,9 @@ pub async fn put_settings(
     let tenant = ctx.subject_tenant_id();
     let before = settings(tx, scope, tenant).await?;
     check_version(version, before.version)?;
+    // D-457: only a text that differs from the stored one is capped, so settings stored before the
+    // caps never lock (the second review of W1b, L2).
+    super::caps::changed_settings_text(&body, &before)?;
     if !matches!(body.default_timing.as_str(), "advance" | "arrears") {
         return Err(invalid("default_timing", "TIMING_INVALID").into());
     }
@@ -189,7 +192,7 @@ async fn stored(
     let mut keys = Vec::new();
     for r in rows {
         let values = serde_json::from_value(r.values)
-            .map_err(|_| CanonicalError::internal("invalid stored dimension").create())?;
+            .map_err(|e| RepoError::CorruptRow(format!("dimension {} values: {e}", r.key)))?;
         keys.push((r.key, values, r.version));
     }
     Ok((keys, tag))
@@ -292,6 +295,13 @@ pub async fn put_dimensions(
         if !keys.insert(item.key.clone()) {
             return Err(invalid("items", "DIM_KEY_DUPLICATE").into());
         }
+        // D-457: only the key or values the stored registry does not hold are capped, so a row
+        // stored before the caps never locks the registry.
+        let held = old
+            .iter()
+            .find(|(key, _, _)| *key == item.key)
+            .map(|(_, values, _)| values.as_slice());
+        super::caps::new_dimension_text(&item.key, &item.values, held)?;
         if let Some(e) = dimension::validate(&item.key, &item.values).first() {
             return Err(invalid("items", e.code).into());
         }

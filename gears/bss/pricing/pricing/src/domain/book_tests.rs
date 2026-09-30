@@ -53,7 +53,12 @@ fn prototype_l229_book_validity_half_open() {
         valid_until: Some(date("2026-12-31")),
         ..book()
     };
+    assert!(
+        valid_on(&b, date("2026-01-01")),
+        "the start is inside (PT-09)"
+    );
     assert!(valid_on(&b, date("2026-06-01")));
+    assert!(valid_on(&b, date("2026-12-30")));
     assert!(!valid_on(&b, date("2026-12-31")));
     assert!(!valid_on(&b, date("2025-12-31")));
 }
@@ -71,6 +76,25 @@ fn prototype_l231_book_validity_invalid() {
         })[0]
             .code,
         "BOOK_VALIDITY_INVALID"
+    );
+    // An empty window, its end on its start, is refused too (PT-09).
+    assert_eq!(
+        validate(&Book {
+            valid_from: Some(date("2026-05-01")),
+            valid_until: Some(date("2026-05-01")),
+            ..book()
+        })[0]
+            .code,
+        "BOOK_VALIDITY_INVALID"
+    );
+    assert!(
+        validate(&Book {
+            valid_from: Some(date("2026-05-01")),
+            valid_until: Some(date("2026-05-02")),
+            ..book()
+        })
+        .is_empty(),
+        "one day is a window"
     );
 }
 #[test]

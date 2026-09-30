@@ -27,25 +27,14 @@ async fn unit_card(f: &Fixture, unit: &Value) -> Value {
     b
 }
 
-/// The unit as `GET /approval-units?ref_id=` lists it.
+/// The unit as `GET /approval-units?ref_id=` lists it, over every page (P-D-224).
 async fn unit_listed(f: &Fixture, unit: &Value) -> Value {
-    let (status, b) = call(
-        &f.app,
-        &f.reviewer,
-        Method::GET,
-        &format!("/approval-units?ref_id={}", f.id),
-        json!({}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 200, "{b}");
-    b["items"]
-        .as_array()
-        .unwrap()
+    let listed = f.all_units(&format!("ref_id={}", f.id)).await;
+    listed
         .iter()
         .find(|item| item["id"] == unit["unit"]["id"])
         .cloned()
-        .unwrap_or_else(|| panic!("the unit is listed: {b}"))
+        .unwrap_or_else(|| panic!("the unit is listed: {listed:?}"))
 }
 
 /// The note of the unit on its receipt, its card and its list entry, which must agree.

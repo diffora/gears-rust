@@ -145,7 +145,9 @@ impl TypedEvent for ReferenceForceReleased {
     }
 }
 
-fn producer_system_actor() -> SecurityContext {
+/// The producer's own identity. A builder refusal fails the boot through `bind_producer`'s `?`,
+/// with its context, instead of a panic (RS-34).
+fn producer_system_actor() -> anyhow::Result<SecurityContext> {
     /// Hand-picked, version nibble `0`. `62 73 73 70` is `bssp`.
     const PRODUCER_ACTOR: Uuid = uuid::uuid!("00000000-0000-0f01-0000-627373702d70");
     /// The subject type an `AuthZ` policy may key on to route this gear's
@@ -157,13 +159,12 @@ fn producer_system_actor() -> SecurityContext {
         site = "broker_producer",
         "bss-products system actor constructed"
     );
-    #[allow(clippy::expect_used)]
     SecurityContext::builder()
         .subject_id(PRODUCER_ACTOR)
         .subject_type(SUBJECT_TYPE)
         .subject_tenant_id(Uuid::nil())
         .build()
-        .expect("both required builder fields are set unconditionally above")
+        .map_err(|e| anyhow::anyhow!("bss-products: the producer's system actor: {e}"))
 }
 
 /// The pipeline a route enqueues into.
@@ -206,7 +207,7 @@ pub(crate) async fn bind_producer(
     let producer = event_broker_sdk::DbProducer::builder()
         .broker(broker)
         .db(db.clone())
-        .security_context(producer_system_actor())
+        .security_context(producer_system_actor()?)
         .identity(
             event_broker_sdk::ProducerIdentity::new()
                 .source(SOURCE)
@@ -265,3 +266,6 @@ pub(crate) async fn bind_producer(
 #[cfg(test)]
 #[path = "broker_tests.rs"]
 mod broker_tests;
+#[cfg(test)]
+#[path = "broker_wake_tests.rs"]
+mod broker_wake_tests;

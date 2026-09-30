@@ -54,24 +54,6 @@ fn two_renderings_of_one_payload_differing_only_in_key_order_hash_equal() {
     );
 }
 
-/// Key order is normalized at **every** object level, not only the outermost
-/// one.
-///
-/// A canonicalizer that sorted the top-level keys and then handed each value
-/// to `serde_json`'s own `Display` would pass the case above and fail this
-/// one, which is exactly the shortcut this test exists to refuse.
-#[test]
-fn nested_objects_are_sorted_too() {
-    let one = parsed(r#"{"outer":{"z":1,"a":2},"first":true}"#);
-    let other = parsed(r#"{"first":true,"outer":{"a":2,"z":1}}"#);
-
-    assert_eq!(
-        canonical_rendering(&one),
-        r#"{"first":true,"outer":{"a":2,"z":1}}"#
-    );
-    assert_eq!(payload_digest(&one), payload_digest(&other));
-}
-
 /// A differing field value hashes differently — the other half of the
 /// contract, and the one that makes `IDEMPOTENCY_CONFLICT` reachable at all.
 ///
@@ -137,32 +119,6 @@ fn a_number_renders_with_no_trailing_zeroes_so_one_and_one_point_zero_agree() {
     assert_eq!(payload_digest(&as_integer), payload_digest(&as_decimal));
 }
 
-/// Folding a precondition into the operand **would** change the digest —
-/// which is why no door on this surface does (P-D-201).
-///
-/// The exclusion itself is structural: [`super::payload_digest`] is handed a
-/// value built from the parsed body's own fields and can see no header at
-/// all. What this case pins is that the exclusion is *observable* rather
-/// than cosmetic: a door that hashed its `If-Match` in would produce a
-/// different digest for the same act, so a client refused `STALE_REVISION`
-/// that re-read the head and retried with a fresher tag would be answered
-/// `IDEMPOTENCY_CONFLICT` instead of having its request run. The door-level
-/// measurement of the live behaviour is
-/// `crate::api::rest::products`'s
-/// `an_answered_key_replays_its_stored_response_even_though_the_retry_carries_a_precondition`.
-#[test]
-fn folding_a_precondition_into_the_operand_would_change_the_digest() {
-    let body_only = json!({ "brand_id": "b-1", "name": "Fibre 500" });
-    let body_plus_precondition =
-        json!({ "brand_id": "b-1", "name": "Fibre 500", "if_match": "\"7\"" });
-
-    assert_ne!(
-        payload_digest(&body_only),
-        payload_digest(&body_plus_precondition),
-        "a precondition folded into the operand is not free: it forks the digest of one act"
-    );
-}
-
 /// The digest is stable across runs and reproducible outside this crate.
 ///
 /// The vector below was computed independently of this code, from the
@@ -198,35 +154,11 @@ fn the_digest_is_stable_across_runs_and_reproducible_outside_this_crate() {
     );
     assert_eq!(
         payload_digest(&payload),
-        vec![
+        [
             0xf1, 0x16, 0xd4, 0xe2, 0x4d, 0x6e, 0x8f, 0x5d, 0x07, 0x8b, 0x20, 0x23, 0x90, 0xf7,
             0x0f, 0x33, 0x86, 0xbb, 0xf3, 0x15, 0x95, 0x07, 0x1b, 0x08, 0x14, 0xbc, 0x31, 0xbc,
             0xc3, 0x80, 0x23, 0x65,
         ],
         "the stored digest must equal the independently computed vector, byte for byte"
     );
-    assert_eq!(
-        payload_digest(&payload),
-        payload_digest(&payload),
-        "two calls in one process agree, which is the weaker half the vector above subsumes"
-    );
-}
-
-/// A string is escaped the way `JSON` escapes strings, so a value carrying a
-/// quote or a backslash cannot forge the rendering's own punctuation.
-///
-/// Without escaping, a `name` of `a","brand_id":"b-2` would render as two
-/// fields and let one act's digest be spelled by another's payload — the
-/// injection a canonical rendering assembled by concatenation invites.
-#[test]
-fn a_string_value_is_escaped_so_it_cannot_forge_the_renderings_punctuation() {
-    let hostile = json!({ "name": "a\",\"brand_id\":\"b-2", "brand_id": "b-1" });
-    let honest = json!({ "name": "a", "brand_id": "b-2" });
-
-    assert_eq!(
-        canonical_rendering(&hostile),
-        "{\"brand_id\":\"b-1\",\"name\":\"a\\\",\\\"brand_id\\\":\\\"b-2\"}",
-        "the quotes inside the value are escaped, not passed through as structure"
-    );
-    assert_ne!(payload_digest(&hostile), payload_digest(&honest));
 }

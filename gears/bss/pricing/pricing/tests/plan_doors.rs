@@ -908,7 +908,13 @@ async fn plan_doors_need_the_plan_permissions_and_hide_other_tenants() {
             "a stranger may not write here: {method} {path}: {b}"
         );
         let (s, b, _) = request(&f.app, &author, method, &path, body, tag, key).await;
-        assert!(s < 300 || s == 409, "{method} {path}: {s} {b}");
+        if method == "POST" && path == "/plans" {
+            // A new plan names its book, which `plan:author` alone does not read (D-456).
+            assert_eq!(s, 403, "{method} {path}: {b}");
+            assert!(b.to_string().contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
+        } else {
+            assert!(s < 300 || s == 409, "{method} {path}: {s} {b}");
+        }
     }
 }
 
@@ -971,4 +977,54 @@ async fn a_book_change_remaps_an_item_to_the_twin_of_its_own_model() {
         ids[2].to_string(),
         "the flat twin, not the per_unit entry listed first"
     );
+}
+
+/// Fix run W1c M1 (D-424, products P-D-222): Products' registry trusts pricing's system actor
+/// in-process, and a door hands the registry its caller's context. A REST caller whose token
+/// carries that actor, under a policy that grants it every pricing action and a Products that
+/// grants nobody `read` or `reference`, is refused at the door, 403 `SYSTEM_ACTOR_RESERVED`: no
+/// entry is written and Products is never asked, so the trust never reaches a REST caller.
+#[tokio::test]
+async fn a_rest_caller_asserting_pricings_system_actor_never_reaches_the_registry() {
+    let (f, catalog) = setup().await;
+    let tenant = f.ctx.subject_tenant_id();
+    let eur = book(&f, "eur").await;
+    let sku = catalog.sku(SkuType::Usage);
+    catalog.readers([]);
+    catalog.referencers([]);
+    let app = plan_support::entry_support::app_granting_every_subject(f.state.clone(), tenant);
+    let actor = toolkit_security::SecurityContext::builder()
+        .subject_id(bss_products_sdk::PRICING_SYSTEM_ACTOR)
+        .subject_tenant_id(tenant)
+        .subject_type("bss-pricing.system")
+        .build()
+        .unwrap();
+    let (s, b, _) = request(
+        &app,
+        &actor,
+        "POST",
+        &format!("/price-books/{eur}/entries"),
+        json!({"sku_id":sku,"model":"per_unit"}),
+        None,
+        Some("asserted"),
+    )
+    .await;
+    assert_eq!(s, 403, "{b}");
+    assert_eq!(b["context"]["reason"], "SYSTEM_ACTOR_RESERVED", "{b}");
+    assert_eq!(
+        (catalog.reads(), catalog.calls(), catalog.reserves()),
+        (0, 0, 0),
+        "Products was never asked"
+    );
+    let (s, listed, _) = f
+        .call(
+            "GET",
+            &format!("/price-books/{eur}/entries"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{listed}");
+    assert_eq!(listed["items"], json!([]), "nothing written: {listed}");
 }

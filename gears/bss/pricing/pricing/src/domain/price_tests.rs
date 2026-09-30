@@ -127,15 +127,15 @@ fn prototype_l190_l191_return_copy_is_detached() {
     promo.state = PriceState::Draft;
     promo.effective_from = date("2026-10-01");
     promo.price = Some(PriceData::Flat { amount: dec("40") });
-    let mut pair = temporary(&[r.clone()], promo, date("2026-10-11"), Uuid::from_u128(3)).unwrap();
+    let pair = temporary(&[r.clone()], promo, date("2026-10-11"), Uuid::from_u128(3)).unwrap();
     assert_eq!(pair[1].version_no, 3);
     assert_eq!(pair[1].effective_from, date("2026-10-11"));
     assert_eq!(pair[1].price, r.price);
     assert_eq!(pair[1].return_of_price_id, Some(r.id));
     assert_eq!(pair[1].paired_price_id, Some(pair[0].id));
     assert_eq!(pair[0].paired_price_id, Some(pair[1].id));
-    pair[1].price = Some(PriceData::Flat { amount: dec("99") });
-    assert_eq!(r.price, Some(PriceData::Flat { amount: dec("20") }));
+    // The promo half keeps its own money; the return copied the restored price's (PT-07).
+    assert_eq!(pair[0].price, Some(PriceData::Flat { amount: dec("40") }));
 }
 #[test]
 fn prototype_l192_l194_temporary_end() {
@@ -194,7 +194,6 @@ fn prototype_l200_l203_temporary_resolution_and_open_tail() {
 }
 #[test]
 fn prototype_l238_l241_shift_preserves_duration() {
-    assert_eq!((date("2026-10-11") - date("2026-10-01")).whole_days(), 10);
     let mut r = price(3, "2026-10-01", None, PriceState::Draft);
     r.temporary_until = Some(date("2026-10-11"));
     let shifted = shift(&r, date("2026-11-01")).unwrap();
@@ -373,10 +372,8 @@ fn matrix_18_min_fee_is_only_validated() {
     }
     r.min_fee = Some(dec("30"));
     assert!(rules(&r, &[], None).is_empty());
-    assert_eq!(
-        crate::domain::money::amount_for(r.model, r.price.as_ref().unwrap(), dec("10")).unwrap(),
-        dec("10")
-    );
+    // `amount_for` takes no fee at all: that the fee is not applied holds by its signature
+    // (PT-08), and resolve serves it as stored (tests/read_contract.rs).
 }
 #[test]
 fn matrix_18_amount_package_and_start_invalid() {

@@ -1,6 +1,6 @@
 //! Tenant-scoped registry repositories and typed storage errors.
 
-use crate::infra::storage::RepoError;
+use crate::infra::storage::{RepoError, RepoRefusal};
 use toolkit_db::secure::ScopeError;
 
 pub mod approval_repo;
@@ -45,29 +45,25 @@ fn map_unique(context: String, e: ScopeError) -> RepoError {
         return driver_failure(context, e);
     }
     let s = e.to_string();
-    let code = if s.contains("uq_products_sku_code") || s.contains("products_sku.code") {
-        "SKU_CODE_TAKEN"
+    let refusal = if s.contains("uq_products_sku_code") || s.contains("products_sku.code") {
+        RepoRefusal::SkuCodeTaken
     } else if s.contains("uq_products_sku_name") || s.contains("products_sku.name") {
-        "SKU_NAME_TAKEN"
+        RepoRefusal::SkuNameTaken
     } else if s.contains("uq_products_category_code") || s.contains("products_category.code") {
-        "CATEGORY_CODE_TAKEN"
+        RepoRefusal::CategoryCodeTaken
     // After the code arm: `SQLite` names the code index's columns `products_category.tenant_id,
     // products_category.code`, and the partial default index's column `products_category.tenant_id`
     // alone (P-D-218).
     } else if s.contains("uq_products_category_default")
         || s.contains("products_category.tenant_id")
     {
-        "CATEGORY_DEFAULT_TAKEN"
-    } else if s.contains("uq_products_sku_version_date")
-        || s.contains("products_sku_version.effective_from")
-    {
-        "VERSION_DATE_TAKEN"
+        RepoRefusal::CategoryDefaultTaken
     } else if s.contains("uq_products_sku_reference_live")
         || s.contains("products_sku_reference.owner_gear")
     {
-        "REFERENCE_EXISTS"
+        RepoRefusal::ReferenceExists
     } else {
         return driver_failure(context, e);
     };
-    RepoError::Db(code.to_owned())
+    RepoError::Refused(refusal)
 }

@@ -13,7 +13,7 @@ use super::{
     require_authenticated, tx_to_canonical,
 };
 use crate::{
-    authz::actions,
+    authz::{actions, resource_types},
     domain::{
         approvals::{KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE},
         canonical::{canonical_rendering, content_digest},
@@ -36,7 +36,9 @@ use toolkit::api::{
     operation_builder::OperationBuilder,
 };
 use toolkit_security::SecurityContext;
-#[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
+/// The policy is authorized as `approval_unit × settings`, so its refusals name that label
+/// (RS-25), not the SKU's.
+#[resource_error(gts_id!("cf.bss.products.approval_unit.v1~"))]
 struct PolicyResource;
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::get("/bss-products/v1/approval-policy")
@@ -119,8 +121,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
 fn policy_tag(policy: &ApprovalPolicyDto) -> Result<ContentTag, CanonicalError> {
     let value = serde_json::to_value(policy)
         .map_err(|e| CanonicalError::internal(format!("bss-products: policy tag: {e}")).create())?;
-    ContentTag::of_digest(&content_digest(&canonical_rendering(&value)))
-        .ok_or_else(|| CanonicalError::internal("bss-products: policy tag: short digest").create())
+    Ok(ContentTag::of_digest(&content_digest(
+        &canonical_rendering(&value),
+    )))
 }
 /// The policy with its `ETag`.
 fn answer(policy: ApprovalPolicyDto) -> Result<Response, CanonicalError> {
@@ -153,7 +156,13 @@ async fn put(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     // Authorization first, then the precondition, then the body (as pricing's doors do).
-    let scope = g::scope(&enforcer, &ctx, actions::SETTINGS, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::SETTINGS,
+    )
+    .await?;
     let expected = if_match_content(&headers)?;
     let p = json_body(body)?;
     let kind = p.kind.unwrap_or_else(|| "*".into());
@@ -179,8 +188,12 @@ async fn put(
                         .await
                         .map_err(TxError::Repo)?,
                 );
-                let tag = policy_tag(&current)
-                    .map_err(|_| TxError::Repo(RepoError::Db("the policy's content tag".into())))?;
+                let tag = policy_tag(&current).map_err(|e| {
+                    TxError::Repo(RepoError::Db(format!(
+                        "the policy's content tag: {}",
+                        e.diagnostic().unwrap_or(e.detail())
+                    )))
+                })?;
                 if tag != expected {
                     return Err(stale_tag());
                 }
@@ -189,7 +202,6 @@ async fn put(
                     .map_err(TxError::Repo)?;
                 g::audit(
                     tx,
-                    &scope,
                     &ctx,
                     "approval_policy.write",
                     "approval_policy",
@@ -219,7 +231,13 @@ async fn delete(
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
-    let scope = g::scope(&enforcer, &ctx, actions::SETTINGS, true).await?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::SETTINGS,
+    )
+    .await?;
     let expected = if_match_content(&headers)?;
     if kind == "*" {
         let mut report = crate::domain::validation::ValidationReport::new();
@@ -249,8 +267,12 @@ async fn delete(
                 let current = repo::read_policy(tx, &scope, tenant)
                     .await
                     .map_err(TxError::Repo)?;
-                let tag = policy_tag(&ApprovalPolicyDto::from(current.clone()))
-                    .map_err(|_| TxError::Repo(RepoError::Db("the policy's content tag".into())))?;
+                let tag = policy_tag(&ApprovalPolicyDto::from(current.clone())).map_err(|e| {
+                    TxError::Repo(RepoError::Db(format!(
+                        "the policy's content tag: {}",
+                        e.diagnostic().unwrap_or(e.detail())
+                    )))
+                })?;
                 if tag != expected {
                     return Err(stale_tag());
                 }
@@ -264,7 +286,6 @@ async fn delete(
                 }
                 g::audit(
                     tx,
-                    &scope,
                     &ctx,
                     "approval_policy.reset",
                     "approval_policy",

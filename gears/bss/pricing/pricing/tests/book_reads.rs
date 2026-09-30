@@ -71,6 +71,141 @@ fn money_app(f: &Fixture, books: Option<Vec<Uuid>>, unavailable: bool) -> axum::
     ))
 }
 
+// ------------------------------------------------------------------ a plan's book (PS-08)
+
+/// The number of plans of the fixture tenant, read with every grant.
+async fn plan_count(f: &Fixture) -> usize {
+    ok(f, "/plans").await["items"].as_array().unwrap().len()
+}
+
+/// A plan names only a book its author may read (whole-branch review PS-08, D-456): plan create,
+/// clone and a revision PATCH that names a book judge `price_book` read on that book, as D-440
+/// judges the money. A grant that does not admit the book is 403 `PRICE_BOOK_READ_REQUIRED`, a
+/// policy that cannot judge is 503, and nothing is written; a grant that admits it lets all three
+/// through, and a PATCH that names no book asks nothing of the money's policy.
+#[tokio::test]
+async fn a_plan_names_only_a_book_its_author_may_read() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let other = plan_support::book(&f, "other").await;
+    let sku = catalog.sku(SkuType::Usage);
+    let entry = plan_support::entry(&f, eur, sku, "usage", None).await;
+    let (source, rev) = plan(&f, "source", eur).await;
+    let source = id_of(&source["id"]);
+    item(&f, rev, sku, Some(entry), "paid").await;
+    publish(&f, source, rev).await;
+    let (_, draft) = plan(&f, "draft", eur).await;
+    let plans = plan_count(&f).await;
+    let tries = |app: axum::Router, tag: &'static str| {
+        let f = &f;
+        async move {
+            [
+                request(
+                    &app,
+                    &f.ctx,
+                    "POST",
+                    "/plans",
+                    json!({"code":format!("new-{tag}"),"name":"New","book_id":eur}),
+                    None,
+                    Some(&format!("create-{tag}")),
+                )
+                .await,
+                request(
+                    &app,
+                    &f.ctx,
+                    "POST",
+                    &format!("/plans/{source}/clone"),
+                    json!({"code":format!("clone-{tag}"),"name":"Clone"}),
+                    None,
+                    Some(&format!("clone-{tag}")),
+                )
+                .await,
+                request(
+                    &app,
+                    &f.ctx,
+                    "PATCH",
+                    &format!("/plan-revisions/{draft}"),
+                    json!({"book_id":eur}),
+                    Some("\"1\""),
+                    None,
+                )
+                .await,
+            ]
+        }
+    };
+    for (app, status, tag) in [
+        (money_app(&f, Some(vec![other]), false), 403, "narrow"),
+        (money_app(&f, None, true), 503, "down"),
+    ] {
+        for (s, b, _) in tries(app, tag).await {
+            assert_eq!(s, status, "{tag}: {b}");
+            if status == 403 {
+                assert!(code_of(&b).contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
+            }
+        }
+        assert_eq!(plan_count(&f).await, plans, "{tag}: nothing was written");
+    }
+    let revision = ok(&f, &format!("/plan-revisions/{draft}")).await;
+    assert_eq!(
+        revision["version"], 1,
+        "the PATCH wrote nothing: {revision}"
+    );
+    // A PATCH that names no book needs no judgement of the money: the policy may be down.
+    let (s, b, _) = request(
+        &money_app(&f, None, true),
+        &f.ctx,
+        "PATCH",
+        &format!("/plan-revisions/{draft}"),
+        json!({"available_from":null}),
+        Some("\"1\""),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+    let admitted = money_app(&f, Some(vec![eur]), false);
+    let [created, cloned, patched] = tries(admitted, "admitted").await;
+    assert_eq!(created.0, 201, "{created:?}");
+    assert_eq!(cloned.0, 201, "{cloned:?}");
+    assert_eq!(patched.0, 409, "the draft moved to version 2: {patched:?}");
+    assert!(
+        code_of(&patched.1).contains("STALE_REVISION"),
+        "{patched:?}"
+    );
+    assert_eq!(plan_count(&f).await, plans + 2);
+    // The second review of W1a, L2: the PATCH judges the book it names, not the draft's current
+    // one. Under a grant for `eur` alone, moving the `eur` draft to `other` is 403 and writes
+    // nothing; naming `eur` at the draft's current version passes.
+    let only_eur = money_app(&f, Some(vec![eur]), false);
+    let (s, b, _) = request(
+        &only_eur,
+        &f.ctx,
+        "PATCH",
+        &format!("/plan-revisions/{draft}"),
+        json!({"book_id":other}),
+        Some("\"2\""),
+        None,
+    )
+    .await;
+    assert_eq!(s, 403, "{b}");
+    assert!(code_of(&b).contains("PRICE_BOOK_READ_REQUIRED"), "{b}");
+    let revision = ok(&f, &format!("/plan-revisions/{draft}")).await;
+    assert_eq!(
+        revision["version"], 2,
+        "the refused move wrote nothing: {revision}"
+    );
+    let (s, b, _) = request(
+        &only_eur,
+        &f.ctx,
+        "PATCH",
+        &format!("/plan-revisions/{draft}"),
+        json!({"book_id":eur}),
+        Some("\"2\""),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{b}");
+}
+
 // ------------------------------------------------------------------ D-440: an entry's prices
 
 /// An entry whose default chain holds one price of every status and whose value chains `eu` and
@@ -1162,4 +1297,338 @@ async fn the_book_reads_count_their_stats_in_the_same_statements_for_10_and_100_
         lists.push(statements(&f, &recorder, &format!("/price-books/{b}/entries"), n).await);
     }
     same("entries", &lists[0], &lists[1]);
+}
+
+// ------------------------------------------------------------------ set-based reads (whole-branch review)
+
+/// The statements on pricing's tables the last request made, in order, with their binds.
+fn pricing_statements(recorder: &toolkit_db::test_support::QueryRecorder) -> Vec<(String, usize)> {
+    recorder
+        .events()
+        .into_iter()
+        .filter(|q| {
+            q.table
+                .as_deref()
+                .is_some_and(|t| t.starts_with("pricing_"))
+        })
+        .map(|q| (q.sql, q.param_count))
+        .collect()
+}
+
+/// `GET /resolve` reads the revision's entries and their prices set-based (PS-15): the same
+/// statements for 10 and for 100 items, each item on its own entry with its own price.
+#[tokio::test]
+async fn resolve_reads_in_the_same_statements_for_10_and_100_items() {
+    let (f, catalog, recorder) = recorded().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let now = time::OffsetDateTime::now_utc();
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (created, revision) = plan(&f, &format!("resolve-{n}"), eur).await;
+        for _ in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = stored_entry(&f, eur, sku, "per_unit", now).await;
+            stored_price(&f, e, Row::new(1, "approved", today() - days(1))).await;
+            item(&f, revision, sku, Some(e), "paid").await;
+        }
+        publish(&f, id_of(&created["id"]), revision).await;
+        recorder.clear();
+        let b = ok(
+            &f,
+            &format!("/resolve?plan_revision_id={revision}&date={}", today()),
+        )
+        .await;
+        assert_eq!(b["items"].as_array().unwrap().len(), n);
+        runs.push(pricing_statements(&recorder));
+    }
+    same("resolve", &runs[0], &runs[1]);
+}
+
+/// A book's publish-changes listing and its export read the book's prices, and the listing the
+/// plans that read its entries, set-based (PS-14, PS-16): the same statements for 10 and for 100
+/// entries, each with an approved price and a draft, and each named by its own plan.
+#[tokio::test]
+async fn publish_changes_and_the_export_read_in_the_same_statements_for_10_and_100_entries() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    let (mut listings, mut exports) = (Vec::new(), Vec::new());
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("changes-{n}")).await;
+        for i in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = stored_entry(&f, b, sku, "per_unit", now).await;
+            stored_price(&f, e, Row::new(1, "approved", today() - days(1))).await;
+            stored_price(&f, e, Row::new(2, "draft", today() + days(1))).await;
+            let (_, revision) = plan(&f, &format!("reader-{n}-{i}"), b).await;
+            item(&f, revision, sku, Some(e), "paid").await;
+        }
+        recorder.clear();
+        let listing = ok(&f, &format!("/price-books/{b}/publish-changes")).await;
+        assert_eq!(
+            listing["prices"].as_array().unwrap().len(),
+            n,
+            "{listing:#}"
+        );
+        assert_eq!(listing["impact"]["plans"].as_array().unwrap().len(), n);
+        listings.push(pricing_statements(&recorder));
+        recorder.clear();
+        let export = ok(&f, &format!("/price-books/{b}/export")).await;
+        assert_eq!(export["entries"].as_array().unwrap().len(), n);
+        exports.push(pricing_statements(&recorder));
+    }
+    same("publish-changes", &listings[0], &listings[1]);
+    same("export", &exports[0], &exports[1]);
+}
+
+/// A submit reads its prices set-based (PS-39): publishing 10 or 100 drafts of one entry makes
+/// the same reads of `pricing_price`, under quorum 1 (recorded) and quorum 0 (applied at once,
+/// with its event); only its per-price writes (the locks, the approvals) grow.
+#[tokio::test]
+async fn a_submit_reads_its_prices_in_the_same_statements_for_10_and_100_drafts() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    for quorum in [1, 0] {
+        let (_, _, tag) = f
+            .call("GET", "/approval-policy", json!({}), None, None)
+            .await;
+        let (s, b, _) = f
+            .call(
+                "PUT",
+                "/approval-policy",
+                json!({ "quorum": quorum }),
+                Some(&tag),
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{b}");
+        submit_reads(&f, &catalog, &recorder, now, quorum).await;
+    }
+}
+async fn submit_reads(
+    f: &Fixture,
+    catalog: &Catalog,
+    recorder: &toolkit_db::test_support::QueryRecorder,
+    now: time::OffsetDateTime,
+    quorum: u32,
+) {
+    let mut runs = Vec::new();
+    for n in [10_i32, 100] {
+        let b = plan_support::book(f, &format!("submit-{quorum}-{n}")).await;
+        let e = stored_entry(f, b, catalog.sku(SkuType::Usage), "per_unit", now).await;
+        for i in 1..=n {
+            stored_price(f, e, Row::new(i, "draft", today() + days(i64::from(i)))).await;
+        }
+        recorder.clear();
+        let (s, body, _) = f
+            .call(
+                "POST",
+                &format!("/price-books/{b}/publish-changes"),
+                json!({}),
+                None,
+                Some(&format!("submit-{quorum}-{n}")),
+            )
+            .await;
+        assert_eq!(s, 201, "{body}");
+        assert_eq!(body["applied"], quorum == 0, "{body}");
+        runs.push(
+            recorder
+                .events()
+                .into_iter()
+                .filter(|q| {
+                    q.table.as_deref() == Some("pricing_price")
+                        && q.sql
+                            .trim_start()
+                            .to_ascii_uppercase()
+                            .starts_with("SELECT")
+                })
+                .map(|q| (q.sql, q.param_count))
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(
+        runs[0].len(),
+        runs[1].len(),
+        "quorum {quorum}: the price reads grow with the drafts: {:#?}",
+        runs[1]
+    );
+}
+
+// ------------------------------------------------------------------ the unit list (PS-13, D-458)
+
+/// A `prices` unit on `book` whose one price item names `entry`, with one current vote.
+async fn priced_unit(
+    f: &Fixture,
+    book: Uuid,
+    entry: Uuid,
+    submitted: time::OffsetDateTime,
+) -> Uuid {
+    use bss_approval::{Decision, ItemRef, Store, Unit, Verdict};
+    use bss_pricing::infra::storage::repo::{approval_repo::PricingApprovalStore, price_repo};
+    let (id, tenant) = (Uuid::now_v7(), f.ctx.subject_tenant_id());
+    let scope = plan_support::scope(f);
+    price_repo::transaction(&f.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move {
+            let store = PricingApprovalStore {
+                scope,
+                tenant_id: tenant,
+            };
+            let err = |e: bss_approval::ApprovalError| {
+                bss_pricing::infra::storage::RepoError::Db(e.to_string())
+            };
+            store
+                .insert_unit(
+                    tx,
+                    &Unit {
+                        id,
+                        tenant_id: tenant,
+                        kind: "prices".into(),
+                        ref_type: "price_book".into(),
+                        ref_id: book,
+                        state: UnitState::Pending,
+                        common_effective_date: None,
+                        quorum_required: 2,
+                        generation: 1,
+                        submitted_by: Uuid::new_v4(),
+                        submitted_at: submitted,
+                        submit_note: None,
+                        decided_at: None,
+                        decided_note: None,
+                        snapshot: json!({}),
+                        snapshot_hash: "hash".into(),
+                        version: 1,
+                    },
+                    &[ItemRef {
+                        item_type: "price".into(),
+                        item_id: Uuid::now_v7(),
+                        created_by: Uuid::new_v4(),
+                        before: None,
+                        after: json!({ "price_book_entry_id": entry }),
+                    }],
+                )
+                .await
+                .map_err(err)?;
+            store
+                .insert_decision(
+                    tx,
+                    &Decision {
+                        unit_id: id,
+                        actor: Uuid::new_v4(),
+                        generation: 1,
+                        verdict: Verdict::Approve,
+                        note: None,
+                        at: submitted,
+                        stale: false,
+                    },
+                )
+                .await
+                .map_err(err)
+        })
+    })
+    .await
+    .unwrap();
+    id
+}
+
+/// `GET /approval-units` reads one page set-based (PS-13, D-458): its units, their items, their
+/// decisions and their impact's plans in the same statements for 10 and for 100 units, each with
+/// an item on its own entry, a vote, and a plan that names the entry.
+#[tokio::test]
+async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("units-{n}")).await;
+        for i in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = stored_entry(&f, b, sku, "per_unit", now).await;
+            let (_, revision) = plan(&f, &format!("reads-{n}-{i}"), b).await;
+            item(&f, revision, sku, Some(e), "paid").await;
+            priced_unit(&f, b, e, now).await;
+        }
+        recorder.clear();
+        let page = ok(&f, &format!("/approval-units?book_id={b}")).await;
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), n);
+        for unit in items {
+            assert_eq!(unit["decisions"].as_array().unwrap().len(), 1, "{unit}");
+            assert_eq!(
+                unit["impact"]["plans"].as_array().unwrap().len(),
+                1,
+                "{unit}"
+            );
+        }
+        runs.push(pricing_statements(&recorder));
+    }
+    same("approval units", &runs[0], &runs[1]);
+}
+
+/// The unit list pages (PS-13, D-458): `limit` (default 200, clamped at 500) and the opaque
+/// `cursor` of `page_info`, in submission order with the id breaking a tie; the pages together are
+/// the whole list, and a cursor replayed under another filter is 400.
+#[tokio::test]
+async fn the_unit_list_pages_in_submission_order() {
+    let (f, _catalog) = setup().await;
+    let book = plan_support::book(&f, "paged").await;
+    let t0 = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+    let mut submitted = Vec::new();
+    for minutes in [0_i64, 1, 1, 2, 3] {
+        submitted.push(
+            unit_on(
+                &f,
+                "prices",
+                book,
+                UnitState::Pending,
+                t0 + time::Duration::minutes(minutes),
+                None,
+            )
+            .await,
+        );
+    }
+    // Minute 1 holds two units: the id orders them.
+    submitted[1..3].sort();
+    let whole = ok(&f, &format!("/approval-units?book_id={book}")).await;
+    assert_eq!(
+        ids(&whole),
+        submitted.iter().map(Uuid::to_string).collect::<Vec<_>>()
+    );
+    assert_eq!(whole["page_info"]["limit"], 200, "{whole}");
+    assert!(whole["page_info"]["next_cursor"].is_null(), "{whole}");
+    let mut seen = Vec::new();
+    let mut path = format!("/approval-units?book_id={book}&limit=2");
+    let mut pages = 0;
+    loop {
+        let page = ok(&f, &path).await;
+        pages += 1;
+        assert!(page["items"].as_array().unwrap().len() <= 2, "{page}");
+        seen.extend(ids(&page));
+        match page["page_info"]["next_cursor"].as_str() {
+            Some(cursor) => {
+                path = format!(
+                    "/approval-units?book_id={book}&limit=2&cursor={}",
+                    encode(cursor)
+                );
+            }
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    assert_eq!(seen, ids(&whole), "the pages are the whole list, in order");
+    let first = ok(&f, &format!("/approval-units?book_id={book}&limit=2")).await;
+    let cursor = encode(first["page_info"]["next_cursor"].as_str().unwrap());
+    let (s, b, _) = get(
+        &f,
+        &format!("/approval-units?book_id={book}&state=pending&limit=2&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(s, 400, "a cursor of another filter: {b}");
+    assert!(code_of(&b).contains("FILTER_MISMATCH"), "{b}");
+    let (s, b, _) = get(&f, "/approval-units?cursor=not-a-cursor").await;
+    assert_eq!(s, 400, "{b}");
+    let (s, b, _) = get(&f, "/approval-units?limit=many").await;
+    assert_eq!(s, 400, "{b}");
+    assert!(code_of(&b).contains("QUERY_INVALID"), "{b}");
+    let clamped = ok(&f, &format!("/approval-units?book_id={book}&limit=1000")).await;
+    assert_eq!(clamped["page_info"]["limit"], 500, "{clamped}");
 }

@@ -134,13 +134,20 @@ closed_set!(
     PricingRevisionState from RevisionState {
         Draft => "draft",
         Pending => "pending",
+        Scheduled => "scheduled",
         Published => "published",
         Superseded => "superseded",
     }
 );
 closed_set!(
-    /// The state of a revision that resolves: no other does (D-419).
-    PricingResolvedRevisionState { Published => "published", Superseded => "superseded" }
+    /// The state of a revision that resolves, as it reads today (D-447): a published or
+    /// superseded one on every date (D-419), a scheduled one from its sale date on (D-454). No
+    /// other resolves.
+    PricingResolvedRevisionState {
+        Published => "published",
+        Superseded => "superseded",
+        Scheduled => "scheduled",
+    }
 );
 closed_set!(
     /// What a reference op does (D-413).

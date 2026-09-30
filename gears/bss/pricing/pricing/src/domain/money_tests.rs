@@ -205,3 +205,51 @@ fn money_sent_as_json_numbers_is_refused_never_rounded() {
         "a string keeps every digit"
     );
 }
+/// `amount_for`'s two other refusals (PT-10): a negative quantity, and content its model does not
+/// take, judged before any arithmetic.
+#[test]
+fn a_negative_quantity_and_a_shape_the_model_does_not_take_are_refused() {
+    assert_eq!(
+        amount_for(
+            Model::PerUnit,
+            &PriceData::PerUnit { rate: dec("2") },
+            dec("-1")
+        )
+        .unwrap_err()
+        .code,
+        "AMOUNT_INVALID"
+    );
+    assert_eq!(
+        amount_for(
+            Model::PerUnit,
+            &PriceData::PerUnit { rate: dec("2") },
+            dec("0")
+        )
+        .unwrap(),
+        dec("0"),
+        "zero is a quantity"
+    );
+    assert_eq!(
+        amount_for(
+            Model::Flat,
+            &PriceData::PerUnit { rate: dec("2") },
+            dec("1")
+        )
+        .unwrap_err()
+        .code,
+        "PRICE_MISSING"
+    );
+    assert_eq!(
+        amount_for(
+            Model::Package,
+            &PriceData::Package {
+                package_size: dec("0"),
+                package_price: dec("5")
+            },
+            dec("1")
+        )
+        .unwrap_err()
+        .code,
+        "PACKAGE_FIELDS_INVALID"
+    );
+}

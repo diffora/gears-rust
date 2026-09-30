@@ -4,8 +4,8 @@
 //! These fakes deliberately do not roll back. SQL rollback and competing writers
 //! are covered by the SQL-backed gear store in phase 1c.
 use bss_approval::{
-    ApprovalError, ApprovalSubject, ApproveOutcome, Decision, Engine, ItemRef, Policy, Store,
-    SubmitRequest, Unit, UnitState,
+    ApprovalError, ApprovalSubject, ApproveOutcome, Decision, Engine, ItemRef, Policy,
+    RejectOutcome, Store, SubmitRequest, Unit, UnitState,
 };
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, sync::Arc};
@@ -188,12 +188,16 @@ impl<'a> Store<DbTx<'a>> for Mem {
 }
 
 type LiveRows = BTreeMap<Uuid, (Uuid, i64)>;
+/// Each unlocked item with the `approved` flag of its unlock.
+type Unlocks = Vec<(Uuid, bool)>;
 
 /// Rows whose business content is one amount; the lock lives in a separate map so it is never part of `after`.
+/// `unlocked` records every unlock the engine made, with its `approved` flag, in call order.
 #[derive(Default, Clone)]
 struct Rows {
     live: Arc<Mutex<LiveRows>>,
     locked: Arc<Mutex<BTreeMap<Uuid, Uuid>>>,
+    unlocked: Arc<Mutex<Unlocks>>,
     applied: Arc<Mutex<Vec<Uuid>>>,
     refuse_apply: Arc<Mutex<bool>>,
 }
@@ -262,11 +266,12 @@ impl<'a> ApprovalSubject<DbTx<'a>> for Rows {
         _: &DbTx<'a>,
         _: &Unit,
         items: &[ItemRef],
-        _: bool,
+        approved: bool,
     ) -> Result<(), ApprovalError> {
         let mut l = self.locked.lock();
         for i in items {
             l.remove(&i.item_id);
+            self.unlocked.lock().push((i.item_id, approved));
         }
         Ok(())
     }
@@ -402,7 +407,9 @@ async fn quorum_zero_applies_at_submit_and_records_the_unit() {
     let author = Uuid::new_v4();
     let (subject, ids) = rows(author, 2);
     let store = Mem::default();
-    let s = submit(&db, &store, &subject, ids, author, 0).await.unwrap();
+    let s = submit(&db, &store, &subject, ids.clone(), author, 0)
+        .await
+        .unwrap();
     assert_eq!(unit_of(&db, &store, s.unit.id).await, s.unit);
     assert!(store.decisions.lock().is_empty());
     assert!(s.applied);
@@ -410,6 +417,11 @@ async fn quorum_zero_applies_at_submit_and_records_the_unit() {
     assert_eq!(s.unit.decided_at, Some(T0));
     assert_eq!(subject.applied.lock().len(), 2);
     assert!(subject.locked.lock().is_empty());
+    assert_eq!(
+        *subject.unlocked.lock(),
+        ids.iter().map(|id| (*id, true)).collect::<Vec<_>>(),
+        "applied at submit: every lock turns into its approval"
+    );
 }
 #[tokio::test]
 async fn quorum_one_pends_then_an_independent_approve_applies() {
@@ -417,18 +429,35 @@ async fn quorum_one_pends_then_an_independent_approve_applies() {
     let author = Uuid::new_v4();
     let (subject, ids) = rows(author, 1);
     let store = Mem::default();
-    let s = submit(&db, &store, &subject, ids, author, 1).await.unwrap();
+    let s = submit(&db, &store, &subject, ids.clone(), author, 1)
+        .await
+        .unwrap();
     assert!(!s.applied);
     assert!(matches!(
         approve(&db, &store, &subject, s.unit.id, author).await,
         Err(ApprovalError::SodViolation)
     ));
+    assert!(
+        subject.unlocked.lock().is_empty(),
+        "a refusal unlocks nothing"
+    );
     assert!(matches!(
         approve(&db, &store, &subject, s.unit.id, Uuid::new_v4())
             .await
             .unwrap(),
         ApproveOutcome::Applied
     ));
+    assert_eq!(*subject.applied.lock(), ids);
+    assert!(subject.locked.lock().is_empty());
+    assert_eq!(
+        *subject.unlocked.lock(),
+        [(ids[0], true)],
+        "unlocked as approved"
+    );
+    let applied = unit_of(&db, &store, s.unit.id).await;
+    assert_eq!(applied.state, UnitState::Approved);
+    assert_eq!(applied.decided_at, Some(T1));
+    assert_eq!(applied.decided_note, None);
     assert!(matches!(
         approve(&db, &store, &subject, s.unit.id, Uuid::new_v4()).await,
         Err(ApprovalError::AlreadyDecided)
@@ -448,23 +477,6 @@ async fn a_locked_item_refuses_a_second_unit() {
         Err(ApprovalError::Locked { .. })
     ));
     // the second unit row was inserted by the fake and would be rolled back by a real store; the fake keeps it — that is the fake's limit, not the engine's
-}
-#[tokio::test]
-async fn the_lock_itself_does_not_change_the_fingerprint() {
-    let db = db().await;
-    let author = Uuid::new_v4();
-    let (subject, ids) = rows(author, 1);
-    let store = Mem::default();
-    let s = submit(&db, &store, &subject, ids, author, 1).await.unwrap();
-    assert!(
-        matches!(
-            approve(&db, &store, &subject, s.unit.id, Uuid::new_v4())
-                .await
-                .unwrap(),
-            ApproveOutcome::Applied
-        ),
-        "lock metadata is not business content"
-    );
 }
 #[tokio::test]
 async fn content_drift_refreshes_the_generation_and_the_same_reviewer_votes_again() {
@@ -531,6 +543,11 @@ async fn content_drift_refreshes_the_generation_and_the_same_reviewer_votes_agai
             .unwrap(),
         ApproveOutcome::Applied
     ));
+    assert_eq!(*subject.unlocked.lock(), [(ids[0], true)]);
+    assert_eq!(
+        unit_of(&db, &store, s.unit.id).await.state,
+        UnitState::Approved
+    );
 }
 #[tokio::test]
 async fn a_lost_version_race_is_contended_and_writes_nothing() {
@@ -578,7 +595,9 @@ async fn reject_needs_a_note_and_unlocks_withdraw_is_the_submitters() {
     let author = Uuid::new_v4();
     let (subject, ids) = rows(author, 1);
     let store = Mem::default();
-    let s = submit(&db, &store, &subject, ids, author, 1).await.unwrap();
+    let s = submit(&db, &store, &subject, ids.clone(), author, 1)
+        .await
+        .unwrap();
     let (st, su) = (store.clone(), subject.clone());
     let id = s.unit.id;
     let w = in_tx(&db, move |tx| {
@@ -595,7 +614,7 @@ async fn reject_needs_a_note_and_unlocks_withdraw_is_the_submitters() {
     .await;
     assert!(matches!(r, Err(ApprovalError::NoteRequired)));
     let (st, su) = (store.clone(), subject.clone());
-    in_tx(&db, move |tx| {
+    let outcome = in_tx(&db, move |tx| {
         let (st, su) = (st.clone(), su.clone());
         Box::pin(async move {
             Engine::reject(&st, &su, tx, id, Uuid::new_v4(), 1, "wrong amount", T1).await
@@ -603,12 +622,22 @@ async fn reject_needs_a_note_and_unlocks_withdraw_is_the_submitters() {
     })
     .await
     .unwrap();
+    assert_eq!(outcome, RejectOutcome::Rejected);
     let rejected = unit_of(&db, &store, id).await;
     assert_eq!(rejected.state, UnitState::Rejected);
     assert_eq!(rejected.decided_note.as_deref(), Some("wrong amount"));
+    assert_eq!(rejected.decided_at, Some(T1));
     assert!(subject.locked.lock().is_empty());
+    assert_eq!(
+        *subject.unlocked.lock(),
+        [(ids[0], false)],
+        "unlocked, not approved"
+    );
+    assert!(subject.applied.lock().is_empty());
     let (subject, ids) = rows(author, 1);
-    let s = submit(&db, &store, &subject, ids, author, 1).await.unwrap();
+    let s = submit(&db, &store, &subject, ids.clone(), author, 1)
+        .await
+        .unwrap();
     let (st, su) = (store.clone(), subject.clone());
     let id = s.unit.id;
     in_tx(&db, move |tx| {
@@ -621,11 +650,14 @@ async fn reject_needs_a_note_and_unlocks_withdraw_is_the_submitters() {
     assert_eq!(withdrawn.state, UnitState::Withdrawn);
     assert_eq!(withdrawn.decided_at, Some(T1));
     assert!(subject.locked.lock().is_empty());
+    assert_eq!(*subject.unlocked.lock(), [(ids[0], false)]);
+    assert!(subject.applied.lock().is_empty());
 }
 
 /// Products P-D-219, pricing D-445: the submitter's note is stored on the unit as sent, and it is
 /// not content. Three submits of the same items (each withdrawn to free the lock) that differ only
-/// by their note — two notes and none — record the same snapshot and the same fingerprint.
+/// by their note — two notes and none — record the same fingerprint. (The fake's snapshot never
+/// sees the note, and `Store::refresh` takes none: the gears' store tests cover both.)
 #[tokio::test]
 async fn the_submitters_note_is_stored_on_the_unit_and_is_not_content() {
     let db = db().await;
@@ -648,39 +680,214 @@ async fn the_submitters_note_is_stored_on_the_unit_and_is_not_content() {
             u.snapshot_hash, units[0].snapshot_hash,
             "a note is not content"
         );
-        assert_eq!(u.snapshot, units[0].snapshot, "nor part of the snapshot");
     }
-    assert!(
-        !units[0].snapshot.to_string().contains("raise for Q4"),
-        "{}",
-        units[0].snapshot
-    );
     // The withdrawal decided the unit; the submitter's note stays beside the decision.
     let withdrawn = unit_of(&db, &store, units[0].id).await;
     assert_eq!(withdrawn.state, UnitState::Withdrawn);
     assert_eq!(withdrawn.submit_note.as_deref(), Some("raise for Q4"));
 }
 
-/// A stale refresh rewrites the items, the snapshot and the fingerprint, and keeps the note: it is
-/// what the submitter said, not what the reviewers review.
+/// A reject with the unit's current generation, under the fake's transaction.
+async fn reject(
+    db: &Db,
+    store: &Mem,
+    subject: &Rows,
+    unit: Uuid,
+    actor: Uuid,
+    generation: i32,
+    note: &'static str,
+) -> Result<RejectOutcome, ApprovalError> {
+    let (store, subject) = (store.clone(), subject.clone());
+    in_tx(db, move |tx| {
+        let (store, subject) = (store.clone(), subject.clone());
+        Box::pin(async move {
+            Engine::reject(&store, &subject, tx, unit, actor, generation, note, T1).await
+        })
+    })
+    .await
+}
+/// An approve carrying a note.
+async fn approve_noted(
+    db: &Db,
+    store: &Mem,
+    subject: &Rows,
+    unit: Uuid,
+    actor: Uuid,
+    note: String,
+) -> Result<ApproveOutcome, ApprovalError> {
+    let (store, subject) = (store.clone(), subject.clone());
+    in_tx(db, move |tx| {
+        let (store, subject, note) = (store.clone(), subject.clone(), note.clone());
+        Box::pin(async move {
+            Engine::approve(&store, &subject, tx, unit, actor, 1, Some(&note), T1).await
+        })
+    })
+    .await
+}
+
+/// A reject on content that drifted under the reviewers refreshes the unit as an approve does:
+/// the unit stays pending at the next generation, records no vote and keeps its locks; the
+/// reviewer then rejects what they now see.
 #[tokio::test]
-async fn a_stale_refresh_keeps_the_submitters_note() {
+async fn a_reject_on_drifted_content_refreshes_the_unit_and_records_no_vote() {
     let db = db().await;
     let author = Uuid::new_v4();
     let (subject, ids) = rows(author, 1);
     let store = Mem::default();
-    let s = submit_noted(&db, &store, &subject, ids.clone(), author, 1, Some("why"))
+    let s = submit(&db, &store, &subject, ids.clone(), author, 1)
         .await
         .unwrap();
-    subject.live.lock().insert(ids[0], (author, 11));
-    assert!(matches!(
-        approve(&db, &store, &subject, s.unit.id, Uuid::new_v4())
+    subject.live.lock().get_mut(&ids[0]).unwrap().1 = 99;
+    let reviewer = Uuid::new_v4();
+    assert_eq!(
+        reject(&db, &store, &subject, s.unit.id, reviewer, 1, "too cheap")
             .await
             .unwrap(),
-        ApproveOutcome::Refreshed { generation: 2 }
+        RejectOutcome::Refreshed { generation: 2 }
+    );
+    let u = unit_of(&db, &store, s.unit.id).await;
+    assert_eq!(
+        u.state,
+        UnitState::Pending,
+        "a stale unit is refreshed, not rejected"
+    );
+    assert_eq!(u.generation, 2);
+    assert_ne!(u.snapshot_hash, s.unit.snapshot_hash);
+    assert!(
+        store.decisions.lock().is_empty(),
+        "the refresh records no vote"
+    );
+    assert!(
+        !subject.locked.lock().is_empty(),
+        "the refresh keeps the locks"
+    );
+    assert!(subject.unlocked.lock().is_empty());
+    assert_eq!(
+        reject(&db, &store, &subject, s.unit.id, reviewer, 1, "late")
+            .await
+            .unwrap_err()
+            .code(),
+        "GENERATION_MISMATCH",
+        "the old generation is refused"
+    );
+    assert_eq!(
+        reject(
+            &db,
+            &store,
+            &subject,
+            s.unit.id,
+            reviewer,
+            2,
+            "still too cheap"
+        )
+        .await
+        .unwrap(),
+        RejectOutcome::Rejected
+    );
+    let u = unit_of(&db, &store, s.unit.id).await;
+    assert_eq!(u.state, UnitState::Rejected);
+    assert_eq!(u.decided_note.as_deref(), Some("still too cheap"));
+    assert!(subject.locked.lock().is_empty());
+    assert_eq!(*subject.unlocked.lock(), [(ids[0], false)]);
+}
+
+/// The same reviewer may not approve and then reject one generation: the reject is a duplicate
+/// vote, and the unit stays pending with its locks held.
+#[tokio::test]
+async fn an_approve_then_a_reject_by_one_reviewer_is_a_duplicate_vote() {
+    let db = db().await;
+    let author = Uuid::new_v4();
+    let (subject, ids) = rows(author, 1);
+    let store = Mem::default();
+    let s = submit(&db, &store, &subject, ids, author, 2).await.unwrap();
+    let reviewer = Uuid::new_v4();
+    assert!(matches!(
+        approve(&db, &store, &subject, s.unit.id, reviewer)
+            .await
+            .unwrap(),
+        ApproveOutcome::Pending { have: 1, need: 2 }
     ));
-    let refreshed = unit_of(&db, &store, s.unit.id).await;
-    assert_eq!(refreshed.generation, 2);
-    assert_ne!(refreshed.snapshot_hash, s.unit.snapshot_hash);
-    assert_eq!(refreshed.submit_note.as_deref(), Some("why"));
+    assert!(matches!(
+        reject(
+            &db,
+            &store,
+            &subject,
+            s.unit.id,
+            reviewer,
+            1,
+            "changed my mind"
+        )
+        .await,
+        Err(ApprovalError::DuplicateVote)
+    ));
+    let u = unit_of(&db, &store, s.unit.id).await;
+    assert_eq!(u.state, UnitState::Pending);
+    assert_eq!(store.decisions.lock().len(), 1);
+    assert!(!subject.locked.lock().is_empty());
+}
+
+/// A vote's note is at most `NOTE_MAX_CHARS` characters (Unicode scalar values), on approve and
+/// on reject alike; a longer one is refused before any write.
+#[tokio::test]
+async fn a_vote_note_longer_than_the_cap_is_refused_before_any_write() {
+    let db = db().await;
+    let author = Uuid::new_v4();
+    let (subject, ids) = rows(author, 1);
+    let store = Mem::default();
+    let s = submit(&db, &store, &subject, ids, author, 2).await.unwrap();
+    let long = "e".repeat(2001);
+    let refused = approve_noted(
+        &db,
+        &store,
+        &subject,
+        s.unit.id,
+        Uuid::new_v4(),
+        long.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code(), "NOTE_TOO_LONG", "{refused}");
+    let long: &'static str = Box::leak(long.into_boxed_str());
+    let refused = reject(&db, &store, &subject, s.unit.id, Uuid::new_v4(), 1, long)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), "NOTE_TOO_LONG", "{refused}");
+    assert!(store.decisions.lock().is_empty(), "nothing was written");
+    assert_eq!(
+        unit_of(&db, &store, s.unit.id).await.version,
+        s.unit.version
+    );
+    // 2000 two-byte characters are within the cap.
+    let at_cap = "\u{e9}".repeat(2000);
+    assert!(matches!(
+        approve_noted(&db, &store, &subject, s.unit.id, Uuid::new_v4(), at_cap)
+            .await
+            .unwrap(),
+        ApproveOutcome::Pending { have: 1, need: 2 }
+    ));
+}
+
+/// A unit the store does not hold is the engine's own typed refusal, not a store failure.
+#[tokio::test]
+async fn a_missing_unit_is_unit_not_found_at_every_vote() {
+    let db = db().await;
+    let (subject, _) = rows(Uuid::new_v4(), 1);
+    let store = Mem::default();
+    let missing = Uuid::new_v4();
+    let approve = approve(&db, &store, &subject, missing, Uuid::new_v4())
+        .await
+        .unwrap_err();
+    assert_eq!(approve.code(), "UNIT_NOT_FOUND", "{approve}");
+    let reject = reject(&db, &store, &subject, missing, Uuid::new_v4(), 1, "no")
+        .await
+        .unwrap_err();
+    assert_eq!(reject.code(), "UNIT_NOT_FOUND", "{reject}");
+    let (st, su) = (store.clone(), subject.clone());
+    let withdraw = in_tx(&db, move |tx| {
+        let (st, su) = (st.clone(), su.clone());
+        Box::pin(async move { Engine::withdraw(&st, &su, tx, missing, Uuid::new_v4(), T1).await })
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(withdraw.code(), "UNIT_NOT_FOUND", "{withdraw}");
 }

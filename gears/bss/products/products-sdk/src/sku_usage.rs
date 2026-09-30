@@ -78,9 +78,10 @@ pub struct SkuUsage {
     pub currencies: Vec<String>,
     /// The prices of those entries, added up by state.
     pub prices: PriceCounts,
-    /// The distinct plans with a draft, pending or published revision whose
-    /// items name one of those entries — distinct across the SKU's entries,
-    /// never a sum of the entries' counts.
+    /// The distinct plans with a draft, pending, scheduled or published
+    /// revision whose items name one of those entries — distinct across the
+    /// SKU's entries, never a sum of the entries' counts. The revisions are
+    /// counted by their stored state (pricing D-453).
     pub plans: u64,
 }
 
@@ -91,8 +92,9 @@ pub struct SkuUsageSets {
     /// The SKUs with an entry in a book of the tenant, in any reference state:
     /// exactly those whose [`SkuUsage::entries`] is above zero.
     pub priced: Vec<Uuid>,
-    /// The SKUs whose entries a plan item of a draft, pending or published
-    /// revision names: exactly those whose [`SkuUsage::plans`] is above zero.
+    /// The SKUs whose entries a plan item of a draft, pending, scheduled or
+    /// published revision names: exactly those whose [`SkuUsage::plans`] is
+    /// above zero.
     /// An item that names a SKU without an entry does not count, as it does not
     /// in `plans`.
     pub in_plan: Vec<Uuid>,
@@ -100,6 +102,12 @@ pub struct SkuUsageSets {
 
 /// Pricing's usage of SKUs, which pricing registers on `ClientHub` as
 /// `dyn SkuUsageV1`.
+///
+/// **Cancel-safety.** Products runs each call on a task of its own and aborts
+/// it at its bound, or when the read that asked is dropped
+/// (`api::rest::usage`). A call may therefore be dropped at any `.await`: an
+/// implementation must only read, and must hold nothing that a drop leaves
+/// half done (RS-43).
 #[async_trait]
 pub trait SkuUsageV1: Send + Sync + 'static {
     /// The usage of each distinct id of `sku_ids` in `tenant`, once, in the
@@ -112,6 +120,8 @@ pub trait SkuUsageV1: Send + Sync + 'static {
     /// [`sku_usage_denied`] (403) for a caller without pricing
     /// `price_book_entry:read`; [`sku_usage_unavailable`] (503) when the
     /// answer cannot be read. **Neither is a page of zeros.**
+    ///
+    /// The call may be aborted at any `.await` (see the trait): it reads only.
     async fn usage(
         &self,
         ctx: &SecurityContext,
@@ -129,6 +139,8 @@ pub trait SkuUsageV1: Send + Sync + 'static {
     /// As [`Self::usage`]: [`sku_usage_denied`] (403) for a caller without
     /// pricing `price_book_entry:read`, [`sku_usage_unavailable`] (503) when the
     /// sets cannot be read. **Neither is an empty set.**
+    ///
+    /// The call may be aborted at any `.await` (see the trait): it reads only.
     async fn usage_sets(
         &self,
         ctx: &SecurityContext,

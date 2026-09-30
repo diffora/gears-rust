@@ -58,7 +58,6 @@ pub enum AuthzError {
 
 /// Shared PEP gate: asks the PDP whether `(resource_type, action)` is
 /// permitted for `ctx`, returning the caller's compiled `AccessScope`.
-/// `resource_id` pins a single-row op (`None` for collections).
 ///
 /// `owner_tenant_id` is an optional `OWNER_TENANT_ID` resource-property hint
 /// describing the *resource's* owning tenant:
@@ -71,10 +70,17 @@ pub enum AuthzError {
 ///   `target_tenant` is a member of the compiled scope and denies a
 ///   cross-tenant target.
 ///
-/// `require_constraints` should be `true` on every authorizing door path —
-/// reads (so the scope is a real SQL filter and an unconstrained *allow*
-/// fail-closes instead of leaking every tenant) and writes (so the
-/// target-membership assertion above has a constraint to test).
+/// **Constraints are always required, and there is no parameter for it**
+/// (RS-19, as pricing's gate): reads need them so the scope is a real SQL filter
+/// and an unconstrained *allow* fail-closes instead of leaking every tenant, and
+/// writes need them so the target-membership assertion has a constraint to test.
+/// Held as a `bool` it was spelled `true` at every call site and was one `false`
+/// away from skipping the cross-tenant check. No door names a single row, so the
+/// `RESOURCE_ID` hint is not asked either.
+///
+/// Every denial is logged once here, target `bss_products.authz.deny`, with the
+/// subject, its tenant, the resource type, the action, the target tenant and the
+/// reason (RS-20): the 403 carries only the reason.
 ///
 /// # Errors
 ///
@@ -86,47 +92,67 @@ pub async fn access_scope(
     resource: &ResourceType,
     action: &str,
     owner_tenant_id: Option<Uuid>,
-    resource_id: Option<Uuid>,
-    require_constraints: bool,
 ) -> Result<AccessScope, AuthzError> {
-    let mut request = AccessRequest::new().require_constraints(require_constraints);
+    let mut request = AccessRequest::new().require_constraints(true);
     if let Some(tenant) = owner_tenant_id {
         request = request.resource_property(pep_properties::OWNER_TENANT_ID, tenant);
     }
-    if let Some(rid) = resource_id {
-        request = request.resource_property(pep_properties::RESOURCE_ID, rid);
-    }
 
+    let denial = |reason: String| {
+        tracing::warn!(
+            target: "bss_products.authz.deny",
+            subject_id = %ctx.subject_id(),
+            subject_tenant_id = %ctx.subject_tenant_id(),
+            resource_type = resource.name(),
+            action,
+            owner_tenant_id = ?owner_tenant_id,
+            reason = %reason,
+            "bss-products: authorization denied"
+        );
+        AuthzError::Denied(reason)
+    };
     let scope = enforcer
-        .access_scope_with(ctx, resource, action, resource_id, &request)
+        .access_scope_with(ctx, resource, action, None, &request)
         .await
         .map_err(|e| match e {
-            authz_resolver_sdk::EnforcerError::Denied { .. }
-            | authz_resolver_sdk::EnforcerError::CompileFailed(_) => {
-                AuthzError::Denied(e.to_string())
+            authz_resolver_sdk::EnforcerError::Denied { .. } => denial(e.to_string()),
+            authz_resolver_sdk::EnforcerError::CompileFailed(ref compile_err) => {
+                // The compiler's diagnostic names PDP predicates and properties: an internal
+                // detail, not something the PDP told the caller. It stays in the log, and the
+                // caller gets a stable token (RS-08, as pricing's gate).
+                tracing::warn!(
+                    target: "bss_products.authz.deny",
+                    subject_id = %ctx.subject_id(),
+                    resource_type = resource.name(),
+                    action,
+                    error = %compile_err,
+                    "bss-products: authz constraint compilation failed"
+                );
+                denial(CONSTRAINT_COMPILATION_FAILED.to_owned())
             }
             authz_resolver_sdk::EnforcerError::EvaluationFailed(_) => {
                 AuthzError::Unavailable(e.to_string())
             }
         })?;
 
-    // Write paths anchor to a target tenant and pass `require_constraints =
-    // true`: a degraded flat-`In` PDP decision does NOT re-validate
-    // `owner_tenant_id`, so assert the target is a member of the compiled
-    // scope here — a target outside the caller's authorized tenants is a
-    // cross-tenant write and is denied. Reads pass `owner_tenant_id = None`
+    // Write paths anchor to a target tenant: a degraded flat-`In` PDP decision
+    // does NOT re-validate `owner_tenant_id`, so assert the target is a member of
+    // the compiled scope here — a target outside the caller's authorized tenants
+    // is a cross-tenant write and is denied. Reads pass `owner_tenant_id = None`
     // and use the scope as the SQL filter, so this membership check is
-    // write-only.
+    // write-only, and `Some(target)` is the whole of what selects it.
     if let Some(target) = owner_tenant_id
-        && require_constraints
         && !scope.contains_uuid(pep_properties::OWNER_TENANT_ID, target)
     {
-        return Err(AuthzError::Denied(format!(
+        return Err(denial(format!(
             "subject not authorized to write resources owned by tenant {target}"
         )));
     }
     Ok(scope)
 }
+
+/// The reason a denial carries when the PDP's constraints did not compile (RS-08).
+pub const CONSTRAINT_COMPILATION_FAILED: &str = "constraint_compilation_failed";
 
 fn authz_type_schema_json(gts_id: &str, title: &str) -> serde_json::Value {
     serde_json::json!({

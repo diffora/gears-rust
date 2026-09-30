@@ -14,7 +14,9 @@ pub struct PricingResolveDto {
     pub plan_revision_id: Uuid,
     pub plan_id: Uuid,
     pub rev_no: i32,
-    /// No other revision resolves.
+    /// The revision's state as it reads today (D-447): `published`, `superseded`, or `scheduled`
+    /// for a revision asked on or after its sale date while that date has not come yet (D-454). No
+    /// other revision resolves.
     pub state: PricingResolvedRevisionState,
     /// The revision's book.
     pub book_id: Uuid,

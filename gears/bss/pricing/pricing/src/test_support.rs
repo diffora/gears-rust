@@ -1,5 +1,4 @@
 //! File-backed `SQLite` for repository races.
-#![allow(clippy::expect_used, clippy::unwrap_used)]
 use toolkit::contracts::DatabaseCapability;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError};

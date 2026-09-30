@@ -586,6 +586,59 @@ async fn cancelling_releasing_backoff_and_threshold_never_drop_work() {
         }
     }
 }
+/// A create cancelled for its SKU (a bundle) whose release then fails keeps its refusal: the
+/// retries do not overwrite the recorded code with `REGISTRY_UNAVAILABLE`, and the op ends `done`
+/// naming the refusal it met, as `/reference-ops` shows it (whole-branch review PS-05).
+#[tokio::test]
+async fn a_cancelled_create_keeps_its_refusal_through_a_failed_release() {
+    for kind in KINDS {
+        let (f, script, t, input) = setup(kind).await;
+        let c = f.caller();
+        // A bundle SKU: the re-read refuses the create, and every release fails.
+        script.set(14);
+        assert_eq!(t.create(&c, input.clone(), "one").await.0, 503, "{kind:?}");
+        let refusal = match kind {
+            Kind::Entry => "BUNDLE_SKU_NOT_PRICEABLE",
+            Kind::Item => "ITEM_BUNDLE_SKU",
+        };
+        let scope = AccessScope::for_tenant(f.ctx.subject_tenant_id());
+        let page = |state| {
+            let (db, scope, tenant) = (f.db.clone(), scope.clone(), f.ctx.subject_tenant_id());
+            async move {
+                ops::page(&db.conn().unwrap(), &scope, tenant, Some(state), None, 10)
+                    .await
+                    .unwrap()
+            }
+        };
+        let mut now = clock().now();
+        for _ in 0..2 {
+            Ticker::new(f.state.clone(), Arc::new(FixedClock(now)), 1, 100)
+                .tick()
+                .await
+                .unwrap();
+            let open = page(OpState::Cancelling).await;
+            assert_eq!(open.len(), 1, "{kind:?}");
+            assert_eq!(
+                open[0].last_error.as_deref(),
+                Some(refusal),
+                "{kind:?}: a failed release keeps the refusal"
+            );
+            now += time::Duration::seconds(301);
+        }
+        script.set(0);
+        Ticker::new(f.state.clone(), Arc::new(FixedClock(now)), 1, 100)
+            .tick()
+            .await
+            .unwrap();
+        let done = page(OpState::Done).await;
+        assert_eq!(done.len(), 1, "{kind:?}");
+        assert_eq!(
+            done[0].last_error.as_deref(),
+            Some(refusal),
+            "{kind:?}: the op ends naming the refusal it met"
+        );
+    }
+}
 #[tokio::test]
 async fn door_losing_completion_race_rereads_the_tickers_receipt() {
     for kind in KINDS {

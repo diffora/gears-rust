@@ -53,6 +53,12 @@
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
+| P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
+| P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424 |
+| P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
+| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b) |
+| P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
+| P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 
 ## Entries
 
@@ -599,7 +605,8 @@ page's `usage` on the client, so the list and the counts take `priced=true|false
 
 - **The definitions are the usage's own** (pricing D-428): `priced` keeps the SKUs whose `usage.entries` is
   above zero (an entry in any book of the tenant, in any reference state), `in_plan` those whose `usage.plans`
-  is above zero (a draft, pending or published revision names one of the SKU's entries). A plan item that
+  is above zero (a draft, pending, scheduled or published revision names one of the SKU's entries; pricing D-453
+  counts a revision by its stored state). A plan item that
   names a SKU without an entry (an `included` item) does not count, as it does not in `plans`: the owner's open
   question from phase 5 stays open. `false` keeps the other SKUs. Tests pin `priced` ⇔ `entries > 0` and
   `in_plan` ⇔ `plans > 0` on the same data.
@@ -906,3 +913,203 @@ owner chose to close it.
 
 **Source:** Owner, 2026-09-28 (a yes; phase 7 plan rev 2, added to run 7.3); phase 6 fix run 2 review (LOW-2);
 phase 7 review (queries, migrations and docs lens, LOW-1: the migration for stored rows).
+
+#### P-D-221 [M] The outbox wakes its sequencer after the commit (twin of pricing D-455)
+
+Since the main sync, toolkit-db's `Outbox::enqueue` does not mark its partition dirty. It returns a `Wake`,
+which marks the partition and wakes the sequencers when it is fired, after the commit (toolkit-db `2bfc76aec`).
+`enqueue_typed` fired that `Wake` at once, inside the caller's transaction. A sequencer woken then read the
+partition before the commit, found nothing and cleared the flag. The committed row then waited for the cold
+reconciler, a minute at the default profile.
+
+- **The handle.** `events::TxOutbox` is the event sink as one transaction sees it. `enqueue_typed` takes it in
+  place of the `EventSink`. It adds each event's `Wake` to the handle and fires nothing. The clones of a handle
+  share it.
+- **The transaction.** `events::transaction` runs the work in `Db::transaction_with_retry` with the door's
+  isolation and retry classifier, and with a new handle over `ApiState::sink`. A retried attempt first discards
+  the wakes of the attempt before it, which rolled back. When the transaction commits, the handle fires once.
+  When it fails, the handle is discarded.
+- **The writers.** Every door that enqueues runs in it: the SKU submit (publish, change and retire, applied at
+  once at quorum 0), the vote door (approve, reject and withdraw) and the force release of a reference. The
+  unit's review read before a vote runs in it too: it enqueues nothing, but the subject it reads through takes
+  the handle.
+- **The approval subjects.** The apply of `SkuPublish`, `SkuChange` and `SkuRetire` enqueues `SkuPublished`,
+  `SkuChanged` and `SkuRetired` inside the engine. `SkuPublish` holds the attempt's handle (its field `outbox`,
+  which was `sink`), so the wake leaves the engine with the subject, which the gear builds for its
+  transaction. `bss-approval` changes no signature, and the `ApprovalSubject` doc says where such an effect
+  stays. `governance::decided` takes the handle for `ApprovalUnitDecided`.
+- **The census.** A test pins that `TxOutbox::new` occurs in `src/` only in `events::transaction`, and that no
+  other file fires or discards a wake. The door test alone cannot see a subject that holds a handle of its own:
+  the test broker puts every event of a tenant in one partition, so the door's `ApprovalUnitDecided` wake
+  delivers the SKU event too.
+- **The tests.** `infra/broker_wake_tests.rs` drives the real in-process broker (the event-broker gear's
+  `test_support` harness, a new dev-dependency) over a database with four connections. With one connection
+  the sequencer queues behind the transaction, and the race does not show. A committed enqueue is delivered at
+  once, although its transaction goes on for 300 ms after it. A rolled-back one wakes nothing: a row committed
+  before it with its wake discarded stays undelivered in the same partition. A retried attempt's wake is
+  dropped. The two events of a quorum-0 SKU submit are delivered at once. A probe that fires the wake inside
+  the transaction again turns the first test red. Products had no real-broker test before: the mock of the
+  broker SDK had hidden the subject-type contract that the sync found.
+- *Rejected alternative:* each enqueue returns its `Wake`, and every function on the path returns it to the
+  transaction (the toolkit's `outbox::in_transaction` and main's gears). The engine's `apply` returns nothing,
+  so the subjects would need a second mechanism. An error after an enqueue would also drop an unfired `Wake`,
+  which the toolkit logs as a leak.
+
+**Source:** Main sync of 2026-09-29 (sync report, port 3; toolkit-db `2bfc76aec`); pricing phase 8 plan rev 2
+(run 8.2b).
+
+#### P-D-222 [H] The registry trusts pricing's system actor in-process only; no REST door serves that actor
+
+**Status:** DECIDED 2026-09-29. Amended 2026-09-30 (fix run W1c): both gears refuse the actor at the REST edge.
+
+The in-process reference registry (`infra::reference_registry::LocalReferenceRegistry`, the `ReferenceRegistryV1` that pricing
+reaches as `PricingReferenceRegistry`) gives one principal a tenant-wide scope without the PDP: pricing's system actor
+(`subject_type` `bss-pricing.system`, `subject_id` `PRICING_SYSTEM_ACTOR`), on the registry bound to the `pricing` owner, in the
+caller's own tenant. Pricing's resolve and its reference ticker read and reserve as that actor (pricing D-424). The whole-branch
+review asked whether a caller could assert it (RS-02). The owner kept the trust (O1).
+
+- **What was measured.** A REST caller's `SecurityContext` comes from its token, and it can carry that subject type. The OIDC
+  authn plugin maps `subject_type` from a claim (`user_type` by default, and vhp-core's `config/server.yaml` configures the same)
+  and `subject_id` from `sub`. The static-authn plugin takes both from its configured identities. The gateway does not remove the
+  value. A caller cannot forge a signed token, but an IdP that issues `user_type: bss-pricing.system` with that `sub` gives a REST
+  caller exactly the context the registry trusts. So the trust is safe only if no REST path honours it.
+- **The threat model.** In-process code of the same binary is trusted, as it is trusted with the database. The registry is reached
+  only through the `ClientHub`: products registers it once at init, pricing is its one consumer, and no REST door calls it.
+  The registry's system branch is in `LocalReferenceRegistry::scope` alone, and its doc says so.
+- **The relay (second review of W1b, M1).** No products door calls the registry, but pricing's doors do, with their caller's
+  context: the entry create reads the SKU (`sku_for_write`) and drives its reserve and confirm as the caller
+  (`reference_work::drive`), and so do the entry delete, the plan item doors, the plan copy, clone and revision delete (their
+  reference ops), and the plan checks' SKU reads (`plans::fresh_skus`). The entry PATCH makes no registry call. So a REST caller whose token carried the actor got the registry's tenant-wide trust through a pricing
+  door, without products' own `read` or `reference` check, and the audit row said `actor_kind=system`. A pricing test showed
+  it: under a policy that grants the caller every pricing action and a products that grants nobody, the entry create answered
+  201. The first version of this decision said that nothing on a REST path read the subject type, which left pricing's doors out.
+- **The edge refusal (fix run W1c).** Both gears refuse pricing's system actor on every REST door, in either half: a context
+  whose subject type is `bss-pricing.system` or whose id is `PRICING_SYSTEM_ACTOR` is 403 `SYSTEM_ACTOR_RESERVED`, after the
+  authentication check (401) and before the PDP. The one test is `bss_products_sdk::is_pricing_system_actor`, and each gear's `require_authenticated`,
+  which every door calls first, applies it (products `api::rest`, pricing `authoring::support`). The refusal is logged on the
+  gear's authz deny target. Only pricing's own actor is refused: another system subject (Rating's and Subscriptions', which call
+  pricing's resolve, D-424) passes the edge, and the PDP judges it by its roles, as every other caller.
+- **On the stand.** The relay predates phase 8. At `01f670fa4`, the build the Benidorm stand runs (its gears pin `a9cf1a605`
+  merges it), the registry's trusted branch, pricing's doors that pass their caller's context and a `require_authenticated` that
+  accepts any subject type are all present, and vhp-core maps `user_type` to the subject type. So it was live for a token whose
+  `sub` is `PRICING_SYSTEM_ACTOR` and whose `user_type` is `bss-pricing.system`, with a pricing grant for the door. Only the IdP
+  can issue such a token. The stand itself was not probed.
+- **The audit label.** The reference doors wrote `actor_kind=system` on a reserve, confirm or release audit row when the subject
+  type ended in `.system`, so a REST caller's token set the label. Now `references::Acting` carries the context and whether the
+  registry's trusted branch admitted it. A REST door always acts as a subject, and only the registry records the system's act.
+- **The tests.** `a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass` calls every served door (the operations the
+  gear's own `register_rest` serves, RT-01 and fix run W1c's L1) as the actor three ways (both halves, the subject type alone, the id alone): each is 403
+  `SYSTEM_ACTOR_RESERVED` and the PDP is never asked. Rating's system subject at the same doors, under a PDP that allows
+  nothing, is 403 after the PDP was asked the door's own action.
+  `a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts` pins the audit label, for another gear's system subject.
+  Pricing has the twins: `rest_authz::no_rest_door_serves_pricings_system_actor` (every door pricing serves) and
+  `plan_doors::a_rest_caller_asserting_pricings_system_actor_never_reaches_the_registry` (the entry create above is 403,
+  nothing is written and the registry is never called).
+- *Rejected alternative:* a PDP role for the system actor (the way account-management's `am.system` goes through its PDP). vhp-core's
+  PDP does not know `bss-pricing.system` (D-424's note), so every resolve and every ticker call would be refused until it did.
+
+**Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ok"); whole-branch review RS-02 (fix run W1b); the second review of
+W1b, M1 (fix run W1c). Keeps pricing D-424.
+
+#### P-D-223 [M] A refusal keeps its class and names its resource
+
+The whole-branch review found refusals that left with another class than the one decided, or named a resource the gear does not
+register.
+
+- **The resource.** Every `DomainError` refusal named `cf.bss.products.product.v1~`, a type this gear neither defines nor
+  registers, so a SKU's 404 said `product.v1~` and its 403 `sku.v1~` (RS-25). The ladder (`infra::error_mapping`) now picks one of
+  the three registered labels from the refusal: a missing row by its kind (a reference is a SKU's), an approval refusal and a
+  stale unit the approval unit, a code starting `CATEGORY_` the category, and every other refusal the SKU. The approval policy's
+  404 names the approval unit, the label its grant is asked on, and `governance::scope`'s 403 names the resource it asked.
+- **The class.** The browse REST client turned every non-2xx answer into a retryable 503. A 4xx from the browse door now passes
+  its Problem through with its class (a caller without `sku` read stays 403, a refused `$filter` 400). A 4xx without a Problem is a
+  500, an answer the client cannot use. Any other status stays the 503 of a catalog that did not answer, with a fixed detail
+  (RS-06). Behind the catalog, a repository failure was a 503 whose detail was the driver's text. It is now the repository's
+  logged 500 with the text off the wire, and only a pool that cannot hand out a connection stays a 503 (RS-07, RS-09).
+- **The engine's refusals.** The engine's `UnitNotFound` answered 409 through the `other` arm, and it is now the unit's 404. A
+  duplicate decision that loses the unique index is `DUPLICATE_VOTE` 409, not a store failure's 500 (RS-32). A reservation that
+  loses the live-reference index twice is `REFERENCE_EXISTS` 409, not a 500 (RS-04, RS-05).
+- **Consumers.** No consumer reads `resource_type`: the gears-rust tests, the e2e suites and vhp-core's e2e do not. Pricing no
+  longer calls `ProductCatalogClientV1`. Products' own browse door and the REST client's test are its only callers.
+
+**Source:** Whole-branch review of 2026-09-29, RS-04, RS-05, RS-06, RS-07, RS-09, RS-25 and RS-32, and fix run W1a's note on
+`UnitNotFound` (fix run W1b).
+
+#### P-D-224 [M] The approval-unit list pages and reads its page set-based (twin of pricing D-458)
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** `GET /bss-products/v1/approval-units` answered every unit of the tenant that its filters kept, decided ones
+  included, and read each unit's decisions with a statement of its own, all in one serializable transaction on Postgres (RS-03).
+- **The page.** The list takes `limit` (200 by default, clamped at 500, pricing's rule, D-458) and `cursor`, the opaque
+  continuation of a page's `page_info.next_cursor`, the toolkit pager's cursor. The order stays submission order
+  (`submitted_at`), with the unit id breaking a tie. The answer is `{ items, page_info }`: `items` keeps its shape, and
+  `page_info` (`next_cursor`, `prev_cursor`, `limit`) is added. The cursor carries a hash of the narrowing (`state`, `kind`,
+  `ref_id`), so a cursor replayed under another narrowing is 400 `FILTER_MISMATCH`. A cursor that does not read is 400, and a
+  `limit` that is not a number 400 `VALIDATION` on `query`.
+- **The reads.** A page reads its units in one statement and all their decisions in one more
+  (`approval_repo::page_units`, `decisions_of_units`). The QueryRecorder shows the same statements for 10 and for 100 units,
+  each with a vote.
+- **Breaking for a caller** that reads the list whole: a tenant with more than 200 units matching its filters gets them over
+  several pages and must follow `next_cursor`. The in-gear tests that read the list whole follow it
+  (`sku_governance_tests::Fixture::all_units`); the gears-rust e2e reads no products list. The vhp-core e2e reads page 1
+  in `tests/bss-products/test_products_approvals.py` (the pending queue, twice), `test_products_isolation.py` (another tenant's
+  list), `test_products_usage_types.py` (an empty list) and `test_products_authz.py` (a reader's list), and through the helper
+  `tests/lib/products.py` `units_of` (`GET /approval-units?ref_id=`, its `items`: one SKU's units), which
+  `test_products_approvals.py` calls three times. Each runs in a fresh tenant with a few units, so it passes unchanged; a
+  vhp-core change would make them follow `next_cursor`.
+
+**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ok"); whole-branch review RS-03 (fix run W1b).
+
+#### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
+
+**Status:** DECIDED 2026-09-29.
+
+- **The defect.** Only a SKU's code had a cap (64). A SKU's name, description, GL code, tax category, invoice line template,
+  usage-type reference and unit, a category's code and name, and an operator's release reason had a blank check at most, on
+  create, draft PATCH and change alike (RS-10, RS-11, RS-38). They landed in unbounded `text` columns and were copied into the
+  approval snapshots, and a long category code could fail its unique index on Postgres as a 500.
+- **The caps**, counted in characters (Unicode scalar values), as a submitter's note always was (P-D-219): a code 64 (a SKU's,
+  a category's); a name 200 (a SKU's, a category's); a description, a note or a reason 2000 (a SKU's description, a forced
+  release's reason, a submitter's note, a vote's note); a GL code, a tax category and a unit 64; an invoice line template 2000;
+  a usage-type reference 512. The values live in `domain::caps`, and const assertions tie the note cap to the approval
+  engine's `NOTE_MAX_CHARS` and the submit doors' own.
+- **The refusal.** 400 `FIELD_TOO_LONG` with the field named, a violation of the body's validation stage (P-D-202), the shape
+  `NOTE_TOO_LONG` already has. A SKU code over 64 characters was a `VALIDATION` violation and is now `FIELD_TOO_LONG` too. A
+  note keeps `NOTE_TOO_LONG`: the submit, change and retire doors judge it (P-D-219) and the approval engine judges a vote's
+  (fix run W1a, X-01; RS-37 measured already closed). Each door judges the texts with its body's other rules, before its
+  transaction opens, so a text too long is refused before a 404 or a 409.
+- **Stored rows.** Only a write is judged, and only on the texts its body carries (a cleared field carries none). A stored row
+  over a cap stays readable, and a PATCH that does not carry the field leaves it as it is.
+- **The tests.** `api/rest/caps_tests.rs` sends one text over each cap to each door and reads that nothing was written; texts
+  at the caps in two-byte characters pass; a vote's note over 2000 characters is `NOTE_TOO_LONG` on approve and reject.
+- **Pricing** applies the same caps in D-457. The vhp-core e2e would add one refusal: a SKU created with a 65-character code is
+  400 `FIELD_TOO_LONG` on `code`.
+
+**Source:** Whole-branch review of 2026-09-29, RS-10, RS-11, RS-37 and RS-38 (fix run W1b; the dispositions' "Length caps").
+
+#### P-D-226 [M] The SDK's SKU types serialize as the wire carries them
+
+**Status:** DECIDED 2026-09-30.
+
+- **The defect.** `bss_products_sdk::models::Sku` says it is the SKU "as the doors return it", but its derived serde wrote
+  `created_at` and `updated_at` as `time`'s tuples, where `SkuDto` sends RFC 3339 strings; `SkuVersion` wrote `effective_from` as
+  `[year, ordinal]` where `SkuVersionDto` sends `YYYY-MM-DD` (RS-23). `SkuChangedPayload` was `snake_case` with a tuple date and no
+  actor, while the `SkuChanged` event the broker emits is `camelCase` (`skuId`, `effectiveFrom` as `YYYY-MM-DD`, `actorRef`), the
+  PRD's shape (RS-24). A consumer that read a door's JSON or an event into these types failed on every one.
+- **The serde.** `Sku`'s instants and `SkuVersion`'s `created_at` use `time::serde::rfc3339`, and `SkuVersion.effective_from` a
+  `YYYY-MM-DD` date, as the DTOs write them. `SkuChangedPayload` is `camelCase`, carries `actorRef`, and writes its date as
+  `YYYY-MM-DD`, field for field the emitted event. `BillingTiming` gains `as_str` and `parse` (RS-48), which the repository and the
+  PATCH DTO now use in place of three copies of its tokens.
+- **Consumers.** Nothing deserializes these types from JSON today: pricing receives `Sku` and `SkuVersion` typed, through the
+  in-process registry, and nothing reads `SkuChangedPayload` (measured over gears-rust and vhp-core's crates). So no reader breaks,
+  and the first one reads what the wire carries.
+- **`SkuContent` is a storage format** (RS-22). Its derive writes the append-only `content` of every stored version and the
+  proposal of every unit, so its serde stays compatible forever: a field added is an `Option` or carries `#[serde(default)]`, a
+  field is never renamed without `#[serde(alias)]`, and there is no `deny_unknown_fields`. Its doc says so, and
+  `sku_repo_tests::stored_content_fixtures_keep_reading` reads fixture rows through the repository: one as this build writes it,
+  one without the optional fields and one with a field this build does not know.
+- **The tests.** `the_sdk_sku_types_read_the_doors_json` reads a SKU card and a version history into the SDK types and writes
+  them back unchanged; `the_sdk_payload_reads_the_emitted_sku_changed_event` does the same for the event.
+
+**Source:** Whole-branch review of 2026-09-29, RS-22, RS-23, RS-24 and RS-48 (fix run W1b).

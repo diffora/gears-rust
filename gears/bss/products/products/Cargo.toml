@@ -181,3 +181,7 @@ test-containers = { workspace = true }
 # A test's `SQLite` file lives in its own temporary directory, removed with the test (the database,
 # its `-wal` and its `-shm`); before, every run left its files in the user's temp dir.
 tempfile = { workspace = true }
+# The delivery suite (`infra/broker_wake_tests.rs`) drives a real in-process broker: the gear's
+# own harness (`test_support::EventBrokerHarness`), as pricing's bound-producer suite does. A mock
+# accepted subject types the real ingest refuses (the sync of 2026-09-29).
+cf-gears-event-broker = { path = "../../../system/event-broker/event-broker", features = ["test-utils"] }

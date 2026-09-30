@@ -181,11 +181,7 @@ async fn a_prices_unit_names_the_plan_revisions_reading_its_entries_on_every_rea
         unit.snapshot
     );
     assert_eq!(card(&f, unit.id.clone()).await["impact"], impact);
-    let (s, list, _) = f
-        .call("GET", "/approval-units?kind=prices", json!({}), None, None)
-        .await;
-    assert_eq!(s, 200, "{list}");
-    assert_eq!(list["items"][0]["impact"], impact);
+    assert_eq!(f.all_units("kind=prices").await[0]["impact"], impact);
     let (s, drafted, _) = f
         .call(
             "POST",

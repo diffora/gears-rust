@@ -3,48 +3,41 @@
 //! Shared scoped transaction plumbing for approval and reference operations.
 use super::{ApiState, TxError, authz_error_to_canonical, contention_db_err, tx_to_canonical};
 use crate::{
-    authz::{access_scope, actions, resource_types},
+    authz::{access_scope, actions, labels, resource_types},
     domain::{error::DomainError, recognized::UsageTypeAnswer, validation::ValidationReport},
     infra::{broker, events, storage::repo},
 };
-use authz_resolver_sdk::PolicyEnforcer;
+use authz_resolver_sdk::{PolicyEnforcer, pep::ResourceType};
 use bss_approval::{Store, Unit};
 use bss_products_sdk::models::{Sku, SkuContent};
 use time::OffsetDateTime;
-use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::{
     DbTx,
     secure::{AccessScope, DBRunner},
 };
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
-#[resource_error(gts_id!("cf.bss.products.sku.v1~"))]
-struct Resource;
-
+/// The PDP's scope for `action` on `resource` (`resource_types::SKU` or `APPROVAL_UNIT`): the call
+/// site names the resource it authorizes, not a `bool` (RS-54). A write anchors to the subject's
+/// tenant; the 403 names the resource asked (RS-25).
 pub async fn scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
+    resource: &ResourceType,
     action: &str,
-    units: bool,
 ) -> Result<AccessScope, CanonicalError> {
-    let resource = if units {
-        resource_types::APPROVAL_UNIT
-    } else {
-        resource_types::SKU
-    };
     access_scope(
         enforcer,
         ctx,
-        &resource,
+        resource,
         action,
         (action != actions::READ).then(|| ctx.subject_tenant_id()),
-        None,
-        true,
     )
     .await
     .map_err(|e| {
         authz_error_to_canonical(e, |reason| {
-            Resource::permission_denied().with_reason(reason).create()
+            crate::infra::error_mapping::permission_denied(resource.name(), reason)
         })
     })
 }
@@ -201,16 +194,16 @@ pub(super) async fn touch(
         .await
         .map_err(tx_to_canonical)
 }
-#[allow(
+/// Audit row identifiers belong to a separate aggregate from the authorized resource: the row is
+/// written under the caller's own tenant, never a PDP-compiled scope, so the function takes none
+/// (RS-53). `lifecycle` is the SKU lifecycle move the act made (P-D-213):
+/// [`repo::LifecycleMove::NONE`] for an act on no SKU (the policy, a reference).
+#[expect(
     clippy::too_many_arguments,
     reason = "Audit inputs explicitly bind subject and actor to the caller transaction"
 )]
-/// Audit row identifiers belong to a separate aggregate from the authorized resource. `lifecycle`
-/// is the SKU lifecycle move the act made (P-D-213): [`repo::LifecycleMove::NONE`] for an act on
-/// no SKU (the policy, a reference).
 pub async fn audit(
     tx: &impl DBRunner,
-    _scope: &AccessScope,
     ctx: &SecurityContext,
     action: &str,
     kind: &str,
@@ -240,7 +233,7 @@ pub async fn audit(
     .map_err(TxError::Repo)
 }
 pub(super) async fn decided(
-    state: &ApiState,
+    outbox: &events::TxOutbox,
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     unit: &Unit,
@@ -257,7 +250,7 @@ pub(super) async fn decided(
     actors.sort();
     actors.dedup();
     events::enqueue_typed(
-        &state.sink,
+        outbox,
         tx,
         broker::ApprovalUnitDecided {
             tenant_id: unit.tenant_id,
@@ -294,13 +287,11 @@ pub(super) async fn settings_read(
         &resource_types::APPROVAL_UNIT,
         actions::SETTINGS,
         None,
-        None,
-        true,
     )
     .await
     .map_err(|e| {
         authz_error_to_canonical(e, |reason| {
-            Resource::permission_denied().with_reason(reason).create()
+            crate::infra::error_mapping::permission_denied(labels::APPROVAL_UNIT, reason)
         })
     })
 }

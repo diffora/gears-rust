@@ -1,14 +1,21 @@
-//! Bounded recovery and periodic receipt reconciliation under the pricing system actor.
+//! Bounded recovery and periodic receipt reconciliation under the pricing system actor, and the
+//! switch of scheduled plan revisions on their date.
 //!
 //! Reconciliation scans both kinds of reference (D-407), each with its own cursor: confirmed and
 //! lost price book entries, and confirmed and lost plan items of every revision state (D-414).
+//! The switch duty (D-450) runs first in its tick, with its own error handling, so neither the
+//! reference duties' scans nor a failing reconciliation can skip it. The tick count moves right
+//! after it, so a scan that keeps failing cannot freeze the count off the switch's period.
 //!
 //! @cpt-dod:cpt-cf-bss-pricing-dod-confirmation-retry:p1
 use super::{
+    plan_revisions,
     reference_work::{self, Caller, Clock},
     storage::{
         entity::{plan_item, price_book_entry},
-        repo::{plan_item_repo, price_book_entry_repo, reference_op_repo as ops},
+        repo::{
+            plan_item_repo, plan_revision_repo, price_book_entry_repo, reference_op_repo as ops,
+        },
     },
 };
 use crate::{
@@ -26,7 +33,10 @@ use bss_products_sdk::{
     PRICING_SYSTEM_ACTOR,
     models::{Lifecycle, ReferenceState as RegistryState, SkuType},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
@@ -42,12 +52,15 @@ pub fn system_actor(tenant: Uuid) -> Result<SecurityContext, CanonicalError> {
         .build()
         .map_err(|_| CanonicalError::internal("pricing recovery identity failed").create())
 }
+/// The switch duty's period in ticks (D-450): once a minute at the gear's one-second tick.
+pub const SWITCH_EVERY: u64 = 60;
 /// One gear-owned ticker. A cursor per reference kind bounds reconciliation across ticks.
 pub struct Ticker {
     state: Arc<AuthoringState>,
     clock: Arc<dyn Clock>,
     limit: u64,
     reconcile_every: u64,
+    switch_every: u64,
     ticks: u64,
     cursors: Cursors,
 }
@@ -105,14 +118,35 @@ impl Ticker {
             clock,
             limit: limit.clamp(1, 1000),
             reconcile_every: reconcile_every.max(1),
+            switch_every: SWITCH_EVERY,
             ticks: 0,
             cursors: Cursors::default(),
         }
     }
-    /// Resume a bounded due batch, then reconcile a bounded confirmed batch every N ticks.
+    /// Run the switch duty every `n` ticks instead of [`SWITCH_EVERY`]; tests tick it at once.
+    #[must_use]
+    pub fn switch_every(mut self, n: u64) -> Self {
+        self.switch_every = n.max(1);
+        self
+    }
+    /// Switch the due scheduled plan revisions on the first tick and every [`SWITCH_EVERY`] after
+    /// it, then resume a bounded due batch, then reconcile a bounded confirmed batch every N ticks.
     /// # Errors
-    /// Scan failures are surfaced; per-op failures remain due at their scheduled retry.
+    /// The reference duties' scan failures are surfaced; per-op failures remain due at their
+    /// scheduled retry. The switch surfaces nothing: it warns and runs again on its next tick.
+    // cancel-safe: `serve` drops this future at shutdown at any await, a Products call inside a
+    // drive or an open transaction included. A dropped transaction rolls back; every op is a
+    // durable journal row written before its registry call, advanced by compare-and-swap, and
+    // due again after `IN_FLIGHT_GRACE`, so a drop is a crash the next tick recovers (D-401).
+    // The in-memory tick count and cursors only pace the duties.
     pub async fn tick(&mut self) -> Result<(), CanonicalError> {
+        // D-450, plan rev 2 M4: first, and never through `?`.
+        if self.ticks.is_multiple_of(self.switch_every) {
+            self.switch().await;
+        }
+        // The count moves before any duty that can return early, so a scan that keeps failing
+        // cannot hold it off the switch's period (phase 8 review B1).
+        self.ticks = self.ticks.wrapping_add(1);
         // Only this trusted scheduler scans all tenants. Every mutation and Products call
         // below has a tenant-only scope and the fixed pricing system actor.
         let due = ops::due(
@@ -138,14 +172,64 @@ impl Ticker {
             )
             .await
             {
-                tracing::warn!(op_id=%op.op_id, attempts=op.attempts, error=%error, "pricing reference recovery deferred");
+                tracing::warn!(op_id=%op.op_id, attempts=op.attempts, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing reference recovery deferred");
             }
         }
-        self.ticks = self.ticks.wrapping_add(1);
         if self.ticks.is_multiple_of(self.reconcile_every) {
             self.reconcile().await?;
         }
         Ok(())
+    }
+    /// The switch duty (D-450): every plan with a due scheduled revision, across tenants (at most
+    /// `limit` revisions, by `available_from` then id), is switched in its own transaction with its
+    /// event and its audit row ([`plan_revisions::catch_up`]). A failure is a warning for its plan,
+    /// and the other plans go on; the next cycle finds what is still due.
+    async fn switch(&self) {
+        // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-1
+        let now = self.clock.now();
+        let due = match self.due_plans(now).await {
+            Ok(due) => due,
+            Err(error) => {
+                tracing::warn!(error=%error, "pricing plan switch scan deferred");
+                return;
+            }
+        };
+        for (tenant, plan) in due {
+            if let Err(error) = self.switch_plan(tenant, plan, now).await {
+                tracing::warn!(%tenant, plan_id=%plan, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing plan switch deferred");
+            }
+        }
+        // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-1
+    }
+    /// The plans of the due scan on the UTC day of `now`, each once, in the scan's order.
+    async fn due_plans(&self, now: time::OffsetDateTime) -> Result<Vec<(Uuid, Uuid)>, String> {
+        let conn = self.state.db.conn().map_err(|e| e.to_string())?;
+        let today = now.to_offset(time::UtcOffset::UTC).date();
+        let due = plan_revision_repo::due_scheduled(&conn, today, self.limit)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut seen = BTreeSet::new();
+        Ok(due
+            .into_iter()
+            .map(|r| (r.tenant_id, r.plan_id))
+            .filter(|key| seen.insert(*key))
+            .collect())
+    }
+    /// One plan's switch in its own transaction.
+    async fn switch_plan(
+        &self,
+        tenant: Uuid,
+        plan: Uuid,
+        now: time::OffsetDateTime,
+    ) -> Result<(), CanonicalError> {
+        let db = self.state.db.db();
+        support::transaction_with_events(&db, &self.state.outbox, move |tx, outbox| {
+            Box::pin(async move {
+                plan_revisions::catch_up(tx, &outbox, tenant, plan, now, Uuid::now_v7()).await
+            })
+        })
+        .await
+        .map(|_| ())
     }
     async fn reconcile(&mut self) -> Result<(), CanonicalError> {
         let conn = self
@@ -190,7 +274,7 @@ impl Ticker {
             // One tenant's divergence (an unreachable or disagreeing registry, a storage
             // error) never halts reconciliation for the others; the cursors move on.
             if let Err(error) = self.reconcile_tenant(registry.as_ref(), tenant, held).await {
-                tracing::warn!(%tenant, error=%error, "pricing reconciliation skipped a tenant");
+                tracing::warn!(%tenant, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing reconciliation skipped a tenant");
             }
         }
         self.cursors = next;
@@ -234,7 +318,7 @@ impl Ticker {
         if let Err(error) =
             reference_work::drive(&self.state, ctx, id, self.clock.clone(), Caller::Ticker).await
         {
-            tracing::warn!(op_id=%id, error=%error, "pricing re-reservation deferred");
+            tracing::warn!(op_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing re-reservation deferred");
         }
         Ok(())
     }
@@ -372,7 +456,7 @@ async fn admits(
                 }
         }
         Err(error) => {
-            tracing::warn!(ref_kind=kind.as_str(), ref_id=%id, error=%error, "pricing lost-reference check deferred");
+            tracing::warn!(ref_kind=kind.as_str(), ref_id=%id, error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing lost-reference check deferred");
             false
         }
     }

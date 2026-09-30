@@ -20,6 +20,7 @@
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [revision-checks](#revision-checks)
   - [revision-apply](#revision-apply)
+  - [revision-switch](#revision-switch)
   - [clone-and-retire](#clone-and-retire)
 - [4. States (CDSL)](#4-states-cdsl)
   - [Plans states](#plans-states)
@@ -50,7 +51,8 @@ is the schema and transaction authority. Unchecked phase 3/4 work is not part of
 ### 1.2 Purpose
 
 Publish independent revision structure against book coverage, preserving existing pins; author items, clone and retirement prerequisites.
-Phase 6 adds the reads the SKUs screen needs (D-434): GET /plans?sku_id= lists the plans whose draft, pending or published revisions name the SKU through an entry, in the shape of GET /plans, which now reads its revisions in one statement for every plan; GET /plan-items/{id} reads one item with its plan and its revision's number and state.
+Phase 6 adds the reads the SKUs screen needs (D-434): GET /plans?sku_id= lists the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (the scheduled state since D-453), in the shape of GET /plans, which now reads its revisions in one statement for every plan; GET /plan-items/{id} reads one item with its plan and its revision's number and state.
+Phase 8 adds scheduled revisions (D-446 to D-454): an approval before the sale date schedules the revision, the pricing ticker's switch duty and the copy, clone and unschedule doors persist its switch on the date and announce it once, POST /plan-revisions/{id}/unschedule withdraws it to a draft, and every read derives the state a revision reads today.
 
 Requirements: `cpt-cf-bss-pricing-fr-plans`, `cpt-cf-bss-pricing-fr-reference-protocol`.
 
@@ -100,6 +102,17 @@ Holding multiple permissions never bypasses separation of duties.
 2. [x] - `p1` - Revalidate book, SKU lifecycle and complete coverage inside apply; changed environment refuses apply without partial publication. - `inst-plans-revision-apply-2`
 3. [x] - `p1` - Publish the selected revision, supersede the previous one and update published_rev, audit and PlanRevisionPublished in one transaction. - `inst-plans-revision-apply-3`
 4. [x] - `p1` - Keep all historical revision/book bindings and subscription pins intact. - `inst-plans-revision-apply-4`
+5. [x] - `p1` - When the sale date is after the apply's UTC day, schedule the revision instead: its lock becomes approved_by_unit_id, nothing is superseded or published and no PlanRevisionPublished is written; the switch on its date publishes it (D-449, D-450). - `inst-plans-revision-apply-5`
+
+### revision-switch
+
+- [x] `p1` - **ID**: `cpt-cf-bss-pricing-algo-plans-revision-switch`
+
+1. [x] - `p1` - The pricing ticker's switch duty runs first in its tick, on the first tick and then every 60 ticks, with its own error handling: it scans the due scheduled revisions of every tenant, bounded and ordered, and switches each plan in its own transaction (D-450). - `inst-plans-revision-switch-1`
+2. [x] - `p1` - Persist the switch through switch_due and, only when it switched, enqueue PlanRevisionPublished (the approving unit, its latest current approver or else its submitter, the superseded revision) and audit plan_revision.switch under the system actor, in the same transaction (D-450). - `inst-plans-revision-switch-2`
+3. [x] - `p1` - The copy, clone and unschedule doors catch the plan's due switch up first; the copy is refused with REVISION_SCHEDULED while a revision waits for its sale date (D-451). - `inst-plans-revision-switch-3`
+4. [x] - `p1` - Unschedule returns a waiting revision to an unlocked draft under plan submit, with its items and references kept; a published revision is REVISION_IN_EFFECT and any other REVISION_NOT_SCHEDULED (D-452). - `inst-plans-revision-switch-4`
+5. [x] - `p1` - Every read derives the effective state from the stored revisions and never writes; resolve serves a waiting revision from its sale date and refuses it before with REVISION_NOT_YET_AVAILABLE (D-453, D-454). - `inst-plans-revision-switch-5`
 
 ### clone-and-retire
 
@@ -118,7 +131,7 @@ Retirement (steps 2 to 4) is deferred by the owner (D-410, 2026-09-25) and not b
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-plans`
 
-Revision states are draft → pending → published → superseded; submit locks the draft under its unit (pending_unit_id, conditional), a rejected or withdrawn unit returns its revision to an editable draft without publishing it, and apply supersedes the published revision before it publishes this one. Plan retirement is deferred by the owner (D-410). A blocked draft has no unit; blocked_by is a computed check result. A retirement request does not mean all subscriptions have moved.
+Revision states are draft → pending → published → superseded, and pending → scheduled → published when the unit is approved before the sale date (D-449): a scheduled revision reads as published from 00:00 UTC of its date, before the switch job or a door persists it (D-447, D-450, D-451), and unschedule returns it to draft (D-452). Submit locks the draft under its unit (pending_unit_id, conditional), a rejected or withdrawn unit returns its revision to an editable draft without publishing it, and apply supersedes the published revision before it publishes this one. Plan retirement is deferred by the owner (D-410). A blocked draft has no unit; blocked_by is a computed check result. A retirement request does not mean all subscriptions have moved.
 
 ## 5. Definitions of Done
 

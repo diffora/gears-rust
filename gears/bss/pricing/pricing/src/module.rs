@@ -18,7 +18,7 @@ struct PricingRuntime {
     state: Arc<crate::api::rest::authoring::AuthoringState>,
 }
 
-#[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver, account_management], lifecycle(entry = "serve", stop_timeout = "30s"))]
+#[toolkit::gear(name = "bss-pricing", capabilities = [db, rest, stateful], deps = [types_registry, authz_resolver], lifecycle(entry = "serve", stop_timeout = "30s"))]
 pub struct BssPricingGear {
     runtime: ArcSwapOption<PricingRuntime>,
 }
@@ -32,7 +32,12 @@ impl Default for BssPricingGear {
 }
 
 impl BssPricingGear {
-    /// Spawn the reference recovery task and cancel in-flight work on shutdown.
+    /// Spawn the reference recovery task and cancel in-flight work on shutdown. Its ticker runs
+    /// every second: the plan switch duty first, on the first tick and every
+    /// `reference_ticker::SWITCH_EVERY` (60) after it (D-450), then at most 100 due reference ops,
+    /// and a reconciliation every 10 ticks. The knobs are fixed here; the gear has no config key.
+    /// The outbox pipeline is stopped however the task ends, a panic included; the task's
+    /// failure is returned after that (PS-36).
     pub(crate) async fn serve(self: Arc<Self>, cancel: CancellationToken) -> Result<()> {
         let Some(runtime) = self.runtime.load_full() else {
             cancel.cancelled().await;
@@ -47,25 +52,37 @@ impl BssPricingGear {
                 100,
                 10,
             );
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            let mut interval = tick_interval();
             loop {
                 tokio::select! { biased;
                     () = child.cancelled() => break,
                     _ = interval.tick() => {
                         tokio::select! { biased;
                             () = child.cancelled() => break,
-                            result = ticker.tick() => if let Err(error) = result { tracing::warn!(error=%error, "pricing reference ticker failed"); }
+                            result = ticker.tick() => if let Err(error) = result { tracing::warn!(error=%error, diagnostic=error.diagnostic().unwrap_or_default(), "pricing reference ticker failed"); }
                         }
                     }
                 }
             }
         });
-        task.await
-            .context("pricing reference ticker stopped unexpectedly")?;
+        let ended = task.await;
         runtime.state.stop().await;
-        Ok(())
+        ended.context("pricing reference ticker stopped unexpectedly")
     }
 }
+
+/// The ticker's one-second interval. A tick that overruns (a slow Products under a hundred
+/// drives) delays the next by a full second: the missed ticks are not fired back to back, which
+/// would repeat the scans and the Products calls while Products is slow (PS-12).
+pub(crate) fn tick_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
+#[cfg(test)]
+#[path = "module_tests.rs"]
+mod module_tests;
 
 #[async_trait]
 impl Gear for BssPricingGear {
@@ -225,13 +242,13 @@ impl MigrationTrait for InvalidOutboxMigration {
 // PUT /approval-policy config:settings true false
 
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
-// POST /plans plan:author false true
+// POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
 // GET /plan-revisions/{id} plan:read false false
-// PATCH /plan-revisions/{id} plan:author true false
+// PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
 // Run 3.3 items and checks: method | path | resource:action | If-Match | Idempotency-Key
@@ -242,7 +259,7 @@ impl MigrationTrait for InvalidOutboxMigration {
 
 // Run 3.4 plan approvals: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/submit plan:submit false true
-// POST /plans/{id}/clone plan:author false true
+// POST /plans/{id}/clone plan:author (then price_book:read, D-456) false true
 
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false

@@ -82,23 +82,15 @@ async fn read_scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
 ) -> Result<AccessScope, CanonicalError> {
-    access_scope(
-        enforcer,
-        ctx,
-        &resource_types::SKU,
-        actions::READ,
-        None,
-        None,
-        true,
-    )
-    .await
-    .map_err(|e| {
-        authz_error_to_canonical(e, |reason| {
-            SkuResource::permission_denied()
-                .with_reason(reason)
-                .create()
+    access_scope(enforcer, ctx, &resource_types::SKU, actions::READ, None)
+        .await
+        .map_err(|e| {
+            authz_error_to_canonical(e, |reason| {
+                SkuResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            })
         })
-    })
 }
 
 /// @cpt-cf-bss-products-fr-read-model

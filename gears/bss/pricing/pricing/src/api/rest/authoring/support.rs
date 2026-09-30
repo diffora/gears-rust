@@ -1,7 +1,10 @@
 //! Canonical failures, transaction retries, and audit plumbing shared by the doors.
 use crate::{
     authz,
-    infra::storage::{RepoError, repo},
+    infra::{
+        events::{self, EventSink, TxOutbox},
+        storage::{RepoError, repo},
+    },
 };
 use axum::{
     Extension, Json,
@@ -20,10 +23,18 @@ struct PricingResource;
 #[cfg(test)]
 #[path = "support_tests.rs"]
 mod tests;
+/// The refusal of a REST caller that asserts pricing's own system actor (D-424).
+pub const SYSTEM_ACTOR_RESERVED: &str = "SYSTEM_ACTOR_RESERVED";
+/// The caller of a REST door: 401 `AUTHENTICATION_REQUIRED` without a subject, a tenant or a
+/// subject type. Pricing's own system actor, in either half, is 403 `SYSTEM_ACTOR_RESERVED`
+/// (D-424, products P-D-222): Products' registry trusts it in-process, and a door hands the
+/// registry its caller's context, so no REST caller may act as it, whatever its token asserts.
+/// Another system subject (Rating's, Subscriptions') passes. Every door calls this first.
 pub fn require_authenticated(
     ctx: Option<Extension<SecurityContext>>,
 ) -> Result<SecurityContext, CanonicalError> {
-    ctx.map(|Extension(c)| c)
+    let ctx = ctx
+        .map(|Extension(c)| c)
         .filter(|c| {
             !c.subject_id().is_nil()
                 && !c.subject_tenant_id().is_nil()
@@ -33,8 +44,22 @@ pub fn require_authenticated(
             CanonicalError::unauthenticated()
                 .with_reason("AUTHENTICATION_REQUIRED")
                 .create()
-        })
+        })?;
+    if bss_products_sdk::is_pricing_system_actor(&ctx) {
+        tracing::warn!(
+            target: "pricing.authz.deny",
+            subject_id = %ctx.subject_id(),
+            subject_tenant_id = %ctx.subject_tenant_id(),
+            subject_type = ctx.subject_type().unwrap_or_default(),
+            reason = SYSTEM_ACTOR_RESERVED,
+            "bss-pricing: a REST caller asserted pricing's system actor"
+        );
+        return Err(forbidden(SYSTEM_ACTOR_RESERVED));
+    }
+    Ok(ctx)
 }
+/// A denial is 403 with the PDP's reason (logged where [`authz::access_scope`] made it); an
+/// unreachable PDP is 503.
 pub fn authz_failure(error: authz::AuthzError) -> CanonicalError {
     match error {
         authz::AuthzError::Denied(d) => PricingResource::permission_denied()
@@ -97,6 +122,50 @@ pub fn missing_what(what: &str) -> CanonicalError {
         .with_resource(what)
         .create()
 }
+/// What a claimed key answers, the one mapping of every door (whole-branch review PS-43):
+/// `Ok(None)` when this call holds the key, the stored status and body of an answered key the
+/// same payload claims, and the refusal otherwise. The match is exhaustive, so a new claim
+/// outcome does not compile until it is answered here.
+/// # Errors
+/// A different payload under the key is `IDEMPOTENCY_CONFLICT`, in either state; a live claim of
+/// the same payload, or a lost takeover race, is `IDEMPOTENCY_KEY_IN_FLIGHT`.
+pub fn held(
+    claim: repo::idempotency_repo::IdempotencyClaim,
+    digest: &[u8],
+) -> Result<Option<(i32, serde_json::Value)>, CanonicalError> {
+    use repo::idempotency_repo::IdempotencyClaim;
+    match claim {
+        IdempotencyClaim::Claimed => Ok(None),
+        IdempotencyClaim::Answered {
+            payload_hash,
+            response_status,
+            response_body,
+        } => {
+            if payload_hash == digest {
+                Ok(Some((response_status, response_body)))
+            } else {
+                Err(conflict("IDEMPOTENCY_CONFLICT"))
+            }
+        }
+        IdempotencyClaim::InFlight { payload_hash, .. } => {
+            Err(conflict(if payload_hash == digest {
+                "IDEMPOTENCY_KEY_IN_FLIGHT"
+            } else {
+                "IDEMPOTENCY_CONFLICT"
+            }))
+        }
+        IdempotencyClaim::TakeoverRaceLost => Err(conflict("IDEMPOTENCY_KEY_IN_FLIGHT")),
+    }
+}
+/// A stored status, back as the one the caller was told.
+/// # Errors
+/// A stored status that is not an HTTP status is an internal failure.
+pub fn stored_status(status: i32) -> Result<StatusCode, CanonicalError> {
+    u16::try_from(status)
+        .ok()
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .ok_or_else(|| CanonicalError::internal("invalid stored status").create())
+}
 /// Claim a POST's key inside the mutation transaction, or replay its stored answer.
 /// # Errors
 /// A different payload under the key is `IDEMPOTENCY_CONFLICT`; a live claim is in flight.
@@ -109,7 +178,7 @@ pub async fn claim(
 ) -> Result<Option<Response>, DoorError> {
     let now = time::OffsetDateTime::now_utc();
     let scope = AccessScope::for_tenant(tenant);
-    match repo::idempotency_repo::claim_idempotency_key(
+    let claim = repo::idempotency_repo::claim_idempotency_key(
         tx,
         &scope,
         tenant,
@@ -119,39 +188,15 @@ pub async fn claim(
         now,
         now + time::Duration::hours(24),
     )
-    .await?
-    {
-        repo::idempotency_repo::IdempotencyClaim::Claimed => Ok(None),
-        repo::idempotency_repo::IdempotencyClaim::Answered {
-            payload_hash,
-            response_status,
-            response_body,
-        } => {
-            if payload_hash != digest {
-                return Err(conflict("IDEMPOTENCY_CONFLICT").into());
-            }
-            let status = u16::try_from(response_status)
-                .ok()
-                .and_then(|s| StatusCode::from_u16(s).ok())
-                .ok_or_else(|| CanonicalError::internal("invalid stored status").create())?;
-            Ok(Some(response(
-                status,
-                &response_body["body"],
-                response_body["etag"].as_u64(),
-            )?))
-        }
-        repo::idempotency_repo::IdempotencyClaim::InFlight { payload_hash, .. } => {
-            Err(conflict(if payload_hash == digest {
-                "IDEMPOTENCY_KEY_IN_FLIGHT"
-            } else {
-                "IDEMPOTENCY_CONFLICT"
-            })
-            .into())
-        }
-        repo::idempotency_repo::IdempotencyClaim::TakeoverRaceLost => {
-            Err(conflict("IDEMPOTENCY_KEY_IN_FLIGHT").into())
-        }
-    }
+    .await?;
+    let Some((status, body)) = held(claim, digest)? else {
+        return Ok(None);
+    };
+    Ok(Some(response(
+        stored_status(status)?,
+        &body["body"],
+        body["etag"].as_u64(),
+    )?))
 }
 /// Record the answer of a claimed key in the same transaction and render it.
 /// # Errors
@@ -232,6 +277,16 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
             .create()
             .into(),
         A::NoteRequired => invalid("note", "NOTE_REQUIRED").into(),
+        A::NoteTooLong => invalid_because(
+            "note",
+            "NOTE_TOO_LONG",
+            &format!(
+                "a note is at most {} characters",
+                bss_approval::NOTE_MAX_CHARS
+            ),
+        )
+        .into(),
+        A::UnitNotFound { .. } => missing_what("approval_unit").into(),
         A::Empty => invalid("price_ids", "NO_DRAFT_PRICES").into(),
         A::GenerationMismatch { current, .. } => DoorError::Generation { current },
         // The shared engine names its lock conflict for every gear (`ROW_LOCKED_PENDING`);
@@ -243,7 +298,6 @@ pub fn approval_failure(error: bss_approval::ApprovalError) -> DoorError {
         })
         .into(),
         A::AlreadyDecided | A::DuplicateVote | A::Contended => conflict(error.code()).into(),
-        A::Store(detail) if detail.starts_with("DUPLICATE") => conflict("DUPLICATE_VOTE").into(),
         A::Store(detail) => {
             tracing::error!(detail, "pricing approval store failure");
             CanonicalError::internal("pricing approval store failure")
@@ -281,6 +335,17 @@ pub fn checks_red(red: &[super::dto::PricingPlanCheckDto]) -> CanonicalError {
     let mut problem = toolkit::api::canonical_prelude::Problem::from(refusal.clone());
     problem.detail = detail;
     CanonicalError::try_from(problem).unwrap_or(refusal)
+}
+/// A Products call that did not answer (a 5xx, a timeout, a rate limit): its own status and
+/// diagnostic reach the log, since the caller sees only 503 `REGISTRY_UNAVAILABLE` (PS-32).
+pub fn registry_unavailable(error: &CanonicalError) -> CanonicalError {
+    tracing::warn!(
+        status = error.status_code(),
+        error = %error,
+        diagnostic = error.diagnostic().unwrap_or_default(),
+        "pricing: a Products registry call did not answer"
+    );
+    unavailable()
 }
 /// The Products registry is not reachable from this process.
 pub fn unavailable() -> CanonicalError {
@@ -329,21 +394,6 @@ pub async fn transaction<T: Send + 'static>(
 ) -> Result<T, CanonicalError> {
     transaction_door(db, work).await.map_err(Into::into)
 }
-/// [`transaction`] for an approval-unit door: exhausted contention is `UNIT_CONTENDED`.
-/// # Errors
-/// Returns the last attempt's refusal or storage failure.
-pub async fn unit_transaction<T: Send + 'static>(
-    db: &Db,
-    work: impl for<'a> FnMut(
-        &'a DbTx<'a>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
-    > + Send,
-) -> Result<T, CanonicalError> {
-    transaction_coded(db, UNIT_CONTENDED, work)
-        .await
-        .map_err(Into::into)
-}
 /// The serializable retrying transaction, keeping the door's typed refusal.
 /// # Errors
 /// Returns the last attempt's refusal or storage failure; contention the retries could not
@@ -358,19 +408,6 @@ pub async fn transaction_door<T: Send + 'static>(
 ) -> Result<T, DoorError> {
     transaction_coded(db, CONTENDED, work).await
 }
-/// [`transaction_door`] for an approval-unit door: exhausted contention is `UNIT_CONTENDED`.
-/// # Errors
-/// Returns the last attempt's refusal or storage failure.
-pub async fn unit_transaction_door<T: Send + 'static>(
-    db: &Db,
-    work: impl for<'a> FnMut(
-        &'a DbTx<'a>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
-    > + Send,
-) -> Result<T, DoorError> {
-    transaction_coded(db, UNIT_CONTENDED, work).await
-}
 /// Run `work` serializably with the toolkit's contention retries. A driver error the retry
 /// classifier still calls contention after the last attempt becomes 409 `code`.
 async fn transaction_coded<T: Send + 'static>(
@@ -384,10 +421,104 @@ async fn transaction_coded<T: Send + 'static>(
 ) -> Result<T, DoorError> {
     db.transaction_with_retry(
         toolkit_db::secure::TxConfig::serializable(),
-        |e| match e {
-            DoorError::Repo(RepoError::Driver { source, .. }) => Some(source),
-            _ => None,
-        },
+        driver_source,
+        work,
+    )
+    .await
+    .map_err(|error| exhausted_contention(db.backend(), code, error))
+}
+/// The driver error the retry classifier judges, if the door's error carries one.
+fn driver_source(error: &DoorError) -> Option<&sea_orm::DbErr> {
+    match error {
+        DoorError::Repo(RepoError::Driver { source, .. }) => Some(source),
+        _ => None,
+    }
+}
+/// [`transaction`] for work that enqueues events: `work` takes the attempt's [`TxOutbox`] over
+/// `sink`, and the outbox's sequencers wake only once the transaction has committed (D-455).
+/// # Errors
+/// Returns the last attempt's refusal or storage failure; exhausted contention is `CONTENDED`.
+pub async fn transaction_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, CanonicalError> {
+    events_coded(db, sink, CONTENDED, work)
+        .await
+        .map_err(Into::into)
+}
+/// [`transaction_with_events`] keeping the typed error, for a caller that classifies it before it
+/// is rendered (the reference work's commit, PS-42).
+/// # Errors
+/// Returns the last attempt's refusal or storage failure; exhausted contention is `CONTENDED`.
+pub async fn transaction_door_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events_coded(db, sink, CONTENDED, work).await
+}
+/// [`transaction_with_events`] for an approval-unit door, every one of which enqueues
+/// `ApprovalUnitDecided` when it decides: exhausted contention is `UNIT_CONTENDED`.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure.
+pub async fn unit_transaction_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, CanonicalError> {
+    events_coded(db, sink, UNIT_CONTENDED, work)
+        .await
+        .map_err(Into::into)
+}
+/// [`unit_transaction_with_events`] keeping the door's typed refusal.
+/// # Errors
+/// Returns the last attempt's refusal or storage failure.
+pub async fn unit_transaction_door_with_events<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events_coded(db, sink, UNIT_CONTENDED, work).await
+}
+/// [`transaction_coded`] through [`events::transaction`]: the same isolation, retries and
+/// exhausted-contention code, with the attempt's [`TxOutbox`] fired after the commit.
+async fn events_coded<T: Send + 'static>(
+    db: &Db,
+    sink: &EventSink,
+    code: &'static str,
+    work: impl for<'a> FnMut(
+        &'a DbTx<'a>,
+        TxOutbox,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<T, DoorError>> + Send + 'a>,
+    > + Send,
+) -> Result<T, DoorError> {
+    events::transaction(
+        db,
+        sink,
+        toolkit_db::secure::TxConfig::serializable(),
+        driver_source,
         work,
     )
     .await
@@ -413,6 +544,11 @@ pub fn exhausted_contention(
         _ => error,
     }
 }
+/// A door's answer with its status and `ETag`. An error status is an RFC 9457 problem, so its
+/// body is served `application/problem+json` and the canonical error middleware completes and
+/// logs it (PS-07): the committed `UNIT_STALE` and its replay are the doors' only such answers.
+/// # Errors
+/// An `ETag` that is not a header value.
 pub fn response<T: serde::Serialize>(
     status: StatusCode,
     body: &T,
@@ -427,7 +563,14 @@ pub fn response<T: serde::Serialize>(
                 .map_err(|_| CanonicalError::internal("invalid ETag").create())?,
         );
     }
-    Ok((status, headers, Json(body)).into_response())
+    let mut response = (status, headers, Json(body)).into_response();
+    if status.is_client_error() || status.is_server_error() {
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/problem+json"),
+        );
+    }
+    Ok(response)
 }
 pub fn value<T: serde::Serialize>(body: &T) -> Result<serde_json::Value, CanonicalError> {
     serde_json::to_value(body)

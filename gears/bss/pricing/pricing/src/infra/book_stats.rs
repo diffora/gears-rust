@@ -36,7 +36,7 @@ pub struct BookStats {
     pub entries: u64,
     /// The distinct SKUs of those entries.
     pub skus: u64,
-    /// The distinct plans with a draft, pending or published revision on the book
+    /// The distinct plans with a draft, pending, scheduled or published revision on the book
     /// ([`plan_revision_repo::plans_on_books`]).
     pub plans: u64,
     /// The distinct plans that name the book only through superseded revisions (the same read):

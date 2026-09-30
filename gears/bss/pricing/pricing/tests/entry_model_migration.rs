@@ -448,7 +448,10 @@ fn entry_row(id: Uuid, kind: &str, period: Option<&str>) -> String {
 }
 
 /// A price of the chain before 000013, which still has its own `model` column.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one stored row, column for column"
+)]
 fn price_row(
     n: u128,
     entry: Uuid,

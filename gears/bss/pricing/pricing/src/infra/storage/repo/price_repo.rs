@@ -1,5 +1,6 @@
 //! Scoped price persistence with conditional versions.
 use super::{driver_failure, map_unique, matched};
+use crate::domain::{price::PriceState, price_book_entry::ReferenceState};
 use crate::infra::storage::{RepoError, entity::price as e};
 use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
@@ -26,7 +27,7 @@ pub async fn insert(
             .ok_or(RepoError::Conflict {
                 code: "ENTRY_NOT_FOUND",
             })?;
-    if entry.reference_state == "lost" {
+    if entry.reference_state == ReferenceState::Lost.as_str() {
         return Err(RepoError::Conflict {
             code: "ENTRY_REFERENCE_LOST",
         });
@@ -82,6 +83,70 @@ pub async fn find(
         .await
         .map_err(|e| driver_failure("find price".into(), e))
 }
+/// The tenant's prices among `ids`, by id, in ONE statement whatever their number; an id the
+/// tenant does not hold has no row.
+/// # Errors
+/// Returns typed database failures.
+pub async fn find_many(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::Id.is_in(ids.iter().copied())),
+        )
+        .order_by(e::Column::Id, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list prices by id".into(), e))
+}
+/// Every price of the entries, by entry and then as [`for_entry`] orders one entry's (version
+/// number), in ONE statement whatever the number of entries.
+/// # Errors
+/// Returns typed database failures.
+pub async fn for_entries(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    entries: &[Uuid],
+) -> Result<Vec<e::Model>, RepoError> {
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied())),
+        )
+        .order_by(e::Column::PriceBookEntryId, Order::Asc)
+        .order_by(e::Column::VersionNo, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("list the prices of entries".into(), e))
+}
+/// [`for_entries`] grouped by entry, each entry's prices in [`for_entry`]'s order; an entry
+/// without prices has no key.
+#[must_use]
+pub fn by_entry(prices: Vec<e::Model>) -> std::collections::BTreeMap<Uuid, Vec<e::Model>> {
+    let mut groups: std::collections::BTreeMap<Uuid, Vec<e::Model>> =
+        std::collections::BTreeMap::new();
+    for p in prices {
+        groups.entry(p.price_book_entry_id).or_default().push(p);
+    }
+    groups
+}
 /// List tenant rows in stable identity order.
 /// # Errors
 /// Returns typed database failures.
@@ -109,7 +174,7 @@ pub async fn update_draft(
 ) -> Result<(), RepoError> {
     let predicate = key(m.tenant_id, m.id).add(e::Column::Version.eq(m.version));
     let predicate = predicate
-        .add(e::Column::State.eq("draft"))
+        .add(e::Column::State.eq(PriceState::Draft.as_str()))
         .add(e::Column::PendingUnitId.is_null());
     let result = e::Entity::update_many()
         .secure()
@@ -383,7 +448,7 @@ pub async fn delete_draft(
         .filter(
             key(tenant, id)
                 .add(e::Column::Version.eq(version))
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -442,7 +507,7 @@ pub async fn link_pair(
         .col_expr(e::Column::PairedPriceId, Expr::value(Some(partner)))
         .filter(
             key(tenant, id)
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null())
                 .add(e::Column::PairedPriceId.is_null()),
         )
@@ -480,7 +545,7 @@ pub async fn delete_drafts(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
                 .add(any)
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -525,7 +590,10 @@ pub async fn delete_unapproved(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
                 .add(any)
-                .add(e::Column::State.is_in(["draft", "rejected"]))
+                .add(
+                    e::Column::State
+                        .is_in([PriceState::Draft.as_str(), PriceState::Rejected.as_str()]),
+                )
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -592,12 +660,12 @@ pub async fn try_lock(
         .secure()
         .scope_with(scope)
         .col_expr(e::Column::PendingUnitId, Expr::value(Some(unit)))
-        .col_expr(e::Column::State, Expr::value("pending"))
+        .col_expr(e::Column::State, Expr::value(PriceState::Pending.as_str()))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(
             key(tenant, id)
                 .add(e::Column::Version.eq(version))
-                .add(e::Column::State.eq("draft"))
+                .add(e::Column::State.eq(PriceState::Draft.as_str()))
                 .add(e::Column::PendingUnitId.is_null()),
         )
         .exec(runner)
@@ -627,9 +695,9 @@ pub async fn unlock(
     outcome: Unlock,
 ) -> Result<(), RepoError> {
     let (state, from) = match outcome {
-        Unlock::Approved => ("approved", "approved"),
-        Unlock::Draft => ("draft", "pending"),
-        Unlock::Rejected => ("rejected", "pending"),
+        Unlock::Approved => (PriceState::Approved, PriceState::Approved),
+        Unlock::Draft => (PriceState::Draft, PriceState::Pending),
+        Unlock::Rejected => (PriceState::Rejected, PriceState::Pending),
     };
     let result = e::Entity::update_many()
         .secure()
@@ -639,12 +707,12 @@ pub async fn unlock(
             e::Column::ApprovedByUnitId,
             Expr::value((outcome == Unlock::Approved).then_some(unit)),
         )
-        .col_expr(e::Column::State, Expr::value(state))
+        .col_expr(e::Column::State, Expr::value(state.as_str()))
         .col_expr(e::Column::Version, Expr::col(e::Column::Version).add(1_i64))
         .filter(
             key(tenant, id)
                 .add(e::Column::PendingUnitId.eq(unit))
-                .add(e::Column::State.eq(from)),
+                .add(e::Column::State.eq(from.as_str())),
         )
         .exec(runner)
         .await
@@ -675,7 +743,7 @@ pub async fn approve(
     let result = e::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(e::Column::State, Expr::value("approved"))
+        .col_expr(e::Column::State, Expr::value(PriceState::Approved.as_str()))
         .col_expr(e::Column::EffectiveFrom, Expr::value(window.effective_from))
         .col_expr(e::Column::EffectiveTo, Expr::value(window.effective_to))
         .col_expr(
@@ -689,7 +757,7 @@ pub async fn approve(
         .filter(
             key(tenant, id)
                 .add(e::Column::PendingUnitId.eq(unit))
-                .add(e::Column::State.eq("pending")),
+                .add(e::Column::State.eq(PriceState::Pending.as_str())),
         )
         .exec(runner)
         .await
@@ -699,7 +767,7 @@ pub async fn approve(
 /// Re-close an approved price after its chain changed, at the version the caller read.
 /// # Errors
 /// A concurrent change is `STALE_REVISION`; database failures keep their type.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     reason = "tenant identity, version and the two recomputed columns are the write's operands"
 )]
@@ -723,7 +791,7 @@ pub async fn set_window(
         .filter(
             key(tenant, id)
                 .add(e::Column::Version.eq(version))
-                .add(e::Column::State.eq("approved")),
+                .add(e::Column::State.eq(PriceState::Approved.as_str())),
         )
         .exec(runner)
         .await

@@ -134,6 +134,40 @@ pub fn at(hour: u32) -> OffsetDateTime {
     )
 }
 
+/// [`FlatInResolver`] that counts its evaluations.
+struct CountingFlatIn {
+    inner: FlatInResolver,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl AuthZResolverApi for CountingFlatIn {
+    async fn evaluate(
+        &self,
+        ctx: PlatformSecurityContext,
+        req: EvaluationRequest,
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        self.asked
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.evaluate(ctx, req).await
+    }
+}
+
+/// [`flat_in_enforcer`] with a count of the PDP evaluations it made.
+#[must_use]
+pub fn counting_flat_in_enforcer(
+    allowed: Uuid,
+) -> (PolicyEnforcer, Arc<std::sync::atomic::AtomicUsize>) {
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    (
+        PolicyEnforcer::new(Arc::new(CountingFlatIn {
+            inner: FlatInResolver { allowed },
+            asked: asked.clone(),
+        })),
+        asked,
+    )
+}
+
 /// A [`PolicyEnforcer`] over [`FlatInResolver`], scoped to one tenant.
 #[must_use]
 pub fn flat_in_enforcer(allowed: Uuid) -> PolicyEnforcer {
@@ -1059,12 +1093,28 @@ pub async fn test_db() -> (
     Uuid,
     TestDsn,
 ) {
+    test_db_with(1).await
+}
+
+/// [`test_db`] over a pool of `max_conns` connections: the outbox's workers then read on a
+/// connection of their own while a transaction is still open, as they do in a deployment.
+///
+/// # Panics
+/// Panics if fixture initialization fails.
+pub async fn test_db_with(
+    max_conns: u32,
+) -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::secure::AccessScope,
+    Uuid,
+    TestDsn,
+) {
     use sea_orm_migration::MigratorTrait;
     let dsn = TestDsn::new("products-repos-");
     let db = toolkit_db::connect_db(
         &dsn,
         toolkit_db::ConnectOpts {
-            max_conns: Some(1),
+            max_conns: Some(max_conns),
             min_conns: Some(1),
             ..Default::default()
         },
@@ -1090,12 +1140,73 @@ pub async fn test_db() -> (
         &crate::authz::resource_types::SKU,
         crate::authz::actions::READ,
         Some(tenant),
-        None,
-        true,
     )
     .await
     .unwrap();
     (toolkit_db::DBProvider::new(db), scope, tenant, dsn)
+}
+
+/// [`test_db`] over a connection whose statements are recorded, for the fixed-statement tests of
+/// the set-based reads.
+///
+/// # Panics
+/// Panics if fixture initialization fails.
+pub async fn recorded_test_db() -> (
+    toolkit_db::DBProvider<toolkit_db::DbError>,
+    toolkit_db::secure::AccessScope,
+    Uuid,
+    TestDsn,
+    toolkit_db::test_support::QueryRecorder,
+) {
+    use sea_orm_migration::MigratorTrait;
+    let dsn = TestDsn::new("products-recorded-");
+    let (db, recorder) = toolkit_db::test_support::connect_with_recorder(
+        &dsn,
+        toolkit_db::ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::infra::storage::migrations::Migrator::migrations(),
+    )
+    .await
+    .unwrap();
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX).unwrap(),
+    )
+    .await
+    .unwrap();
+    let tenant = Uuid::new_v4();
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant);
+    recorder.clear();
+    (
+        toolkit_db::DBProvider::new(db),
+        scope,
+        tenant,
+        dsn,
+        recorder,
+    )
+}
+
+/// The statements `recorder` holds on the gear's own tables (`products_*`), normalized, in order.
+#[must_use]
+pub fn products_statements(recorder: &toolkit_db::test_support::QueryRecorder) -> Vec<String> {
+    recorder
+        .events()
+        .into_iter()
+        .filter(|q| {
+            q.table
+                .as_deref()
+                .is_some_and(|t| t.starts_with("products_"))
+        })
+        .map(|q| q.sql)
+        .collect()
 }
 
 /// Running outbox lifetime retained by every clone of a REST test router.
@@ -1193,8 +1304,6 @@ pub async fn repo_connection(
         &crate::authz::resource_types::SKU,
         crate::authz::actions::AUTHOR,
         Some(tenant),
-        None,
-        true,
     )
     .await
     .unwrap();

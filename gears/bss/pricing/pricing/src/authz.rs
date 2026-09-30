@@ -231,22 +231,22 @@ pub async fn access_scope(
                         None => dr.error_code.clone(),
                     },
                 );
-                AuthzError::Denied(Box::new(pdp_denial(
+                denied(pdp_denial(
                     ctx,
                     rt,
                     action,
                     resource_id,
                     owner_tenant_id,
                     reason,
-                )))
+                ))
             }
             authz_resolver_sdk::EnforcerError::CompileFailed(ref compile_err) => {
                 // The compiler diagnostic names PDP predicates and properties — an
                 // internal detail, not something the PDP told the caller. It goes
-                // server-side only, with the same operands `authz_error_to_canonical`
-                // logs for a PDP denial, so this line can be tied back to the 403 it
-                // explains. The caller gets a stable machine token distinct from an
-                // actual PDP denial, rather than the leaking diagnostic.
+                // server-side only, with the same operands [`denied`] logs for a PDP
+                // denial, so this line can be tied back to the 403 it explains. The
+                // caller gets a stable machine token distinct from an actual PDP
+                // denial, rather than the leaking diagnostic.
                 tracing::warn!(
                     target: "pricing.authz.deny",
                     subject_principal_id = %ctx.subject_id(),
@@ -281,14 +281,32 @@ pub async fn access_scope(
     if let Some(target) = owner_tenant_id
         && !scope.contains_uuid(pep_properties::OWNER_TENANT_ID, target)
     {
-        return Err(AuthzError::Denied(Box::new(cross_tenant_write_denial(
+        return Err(denied(cross_tenant_write_denial(
             ctx.subject_id(),
             ctx.subject_tenant_id(),
             rt,
             action,
             resource_id,
             target,
-        ))));
+        )));
     }
     Ok(scope)
+}
+
+/// A denial with its operands in the log (PS-17): the 403 carries only the reason, and the
+/// canonical middleware logs only the status and the path. Target `pricing.authz.deny`, as the
+/// constraint compilation failure.
+fn denied(attempt: DeniedAttempt) -> AuthzError {
+    tracing::warn!(
+        target: "pricing.authz.deny",
+        subject_principal_id = %attempt.subject_principal_id,
+        subject_tenant_id = %attempt.subject_tenant_id,
+        resource_type = %attempt.resource_type,
+        action = %attempt.action,
+        resource_id = ?attempt.resource_id,
+        owner_tenant_id = ?attempt.owner_tenant_id,
+        reason = %attempt.reason,
+        "authorization denied"
+    );
+    AuthzError::Denied(Box::new(attempt))
 }

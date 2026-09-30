@@ -23,7 +23,7 @@ pub(super) fn input(
         IdempotencyClaimInput::new(
             endpoint,
             key,
-            crate::domain::idempotency::payload_digest(body),
+            crate::domain::idempotency::payload_digest(body).to_vec(),
             time::OffsetDateTime::now_utc(),
             state.idempotency_retention_hours,
         )

@@ -1,8 +1,11 @@
 //! Trusted in-process transport. Ownership is selected only by Products wiring.
-use crate::api::rest::{self, ApiState, TxError, governance as g, references as service};
-use crate::authz::actions;
-use crate::domain::references::RefKind;
-use crate::infra::storage::{RepoError, repo};
+use crate::api::rest::{
+    self, ApiState, TxError, closed_sets::ProductsReferenceState, governance as g,
+    references as service,
+};
+use crate::authz::{actions, resource_types};
+use crate::domain::{error::DomainError, references::RefKind};
+use crate::infra::storage::{RepoError, RepoRefusal, repo};
 use async_trait::async_trait;
 use authz_resolver_sdk::PolicyEnforcer;
 use bss_products_sdk::{
@@ -44,28 +47,52 @@ impl LocalReferenceRegistry {
     pub fn for_owner(owner: &str) -> ReferenceRegistryOwner {
         ReferenceRegistryOwner(owner.into())
     }
+    /// The caller's scope, and whether it is the trusted system act (P-D-222).
+    ///
+    /// **The in-process trust.** This registry is reached only through the `ClientHub`
+    /// (`PricingReferenceRegistry`); no REST door calls it, and every REST door asks the PDP for
+    /// every caller, whatever subject type the caller's token asserts. The one trusted principal
+    /// is pricing's system actor (`bss-pricing.system`, `PRICING_SYSTEM_ACTOR`) on the registry
+    /// bound to the `pricing` owner, in the caller's own tenant: in-process code of the same
+    /// binary is trusted, as it is with the database. Pricing's doors hand this registry their
+    /// caller's context, so the REST edge of both gears refuses that actor, in either half, 403
+    /// `SYSTEM_ACTOR_RESERVED` (`require_authenticated`, fix run W1c): only in-process code
+    /// reaches this branch as it. A missing subject type is a human
+    /// principal (the static-authn default, third-party OIDC tokens): it goes through the PDP
+    /// like any other. Only the system branch interprets the subject type, and it checks it
+    /// itself.
     async fn scope(
         &self,
         ctx: &SecurityContext,
         tenant: Uuid,
         action: &str,
-    ) -> Result<AccessScope, CanonicalError> {
-        // A missing subject type is a human principal (the static-authn default, third-party
-        // OIDC tokens): it goes through the PDP below like any other. Only the system branch
-        // interprets the subject type, and it checks it itself.
+    ) -> Result<(AccessScope, bool), CanonicalError> {
         if tenant != ctx.subject_tenant_id() || tenant.is_nil() || ctx.subject_id().is_nil() {
-            return Err(service::forbidden().into());
+            return Err(service::forbidden(
+                ctx.subject_id(),
+                ctx.subject_tenant_id(),
+                "the call names another tenant than the caller's",
+            )
+            .into());
         }
         if ctx.subject_type().is_some_and(|s| s.ends_with(".system")) {
             if self.owner != "pricing"
                 || ctx.subject_type() != Some("bss-pricing.system")
                 || ctx.subject_id() != PRICING_SYSTEM_ACTOR
             {
-                return Err(service::forbidden().into());
+                return Err(service::forbidden(
+                    ctx.subject_id(),
+                    tenant,
+                    "a system subject other than pricing's on its own registry",
+                )
+                .into());
             }
-            return Ok(AccessScope::for_tenant(tenant));
+            return Ok((AccessScope::for_tenant(tenant), true));
         }
-        g::scope(&self.enforcer, ctx, action, false).await
+        Ok((
+            g::scope(&self.enforcer, ctx, &resource_types::SKU, action).await?,
+            false,
+        ))
     }
     async fn change(
         &self,
@@ -74,7 +101,7 @@ impl LocalReferenceRegistry {
         id: Uuid,
         release: bool,
     ) -> Result<(), CanonicalError> {
-        let scope = self.scope(ctx, tenant, actions::REFERENCE).await?;
+        let (scope, system) = self.scope(ctx, tenant, actions::REFERENCE).await?;
         let ctx = ctx.clone();
         let owner = self.owner.clone();
         let ttl = self.state.fence_ttl_minutes;
@@ -87,10 +114,11 @@ impl LocalReferenceRegistry {
                 move |tx| {
                     let (scope, ctx, owner) = (scope.clone(), ctx.clone(), owner.clone());
                     Box::pin(async move {
+                        let acting = service::Acting { ctx: &ctx, system };
                         if release {
-                            service::release_tx(tx, &scope, &ctx, &owner, id, ttl).await?;
+                            service::release_tx(tx, &scope, acting, &owner, id, ttl).await?;
                         } else {
-                            service::confirm_tx(tx, &scope, &ctx, &owner, id, ttl).await?;
+                            service::confirm_tx(tx, &scope, acting, &owner, id, ttl).await?;
                         }
                         Ok(())
                     })
@@ -100,13 +128,12 @@ impl LocalReferenceRegistry {
             .map_err(rest::tx_to_canonical)
     }
 }
-fn state(token: &str) -> Result<ReferenceState, CanonicalError> {
-    match token {
-        "reserved" => Ok(ReferenceState::Reserved),
-        "confirmed" => Ok(ReferenceState::Confirmed),
-        "released" => Ok(ReferenceState::Released),
-        _ => Err(CanonicalError::internal("invalid stored reference state").create()),
-    }
+/// A stored reference state, read back through its closed set: a token outside it names the row
+/// and the token in the logged 500 (RS-33).
+fn state(token: &str, id: Uuid) -> Result<ReferenceState, CanonicalError> {
+    ProductsReferenceState::stored(token, &format_args!("reference {id} state"))
+        .map(Into::into)
+        .map_err(|e| rest::repo_error_to_canonical(&e))
 }
 #[async_trait]
 impl ReferenceRegistryV1 for LocalReferenceRegistry {
@@ -118,13 +145,14 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
         kind: ReferenceKind,
         ref_id: Uuid,
     ) -> Result<ReservationReceipt, CanonicalError> {
-        let scope = self.scope(ctx, tenant, actions::REFERENCE).await?;
+        let (scope, system) = self.scope(ctx, tenant, actions::REFERENCE).await?;
         let kind = match kind {
             ReferenceKind::PriceBookEntry => RefKind::PriceBookEntry,
             ReferenceKind::PlanItem => RefKind::PlanItem,
             ReferenceKind::SoldAs => RefKind::SoldAs,
         };
-        for attempt in 0..2 {
+        // A unique loser retries once; a second loss is the 409 after the loop (RS-05).
+        for _ in 0..2 {
             let (scope, ctx, owner, ttl) = (
                 scope.clone(),
                 ctx.clone(),
@@ -141,20 +169,22 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
                     move |tx| {
                         let (scope, ctx, owner) = (scope.clone(), ctx.clone(), owner.clone());
                         Box::pin(async move {
-                            service::reserve_tx(tx, &scope, &ctx, &owner, sku_id, kind, ref_id, ttl)
-                                .await
+                            let acting = service::Acting { ctx: &ctx, system };
+                            service::reserve_tx(
+                                tx, &scope, acting, &owner, sku_id, kind, ref_id, ttl,
+                            )
+                            .await
                         })
                     },
                 )
                 .await;
             match result {
-                Err(TxError::Repo(RepoError::Db(code)))
-                    if code == "REFERENCE_EXISTS" && attempt == 0 => {}
+                Err(TxError::Repo(RepoError::Refused(RepoRefusal::ReferenceExists))) => {}
                 other => {
                     let (row, _) = other.map_err(rest::tx_to_canonical)?;
                     return Ok(ReservationReceipt {
                         reservation_id: row.id,
-                        state: state(&row.state)?,
+                        state: state(&row.state, row.id)?,
                     });
                 }
             }
@@ -186,17 +216,39 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
         tenant: Uuid,
         ids: &[Uuid],
     ) -> Result<Vec<(Uuid, ReferenceState)>, CanonicalError> {
-        let scope = self.scope(ctx, tenant, actions::REFERENCE).await?;
+        let (scope, _) = self.scope(ctx, tenant, actions::REFERENCE).await?;
         let db = self.state.db.db();
-        let conn = db
-            .conn()
-            .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+        let conn = db.conn().map_err(|e| rest::tx_to_canonical(e.into()))?;
+        // One read per thousand ids, the owner checked per row (RS-13): pricing's reconcile
+        // asks a whole batch of receipts each pass. The first id in order that is missing or
+        // held by another owner decides the answer, as when each id was read on its own.
+        let mut rows = std::collections::HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(1000) {
+            for row in repo::find_references(&conn, &scope, tenant, chunk)
+                .await
+                .map_err(|e| rest::repo_error_to_canonical(&e))?
+            {
+                rows.insert(row.id, row);
+            }
+        }
         let mut result = Vec::with_capacity(ids.len());
         for id in ids {
-            let row = service::owned(&conn, &scope, tenant, &self.owner, *id)
-                .await
-                .map_err(rest::tx_to_canonical)?;
-            result.push((*id, state(&row.state)?));
+            let Some(row) = rows.get(id) else {
+                return Err(DomainError::NotFound {
+                    what: "reference",
+                    id: *id,
+                }
+                .into());
+            };
+            if row.owner_gear != self.owner {
+                return Err(service::forbidden(
+                    ctx.subject_id(),
+                    tenant,
+                    "the reference belongs to another owner",
+                )
+                .into());
+            }
+            result.push((*id, state(&row.state, row.id)?));
         }
         Ok(result)
     }
@@ -206,11 +258,9 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
         tenant: Uuid,
         id: Uuid,
     ) -> Result<Sku, CanonicalError> {
-        let scope = self.scope(ctx, tenant, actions::READ).await?;
+        let (scope, _) = self.scope(ctx, tenant, actions::READ).await?;
         let db = self.state.db.db();
-        let conn = db
-            .conn()
-            .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+        let conn = db.conn().map_err(|e| rest::tx_to_canonical(e.into()))?;
         g::find(&conn, &scope, tenant, id)
             .await
             .map_err(rest::tx_to_canonical)
@@ -222,11 +272,9 @@ impl ReferenceRegistryV1 for LocalReferenceRegistry {
         id: Uuid,
         date: time::Date,
     ) -> Result<Option<SkuVersion>, CanonicalError> {
-        let scope = self.scope(ctx, tenant, actions::READ).await?;
+        let (scope, _) = self.scope(ctx, tenant, actions::READ).await?;
         let db = self.state.db.db();
-        let conn = db
-            .conn()
-            .map_err(|e| CanonicalError::internal(e.to_string()).create())?;
+        let conn = db.conn().map_err(|e| rest::tx_to_canonical(e.into()))?;
         g::find(&conn, &scope, tenant, id)
             .await
             .map_err(rest::tx_to_canonical)?;

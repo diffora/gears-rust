@@ -32,7 +32,9 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         DomainError::NotFound { .. } => (404, None),
         DomainError::Approval(r) => match r.code {
             "SOD_VIOLATION" | "NOT_SUBMITTER" => (403, Some(r.code)),
-            "NOTE_REQUIRED" | "VALIDATION" | "GENERATION_MISMATCH" => (400, Some(r.code)),
+            "NOTE_REQUIRED" | "NOTE_TOO_LONG" | "VALIDATION" | "GENERATION_MISMATCH" => {
+                (400, Some(r.code))
+            }
             "DB" | "STORE" => (500, None),
             _ => (409, Some(r.code)),
         },
@@ -135,6 +137,7 @@ fn approval_refusals_preserve_their_status_code_and_generation() {
         ("SOD_VIOLATION", 403),
         ("NOT_SUBMITTER", 403),
         ("NOTE_REQUIRED", 400),
+        ("NOTE_TOO_LONG", 400),
         ("VALIDATION", 400),
         ("GENERATION_MISMATCH", 400),
         ("DB", 500),
@@ -192,6 +195,7 @@ fn actual_approval_errors_keep_custom_codes_fields_and_details() {
             Some("ROW_LOCKED_PENDING"),
         ),
         (A::NoteRequired, 400, Some("NOTE_REQUIRED")),
+        (A::NoteTooLong, 400, Some("NOTE_TOO_LONG")),
         (A::Empty, 400, Some("VALIDATION")),
         (
             A::GenerationMismatch {
@@ -229,4 +233,78 @@ fn a_report_carrying_a_catalog_denial_is_403() {
     let canonical = CanonicalError::from(DomainError::Validation(report));
     assert_eq!(canonical.status_code(), 403);
     assert_eq!(code_of(&canonical), Some("USAGE_TYPE_FORBIDDEN"));
+}
+
+/// W1a left the engine's `UnitNotFound` on the `other` arm, a 409. It is the unit's 404, naming the
+/// unit as the door's own pre-load does.
+#[test]
+fn an_engine_unit_not_found_is_the_units_404() {
+    let unit_id = uuid::Uuid::new_v4();
+    let canonical = CanonicalError::from(DomainError::from(
+        bss_approval::ApprovalError::UnitNotFound { unit_id },
+    ));
+    assert_eq!(canonical.status_code(), 404);
+    assert_eq!(
+        canonical.resource_name(),
+        Some(unit_id.to_string().as_str())
+    );
+    assert_eq!(
+        canonical.resource_type(),
+        Some(crate::authz::labels::APPROVAL_UNIT)
+    );
+}
+
+/// RS-25: a refusal names the resource it refuses, one of the gear's registered authz labels,
+/// never the unregistered `product.v1~` every refusal carried.
+#[test]
+fn a_refusal_names_the_resource_it_refuses() {
+    use crate::authz::labels;
+    use crate::domain::error::ApprovalRefusal;
+    let id = uuid::Uuid::new_v4();
+    for (err, expected) in [
+        (DomainError::NotFound { what: "sku", id }, labels::SKU),
+        (
+            DomainError::NotFound {
+                what: "category",
+                id,
+            },
+            labels::CATEGORY,
+        ),
+        (
+            DomainError::NotFound {
+                what: "approval_unit",
+                id,
+            },
+            labels::APPROVAL_UNIT,
+        ),
+        (
+            DomainError::NotFound {
+                what: "reference",
+                id,
+            },
+            labels::SKU,
+        ),
+        (
+            DomainError::Approval(ApprovalRefusal {
+                code: "DUPLICATE_VOTE",
+                detail: "vote".into(),
+            }),
+            labels::APPROVAL_UNIT,
+        ),
+        (
+            DomainError::StaleUnit { generation: 2 },
+            labels::APPROVAL_UNIT,
+        ),
+        (
+            DomainError::Conflict {
+                code: "SKU_CODE_TAKEN",
+                detail: "taken".into(),
+            },
+            labels::SKU,
+        ),
+    ] {
+        let name = format!("{err:?}");
+        let canonical = CanonicalError::from(err);
+        assert_eq!(canonical.resource_type(), Some(expected), "{name}");
+    }
 }

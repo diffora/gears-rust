@@ -19,7 +19,7 @@ use crate::{
         validation::ValidationReport,
     },
     infra::storage::{
-        RepoError,
+        RepoError, RepoRefusal,
         repo::{self, CategoryListField, HeadWrite, SkuListError},
     },
 };
@@ -94,8 +94,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "A flat category; one may be the tenant's default. Creating one with `is_default: true` \
              moves the default to it: the previous default is cleared in the same write \
-             (P-D-218). Refusals: 409 CATEGORY_CODE_TAKEN, or CATEGORY_DEFAULT_TAKEN when a \
-             concurrent write took the default first.",
+             (P-D-218). The code is at most 64 characters and the name 200 (P-D-225). Refusals: \
+             400 FIELD_TOO_LONG on a code or a name over its cap; 409 CATEGORY_CODE_TAKEN, or \
+             CATEGORY_DEFAULT_TAKEN when a concurrent write took the default first.",
         )
         .tag(TAG)
         .authenticated()
@@ -186,8 +187,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "Edits a category under If-Match. `is_default: true` moves the tenant's default to it: \
              the previous default is cleared in the same write, gets a new version and its own \
-             audit row (P-D-218); a retired category never becomes the default (P-D-220). \
-             Refusals: 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a \
+             audit row (P-D-218); a retired category never becomes the default (P-D-220). The \
+             name is at most 200 characters (P-D-225). Refusals: 400 FIELD_TOO_LONG on a name \
+             over its cap; 404; 409 STALE_REVISION, CATEGORY_RETIRED for `is_default: true` on a \
              retired category, or CATEGORY_DEFAULT_TAKEN when a concurrent write took the default \
              first.",
         )
@@ -242,24 +244,20 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     router.layer(Extension(state))
 }
 
-/// Compile category access through the PDP before validation or storage.
+/// Compile category access through the PDP before validation or storage. The call site names
+/// the action it asks (`actions::READ` or `actions::AUTHOR`), not a `bool` (RS-54); a write
+/// anchors to the subject's tenant.
 async fn scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
-    write: bool,
+    action: &'static str,
 ) -> Result<AccessScope, CanonicalError> {
     access_scope(
         enforcer,
         ctx,
         &resource_types::CATEGORY,
-        if write {
-            actions::AUTHOR
-        } else {
-            actions::READ
-        },
-        write.then(|| ctx.subject_tenant_id()),
-        None,
-        true,
+        action,
+        (action != actions::READ).then(|| ctx.subject_tenant_id()),
     )
     .await
     .map_err(|e| {
@@ -293,7 +291,7 @@ async fn create_category(
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
-    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let payload = super::json_body(body)?;
     let claim = replay::input(
         &state,
@@ -334,7 +332,7 @@ async fn create_category(
                     let c = repo::insert_category(tx, &scope, tenant_id, new, now)
                         .await
                         .map_err(|e| match e {
-                            RepoError::Db(code) if code == "CATEGORY_CODE_TAKEN" => {
+                            RepoError::Refused(RepoRefusal::CategoryCodeTaken) => {
                                 TxError::Refused(DomainError::Conflict {
                                     code: "CATEGORY_CODE_TAKEN",
                                     detail: "a category with this code exists".into(),
@@ -370,7 +368,7 @@ async fn list_categories(
 ) -> Result<Json<Page<ProductsCategoryItem>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     // Authorization first, then the query (a 403 before a 400).
-    let scope = scope(&enforcer, &ctx, false).await?;
+    let scope = scope(&enforcer, &ctx, actions::READ).await?;
     params(query, &["limit", "cursor"], None)?;
     let OData(mut odata) = odata?;
     if odata.select.is_some() {
@@ -429,7 +427,7 @@ async fn get_category(
     Path(id): Path<Uuid>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = scope(&enforcer, &ctx, false).await?;
+    let scope = scope(&enforcer, &ctx, actions::READ).await?;
     let tenant = ctx.subject_tenant_id();
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
     let c = repo::find_category(&conn, &scope, tenant, id)
@@ -470,7 +468,7 @@ async fn update_category(
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
-    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let expected = if_match(&headers)?.get();
     let body = super::json_body(body)?;
     let patch_tx = CategoryPatch {
@@ -478,9 +476,17 @@ async fn update_category(
         is_default: body.is_default,
         sort_order: body.sort_order,
     };
+    let mut r = ValidationReport::new();
     if patch_tx.name.as_deref() == Some("") {
-        let mut r = ValidationReport::new();
         r.violate("VALIDATION", "name", "name must not be blank");
+    }
+    crate::domain::caps::check(
+        &mut r,
+        "name",
+        patch_tx.name.as_deref(),
+        crate::domain::caps::NAME_MAX_CHARS,
+    );
+    if !r.is_empty() {
         return Err(DomainError::Validation(r).into());
     }
     let now = OffsetDateTime::now_utc();
@@ -553,7 +559,7 @@ async fn retire_category(
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
     let actor = ctx.subject_id();
-    let scope_tx = scope(&enforcer, &ctx, true).await?;
+    let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let claim = replay::input(
         &state,
         &headers,
@@ -678,7 +684,7 @@ async fn move_default(
 /// concurrent moves, a 409 (P-D-218), never the 500 of an unmapped index.
 fn default_taken(e: RepoError) -> TxError {
     match e {
-        RepoError::Db(code) if code == "CATEGORY_DEFAULT_TAKEN" => {
+        RepoError::Refused(RepoRefusal::CategoryDefaultTaken) => {
             TxError::Refused(DomainError::Conflict {
                 code: "CATEGORY_DEFAULT_TAKEN",
                 detail: "another category became the tenant's default; read it and retry".into(),

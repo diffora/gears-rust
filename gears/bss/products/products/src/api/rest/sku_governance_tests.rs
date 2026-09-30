@@ -24,6 +24,7 @@ fn routes(s: Arc<crate::api::rest::ApiState>, o: &dyn toolkit::api::OpenApiRegis
         .merge(crate::api::rest::approval_units::router(s.clone(), o))
         .merge(crate::api::rest::approval_policy::router(s.clone(), o))
         .merge(crate::api::rest::references::router(s.clone(), o))
+        .merge(crate::api::rest::browse::router(s.clone(), o))
         .merge(crate::api::rest::usage_types::router(s, o))
 }
 struct Fixture {
@@ -98,6 +99,22 @@ async fn call_with(
 }
 impl Fixture {
     async fn new(quorum: u32) -> Self {
+        let (db, _, _, dsn) = test_db().await;
+        Self::on(quorum, db, dsn).await
+    }
+    /// [`Fixture::new`] over a database whose statements `recorder` records; the recorder is
+    /// cleared after the fixture's own writes.
+    async fn recorded(quorum: u32) -> (Self, toolkit_db::test_support::QueryRecorder) {
+        let (db, _, _, dsn, recorder) = recorded_test_db().await;
+        let f = Self::on(quorum, db, dsn).await;
+        recorder.clear();
+        (f, recorder)
+    }
+    async fn on(
+        quorum: u32,
+        db: toolkit_db::DBProvider<toolkit_db::DbError>,
+        dsn: TestDsn,
+    ) -> Self {
         let tenant = Uuid::new_v4();
         let author = authed_ctx(tenant);
         let reviewer = authed_ctx(tenant);
@@ -108,7 +125,6 @@ impl Fixture {
             .token_scopes(vec!["*".into()])
             .build()
             .unwrap();
-        let (db, _, _, dsn) = test_db().await;
         let (app, state) = rest_app_on_db(tenant, routes, resolved_usage_types(), "test", db).await;
         let (status, c) = call(
             &app,
@@ -232,6 +248,75 @@ impl Fixture {
         let (status, b) = self.post("/submit", json!({})).await;
         assert_eq!(status, 200, "{b}");
     }
+    /// A second recurring draft of the tenant, by the fixture's author; its id.
+    async fn draft(&self, code: &str) -> Uuid {
+        let (status, s) = call(
+            &self.app,
+            &self.author,
+            Method::POST,
+            "/skus",
+            json!({"code":code,"name":code,"type":"recurring"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 201, "{s}");
+        Uuid::parse_str(s["id"].as_str().unwrap()).unwrap()
+    }
+    /// Submit the draft `id` for publication; the unit's id.
+    async fn submit(&self, id: Uuid) -> String {
+        let (status, u) = call(
+            &self.app,
+            &self.author,
+            Method::POST,
+            &format!("/skus/{id}/submit"),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{u}");
+        u["unit"]["id"].as_str().unwrap().to_owned()
+    }
+    /// `GET /approval-units` with `query`, as the reviewer.
+    async fn units(&self, query: &str) -> (u16, Value) {
+        call(
+            &self.app,
+            &self.reviewer,
+            Method::GET,
+            &format!("/approval-units{query}"),
+            json!({}),
+            None,
+        )
+        .await
+    }
+    /// Every unit the list answers under `narrowing` (`&`-joined, may be empty), following
+    /// `page_info.next_cursor` to the last page (P-D-224).
+    async fn all_units(&self, narrowing: &str) -> Vec<Value> {
+        let mut items = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut query = narrowing.to_owned();
+            if let Some(c) = &cursor {
+                if !query.is_empty() {
+                    query.push('&');
+                }
+                query.push_str("cursor=");
+                query.push_str(c);
+            }
+            let (status, page) = self
+                .units(&if query.is_empty() {
+                    String::new()
+                } else {
+                    format!("?{query}")
+                })
+                .await;
+            assert_eq!(status, 200, "{page}");
+            items.extend(page["items"].as_array().unwrap().iter().cloned());
+            match page["page_info"]["next_cursor"].as_str() {
+                Some(next) => cursor = Some(next.to_owned()),
+                None => return items,
+            }
+        }
+    }
     async fn reserve(&self, ref_id: Uuid) -> (u16, Value) {
         call(
             &self.app,
@@ -264,29 +349,14 @@ async fn quorum_zero_publishes_at_submit_and_records_the_unit() {
     let s = f.card().await;
     assert_eq!(s["lifecycle"], "published");
     assert_eq!(s["published_version"], 1);
-    let (status, units) = call(
-        &f.app,
-        &f.author,
-        Method::GET,
-        "/approval-units?state=approved",
-        json!({}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 200);
-    assert_eq!(units["items"].as_array().unwrap().len(), 1);
+    assert_eq!(f.all_units("state=approved").await.len(), 1);
     for (reference, count) in [(f.id, 1), (Uuid::new_v4(), 0)] {
-        let (status, body) = call(
-            &f.app,
-            &f.author,
-            Method::GET,
-            &format!("/approval-units?state=approved&kind=sku_publish&ref_id={reference}"),
-            json!({}),
-            None,
-        )
-        .await;
-        assert_eq!(status, 200);
-        assert_eq!(body["items"].as_array().unwrap().len(), count);
+        let units = f
+            .all_units(&format!(
+                "state=approved&kind=sku_publish&ref_id={reference}"
+            ))
+            .await;
+        assert_eq!(units.len(), count);
     }
     assert_eq!(enqueued_event_count(&f.dsn, SkuPublished::TYPE_ID).await, 1);
     assert_eq!(
@@ -388,18 +458,8 @@ async fn content_drift_refreshes_the_generation_and_the_first_reviewer_votes_aga
     let (status, first) = f.vote(&u, "approve", 1).await;
     assert_eq!(status, 200);
     assert_eq!(first["unit"]["decisions"].as_array().unwrap().len(), 1);
-    let (_, queue) = call(
-        &f.app,
-        &f.reviewer,
-        Method::GET,
-        &format!("/approval-units?ref_id={}", f.id),
-        json!({}),
-        None,
-    )
-    .await;
-    let pending = queue["items"]
-        .as_array()
-        .unwrap()
+    let queue = f.all_units(&format!("ref_id={}", f.id)).await;
+    let pending = queue
         .iter()
         .find(|item| item["id"] == u["unit"]["id"])
         .unwrap();
@@ -579,11 +639,32 @@ async fn an_operator_release_needs_force_and_a_reason_and_is_evented() {
     f.publish().await;
     let (_, r) = f.reserve(Uuid::new_v4()).await;
     let path = format!("/references/{}", r["reservation_id"].as_str().unwrap());
+    // RT-02: each half of the guard refuses on its own: no force, a force with no reason, and a
+    // force with a blank reason; none releases.
+    for body in [
+        json!({}),
+        json!({"force":true}),
+        json!({"force":true,"reason":"  "}),
+    ] {
+        let (status, b) = call(&f.app, &f.author, Method::DELETE, &path, body.clone(), None).await;
+        assert_eq!(status, 400, "{body}: {b}");
+    }
+    let (_, refs) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}/references", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert!(
+        refs.to_string().contains("\"reserved\""),
+        "still live: {refs}"
+    );
     assert_eq!(
-        call(&f.app, &f.author, Method::DELETE, &path, json!({}), None)
-            .await
-            .0,
-        400
+        enqueued_event_count(&f.dsn, ReferenceForceReleased::TYPE_ID).await,
+        0
     );
     let (status, b) = call(
         &f.app,
@@ -1011,83 +1092,143 @@ impl authz_resolver_sdk::AuthZResolverApi for ActionResolver {
         })
     }
 }
+/// The action each served operation's door asks the PDP, by `operationId`. The release of a
+/// reference is `submit` for a caller that owns no reference (the operator route).
+const DOOR_ACTIONS: &[(&str, &str)] = &[
+    ("bss_products.create_category", "author"),
+    ("bss_products.list_categories", "read"),
+    ("bss_products.get_category", "read"),
+    ("bss_products.update_category", "author"),
+    ("bss_products.retire_category", "author"),
+    ("bss_products.create_sku", "author"),
+    ("bss_products.list_skus", "read"),
+    ("bss_products.count_skus", "read"),
+    ("bss_products.get_sku", "read"),
+    ("bss_products.update_sku_draft", "author"),
+    ("bss_products.delete_sku_draft", "author"),
+    ("bss_products.sku_versions", "read"),
+    ("bss_products.sku_version_as_of", "read"),
+    ("bss_products.sku_references", "read"),
+    ("bss_products.sku_history", "read"),
+    ("bss_products.submit_sku", "submit"),
+    ("bss_products.change_sku", "submit"),
+    ("bss_products.retire_sku", "submit"),
+    ("bss_products.unfence_sku", "submit"),
+    ("bss_products.list_approval_units", "read"),
+    ("bss_products.get_approval_unit", "read"),
+    ("bss_products.approve_unit", "approve"),
+    ("bss_products.reject_unit", "approve"),
+    ("bss_products.withdraw_unit", "submit"),
+    ("bss_products.get_approval_policy", "settings"),
+    ("bss_products.put_approval_policy", "settings"),
+    ("bss_products.delete_approval_policy_override", "settings"),
+    ("bss_products.reserve_reference", "reference"),
+    ("bss_products.confirm_reference", "reference"),
+    ("bss_products.release_reference", "submit"),
+    ("bss_products.browse", "read"),
+    ("bss_products.list_usage_types", "author"),
+];
+
+/// The router the gear's own `register_rest` serves over the fixture's state, under `enforcer`
+/// (fix run W1c, L1): a door census calls the registered doors, not the suite's `routes`.
+fn registered(
+    f: &Fixture,
+    enforcer: impl authz_resolver_sdk::AuthZResolverApi + 'static,
+) -> Router {
+    crate::gear::BssProductsGear::registered_rest(
+        f.state.clone(),
+        authz_resolver_sdk::PolicyEnforcer::new(Arc::new(enforcer)),
+    )
+    .0
+}
+/// Every operation the gear's own `register_rest` serves, from the `OpenAPI` it registers (fix
+/// run W1c, L1: never the suite's copy of the router list), as the method, the concrete path this
+/// suite calls and the action its door asks (RT-01): an operation without a row in
+/// [`DOOR_ACTIONS`], or a row that names no served operation, fails here. A SKU path names the
+/// fixture's SKU; any other id is fresh.
+fn served_doors(f: &Fixture) -> Vec<(Method, String, &'static str)> {
+    // Registering the routes fills the registry; the router itself is not served here.
+    let (_, openapi) =
+        crate::gear::BssProductsGear::registered_rest(f.state.clone(), flat_in_enforcer(f.tenant));
+    let api = serde_json::to_value(
+        openapi
+            .build_openapi(&toolkit::api::OpenApiInfo::default())
+            .unwrap(),
+    )
+    .unwrap();
+    let table: std::collections::BTreeMap<&str, &'static str> =
+        DOOR_ACTIONS.iter().copied().collect();
+    let mut served = std::collections::BTreeSet::new();
+    let mut doors = Vec::new();
+    for (template, item) in api["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            let Some(id) = operation["operationId"].as_str() else {
+                continue;
+            };
+            let action = *table
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} is served and has no row in DOOR_ACTIONS"));
+            served.insert(id.to_owned());
+            let path = template
+                .strip_prefix("/bss-products/v1")
+                .unwrap()
+                .replace("/skus/{id}", &format!("/skus/{}", f.id))
+                .replace("{id}", &Uuid::new_v4().to_string())
+                .replace("{kind}", "sku_publish");
+            let path = match id {
+                "bss_products.sku_version_as_of" => format!("{path}?date=2026-09-27"),
+                "bss_products.browse" => format!("{path}?kind=sku"),
+                _ => path,
+            };
+            doors.push((
+                Method::from_bytes(method.to_uppercase().as_bytes()).unwrap(),
+                path,
+                action,
+            ));
+        }
+    }
+    let rows: std::collections::BTreeSet<String> =
+        table.keys().map(|id| (*id).to_owned()).collect();
+    assert_eq!(
+        served, rows,
+        "a row of DOOR_ACTIONS names no served operation"
+    );
+    doors
+}
+
+/// The position [`ActionResolver`] records for `action`.
+fn action_seen(action: &str) -> usize {
+    crate::authz::actions::ALL
+        .iter()
+        .position(|a| *a == action)
+        .unwrap()
+        + 1
+}
+
+/// Every door the gear's own `register_rest` serves (fix run W1c, L1) asks the PDP its own action
+/// and is 403 when it denies, and 401 without a caller; another tenant's SKU and unit are 404.
 #[tokio::test]
 async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
     let f = Fixture::new(1).await;
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let enforcer = authz_resolver_sdk::PolicyEnforcer::new(Arc::new(ActionResolver {
-        id: None,
-        allowed: None,
-        tenant: f.tenant,
-        seen: seen.clone(),
-    }));
-    let app = routes(f.state.clone(), &toolkit::api::OpenApiRegistryImpl::new())
-        .layer(axum::Extension(enforcer));
+    let app = registered(
+        &f,
+        ActionResolver {
+            id: None,
+            allowed: None,
+            tenant: f.tenant,
+            seen: seen.clone(),
+        },
+    );
     let sku_path = format!("/skus/{}", f.id);
-    let category_path = format!("/categories/{}", Uuid::new_v4());
-    let unit_path = format!("/approval-units/{}", Uuid::new_v4());
-    let reference_path = format!("/references/{}", Uuid::new_v4());
-    let cases = vec![
-        (Method::POST, "/categories".into(), "author"),
-        (Method::GET, "/categories".into(), "read"),
-        (Method::PATCH, category_path.clone(), "author"),
-        (Method::POST, format!("{category_path}/retire"), "author"),
-        (Method::POST, "/skus".into(), "author"),
-        (Method::GET, "/skus".into(), "read"),
-        (Method::GET, sku_path.clone(), "read"),
-        (Method::PATCH, sku_path.clone(), "author"),
-        (Method::GET, format!("{sku_path}/versions"), "read"),
-        (Method::GET, format!("{sku_path}/references"), "read"),
-        (Method::POST, format!("{sku_path}/submit"), "submit"),
-        (Method::POST, format!("{sku_path}/changes"), "submit"),
-        (Method::POST, format!("{sku_path}/retire"), "submit"),
-        (Method::POST, format!("{sku_path}/unfence"), "submit"),
-        (Method::GET, "/approval-units".into(), "read"),
-        (Method::GET, unit_path.clone(), "read"),
-        (Method::POST, format!("{unit_path}/approve"), "approve"),
-        (Method::POST, format!("{unit_path}/reject"), "approve"),
-        (Method::POST, format!("{unit_path}/withdraw"), "submit"),
-        (Method::GET, "/approval-policy".into(), "settings"),
-        (Method::PUT, "/approval-policy".into(), "settings"),
-        (
-            Method::DELETE,
-            "/approval-policy/sku_publish".into(),
-            "settings",
-        ),
-        (
-            Method::POST,
-            format!("{sku_path}/references/reserve"),
-            "reference",
-        ),
-        (
-            Method::POST,
-            format!("{reference_path}/confirm"),
-            "reference",
-        ),
-        (Method::DELETE, reference_path, "submit"),
-        (Method::DELETE, sku_path.clone(), "author"),
-        (Method::GET, "/usage-types".into(), "author"),
-        (Method::GET, "/skus/counts".into(), "read"),
-        (Method::GET, format!("{sku_path}/history"), "read"),
-        (
-            Method::GET,
-            format!("{sku_path}/versions/as-of?date=2026-09-27"),
-            "read",
-        ),
-        (Method::GET, category_path.clone(), "read"),
-    ];
-    assert_eq!(cases.len(), 31);
-    for (method, path, action) in cases {
+    for (method, path, action) in served_doors(&f) {
         seen.store(0, std::sync::atomic::Ordering::Relaxed);
         let (status, b) = call(&app, &f.author, method.clone(), &path, json!({}), None).await;
         assert_eq!(status, 403, "{method} {path}: {b}");
         assert_eq!(
             seen.load(std::sync::atomic::Ordering::Relaxed),
-            crate::authz::actions::ALL
-                .iter()
-                .position(|a| *a == action)
-                .unwrap()
-                + 1
+            action_seen(action),
+            "{method} {path} asks {action}"
         );
         let response = app
             .clone()
@@ -1150,6 +1291,241 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         .0,
         200
     );
+}
+/// O1 (P-D-222, fix run W1c M1): pricing's system actor acts in-process only. A REST caller whose
+/// context carries it in either half (the subject type `bss-pricing.system` or the id
+/// `PRICING_SYSTEM_ACTOR`; a token's claims can carry both) is refused at every served door, 403
+/// `SYSTEM_ACTOR_RESERVED`, before the PDP is asked. Another system subject (Rating's, pricing
+/// D-424) is judged by the PDP as any caller is: under a PDP that allows nothing, each door answers
+/// 403 after asking its own action.
+#[tokio::test]
+async fn a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let f = Fixture::new(1).await;
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = registered(
+        &f,
+        ActionResolver {
+            id: None,
+            allowed: None,
+            tenant: f.tenant,
+            seen: seen.clone(),
+        },
+    );
+    let subject = |id: Uuid, kind: &str| {
+        SecurityContext::builder()
+            .subject_id(id)
+            .subject_tenant_id(f.tenant)
+            .subject_type(kind)
+            .token_scopes(vec!["*".into()])
+            .build()
+            .unwrap()
+    };
+    let pricing = bss_products_sdk::PRICING_SYSTEM_ACTOR;
+    let asserted = [
+        subject(pricing, "bss-pricing.system"),
+        subject(Uuid::new_v4(), "bss-pricing.system"),
+        subject(pricing, gts_id!("cf.core.security.subject_user.v1~")),
+    ];
+    let rating = subject(Uuid::new_v4(), "bss-rating.system");
+    let doors = served_doors(&f);
+    assert_eq!(doors.len(), DOOR_ACTIONS.len());
+    for (method, path, action) in doors {
+        for ctx in &asserted {
+            seen.store(0, Relaxed);
+            let (status, b) = call(&app, ctx, method.clone(), &path, json!({}), None).await;
+            let who = (ctx.subject_id(), ctx.subject_type());
+            assert_eq!(status, 403, "{method} {path} as {who:?}: {b}");
+            assert_eq!(
+                b["context"]["reason"], "SYSTEM_ACTOR_RESERVED",
+                "{method} {path} as {who:?}: {b}"
+            );
+            assert_eq!(seen.load(Relaxed), 0, "{method} {path}: no PDP question");
+        }
+        seen.store(0, Relaxed);
+        let (status, b) = call(&app, &rating, method.clone(), &path, json!({}), None).await;
+        assert_eq!(status, 403, "{method} {path} as rating: {b}");
+        assert_eq!(
+            seen.load(Relaxed),
+            action_seen(action),
+            "{method} {path}: the PDP judged rating's {action}"
+        );
+    }
+}
+/// O1 (P-D-222): a REST door never records the registry's trust either. A reserve through the
+/// door by a principal whose token asserts a `.system` subject type (another gear's: pricing's own
+/// is refused at every door) is audited as a subject's act; only the in-process registry records
+/// the pricing system actor's act as the system's.
+#[tokio::test]
+async fn a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts() {
+    use bss_products_sdk::{PRICING_SYSTEM_ACTOR, ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let asserting = SecurityContext::builder()
+        .subject_id(Uuid::from_u128(42))
+        .subject_tenant_id(f.tenant)
+        .subject_type("bss-rating.system")
+        .token_scopes(vec!["*".into()])
+        .build()
+        .unwrap();
+    let (status, b) = call(
+        &f.app,
+        &asserting,
+        Method::POST,
+        &format!("/skus/{}/references/reserve", f.id),
+        json!({"owner":"pricing","kind":"price_book_entry","ref_id":Uuid::new_v4()}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 201, "{b}");
+    let system = SecurityContext::builder()
+        .subject_id(PRICING_SYSTEM_ACTOR)
+        .subject_type("bss-pricing.system")
+        .subject_tenant_id(f.tenant)
+        .build()
+        .unwrap();
+    local(&f, "pricing")
+        .reserve(
+            &system,
+            f.tenant,
+            f.id,
+            ReferenceKind::PriceBookEntry,
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    for (actor, kind) in [
+        (Uuid::from_u128(42), "subject"),
+        (PRICING_SYSTEM_ACTOR, "system"),
+    ] {
+        let reason = raw_string_opt(
+            &f.dsn,
+            &format!(
+                "SELECT reason AS v FROM products_audit_log WHERE action = 'reference.reserve' \
+                 AND {}",
+                id_matches("actor_ref", actor)
+            ),
+        )
+        .await;
+        assert_eq!(
+            reason.as_deref(),
+            Some(format!("owner=pricing; actor_kind={kind}").as_str())
+        );
+    }
+}
+/// RS-03 (O2, P-D-224): the unit list pages in submission order, `limit` 200 by default and
+/// clamped at 500, `cursor` from `page_info`. A cursor replayed under another narrowing is 400
+/// `FILTER_MISMATCH`, a cursor that does not read and a `limit` that is not a number 400.
+#[tokio::test]
+async fn the_unit_list_pages_in_submission_order() {
+    let f = Fixture::new(2).await;
+    let mut units = vec![f.submit(f.id).await];
+    for code in ["P1", "P2"] {
+        let id = f.draft(code).await;
+        units.push(f.submit(id).await);
+    }
+    let (status, first) = f.units("?limit=2").await;
+    assert_eq!(status, 200, "{first}");
+    let ids = |page: &Value| -> Vec<String> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|u| u["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(ids(&first), units[..2]);
+    assert_eq!(first["page_info"]["limit"], 2);
+    let next = first["page_info"]["next_cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (status, second) = f.units(&format!("?limit=2&cursor={next}")).await;
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(ids(&second), units[2..]);
+    assert!(second["page_info"]["next_cursor"].is_null(), "{second}");
+    assert_eq!(f.units("").await.1["page_info"]["limit"], 200);
+    assert_eq!(f.units("?limit=9999").await.1["page_info"]["limit"], 500);
+    let (status, b) = f.units(&format!("?state=pending&cursor={next}")).await;
+    assert_eq!(status, 400, "{b}");
+    assert!(b.to_string().contains("FILTER_MISMATCH"), "{b}");
+    for bad in ["?cursor=not-a-cursor", "?limit=many"] {
+        assert_eq!(f.units(bad).await.0, 400, "{bad}");
+    }
+    let every: Vec<String> = f
+        .all_units("limit=1")
+        .await
+        .iter()
+        .map(|u| u["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(every, units);
+}
+
+/// RS-03 (P-D-224): a page of the unit list reads its units and all their decisions in the same
+/// statements for 10 and for 100 units, each with a vote; it read each unit's decisions on its own.
+#[tokio::test]
+async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units() {
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (f, recorder) = Fixture::recorded(2).await;
+        for i in 0..n {
+            let id = if i == 0 {
+                f.id
+            } else {
+                f.draft(&format!("U{i:03}")).await
+            };
+            let unit = f.submit(id).await;
+            let (status, b) = call(
+                &f.app,
+                &f.reviewer,
+                Method::POST,
+                &format!("/approval-units/{unit}/approve"),
+                json!({"generation":1}),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200, "{b}");
+        }
+        recorder.clear();
+        let (status, page) = f.units("").await;
+        assert_eq!(status, 200, "{page}");
+        let items = page["items"].as_array().unwrap();
+        assert_eq!(items.len(), n);
+        assert!(
+            items
+                .iter()
+                .all(|u| u["decisions"].as_array().unwrap().len() == 1),
+            "every unit carries its vote"
+        );
+        runs.push(products_statements(&recorder));
+    }
+    assert_eq!(runs[0], runs[1]);
+}
+/// RS-23 (P-D-226): the SDK's `Sku` and `SkuVersion` read the doors' JSON (instants RFC 3339,
+/// the effective date `YYYY-MM-DD`, as `SkuDto` and `SkuVersionDto` write them) and write it back
+/// unchanged.
+#[tokio::test]
+async fn the_sdk_sku_types_read_the_doors_json() {
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let card = f.card().await;
+    let sku: bss_products_sdk::models::Sku = serde_json::from_value(card.clone()).unwrap();
+    assert_eq!(sku.id, f.id);
+    assert_eq!(serde_json::to_value(&sku).unwrap(), card);
+    let (status, versions) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}/versions", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{versions}");
+    let read: Vec<bss_products_sdk::models::SkuVersion> =
+        serde_json::from_value(versions.clone()).unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(serde_json::to_value(&read).unwrap(), versions);
 }
 #[tokio::test]
 async fn reject_refreshes_drift_and_commits_without_counting_the_rejection() {
@@ -1717,6 +2093,18 @@ async fn unit_only_reviewer_can_approve() {
             })),
         ))
     };
+    // RT-03: a second unit of the tenant, outside the grant's RESOURCE_ID, is refused.
+    let other = f.submit(f.draft("OTHER").await).await;
+    let refused = call(
+        &restricted("approve", unit_id),
+        &f.reviewer,
+        Method::POST,
+        &format!("/approval-units/{other}/approve"),
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(refused.0, 404, "{refused:?}");
     let result = call(
         &restricted("approve", unit_id),
         &f.reviewer,
@@ -1767,12 +2155,25 @@ async fn sku_only_reader_sees_reference_counts() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(refs["items"].as_array().unwrap().len(), 1);
+    // RT-03: another SKU of the tenant, outside the grant's RESOURCE_ID, is not read; a fresh id
+    // would be 404 whether the constraint applied or not.
+    let outside = f.draft("OUTSIDE").await;
+    let unrestricted = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{outside}"),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(unrestricted.0, 200, "{unrestricted:?}");
     assert_eq!(
         call(
             &app,
             &f.author,
             Method::GET,
-            &format!("/skus/{}", Uuid::new_v4()),
+            &format!("/skus/{outside}"),
             json!({}),
             None
         )
@@ -1891,6 +2292,129 @@ async fn bound_registry_reserve_confirm_release_states_and_owner_isolation() {
             .unwrap()[0]
             .1,
         ReferenceState::Reserved
+    );
+}
+/// RS-04 / RS-05: a reservation whose insert loses the live-reference index on both attempts is
+/// 409 `REFERENCE_EXISTS`, at the door and through the registry, never a 500. The loss is made
+/// lasting by an extra unique index over the logical reference with no `state` condition: the
+/// released attempt holds it, and the live read each attempt makes never sees a released row.
+#[tokio::test]
+async fn a_reservation_that_loses_the_index_twice_is_409_reference_exists() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1};
+    let f = Fixture::new(0).await;
+    f.publish().await;
+    let ref_id = Uuid::new_v4();
+    let (status, r) = f.reserve(ref_id).await;
+    assert_eq!(status, 201, "{r}");
+    let (status, b) = f.release(&r["reservation_id"]).await;
+    assert_eq!(status, 200, "{b}");
+    {
+        use sea_orm::{ConnectionTrait, Database};
+        let raw = Database::connect(&f.dsn).await.unwrap();
+        raw.execute_unprepared(
+            "CREATE UNIQUE INDEX every_attempt_of_a_reference ON products_sku_reference \
+             (tenant_id, owner_gear, ref_kind, ref_id)",
+        )
+        .await
+        .unwrap();
+        raw.close().await.ok();
+    }
+    let (status, b) = f.reserve(ref_id).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "REFERENCE_EXISTS");
+    let error = local(&f, "pricing")
+        .reserve(
+            &f.author,
+            f.tenant,
+            f.id,
+            ReferenceKind::PriceBookEntry,
+            ref_id,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(canonical_code(error), "REFERENCE_EXISTS");
+}
+/// RS-13: the registry answers the states of a batch of reservations in the same statements for
+/// 10 and for 100 ids, one read with the owner checked per row; it read each id on its own. An
+/// unknown id is still the batch's 404.
+#[tokio::test]
+async fn registry_states_read_in_the_same_statements_for_10_and_100_ids() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1, ReferenceState};
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let (f, recorder) = Fixture::recorded(0).await;
+        f.publish().await;
+        let registry = local(&f, "pricing");
+        let mut ids = Vec::with_capacity(n);
+        for _ in 0..n {
+            ids.push(
+                registry
+                    .reserve(
+                        &f.author,
+                        f.tenant,
+                        f.id,
+                        ReferenceKind::PriceBookEntry,
+                        Uuid::new_v4(),
+                    )
+                    .await
+                    .unwrap()
+                    .reservation_id,
+            );
+        }
+        recorder.clear();
+        let states = registry.states(&f.author, f.tenant, &ids).await.unwrap();
+        assert_eq!(
+            states,
+            ids.iter()
+                .map(|id| (*id, ReferenceState::Reserved))
+                .collect::<Vec<_>>()
+        );
+        runs.push(products_statements(&recorder));
+        let mut with_unknown = ids.clone();
+        with_unknown.insert(1, Uuid::new_v4());
+        assert_eq!(
+            registry
+                .states(&f.author, f.tenant, &with_unknown)
+                .await
+                .unwrap_err()
+                .status_code(),
+            404
+        );
+    }
+    assert_eq!(runs[0], runs[1]);
+}
+
+/// RS-15: a SKU card counts its live references in one grouped read; it loaded every live row.
+/// The counts it answers are unchanged: by owner and kind, and the reserved subset.
+#[tokio::test]
+async fn a_sku_card_counts_its_references_in_one_grouped_read() {
+    let (f, recorder) = Fixture::recorded(0).await;
+    f.publish().await;
+    for _ in 0..3 {
+        assert_eq!(f.reserve(Uuid::new_v4()).await.0, 201);
+    }
+    recorder.clear();
+    let (status, card) = call(
+        &f.app,
+        &f.author,
+        Method::GET,
+        &format!("/skus/{}", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{card}");
+    assert_eq!(card["references"]["price_book_entries"], 3, "{card}");
+    assert_eq!(card["references"]["reserved"], 3, "{card}");
+    let reads: Vec<String> = products_statements(&recorder)
+        .into_iter()
+        .filter(|sql| sql.contains("products_sku_reference"))
+        .collect();
+    assert_eq!(reads.len(), 1, "{reads:?}");
+    assert!(
+        reads[0].contains("GROUP BY") && reads[0].contains("COUNT"),
+        "{}",
+        reads[0]
     );
 }
 #[tokio::test]
@@ -2094,11 +2618,15 @@ async fn bound_registry_system_identity_and_tenant_are_checked() {
         ),
         "REFERENCE_OWNER_MISMATCH"
     );
-    assert!(
-        registry
-            .sku_for_write(&system, Uuid::new_v4(), f.id)
-            .await
-            .is_err()
+    // RT-04: the tenant check's own code, not a data-scope 404 another tenant's scope would give.
+    assert_eq!(
+        canonical_code(
+            registry
+                .sku_for_write(&system, Uuid::new_v4(), f.id)
+                .await
+                .unwrap_err()
+        ),
+        "REFERENCE_OWNER_MISMATCH"
     );
 }
 
@@ -2630,17 +3158,7 @@ async fn the_unit_card_of_a_deleted_draft_answers_impact_live_null() {
     assert_eq!(card["state"], "rejected");
     assert_eq!(card["impact_live"], Value::Null);
     assert!(card["snapshot"].is_object(), "{card}");
-    let (status, list) = call(
-        &f.app,
-        &f.author,
-        Method::GET,
-        &format!("/approval-units?ref_id={}", f.id),
-        json!({}),
-        None,
-    )
-    .await;
-    assert_eq!(status, 200, "{list}");
-    assert_eq!(list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(f.all_units(&format!("ref_id={}", f.id)).await.len(), 1);
 }
 
 /// P-D-206: a draft cannot be reserved, so no registry row can name a never-published draft; were
@@ -2788,3 +3306,6 @@ async fn a_collector_denial_is_403_at_submit_and_at_approve() {
 mod sku_history_tests;
 #[path = "submit_note_tests.rs"]
 mod submit_note_tests;
+
+#[path = "caps_tests.rs"]
+mod caps_tests;
