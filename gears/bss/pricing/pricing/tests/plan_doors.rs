@@ -16,7 +16,7 @@ use uuid::Uuid;
 async fn a_plan_is_created_with_a_draft_revision_one_on_its_book_and_its_key_replays() {
     let (f, _) = setup().await;
     let eur = book(&f, "eur").await;
-    let body = json!({"code":"pro","name":"Pro","book_id":eur});
+    let body = json!({"code":"PRO","name":"Pro","book_id":eur});
     assert_eq!(
         f.call("POST", "/plans", body.clone(), None, None).await.0,
         400,
@@ -28,7 +28,7 @@ async fn a_plan_is_created_with_a_draft_revision_one_on_its_book_and_its_key_rep
     assert_eq!(created.0, 201, "{created:?}");
     assert_eq!(created.2, "\"1\"");
     let p = &created.1;
-    assert_eq!(p["code"], "pro");
+    assert_eq!(p["code"], "PRO");
     assert_eq!(p["name"], "Pro");
     assert_eq!(p["published_rev"], json!(null));
     assert_eq!(p["created_by"], f.ctx.subject_id().to_string());
@@ -47,7 +47,7 @@ async fn a_plan_is_created_with_a_draft_revision_one_on_its_book_and_its_key_rep
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro2","name":"Pro","book_id":eur}),
+            json!({"code":"PRO2","name":"Pro","book_id":eur}),
             None,
             Some("one"),
         )
@@ -102,7 +102,7 @@ async fn a_plan_needs_a_code_of_its_own_and_a_book_of_its_tenant() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Pro","book_id":Uuid::new_v4()}),
+            json!({"code":"PRO","name":"Pro","book_id":Uuid::new_v4()}),
             None,
             Some("nobook"),
         )
@@ -113,7 +113,7 @@ async fn a_plan_needs_a_code_of_its_own_and_a_book_of_its_tenant() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Again","book_id":eur}),
+            json!({"code":"PRO","name":"Again","book_id":eur}),
             None,
             Some("again"),
         )
@@ -144,7 +144,7 @@ async fn a_plan_is_renamed_under_if_match() {
     assert_eq!(s, 200, "{b}");
     assert_eq!(tag, "\"2\"");
     assert_eq!(b["name"], "Professional");
-    assert_eq!(b["code"], "pro");
+    assert_eq!(b["code"], "PRO");
     let unknown = f
         .call(
             "PATCH",
@@ -203,13 +203,28 @@ async fn a_copy_carries_the_published_book_availability_and_items_and_attaches_t
             copy["price_book_entry_id"],
             json!(source.price_book_entry_id.map(|e| e.to_string()))
         );
-        assert_eq!(copy["treatment"], source.treatment);
+        assert!(copy.get("treatment").is_none(), "D-467: {copy}");
         assert_eq!(
             copy["reference_state"], "unreserved",
             "D-413: written unreserved"
         );
         assert_eq!(copy["reservation_id"], json!(null));
     }
+    // D-467: a copy is a new row, `paid` and no quantity; the legacy included item, stored
+    // without an entry, stays one (its draft's checks show it ITEM_ENTRY_MISSING).
+    let stored: Vec<_> = items(&f, id_of(&r["id"]))
+        .await
+        .into_iter()
+        .map(|i| (i.sku_id, i.treatment, i.included_qty, i.qty_min))
+        .collect();
+    assert!(
+        stored.contains(&(paid.sku_id, "paid".to_owned(), None, None)),
+        "{stored:?}"
+    );
+    assert!(
+        stored.contains(&(free.sku_id, "included".to_owned(), None, None)),
+        "{stored:?}"
+    );
     assert_eq!(
         f.call("POST", &path, json!({}), None, Some("copy")).await,
         copied,
@@ -608,7 +623,7 @@ async fn deleting_a_never_published_plans_last_revision_deletes_the_plan_and_fre
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Pro again","book_id":eur}),
+            json!({"code":"PRO","name":"Pro again","book_id":eur}),
             None,
             Some("again"),
         )
@@ -665,7 +680,7 @@ async fn a_draft_delete_leaves_a_plan_with_a_published_revision_as_it_was() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"pro","name":"Pro again","book_id":eur}),
+            json!({"code":"PRO","name":"Pro again","book_id":eur}),
             None,
             Some("again"),
         )
@@ -867,7 +882,7 @@ async fn plan_doors_need_the_plan_permissions_and_hide_other_tenants() {
         (
             "POST",
             "/plans".to_owned(),
-            json!({"code":"x","name":"x","book_id":eur}),
+            json!({"code":"X","name":"x","book_id":eur}),
             None,
             Some("k"),
         ),
@@ -1027,4 +1042,68 @@ async fn a_rest_caller_asserting_pricings_system_actor_never_reaches_the_registr
         .await;
     assert_eq!(s, 200, "{listed}");
     assert_eq!(listed["items"], json!([]), "nothing written: {listed}");
+}
+
+/// D-463: `POST /plans` takes an optional `available_from`, judged as the revision PATCH judges
+/// it: a date is rev 1's sale date, omitted or null is "at publish", and a malformed one is 400
+/// `DATE_INVALID` with nothing written, among the body's refusals: before the 404 of a book the
+/// tenant does not hold.
+#[tokio::test]
+async fn a_plan_is_created_with_its_sale_date() {
+    let (f, _) = setup().await;
+    let eur = book(&f, "eur").await;
+    let dated = f
+        .call(
+            "POST",
+            "/plans",
+            json!({"code":"DATED","name":"Dated","book_id":eur,"available_from":"2031-03-01"}),
+            None,
+            Some("dated"),
+        )
+        .await;
+    assert_eq!(dated.0, 201, "{dated:?}");
+    assert_eq!(dated.1["revisions"][0]["available_from"], "2031-03-01");
+    let rev1 = id_of(&dated.1["revisions"][0]["id"]);
+    let read = f
+        .call(
+            "GET",
+            &format!("/plan-revisions/{rev1}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(read.1["available_from"], "2031-03-01", "stored: {read:?}");
+    for (code, from) in [("omitted", None), ("null", Some(json!(null)))] {
+        let mut body = json!({"code":code.to_uppercase(),"name":code,"book_id":eur});
+        if let Some(from) = from {
+            body["available_from"] = from;
+        }
+        let created = f.call("POST", "/plans", body, None, Some(code)).await;
+        assert_eq!(created.0, 201, "{created:?}");
+        assert_eq!(
+            created.1["revisions"][0]["available_from"],
+            json!(null),
+            "{code}"
+        );
+    }
+    for (key, book_id) in [("bad", eur), ("bad-and-unknown-book", Uuid::new_v4())] {
+        let refused = f
+            .call(
+                "POST",
+                "/plans",
+                json!({"code":key.to_uppercase(),"name":key,"book_id":book_id,"available_from":"2031-13-01"}),
+                None,
+                Some(key),
+            )
+            .await;
+        assert_eq!(refused.0, 400, "{key}: {refused:?}");
+        assert!(text(&refused.1).contains("DATE_INVALID"), "{refused:?}");
+    }
+    let (_, listed, _) = f.call("GET", "/plans", json!({}), None, None).await;
+    assert_eq!(
+        listed["items"].as_array().unwrap().len(),
+        3,
+        "nothing written: {listed}"
+    );
 }

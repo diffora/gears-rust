@@ -488,13 +488,14 @@ pub async fn entry_in(
     .unwrap()
     .id
 }
-/// A plan through its door: `(plan body, revision 1 id)`.
+/// A plan through its door: `(plan body, revision 1 id)`. Its code is `code` upper-cased, a code
+/// the rule of D-468 admits (`pro` gives `PRO`).
 pub async fn plan(f: &Fixture, code: &str, book: Uuid) -> (Value, Uuid) {
     let (s, b, _) = f
         .call(
             "POST",
             "/plans",
-            json!({"code":code,"name":format!("Plan {code}"),"book_id":book}),
+            json!({"code":code.to_uppercase(),"name":format!("Plan {code}"),"book_id":book}),
             None,
             Some(&format!("plan-{code}")),
         )

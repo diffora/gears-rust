@@ -240,15 +240,22 @@ async fn an_item_create_reserves_a_plan_item_writes_and_confirms() {
     let c = f.caller();
     let sku = Uuid::new_v4();
     let e = entry(&f, t.book, sku).await;
-    let input = json!({"sku_id":sku,"price_book_entry_id":e.id,"treatment":"paid","qty_min":1});
+    let input = json!({"sku_id":sku,"price_book_entry_id":e.id});
     let created = t.create(&c, input.clone(), "one").await;
     assert_eq!(created.0, 201, "{created:?}");
     assert_eq!(created.1["reference_state"], "confirmed");
     assert_eq!(created.1["revision_id"], t.revision.to_string());
     assert_eq!(created.1["sku_id"], sku.to_string());
     assert_eq!(created.1["price_book_entry_id"], e.id.to_string());
-    assert_eq!(created.1["treatment"], "paid");
-    assert_eq!(created.1["qty_min"], 1);
+    // D-467: a plan item is a SKU and its entry; the new row stores `paid` and no quantity.
+    for removed in ["treatment", "included_qty", "qty_min"] {
+        assert!(created.1.get(removed).is_none(), "{removed}: {created:?}");
+    }
+    let row = stored_item(&f, id_of(&created.1["id"])).await.unwrap();
+    assert_eq!(
+        (row.treatment.as_str(), row.included_qty, row.qty_min),
+        ("paid", None, None)
+    );
     assert_eq!(created.2, "\"2\"", "written, then confirmed");
     assert_eq!(t.create(&c, input, "one").await, created, "the key replays");
     assert_eq!(
@@ -449,7 +456,7 @@ async fn a_book_change_between_reserve_and_write_makes_the_entry_foreign() {
         &f,
         &script,
         &t,
-        json!({"sku_id":sku,"price_book_entry_id":e.id,"treatment":"paid"}),
+        json!({"sku_id":sku,"price_book_entry_id":e.id}),
         async {
             let conn = f.db.conn().unwrap();
             let mut r =
@@ -483,7 +490,7 @@ async fn the_write_refuses_an_entry_of_another_book_or_sku_or_an_unknown_one() {
         let answer = t
             .create(
                 &f.caller(),
-                json!({"sku_id":sku,"price_book_entry_id":entry_id,"treatment":"optional"}),
+                json!({"sku_id":sku,"price_book_entry_id":entry_id}),
                 "one",
             )
             .await;
@@ -821,4 +828,97 @@ async fn a_contended_item_write_after_the_reserve_cancels_the_create() {
     let retry = t.create(&f.caller(), input, "one").await;
     assert_eq!(retry.0, 201, "a same-key retry runs afresh: {retry:?}");
     assert_eq!(retry.1["reference_state"], "confirmed");
+}
+
+/// D-465: the create op's SKU re-read judges a deprecated SKU as the item door does. Every SKU
+/// reads deprecated here (mode 9). On a draft of a plan whose published revision in effect
+/// carries the SKU, the create is written and confirmed; any other SKU is refused with the
+/// door's own answer, 400 `ITEM_SKU_DEPRECATED`, its op keeping `SKU_DEPRECATED`.
+#[tokio::test]
+async fn the_create_ops_re_read_admits_a_deprecated_sku_its_plan_sells() {
+    let (f, _script, t) = setup(9).await;
+    let tenant = f.ctx.subject_tenant_id();
+    let now = time::OffsetDateTime::now_utc();
+    let carried = Uuid::new_v4();
+    let carried_entry = entry(&f, t.book, carried).await.id;
+    let other = Uuid::new_v4();
+    let other_entry = entry(&f, t.book, other).await.id;
+    plan_item_repo::insert(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        plan_item::Model {
+            id: Uuid::now_v7(),
+            tenant_id: tenant,
+            revision_id: t.revision,
+            sku_id: carried,
+            price_book_entry_id: Some(carried_entry),
+            treatment: "paid".into(),
+            included_qty: None,
+            qty_min: None,
+            reservation_id: Some(Uuid::new_v4()),
+            reference_state: "confirmed".into(),
+            version: 1,
+            created_by: f.ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap();
+    publish(&f, t.revision).await;
+    let rev2 = plan_revision_repo::insert(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        bss_pricing::infra::storage::entity::plan_revision::Model {
+            id: Uuid::now_v7(),
+            tenant_id: tenant,
+            plan_id: t.plan,
+            rev_no: 2,
+            book_id: t.book,
+            state: "draft".into(),
+            available_from: None,
+            pending_unit_id: None,
+            approved_by_unit_id: None,
+            published_at: None,
+            version: 1,
+            created_by: f.ctx.subject_id(),
+            created_at: now,
+            updated_at: now,
+        },
+    )
+    .await
+    .unwrap()
+    .id;
+    let create = |sku: Uuid, entry: Uuid, key: &'static str| {
+        let input = json!({"sku_id":sku,"price_book_entry_id":entry});
+        let digest = bss_pricing::api::rest::preconditions::request_digest(&input).unwrap();
+        let body: bss_pricing::api::rest::authoring::dto::PricingPlanItemCreate =
+            serde_json::from_value(input).unwrap();
+        bss_pricing::api::rest::authoring::plan_items::create(
+            f.state.clone(),
+            scope(&f),
+            f.ctx.clone(),
+            rev2,
+            Uuid::now_v7(),
+            key.to_owned(),
+            digest,
+            body,
+        )
+    };
+    let written = entry_support::answer(create(carried, carried_entry, "carried").await).await;
+    assert_eq!(written.0, 201, "{written:?}");
+    let item = stored_item(&f, id_of(&written.1["id"])).await.unwrap();
+    assert_eq!(item.revision_id, rev2);
+    assert_eq!(item.reference_state, "confirmed", "{item:?}");
+    let refused = entry_support::answer(create(other, other_entry, "other").await).await;
+    assert_eq!(refused.0, 400, "{refused:?}");
+    assert!(
+        refused.1.to_string().contains("ITEM_SKU_DEPRECATED"),
+        "{refused:?}"
+    );
+    let ops = ops::page(&f.db.conn().unwrap(), &scope(&f), tenant, None, None, 100)
+        .await
+        .unwrap();
+    let refused_op = ops.iter().find(|op| op.sku_id == other).unwrap();
+    assert_eq!(refused_op.last_error.as_deref(), Some("SKU_DEPRECATED"));
 }

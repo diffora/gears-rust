@@ -212,7 +212,7 @@ On a usage chain, a successor preserves package size and the SKU unit; the model
 
 **Phase:** 2. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price. Apply after included quantities and before promotions, prorated by the fraction of the period the price covered. There is no plan minimum or cap. Pricing stores and validates min_fee and resolve returns it; Rating applies the floor (D-415).
+The floor belongs to a price per subscription per billing period, aggregating every value and slice rated by that price. Apply before promotions, prorated by the fraction of the period the price covered; no plan carries an included quantity to deduct first (D-467). There is no plan minimum or cap. Pricing stores and validates min_fee and resolve returns it; Rating applies the floor (D-415).
 
 #### `fr-temporary-pair`
 
@@ -276,7 +276,7 @@ Persist PricesPublished and ApprovalUnitDecided with state and audit in the tool
 
 **Phase:** 3. **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-A plan has immutable published revisions; each revision binds one book and contains paid, optional or included items, availability, minimal Grants and optional sold-as bundle SKU. Enforce one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), usage-only included_qty, no bundle item, no deprecated SKU newly added, while one carried over from the same plan's published revision stays (ITEM_SKU_DEPRECATED, D-408), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units. Clone produces a draft; retirement requires migration. An approved revision whose sale date is after the day of its approval is scheduled: it takes effect on that date, and until then the plan keeps selling its published revision (D-446, D-449, D-450). Grants and the sold-as bundle SKU are deferred (D-411), and so is retirement (D-410).
+A plan has immutable published revisions; each revision binds one book and contains items, availability, minimal Grants and optional sold-as bundle SKU; an item is a SKU and its entry in the plan's book, with no treatment, included quantity or minimum quantity (D-467). Enforce an entry for every item (ITEM_ENTRY_MISSING), one recurring frequency (FREQUENCY_MIXED), no duplicate usage meter (METER_DUPLICATE), no bundle item, no deprecated SKU newly added, while one carried over from the same plan's published revision stays, and one that revision carries may be added again (ITEM_SKU_DEPRECATED, D-408, D-465), and entries only from its book (ITEM_BOOK_FOREIGN). Sale-date coverage is per dimension value with an open tail or default (ITEM_UNCOVERED); book validity is PLAN_BOOK_VALIDITY. Checks compute blocked_by pending price units, and each check row names the items that turn it red and the pending prices behind blocked_by (D-466). A new plan's code, on create and on clone, is 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding (PLAN_CODE_INVALID); a code stored before the rule keeps reading and is never judged again (D-468). Clone produces a draft; retirement requires migration. An approved revision whose sale date is after the day of its approval is scheduled: it takes effect on that date, and until then the plan keeps selling its published revision (D-446, D-449, D-450). Grants and the sold-as bundle SKU are deferred (D-411), and so is retirement (D-410).
 
 #### `fr-promotions`
 
@@ -316,7 +316,7 @@ GET /bss-pricing/v1/prices/{id} (spec §7.1's /pricing/v1/prices/{id}, D-422) se
 
 **Phase:** 4, not built (D-415). **Source:** spec §2.2, §5–§7, §12–§13; phase 2 plan for delivery details.
 
-Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. GET /pricing/v1/quote is the Studio preview with quantities and optional-item choices, returning totals. Apply price selection, half-open tiers, included quantities, per-price prorated min_fee and promotions in that order. Recurring slices prorate by calendar days; usage readings use their timestamps and counters restart per slice. Quote is separate from the consumer resolve contract.
+Not built (D-415): the owner dropped quote and the Studio wiring; consumers read resolve and GET /bss-pricing/v1/prices/{id}, and Rating owns the minimum-fee floor arithmetic. GET /pricing/v1/quote is the Studio preview with quantities, returning totals (since D-467 no plan item is optional or carries an included quantity). Apply price selection, half-open tiers, per-price prorated min_fee and promotions in that order. Recurring slices prorate by calendar days; usage readings use their timestamps and counters restart per slice. Quote is separate from the consumer resolve contract.
 
 ## 6. Non-Functional Requirements
 
@@ -374,11 +374,16 @@ Phase 7 adds the Price Books screen's reads: an entry's prices with their status
 approved prices by date (D-440), every book read's stats (D-441), and a book list that pages on the toolkit's OData
 pager and is searched by q and sku_id (D-442); and its writes: the dates of a temporary draft, whose pair follows
 them (D-443), and a book's description and the delete of a book nothing uses (D-444). An approval unit carries its
-submitter's note, `submit_note`, the unit shape products shares; pricing's doors send none (D-445).
+submitter's note, `submit_note`, the unit shape products shares (D-445).
+Phase 9 adds what the plans screen reads: each plan's current revision and the one in effect (D-460), who made
+each revision and when it was submitted and approved (D-461), and a pending revision's vote progress (D-462); and
+a plan's create and clone take its sale date (D-463). A plan revision's submit and publish-changes carry the
+submitter's note to the unit's submit_note; a single price's submit takes none (D-464). A draft may add again a
+deprecated SKU its plan's published revision in effect carries (D-465).
 The frozen consumer contract is named `/pricing/v1/resolve` and `/pricing/v1/prices/{id}` in spec §7.1;
 phase 4 must explicitly wire that public surface. Wire fields and query parameters are snake_case.
 Doors use headers + Bytes and preconditions::parse_body with correlation::establish on mutations. Errors expose
-code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag; mutation preconditions are required.
+code/field/message through canonical RFC-9457 Problem responses. Reads expose ETag, and so does every write answer that sets one, declared in the served contract; mutation preconditions are required. Every operation declares its 503, and the operations that read Products hard name REGISTRY_UNAVAILABLE (D-469).
 
 ### 7.2 External Integration Contracts
 

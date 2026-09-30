@@ -399,7 +399,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # A plan on the book, sold from the price's start, with the entry as a paid item: red.
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"plan-{run}", "name": f"Plan {run}", "book_id": book},
+            json={"code": f"PLAN-{run}".upper(), "name": f"Plan {run}", "book_id": book},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -415,11 +415,13 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.status_code == 200, r.text
         r = api.post(
             f"{PRICING}/plan-revisions/{rev1}/items",
-            json={"sku_id": sku, "price_book_entry_id": entry, "treatment": "paid"},
+            json={"sku_id": sku, "price_book_entry_id": entry},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
         assert r.json()["reference_state"] == "confirmed", r.text
+        # D-467: a plan item is a SKU and its entry; the item answer carries no treatment.
+        assert "treatment" not in r.json(), r.text
         # A draft revision naming the entry counts its plan.
         assert _usage(api, entry) == _entry_usage(pending=1, plans=1)
         checks = _checks(api, rev1)
@@ -458,11 +460,9 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert (resolved["currency"], resolved["currency_minor_digits"]) == ("EUR", 2), resolved
         [item] = resolved["items"]
         assert (item["sku_id"], item["price_book_entry_id"]) == (sku, entry), item
-        assert (item["charge_kind"], item["period"], item["treatment"]) == (
-            "recurring",
-            "month",
-            "paid",
-        ), item
+        assert (item["charge_kind"], item["period"]) == ("recurring", "month"), item
+        for removed in ("treatment", "included_qty", "qty_min"):
+            assert removed not in item, item
         version = item["sku_version"]
         assert version is not None, "products answered the dated read: " + str(item)
         assert version["published_version"] >= 1, item
@@ -523,7 +523,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # A clone is a new plan whose draft rev 1 reads the same book.
         r = api.post(
             f"{PRICING}/plans/{plan}/clone",
-            json={"code": f"plan-{run}-clone", "name": f"Plan {run} clone"},
+            json={"code": f"PLAN-{run}-CLONE".upper(), "name": f"Plan {run} clone"},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -777,7 +777,11 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         # A plan publishes rev 1 with the flat entry.
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"plan-nocat-{run}", "name": f"Plan no category {run}", "book_id": eur},
+            json={
+                "code": f"PLAN-NOCAT-{run}".upper(),
+                "name": f"Plan no category {run}",
+                "book_id": eur,
+            },
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -793,7 +797,7 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
         assert r.status_code == 200, r.text
         r = api.post(
             f"{PRICING}/plan-revisions/{rev1}/items",
-            json={"sku_id": sku, "price_book_entry_id": flat["id"], "treatment": "paid"},
+            json={"sku_id": sku, "price_book_entry_id": flat["id"]},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -1074,7 +1078,7 @@ def test_where_a_sku_is_priced_and_sold_and_the_settings_offer_currencies(api):
         assert r.json()["applied"] is True, r.text
         r = api.post(
             f"{PRICING}/plans",
-            json={"code": f"plan-sold-{run}", "name": f"Plan sold {run}", "book_id": eur},
+            json={"code": f"PLAN-SOLD-{run}".upper(), "name": f"Plan sold {run}", "book_id": eur},
             headers=_key(),
         )
         assert r.status_code == 201, r.text
@@ -1082,7 +1086,7 @@ def test_where_a_sku_is_priced_and_sold_and_the_settings_offer_currencies(api):
         rev1 = r.json()["revisions"][0]["id"]
         r = api.post(
             f"{PRICING}/plan-revisions/{rev1}/items",
-            json={"sku_id": sku, "price_book_entry_id": entry["id"], "treatment": "paid"},
+            json={"sku_id": sku, "price_book_entry_id": entry["id"]},
             headers=_key(),
         )
         assert r.status_code == 201, r.text

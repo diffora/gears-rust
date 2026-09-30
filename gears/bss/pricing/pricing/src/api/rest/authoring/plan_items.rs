@@ -19,7 +19,7 @@ use super::{
 use crate::api::rest::closed_sets::PricingRevisionState;
 use crate::{
     domain::{
-        plan::{MAX_ITEMS, ReferenceState, RevisionState, Treatment},
+        plan::{self, MAX_ITEMS, ReferenceState, RevisionState},
         reference_op::{OpKind, RefKind},
     },
     infra::{
@@ -44,36 +44,41 @@ use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
-/// The item door's input rules, judged before any claim or reservation (D-403: 400).
-fn treatment(text: &str) -> Result<Treatment, DoorError> {
-    text.parse()
-        .map_err(|_| support::invalid("treatment", "TREATMENT_INVALID").into())
-}
-/// Canonical unsigned decimal text, the column's own CHECK: digits, then an optional fraction;
-/// and the domain's decimal, which the checks and submit parse it as (a text too long for it
-/// would be a stored row every later read answers 500 for).
-fn included_qty(text: Option<&str>) -> Result<(), DoorError> {
-    let canonical = |q: &str| {
-        let (whole, fraction) = q.split_once('.').map_or((q, None), |(w, f)| (w, Some(f)));
-        !whole.is_empty()
-            && whole.bytes().all(|b| b.is_ascii_digit())
-            && fraction.is_none_or(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()))
-            && q.parse::<rust_decimal::Decimal>().is_ok()
+/// The keys a plan item no longer takes (D-467): a plan item is a SKU and its entry.
+pub const REMOVED_KEYS: [&str; 3] = ["treatment", "included_qty", "qty_min"];
+/// The item doors' body rules that the typed body cannot say, judged before any read: a key a plan
+/// item no longer takes is 400 `BODY_UNEXPECTED` on that key, the rule for a stray key (D-467);
+/// then, for the create (`entry_required`), a missing or null `price_book_entry_id` is 400
+/// `ITEM_ENTRY_MISSING`. Any other key the body does not know is refused by its parse, as before.
+/// # Errors
+/// The refusals above.
+pub fn judge_body(body: &serde_json::Value, entry_required: bool) -> Result<(), CanonicalError> {
+    let Some(fields) = body.as_object() else {
+        return Ok(());
     };
-    if text.is_some_and(|q| !canonical(q)) {
-        return Err(support::invalid("included_qty", "INCLUDED_QTY_INVALID").into());
+    if let Some(key) = REMOVED_KEYS.iter().find(|key| fields.contains_key(**key)) {
+        return Err(support::invalid_because(
+            key,
+            "BODY_UNEXPECTED",
+            "a plan item is a SKU and its entry: it takes no treatment, included_qty or qty_min",
+        ));
+    }
+    if entry_required
+        && fields
+            .get("price_book_entry_id")
+            .is_none_or(serde_json::Value::is_null)
+    {
+        return Err(support::invalid(
+            "price_book_entry_id",
+            "ITEM_ENTRY_MISSING",
+        ));
     }
     Ok(())
 }
-fn qty_min(value: Option<i32>) -> Result<(), DoorError> {
-    if value.is_some_and(|q| q < 0) {
-        return Err(support::invalid("qty_min", "QTY_MIN_INVALID").into());
-    }
-    Ok(())
-}
-/// A paid or optional item points at a price; only an included one may name none.
-fn entry_needed(treatment: Treatment, entry: Option<Uuid>) -> Result<(), DoorError> {
-    if treatment != Treatment::Included && entry.is_none() {
+/// Every item points at a price (D-467): an item without an entry is a legacy row, and a PATCH
+/// that keeps it without one, or clears its entry, is refused.
+fn entry_needed(entry: Option<Uuid>) -> Result<(), DoorError> {
+    if entry.is_none() {
         return Err(support::invalid("price_book_entry_id", "ITEM_ENTRY_MISSING").into());
     }
     Ok(())
@@ -102,9 +107,9 @@ async fn entry_fits(
 /// every refusal the door owns is judged before anything is claimed or reserved, and only then
 /// does [`create`] write its op and drive it (D-401, D-407).
 /// # Errors
-/// 400 `TREATMENT_INVALID`, `INCLUDED_QTY_INVALID`, `QTY_MIN_INVALID`, `ITEM_ENTRY_MISSING`,
-/// `ITEM_BOOK_FOREIGN`, `ITEM_ENTRY_SKU_MISMATCH`, `REVISION_ITEMS_TOO_MANY`,
-/// `ITEM_SKU_DEPRECATED` or `ITEM_BUNDLE_SKU`; 404 for an unknown revision or entry; 409
+/// 400 `ITEM_BOOK_FOREIGN`, `ITEM_ENTRY_SKU_MISMATCH`, `REVISION_ITEMS_TOO_MANY`,
+/// `ITEM_SKU_DEPRECATED` (a deprecated SKU the plan's published revision in effect does not
+/// carry, D-465) or `ITEM_BUNDLE_SKU`; 404 for an unknown revision or entry; 409
 /// `REVISION_NOT_DRAFT` or `ITEM_SKU_TAKEN`; 403 `NOT_DRAFT_AUTHOR` (D-404); 503 when Products
 /// cannot answer; then [`create`]'s own.
 #[expect(
@@ -126,36 +131,31 @@ pub async fn add(
     {
         return receipt.response();
     }
-    let kind = treatment(&input.treatment)?;
-    included_qty(input.included_qty.as_deref())?;
-    qty_min(input.qty_min)?;
-    entry_needed(kind, input.price_book_entry_id)?;
     let (judged_scope, judged_ctx, judged) = (scope.clone(), ctx.clone(), input.clone());
-    support::transaction(&state.db.db(), move |tx| {
+    let carried = support::transaction(&state.db.db(), move |tx| {
         let (scope, ctx, input) = (judged_scope.clone(), judged_ctx.clone(), judged.clone());
         Box::pin(async move { admissible(tx, &scope, &ctx, revision, &input).await })
     })
     .await?;
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
-    fresh_sku(&state, &ctx, input.sku_id).await?;
+    fresh_sku(&state, &ctx, input.sku_id, carried).await?;
     create(state, scope, ctx, revision, correlation, key, digest, input).await
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-2
 }
-/// The revision, the entry and the revision's items, judged in one read.
+/// The revision, the entry and the revision's items, judged in one read. Answers whether the
+/// plan's published revision in effect carries the SKU (D-465), which admits a deprecated one.
 async fn admissible(
     tx: &impl DBRunner,
     scope: &AccessScope,
     ctx: &SecurityContext,
     revision: Uuid,
     input: &PricingPlanItemCreate,
-) -> Result<(), DoorError> {
+) -> Result<bool, DoorError> {
     let tenant = ctx.subject_tenant_id();
     let children = AccessScope::for_tenant(tenant);
     let r = plans::find_revision(tx, scope, tenant, revision).await?;
     plans::editable(&r, ctx)?;
-    if let Some(entry) = input.price_book_entry_id {
-        entry_fits(tx, &children, &r, input.sku_id, entry).await?;
-    }
+    entry_fits(tx, &children, &r, input.sku_id, input.price_book_entry_id).await?;
     let items = plan_item_repo::for_revision(tx, &children, tenant, revision).await?;
     if items.iter().any(|i| i.sku_id == input.sku_id) {
         return Err(support::conflict("ITEM_SKU_TAKEN").into());
@@ -163,15 +163,19 @@ async fn admissible(
     if items.len() >= MAX_ITEMS {
         return Err(support::invalid("items", "REVISION_ITEMS_TOO_MANY").into());
     }
-    Ok(())
+    Ok(plans::published_skus(tx, tenant, r.plan_id, plans::today())
+        .await?
+        .contains(&input.sku_id))
 }
-/// The SKU read fresh (D-408): a deprecated SKU cannot be added, and a bundle SKU is never an
-/// item. A registry that cannot answer is 503 with nothing written; a definite Products refusal
-/// is answered as Products gave it.
+/// The SKU read fresh (D-408): a deprecated SKU is added only when the plan's published revision
+/// in effect carries it (`carried`: a re-add is not "newly added", D-465), and a bundle SKU is
+/// never an item. A registry that cannot answer is 503 with nothing written; a definite Products
+/// refusal is answered as Products gave it.
 async fn fresh_sku(
     state: &AuthoringState,
     ctx: &SecurityContext,
     sku: Uuid,
+    carried: bool,
 ) -> Result<(), CanonicalError> {
     let registry =
         reference_registry::resolve(&state.hub).map_err(|e| support::registry_unavailable(&e))?;
@@ -185,7 +189,7 @@ async fn fresh_sku(
                 support::registry_unavailable(&error)
             }
         })?;
-    if sku.lifecycle == Lifecycle::Deprecated {
+    if sku.lifecycle == Lifecycle::Deprecated && !carried {
         return Err(support::invalid("sku_id", "ITEM_SKU_DEPRECATED"));
     }
     if let Some(code) = reference_work::plan_item::type_refusal(sku.r#type) {
@@ -193,11 +197,12 @@ async fn fresh_sku(
     }
     Ok(())
 }
-/// `PATCH /plan-items/{id}` below its door: treatment, quantities or entry of an item of an
-/// unlocked draft of the caller, at the version the caller read; the SKU never changes.
+/// `PATCH /plan-items/{id}` below its door: the entry of an item of an unlocked draft of the
+/// caller, at the version the caller read; the SKU never changes. The row is written in the shape
+/// of D-467 (`paid`, no quantity), so a legacy item that is given an entry stops being one.
 /// # Errors
-/// 404; 409 `REVISION_NOT_DRAFT`; 403 `NOT_DRAFT_AUTHOR`; 409 `STALE_REVISION`; the input and
-/// entry refusals of [`add`].
+/// 404; 409 `REVISION_NOT_DRAFT`; 403 `NOT_DRAFT_AUTHOR`; 409 `STALE_REVISION`; 400
+/// `ITEM_ENTRY_MISSING` for an item left without an entry; the entry refusals of [`add`].
 pub(super) async fn patch(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -215,25 +220,18 @@ pub(super) async fn patch(
     let r = plans::find_revision(tx, &children, tenant, m.revision_id).await?;
     plans::editable(&r, ctx)?;
     support::check_version(version, m.version)?;
-    if let Some(text) = input.treatment {
-        treatment(&text)?;
-        m.treatment = text;
-    }
-    if let Some(qty) = input.included_qty {
-        included_qty(qty.as_deref())?;
-        m.included_qty = qty;
-    }
-    if let Some(min) = input.qty_min {
-        qty_min(min)?;
-        m.qty_min = min;
-    }
     if let Some(entry) = input.price_book_entry_id {
         if let Some(entry) = entry {
             entry_fits(tx, &children, &r, m.sku_id, entry).await?;
         }
         m.price_book_entry_id = entry;
     }
-    entry_needed(treatment(&m.treatment)?, m.price_book_entry_id)?;
+    entry_needed(m.price_book_entry_id)?;
+    m.treatment = plan::stored_treatment(m.price_book_entry_id)
+        .as_str()
+        .into();
+    m.included_qty = None;
+    m.qty_min = None;
     m.updated_at = time::OffsetDateTime::now_utc();
     plan_item_repo::update_draft(tx, &children, m.clone()).await?;
     m.version += 1;

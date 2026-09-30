@@ -131,7 +131,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("Idempotency-Key"))
         .handler(create_book)
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::CREATED, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = book_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}")
@@ -150,6 +152,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PricingPriceBookReadDto>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.patch_book")
@@ -169,7 +172,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(patch_book)
         .json_response_with_schema::<PriceBookDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::delete("/bss-pricing/v1/price-books/{id}")
         .operation_id("bss_pricing.delete_book")
@@ -195,6 +200,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(delete_book)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/entries")
         .operation_id("bss_pricing.list_entries")
@@ -216,6 +222,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(list_entries)
         .json_response_with_schema::<PricingPriceBookEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/export")
         .operation_id("bss_pricing.export_book")
@@ -231,6 +238,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(export_book)
         .json_response_with_schema::<PriceBookExport>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/settings")
         .operation_id("bss_pricing.get_settings")
@@ -248,6 +256,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PricingSettingsDto>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::put("/bss-pricing/v1/settings")
         .operation_id("bss_pricing.put_settings")
@@ -271,7 +280,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(put_settings)
         .json_response_with_schema::<PricingSettingsDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/dimension-keys")
         .operation_id("bss_pricing.get_dimensions")
@@ -288,6 +299,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::put("/bss-pricing/v1/dimension-keys")
         .operation_id("bss_pricing.put_dimensions")
@@ -308,7 +320,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(put_dimensions)
         .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/dimension-keys")
         .operation_id("bss_pricing.patch_dimension_values")
@@ -328,7 +342,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .param(header("If-Match"))
         .handler(patch_dimensions)
         .json_response_with_schema::<PricingDimensionRegistry>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/entries")
         .operation_id("bss_pricing.create_entry")
@@ -356,7 +372,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             StatusCode::CREATED,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries")
         .operation_id("bss_pricing.list_sku_entries")
@@ -375,6 +393,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(list_sku_entries)
         .json_response_with_schema::<dto::PricingSkuEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.get_entry")
@@ -401,6 +420,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         )
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-book-entries/{id}/prices")
         .operation_id("bss_pricing.list_entry_prices")
@@ -433,6 +453,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.patch_entry")
@@ -457,7 +478,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::delete("/bss-pricing/v1/price-book-entries/{id}")
         .operation_id("bss_pricing.delete_entry")
@@ -475,6 +498,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(delete_entry)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/reference-ops")
         .operation_id("bss_pricing.list_reference_ops")
@@ -497,6 +521,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = plan_routes::item_routes(plan_routes::routes(router, openapi), openapi);
     approval_routes(price_routes(router, openapi), openapi)
@@ -516,9 +541,12 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Puts one draft price into a prices approval unit; at quorum 0 the unit applies at \
              once. A half of a temporary pair is not submitted alone: it is 400 PAIR_SPLIT, and \
              the pair goes through POST /price-books/{id}/publish-changes, which completes it \
-             (D-405). Refusals: 400 PAIR_SPLIT, or a rule the price breaks at submit (for example \
-             WINDOW_START_IN_PAST, PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 \
-             PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+             (D-405). It takes no body and no note: a note for the approver travels with \
+             publish-changes (D-464). Refusals: 400 BODY_UNEXPECTED for a body with any key; 400 \
+             PAIR_SPLIT, or a rule the price breaks at submit (for example WINDOW_START_IN_PAST, \
+             PAIR_RETURN_STALE or CHAIN_MODEL_CHANGED); 409 PRICE_NOT_DRAFT, PRICE_LOCKED_PENDING \
+             or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a usage \
+             chain's dated metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -532,6 +560,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/submit")
         .operation_id("bss_pricing.submit_plan_revision")
@@ -540,14 +569,25 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Puts an unlocked draft revision whose checks are all green into a plan_revision \
              approval unit (plan submit); at quorum 0 it applies at once. An applied revision is \
              published, or scheduled when its sale date is after today: it takes effect on that \
-             date (D-449). Refusals: 400 REVISION_CHECKS_RED with the red checks; 409 \
-             REVISION_NOT_DRAFT or ROW_LOCKED_PENDING; 503 when Products cannot answer the checks' \
+             date (D-449). An optional body carries the submitter's note for the approver, stored \
+             on the unit as submit_note (D-464): no body, {} and a null note carry none. The \
+             receipt's revision says when it was submitted and approved (D-461) and, while it is \
+             pending, its vote progress (D-462). Refusals: 400 NOTE_TOO_LONG for a note over 2000 \
+             characters, judged before anything is read, and BODY_UNEXPECTED for any other key; \
+             400 REVISION_CHECKS_RED with the red checks; 409 REVISION_NOT_DRAFT or \
+             ROW_LOCKED_PENDING; 503 REGISTRY_UNAVAILABLE when Products cannot answer the checks' \
              SKU reads.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Plan revision id")
+        .json_request::<dto::PricingPlanRevisionSubmitRequest>(
+            openapi,
+            "Optional: the submitter's note, at most 2000 characters (400 NOTE_TOO_LONG); stored \
+             on the unit as submit_note (D-464)",
+        )
+        .request_optional()
         .param(header("Idempotency-Key"))
         .handler(submit_plan_revision)
         .json_response_with_schema::<dto::PricingPlanRevisionSubmitReceipt>(
@@ -556,6 +596,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/plan-revisions/{id}/unschedule")
         .operation_id("bss_pricing.unschedule_plan_revision")
@@ -580,7 +621,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/price-books/{id}/publish-changes")
         .operation_id("bss_pricing.list_publish_changes")
@@ -601,6 +644,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/price-books/{id}/publish-changes")
         .operation_id("bss_pricing.publish_changes")
@@ -608,8 +652,11 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .description(
             "Submits the book's draft prices, all of them or the listed price_ids, optionally on a \
              common effective date, as one prices approval unit; at quorum 0 it applies at once. \
-             Refusals: 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
-             PRICE_LOCKED_PENDING or UNIT_CONTENDED.",
+             An optional note for the approver is stored on the unit as submit_note (D-464). \
+             Refusals: 400 NOTE_TOO_LONG for a note over 2000 characters, judged before anything \
+             is read; 400 NO_DRAFT_PRICES, PRICE_NOT_IN_BOOK or PAIR_SPLIT; 409 \
+             PRICE_LOCKED_PENDING or UNIT_CONTENDED; 503 REGISTRY_UNAVAILABLE when Products cannot \
+             answer a usage chain's dated metering read (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -624,6 +671,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/approval-units")
         .operation_id("bss_pricing.list_approval_units")
@@ -657,6 +705,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/approval-units/{id}")
         .operation_id("bss_pricing.get_approval_unit")
@@ -676,6 +725,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/approval-units/{id}/approve")
         .operation_id("bss_pricing.approve_unit")
@@ -686,7 +736,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              scheduled for that date, D-449). The vote's note is at most 2000 characters. \
              Refusals: 400 GENERATION_MISMATCH, UNIT_STALE or NOTE_TOO_LONG; 403 SOD_VIOLATION \
              for the submitter or the author; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED or \
-             APPLY_REFUSED.",
+             APPLY_REFUSED; 503 REGISTRY_UNAVAILABLE when Products cannot answer a read the \
+             applying vote's rules make: a plan revision's checks, or a usage chain's dated \
+             metering (D-402).",
         )
         .tag("Pricing")
         .authenticated()
@@ -697,6 +749,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(approve_unit)
         .json_response_with_schema::<dto::PricingVoteReceipt>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/approval-units/{id}/reject")
         .operation_id("bss_pricing.reject_unit")
@@ -718,6 +771,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(reject_unit)
         .json_response_with_schema::<dto::PricingVoteReceipt>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::post("/bss-pricing/v1/approval-units/{id}/withdraw")
         .operation_id("bss_pricing.withdraw_unit")
@@ -734,6 +788,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(withdraw_unit)
         .json_response_with_schema::<dto::PricingVoteReceipt>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/approval-policy")
         .operation_id("bss_pricing.get_approval_policy")
@@ -754,6 +809,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         )
         .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::delete("/bss-pricing/v1/approval-policy/{kind}")
         .operation_id("bss_pricing.delete_approval_policy_override")
@@ -776,7 +832,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     OperationBuilder::put("/bss-pricing/v1/approval-policy")
         .operation_id("bss_pricing.put_approval_policy")
@@ -797,7 +855,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::OK,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi)
 }
 async fn submit_price(
@@ -857,7 +917,10 @@ async fn submit_plan_revision(
     .map_err(authz_failure)?;
     let correlation = correlation::require_correlation(corr)?;
     let key = preconditions::idempotency_key(&headers)?;
-    let digest = preconditions::request_digest(&support::empty_body(&body)?)?;
+    // D-464: the submitter's optional note, its cap judged before any read.
+    let (payload, note) = support::note_body(&body)?;
+    caps::note(note.as_deref())?;
+    let digest = preconditions::request_digest(&payload)?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -867,7 +930,7 @@ async fn submit_plan_revision(
         key,
         digest,
     };
-    approvals::submit_revision(&state.db.db(), cmd, id).await
+    approvals::submit_revision(&state.db.db(), cmd, id, note).await
 }
 async fn unschedule_plan_revision(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -945,6 +1008,8 @@ async fn publish_changes(
     let payload: serde_json::Value = preconditions::parse_body(&body)?;
     let digest = preconditions::request_digest(&payload)?;
     let input: dto::PricingPublishChangesRequest = preconditions::parse_body(&body)?;
+    // D-464: the submitter's optional note, its cap judged before any read.
+    input.caps()?;
     let cmd = approvals::Command {
         scope,
         ctx,
@@ -1281,7 +1346,9 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             StatusCode::CREATED,
             "Response",
         )
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::patch("/bss-pricing/v1/prices/{id}")
         .operation_id("bss_pricing.patch_price")
@@ -1309,7 +1376,9 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .param(header("If-Match"))
         .handler(patch_price)
         .json_response_with_schema::<dto::PricingPriceDto>(openapi, StatusCode::OK, "Response")
+        .response_header(etag())
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     OperationBuilder::delete("/bss-pricing/v1/prices/{id}")
         .operation_id("bss_pricing.delete_price")
@@ -1326,6 +1395,7 @@ fn price_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .handler(delete_price)
         .no_content_response(StatusCode::NO_CONTENT, "Deleted")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi)
 }
 async fn create_price(

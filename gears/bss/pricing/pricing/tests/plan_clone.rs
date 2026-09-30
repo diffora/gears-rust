@@ -73,7 +73,7 @@ async fn a_clone_copies_the_published_revision_into_a_new_draft_rev_1_and_attach
     publish(&f, source, rev1).await;
     let published = revision(&f, rev1).await;
     assert!(published["approved_by_unit_id"].is_string());
-    let path_body = json!({"code":"pro-2","name":"Pro 2"});
+    let path_body = json!({"code":"PRO-2","name":"Pro 2"});
     assert_eq!(
         clone(&f, source, path_body.clone(), None).await.0,
         400,
@@ -94,7 +94,7 @@ async fn a_clone_copies_the_published_revision_into_a_new_draft_rev_1_and_attach
     assert_eq!(cloned.2, "\"1\"");
     let p2 = &cloned.1;
     assert_ne!(p2["id"], p["id"]);
-    assert_eq!(p2["code"], "pro-2");
+    assert_eq!(p2["code"], "PRO-2");
     assert_eq!(p2["name"], "Pro 2");
     assert_eq!(
         p2["published_rev"],
@@ -123,9 +123,9 @@ async fn a_clone_copies_the_published_revision_into_a_new_draft_rev_1_and_attach
             copy["price_book_entry_id"],
             json!(source_item.price_book_entry_id.map(|e| e.to_string()))
         );
-        assert_eq!(copy["treatment"], source_item.treatment);
-        assert_eq!(copy["included_qty"], json!(source_item.included_qty));
-        assert_eq!(copy["qty_min"], json!(source_item.qty_min));
+        for removed in ["treatment", "included_qty", "qty_min"] {
+            assert!(copy.get(removed).is_none(), "D-467, no {removed}: {copy}");
+        }
         assert_eq!(copy["created_by"], reviewer.subject_id().to_string());
         // D-413: written unreserved, then attached by the door's best-effort drive.
         assert_eq!(copy["reference_state"], "confirmed", "{copy}");
@@ -164,36 +164,36 @@ async fn a_clone_needs_a_published_source_and_a_code_of_its_own() {
     let (p, rev1) = plan(&f, "pro", eur).await;
     let source = id_of(&p["id"]);
     item(&f, rev1, catalog.sku(SkuType::Usage), None, "included").await;
-    let (s, b, _) = clone(&f, source, json!({"code":"x","name":"X"}), Some("draft")).await;
+    let (s, b, _) = clone(&f, source, json!({"code":"X","name":"X"}), Some("draft")).await;
     assert_eq!(s, 409, "a draft is not a published source: {b}");
     assert!(text(&b).contains("CLONE_SOURCE_UNPUBLISHED"), "{b}");
     publish(&f, source, rev1).await;
     let (s, b, _) = clone(&f, source, json!({"code":"  ","name":"X"}), Some("blank")).await;
     assert_eq!(s, 400, "{b}");
     assert!(text(&b).contains("PLAN_CODE_REQUIRED"), "{b}");
-    let (s, b, _) = clone(&f, source, json!({"code":"pro","name":"X"}), Some("taken")).await;
+    let (s, b, _) = clone(&f, source, json!({"code":"PRO","name":"X"}), Some("taken")).await;
     assert_eq!(s, 409, "{b}");
     assert!(text(&b).contains("PLAN_CODE_TAKEN"), "{b}");
     let (s, b, _) = clone(
         &f,
         Uuid::new_v4(),
-        json!({"code":"y","name":"Y"}),
+        json!({"code":"Y","name":"Y"}),
         Some("unknown"),
     )
     .await;
     assert_eq!(s, 404, "{b}");
-    let (s, b, _) = clone(&f, source, json!({"code":"z"}), Some("no-name")).await;
+    let (s, b, _) = clone(&f, source, json!({"code":"Z"}), Some("no-name")).await;
     assert_eq!(s, 400, "a clone names its plan: {b}");
     let (s, b, _) = clone(
         &f,
         source,
-        json!({"code":"z","name":"Z","book_id":eur}),
+        json!({"code":"Z","name":"Z","book_id":eur}),
         Some("extra"),
     )
     .await;
     assert_eq!(s, 400, "a clone takes code and name only: {b}");
     assert_eq!(plans(&f).await.len(), 1, "no refused clone wrote a plan");
-    let (s, b, _) = clone(&f, source, json!({"code":"x","name":"X"}), Some("draft")).await;
+    let (s, b, _) = clone(&f, source, json!({"code":"X","name":"X"}), Some("draft")).await;
     assert_eq!(s, 201, "a refused key was never claimed: {b}");
 }
 
@@ -210,7 +210,7 @@ async fn a_clone_carries_a_deprecated_sku_and_the_new_plans_checks_show_it_red()
     let (s, cloned, _) = clone(
         &f,
         source,
-        json!({"code":"pro-2","name":"Pro 2"}),
+        json!({"code":"PRO-2","name":"Pro 2"}),
         Some("c"),
     )
     .await;
@@ -283,7 +283,7 @@ async fn a_clone_writes_the_plan_the_revision_and_every_item_in_one_transaction(
         ),
     )
     .await;
-    let body = json!({"code":"pro-2","name":"Pro 2"});
+    let body = json!({"code":"PRO-2","name":"Pro 2"});
     let (s, b, _) = clone(&f, source, body.clone(), Some("clone")).await;
     assert_eq!(s, 500, "{b}");
     assert_eq!(
@@ -321,7 +321,7 @@ async fn the_clone_door_needs_plan_author() {
             &who,
             "POST",
             &path,
-            json!({"code":format!("c-{status}-{}", Uuid::new_v4()),"name":"C"}),
+            json!({"code":format!("C-{status}-{}", &Uuid::new_v4().simple().to_string()[..8]).to_uppercase(),"name":"C"}),
             None,
             Some(&Uuid::new_v4().to_string()),
         )
@@ -333,7 +333,7 @@ async fn the_clone_door_needs_plan_author() {
         &holding(&f, "plan:author"),
         "POST",
         &path,
-        json!({"code":"c-author","name":"C"}),
+        json!({"code":"C-AUTHOR","name":"C"}),
         None,
         Some("author"),
     )
@@ -360,7 +360,7 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
     let (s, cloned, _) = clone(
         &f,
         source,
-        json!({"code":"pro-2","name":"Pro 2"}),
+        json!({"code":"PRO-2","name":"Pro 2"}),
         Some("clone"),
     )
     .await;
@@ -398,11 +398,13 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
             .clone()
     };
     let (seats_copy, storage_copy) = (copy_of(seats), copy_of(storage));
+    // D-467: the legacy included copy, stored without an entry, is given one.
+    let storage_entry = entry(&f, eur, storage, "usage", None).await;
     let (s, b, _) = f
         .call(
             "PATCH",
             &format!("/plan-items/{}", storage_copy["id"].as_str().unwrap()),
-            json!({"included_qty":"250"}),
+            json!({"price_book_entry_id":storage_entry}),
             Some(&format!("\"{}\"", storage_copy["version"])),
             None,
         )
@@ -421,7 +423,10 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
     let changed = revision(&f, draft).await;
     assert_eq!(changed["available_from"], "2031-06-01");
     assert_eq!(changed["items"].as_array().unwrap().len(), 1, "{changed}");
-    assert_eq!(changed["items"][0]["included_qty"], "250");
+    assert_eq!(
+        changed["items"][0]["price_book_entry_id"],
+        json!(storage_entry.to_string())
+    );
     assert_eq!(
         plan_body(&f, source).await,
         plan_before,
@@ -431,5 +436,60 @@ async fn changing_the_clone_leaves_the_source_unchanged() {
         revision(&f, rev1).await,
         rev_before,
         "the source revision is untouched"
+    );
+}
+
+/// D-463: the clone takes an optional `available_from`: omitted, rev 1 keeps the source's sale
+/// date as before; a date overrides it; null clears it ("at publish"); a malformed one is 400
+/// `DATE_INVALID` with nothing written, among the body's refusals: before the 404 of a plan the
+/// tenant does not hold.
+#[tokio::test]
+async fn a_clone_keeps_overrides_or_clears_the_sale_date() {
+    let (f, _) = setup().await;
+    let eur = book(&f, "eur").await;
+    let (p, rev1) = plan(&f, "pro", eur).await;
+    let source = id_of(&p["id"]);
+    let (s, _, _) = f
+        .call(
+            "PATCH",
+            &format!("/plan-revisions/{rev1}"),
+            json!({"available_from":"2031-03-01"}),
+            Some("\"1\""),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200);
+    publish(&f, source, rev1).await;
+    for (code, from, expected) in [
+        ("kept", None, json!("2031-03-01")),
+        ("moved", Some(json!("2032-01-15")), json!("2032-01-15")),
+        ("cleared", Some(json!(null)), json!(null)),
+    ] {
+        let mut body = json!({"code":code.to_uppercase(),"name":code});
+        if let Some(from) = from {
+            body["available_from"] = from;
+        }
+        let (s, b, _) = clone(&f, source, body, Some(code)).await;
+        assert_eq!(s, 201, "{code}: {b}");
+        assert_eq!(b["revisions"][0]["available_from"], expected, "{code}: {b}");
+        let rev = revision(&f, id_of(&b["revisions"][0]["id"])).await;
+        assert_eq!(rev["available_from"], expected, "{code}: stored");
+    }
+    for (key, from_plan) in [("bad", source), ("bad-and-unknown-plan", Uuid::new_v4())] {
+        let (s, b, _) = clone(
+            &f,
+            from_plan,
+            json!({"code":key.to_uppercase(),"name":key,"available_from":"20310301"}),
+            Some(key),
+        )
+        .await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(text(&b).contains("DATE_INVALID"), "{b}");
+    }
+    assert_eq!(plans(&f).await.len(), 4, "nothing written");
+    assert_eq!(
+        revision(&f, rev1).await["available_from"],
+        "2031-03-01",
+        "the source is unchanged"
     );
 }

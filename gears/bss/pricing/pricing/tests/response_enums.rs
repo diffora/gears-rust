@@ -23,7 +23,6 @@ const PRICE_STATUS: &[&str] = &[
     "active",
     "superseded",
 ];
-const TREATMENT: &[&str] = &["paid", "optional", "included"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
 const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "superseded"];
 const RESOLVED_REVISION: &[&str] = &["published", "superseded", "scheduled"];
@@ -57,7 +56,6 @@ const CLOSED: &[Closed] = &[
     ("PricingPriceDto", "eligibility", ELIGIBILITY, false),
     ("PricingPriceDto", "state", PRICE_STATE, false),
     ("PricingPriceDto", "status", PRICE_STATUS, false),
-    ("PricingPlanItemDto", "treatment", TREATMENT, false),
     (
         "PricingPlanItemDto",
         "reference_state",
@@ -75,7 +73,6 @@ const CLOSED: &[Closed] = &[
     ("PricingVoteReceipt", "outcome", VOTE_OUTCOME, false),
     ("PricingSettingsDto", "default_timing", TIMING, false),
     ("PricingResolveDto", "state", RESOLVED_REVISION, false),
-    ("PricingResolveItemDto", "treatment", TREATMENT, false),
     ("PricingResolveItemDto", "charge_kind", CHARGE_KIND, true),
     ("PricingResolveItemDto", "period", PERIOD, true),
     ("PricingResolveItemDto", "model", MODEL, true),
@@ -110,8 +107,6 @@ const REQUEST_STRING: &[(&str, &str)] = &[
     ("PricingPriceBookEntryCreate", "period"),
     ("PricingPriceCreate", "eligibility"),
     ("PricingPricePatch", "eligibility"),
-    ("PricingPlanItemCreate", "treatment"),
-    ("PricingPlanItemPatch", "treatment"),
     ("PricingSettingsPut", "default_timing"),
     ("PricingSettingsPut", "default_rounding"),
     ("PricingApprovalPolicyPut", "kind"),
@@ -278,5 +273,40 @@ async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() {
         assert!(seen.contains(schema), "{schema} is a request body");
         let p = property(&api, schema, field).unwrap_or_else(|| panic!("{schema}.{field}"));
         assert!(plain_string(p), "{schema}.{field}: {p}");
+    }
+}
+
+/// D-467: a plan item is a SKU and its entry. No plan item schema, request or response, and no
+/// resolved item carries `treatment`, `included_qty` or `qty_min`; the treatment's closed set is
+/// gone from the spec, and the create requires its entry.
+#[tokio::test]
+async fn no_plan_item_schema_carries_treatment_or_the_quantities() {
+    let api = served().await;
+    for schema in [
+        "PricingPlanItemCreate",
+        "PricingPlanItemPatch",
+        "PricingPlanItemDto",
+        "PricingPlanItemReadDto",
+        "PricingResolveItemDto",
+    ] {
+        assert!(!component(&api, schema).is_null(), "{schema} is served");
+        for key in ["treatment", "included_qty", "qty_min"] {
+            assert!(property(&api, schema, key).is_none(), "{schema}.{key}");
+        }
+    }
+    assert!(
+        api["components"]["schemas"]
+            .get("PricingTreatment")
+            .is_none(),
+        "no schema names a treatment"
+    );
+    let required = component(&api, "PricingPlanItemCreate")["required"]
+        .as_array()
+        .unwrap();
+    for field in ["sku_id", "price_book_entry_id"] {
+        assert!(
+            required.contains(&Value::from(field)),
+            "{field}: {required:?}"
+        );
     }
 }

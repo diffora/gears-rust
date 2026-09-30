@@ -370,7 +370,7 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
         .iter()
         .map(|p| p["code"].as_str().unwrap())
         .collect();
-    assert_eq!(codes, ["a-live", "c-draft"], "{b}");
+    assert_eq!(codes, ["A-LIVE", "C-DRAFT"], "{b}");
     // One response schema: each plan as GET /plans answers it, with its revision headers.
     let (_, all, _) = get(&f, "/plans").await;
     let whole = |code: &str| {
@@ -382,12 +382,12 @@ async fn the_plans_of_a_sku_are_those_that_name_it_through_an_entry() {
             .unwrap()
             .clone()
     };
-    assert_eq!(b["items"][0], whole("a-live"));
-    assert_eq!(b["items"][1], whole("c-draft"));
+    assert_eq!(b["items"][0], whole("A-LIVE"));
+    assert_eq!(b["items"][1], whole("C-DRAFT"));
     assert_eq!(b["items"][1]["id"], draft["id"]);
     assert_eq!(all["items"].as_array().unwrap().len(), 5);
     assert_eq!(
-        whole("b-history")["revisions"].as_array().unwrap().len(),
+        whole("B-HISTORY")["revisions"].as_array().unwrap().len(),
         2,
         "the plain list keeps every revision header"
     );
@@ -511,7 +511,7 @@ async fn a_plan_item_reads_with_its_revision_and_plan() {
     assert_eq!(b["state"], "draft");
     assert_eq!(b["sku_id"], sku.to_string());
     assert_eq!(b["price_book_entry_id"], e.to_string());
-    assert_eq!(b["treatment"], "paid");
+    assert!(b.get("treatment").is_none(), "D-467: {b}");
     assert_eq!(b["reference_state"], "confirmed");
     assert_eq!(b["version"], 1);
     // The tag is the one the PATCH takes.
@@ -519,7 +519,7 @@ async fn a_plan_item_reads_with_its_revision_and_plan() {
         .call(
             "PATCH",
             &format!("/plan-items/{}", stored.id),
-            json!({"treatment":"optional"}),
+            json!({"price_book_entry_id":e}),
             Some(&tag),
             None,
         )
@@ -651,7 +651,7 @@ async fn the_two_sku_lists_read_in_the_same_statements_for_10_and_100_rows() {
             "{what}: the same statements, whatever the size"
         );
     }
-    // The plain plan list is set-based too: 110 plans in the statements of the SKU's list.
+    // The plain plan list is set-based too: 110 plans in four statements (D-460, D-461).
     let plain = statements(&f, &recorder, "/plans", 110).await;
-    assert_eq!(plain.len(), 2, "{plain:#?}");
+    assert_eq!(plain.len(), 4, "{plain:#?}");
 }

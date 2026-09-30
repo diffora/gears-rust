@@ -1746,3 +1746,71 @@ async fn an_override_is_reset_to_the_default_under_if_match() {
         .collect();
     assert_eq!(actions, ["approval_policy.write", "approval_policy.reset"]);
 }
+
+/// D-464: publish-changes takes an optional `note` beside its selection, stored on the unit as
+/// `submit_note`; absent or null, none. A note over 2000 characters is 400 `NOTE_TOO_LONG`, judged
+/// before any read (a book the tenant does not hold answers it too), with nothing written. The
+/// single price's submit still takes no note: its body stays empty (400 `BODY_UNEXPECTED`).
+#[tokio::test]
+async fn publish_changes_carries_the_submitters_note_and_a_price_submit_none() {
+    let g = gov(1).await;
+    let path = format!("/price-books/{}/publish-changes", g.book);
+    let price = g.draft("one", body("2031-05-01")).await;
+    let (s, b, _) =
+        g.f.call(
+            "POST",
+            &format!("/prices/{}/submit", price[0]["id"].as_str().unwrap()),
+            json!({"note":"why"}),
+            None,
+            Some("price-noted"),
+        )
+        .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(code(&b).contains("BODY_UNEXPECTED"), "{b}");
+    let too_long = json!({"note":"\u{e9}".repeat(2001)});
+    for (key, target) in [
+        ("over", path.clone()),
+        (
+            "over-unknown",
+            format!("/price-books/{}/publish-changes", Uuid::new_v4()),
+        ),
+    ] {
+        let (s, b, _) =
+            g.f.call("POST", &target, too_long.clone(), None, Some(key))
+                .await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(code(&b).contains("NOTE_TOO_LONG"), "{key}: {b}");
+    }
+    assert_eq!(
+        g.price(&price[0]["id"]).await.state,
+        "draft",
+        "nothing written"
+    );
+    let (s, receipt, _) =
+        g.f.call(
+            "POST",
+            &path,
+            json!({"note":"the May price"}),
+            None,
+            Some("noted"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["unit"]["submit_note"], "the May price");
+    assert_eq!(
+        g.card(&receipt["unit"]).await["submit_note"],
+        "the May price"
+    );
+    let second = g.draft("two", body("2031-06-01")).await;
+    let (s, receipt, _) =
+        g.f.call(
+            "POST",
+            &path,
+            json!({"price_ids":[second[0]["id"]],"note":null}),
+            None,
+            Some("null"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["unit"]["submit_note"], json!(null));
+}

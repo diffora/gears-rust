@@ -5,7 +5,7 @@
 //! are covered by the SQL-backed gear store in phase 1c.
 use bss_approval::{
     ApprovalError, ApprovalSubject, ApproveOutcome, Decision, Engine, ItemRef, Policy,
-    RejectOutcome, Store, SubmitRequest, Unit, UnitState,
+    RejectOutcome, Store, SubmitRequest, Unit, UnitState, approve_eligibility,
 };
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, sync::Arc};
@@ -890,4 +890,89 @@ async fn a_missing_unit_is_unit_not_found_at_every_vote() {
     .await
     .unwrap_err();
     assert_eq!(withdraw.code(), "UNIT_NOT_FOUND", "{withdraw}");
+}
+
+/// W2: a reader's view of a unit (the vote counts, whether its reader may approve) comes from
+/// `approve_eligibility` over the unit, its stored items and its decisions, and the engine's own
+/// approve is judged by the same function: before every vote of a run through quorum 2, a
+/// refused actor, a duplicate, a content drift and its refresh, the stale vote that no longer
+/// counts and the apply, the predicate's refusal is the vote's error, and an eligible vote pends
+/// at the predicate's approvals plus one, applies, or refreshes a drifted unit. Quorum 0 applies
+/// at the submit, and the predicate then answers what every vote meets: the unit is decided.
+#[tokio::test]
+async fn the_approve_eligibility_is_the_engines_own_answer() {
+    async fn judged(
+        db: &Db,
+        store: &Mem,
+        unit: Uuid,
+        actor: Uuid,
+    ) -> bss_approval::ApproveEligibility {
+        let store = store.clone();
+        in_tx(db, move |tx| {
+            let store = store.clone();
+            Box::pin(async move {
+                let u = store.unit(tx, unit).await?.unwrap();
+                let items = store.items(tx, unit).await?;
+                let decisions = store.decisions(tx, unit).await?;
+                Ok(approve_eligibility(&u, &items, &decisions, actor))
+            })
+        })
+        .await
+        .unwrap()
+    }
+    let db = db().await;
+    let author = Uuid::new_v4();
+    let (subject, ids) = rows(author, 1);
+    let store = Mem::default();
+    let s = submit(&db, &store, &subject, ids.clone(), author, 2)
+        .await
+        .unwrap();
+    let (first, second, late) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let mut seen = Vec::new();
+    for (step, actor) in [
+        ("the submitter", author),
+        ("a first reviewer", first),
+        ("the same reviewer again", first),
+        ("after a drift", second),
+        ("the first reviewer on the new generation", first),
+        ("the quorum", second),
+        ("after the apply", late),
+    ] {
+        if step == "after a drift" {
+            subject.live.lock().get_mut(&ids[0]).unwrap().1 = 99;
+        }
+        let before = judged(&db, &store, s.unit.id, actor).await;
+        let outcome = approve(&db, &store, &subject, s.unit.id, actor).await;
+        match (&before.refusal, &outcome) {
+            (Some(refusal), Err(error)) => assert_eq!(refusal.code(), error.code(), "{step}"),
+            (None, Ok(ApproveOutcome::Pending { have, need })) => {
+                assert_eq!(*have, before.approvals + 1, "{step}");
+                assert_eq!(*need, 2, "{step}");
+            }
+            (None, Ok(ApproveOutcome::Applied)) => {
+                assert!(before.approvals + 1 >= 2, "{step}: {before:?}");
+            }
+            (None, Ok(ApproveOutcome::Refreshed { .. })) => {}
+            other => panic!("{step}: the predicate and the engine disagree: {other:?}"),
+        }
+        seen.push((step, before.approvals, outcome.map_err(|e| e.code())));
+    }
+    assert_eq!(
+        seen.iter().map(|(_, n, _)| *n).collect::<Vec<_>>(),
+        [0, 0, 1, 1, 0, 1, 2],
+        "the drift made the first vote stale, so it no longer counts: {seen:?}"
+    );
+    assert!(matches!(seen[6].2, Err("UNIT_ALREADY_DECIDED")), "{seen:?}");
+    let (subject, ids) = rows(author, 1);
+    let at_once = submit(&db, &store, &subject, ids, author, 0).await.unwrap();
+    assert!(at_once.applied);
+    let judged = judged(&db, &store, at_once.unit.id, late).await;
+    assert_eq!(
+        judged.refusal.as_ref().map(ApprovalError::code),
+        Some("UNIT_ALREADY_DECIDED")
+    );
+    assert!(matches!(
+        approve(&db, &store, &subject, at_once.unit.id, late).await,
+        Err(ApprovalError::AlreadyDecided)
+    ));
 }

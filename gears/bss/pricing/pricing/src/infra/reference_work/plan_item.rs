@@ -14,7 +14,7 @@ use super::{
 use crate::{
     api::rest::authoring::support::{self, DoorError},
     domain::{
-        plan::{MAX_ITEMS, ReferenceState},
+        plan::{self, MAX_ITEMS, ReferenceState},
         reference_op::{Effect, Event, OpKind, RefKind},
     },
     infra::storage::{
@@ -71,9 +71,11 @@ pub(super) fn written(op: &entity::Model) -> Result<Observation, CanonicalError>
         revision_id,
         sku_id: op.sku_id,
         price_book_entry_id: input.price_book_entry_id,
-        treatment: input.treatment,
-        included_qty: input.included_qty,
-        qty_min: input.qty_min,
+        treatment: plan::stored_treatment(input.price_book_entry_id)
+            .as_str()
+            .into(),
+        included_qty: None,
+        qty_min: None,
         reservation_id: Some(receipt),
         reference_state: ReferenceState::ConfirmationPending.as_str().into(),
         version: 1,

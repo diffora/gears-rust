@@ -33,7 +33,7 @@ use crate::{
     authz::{self, ResourceRef, actions, resource_types},
     domain::{
         book, dimension,
-        plan::{RevisionState, Treatment},
+        plan::RevisionState,
         price::PriceState,
         price_book_entry::ChargeKind,
         resolve::{self, ItemResolution, Pin, ResolveContext, Resolved, TenantDefaults},
@@ -138,7 +138,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              PIN_DUPLICATE or PINS_TOO_MANY; 404 for an unknown revision or item; 409 \
              REVISION_NOT_PUBLISHED for a draft or pending revision, REVISION_NOT_YET_AVAILABLE \
              for a scheduled one before its sale date; Products' own refusal of a SKU read; 503 \
-             when Products cannot answer.",
+             REGISTRY_UNAVAILABLE when Products cannot answer.",
         )
         .tag("Pricing")
         .authenticated()
@@ -159,6 +159,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(resolve)
         .json_response_with_schema::<PricingResolveDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/prices/{id}")
         .operation_id("bss_pricing.get_price")
@@ -177,6 +178,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .handler(get_price)
         .json_response_with_schema::<PricingPinnedPriceDto>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi);
     router.layer(Extension(state))
 }
@@ -512,19 +514,9 @@ async fn read_stored(
     }
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
-        let bad = |what: &str| corrupt(format!("plan item {} {what}", row.id));
-        let treatment: Treatment = row.treatment.parse().map_err(|_| bad("treatment"))?;
         items.push(resolve::Item {
             id: row.id,
             sku_id: row.sku_id,
-            treatment,
-            included_qty: row
-                .included_qty
-                .as_deref()
-                .map(str::parse)
-                .transpose()
-                .map_err(|_| bad("included_qty"))?,
-            qty_min: row.qty_min,
             entry: row
                 .price_book_entry_id
                 .and_then(|entry| entries.get(&entry).cloned()),
@@ -658,9 +650,6 @@ fn render(
         items.push(PricingResolveItemDto {
             item_id: r.item_id,
             sku_id: r.sku_id,
-            treatment: r.treatment.into(),
-            included_qty: r.included_qty.map(|q| q.to_string()),
-            qty_min: r.qty_min,
             price_book_entry_id: r.price_book_entry_id,
             charge_kind: r.charge_kind.map(Into::into),
             period: r

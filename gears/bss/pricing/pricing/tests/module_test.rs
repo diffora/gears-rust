@@ -243,6 +243,26 @@ fn etag_routes() -> Routes {
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
         ("GET", "/bss-pricing/v1/plan-items/{id}"),
+        // D-469: the write answers that set one (run 9.2's census).
+        ("POST", "/bss-pricing/v1/price-books"),
+        ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        ("PUT", "/bss-pricing/v1/settings"),
+        ("PUT", "/bss-pricing/v1/dimension-keys"),
+        ("PATCH", "/bss-pricing/v1/dimension-keys"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/entries"),
+        ("PATCH", "/bss-pricing/v1/price-book-entries/{id}"),
+        ("PUT", "/bss-pricing/v1/approval-policy"),
+        ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
+        ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("PATCH", "/bss-pricing/v1/prices/{id}"),
+        ("POST", "/bss-pricing/v1/plans"),
+        ("PATCH", "/bss-pricing/v1/plans/{id}"),
+        ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
+        ("POST", "/bss-pricing/v1/plans/{id}/clone"),
+        ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
+        ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -282,10 +302,11 @@ async fn every_operation_has_a_human_summary_and_a_description() {
     assert_eq!(described, 51);
 }
 
-/// Every read that answers an `ETag` declares the header on its 200 response, and nothing else
-/// declares one.
+/// Every answer that sets an `ETag` declares the header on its success response, and nothing else
+/// declares one: the eight reads, and the nineteen write answers that the census of run 9.2 found
+/// (D-469), each the version a following If-Match takes.
 #[tokio::test]
-async fn every_read_that_sets_an_etag_declares_it() {
+async fn every_answer_that_sets_an_etag_declares_it() {
     let harness = rest_support::Harness::new().await.unwrap();
     let (_, openapi) = harness.router(axum::Router::new()).unwrap();
     let declared: Routes = openapi
@@ -296,7 +317,7 @@ async fn every_read_that_sets_an_etag_declares_it() {
                 r.headers
                     .iter()
                     .any(|h| h.name.eq_ignore_ascii_case("etag"))
-                    && r.status == 200
+                    && (200..300).contains(&r.status)
             })
         })
         .map(|e| {
@@ -315,7 +336,10 @@ async fn every_read_that_sets_an_etag_declares_it() {
                 .any(|h| h.name.eq_ignore_ascii_case("etag"))
         })
         .count();
-    assert_eq!(anywhere, 8, "only the 200 of those reads declares it");
+    assert_eq!(
+        anywhere, 27,
+        "only the success answer of those ops declares it"
+    );
 }
 
 #[test]

@@ -601,6 +601,34 @@ pub fn empty_body(body: &[u8]) -> Result<serde_json::Value, CanonicalError> {
         Err(invalid("body", "BODY_UNEXPECTED"))
     }
 }
+/// The body of a plan revision's submit, which takes only the submitter's note (D-464, the rule
+/// of products P-D-219): no body, `{}` and `{"note": null}` carry no note, `{"note": "…"}` carries
+/// it; any other key is 400 `BODY_UNEXPECTED`, the rule of [`empty_body`] it replaces, and a note
+/// that is neither text nor null is 400 as an unreadable body. Answers the payload the key's
+/// digest covers (the body as sent, `{}` for none) and the note. Its cap is the door's to judge.
+/// # Errors
+/// The refusals above; an unreadable body.
+pub fn note_body(body: &[u8]) -> Result<(serde_json::Value, Option<String>), CanonicalError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok((serde_json::json!({}), None));
+    }
+    let value: serde_json::Value =
+        crate::api::rest::preconditions::parse_body(body).map_err(CanonicalError::from)?;
+    let note = match value.as_object() {
+        Some(fields) if fields.keys().all(|key| key == "note") => match fields.get("note") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(text)) => Some(text.clone()),
+            Some(_) => {
+                return Err(crate::infra::error_mapping::DomainError::InvalidRequest(
+                    "the request body is not readable: note is text or null".to_owned(),
+                )
+                .into());
+            }
+        },
+        _ => return Err(invalid("body", "BODY_UNEXPECTED")),
+    };
+    Ok((value, note))
+}
 /// The If-Match token must name the stored version: a stale one is 409 `STALE_REVISION`
 /// before anything is written (the code products answers for the same refusal).
 ///

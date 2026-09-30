@@ -165,6 +165,7 @@ pub(super) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
             "Response",
         )
         .standard_errors(openapi)
+        .error_503(openapi)
         .register(router, openapi)
 }
 

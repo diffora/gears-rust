@@ -296,6 +296,7 @@ async fn update_many_rejects_setting_tenant_id() {
     assert!(matches!(err, ScopeError::Denied("tenant_id is immutable")));
 }
 
+/// `exec_with_returning` returns only the rows the scoped update wrote, and a deny-all scope writes none.
 #[tokio::test]
 async fn update_many_with_returning_answers_the_rows_it_wrote_within_its_scope() {
     use sea_orm::ExprTrait;

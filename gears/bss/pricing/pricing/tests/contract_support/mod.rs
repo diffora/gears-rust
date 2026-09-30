@@ -47,7 +47,9 @@
 //! (paid), storage (paid) and legacy (included, a SKU Products no longer knows); revision 2
 //! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional),
 //! backup (included, 100 units, no entry), requests, requests-volume and requests-package (paid; each
-//! entry has one model, D-427: graduated, volume, package); revision 3 is a draft. Plan `trial` revision 1 is
+//! entry has one model, D-427: graduated, volume, package); revision 3 is a draft. Those
+//! treatments and quantities are the stored rows of before D-467, as the stand holds them: no
+//! answer shows them any more, and the items resolve by their SKU and entry alone. Plan `trial` revision 1 is
 //! pending and holds egress (paid): an entry a pending revision names (D-428). Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
 //! and one version each of storage, egress, backup, requests, requests-volume, requests-package and
 //! promo from 2026-01-01. Plan `promo`

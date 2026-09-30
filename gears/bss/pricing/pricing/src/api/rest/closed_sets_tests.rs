@@ -61,7 +61,6 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
             "superseded"
         ]
     );
-    assert_eq!(tokens!(PricingTreatment), ["paid", "optional", "included"]);
     assert_eq!(
         tokens!(PricingItemReferenceState),
         ["unreserved", "confirmation_pending", "confirmed", "lost"]
@@ -156,12 +155,6 @@ fn a_mapped_set_carries_the_domain_token() {
         PricingPriceStatus::ALL,
         DisplayStatus::as_str,
         PricingPriceStatus::as_str,
-    );
-    same(
-        Treatment::ALL,
-        PricingTreatment::ALL,
-        Treatment::as_str,
-        PricingTreatment::as_str,
     );
     same(
         ItemReference::ALL,

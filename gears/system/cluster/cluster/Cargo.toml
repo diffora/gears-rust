@@ -52,7 +52,7 @@ k8s = ["dep:cf-k8s-cluster-plugin"]
 # validator so the cluster pod can enforce `X-ToolKit-Internal-Token` on its
 # grpc-hub (coordination plane + DirectoryService registration) in Profile 3.
 # Must propagate to grpc-hub: the hub's TokenReview validator is gated behind its
-# own `k8s-auth` feature (mirrors platform-host's `k8s` feature), otherwise
+# own `k8s-auth` feature (mirrors flight-control's `k8s` feature), otherwise
 # `internal_auth: { provider: kube }` fails init with "requires the k8s-auth
 # feature".
 k8s-auth = ["toolkit/k8s-auth", "grpc_hub/k8s-auth"]

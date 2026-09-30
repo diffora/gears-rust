@@ -105,7 +105,7 @@ async fn a_plan_names_only_a_book_its_author_may_read() {
                     &f.ctx,
                     "POST",
                     "/plans",
-                    json!({"code":format!("new-{tag}"),"name":"New","book_id":eur}),
+                    json!({"code":format!("new-{tag}").to_uppercase(),"name":"New","book_id":eur}),
                     None,
                     Some(&format!("create-{tag}")),
                 )
@@ -115,7 +115,7 @@ async fn a_plan_names_only_a_book_its_author_may_read() {
                     &f.ctx,
                     "POST",
                     &format!("/plans/{source}/clone"),
-                    json!({"code":format!("clone-{tag}"),"name":"Clone"}),
+                    json!({"code":format!("clone-{tag}").to_uppercase(),"name":"Clone"}),
                     None,
                     Some(&format!("clone-{tag}")),
                 )

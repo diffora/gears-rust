@@ -59,7 +59,7 @@ bss-products = ["dep:bss_products"]
 bss-pricing = ["dep:bss_pricing", "bss-products"]
 
 [dependencies]
-mimalloc = { version = "0.1" }
+mimalloc = { workspace = true }
 # Local crates
 toolkit = { workspace = true, features = ["bootstrap"] }
 

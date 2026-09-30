@@ -217,3 +217,51 @@ fn a_scheduled_revision_without_a_date_is_never_due() {
         Some(2)
     );
 }
+
+/// D-460: the current revision of a plan is its draft or pending one, else the scheduled one
+/// waiting for its date, else the published one in effect; `in_effect` is the published one in
+/// effect. Both are judged over the states the revisions read on the day, so a due scheduled
+/// revision is both, and its stored-published predecessor neither.
+#[test]
+fn the_current_revision_and_the_one_in_effect_follow_the_effective_states() {
+    let chosen = |revisions: &[StoredRevision], today: &str| {
+        let read = effective(revisions, date(today));
+        (
+            current(&read).map(|r| (r.id.as_u128(), r.state)),
+            in_effect(&read).map(|r| r.id.as_u128()),
+        )
+    };
+    assert_eq!(chosen(&[], "2026-09-30"), (None, None), "no revision");
+    let draft_only = [stored(1, PLAN, 1, RevisionState::Draft, None)];
+    assert_eq!(
+        chosen(&draft_only, "2026-09-30"),
+        (Some((1, RevisionState::Draft)), None)
+    );
+    for open in [RevisionState::Draft, RevisionState::Pending] {
+        let beside = [
+            stored(1, PLAN, 1, RevisionState::Superseded, None),
+            stored(2, PLAN, 2, RevisionState::Published, None),
+            stored(3, PLAN, 3, open, None),
+        ];
+        assert_eq!(
+            chosen(&beside, "2026-09-30"),
+            (Some((3, open)), Some(2)),
+            "{open:?} beside the published"
+        );
+    }
+    assert_eq!(
+        chosen(&history(), "2026-09-30"),
+        (Some((3, RevisionState::Scheduled)), Some(2)),
+        "waiting"
+    );
+    assert_eq!(
+        chosen(&history(), "2026-10-01"),
+        (Some((3, RevisionState::Published)), Some(3)),
+        "due, before its switch is persisted"
+    );
+    let published_only = [stored(1, PLAN, 1, RevisionState::Published, None)];
+    assert_eq!(
+        chosen(&published_only, "2026-09-30"),
+        (Some((1, RevisionState::Published)), Some(1))
+    );
+}

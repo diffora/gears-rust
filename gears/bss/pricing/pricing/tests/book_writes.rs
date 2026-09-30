@@ -1247,7 +1247,8 @@ async fn every_text_a_request_writes_has_a_length_cap() {
         1,
         "nothing written"
     );
-    // The caps themselves, two bytes a character.
+    // The caps themselves, two bytes a character. A plan code takes ASCII only (D-468), so the plan
+    // meets the name's cap alone.
     let accented = |n: usize| "\u{e9}".repeat(n);
     for (path, body, key) in [
         (
@@ -1257,7 +1258,7 @@ async fn every_text_a_request_writes_has_a_length_cap() {
         ),
         (
             "/plans".to_owned(),
-            json!({"code":accented(64),"name":accented(200),"book_id":book}),
+            json!({"code":"PLAN-AT-CAP","name":accented(200),"book_id":book}),
             Some("plan-at-cap"),
         ),
     ] {

@@ -21,9 +21,6 @@
           {
             "item_id": "<item:pro-2/storage>",
             "sku_id": "<sku:storage>",
-            "treatment": "paid",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": "<entry:storage>",
             "charge_kind": "usage",
             "period": null,
@@ -172,9 +169,6 @@
           {
             "item_id": "<item:pro-2/storage>",
             "sku_id": "<sku:storage>",
-            "treatment": "paid",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": "<entry:storage>",
             "charge_kind": "usage",
             "period": null,

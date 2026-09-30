@@ -257,7 +257,7 @@ async fn postgres_a_referenced_book_is_refused_by_its_foreign_key_as_a_conflict(
         &ctx,
         "POST",
         "/plans",
-        json!({"code":"p","name":"p","book_id":planned}),
+        json!({"code":"P","name":"p","book_id":planned}),
         None,
         Some("plan"),
     )

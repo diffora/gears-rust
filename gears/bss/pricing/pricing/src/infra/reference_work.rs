@@ -23,7 +23,10 @@ use crate::{
     infra::storage::{
         RepoError,
         entity::{plan_item as plan_item_entity, price_book_entry, reference_op as entity},
-        repo::{idempotency_repo as idem, price_book_entry_repo, reference_op_repo as ops},
+        repo::{
+            idempotency_repo as idem, plan_revision_repo, price_book_entry_repo,
+            reference_op_repo as ops,
+        },
     },
 };
 use axum::{
@@ -99,23 +102,19 @@ impl EntryInput {
 /// kept apart from the request `PricingPlanItemCreate`, whose `deny_unknown_fields` would make a
 /// stored op corrupt the day a field of the wire is renamed or removed. Its JSON is the request
 /// body's, field for field; it denies no unknown field, and a field added later takes
-/// `#[serde(default)]`.
+/// `#[serde(default)]`. An op stored before D-467 also carries `treatment`, `included_qty` and
+/// `qty_min`, which are ignored: its item is written as every item is from D-467 on
+/// (`plan::stored_treatment`, no quantity), and one without an entry stays a legacy entry-less row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ItemInput {
     pub sku_id: Uuid,
     pub price_book_entry_id: Option<Uuid>,
-    pub treatment: String,
-    pub included_qty: Option<String>,
-    pub qty_min: Option<i32>,
 }
 impl From<PricingPlanItemCreate> for ItemInput {
     fn from(input: PricingPlanItemCreate) -> Self {
         Self {
             sku_id: input.sku_id,
-            price_book_entry_id: input.price_book_entry_id,
-            treatment: input.treatment,
-            included_qty: input.included_qty,
-            qty_min: input.qty_min,
+            price_book_entry_id: Some(input.price_book_entry_id),
         }
     }
 }
@@ -642,7 +641,11 @@ async fn step(
 ) -> Result<(), CanonicalError> {
     warn_past_threshold(op);
     let registry = super::reference_registry::resolve(&state.hub);
-    let (event, write, refusal) = match observe(registry, ctx, op).await {
+    let carried = match carried(state, op, current, clock.as_ref()).await {
+        Ok(carried) => carried,
+        Err(error) => return cancel_then(state, caller, op, work, current, clock, error).await,
+    };
+    let (event, write, refusal) = match observe(registry, ctx, op, carried).await {
         Ok(observation) => observation,
         Err(error) => return cancel_then(state, caller, op, work, current, clock, error).await,
     };
@@ -1069,10 +1072,52 @@ fn unanswered(op: &entity::Model, call: &str, error: &CanonicalError) {
         "pricing reference registry call will be retried"
     );
 }
+/// Whether a plan item's create may take a deprecated SKU (D-465): its plan's published revision
+/// in effect on the clock's day carries it, as the item door judged. Read only where
+/// [`observe_sku`] judges a create's SKU (a plan item's create, reserving, with its receipt);
+/// `false` everywhere else, and for a revision that is gone (its write then refuses it). The read
+/// is outside Tx B: a revision that stops carrying the SKU meanwhile is judged again by the checks
+/// at submit and at apply (D-408).
+async fn carried(
+    state: &AuthoringState,
+    op: &entity::Model,
+    current: OpState,
+    clock: &dyn Clock,
+) -> Result<bool, CanonicalError> {
+    if current != OpState::Reserving
+        || op.reservation_id.is_none()
+        || op.kind != OpKind::Create.as_str()
+        || parse_ref_kind(op)? != RefKind::PlanItem
+    {
+        return Ok(false);
+    }
+    let Target::PlanItem { revision_id, .. } = Work::read(op)?.target else {
+        return Err(corrupt());
+    };
+    let tenant = op.tenant_id;
+    let conn = state.db.conn().map_err(|_| corrupt())?;
+    let Some(revision) =
+        plan_revision_repo::find(&conn, &AccessScope::for_tenant(tenant), tenant, revision_id)
+            .await
+            .map_err(stored_failure)?
+    else {
+        return Ok(false);
+    };
+    Ok(crate::api::rest::authoring::plans::published_skus(
+        &conn,
+        tenant,
+        revision.plan_id,
+        clock.now().date(),
+    )
+    .await
+    .map_err(CanonicalError::from)?
+    .contains(&op.sku_id))
+}
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
     ctx: &SecurityContext,
     op: &entity::Model,
+    carried: bool,
 ) -> Result<Observation, CanonicalError> {
     let current = parse_state(op)?;
     let unavailable = || {
@@ -1105,7 +1150,7 @@ async fn observe(
         OpState::Reserving if op.reservation_id.is_none() => {
             observe_reserve(registry.as_ref(), ctx, op).await
         }
-        OpState::Reserving => observe_sku(registry.as_ref(), ctx, op).await,
+        OpState::Reserving => observe_sku(registry.as_ref(), ctx, op, carried).await,
         OpState::Written => {
             let event = match registry
                 .confirm(ctx, op.tenant_id, op.reservation_id.ok_or_else(corrupt)?)
@@ -1227,6 +1272,7 @@ async fn observe_sku(
     registry: &dyn ReferenceRegistryV1,
     ctx: &SecurityContext,
     op: &entity::Model,
+    carried: bool,
 ) -> Result<Observation, CanonicalError> {
     let tenant = op.tenant_id;
     let sku = match registry.sku_for_write(ctx, tenant, op.sku_id).await {
@@ -1256,11 +1302,14 @@ async fn observe_sku(
     };
     let kind = parse_ref_kind(op)?;
     // The lifecycle rules of every kind: a draft, retiring or retired SKU takes no reference,
-    // and a create takes no deprecated SKU. An attach and a rereserve do: the reference they
+    // and a create takes no deprecated SKU, except a plan item's whose plan's published revision
+    // in effect carries it (`carried`, D-465). An attach and a rereserve do: the reference they
     // replace already protected that SKU (D-413). The kind adds its own rule on the SKU's type.
     let refusal = match sku.lifecycle {
         Lifecycle::Draft => Some("SKU_DRAFT"),
-        Lifecycle::Deprecated if op.kind == OpKind::Create.as_str() => Some("SKU_DEPRECATED"),
+        Lifecycle::Deprecated if op.kind == OpKind::Create.as_str() && !carried => {
+            Some("SKU_DEPRECATED")
+        }
         Lifecycle::Retiring | Lifecycle::Retired => Some("SKU_RETIRING"),
         Lifecycle::Published | Lifecycle::Deprecated => match kind {
             RefKind::Entry => charge_kind_for(sku.r#type).err().map(|e| e.code),
