@@ -54,7 +54,10 @@ impl LocalReferenceRegistry {
     /// every caller, whatever subject type the caller's token asserts. The one trusted principal
     /// is pricing's system actor (`bss-pricing.system`, `PRICING_SYSTEM_ACTOR`) on the registry
     /// bound to the `pricing` owner, in the caller's own tenant: in-process code of the same
-    /// binary is trusted, as it is with the database. A missing subject type is a human
+    /// binary is trusted, as it is with the database. Pricing's doors hand this registry their
+    /// caller's context, so the REST edge of both gears refuses that actor, in either half, 403
+    /// `SYSTEM_ACTOR_RESERVED` (`require_authenticated`, fix run W1c): only in-process code
+    /// reaches this branch as it. A missing subject type is a human
     /// principal (the static-authn default, third-party OIDC tokens): it goes through the PDP
     /// like any other. Only the system branch interprets the subject type, and it checks it
     /// itself.

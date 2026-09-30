@@ -49,7 +49,10 @@ pub struct ApiState {
     pub hub: std::sync::Arc<toolkit::ClientHub>,
 }
 
-/// Shared REST foundation helper.
+/// The caller of a REST door: 401 `AUTHENTICATION_REQUIRED` without a subject, a tenant or a
+/// subject type. Pricing's system actor, in either half (P-D-222), is 403 `SYSTEM_ACTOR_RESERVED`:
+/// the reference registry trusts it in-process, and only in-process code acts as it, so no REST
+/// caller may, whatever its token asserts. Every door calls this first.
 pub fn require_authenticated(
     extension_ctx: Option<Extension<SecurityContext>>,
 ) -> Result<SecurityContext, CanonicalError> {
@@ -62,8 +65,26 @@ pub fn require_authenticated(
     if ctx.subject_type().is_none() {
         return Err(unauthenticated());
     }
+    if bss_products_sdk::is_pricing_system_actor(&ctx) {
+        tracing::warn!(
+            target: "bss_products.authz.deny",
+            subject_id = %ctx.subject_id(),
+            subject_tenant_id = %ctx.subject_tenant_id(),
+            subject_type = ctx.subject_type().unwrap_or_default(),
+            reason = SYSTEM_ACTOR_RESERVED,
+            "bss-products: a REST caller asserted pricing's system actor"
+        );
+        return Err(DomainError::Forbidden {
+            code: SYSTEM_ACTOR_RESERVED,
+            detail: "pricing's system actor acts in-process only".into(),
+        }
+        .into());
+    }
     Ok(ctx)
 }
+
+/// The refusal of a REST caller that asserts pricing's system actor (P-D-222).
+pub const SYSTEM_ACTOR_RESERVED: &str = "SYSTEM_ACTOR_RESERVED";
 
 /// Shared REST foundation helper.
 #[must_use]

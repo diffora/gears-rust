@@ -1276,13 +1276,15 @@ async fn every_route_denies_the_wrong_action_and_the_other_tenant() {
         200
     );
 }
-/// O1 (P-D-222): a REST caller whose context asserts the pricing system actor (the subject type
-/// `bss-pricing.system` and the id `PRICING_SYSTEM_ACTOR`, which a token's claims can carry) is
-/// judged by the PDP at every served door, as any caller is. Under a PDP that allows nothing,
-/// every door answers 403 after asking its own action: no door honours the registry's in-process
-/// trust of that actor.
+/// O1 (P-D-222, fix run W1c M1): pricing's system actor acts in-process only. A REST caller whose
+/// context carries it in either half (the subject type `bss-pricing.system` or the id
+/// `PRICING_SYSTEM_ACTOR`; a token's claims can carry both) is refused at every served door, 403
+/// `SYSTEM_ACTOR_RESERVED`, before the PDP is asked. Another system subject (Rating's, pricing
+/// D-424) is judged by the PDP as any caller is: under a PDP that allows nothing, each door answers
+/// 403 after asking its own action.
 #[tokio::test]
 async fn a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass() {
+    use std::sync::atomic::Ordering::Relaxed;
     let f = Fixture::new(1).await;
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app =
@@ -1294,29 +1296,50 @@ async fn a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass() {
                 seen: seen.clone(),
             })),
         ));
-    let asserted = SecurityContext::builder()
-        .subject_id(bss_products_sdk::PRICING_SYSTEM_ACTOR)
-        .subject_tenant_id(f.tenant)
-        .subject_type("bss-pricing.system")
-        .token_scopes(vec!["*".into()])
-        .build()
-        .unwrap();
+    let subject = |id: Uuid, kind: &str| {
+        SecurityContext::builder()
+            .subject_id(id)
+            .subject_tenant_id(f.tenant)
+            .subject_type(kind)
+            .token_scopes(vec!["*".into()])
+            .build()
+            .unwrap()
+    };
+    let pricing = bss_products_sdk::PRICING_SYSTEM_ACTOR;
+    let asserted = [
+        subject(pricing, "bss-pricing.system"),
+        subject(Uuid::new_v4(), "bss-pricing.system"),
+        subject(pricing, gts_id!("cf.core.security.subject_user.v1~")),
+    ];
+    let rating = subject(Uuid::new_v4(), "bss-rating.system");
     let doors = served_doors(&f);
     assert_eq!(doors.len(), DOOR_ACTIONS.len());
     for (method, path, action) in doors {
-        seen.store(0, std::sync::atomic::Ordering::Relaxed);
-        let (status, b) = call(&app, &asserted, method.clone(), &path, json!({}), None).await;
-        assert_eq!(status, 403, "{method} {path}: {b}");
+        for ctx in &asserted {
+            seen.store(0, Relaxed);
+            let (status, b) = call(&app, ctx, method.clone(), &path, json!({}), None).await;
+            let who = (ctx.subject_id(), ctx.subject_type());
+            assert_eq!(status, 403, "{method} {path} as {who:?}: {b}");
+            assert_eq!(
+                b["context"]["reason"], "SYSTEM_ACTOR_RESERVED",
+                "{method} {path} as {who:?}: {b}"
+            );
+            assert_eq!(seen.load(Relaxed), 0, "{method} {path}: no PDP question");
+        }
+        seen.store(0, Relaxed);
+        let (status, b) = call(&app, &rating, method.clone(), &path, json!({}), None).await;
+        assert_eq!(status, 403, "{method} {path} as rating: {b}");
         assert_eq!(
-            seen.load(std::sync::atomic::Ordering::Relaxed),
+            seen.load(Relaxed),
             action_seen(action),
-            "{method} {path}: the PDP judged {action}"
+            "{method} {path}: the PDP judged rating's {action}"
         );
     }
 }
 /// O1 (P-D-222): a REST door never records the registry's trust either. A reserve through the
-/// door by a principal whose token asserts a `.system` subject type is audited as a subject's
-/// act; only the in-process registry records the pricing system actor's act as the system's.
+/// door by a principal whose token asserts a `.system` subject type (another gear's: pricing's own
+/// is refused at every door) is audited as a subject's act; only the in-process registry records
+/// the pricing system actor's act as the system's.
 #[tokio::test]
 async fn a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts() {
     use bss_products_sdk::{PRICING_SYSTEM_ACTOR, ReferenceKind, ReferenceRegistryV1};
@@ -1325,7 +1348,7 @@ async fn a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts() {
     let asserting = SecurityContext::builder()
         .subject_id(Uuid::from_u128(42))
         .subject_tenant_id(f.tenant)
-        .subject_type("bss-pricing.system")
+        .subject_type("bss-rating.system")
         .token_scopes(vec!["*".into()])
         .build()
         .unwrap();

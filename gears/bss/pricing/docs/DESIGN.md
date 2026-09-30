@@ -364,6 +364,8 @@ returns 503 REGISTRY_UNAVAILABLE and does not prevent boot. Ownership is bound b
 request input. This is an explicit same-binary, same-deployment trust boundary. Calls use the caller's
 subject for audit and record the bound owner. PRICING_SYSTEM_ACTOR with subject type bss-pricing.system
 uses only the operation tenant's scope and is audited as system; other system subjects are refused.
+No REST caller may act as it: both gears refuse a request whose context carries its subject type or its id,
+403 SYSTEM_ACTOR_RESERVED, before the PDP (D-424, products P-D-222).
 A future out-of-process transport uses the REST reference_principals mapping and pricing's configured
 service_principal_id credentials with the same semantics; that transport is not implemented here.
 The fresh sku_for_write read accepts every lifecycle; sku_version_as_of resolves the version in force

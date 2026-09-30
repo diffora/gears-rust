@@ -358,6 +358,7 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `GENERATION_MISMATCH`, `UNIT_STALE` | 400 with current/new generation; mismatch refuses vote, stale refresh commits |
 | `SOD_VIOLATION`, `NOT_SUBMITTER`, `NOT_DRAFT_AUTHOR` | 403; author/submitter approval, unauthorized withdrawal, or a SKU draft edited or deleted by anyone but its author |
 | `USAGE_TYPE_FORBIDDEN` | 403; the usage-type catalog, read as the caller, refused the caller at submit or approve (P-D-207) |
+| `SYSTEM_ACTOR_RESERVED` | 403 at every door, before the PDP; the caller's context carries pricing's system actor (the subject type `bss-pricing.system` or the id `PRICING_SYSTEM_ACTOR`), which acts in-process only (P-D-222) |
 | `USAGE_NEEDS_METER`, `USAGE_TYPE_UNRESOLVED`, `BUNDLE_HAS_NO_METER` | Validation refusal; submit's failed subject checks are 400 with no unit created. Draft unresolved catalog reference is 400 per P-D-184. |
 | `APPLY_REFUSED` | Apply failure with domain reason, including SKU_REFERENCED; transaction rolls back without success events |
 | `NO_VERSION_IN_FORCE` | 404; date precedes first version |

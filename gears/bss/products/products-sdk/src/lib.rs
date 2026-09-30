@@ -12,4 +12,7 @@ pub use models::{
 
 pub mod references;
 pub use models::{ReferenceKind, ReferenceState, ReservationReceipt};
-pub use references::{PRICING_SYSTEM_ACTOR, PricingReferenceRegistry, ReferenceRegistryV1};
+pub use references::{
+    PRICING_SYSTEM_ACTOR, PRICING_SYSTEM_SUBJECT_TYPE, PricingReferenceRegistry,
+    ReferenceRegistryV1, is_pricing_system_actor,
+};

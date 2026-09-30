@@ -88,6 +88,81 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert!(permissions.is_empty());
 }
 
+/// Fix run W1c M1 (D-424, products P-D-222): pricing's system actor acts in-process only. A REST
+/// caller whose context carries it in either half (the subject type `bss-pricing.system` or the
+/// id `PRICING_SYSTEM_ACTOR`; a token's claims can carry both) is refused at every door the real
+/// `register_rest` serves, 403 `SYSTEM_ACTOR_RESERVED`, before the PDP is asked. Another system
+/// subject (Rating's, which calls resolve) passes the edge and meets the PDP, here one that cannot
+/// answer (503).
+#[tokio::test]
+async fn no_rest_door_serves_pricings_system_actor() {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let harness = rest_support::Harness::new().await.unwrap();
+    let (app, openapi) = harness.router(axum::Router::new()).unwrap();
+    let tenant = uuid::Uuid::new_v4();
+    let subject = |id: uuid::Uuid, kind: &str| {
+        toolkit_security::SecurityContext::builder()
+            .subject_id(id)
+            .subject_tenant_id(tenant)
+            .subject_type(kind)
+            .build()
+            .unwrap()
+    };
+    let pricing = bss_products_sdk::PRICING_SYSTEM_ACTOR;
+    let asserted = [
+        subject(pricing, "bss-pricing.system"),
+        subject(uuid::Uuid::new_v4(), "bss-pricing.system"),
+        subject(pricing, "user"),
+    ];
+    let rating = subject(uuid::Uuid::new_v4(), "bss-rating.system");
+    let doors: Vec<(String, String)> = openapi
+        .operation_specs
+        .iter()
+        .map(|e| {
+            let (method, path) = e.key().split_once(':').unwrap();
+            (method.to_owned(), path.to_owned())
+        })
+        .collect();
+    assert_eq!(doors.len(), 51, "every served door");
+    for (method, template) in doors {
+        let path = template
+            .replace("{id}", &uuid::Uuid::new_v4().to_string())
+            .replace("{kind}", "prices");
+        let callers = asserted.iter().map(|c| (c, true));
+        for (ctx, refused) in callers.chain([(&rating, false)]) {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.as_str())
+                        .uri(&path)
+                        .extension(ctx.clone())
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+            let who = (ctx.subject_id(), ctx.subject_type());
+            if refused {
+                assert_eq!(status, 403, "{method} {path} as {who:?}: {body}");
+                assert_eq!(
+                    body["context"]["reason"], "SYSTEM_ACTOR_RESERVED",
+                    "{method} {path} as {who:?}: {body}"
+                );
+            } else {
+                assert_eq!(status, 503, "{method} {path} as {who:?}: {body}");
+            }
+        }
+    }
+}
+
 #[test]
 fn the_authentication_and_authz_parsers_have_positive_controls() {
     // One per route (51), and more: `require_authenticated(` is also its own definition;

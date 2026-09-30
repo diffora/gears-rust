@@ -8,6 +8,18 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 /// Stable identity for pricing's tenant-scoped recovery ticker.
 pub const PRICING_SYSTEM_ACTOR: Uuid = Uuid::from_u128(0x00000000_0000_0f01_0000_627373722d70);
+/// The subject type of pricing's system actor ([`PRICING_SYSTEM_ACTOR`]).
+pub const PRICING_SYSTEM_SUBJECT_TYPE: &str = "bss-pricing.system";
+/// Whether `ctx` carries pricing's system actor in either half: the subject type
+/// [`PRICING_SYSTEM_SUBJECT_TYPE`] or the id [`PRICING_SYSTEM_ACTOR`]. Only in-process code acts
+/// as that actor. A token's claims can carry both halves, so both gears refuse such a caller at
+/// every REST door, 403 `SYSTEM_ACTOR_RESERVED`, before any other check (products P-D-222,
+/// pricing D-424). Other system subjects (Rating's, Subscriptions') are not refused.
+#[must_use]
+pub fn is_pricing_system_actor(ctx: &SecurityContext) -> bool {
+    ctx.subject_type() == Some(PRICING_SYSTEM_SUBJECT_TYPE)
+        || ctx.subject_id() == PRICING_SYSTEM_ACTOR
+}
 /// Pricing-specific `ClientHub` key. Products constructs the bound implementation.
 pub struct PricingReferenceRegistry(pub Arc<dyn ReferenceRegistryV1>);
 /// Same reservation rules and error codes as the Products REST reference door.

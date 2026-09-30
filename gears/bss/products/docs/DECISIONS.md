@@ -54,7 +54,7 @@
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
-| P-D-222 | H | The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); keeps pricing D-424 |
+| P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b) |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
@@ -958,9 +958,9 @@ reconciler, a minute at the default profile.
 **Source:** Main sync of 2026-09-29 (sync report, port 3; toolkit-db `2bfc76aec`); pricing phase 8 plan rev 2
 (run 8.2b).
 
-#### P-D-222 [H] The registry trusts pricing's system actor in-process only; every REST door asks the PDP for every caller
+#### P-D-222 [H] The registry trusts pricing's system actor in-process only; no REST door serves that actor
 
-**Status:** DECIDED 2026-09-29.
+**Status:** DECIDED 2026-09-29. Amended 2026-09-30 (fix run W1c): both gears refuse the actor at the REST edge.
 
 The in-process reference registry (`infra::reference_registry::LocalReferenceRegistry`, the `ReferenceRegistryV1` that pricing
 reaches as `PricingReferenceRegistry`) gives one principal a tenant-wide scope without the PDP: pricing's system actor
@@ -972,23 +972,44 @@ review asked whether a caller could assert it (RS-02). The owner kept the trust 
   authn plugin maps `subject_type` from a claim (`user_type` by default, and vhp-core's `config/server.yaml` configures the same)
   and `subject_id` from `sub`. The static-authn plugin takes both from its configured identities. The gateway does not remove the
   value. A caller cannot forge a signed token, but an IdP that issues `user_type: bss-pricing.system` with that `sub` gives a REST
-  caller exactly the context the registry trusts. So the trust is safe only because no REST path honours it.
+  caller exactly the context the registry trusts. So the trust is safe only if no REST path honours it.
 - **The threat model.** In-process code of the same binary is trusted, as it is trusted with the database. The registry is reached
   only through the `ClientHub`: products registers it once at init, pricing is its one consumer, and no REST door calls it.
-  Nothing on a REST path reads the subject type for a decision. Every REST door asks the PDP for every caller, and the PDP
-  judges an asserted pricing system actor as it judges any other subject, by its roles. The registry's system branch is in
-  `LocalReferenceRegistry::scope` alone, and its doc says so.
+  The registry's system branch is in `LocalReferenceRegistry::scope` alone, and its doc says so.
+- **The relay (second review of W1b, M1).** No products door calls the registry, but pricing's doors do, with their caller's
+  context: the entry create reads the SKU (`sku_for_write`) and drives its reserve and confirm as the caller
+  (`reference_work::drive`), and so do the entry PATCH and delete, the plan item doors and the plan checks' SKU reads
+  (`plans::fresh_skus`). So a REST caller whose token carried the actor got the registry's tenant-wide trust through a pricing
+  door, without products' own `read` or `reference` check, and the audit row said `actor_kind=system`. A pricing test showed
+  it: under a policy that grants the caller every pricing action and a products that grants nobody, the entry create answered
+  201. The first version of this decision said that nothing on a REST path read the subject type, which left pricing's doors out.
+- **The edge refusal (fix run W1c).** Both gears refuse pricing's system actor on every REST door, in either half: a context
+  whose subject type is `bss-pricing.system` or whose id is `PRICING_SYSTEM_ACTOR` is 403 `SYSTEM_ACTOR_RESERVED`, before the
+  PDP or any other check. The one test is `bss_products_sdk::is_pricing_system_actor`, and each gear's `require_authenticated`,
+  which every door calls first, applies it (products `api::rest`, pricing `authoring::support`). The refusal is logged on the
+  gear's authz deny target. Only pricing's own actor is refused: another system subject (Rating's and Subscriptions', which call
+  pricing's resolve, D-424) passes the edge, and the PDP judges it by its roles, as every other caller.
+- **On the stand.** The relay predates phase 8. At `01f670fa4`, the build the Benidorm stand runs (its gears pin `a9cf1a605`
+  merges it), the registry's trusted branch, pricing's doors that pass their caller's context and a `require_authenticated` that
+  accepts any subject type are all present, and vhp-core maps `user_type` to the subject type. So it was live for a token whose
+  `sub` is `PRICING_SYSTEM_ACTOR` and whose `user_type` is `bss-pricing.system`, with a pricing grant for the door. Only the IdP
+  can issue such a token. The stand itself was not probed.
 - **The audit label.** The reference doors wrote `actor_kind=system` on a reserve, confirm or release audit row when the subject
   type ended in `.system`, so a REST caller's token set the label. Now `references::Acting` carries the context and whether the
   registry's trusted branch admitted it. A REST door always acts as a subject, and only the registry records the system's act.
 - **The tests.** `a_rest_caller_asserting_the_pricing_system_actor_gets_no_bypass` calls every served door (the operations the
-  OpenAPI declares, RT-01) as the asserted actor under a PDP that allows nothing: each is 403 after the PDP was asked the door's
-  own action. A probe that lets `governance::scope` honour the actor turns it red.
-  `a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts` pins the audit label.
+  OpenAPI declares, RT-01) as the actor three ways (both halves, the subject type alone, the id alone): each is 403
+  `SYSTEM_ACTOR_RESERVED` and the PDP is never asked. Rating's system subject at the same doors, under a PDP that allows
+  nothing, is 403 after the PDP was asked the door's own action.
+  `a_rest_reservation_is_a_subjects_act_whatever_the_token_asserts` pins the audit label, for another gear's system subject.
+  Pricing has the twins: `rest_authz::no_rest_door_serves_pricings_system_actor` (every door pricing serves) and
+  `plan_doors::a_rest_caller_asserting_pricings_system_actor_never_reaches_the_registry` (the entry create above is 403,
+  nothing is written and the registry is never called).
 - *Rejected alternative:* a PDP role for the system actor (the way account-management's `am.system` goes through its PDP). vhp-core's
   PDP does not know `bss-pricing.system` (D-424's note), so every resolve and every ticker call would be refused until it did.
 
-**Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ok"); whole-branch review RS-02 (fix run W1b). Keeps pricing D-424.
+**Source:** Owner, 2026-09-29 (the dispositions' O1, answered "ok"); whole-branch review RS-02 (fix run W1b); the second review of
+W1b, M1 (fix run W1c). Keeps pricing D-424.
 
 #### P-D-223 [M] A refusal keeps its class and names its resource
 

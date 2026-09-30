@@ -23,10 +23,18 @@ struct PricingResource;
 #[cfg(test)]
 #[path = "support_tests.rs"]
 mod tests;
+/// The refusal of a REST caller that asserts pricing's own system actor (D-424).
+pub const SYSTEM_ACTOR_RESERVED: &str = "SYSTEM_ACTOR_RESERVED";
+/// The caller of a REST door: 401 `AUTHENTICATION_REQUIRED` without a subject, a tenant or a
+/// subject type. Pricing's own system actor, in either half, is 403 `SYSTEM_ACTOR_RESERVED`
+/// (D-424, products P-D-222): Products' registry trusts it in-process, and a door hands the
+/// registry its caller's context, so no REST caller may act as it, whatever its token asserts.
+/// Another system subject (Rating's, Subscriptions') passes. Every door calls this first.
 pub fn require_authenticated(
     ctx: Option<Extension<SecurityContext>>,
 ) -> Result<SecurityContext, CanonicalError> {
-    ctx.map(|Extension(c)| c)
+    let ctx = ctx
+        .map(|Extension(c)| c)
         .filter(|c| {
             !c.subject_id().is_nil()
                 && !c.subject_tenant_id().is_nil()
@@ -36,7 +44,19 @@ pub fn require_authenticated(
             CanonicalError::unauthenticated()
                 .with_reason("AUTHENTICATION_REQUIRED")
                 .create()
-        })
+        })?;
+    if bss_products_sdk::is_pricing_system_actor(&ctx) {
+        tracing::warn!(
+            target: "pricing.authz.deny",
+            subject_id = %ctx.subject_id(),
+            subject_tenant_id = %ctx.subject_tenant_id(),
+            subject_type = ctx.subject_type().unwrap_or_default(),
+            reason = SYSTEM_ACTOR_RESERVED,
+            "bss-pricing: a REST caller asserted pricing's system actor"
+        );
+        return Err(forbidden(SYSTEM_ACTOR_RESERVED));
+    }
+    Ok(ctx)
 }
 /// A denial is 403 with the PDP's reason (logged where [`authz::access_scope`] made it); an
 /// unreachable PDP is 503.
