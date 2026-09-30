@@ -217,6 +217,27 @@ pub fn effective(revisions: &[StoredRevision], today: Date) -> Vec<EffectiveRevi
         })
         .collect()
 }
+/// The revision a plan's list row names as its current one (D-460), among ONE plan's revisions as
+/// they read on a day ([`effective`]): the draft or pending one (a plan holds at most one, D-451),
+/// else the scheduled one still waiting for its date, else the published one in effect. A due
+/// scheduled revision reads published, so it is current once its date has come. `None` for a plan
+/// without revisions.
+#[must_use]
+pub fn current(revisions: &[EffectiveRevision]) -> Option<&EffectiveRevision> {
+    let first = |states: &[RevisionState]| revisions.iter().find(|r| states.contains(&r.state));
+    first(&[RevisionState::Draft, RevisionState::Pending])
+        .or_else(|| first(&[RevisionState::Scheduled]))
+        .or_else(|| in_effect(revisions))
+}
+/// The published revision in effect among ONE plan's revisions as they read on a day
+/// ([`effective`], D-447, D-460): the one the plan sells today; `None` before its first
+/// publication.
+#[must_use]
+pub fn in_effect(revisions: &[EffectiveRevision]) -> Option<&EffectiveRevision> {
+    revisions
+        .iter()
+        .find(|r| r.state == RevisionState::Published)
+}
 /// The plan's `published_rev` as it reads on `today` (D-447): the number of its due scheduled
 /// revision when it has one, else `stored`, the plan's own projection. Only the due revision need be
 /// among `revisions`.

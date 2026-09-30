@@ -17,8 +17,9 @@
 use super::{
     AuthoringState, configuration,
     dto::{
-        PricingPlanChecksDto, PricingPlanClone, PricingPlanCreate, PricingPlanDto, PricingPlanList,
-        PricingPlanPatch, PricingPlanRevisionDto, PricingPlanRevisionPatch,
+        self, PlanReading, PricingPlanChecksDto, PricingPlanClone, PricingPlanCreate,
+        PricingPlanDto, PricingPlanList, PricingPlanPatch, PricingPlanRevisionDto,
+        PricingPlanRevisionPatch,
     },
     plan_items,
     support::{self, DoorError},
@@ -47,7 +48,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use bss_products_sdk::models::Sku;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -102,14 +103,34 @@ pub(super) fn editable(r: &plan_revision::Model, ctx: &SecurityContext) -> Resul
 pub(super) fn today() -> time::Date {
     time::OffsetDateTime::now_utc().date()
 }
+/// What the plan DTO shows beside the rows of the plans in `revisions` (their revisions, by plan):
+/// the item SKUs of each plan's current revision (D-460), ONE grouped statement whatever the
+/// number of plans.
+async fn plan_reading(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    revisions: &BTreeMap<Uuid, Vec<plan_revision::Model>>,
+    today: time::Date,
+) -> Result<PlanReading, DoorError> {
+    let children = AccessScope::for_tenant(tenant);
+    let mut current = Vec::new();
+    for own in revisions.values() {
+        current.extend(dto::current_revision(own, today)?);
+    }
+    Ok(PlanReading {
+        skus: plan_item_repo::skus_of_revisions(tx, &children, tenant, &current).await?,
+    })
+}
 async fn plan_body(
     tx: &impl DBRunner,
     tenant: Uuid,
     m: plan_entity::Model,
 ) -> Result<PricingPlanDto, DoorError> {
-    let revisions =
+    let own =
         plan_revision_repo::for_plan(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
-    Ok(PricingPlanDto::of(m, &revisions, today())?)
+    let today = today();
+    let reading = plan_reading(tx, tenant, &BTreeMap::from([(m.id, own.clone())]), today).await?;
+    Ok(PricingPlanDto::of(m, &own, today, &reading)?)
 }
 /// A revision read: its items, and its state among its plan's revisions as it reads today.
 async fn revision_body(
@@ -223,7 +244,8 @@ pub(super) async fn create(
     // @cpt-end:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     support::audit(tx, ctx, correlation, "plan.create", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r], today())?;
+    // A write answers what it wrote (D-453): an empty draft (D-460).
+    let body = PricingPlanDto::of(p, &[r], today(), &PlanReading::default())?;
     support::answer(
         tx,
         tenant,
@@ -236,10 +258,11 @@ pub(super) async fn create(
     .await
 }
 /// `GET /plans`: the tenant's plans by code, each with its revision headers as they read today
-/// (D-447); with `sku`, only the plans that have a draft, pending, scheduled or published revision
-/// naming the SKU through an entry (D-434, the SKU usage's `plans`; the stored state counts,
-/// D-446). Two set-based statements whatever the number of plans: the plans, then all their
-/// revisions; the derivation is in memory.
+/// (D-447) and its current revision and the one in effect (D-460); with `sku`, only the plans that
+/// have a draft, pending, scheduled or published revision naming the SKU through an entry (D-434,
+/// the SKU usage's `plans`; the stored state counts, D-446). Three set-based statements whatever
+/// the number of plans (one when there is none): the plans, all their revisions and the current
+/// revisions' items; the derivation is in memory.
 /// # Errors
 /// Storage failures.
 pub(super) async fn list(
@@ -252,21 +275,24 @@ pub(super) async fn list(
         Some(sku) => plan_repo::naming_sku(tx, scope, tenant, sku).await?,
         None => plan_repo::list(tx, scope, tenant).await?,
     };
+    if plans.is_empty() {
+        return Ok(PricingPlanList { items: Vec::new() });
+    }
     let ids: Vec<Uuid> = plans.iter().map(|p| p.id).collect();
     let today = today();
-    let mut revisions: std::collections::BTreeMap<Uuid, Vec<plan_revision::Model>> =
-        std::collections::BTreeMap::new();
+    let mut revisions: BTreeMap<Uuid, Vec<plan_revision::Model>> = BTreeMap::new();
     for r in
         plan_revision_repo::for_plans(tx, &AccessScope::for_tenant(tenant), tenant, &ids).await?
     {
         revisions.entry(r.plan_id).or_default().push(r);
     }
+    let reading = plan_reading(tx, tenant, &revisions, today).await?;
     Ok(PricingPlanList {
         items: plans
             .into_iter()
             .map(|p| {
                 let own = revisions.remove(&p.id).unwrap_or_default();
-                PricingPlanDto::of(p, &own, today)
+                PricingPlanDto::of(p, &own, today, &reading)
             })
             .collect::<Result<_, _>>()?,
     })
@@ -620,11 +646,17 @@ async fn clone_in(
         },
     )
     .await?;
-    let (_, ops) = copy_items(tx, &children, ctx, correlation, published.id, r.id, now).await?;
+    let (items, ops) = copy_items(tx, &children, ctx, correlation, published.id, r.id, now).await?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-clone-and-retire:p1:inst-plans-clone-and-retire-1
     support::audit(tx, ctx, correlation, "plan.clone", p.id, 1).await?;
     support::audit(tx, ctx, correlation, "plan_revision.create", r.id, 1).await?;
-    let body = PricingPlanDto::of(p, &[r], today())?;
+    // A write answers what it wrote (D-453): the new draft with the items it copied (D-460).
+    let mut skus: Vec<Uuid> = items.iter().map(|i| i.sku_id).collect();
+    skus.sort_unstable();
+    let reading = PlanReading {
+        skus: BTreeMap::from([(r.id, skus)]),
+    };
+    let body = PricingPlanDto::of(p, &[r], today(), &reading)?;
     let response = support::answer(
         tx,
         tenant,

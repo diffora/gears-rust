@@ -56,11 +56,15 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("List the plans")
         .description(
             "Lists the tenant's plans by code, each with the headers of its revisions as they \
-             read today (a scheduled revision whose date has come reads published, D-447). With \
-             sku_id, only the plans that have a draft, pending, scheduled or published revision \
-             whose items name the SKU through a price book entry (D-434; an included item without \
-             an entry does not count), in the same shape. Refusals: 400 QUERY_INVALID for a \
-             malformed sku_id or any other key.",
+             read today (a scheduled revision whose date has come reads published, D-447). Each \
+             plan names its current revision (the draft or pending one, else the scheduled one, \
+             else the published one in effect) with its item count, item SKUs and author, and the \
+             published revision in effect (D-460). With sku_id, only the plans that have a draft, \
+             pending, scheduled or published revision whose items name the SKU through a price \
+             book entry (D-434; an included item without an entry does not count), in the same \
+             shape: so a plan's current sku_ids, which name every item, may differ from what the \
+             filter keeps. Three statements whatever the number of plans. Refusals: 400 \
+             QUERY_INVALID for a malformed sku_id or any other key.",
         )
         .tag("Pricing")
         .authenticated()
@@ -79,8 +83,9 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("Read a plan")
         .description(
             "Returns one plan with the headers of its revisions as they read today (D-447), its \
-             version as the ETag a following PATCH sends back as If-Match. Refusals: 404 for a \
-             plan the tenant does not hold.",
+             current revision and the one in effect (D-460), and its version as the ETag a \
+             following PATCH sends back as If-Match. Refusals: 404 for a plan the tenant does not \
+             hold.",
         )
         .tag("Pricing")
         .authenticated()

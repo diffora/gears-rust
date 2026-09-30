@@ -651,7 +651,7 @@ async fn the_two_sku_lists_read_in_the_same_statements_for_10_and_100_rows() {
             "{what}: the same statements, whatever the size"
         );
     }
-    // The plain plan list is set-based too: 110 plans in the statements of the SKU's list.
+    // The plain plan list is set-based too: 110 plans in three statements (D-460).
     let plain = statements(&f, &recorder, "/plans", 110).await;
-    assert_eq!(plain.len(), 2, "{plain:#?}");
+    assert_eq!(plain.len(), 3, "{plain:#?}");
 }

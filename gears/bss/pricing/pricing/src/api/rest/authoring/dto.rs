@@ -9,6 +9,7 @@ use crate::api::rest::closed_sets::{
 };
 use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
 use crate::infra::storage::{RepoError, entity};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// The stored revisions as the effective-state rule reads them (D-447), in their order; a state
@@ -679,6 +680,37 @@ impl PricingPlanRevisionHeader {
         }
     }
 }
+/// A plan's current revision as its list row names it (D-460): the draft or pending one, else
+/// the scheduled one, else the published one in effect, chosen over the states the revisions read
+/// today (D-447).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanCurrent {
+    pub revision_id: Uuid,
+    pub rev_no: i32,
+    /// The state it reads today (D-447): `draft`, `pending`, `scheduled` or `published`.
+    pub state: PricingRevisionState,
+    /// How many items it holds, every item counted (an included one without an entry too).
+    pub item_count: u32,
+    /// The SKUs of its items, one per item, in ascending order. They may differ from the plans
+    /// `GET /plans?sku_id=` keeps, which need an item with an entry and read the stored state
+    /// (D-434).
+    pub sku_ids: Vec<Uuid>,
+    /// Its author, who edits it while it is a draft (D-404); not the plan's.
+    pub created_by: Uuid,
+}
+/// The revision a plan sells today (D-460): its published revision in effect (D-447).
+#[toolkit_macros::api_dto(response)]
+pub struct PricingPlanInEffect {
+    pub revision_id: Uuid,
+    pub rev_no: i32,
+}
+/// What the plan DTO shows beside its own rows (D-460): the item SKUs of the current revisions,
+/// by revision id. A read fills it from its grouped read; a write from the rows it holds (D-453:
+/// a write answers what it wrote).
+#[derive(Debug, Default, Clone)]
+pub struct PlanReading {
+    pub skus: BTreeMap<Uuid, Vec<Uuid>>,
+}
 /// A plan with the headers of its revisions in revision order.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanDto {
@@ -697,19 +729,42 @@ pub struct PricingPlanDto {
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: time::OffsetDateTime,
     pub revisions: Vec<PricingPlanRevisionHeader>,
+    /// The revision being changed or waiting, else the one in effect (D-460); null without
+    /// revisions.
+    pub current: Option<PricingPlanCurrent>,
+    /// The published revision in effect today (D-460); null before the first publication.
+    pub in_effect: Option<PricingPlanInEffect>,
 }
 impl PricingPlanDto {
-    /// The plan with the headers of `revisions` (all of its own) as they read on `today`, and its
-    /// effective `published_rev` (D-447): derived in memory, so the read makes no statement more.
+    /// The plan with the headers of `revisions` (all of its own) as they read on `today`, its
+    /// effective `published_rev` (D-447) and its current revision and the one in effect (D-460),
+    /// from `reading`: derived in memory.
     /// # Errors
     /// `CorruptRow` for a stored token outside its closed set (D-439).
     pub fn of(
         m: entity::plan::Model,
         revisions: &[entity::plan_revision::Model],
         today: time::Date,
+        reading: &PlanReading,
     ) -> Result<Self, RepoError> {
         let stored = stored_revisions(revisions)?;
         let effective = plan::effective(&stored, today);
+        let current = plan::current(&effective).and_then(|chosen| {
+            let row = revisions.iter().find(|r| r.id == chosen.id)?;
+            let sku_ids = reading.skus.get(&chosen.id).cloned().unwrap_or_default();
+            Some(PricingPlanCurrent {
+                revision_id: chosen.id,
+                rev_no: chosen.rev_no,
+                state: chosen.state.into(),
+                item_count: u32::try_from(sku_ids.len()).unwrap_or(u32::MAX),
+                sku_ids,
+                created_by: row.created_by,
+            })
+        });
+        let in_effect = plan::in_effect(&effective).map(|r| PricingPlanInEffect {
+            revision_id: r.id,
+            rev_no: r.rev_no,
+        });
         Ok(Self {
             id: m.id,
             tenant_id: m.tenant_id,
@@ -725,8 +780,20 @@ impl PricingPlanDto {
                 .zip(&effective)
                 .map(|(r, e)| PricingPlanRevisionHeader::of(r, e))
                 .collect(),
+            current,
+            in_effect,
         })
     }
+}
+/// The current revision's id of one plan's revisions as they read on `today` (D-460): the
+/// revision whose items the plans list reads.
+/// # Errors
+/// `CorruptRow` for a state outside the closed set.
+pub fn current_revision(
+    revisions: &[entity::plan_revision::Model],
+    today: time::Date,
+) -> Result<Option<Uuid>, RepoError> {
+    Ok(plan::current(&effective_revisions(revisions, today)?).map(|r| r.id))
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanList {

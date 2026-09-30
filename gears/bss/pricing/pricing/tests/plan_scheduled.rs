@@ -1116,10 +1116,11 @@ async fn the_checks_answer_a_due_revision_the_same_before_and_after_the_switch_i
     }
 }
 
-/// D-453: the plan list derives in memory over the revisions it already read: two statements on
-/// pricing's tables with due scheduled revisions among them, as without.
+/// D-453: the plan list derives in memory over the revisions it already read: its statements on
+/// pricing's tables are the same with due scheduled revisions among them as without. D-460
+/// amends the count from two to three (the current revisions' items).
 #[tokio::test]
-async fn the_plan_list_derives_in_its_two_statements() {
+async fn the_plan_list_derives_in_its_three_statements() {
     let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
     let catalog = Arc::new(Catalog::default());
     let f = Fixture::on(db, tenant, dsn, catalog.clone()).await;
@@ -1139,7 +1140,7 @@ async fn the_plan_list_derives_in_its_two_statements() {
         })
         .map(|q| q.sql)
         .collect();
-    assert_eq!(statements.len(), 2, "{statements:#?}");
+    assert_eq!(statements.len(), 3, "{statements:#?}");
     let items = listed["items"].as_array().unwrap();
     assert_eq!(items.len(), 3);
     for p in items {
