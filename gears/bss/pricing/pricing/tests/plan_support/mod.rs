@@ -472,7 +472,7 @@ pub async fn entry_in(
 ) -> Uuid {
     entry_with_policy(f, book, sku, charge_kind, period, model, None).await
 }
-async fn entry_with_policy(
+pub async fn entry_with_policy(
     f: &Fixture,
     book: Uuid,
     sku: Uuid,

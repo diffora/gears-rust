@@ -24,8 +24,8 @@ const DESIGN_INDEXES: &[(&str, &str)] = &[
     ),
     (
         "pricing_price_book_entry_key",
-        // D-427: the model joined the key (m20260926_000013).
-        "(book_id, sku_id, charge_kind, COALESCE(period, ''::text), model)",
+        // D-427 added model; migration 18 added the immutable policy digest (DESIGN §3.7).
+        "(book_id, sku_id, charge_kind, COALESCE(period, ''::text), model, COALESCE(usage_policy_digest, ''::text))",
     ),
     (
         "pricing_price_approved_start",

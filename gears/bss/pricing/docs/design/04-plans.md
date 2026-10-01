@@ -50,6 +50,17 @@ provider evidence digests in approval snapshots. Dependency failures remain type
 the engine reaches a semantic gate, preserving non-final votes, rejects and withdrawals. Authorized
 successful command replay precedes dependency observations.
 
+Detached publication observations are checked against the complete local selection (including
+added, removed or re-pointed items/prices) and entry identities before any captured refusal is
+consumed. Local drift rolls back and repeats the authorized replay lookup, detached capture and
+transaction within `toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS`; driver contention shares that same
+budget. Exhaustion is `UNIT_CONTENDED`. The second provider evidence read runs immediately before
+the transaction, still outside it. A different answer for the same captured selection remains
+`METER_EVIDENCE_CHANGED` and is never retried. This applies to price submit, plan submit,
+publish-changes and both subjects' voting/apply paths. Entry-create recovery continues to use
+its persisted evidence, and historical reads make no provider calls.
+
+
 The revision fingerprint now includes each selected entry ID and its policy ID/version/digest,
 read from entry rows in the same transaction. Policy content remains entry-owned; no plan-item
 column or override is added. Changed selection refreshes the approval generation (`UNIT_STALE`)

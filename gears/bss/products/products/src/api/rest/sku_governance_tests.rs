@@ -2754,6 +2754,9 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
     .await
     .unwrap();
     let hub = Arc::new(toolkit::ClientHub::default());
+    hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+        pricing_policy_support::MeterProvider::default(),
+    ));
     let registry = crate::infra::reference_registry::LocalReferenceRegistry::for_owner("pricing")
         .with_runtime(f.state.clone(), Arc::new(flat_in_enforcer(f.tenant)));
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
@@ -2787,7 +2790,7 @@ async fn real_pricing_entry_blocks_retirement_until_delete_and_ticker_pass() {
         Method::POST,
         &format!("/price-books/{}/entries", book["id"].as_str().unwrap()),
         // Pricing D-427: an entry is created in a model; `per_unit` is one every charge kind allows.
-        json!({"sku_id":f.id,"model":"per_unit"}),
+        json!({"sku_id":f.id,"model":"per_unit","usage_rating_policy":pricing_policy_support::storage_input()}),
     )
     .await;
     assert_eq!(status, 201, "{entry}");

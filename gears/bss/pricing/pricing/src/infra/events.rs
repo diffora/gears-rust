@@ -109,6 +109,39 @@ pub async fn transaction<T, E, X, F>(
     sink: &EventSink,
     config: TxConfig,
     extract_db_err: X,
+    work: F,
+) -> Result<T, E>
+where
+    E: From<DbError> + Send + 'static,
+    T: Send + 'static,
+    X: Fn(&E) -> Option<&sea_orm::DbErr> + Send,
+    F: for<'a> FnMut(
+            &'a DbTx<'a>,
+            TxOutbox,
+        ) -> Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>
+        + Send,
+{
+    transaction_with_attempts(
+        db,
+        sink,
+        config,
+        toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS,
+        extract_db_err,
+        work,
+    )
+    .await
+}
+
+/// The event transaction with an explicit budget. Detached-capture callers use one attempt
+/// here and own the shared capture/transaction retry budget outside every database transaction.
+/// # Errors
+/// The original typed refusal or driver error after rollback and discarding event wakes.
+pub async fn transaction_with_attempts<T, E, X, F>(
+    db: &Db,
+    sink: &EventSink,
+    config: TxConfig,
+    attempts: u32,
+    extract_db_err: X,
     mut work: F,
 ) -> Result<T, E>
 where
@@ -124,7 +157,7 @@ where
     let outbox = TxOutbox::new(sink.clone());
     let attempt = outbox.clone();
     let result = db
-        .transaction_with_retry(config, extract_db_err, move |tx| {
+        .transaction_with_retry_max(config, attempts, extract_db_err, move |tx| {
             attempt.discard();
             work(tx, attempt.clone())
         })

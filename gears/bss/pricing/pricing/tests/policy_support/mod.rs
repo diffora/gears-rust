@@ -12,6 +12,14 @@ pub fn input() -> serde_json::Value {
     })
 }
 
+/// Storage declaration used by the Products cross-gear retirement fixture.
+pub fn storage_input() -> serde_json::Value {
+    let mut policy = input();
+    policy["quantity_semantics"]["meter"]["usage_type_id"] = serde_json::json!("storage");
+    policy["quantity_semantics"]["unit"] = serde_json::json!("GB");
+    policy
+}
+
 /// Contract-test declarations only: these names are not production registrations.
 #[derive(Default)]
 pub struct MeterProvider {
@@ -59,6 +67,7 @@ impl bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1 for MeterProvider {
         let unit = match (meter.usage_type_id.as_str(), meter.version.as_str()) {
             ("vm-hours", "v1") => "VM\u{b7}hour",
             ("cloudlet-hours", "v1") => "cloudlet\u{b7}hour",
+            ("storage", "v1") => "GB",
             _ => {
                 return Err(MeterResource::invalid_argument()
                     .with_field_violation(

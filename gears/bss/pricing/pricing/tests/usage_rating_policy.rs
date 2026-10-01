@@ -1567,3 +1567,118 @@ fn captured_evidence_digest_uses_strict_lowercase_hex_at_storage_boundaries() {
     invalid["digest"] = json!("AB".repeat(32));
     assert!(serde_json::from_value::<MeterEvidence>(invalid).is_err());
 }
+
+/// Change only provider evidence, or the local entry generation, between detached reads.
+struct MovingMeter {
+    calls: std::sync::atomic::AtomicUsize,
+    local: Option<(String, Uuid)>,
+}
+#[async_trait::async_trait]
+impl bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1 for MovingMeter {
+    async fn resolve(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        meter: bss_pricing_sdk::terms::MeterRef,
+    ) -> Result<
+        bss_pricing_sdk::meter_semantics::MeterSemantics,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut evidence = plan_support::entry_support::policy_support::MeterProvider::default()
+            .resolve(ctx, meter)
+            .await?;
+        if let Some((dsn, entry)) = &self.local {
+            let conn = Database::connect(dsn).await.unwrap();
+            conn.execute_raw(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                "UPDATE pricing_price_book_entry SET version = version + 1 WHERE id = ?",
+                [(*entry).into()],
+            ))
+            .await
+            .unwrap();
+        } else if call > 0 {
+            // One real evidence change, then stable: an erroneous retry would accept it.
+            evidence.digest = [8; 32];
+        }
+        Ok(evidence)
+    }
+}
+
+async fn moving_meter_fixture(local: bool) -> (Fixture, Uuid, Arc<MovingMeter>) {
+    let f = Fixture::new(Arc::new(Script::default())).await;
+    let (book, _) = f.book().await;
+    let entry = create_entry(
+        &f,
+        plan_support::id_of(&book["id"]),
+        Uuid::new_v4(),
+        policy(),
+    )
+    .await;
+    let draft = draft_price(
+        &f,
+        entry,
+        &time::OffsetDateTime::now_utc().date().to_string(),
+        None,
+    )
+    .await;
+    assert_eq!(draft.0, 201, "{draft:?}");
+    let id = plan_support::id_of(&draft.1["items"][0]["id"]);
+    let provider = Arc::new(MovingMeter {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        local: local.then(|| (f.dsn.to_string(), entry)),
+    });
+    f.state
+        .hub
+        .register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(provider.clone());
+    (f, id, provider)
+}
+
+#[tokio::test]
+async fn unchanged_selection_with_changed_provider_evidence_is_not_retried() {
+    let (f, id, provider) = moving_meter_fixture(false).await;
+    let result = submit_price(&f, id).await;
+    assert_eq!(result.0, 409, "{result:?}");
+    assert!(
+        result.1.to_string().contains("METER_EVIDENCE_CHANGED"),
+        "{result:?}"
+    );
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let price = bss_pricing::infra::storage::repo::price_repo::find(
+        &f.db.conn().unwrap(),
+        &plan_support::scope(&f),
+        f.ctx.subject_tenant_id(),
+        id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(price.state, "draft");
+    assert!(price.pending_unit_id.is_none());
+}
+
+#[tokio::test]
+async fn local_identity_moving_past_the_capture_limit_is_unit_contended() {
+    let (f, id, provider) = moving_meter_fixture(true).await;
+    let result = submit_price(&f, id).await;
+    assert_eq!(result.0, 409, "{result:?}");
+    assert!(
+        result.1.to_string().contains("UNIT_CONTENDED"),
+        "{result:?}"
+    );
+    assert_eq!(
+        provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+        2 * toolkit_db::DEFAULT_TX_RETRY_ATTEMPTS as usize
+    );
+    let price = bss_pricing::infra::storage::repo::price_repo::find(
+        &f.db.conn().unwrap(),
+        &plan_support::scope(&f),
+        f.ctx.subject_tenant_id(),
+        id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(price.state, "draft");
+    assert!(price.pending_unit_id.is_none());
+}

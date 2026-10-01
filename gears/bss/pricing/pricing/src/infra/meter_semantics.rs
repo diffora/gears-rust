@@ -4,7 +4,10 @@ use crate::{
     domain::usage_policy::validate_meter_policy,
     infra::{
         reference_registry,
-        storage::{entity::price_book_entry, repo::usage_policy_repo},
+        storage::{
+            entity::{plan_item, price, price_book_entry},
+            repo::{plan_item_repo, price_book_entry_repo, price_repo, usage_policy_repo},
+        },
         usage_policy_wire::{MeterEvidence, UsageRatingPolicyInput},
     },
 };
@@ -12,7 +15,10 @@ use bss_pricing_sdk::{meter_semantics::UsageMeterSemanticsV1, terms::UsageRating
 use bss_products_sdk::models::Sku;
 use std::collections::BTreeMap;
 use toolkit_canonical_errors::CanonicalError;
-use toolkit_db::DbConn;
+use toolkit_db::{
+    DbConn,
+    secure::{AccessScope, DBRunner},
+};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -84,9 +90,86 @@ pub struct ObservedEntry {
 /// Observations are request-local and never used by historical reads.
 #[derive(Clone, Default)]
 pub struct Observations {
+    local_entries: Vec<price_book_entry::Model>,
+    pub(crate) selection: Selection,
     entries: BTreeMap<Uuid, Result<ObservedEntry, CanonicalError>>,
     skus: BTreeMap<Uuid, Result<Sku, CanonicalError>>,
     versions: BTreeMap<Uuid, Result<Vec<bss_products_sdk::models::SkuVersion>, CanonicalError>>,
+}
+/// The local selection that supplied a detached capture, including removals and re-pointing.
+#[derive(Clone, Default)]
+pub(crate) enum Selection {
+    #[default]
+    None,
+    Revision {
+        id: Uuid,
+        items: Vec<plan_item::Model>,
+    },
+    Prices {
+        ids: Vec<Uuid>,
+        scope: AccessScope,
+        rows: Vec<price::Model>,
+    },
+    Publish {
+        book: Uuid,
+        ids: Option<Vec<Uuid>>,
+        rows: Vec<price::Model>,
+    },
+}
+impl Selection {
+    /// Read only the local selection; no provider call belongs in this check.
+    async fn matches(&self, conn: &impl DBRunner, tenant: Uuid) -> Result<bool, DoorError> {
+        let children = AccessScope::for_tenant(tenant);
+        match self {
+            Self::None => Ok(true),
+            Self::Revision { id, items } => {
+                let current = plan_item_repo::for_revision(conn, &children, tenant, *id).await?;
+                let identity = |rows: &[plan_item::Model]| {
+                    rows.iter()
+                        .map(|i| (i.id, (i.sku_id, i.price_book_entry_id)))
+                        .collect::<BTreeMap<_, _>>()
+                };
+                Ok(identity(items) == identity(&current))
+            }
+            Self::Prices { ids, scope, rows } => {
+                let current = price_repo::find_many(conn, scope, tenant, ids).await?;
+                Ok(price_selection(rows) == price_selection(&current))
+            }
+            Self::Publish { book, ids, rows } => {
+                let entries =
+                    price_book_entry_repo::for_book(conn, &children, tenant, *book).await?;
+                let current = price_repo::for_entries(
+                    conn,
+                    &children,
+                    tenant,
+                    &entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+                )
+                .await?;
+                Ok(price_selection(rows)
+                    == price_selection(&publish_selection(current, ids.as_deref())))
+            }
+        }
+    }
+}
+/// Match the publication door's implicit draft selection, or its explicit draft IDs.
+pub(crate) fn publish_selection(
+    rows: Vec<price::Model>,
+    ids: Option<&[Uuid]>,
+) -> Vec<price::Model> {
+    rows.into_iter()
+        .filter(|p| {
+            p.state == "draft"
+                && p.pending_unit_id.is_none()
+                && ids.is_none_or(|ids| ids.contains(&p.id))
+        })
+        .collect()
+}
+/// Price identity includes the paired selection but excludes money judged by the transaction.
+fn price_selection(rows: &[price::Model]) -> BTreeMap<Uuid, (Uuid, Option<Uuid>)> {
+    rows.iter()
+        .filter(|p| p.state == "draft" || p.state == "pending")
+        .map(|p| (p.id, (p.price_book_entry_id, p.paired_price_id)))
+        .collect()
 }
 impl Observations {
     /// Read local policy rows, then capture dependency results outside a transaction. Errors
@@ -102,7 +185,10 @@ impl Observations {
     ) -> Result<Self, DoorError> {
         let policies =
             usage_policy_repo::for_entries(conn, ctx.subject_tenant_id(), &entries).await?;
-        let mut result = Self::default();
+        let mut result = Self {
+            local_entries: entries.clone(),
+            ..Self::default()
+        };
         let ids = entries
             .iter()
             .map(|e| e.sku_id)
@@ -137,7 +223,7 @@ impl Observations {
                 let sku = result
                     .skus
                     .get(&entry.sku_id)
-                    .ok_or_else(|| support::conflict("METER_EVIDENCE_CHANGED"))?
+                    .ok_or_else(|| support::conflict(support::UNIT_CONTENDED))?
                     .as_ref()
                     .map_err(Clone::clone)?;
                 let evidence = resolve(hub, ctx, &policy.content, sku).await?;
@@ -151,6 +237,73 @@ impl Observations {
             result.entries.insert(entry.id, observed);
         }
         Ok(result)
+    }
+    /// Re-read provider evidence immediately before entering the commit transaction. Keep any
+    /// refusal with its observation so rejects and non-final votes retain their existing gates.
+    pub async fn verify(&mut self, hub: &toolkit::ClientHub, ctx: &SecurityContext) {
+        for result in self.entries.values_mut() {
+            let Ok(observed) = result else { continue };
+            let checked = async {
+                let provider = hub.get::<dyn UsageMeterSemanticsV1>().map_err(|_| {
+                    CanonicalError::from(
+                        bss_pricing_sdk::meter_semantics::UnconfiguredMeterSemantics,
+                    )
+                })?;
+                let evidence = provider
+                    .resolve(
+                        ctx,
+                        bss_pricing_sdk::terms::MeterRef {
+                            usage_type_id: observed.evidence.meter.usage_type_id.clone(),
+                            version: observed.evidence.meter.version.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(|e| {
+                        if e.status_code() >= 500 {
+                            CanonicalError::service_unavailable().create()
+                        } else {
+                            e
+                        }
+                    })?;
+                if MeterEvidence::from(evidence) != observed.evidence {
+                    return Err(support::conflict("METER_EVIDENCE_CHANGED"));
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(error) = checked {
+                *result = Err(error);
+            }
+        }
+    }
+    /// Compare the entire local selection and every captured entry before consuming any
+    /// provider result. Local drift is a typed rollback signal, never an evidence conflict.
+    /// # Errors
+    /// Storage failure or a selection that must be captured again outside the transaction.
+    pub async fn check_local(&self, conn: &impl DBRunner, tenant: Uuid) -> Result<(), DoorError> {
+        if !self.selection.matches(conn, tenant).await? {
+            return Err(DoorError::SelectionMoved);
+        }
+        let current = price_book_entry_repo::find_many(
+            conn,
+            &AccessScope::for_tenant(tenant),
+            tenant,
+            &self.local_entries.iter().map(|e| e.id).collect::<Vec<_>>(),
+        )
+        .await?;
+        let captured = self
+            .local_entries
+            .iter()
+            .map(|e| (e.id, e))
+            .collect::<BTreeMap<_, _>>();
+        let current = current
+            .iter()
+            .map(|e| (e.id, e))
+            .collect::<BTreeMap<_, _>>();
+        if current != captured {
+            return Err(DoorError::SelectionMoved);
+        }
+        Ok(())
     }
     /// Recheck local identity before using detached evidence in submit or apply.
     /// # Errors
@@ -168,11 +321,11 @@ impl Observations {
         let observed = self
             .entries
             .get(&entry.id)
-            .ok_or_else(|| support::conflict("METER_EVIDENCE_CHANGED"))?
+            .ok_or_else(|| support::conflict(support::UNIT_CONTENDED))?
             .as_ref()
             .map_err(Clone::clone)?;
         if &observed.entry != entry {
-            return Err(support::conflict("METER_EVIDENCE_CHANGED"));
+            return Err(support::conflict(support::UNIT_CONTENDED));
         }
         Ok(())
     }
@@ -187,7 +340,7 @@ impl Observations {
                 self.skus
                     .get(&id)
                     .cloned()
-                    .unwrap_or_else(|| Err(support::conflict("METER_EVIDENCE_CHANGED")))
+                    .unwrap_or_else(|| Err(support::conflict(support::UNIT_CONTENDED)))
             })
             .collect()
     }
@@ -202,7 +355,7 @@ impl Observations {
         let versions = self
             .versions
             .get(&sku)
-            .ok_or_else(|| support::conflict("METER_EVIDENCE_CHANGED"))?
+            .ok_or_else(|| support::conflict(support::UNIT_CONTENDED))?
             .as_ref()
             .map_err(Clone::clone)?;
         let version = versions

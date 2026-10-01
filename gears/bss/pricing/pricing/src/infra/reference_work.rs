@@ -615,7 +615,7 @@ fn door_code(error: &DoorError) -> Option<String> {
     match error {
         DoorError::Repo(RepoError::Conflict { code }) => Some((*code).to_owned()),
         DoorError::Api(error) => error_code(error),
-        DoorError::Repo(_) | DoorError::Generation { .. } => None,
+        DoorError::Repo(_) | DoorError::Generation { .. } | DoorError::SelectionMoved => None,
     }
 }
 /// Drive a durable op until terminal completion or the next scheduled retry.

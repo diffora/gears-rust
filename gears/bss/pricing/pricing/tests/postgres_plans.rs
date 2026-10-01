@@ -875,8 +875,37 @@ async fn pools() -> Pools {
 /// tail: an item on it is green.
 async fn priced(f: &Fixture, catalog: &Catalog, book: Uuid) -> (Uuid, Uuid) {
     let sku = catalog.sku(SkuType::Usage);
-    let entry = plan_support::entry(f, book, sku, "usage", None).await;
+    // Publication requires an immutable policy. Seed it without a reservation so the
+    // assertions below continue to count only the plan-item reference work under test.
     let conn = f.db.conn().unwrap();
+    let mut input = plan_support::entry_support::policy_support::input();
+    if !price_book_entry_repo::for_book(&conn, &scope(f), f.ctx.subject_tenant_id(), book)
+        .await
+        .unwrap()
+        .is_empty()
+    {
+        // These races add a second usage item. Distinct declared meters keep the existing
+        // duplicate-meter rule green without changing the race or its assertions.
+        let mut skus = catalog.skus.lock().unwrap();
+        let second = skus.get_mut(&sku).unwrap();
+        second.meter = Some("cloudlet-hours".into());
+        second.unit = Some("cloudlet\u{b7}hour".into());
+        input["quantity_semantics"]["meter"]["usage_type_id"] = json!("cloudlet-hours");
+        input["quantity_semantics"]["unit"] = json!("cloudlet\u{b7}hour");
+    }
+    let policy = bss_pricing::infra::storage::repo::usage_policy_repo::intern(
+        &conn,
+        &scope(f),
+        f.ctx.subject_tenant_id(),
+        f.ctx.subject_id(),
+        &serde_json::from_value(input).unwrap(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    let entry =
+        plan_support::entry_with_policy(f, book, sku, "usage", None, "per_unit", Some(policy))
+            .await;
     let e = price_book_entry_repo::find(&conn, &scope(f), f.ctx.subject_tenant_id(), entry)
         .await
         .unwrap()
@@ -1020,9 +1049,9 @@ async fn postgres_an_item_add_reaching_its_write_after_the_lock_is_refused() {
     assert_eq!(p.catalog.releases(), 1, "and released what it reserved");
 }
 
-/// An add that commits while a submit on another pool has read the revision's items but not yet
-/// locked it: SSI fails the submit's transaction, its retry reads the new item, and the unit
-/// carries it — the published revision is exactly the unit's content.
+/// An add that commits while a submit on another pool has captured the revision's items but not
+/// yet locked it: the transaction detects the moved selection, a detached retry reads the new
+/// item, and the unit carries it — the published revision is exactly the unit's content.
 #[tokio::test]
 #[ignore = "needs the Postgres harness"]
 async fn postgres_an_item_add_committed_inside_a_submit_is_carried_by_the_unit() {

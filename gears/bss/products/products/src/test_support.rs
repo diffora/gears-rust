@@ -1474,3 +1474,6 @@ pub fn violation_for(body: &serde_json::Value, subject: &str) -> Option<String> 
         .and_then(|violation| violation["description"].as_str())
         .map(ToOwned::to_owned)
 }
+// Reuse Pricing's explicit contract provider in the real cross-gear authoring test.
+#[path = "../../../pricing/pricing/tests/policy_support/mod.rs"]
+pub(crate) mod pricing_policy_support;

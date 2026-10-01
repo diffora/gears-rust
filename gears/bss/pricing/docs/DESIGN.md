@@ -713,6 +713,8 @@ CREATE TABLE bss.pricing_price_book_entry (
 );
 CREATE UNIQUE INDEX pricing_price_book_entry_key
   ON bss.pricing_price_book_entry (book_id, sku_id, charge_kind, coalesce(period, ''), model, coalesce(usage_policy_digest, ''));
+-- Migration 18 extends the model key with the immutable policy digest. The empty
+-- token represents absent legacy/non-usage policy; equal policy content shares a key.
 CREATE TABLE bss.pricing_price (
   id uuid PRIMARY KEY, tenant_id uuid NOT NULL, price_book_entry_id uuid NOT NULL REFERENCES bss.pricing_price_book_entry(id),
   version_no integer NOT NULL, dim_value text,
