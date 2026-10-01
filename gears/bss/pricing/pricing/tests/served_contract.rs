@@ -1,9 +1,9 @@
 //! D-469 (asks 30 and the contracts notes, phase 9 plan rev 2 M1 and W1): the served spec says
 //! what the doors do. Every op declares 503, as products declares it on all of its ops: every door
 //! answers 503 when the policy decision point cannot answer. The texts name
-//! `REGISTRY_UNAVAILABLE` on exactly the ops that read Products hard. The item create, the revision
-//! PATCH and the revision delete name what they refuse. The `ETag` of every answer that sets one is
-//! pinned with the route census, `tests/module_test.rs`.
+//! `REGISTRY_UNAVAILABLE` on exactly the ops that read Products hard. The item create, the item
+//! PATCH, the revision PATCH and the revision delete name what they refuse. The `ETag` of every
+//! answer that sets one is pinned with the route census, `tests/module_test.rs`.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use serde_json::Value;
@@ -130,6 +130,23 @@ async fn the_texts_name_what_the_doors_refuse() {
         "{patch}"
     );
     assert!(patch.contains("book_id omitted or null leaves"), "{patch}");
+    let item_patch = description(&api, "patch", "/bss-pricing/v1/plan-items/{id}");
+    for code in [
+        "BODY_UNEXPECTED",
+        "ITEM_ENTRY_MISSING",
+        "ITEM_BOOK_FOREIGN",
+        "ITEM_ENTRY_SKU_MISMATCH",
+        "NOT_DRAFT_AUTHOR",
+        "404 for an unknown item",
+        "ENTRY_NOT_FOUND",
+        "REVISION_NOT_DRAFT",
+        "STALE_REVISION",
+    ] {
+        assert!(
+            item_patch.contains(code),
+            "the item PATCH names {code}: {item_patch}"
+        );
+    }
     let delete = description(&api, "delete", "/bss-pricing/v1/plan-revisions/{id}");
     assert!(delete.contains("STALE_REVISION"), "{delete}");
     for path in ["/bss-pricing/v1/plans", "/bss-pricing/v1/plans/{id}/clone"] {

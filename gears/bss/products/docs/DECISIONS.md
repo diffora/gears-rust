@@ -56,7 +56,7 @@
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
 | P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
-| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b) |
+| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224 |
@@ -1065,6 +1065,13 @@ register.
   vhp-core change would make them follow `next_cursor`.
 
 **Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ok"); whole-branch review RS-03 (fix run W1b).
+
+**Amended by P-D-227 (2026-09-30).** The list also takes `$orderby=submitted_at desc`, newest first, while submission
+order stays the default. Any other `$orderby` is 400 `INVALID_ORDERBY_FIELD`, and `$orderby` beside a `cursor` is 400
+`ORDER_WITH_CURSOR`.
+
+**Amended by P-D-228 (2026-09-30).** A page also reads all its units' items in one statement more
+(`approval_repo::items_of_units`), so it makes three statements whatever its size.
 
 #### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
 

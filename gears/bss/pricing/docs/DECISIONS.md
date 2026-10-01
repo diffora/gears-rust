@@ -29,7 +29,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5 |
 | D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs; amended by D-443 |
 | D-392 | H | Publish changes is a selected book batch | DECIDED 2026-09-25 · §2 decision 7; §6; §8 |
-| D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6 |
+| D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6; extended by D-459 |
 | D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8; amended by D-450, D-467 |
 | D-395 | H | Promotions are versioned and migrations are requests | DECIDED 2026-09-25 · §5; §6; §11 phase 3 |
 | D-396 | H | One replay store and optimistic conditional writes | DECIDED 2026-09-25 · §2.2; §3 items 23 and 27; §7.2 |
@@ -94,9 +94,9 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
 | D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463, D-468 |
 | D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468 |
-| D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
+| D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
-| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453 |
+| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461 |
 | D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
@@ -105,7 +105,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-466 | M | Each check row names its items and its blocking prices | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7); extends D-408 |
 | D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439 |
 | D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
-| D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8) |
+| D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8); extended by D-470 |
 | D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469 |
 | D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2) |
 | D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
@@ -175,7 +175,9 @@ List all draft book prices with full predecessor, proposed content and impact, p
 
 bss-approval owns the shared engine shape; pricing owns prefixed tables and subjects. Quorum is tenant policy with kind overrides and fail-safe one when * is absent. No materiality. Submitter and all item authors are excluded from approval; an item's author is its price's creator, the only principal who may edit it (D-404). Votes carry generation; drift commits refreshed items/snapshot/hash, increments generation and marks prior decisions stale (UNIT_STALE). Conditional unit version yields UNIT_CONTENDED on lost races. Quorum zero, reject and withdraw all write terminal audit and ApprovalUnitDecided. See ADR-0003.
 
-**Source:** §2 decision 8; §2.2; §6.
+D-459 extends this entry: the engine's approve rules (the terminal state, the separation of duties, the duplicate vote and which votes count) are one exported function, approve_eligibility. The engine judges a vote through it, and so does every read that shows a unit's vote count or whether its caller may approve.
+
+**Source:** §2 decision 8; §2.2; §6. Extended by D-459.
 
 #### D-394 [H] Plans are versioned structure bound to one book
 
@@ -895,7 +897,9 @@ D-468 extends this entry: a new plan's code also follows a rule of at most 32 ch
 - **Breaking for a caller** that reads the list whole: a tenant with more than 200 units matching its filters gets them over several pages, and must follow next_cursor. The Studio (the pricing-mfe) has to follow it. The gears-rust tests that read the list whole follow it (entry_support::Fixture::all_units); the gears-rust e2e reads no list. The vhp-core e2e reads it whole in tests/bss-pricing/test_pricing_isolation.py (two reads) and test_pricing_prices.py (the pending queue), each with far fewer than 200 units, so they pass unchanged; a vhp-core change would only make them follow next_cursor.
 - **Products** gets the same list in its own decision, P-D-224 (fix run W1b).
 
-**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "2"); whole-branch review PS-13 (fix run W1a, a scope addition).
+D-470 amends this entry: the list also takes $orderby=submitted_at desc, newest first, while submission order stays the default, and impact=false, which answers every unit's impact as null and skips the plans' reading (infra::prices::PlansReading, four statements).
+
+**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "2"); whole-branch review PS-13 (fix run W1a, a scope addition). Amended by D-470.
 
 #### D-459 [M] One approve-eligibility predicate for the engine and its readers
 
@@ -927,7 +931,9 @@ The plans screen shows, per plan, the revision being changed or waiting and the 
 - **No ready flag.** The list carries no ready flag and no count of red checks: the checks read every item SKU from Products (D-408), so the list would make a Products read per SKU of every draft. The screen reads GET /plan-revisions/{id}/checks per draft.
 - **The tests.** tests/plan_overview.rs: the current revision and the one in effect for a draft only, a pending only, a published only, a draft, a pending and a waiting scheduled revision beside the published one, a due scheduled revision whose switch is not persisted (both name it, and its stored state stays scheduled), and a plan without revisions; the plan read agrees with its list row; sku_ids against the SKU filter; the create, clone and rename answers; the statements for 10 and 100 plans. domain::plan's tests pin the choice over the effective states. Probes that chose the published revision before the scheduled one, and that read the items per plan, were caught.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453.
+D-461 amends this entry: the plan list also reads the units its revisions name, in one grouped statement more, so GET /plans makes four statements whatever the number of plans (one when there is none): the plans, their revisions, the current revisions' items and the units.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461.
 
 #### D-461 [M] A revision says who made it and when it was submitted and approved
 
@@ -1076,7 +1082,9 @@ The generated client of the pricing-mfe did not type a 503 (ask 30): no pricing 
   - The revision delete names STALE_REVISION, the answer of a concurrent write that changed the revision or one of its items first.
 - **The tests.** tests/served_contract.rs reads the served spec: a 503 problem on each of the 51 ops; REGISTRY_UNAVAILABLE in the text of exactly the eight; the item create's, the revision PATCH's and the revision delete's texts, and the plan code rule's (D-468). tests/module_test.rs pins the ETag on the success answers of the eight reads and the nineteen writes, and nowhere else. Probes that dropped one op's 503, named the registry on the reject, dropped the unschedule's ETag and dropped STALE_REVISION from the delete's text were caught.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 2, approved); phase 9 plan rev 2 (M1 and W1, binding: 503 on every op; decisions 8 and 9; L8: the contracts notes correct served texts to match the code).
+D-470 extends this entry: the approval-unit counts are one op more, so the census, the 503 on every op and the tests count 52 ops, not 51.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 2, approved); phase 9 plan rev 2 (M1 and W1, binding: 503 on every op; decisions 8 and 9; L8: the contracts notes correct served texts to match the code). Extended by D-470.
 
 #### D-470 [M] The approval units are counted by state and kind, list newest first on request, and skip the live impact on request
 
