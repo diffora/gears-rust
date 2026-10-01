@@ -11949,16 +11949,22 @@
         "type": "object"
       },
       "PricingPriceBookEntryList": {
+        "description": "One page of a book's entries (D-483), ordered `(sku_id, charge_kind, model, id)`.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/PricingPriceBookEntryReadDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "`limit` is the page size (500 by default and at most); `next_cursor` continues the page and\ncarries the list's `$filter` and day."
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -39493,7 +39499,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
+        "description": "One page of the price book entries of one book of the tenant (D-483), ordered by sku_id, charge_kind, model and id, all ascending: month and year entries of one model follow their id. Each entry carries its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day, on every page (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. limit (alias $top) is 500 by default and clamped at 500, and cursor (alias $skiptoken) continues from page_info.next_cursor: a caller that does not follow next_cursor reads the first 500. OData $filter takes sku_id (eq, ne, in), charge_kind, model and reference_state, each compared with one of its closed values. There is no q: SKU names live in Products, so a search asks GET /bss-products/v1/skus?q= and narrows this list with $filter=sku_id in (...). The cursor carries a hash of $filter and of the day, so a cursor replayed under another $filter or another as_of is 400 FILTER_MISMATCH. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for a plain key other than as_of, limit and cursor, or one given twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 400 for $orderby (the order is fixed), $select, $count, a $filter the list does not take, a limit of 0 or a cursor that does not read; 400 FILTER_MISMATCH; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book, judged before any entry is read: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {
@@ -39509,6 +39515,33 @@
             "description": "The day the prices are judged on, YYYY-MM-DD; today (UTC) by default",
             "in": "query",
             "name": "as_of",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size, alias of $top (default 500, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info (alias $skiptoken)",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- sku_id: eq|ne|in\n- charge_kind: eq|ne|contains|startswith|endswith|in\n- model: eq|ne|contains|startswith|endswith|in\n- reference_state: eq|ne|contains|startswith|endswith|in",
+            "in": "query",
+            "name": "$filter",
             "required": false,
             "schema": {
               "type": "string"
@@ -39615,7 +39648,40 @@
         "summary": "List a book's entries",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "charge_kind": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "model": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "reference_state": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "sku_id": [
+              "eq",
+              "ne",
+              "in"
+            ]
+          }
+        }
       },
       "post": {
         "description": "Adds an entry for a SKU to a book in a model fixed for the entry's life (D-427), reserving the SKU reference in Products before the write and confirming it after; the Idempotency-Key replays the receipt. The invoice-line override is at most 2000 characters (D-457). Refusals: 400 MODEL_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH (judged at the door and again after the reservation), ENTRY_PERIOD_INVALID, DIM_NOT_DECLARED, or FIELD_TOO_LONG on an override over its cap; 409 ENTRY_KEY_TAKEN (the SKU, charge kind, period and model are taken in the book), SKU_DRAFT, SKU_DEPRECATED, SKU_RETIRING, SKU_FENCED, BUNDLE_SKU_NOT_PRICEABLE or CHARGE_KIND_SKU_TYPE; 503 REGISTRY_UNAVAILABLE.",
@@ -43213,7 +43279,7 @@
     },
     "/bss-products/v1/skus": {
       "get": {
-        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
+        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter.",
         "operationId": "bss_products.list_skus",
         "parameters": [
           {
@@ -43259,6 +43325,33 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "description": "A price book id: only the SKUs with an entry in it (P-D-246)",
+            "in": "query",
+            "name": "priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A price book id: only the SKUs without an entry in it (P-D-246)",
+            "in": "query",
+            "name": "not_priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A plan revision id: only the SKUs its items do not name (P-D-246)",
+            "in": "query",
+            "name": "not_in_revision",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -43539,7 +43632,7 @@
     },
     "/bss-products/v1/skus/counts": {
       "get": {
-        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`, whose top-level `lifecycle` terms are dropped (a `lifecycle` term under `or` or `not` is 400). `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400.",
+        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`, whose top-level `lifecycle` terms are dropped (a `lifecycle` term under `or` or `not` is 400). `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
         "operationId": "bss_products.count_skus",
         "parameters": [
           {
@@ -43567,6 +43660,33 @@
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "description": "A price book id: only the SKUs with an entry in it (P-D-246)",
+            "in": "query",
+            "name": "priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A price book id: only the SKUs without an entry in it (P-D-246)",
+            "in": "query",
+            "name": "not_priced_in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A plan revision id: only the SKUs its items do not name (P-D-246)",
+            "in": "query",
+            "name": "not_in_revision",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -45103,7 +45223,7 @@
     },
     "/bss-products/v1/usage-types": {
       "get": {
-        "description": "The usage-type catalog the publish gate resolves against, read as the caller (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses the caller; 400 for a malformed query, a `kind` outside counter and gauge, for a search cursor (one cut with `q`) replayed with another `q` or `kind` or without `q`, and for a cursor cut without `q` replayed under any `q` (without `q`, such a cursor passes to the collector unchecked); 501 when no catalog is configured; 503 when the configured one does not answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A configured catalog with no types answers 200 with no items.",
+        "description": "The usage-type catalog the publish gate resolves against, read as the caller (P-D-207). `q` narrows by case-insensitive substring of the id, `kind` by equality; `limit` defaults to 50 and is clamped at 200; `kind` is counter or gauge. Over the usage collector, `q` searches at most 1000 types of the asked kind, in id order, and its cursor is bound to `q` and `kind`. Refusals: 403 without products SKU author, or when the catalog refuses the caller; 400 for a malformed query, a `kind` outside counter and gauge, for a search cursor (one cut with `q`) replayed with another `q` or `kind` or without `q`, and for a cursor cut without `q` replayed under any `q` (without `q`, such a cursor passes to the collector unchecked); 501 when no catalog is configured; 503 when the configured one does not answer, or `USAGE_TYPE_CATALOG_TOO_LARGE` when `q` would search more than 1000 types. A configured catalog with no types answers 200 with no items. A page answers Cache-Control: private, max-age=60 (P-D-247): it is read as the caller, so only the caller's own cache may keep it, for a minute.",
         "operationId": "bss_products.list_usage_types",
         "parameters": [
           {
@@ -45152,7 +45272,15 @@
                 }
               }
             },
-            "description": "Usage types"
+            "description": "Usage types",
+            "headers": {
+              "Cache-Control": {
+                "description": "private, max-age=60: the page is read as the caller, so only the caller's own cache may keep it, for a minute (P-D-247)",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "content": {
