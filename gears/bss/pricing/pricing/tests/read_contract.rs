@@ -1168,7 +1168,7 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
             "prices" => w.price.to_string(),
             _ => String::new(),
         };
-        let mut path = path.replace("{id}", &id);
+        let mut path = path.replace("{id}", &id).replace("{kind}", "prices");
         if path == "/resolve" {
             path = format!("/resolve?plan_revision_id={}&date=2026-10-05", w.revision);
         }
@@ -1181,8 +1181,9 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
         assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
         measured += 1;
     }
-    // 22 since run 9.3's unit counts (D-470), which declare no ETag.
-    assert_eq!(measured, 22, "every GET operation is measured");
+    // 24 since run 9.6's reservations read and effective-policy read (D-480, D-481), which
+    // declare no ETag. 22 was run 9.3's unit counts (D-470).
+    assert_eq!(measured, 24, "every GET operation is measured");
 }
 
 // ------------------------------------------------------------------ phase 9 review R27: the writes' ETag
@@ -1493,7 +1494,7 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         unmeasured.is_empty(),
         "every write op is measured: {unmeasured:?}"
     );
-    assert_eq!(measured.len(), 30, "the 30 write ops of the 52");
+    assert_eq!(measured.len(), 30, "the 30 write ops of the 54");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused

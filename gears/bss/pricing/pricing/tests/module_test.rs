@@ -60,6 +60,8 @@ fn declared_paths() -> Routes {
         ("PATCH", "/bss-pricing/v1/dimension-keys"),
         ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
         ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+        ("GET", "/bss-pricing/v1/plan-revisions/{id}/reservations"),
+        ("GET", "/bss-pricing/v1/approval-policy/{kind}/effective"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -121,7 +123,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 52);
+    assert_eq!(registered.len(), 54);
     assert!(router.has_routes());
 }
 
@@ -199,8 +201,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // the problem's own response, which carries its status (whole-branch review PS-07); - 1:
         // a claimed key's stored status is read back by one function (`support::stored_status`,
         // PS-43), where the claim and the book create each read it; + 2: run 9.3's counts door
-        // (D-470), its registration and its 200 answer.
-        ("StatusCode::", 2, 104),
+        // (D-470), its registration and its 200 answer; + 4: run 9.6's reservations read and
+        // effective-policy read (D-480, D-481), each registration and its 200 answer.
+        ("StatusCode::", 2, 108),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -301,7 +304,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 52);
+    assert_eq!(described, 54);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
@@ -407,7 +410,7 @@ async fn no_operation_declares_a_422() {
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
-// GET /plan-revisions/{id} plan:read false false
+// GET /plan-revisions/{id} plan:read (then price_book:read for the sale-date price, D-480) false false
 // PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
@@ -437,6 +440,9 @@ async fn no_operation_declares_a_422() {
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
 
+// Run 9.6 (D-480, D-481): method | path | resource:action | If-Match | Idempotency-Key
+// GET /plan-revisions/{id}/reservations plan:read false false
+// GET /approval-policy/{kind}/effective price_book_entry:read for prices, plan:read for plan_revision false false
 #[tokio::test]
 async fn init_registers_pricing_read_beside_sku_usage_and_checks_pdp() {
     use bss_pricing_sdk::read::{CatalogRef, PriceQuery, PricingReadV1};

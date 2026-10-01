@@ -104,9 +104,10 @@ pub(super) fn today() -> time::Date {
     time::OffsetDateTime::now_utc().date()
 }
 /// What the plan DTO shows beside the rows of the plans whose revisions `revisions` yields (one
-/// slice per plan): the item SKUs of each plan's current revision (D-460) and the instants of every
-/// unit the revisions name (D-461), ONE grouped statement each whatever the number of plans. It
-/// borrows the revisions: a single plan's read clones none (the phase 9 review's R51).
+/// slice per plan): the item SKUs of each plan's current revision and of the revision in effect
+/// (D-460, D-480) and the instants of every unit the revisions name (D-461), ONE grouped statement
+/// each whatever the number of plans. It borrows the revisions: a single plan's read clones none
+/// (the phase 9 review's R51).
 async fn plan_reading<'a>(
     tx: &impl DBRunner,
     tenant: Uuid,
@@ -114,13 +115,16 @@ async fn plan_reading<'a>(
     today: time::Date,
 ) -> Result<PlanReading, DoorError> {
     let children = AccessScope::for_tenant(tenant);
-    let (mut current, mut units) = (Vec::new(), Vec::new());
+    let (mut wanted, mut units) = (Vec::new(), Vec::new());
     for own in revisions {
-        current.extend(dto::current_revision(own, today)?);
+        wanted.extend(dto::current_revision(own, today)?);
+        wanted.extend(dto::in_effect_revision(own, today)?);
         units.extend(dto::named_units(own));
     }
+    wanted.sort_unstable();
+    wanted.dedup();
     Ok(PlanReading {
-        skus: plan_item_repo::skus_of_revisions(tx, &children, tenant, &current).await?,
+        skus: plan_item_repo::skus_of_revisions(tx, &children, tenant, &wanted).await?,
         units: approval_repo::unit_instants(tx, &children, tenant, &units).await?,
     })
 }
@@ -135,28 +139,93 @@ async fn plan_body(
     let reading = plan_reading(tx, tenant, [own.as_slice()], today).await?;
     Ok(PricingPlanDto::of(m, &own, today, &reading)?)
 }
-/// A revision read: its items, its state among its plan's revisions as it reads today, the
-/// instants of the unit it names (D-461) and, while it is pending, its vote progress (D-462).
-async fn revision_body(
+/// A revision read (D-480): its items, its state among its plan's revisions as it reads today,
+/// the instants of the unit it names (D-461), its vote progress while pending (D-462), then one
+/// grouped read of the entries the items name, one admission of those entries' books under the
+/// caller's `price_book` read (`books`, or none without that grant) and one grouped read of the
+/// admitted entries' default-chain prices on the sale date. A draft or pending revision also
+/// reads the in-effect revision's item SKUs, one statement whether or not one is in effect.
+async fn revision_read(
     tx: &impl DBRunner,
+    books: Option<&AccessScope>,
     tenant: Uuid,
     m: plan_revision::Model,
-) -> Result<PricingPlanRevisionDto, DoorError> {
+) -> Result<dto::PricingPlanRevisionReadDto, DoorError> {
     let children = AccessScope::for_tenant(tenant);
     let items = plan_item_repo::for_revision(tx, &children, tenant, m.id).await?;
+    let mut entry_ids: Vec<Uuid> = items.iter().filter_map(|i| i.price_book_entry_id).collect();
+    entry_ids.sort_unstable();
+    entry_ids.dedup();
     let siblings = plan_revision_repo::for_plan(tx, &children, tenant, m.plan_id).await?;
-    let dto = PricingPlanRevisionDto::read(&m, &siblings, items, today())?;
-    let Some(named) = m.pending_unit_id.or(m.approved_by_unit_id) else {
-        return Ok(dto);
+    let today = today();
+    let mut dto = PricingPlanRevisionDto::read(&m, &siblings, items, today)?;
+    if let Some(named) = m.pending_unit_id.or(m.approved_by_unit_id)
+        && let Some(unit) = approval_repo::find_unit(tx, &children, tenant, named)
+            .await
+            .map_err(support::approval_failure)?
+    {
+        let approval = progress(tx, tenant, &unit).await?;
+        dto = dto.with_units(&instants_of(&unit), approval);
+    }
+    let sale = plan::sale_date(
+        &plan::Revision {
+            id: m.id,
+            rev_no: m.rev_no,
+            book_id: m.book_id,
+            state: dto.state.into(),
+            available_from: m.available_from,
+        },
+        today,
+    );
+    let entries = price_book_entry_repo::find_many(tx, &children, tenant, &entry_ids).await?;
+    let mut book_ids: Vec<Uuid> = entries.iter().map(|e| e.book_id).collect();
+    book_ids.sort_unstable();
+    book_ids.dedup();
+    let admitted: BTreeSet<Uuid> = match books {
+        Some(scope) => book_repo::find_many(tx, scope, tenant, &book_ids)
+            .await?
+            .into_iter()
+            .map(|b| b.id)
+            .collect(),
+        None => BTreeSet::new(),
     };
-    let Some(unit) = approval_repo::find_unit(tx, &children, tenant, named)
-        .await
-        .map_err(support::approval_failure)?
-    else {
-        return Ok(dto);
+    let shown: Vec<&price_book_entry::Model> = entries
+        .iter()
+        .filter(|e| admitted.contains(&e.book_id))
+        .collect();
+    let mut headlines = if shown.is_empty() {
+        BTreeMap::new()
+    } else {
+        super::price_book_entries::headline(tx, tenant, &shown, sale).await?
     };
-    let approval = progress(tx, tenant, &unit).await?;
-    Ok(dto.with_units(&instants_of(&unit), approval))
+    let summaries = entries
+        .into_iter()
+        .map(|e| {
+            let price = admitted
+                .contains(&e.book_id)
+                .then(|| headlines.remove(&e.id).and_then(|h| h.current))
+                .flatten();
+            Ok(dto::PricingPlanEntrySummary::of(e, price)?)
+        })
+        .collect::<Result<Vec<_>, DoorError>>()?;
+    let state: plan::RevisionState = dto.state.into();
+    let carried_sku_ids = if matches!(
+        state,
+        plan::RevisionState::Draft | plan::RevisionState::Pending
+    ) {
+        let id = dto::in_effect_revision(&siblings, today)?;
+        let ids: Vec<Uuid> = id.into_iter().collect();
+        let map = plan_item_repo::skus_of_revisions(tx, &children, tenant, &ids).await?;
+        Some(id.and_then(|i| map.get(&i).cloned()).unwrap_or_default())
+    } else {
+        None
+    };
+    Ok(dto::PricingPlanRevisionReadDto {
+        revision: dto,
+        sale_date: sale.to_string(),
+        entries: summaries,
+        carried_sku_ids,
+    })
 }
 /// A unit's instants, keyed as the DTOs read them (D-461).
 pub(super) fn instants_of(
@@ -755,13 +824,17 @@ async fn clone_in(
 }
 
 /// `GET /plan-revisions/{id}`: the revision with its items and its version, the instants of the
-/// unit it names (D-461) and, while it is pending, its vote progress (D-462): counts only, the
-/// same for every reader.
+/// unit it names (D-461), its vote progress while pending (D-462) and the read-only fields of
+/// D-480 (sale date, entry summaries, carried SKUs). `books` is the caller's `price_book` read,
+/// `None` without that grant: an entry of a book it does not admit has a null sale-date price.
+/// The money's 503 is the handler's, before this read, so a missing revision is 404 only after
+/// the policy can judge (D-440).
 /// # Errors
 /// 404 for a revision the tenant does not hold.
 pub(super) async fn get_revision(
     tx: &impl DBRunner,
     scope: &AccessScope,
+    books: Option<&AccessScope>,
     tenant: Uuid,
     id: Uuid,
 ) -> Result<Response, DoorError> {
@@ -769,8 +842,38 @@ pub(super) async fn get_revision(
     let version = etag(m.version)?;
     Ok(support::response(
         StatusCode::OK,
-        &revision_body(tx, tenant, m).await?,
+        &revision_read(tx, books, tenant, m).await?,
         Some(version),
+    )?)
+}
+/// `GET /plan-revisions/{id}/reservations` (D-480): each item's reference, under plan read. Two
+/// statements: the revision's find (404 when the tenant does not hold it) and its items.
+/// # Errors
+/// 404 for a revision the tenant does not hold.
+pub(super) async fn reservations(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<Response, DoorError> {
+    let m = find_revision(tx, scope, tenant, id).await?;
+    let items =
+        plan_item_repo::for_revision(tx, &AccessScope::for_tenant(tenant), tenant, m.id).await?;
+    let items = items
+        .iter()
+        .map(dto::PricingPlanReservationItemDto::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    let settled = items.iter().all(|item| {
+        !matches!(
+            item.reference_state,
+            crate::api::rest::closed_sets::PricingItemReferenceState::Unreserved
+                | crate::api::rest::closed_sets::PricingItemReferenceState::ConfirmationPending
+        )
+    });
+    Ok(support::response(
+        StatusCode::OK,
+        &dto::PricingPlanReservationsDto { items, settled },
+        None,
     )?)
 }
 /// `POST /plan-revisions/{id}/unschedule` (D-452): a scheduled revision whose sale date has not
@@ -1049,6 +1152,7 @@ pub(super) async fn checks(
         checks: rows.into_iter().map(Into::into).collect(),
         ready,
         sale_date: plan::sale_date(&context.revision, today).to_string(),
+        quorum_required: context.quorum,
     };
     support::response(StatusCode::OK, &body, None)
 }

@@ -244,6 +244,8 @@ impl Harness {
             ("PATCH", "/bss-pricing/v1/dimension-keys"),
             ("GET", "/bss-pricing/v1/price-book-entries/{id}/prices"),
             ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+            ("GET", "/bss-pricing/v1/plan-revisions/{id}/reservations"),
+            ("GET", "/bss-pricing/v1/approval-policy/{kind}/effective"),
         ]
         .into_iter()
         .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -296,7 +298,7 @@ impl Harness {
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
-// GET /plan-revisions/{id} plan:read false false
+// GET /plan-revisions/{id} plan:read (then price_book:read for the sale-date price, D-480) false false
 // PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
@@ -316,3 +318,7 @@ impl Harness {
 
 // Run 8.2 (D-452): method | path | resource:action | If-Match | Idempotency-Key
 // POST /plan-revisions/{id}/unschedule plan:submit false true
+
+// Run 9.6 (D-480, D-481): method | path | resource:action | If-Match | Idempotency-Key
+// GET /plan-revisions/{id}/reservations plan:read false false
+// GET /approval-policy/{kind}/effective price_book_entry:read for prices, plan:read for plan_revision false false

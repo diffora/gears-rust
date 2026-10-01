@@ -534,7 +534,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         published = _current(rev1, 1, "published", [sku], author)
         assert (r.json()["current"], r.json()["in_effect"]) == (
             published,
-            {"revision_id": rev1, "rev_no": 1},
+            {"revision_id": rev1, "rev_no": 1, "sku_ids": [sku]},
         ), r.text
         row = _plan_row(api, sku)
         assert (row["current"], row["in_effect"]) == (
@@ -596,7 +596,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         # D-460: the draft copy is current; rev 1 is still the one in effect.
         row = _plan_row(api, sku)
         assert row["current"] == _current(rev2, 2, "draft", [sku], author), row
-        assert row["in_effect"] == {"revision_id": rev1, "rev_no": 1}, row
+        assert row["in_effect"] == {"revision_id": rev1, "rev_no": 1, "sku_ids": [sku]}, row
         # A submit without a body carries no note (D-464).
         r = api.post(f"{PRICING}/plan-revisions/{rev2}/submit", headers=_key())
         assert r.status_code == 201, r.text
@@ -607,7 +607,7 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.json()["published_rev"] == 2, r.text
         assert (r.json()["current"], r.json()["in_effect"]) == (
             _current(rev2, 2, "published", [sku], author),
-            {"revision_id": rev2, "rev_no": 2},
+            {"revision_id": rev2, "rev_no": 2, "sku_ids": [sku]},
         ), r.text
         # Rev 1 superseded is history; rev 2 published still names the entry: still one plan.
         assert _usage(api, entry) == _entry_usage(active=1, plans=1)

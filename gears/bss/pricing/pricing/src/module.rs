@@ -291,7 +291,7 @@ impl MigrationTrait for InvalidOutboxMigration {
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true
-// GET /plan-revisions/{id} plan:read false false
+// GET /plan-revisions/{id} plan:read (then price_book:read for the sale-date price, D-480) false false
 // PATCH /plan-revisions/{id} plan:author (then price_book:read when it names a book, D-456) true false
 // DELETE /plan-revisions/{id} plan:author false false
 
@@ -308,3 +308,7 @@ impl MigrationTrait for InvalidOutboxMigration {
 // Run 4.3 read contract: method | path | resource:action | If-Match | Idempotency-Key
 // GET /resolve plan:read false false
 // GET /prices/{id} price:read false false
+
+// Run 9.6 (D-480, D-481): method | path | resource:action | If-Match | Idempotency-Key
+// GET /plan-revisions/{id}/reservations plan:read false false
+// GET /approval-policy/{kind}/effective price_book_entry:read for prices, plan:read for plan_revision false false
