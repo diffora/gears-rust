@@ -375,14 +375,14 @@ async fn postgres_pricing_plan_item_keys_checks_and_reference() {
         updated_at: now(),
     };
     assert_eq!(
-        plan_item_repo::insert(&conn, &s.scope, item.clone())
+        plan_item_repo::insert_as_given(&conn, &s.scope, item.clone())
             .await
             .unwrap(),
         item,
         "the quantity reads back as exact text"
     );
     conflict(
-        plan_item_repo::insert(
+        plan_item_repo::insert_as_given(
             &conn,
             &s.scope,
             plan_item::Model {
@@ -430,7 +430,9 @@ async fn postgres_pricing_plan_item_keys_checks_and_reference() {
         ),
     ] {
         assert!(
-            plan_item_repo::insert(&conn, &s.scope, m).await.is_err(),
+            plan_item_repo::insert_as_given(&conn, &s.scope, m)
+                .await
+                .is_err(),
             "{what}"
         );
     }
@@ -1306,7 +1308,7 @@ async fn postgres_pricing_usage_sets_read_set_based() {
     };
     // The seed's entry is named by its draft revision: priced and in plan.
     let live = s.entry.sku_id;
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, s.revision.id, live, Some(s.entry.id), "paid"),
@@ -1329,7 +1331,7 @@ async fn postgres_pricing_usage_sets_read_set_based() {
     let superseded = plan_revision_repo::insert(&conn, &s.scope, revision(&old_plan, &s.book, 1))
         .await
         .unwrap();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, superseded.id, old, Some(old_entry.id), "paid"),
@@ -1350,7 +1352,7 @@ async fn postgres_pricing_usage_sets_read_set_based() {
         .unwrap();
     // Named by an included item with no entry: neither.
     let included = Uuid::new_v4();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, s.revision.id, included, None, "included"),
@@ -1383,7 +1385,7 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     let conn = s.provider.conn().unwrap();
     let sku = s.entry.sku_id;
     // The seed's draft revision names the seed's entry: the plan "pro" sells the SKU.
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, s.revision.id, sku, Some(s.entry.id), "paid"),
@@ -1398,7 +1400,7 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     let old = plan_revision_repo::insert(&conn, &s.scope, revision(&gone, &s.book, 1))
         .await
         .unwrap();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, old.id, sku, Some(s.entry.id), "paid"),
@@ -1423,7 +1425,7 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     let f1 = plan_revision_repo::insert(&conn, &s.scope, revision(&free, &s.book, 1))
         .await
         .unwrap();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, f1.id, sku, None, "included"),

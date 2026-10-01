@@ -564,28 +564,22 @@ async fn copy_items(
     let mut items = Vec::new();
     let mut ops = Vec::new();
     for from in plan_item_repo::for_revision(tx, children, tenant, source).await? {
+        // D-467: a copy is a new row, which the repository writes `paid` with no quantity
+        // whatever the source row carries; a legacy item without an entry stays one, so the
+        // draft's checks show it ITEM_ENTRY_MISSING.
         let copy = plan_item_repo::insert(
             tx,
             children,
             plan_item::Model {
                 id: Uuid::now_v7(),
-                tenant_id: tenant,
                 revision_id: target,
-                sku_id: from.sku_id,
-                price_book_entry_id: from.price_book_entry_id,
-                // D-467: a copy is a new row: `paid` and no quantity; a legacy item without an
-                // entry stays one, so the draft's checks show it ITEM_ENTRY_MISSING.
-                treatment: plan::stored_treatment(from.price_book_entry_id)
-                    .as_str()
-                    .into(),
-                included_qty: None,
-                qty_min: None,
                 reservation_id: None,
                 reference_state: ReferenceState::Unreserved.as_str().into(),
                 version: 1,
                 created_by: ctx.subject_id(),
                 created_at: now,
                 updated_at: now,
+                ..from
             },
         )
         .await?;
@@ -958,12 +952,8 @@ async fn remap(
             continue;
         };
         item.price_book_entry_id = Some(twin.id);
-        item.treatment = plan::stored_treatment(item.price_book_entry_id)
-            .as_str()
-            .into();
-        item.included_qty = None;
-        item.qty_min = None;
         item.updated_at = now;
+        // The repository rewrites the row in D-467's shape (`plan_item_repo::update_draft`).
         plan_item_repo::update_draft(tx, scope, item.clone()).await?;
         item.version += 1;
         support::audit(

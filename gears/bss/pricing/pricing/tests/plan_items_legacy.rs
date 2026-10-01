@@ -47,7 +47,7 @@ async fn legacy(
     quantities: (Option<&str>, Option<i32>),
 ) -> plan_item::Model {
     let now = time::OffsetDateTime::now_utc();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &f.db.conn().unwrap(),
         &scope(f),
         plan_item::Model {

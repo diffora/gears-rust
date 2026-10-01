@@ -514,7 +514,7 @@ pub async fn item(
     treatment: &str,
 ) -> plan_item::Model {
     let now = time::OffsetDateTime::now_utc();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &f.db.conn().unwrap(),
         &scope(f),
         plan_item::Model {
@@ -543,7 +543,7 @@ pub async fn item_with_qty(f: &Fixture, revision: Uuid, sku: Uuid, qty: &str) ->
     let now = time::OffsetDateTime::now_utc();
     m.included_qty = Some(qty.to_owned());
     m.updated_at = now;
-    plan_item_repo::update_draft(&f.db.conn().unwrap(), &scope(f), m.clone())
+    plan_item_repo::update_draft_as_given(&f.db.conn().unwrap(), &scope(f), m.clone())
         .await
         .unwrap();
     m.version += 1;

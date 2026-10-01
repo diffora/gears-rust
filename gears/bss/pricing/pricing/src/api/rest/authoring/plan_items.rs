@@ -19,7 +19,7 @@ use super::{
 use crate::api::rest::closed_sets::PricingRevisionState;
 use crate::{
     domain::{
-        plan::{self, MAX_ITEMS, ReferenceState, RevisionState},
+        plan::{MAX_ITEMS, ReferenceState, RevisionState},
         reference_op::{OpKind, RefKind},
     },
     infra::{
@@ -229,12 +229,8 @@ pub(super) async fn patch(
         m.price_book_entry_id = entry;
     }
     entry_needed(m.price_book_entry_id)?;
-    m.treatment = plan::stored_treatment(m.price_book_entry_id)
-        .as_str()
-        .into();
-    m.included_qty = None;
-    m.qty_min = None;
     m.updated_at = crate::infra::storage::stored_now();
+    // The repository rewrites the row in D-467's shape (`plan_item_repo::update_draft`).
     plan_item_repo::update_draft(tx, &children, m.clone()).await?;
     m.version += 1;
     support::audit(tx, ctx, correlation, "plan_item.patch", id, m.version).await?;

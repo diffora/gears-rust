@@ -207,7 +207,7 @@ async fn copied(f: &Fixture, t: &Target, sku: Uuid) -> (plan_item::Model, Uuid) 
     price_repo::transaction(&f.db.db(), move |tx| {
         let (scope, item, op) = (scope.clone(), written.clone(), op.clone());
         Box::pin(async move {
-            plan_item_repo::insert(tx, &scope, item).await?;
+            plan_item_repo::insert_as_given(tx, &scope, item).await?;
             ops::insert(tx, &scope, op).await?;
             Ok(())
         })
@@ -635,7 +635,7 @@ async fn an_attach_and_a_rereserve_move_an_item_of_a_published_or_superseded_rev
             created_at: now,
             updated_at: now,
         };
-        plan_item_repo::insert(&f.db.conn().unwrap(), &scope(&f), item.clone())
+        plan_item_repo::insert_as_given(&f.db.conn().unwrap(), &scope(&f), item.clone())
             .await
             .unwrap();
         publish(&f, t.revision).await;
@@ -843,7 +843,7 @@ async fn the_create_ops_re_read_admits_a_deprecated_sku_its_plan_sells() {
     let carried_entry = entry(&f, t.book, carried).await.id;
     let other = Uuid::new_v4();
     let other_entry = entry(&f, t.book, other).await.id;
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &f.db.conn().unwrap(),
         &scope(&f),
         plan_item::Model {

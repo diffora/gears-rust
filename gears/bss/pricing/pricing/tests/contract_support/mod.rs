@@ -612,7 +612,7 @@ impl Writer<'_> {
         quantities: (Option<&str>, Option<i32>),
     ) {
         let id = self.names.mint(name);
-        plan_item_repo::insert(
+        plan_item_repo::insert_as_given(
             &self.f.db.conn().unwrap(),
             &self.scope,
             plan_item::Model {

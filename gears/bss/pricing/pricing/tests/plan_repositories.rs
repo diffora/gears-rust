@@ -696,7 +696,7 @@ async fn revision_supersede_is_a_conditional_write_on_a_published_revision() {
 async fn revision_delete_is_a_conditional_write_on_an_empty_unlocked_draft() {
     let w = world().await;
     let conn = w.db.conn().unwrap();
-    let i = plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry))
+    let i = plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry))
         .await
         .unwrap();
     // Items go first: the revision refuses to leave them behind.
@@ -1291,13 +1291,13 @@ async fn item_parents_are_tenant_scoped_and_the_revision_must_be_an_unlocked_dra
     let mut theirs = item(&w.revision, &w.entry);
     theirs.tenant_id = foreign;
     conflict(
-        plan_item_repo::insert(&conn, &foreign_scope, theirs).await,
+        plan_item_repo::insert_as_given(&conn, &foreign_scope, theirs).await,
         "REVISION_NOT_FOUND",
     );
     let mut ghost = item(&w.revision, &w.entry);
     ghost.price_book_entry_id = Some(Uuid::new_v4());
     conflict(
-        plan_item_repo::insert(&conn, &w.scope, ghost).await,
+        plan_item_repo::insert_as_given(&conn, &w.scope, ghost).await,
         "ENTRY_NOT_FOUND",
     );
     let u = unit(&w.db, &w.scope, w.tenant, "plan_revision").await;
@@ -1307,7 +1307,7 @@ async fn item_parents_are_tenant_scoped_and_the_revision_must_be_an_unlocked_dra
             .unwrap()
     );
     conflict(
-        plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry)).await,
+        plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry)).await,
         "REVISION_NOT_DRAFT",
     );
 }
@@ -1325,13 +1325,13 @@ async fn item_entry_must_be_of_the_revisions_book_and_the_items_sku() {
         .await
         .unwrap();
     conflict(
-        plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &foreign)).await,
+        plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &foreign)).await,
         "ITEM_BOOK_FOREIGN",
     );
     let mut mismatched = item(&w.revision, &w.entry);
     mismatched.sku_id = Uuid::new_v4();
     conflict(
-        plan_item_repo::insert(&conn, &w.scope, mismatched).await,
+        plan_item_repo::insert_as_given(&conn, &w.scope, mismatched).await,
         "ITEM_ENTRY_SKU_MISMATCH",
     );
     assert!(
@@ -1340,7 +1340,7 @@ async fn item_entry_must_be_of_the_revisions_book_and_the_items_sku() {
             .unwrap()
             .is_empty()
     );
-    plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry))
+    plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry))
         .await
         .unwrap();
 }
@@ -1374,7 +1374,7 @@ async fn item_insert_honours_the_lock_without_the_pending_state() {
         ("draft", Some(u))
     );
     conflict(
-        plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry)).await,
+        plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry)).await,
         "REVISION_NOT_DRAFT",
     );
 }
@@ -1399,7 +1399,7 @@ async fn item_reconcile_batch_is_ordered_bounded_and_skips_unsettled_references(
         m.treatment = "included".into();
         m.reference_state = state.into();
         m.reservation_id = (state != "unreserved").then(Uuid::new_v4);
-        plan_item_repo::insert(&conn, &w.scope, m.clone())
+        plan_item_repo::insert_as_given(&conn, &w.scope, m.clone())
             .await
             .unwrap();
         if matches!(state, "confirmed" | "lost") {
@@ -1423,6 +1423,58 @@ async fn item_reconcile_batch_is_ordered_bounded_and_skips_unsettled_references(
         "a tenant scope sees only its own"
     );
 }
+/// D-467 (the phase 9 review's theme G, R12, R14, R16, R23): the repository's writers store D-467's
+/// row shape whatever the model they are given carries: `plan::stored_treatment` of its entry
+/// (`paid`, or `included` for an item without one) and no quantity. A caller that passes a legacy
+/// treatment and quantities, to the insert or to the draft update, still stores `paid`, NULL and
+/// NULL; the stored row and the written answer agree.
+#[tokio::test]
+async fn the_writers_store_d467s_row_shape_whatever_the_model_carries() {
+    let w = world().await;
+    let conn = w.db.conn().unwrap();
+    let shape = |m: &plan_item::Model| (m.treatment.clone(), m.included_qty.clone(), m.qty_min);
+    let paid = ("paid".to_owned(), None, None);
+    let mut legacy = item(&w.revision, &w.entry);
+    legacy.treatment = "optional".into();
+    legacy.included_qty = Some("5".into());
+    legacy.qty_min = Some(2);
+    let written = plan_item_repo::insert(&conn, &w.scope, legacy.clone())
+        .await
+        .unwrap();
+    assert_eq!(shape(&written), paid, "the insert answers what it stored");
+    let stored = plan_item_repo::find(&conn, &w.scope, w.tenant, legacy.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(shape(&stored), paid, "the insert stores the shape");
+    let mut edited = stored.clone();
+    edited.treatment = "included".into();
+    edited.included_qty = Some("7".into());
+    edited.qty_min = Some(1);
+    plan_item_repo::update_draft(&conn, &w.scope, edited)
+        .await
+        .unwrap();
+    let stored = plan_item_repo::find(&conn, &w.scope, w.tenant, legacy.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (shape(&stored), stored.version),
+        (paid, 2),
+        "the update too"
+    );
+    // An item without an entry is the one entry-less row the CHECK admits: included, no quantity.
+    let mut entryless = item(&w.revision, &w.entry);
+    entryless.sku_id = Uuid::new_v4();
+    entryless.price_book_entry_id = None;
+    entryless.treatment = "paid".into();
+    entryless.included_qty = Some("3".into());
+    let written = plan_item_repo::insert(&conn, &w.scope, entryless)
+        .await
+        .unwrap();
+    assert_eq!(shape(&written), ("included".to_owned(), None, None));
+}
+
 #[tokio::test]
 async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
     let w = world().await;
@@ -1431,13 +1483,13 @@ async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
     included.treatment = "included".into();
     included.included_qty = Some("100.50".into());
     included.qty_min = None;
-    let got = plan_item_repo::insert(&conn, &w.scope, included.clone())
+    let got = plan_item_repo::insert_as_given(&conn, &w.scope, included.clone())
         .await
         .unwrap();
     assert_eq!(got, included);
     assert_eq!(got.included_qty.as_deref(), Some("100.50"), "exact text");
     conflict(
-        plan_item_repo::insert(
+        plan_item_repo::insert_as_given(
             &conn,
             &w.scope,
             plan_item::Model {
@@ -1453,7 +1505,7 @@ async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
     free.sku_id = Uuid::new_v4();
     free.price_book_entry_id = None;
     free.treatment = "included".into();
-    plan_item_repo::insert(&conn, &w.scope, free.clone())
+    plan_item_repo::insert_as_given(&conn, &w.scope, free.clone())
         .await
         .unwrap();
     for treatment in ["paid", "optional"] {
@@ -1462,7 +1514,7 @@ async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
         priced.sku_id = Uuid::new_v4();
         priced.treatment = treatment.into();
         assert!(
-            plan_item_repo::insert(&conn, &w.scope, priced)
+            plan_item_repo::insert_as_given(&conn, &w.scope, priced)
                 .await
                 .is_err(),
             "{treatment} without an entry"
@@ -1491,7 +1543,9 @@ async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
         ("empty", bad(&|m| m.included_qty = Some(String::new()))),
     ] {
         assert!(
-            plan_item_repo::insert(&conn, &w.scope, m).await.is_err(),
+            plan_item_repo::insert_as_given(&conn, &w.scope, m)
+                .await
+                .is_err(),
             "the columns must refuse a bad {what}"
         );
     }
@@ -1518,7 +1572,7 @@ async fn item_round_trips_one_per_sku_and_its_columns_are_checked() {
 async fn item_draft_edit_is_a_conditional_write_while_its_revision_is_a_draft() {
     let w = world().await;
     let conn = w.db.conn().unwrap();
-    let i = plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry))
+    let i = plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry))
         .await
         .unwrap();
     let mut edited = i.clone();
@@ -1533,7 +1587,7 @@ async fn item_draft_edit_is_a_conditional_write_while_its_revision_is_a_draft() 
         Arc::new(move |tx| {
             let scope = scope.clone();
             let race = race.clone();
-            Box::pin(async move { plan_item_repo::update_draft(tx, &scope, race).await })
+            Box::pin(async move { plan_item_repo::update_draft_as_given(tx, &scope, race).await })
         }),
     )
     .await;
@@ -1548,7 +1602,7 @@ async fn item_draft_edit_is_a_conditional_write_while_its_revision_is_a_draft() 
     let mut ghost = got.clone();
     ghost.price_book_entry_id = Some(Uuid::new_v4());
     conflict(
-        plan_item_repo::update_draft(&conn, &w.scope, ghost).await,
+        plan_item_repo::update_draft_as_given(&conn, &w.scope, ghost).await,
         "ENTRY_NOT_FOUND",
     );
     // Once the revision is locked, its items are fixed.
@@ -1559,7 +1613,7 @@ async fn item_draft_edit_is_a_conditional_write_while_its_revision_is_a_draft() 
             .unwrap()
     );
     conflict(
-        plan_item_repo::update_draft(&conn, &w.scope, got.clone()).await,
+        plan_item_repo::update_draft_as_given(&conn, &w.scope, got.clone()).await,
         "STALE_REVISION",
     );
     conflict(
@@ -1572,7 +1626,7 @@ async fn item_draft_edit_is_a_conditional_write_while_its_revision_is_a_draft() 
 async fn item_reference_moves_in_any_revision_state_at_the_observed_version() {
     let w = world().await;
     let conn = w.db.conn().unwrap();
-    let i = plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry))
+    let i = plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry))
         .await
         .unwrap();
     // A published revision's item still takes its reference receipt (D-413's attach).
@@ -1627,7 +1681,7 @@ async fn item_reference_moves_in_any_revision_state_at_the_observed_version() {
 async fn item_delete_is_a_conditional_write() {
     let w = world().await;
     let conn = w.db.conn().unwrap();
-    let i = plan_item_repo::insert(&conn, &w.scope, item(&w.revision, &w.entry))
+    let i = plan_item_repo::insert_as_given(&conn, &w.scope, item(&w.revision, &w.entry))
         .await
         .unwrap();
     let (tenant, id, scope) = (w.tenant, i.id, w.scope.clone());
