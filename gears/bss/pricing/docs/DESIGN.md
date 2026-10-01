@@ -24,6 +24,7 @@
   - [3.7 Database schemas & tables](#37-database-schemas--tables)
 - [4. Additional context](#4-additional-context)
 - [5. Traceability](#5-traceability)
+  - [Executable seam fixture boundary (D-509)](#executable-seam-fixture-boundary-d-509)
 
 <!-- /toc -->
 
@@ -1004,3 +1005,19 @@ observation is never a reusable admission token.
 
 All four ADRs are cited in §1.2. [PRD](PRD.md) owns requirements; [DECISIONS](DECISIONS.md) owns D-384–D-433.
 Source: `docs/superpowers/specs/2026-09-24-pricebook-model-design.md`, §2.2, §5–§8, §12–§13.
+
+### Executable seam fixture boundary (D-509)
+
+`pricing/tests/pricing_seam_contract.rs` decodes five schema-1 fixture scenarios using test-only typed
+serde DTOs. Prices and plans pass their real authoring/approval paths; all seven ClientHub methods
+retain their command/read classification and authorization. Full AcceptedBinding equality covers the
+entry/policy identity, version/digest/content, money digest/model, dated SKU descriptors and invoice
+pins. Expected commercial values are independent fixture inputs, not snapshots copied from resolve.
+Mixed plans, policy reuse, exact-policy book remapping and policy mismatch are provider contracts.
+
+The combined fixture view is not a new production DTO. Policy remains on the entry, money on its
+price and BillingTerms on the accepted query. F23/F24 use only existing pure Pricing math; consumers
+still own hourly work, source coverage, reset behavior and complete parent/invoice composition.
+No production meter, timer, event or HTTP command is added. Remote deployment must bind the exact
+PricingReadV1, PricingAcceptanceV1 and SellabilityV1 ports to the same services. SDK types remain
+serde-free. The read-only atlas baseline and outstanding reconciliation are recorded in D-509.

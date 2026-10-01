@@ -422,3 +422,15 @@ pub fn sale_query() -> bss_pricing_sdk::acceptance::NewSaleQuery {
         hold_policy_version: 1,
     }
 }
+
+/// Compare complete commercial pins, matching by item rather than incidental storage order.
+pub fn compare_bindings(
+    actual: &[bss_pricing_sdk::read::AcceptedBinding],
+    expected: &[bss_pricing_sdk::read::AcceptedBinding],
+) {
+    assert_eq!(actual.len(), expected.len());
+    for e in expected {
+        let a = actual.iter().find(|b| b.item_id == e.item_id).unwrap();
+        assert_eq!(a, e, "all entry/policy/money/descriptor pins must survive");
+    }
+}

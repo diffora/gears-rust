@@ -20,6 +20,18 @@ fn commercial_classifications_and_read_only_capability_are_exact() {
         .flat_map(|i| i.methods)
         .collect();
     assert_eq!(methods.len(), 7);
+    assert_eq!(
+        methods.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+        [
+            "resolve",
+            "price",
+            "current_revision",
+            "acceptance",
+            "hold",
+            "check",
+            "check_fulfilment"
+        ]
+    );
     for method in methods {
         let command = matches!(method.name.as_str(), "check" | "hold");
         assert_eq!(

@@ -35,6 +35,7 @@
 - [6. Acceptance Criteria](#6-acceptance-criteria)
   - [Durable accepted terms (D-507)](#durable-accepted-terms-d-507)
   - [Frozen fulfilment (D-508)](#frozen-fulfilment-d-508)
+  - [Executable Pricing consumer fixtures (D-509)](#executable-pricing-consumer-fixtures-d-509)
 
 <!-- /toc -->
 
@@ -245,3 +246,17 @@ The fulfilment_holds suite exercises these rules, provider failure, generation/c
 concurrent holds, rollback/restart, and successor revisions selecting another policy window.
 Subscriptions keeps its own committed order and attempt fencing. Eligibility observations are
 never reusable admission tokens, and Pricing does not implement downstream activation.
+
+### Executable Pricing consumer fixtures (D-509)
+
+The schema-1 fixtures vm-hour, cloudlets-hourly-volume, cloudlets-hourly-graduated, frozen-acceptance
+and unsupported-terms execute in `pricing_seam_contract`. Typed round trips and complete pin
+comparisons cover real entry creation, price approval, plan publication, all seven ClientHub methods,
+REST reads, authorization, mixed windows, shared-entry policy reuse and exact-policy book remapping.
+Mutation probes must fail when expected money changes or a fixture policy pin escapes comparison.
+
+F02/F23/F24 money checks are catalog representation checks using domain::money, with no Rating
+scheduler, invoice calculation, VM provisioning or hourly event claim. Those atlas consumer obligations
+remain specified/unexecuted here. E1 remains a test declaration until the authoritative external meter
+provider is delivered. Commands stay SDK-only; later remote transport binds these exact ports. Task 8
+and the shared G4 controller gate complete the implementation handoff after this provider fixture slice.

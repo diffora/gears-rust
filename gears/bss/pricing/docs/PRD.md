@@ -631,3 +631,19 @@ remain later decisions, not implicit requirements of this rewrite.
 Content authority: spec §2 decisions 4–7, 13–17, §2.2, §3 A–C, §5–§8 and §12–§13.
 [DESIGN](DESIGN.md) supplies the drivers and transactions; ADRs record four structural decisions;
 [DECISIONS](DECISIONS.md) records D-384 onward. Slices and FEATUREs carry phase-specific implementation obligations.
+
+D-509 supplies reusable executable Pricing provider fixtures for F07/F22/F31 and the Pricing-input
+portions of F02/F23/F24 in `pricing/tests/seam_fixtures`. Each schema-1 envelope has explicit given and
+expected typed values; complete commercial pins must survive resolve, acceptance and hold. Mixed VM
+BillingCycle/cloudlet CalendarHour plans and entry reuse do not pool independent subscription lines.
+The cloudlet profile is monthly billing, period=null, CalendarHour UTC, SubscriptionLine, SUM of
+integrated cloudlet·hour v1 quantities, integrated-v1 accrual, full thresholds on partial windows,
+volume bands 10 @ 0.02 then 0.015, and no minimum fee. Q=8 and Q=12 independently yield 0.34 rather
+than combined-volume 0.30; graduated(12)=0.23 and the Q=10 boundary is volume 0.15/graduated 0.20.
+These are existing money-helper representation checks, not executed hourly scheduler or invoice tests.
+
+Acceptance provisions nothing. The new commercial commands remain on the authorized SDK ports;
+there is no new public HTTP command API. A future remote transport binds the same ports and services.
+Production meter declarations, Rating scheduling/roll-up and Billing invoice assertions remain external
+obligations. Illustrative meter names are registered only by the contract-test provider. Task 8 and G4
+are still required for the complete implementation handoff.

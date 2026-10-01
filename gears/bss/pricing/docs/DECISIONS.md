@@ -1452,3 +1452,34 @@ hold, expiry/closing boundaries, off-sale/retirement, denial/outage, concurrency
 restart, bounded recapture and immutable entry/policy/invoice pins. Mutation probes reject using
 successor effective_to as expiry, checking eligibility before replay, and renewing TTL on a new
 key. The G3 controller gate follows this task; consumer implementation and E1 remain external.
+
+## D-509 — Executable Pricing seam fixtures and transport boundary (2026-10-01)
+
+The five schema-1 JSON fixtures in pricing/tests/seam_fixtures are decoded by test-only typed serde
+DTOs with a closed scenario enum. Their combined commercial view separates entry-owned immutable
+policy, price-owned money and sale-owned BillingTerms. Provider tests author policy-bearing entries,
+approve prices and publish plans before comparing complete entry, policy, money, SKU and invoice
+pins through ClientHub resolve, price, current_revision, check, acceptance, check_fulfilment and hold.
+Mixed windows retain independent entry policies. Two plans may reuse an entry and policy while their
+accepted line/item identities remain distinct; Pricing introduces no cross-subscription aggregation key.
+Entry-policy mismatch is refused, and book remapping selects only an exact policy match.
+
+F02/F23/F24 arithmetic invokes existing domain::money::decode and amount_for as catalog representation
+checks. Source integration, UTC hourly scheduling, counter reset, manifests, monthly composition and
+invoice rounding are external obligations, not executed consumer integrations. F07 preserves every
+accepted pin after successor publication and delayed activation; F22/F31 exercise typed refusals and
+strict wire boundaries. Unsupported wire values cannot be represented by the SDK's closed enums.
+The illustrative vm-hours/cloudlet-hours names remain declarations of the existing test provider only.
+
+The commercial command surface is SDK-only: check and hold are IdempotentWrite; resolve, price,
+current_revision, acceptance and check_fulfilment are SafeRead. Every provider call requires its
+SecurityContext and PDP scope, including replay and system-named callers. A future remote transport
+must bind these exact ports and services. This slice adds no public HTTP command API, hourly event,
+scheduler or provisioning operation. Existing REST reads retain their contracts, including the optional
+entry-policy projection on resolve. Existing phase-9 contracts are not reinterpreted.
+
+Atlas 1.1.0 source SHA-256: 95ca93b9814b7ff131711990d4d9fea246776704820370407c97a10a36f8c4ed.
+Its older C01 method placement and C10 plan-item ownership remain a publishing-owner reconciliation;
+the delivered SDK ports and entry ownership are authoritative for these executable provider fixtures.
+No external atlas file is edited, no consumer integration status is promoted, and E1 production meter
+semantics remains externally blocked. Task 8 and the shared G4 controller gate follow this slice.
