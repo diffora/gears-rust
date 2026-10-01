@@ -1067,8 +1067,8 @@ register.
 **Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ok"); whole-branch review RS-03 (fix run W1b).
 
 **Amended by P-D-227 (2026-09-30).** The list also takes `$orderby=submitted_at desc`, newest first, while submission
-order stays the default. Any other `$orderby` is 400 `INVALID_ORDERBY_FIELD`, and `$orderby` beside a `cursor` is 400
-`ORDER_WITH_CURSOR`.
+order stays the default. `$orderby=submitted_at asc` names that default. Any `$orderby` but `submitted_at` (asc or desc) is
+400 `INVALID_ORDERBY_FIELD`, and `$orderby` beside a `cursor` is 400 `ORDER_WITH_CURSOR`.
 
 **Amended by P-D-228 (2026-09-30).** A page also reads all its units' items in one statement more
 (`approval_repo::items_of_units`), so it makes three statements whatever its size.

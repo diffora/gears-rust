@@ -97,7 +97,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
 | D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393 |
 | D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461 |
-| D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453 |
+| D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460 |
 | D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5) |
 | D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
 | D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
@@ -949,7 +949,8 @@ The plans screen shows who made each revision and when it was submitted and appr
 - **The write answers.** A write answers what it wrote (D-453). The submit receipt's revision carries its new unit's submitted_at, and approved_at when quorum 0 applied it at once; the copy, the revision PATCH and the unschedule answer a draft, with neither.
 - **The tests.** tests/plan_overview.rs: the header of a pending, a scheduled, a published and a superseded revision against its unit's own read, and of a draft back from a reject, a withdraw and an unschedule; the revision read agrees; created_by and created_at are the row's; the write answers; the list's four statements for 10 and 100 plans. Probes that took submitted_at from the approving unit only, and that dropped the instants from the receipt, were caught.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9). Amends D-434 and D-453.
+**Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9). Amends D-434,
+D-453 and D-460 (GET /plans makes four statements, not three).
 
 #### D-462 [M] A pending revision shows its vote progress under plan read
 

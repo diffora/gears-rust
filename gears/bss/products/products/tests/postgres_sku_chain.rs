@@ -769,11 +769,12 @@ async fn sku_versions_refuse_update_and_delete() {
     raw.close().await.unwrap();
 }
 
-/// P-D-228: a write answers what it wrote. The submit door answers the unit the engine hands
-/// back, whose `submitted_at` and `decided_at` are the instant the door bound. Postgres keeps whole
-/// microseconds, so that instant survives only cut to its microsecond (`stored_instant`, which
-/// every door binds through): a publish applied at once (quorum 0) then reads back the instants
-/// the engine answered. Uncut, an instant 789 ns past its microsecond would not.
+/// A write answers what it wrote (pricing D-453, which products follows), at the storage level:
+/// Postgres keeps whole microseconds, so an instant the engine is handed survives a round trip
+/// only cut to its microsecond (`stored_instant`). A publish applied at once (quorum 0) with a cut
+/// instant reads back exactly the instants the engine answered; uncut, an instant 789 ns past its
+/// microsecond would not. That every door binds through the cut is held by
+/// `tests/stored_instant_census.rs`, not by this test, which calls the engine directly.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_submit_answers_the_instants_the_store_keeps() {
