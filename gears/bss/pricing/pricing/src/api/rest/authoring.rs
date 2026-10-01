@@ -231,7 +231,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              not sellable: the book allows no sale on that day. Refusals, in order: 403 without \
              price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID \
              for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is \
-             not a YYYY-MM-DD date; 404 for a book the tenant does not hold.",
+             not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 \
+             PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's \
+             price_book read does not admit the book: the usage split on another day dates \
+             every approved price, so it is money, and a caller without it reads today only.",
         )
         .tag("Pricing")
         .authenticated()
@@ -1820,6 +1823,7 @@ async fn list_entries(
     // D-473: the one day the whole answer is judged on, refused after the money's policy and
     // before the book (D-440's order).
     let day = entries_day(&uri)?;
+    let dated = day != time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
         let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
         Box::pin(async move {
@@ -1828,6 +1832,17 @@ async fn list_entries(
             // D-428, D-440, D-472: every entry's usage, price in force and next price in a fixed
             // number of reads.
             let shown = price_book_entries::shows_money(tx, books.as_ref(), tenant, id).await?;
+            // D-473 (amended): the usage split on another day moves with the start and the end of
+            // every approved price, so it is money: without the grant on the book, a day other
+            // than today is refused before any price or usage is read.
+            if dated && !shown {
+                return Err(support::forbidden_because(
+                    "PRICE_BOOK_READ_REQUIRED",
+                    "a book's entries on a day other than today are money: reading them takes \
+                     price_book read on the book",
+                )
+                .into());
+            }
             let body = PricingPriceBookEntryList {
                 items: price_book_entries::read(tx, tenant, entries, shown, day).await?,
             };

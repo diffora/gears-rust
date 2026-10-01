@@ -284,7 +284,8 @@ both are shown only when the caller's price_book read admits the entry's book, a
 null. The POST and PATCH answers, the stored Tx B receipt, the export and the publish-changes listing keep
 PricingPriceBookEntryDto, without usage, current_price or next_price. The book's entries list judges all of it on one
 day, its as_of (a YYYY-MM-DD date, today by default): the counts by date, both prices and their statuses (D-473). A day
-outside the book's validity still answers with the prices in force on it, which the book does not sell on that day. The
+outside the book's validity still answers with the prices in force on it, which the book does not sell on that day. A day
+other than today is money: it takes price_book read on the book, else 403 PRICE_BOOK_READ_REQUIRED (D-473). The
 single read and the SKU's entry list stay dated on today.
 GET /price-book-entries/{id}/prices answers PricingEntryPriceList { items: [PricingPriceDto] }: every price in every
 state, each with its display status today; the default chain first, then each value's chain in ascending order, each
@@ -336,6 +337,7 @@ rounding_policy, a unit's kind and ref_type, a check's code and a proposal's cha
 | A plan revision submit with a body key other than note; a price submit with any body key | 400 BODY_UNEXPECTED (D-464) |
 | An entry's prices read without price_book read on its book (the entry itself readable); an unknown status | 403 PRICE_BOOK_READ_REQUIRED; 400 QUERY_INVALID (D-440) |
 | A book's entries list with a query key other than as_of, or as_of twice; an as_of that is not a YYYY-MM-DD date | 400 QUERY_INVALID; 400 DATE_INVALID on as_of, after the 503 of the money's policy and before the 404 of the book (D-473) |
+| A book's entries list with an as_of other than today, without price_book read on the book | 403 PRICE_BOOK_READ_REQUIRED, after the 404 of the book and before any price or usage is read (D-473) |
 | The book list: an unknown, repeated or malformed plain key; a cursor under another $filter, q or sku_id; $select or $count | 400 QUERY_INVALID; 400 FILTER_MISMATCH; 400 UNSUPPORTED_QUERY_PARAM (D-442) |
 | Deleting the default quorum | 400 POLICY_DEFAULT_REQUIRED (D-435) |
 | Changing an entry's invoice_line_override once it has an approved or pending price | 409 INVOICE_LINE_LOCKED (D-426) |

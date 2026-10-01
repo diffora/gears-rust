@@ -2526,3 +2526,103 @@ async fn the_entries_list_refuses_a_date_it_cannot_read_and_any_other_key() {
     let (s, b, _) = get(&f, &format!("{unknown}?as_of=2026-01-05")).await;
     assert_eq!(s, 404, "{b}");
 }
+
+/// D-473 amended (phase 9 review R1): the usage split moves with the start and the end of every
+/// approved price, so an `as_of` other than today is money (D-440). Without `price_book` read on
+/// the book — entry read alone, or a grant narrowed to another book — it is 403
+/// `PRICE_BOOK_READ_REQUIRED`, judged after the book's 404 and before any price or usage is read;
+/// no `as_of`, or today's, answers 200 as before, and a grant that admits the book reads any day.
+#[tokio::test]
+async fn a_dated_entries_list_takes_price_book_read_on_its_book() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let other = plan_support::book(&f, "other").await;
+    let t = today();
+    let entry = stored_entry(
+        &f,
+        eur,
+        catalog.sku(SkuType::Usage),
+        "per_unit",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await;
+    stored_price(&f, entry, Row::new(1, "approved", t - days(1))).await;
+    stored_price(&f, entry, Row::new(2, "approved", t + days(5))).await;
+    let path = format!("/price-books/{eur}/entries");
+    let entry_reader = holding(&f, "price_book_entry:read");
+    let today_only = |s: u16, b: &Value, query: &str, dated: bool| {
+        if dated {
+            assert_eq!(s, 403, "{query}: {b}");
+            assert!(
+                code_of(b).contains("PRICE_BOOK_READ_REQUIRED"),
+                "{query}: {b}"
+            );
+        } else {
+            assert_eq!(s, 200, "{query}: {b}");
+            let item = &b["items"][0];
+            assert!(
+                item["current_price"].is_null() && item["next_price"].is_null(),
+                "{query}: {b}"
+            );
+        }
+    };
+    let queries = [
+        (String::new(), false),
+        (format!("?as_of={t}"), false),
+        (format!("?as_of={}", t + days(5)), true),
+        (format!("?as_of={}", t - days(1)), true),
+        ("?as_of=2020-01-01".to_owned(), true),
+    ];
+    for (query, dated) in &queries {
+        let (s, b, _) = f
+            .call_as(
+                &entry_reader,
+                "GET",
+                &format!("{path}{query}"),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        today_only(s, &b, query, *dated);
+        let narrowed = money_app(&f, Some(vec![other]), false);
+        let (s, b, _) = request(
+            &narrowed,
+            &f.ctx,
+            "GET",
+            &format!("{path}{query}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+        today_only(s, &b, query, *dated);
+        let admitted = money_app(&f, Some(vec![eur]), false);
+        let (s, b, _) = request(
+            &admitted,
+            &f.ctx,
+            "GET",
+            &format!("{path}{query}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(s, 200, "{query}: {b}");
+        let item = &b["items"][0];
+        assert!(
+            item["current_price"].is_object() || item["next_price"].is_object(),
+            "{query}: {b}"
+        );
+    }
+    // The book is judged before the money: an unknown book is 404 whatever the day.
+    let unknown = format!(
+        "/price-books/{}/entries?as_of={}",
+        Uuid::new_v4(),
+        t + days(5)
+    );
+    let (s, b, _) = f
+        .call_as(&entry_reader, "GET", &unknown, json!({}), None, None)
+        .await;
+    assert_eq!(s, 404, "{b}");
+}

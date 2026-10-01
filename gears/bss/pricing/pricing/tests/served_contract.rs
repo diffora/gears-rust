@@ -257,7 +257,8 @@ fn property(api: &Value, schema: &str, name: &str) -> Value {
 
 /// D-472 and D-473 (asks 26 and 37): the three entry reads name `next_price`, which has
 /// `current_price`'s schema; the book's entries list declares `as_of` and says what the date
-/// judges, what it refuses and that a price outside the book's validity is not sellable.
+/// judges, what it refuses — another day than today without the money's grant included — and that
+/// a price outside the book's validity is not sellable.
 #[tokio::test]
 async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
     let api = served().await;
@@ -313,6 +314,9 @@ async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
         "not sellable",
         "valid_from",
         "valid_until",
+        // D-473 amended (phase 9 review R1): another day than today takes the money's grant.
+        "PRICE_BOOK_READ_REQUIRED",
+        "an as_of other than today",
     ] {
         assert!(text.contains(said), "the list says {said}: {text}");
     }
