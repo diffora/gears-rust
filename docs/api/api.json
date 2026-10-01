@@ -10741,10 +10741,10 @@
         "type": "string"
       },
       "PricingEntryPriceCounts": {
-        "description": "An entry's prices by state; a rejected price is not counted (D-428). The approved ones are\nalso counted by where their window stands today (D-440): `approved` = `scheduled + active +\nsuperseded`.",
+        "description": "An entry's prices by state; a rejected price is not counted (D-428). The approved ones are\nalso counted by where their window stands on the day of the read (D-440): today, or the\n`as_of` of the book's entries list (D-473). `approved` = `scheduled + active + superseded`.",
         "properties": {
           "active": {
-            "description": "Approved prices in force today.",
+            "description": "Approved prices in force on the day.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -10765,13 +10765,13 @@
             "type": "integer"
           },
           "scheduled": {
-            "description": "Approved prices that start after today.",
+            "description": "Approved prices that start after the day.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
           },
           "superseded": {
-            "description": "Approved prices whose window ended on or before today.",
+            "description": "Approved prices whose window ended on or before the day.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -11940,6 +11940,16 @@
                   }
                 ]
               },
+              "next_price": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PricingPriceDto"
+                  }
+                ]
+              },
               "usage": {
                 "$ref": "#/components/schemas/PricingEntryUsage"
               }
@@ -11950,7 +11960,7 @@
             "type": "object"
           }
         ],
-        "description": "What the two entry reads answer (D-428): the entry's fields, its `usage` and its\n`current_price` (D-440): the default chain's approved price in force today, as D-434 chooses\nand shows it — `null` when none is, or when the caller does not hold `price_book` read on the\nentry's book. Every other answer that carries an entry (POST, PATCH, the stored receipt, the\nexport, publish-changes) keeps [`PricingPriceBookEntryDto`]."
+        "description": "What the two entry reads answer (D-428): the entry's fields, its `usage`, its `current_price`\n(D-440): the default chain's approved price in force on the day, as D-434 chooses and shows it\n— and its `next_price` (D-472): the default chain's earliest scheduled price, else its newest\ndraft or pending price (the highest `version_no`, then the latest `created_at`). Each is `null`\nwhen there is none, or when the caller does not hold `price_book` read on the entry's book.\nThe day is today, or the `as_of` of the book's entries list (D-473).\nEvery other answer that carries an entry (POST, PATCH, the stored receipt, the export,\npublish-changes) keeps [`PricingPriceBookEntryDto`]."
       },
       "PricingPriceBookReadDto": {
         "allOf": [
@@ -12974,6 +12984,16 @@
                   }
                 ]
               },
+              "next_price": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PricingPriceDto"
+                  }
+                ]
+              },
               "usage": {
                 "$ref": "#/components/schemas/PricingEntryUsage"
               }
@@ -12987,7 +13007,7 @@
             "type": "object"
           }
         ],
-        "description": "One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its\nbook's code, name and currency, its usage (D-428), and the default chain's price in force\ntoday — `null` when none is, or when the caller does not hold `price_book` read (the export's\ngrant)."
+        "description": "One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its\nbook's code, name and currency, its usage (D-428), the default chain's price in force today\nand its `next_price` (D-472), chosen as the entry reads choose it (the highest `version_no`\norders the drafts and pending prices) — each `null` when there is none, or when the caller\ndoes not hold `price_book` read (the export's grant)."
       },
       "PricingSkuEntryList": {
         "description": "`GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.",
@@ -37765,7 +37785,7 @@
     },
     "/bss-pricing/v1/price-book-entries": {
       "get": {
-        "description": "Lists the tenant's price book entries of one SKU across its books (D-434), each with its book's code, name and currency, its usage (D-428) and current_price: the default chain's approved price in force today, shown to a caller who also holds price_book read (the export's grant) and null otherwise. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, or with any other key.",
+        "description": "Lists the tenant's price book entries of one SKU across its books (D-434), each with its book's code, name and currency, its usage (D-428), its current_price, the default chain's approved price in force today, and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read (the export's grant) and are null otherwise. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, or with any other key.",
         "operationId": "bss_pricing.list_sku_entries",
         "parameters": [
           {
@@ -37992,7 +38012,7 @@
         ]
       },
       "get": {
-        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on its book and null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
+        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force today; and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on its book and are null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
         "operationId": "bss_pricing.get_entry",
         "parameters": [
           {
@@ -39275,7 +39295,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on the book and null otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
+        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 404 for a book the tenant does not hold.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {
@@ -39283,6 +39303,15 @@
             "in": "path",
             "name": "id",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The day the prices are judged on, YYYY-MM-DD; today (UTC) by default",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
             "schema": {
               "type": "string"
             }
