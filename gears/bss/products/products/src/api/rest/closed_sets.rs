@@ -100,6 +100,11 @@ closed_set!(
 closed_set!(
     /// A kind of approval unit products records (P-D-227). No CHECK holds the stored column: the
     /// repository reads it through this set, so a unit of another kind is a corrupt row (500).
+    #[expect(
+        clippy::enum_variant_names,
+        reason = "each variant is its stored token in its own case: the schema publishes a \
+                  variant's snake case, so `Publish` would publish `publish`"
+    )]
     ProductsApprovalKind from ApprovalKind {
         SkuPublish => "sku_publish",
         SkuChange => "sku_change",

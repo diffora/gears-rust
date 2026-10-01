@@ -11,6 +11,11 @@ pub const KIND_SKU_RETIRE: &str = "sku_retire";
 /// repository reads it through this set, so a unit of another kind is a corrupt row, never
 /// judged or served as one of these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "the variants name the stored kinds sku_publish, sku_change and sku_retire, and the \
+              wire set maps from them one to one (`ProductsApprovalKind`)"
+)]
 pub enum ApprovalKind {
     SkuPublish,
     SkuChange,

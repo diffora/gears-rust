@@ -3606,7 +3606,7 @@ async fn a_unit_of_an_unknown_kind_or_state_is_a_corrupt_row_on_every_read() {
     stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await;
     let foreign = stored_unit(&f, "promotion", f.id, UnitState::Pending, at).await;
     for path in [
-        "".to_owned(),
+        String::new(),
         "?state=pending".to_owned(),
         format!("?ref_id={}", f.id),
         "/counts".to_owned(),
@@ -3642,7 +3642,7 @@ async fn a_unit_of_an_unknown_kind_or_state_is_a_corrupt_row_on_every_read() {
     );
     raw.close().await.unwrap();
     for path in [
-        "".to_owned(),
+        String::new(),
         "/counts".to_owned(),
         "/counts?kind=sku_publish".to_owned(),
         format!("/{poisoned}"),
