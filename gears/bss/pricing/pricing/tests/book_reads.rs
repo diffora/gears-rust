@@ -1606,6 +1606,8 @@ async fn the_unit_list_pages_in_submission_order() {
         pages += 1;
         assert!(page["items"].as_array().unwrap().len() <= 2, "{page}");
         seen.extend(ids(&page));
+        // Bounded: a cursor that does not advance fails here instead of hanging.
+        assert!(pages <= 3, "the cursor does not advance: {seen:?}");
         match page["page_info"]["next_cursor"].as_str() {
             Some(cursor) => {
                 path = format!(
@@ -1811,9 +1813,16 @@ async fn the_unit_list_pages_newest_first_with_the_id_breaking_a_tie_the_same_wa
         for limit in 1..=5 {
             let mut seen = Vec::new();
             let mut path = format!("/approval-units?{narrowing}{order}&limit={limit}");
+            let mut pages = 0;
             loop {
                 let page = ok(&f, &path).await;
                 seen.extend(ids(&page));
+                // Bounded: a cursor that does not advance fails here instead of hanging.
+                pages += 1;
+                assert!(
+                    seen.len() <= expected.len() && pages <= expected.len() + 1,
+                    "{order} by {limit}: the cursor does not advance: {seen:?}"
+                );
                 match page["page_info"]["next_cursor"].as_str() {
                     // A continuation sends its cursor alone: the cursor carries the order.
                     Some(cursor) => {
