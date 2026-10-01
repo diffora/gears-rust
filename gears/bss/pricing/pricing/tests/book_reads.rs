@@ -1896,6 +1896,31 @@ async fn the_unit_list_pages_newest_first_with_the_id_breaking_a_tie_the_same_wa
     }
 }
 
+/// The phase 9 review's R67 (products) and its twin here: a refused `$orderby` names the key it
+/// refuses, never the whole order, so `submitted_at`, which the list takes, is never called
+/// unsupported.
+#[tokio::test]
+async fn a_refused_order_names_the_key_it_refuses() {
+    let (f, _) = setup().await;
+    for (order, said) in [
+        ("code", "field: code"),
+        ("submitted_at%20desc,id%20desc", "field: id"),
+        (
+            "submitted_at%20desc,submitted_at%20asc",
+            "only one key, submitted_at, is accepted",
+        ),
+    ] {
+        let (s, b, _) = get(&f, &format!("/approval-units?$orderby={order}")).await;
+        assert_eq!(s, 400, "{order}: {b}");
+        let text = b.to_string();
+        assert!(
+            text.contains("INVALID_ORDERBY_FIELD") && text.contains(said),
+            "{order}: {b}"
+        );
+        assert!(!text.contains("submitted_at desc,"), "{order}: {b}");
+    }
+}
+
 /// D-470 (plan review M4): the order is not part of the narrowing's hash, so a cursor minted
 /// before the descending order existed still continues; a cursor carries its order, and a
 /// continuation follows it; `$orderby` beside a cursor is the toolkit's 400 `ORDER_WITH_CURSOR`;
@@ -1906,26 +1931,6 @@ async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continue
     // The narrowing hash of `kind=prices` as the list minted it before run 9.3: the first 8 bytes
     // of the SHA-256 of {"kind":"prices","ref_id":null,"state":null}, with no order in it.
     const BEFORE: &str = "a1a21e85af067d2d";
-    // The phase 9 review's R67 (products) and its twin here: the refusal names the key it refuses,
-    // never the whole order, so a supported field is never called unsupported.
-    for (order, said) in [
-        ("code", "field: code"),
-        ("submitted_at%20desc,id%20desc", "field: id"),
-        (
-            "submitted_at%20desc,submitted_at%20asc",
-            "only one key, submitted_at, is accepted",
-        ),
-    ] {
-        let (f, _) = setup().await;
-        let (s, b, _) = get(&f, &format!("/approval-units?$orderby={order}")).await;
-        assert_eq!(s, 400, "{order}: {b}");
-        let text = b.to_string();
-        assert!(
-            text.contains("INVALID_ORDERBY_FIELD") && text.contains(said),
-            "{order}: {b}"
-        );
-        assert!(!text.contains("submitted_at desc,"), "{order}: {b}");
-    }
     let (f, _catalog) = setup().await;
     let book = plan_support::book(&f, "cursors").await;
     let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
