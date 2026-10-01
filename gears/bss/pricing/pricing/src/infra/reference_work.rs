@@ -312,10 +312,11 @@ pub trait Clock: Send + Sync {
         0
     }
 }
+/// The process clock, cut to the whole microseconds storage keeps.
 pub struct WallClock;
 impl Clock for WallClock {
     fn now(&self) -> OffsetDateTime {
-        OffsetDateTime::now_utc()
+        crate::infra::storage::stored_now()
     }
     fn jitter_millis(&self) -> i64 {
         i64::from(Uuid::new_v4().as_bytes()[0])
@@ -499,7 +500,7 @@ async fn answer_key(
         support::value(receipt)?,
         // A durable op may answer long after its claim: the answer is kept a full retention from
         // now, or the next same-key retry would find it expired and take the key over (D-429).
-        Some(OffsetDateTime::now_utc() + time::Duration::hours(24)),
+        Some(crate::infra::storage::stored_now() + time::Duration::hours(24)),
     )
     .await?
         != idem::IdempotencyAnswer::Recorded

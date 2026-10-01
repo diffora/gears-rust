@@ -32,7 +32,6 @@ use axum::{
 };
 use bss_products_sdk::sku_usage::SkuUsageSets;
 use std::sync::Arc;
-use time::OffsetDateTime;
 use toolkit::api::{
     OpenApiRegistry,
     canonical_prelude::{CanonicalError, resource_error},
@@ -524,7 +523,7 @@ async fn expire(
     tenant: Uuid,
     ttl: u32,
 ) -> Result<(), TxError> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let expired = repo::expire_orphan_fences(
         tx,
         scope,

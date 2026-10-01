@@ -64,6 +64,8 @@ pub struct Command {
     /// The sink the decision's transaction enqueues its events through; they wake the outbox's
     /// sequencer once it commits (D-455).
     pub outbox: crate::infra::events::EventSink,
+    /// The clock the command reads its instant from ([`Command::now`]).
+    pub clock: Arc<dyn crate::infra::reference_work::Clock>,
     pub correlation: Uuid,
     pub key: String,
     pub digest: Vec<u8>,
@@ -71,6 +73,10 @@ pub struct Command {
 impl Command {
     fn tenant(&self) -> Uuid {
         self.ctx.subject_tenant_id()
+    }
+    /// The instant the command writes and answers, as storage keeps it (D-453).
+    fn now(&self) -> OffsetDateTime {
+        crate::infra::storage::stored_instant(self.clock.now())
     }
     fn store(&self) -> PricingApprovalStore {
         PricingApprovalStore {
@@ -436,12 +442,8 @@ pub async fn submit_price(db: &Db, cmd: Command, id: Uuid) -> Result<Response, C
             )
             .await?
             .ok_or_else(support::missing_entry)?;
-            let subject = PricesSubject::new(
-                cmd.ctx.clone(),
-                cmd.hub.clone(),
-                entry.book_id,
-                OffsetDateTime::now_utc(),
-            );
+            let subject =
+                PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), entry.book_id, cmd.now());
             record_prices(tx, &outbox, &cmd, &endpoint, (subject, None), &[id]).await
         })
     })
@@ -476,7 +478,7 @@ pub async fn submit_revision(
             if !plans::open_draft(&r) {
                 return Err(support::conflict("REVISION_NOT_DRAFT").into());
             }
-            let now = OffsetDateTime::now_utc();
+            let now = cmd.now();
             // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-4
             let subject = PlanRevisionSubject::new(cmd.ctx.clone(), cmd.hub.clone(), id, now);
             let submission = Submission {
@@ -679,12 +681,7 @@ pub async fn publish(
                 .collect();
             added.sort_unstable();
             added.dedup();
-            let mut subject = PricesSubject::new(
-                cmd.ctx.clone(),
-                cmd.hub.clone(),
-                book,
-                OffsetDateTime::now_utc(),
-            );
+            let mut subject = PricesSubject::new(cmd.ctx.clone(), cmd.hub.clone(), book, cmd.now());
             subject.common_effective_date = date;
             subject.added_partner = added;
             record_prices(
@@ -944,7 +941,7 @@ async fn vote_in(
     if unit.state != UnitState::Pending {
         return Err(support::conflict("UNIT_ALREADY_DECIDED").into());
     }
-    let now = OffsetDateTime::now_utc();
+    let now = cmd.now();
     let subject = subject_of(cmd, &unit, action, now)?;
     let actor = cmd.ctx.subject_id();
     let seen = || {

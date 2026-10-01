@@ -311,7 +311,7 @@ async fn create_category(
     if !report.is_empty() {
         return Err(DomainError::Validation(report).into());
     }
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let created = state
         .db
         .db()
@@ -489,7 +489,7 @@ async fn update_category(
     if !r.is_empty() {
         return Err(DomainError::Validation(r).into());
     }
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let updated = state
         .db
         .db()
@@ -566,7 +566,7 @@ async fn retire_category(
         format!("/bss-products/v1/categories/{id}/retire"),
         &serde_json::json!({}),
     )?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let retired = state
         .db
         .db()

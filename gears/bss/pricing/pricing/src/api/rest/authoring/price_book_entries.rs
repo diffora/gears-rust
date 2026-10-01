@@ -84,7 +84,7 @@ pub(super) async fn stored(
         tenant,
         endpoint,
         key,
-        time::OffsetDateTime::now_utc(),
+        crate::infra::storage::stored_now(),
     )
     .await
     .map_err(DoorError::from)?
@@ -178,7 +178,7 @@ pub(super) async fn create(
         );
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
-            let now = time::OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let receipt_scope = AccessScope::for_tenant(tenant);
             let claim = idem::claim_idempotency_key(
                 tx,
@@ -275,7 +275,7 @@ pub(super) async fn patch(
         }
         m.invoice_line_override = template;
     }
-    m.updated_at = time::OffsetDateTime::now_utc();
+    m.updated_at = crate::infra::storage::stored_now();
     price_book_entry_repo::update(tx, scope, m.clone()).await?;
     m.version += 1;
     support::audit(
@@ -368,7 +368,7 @@ pub(super) async fn delete(
                 OpKind::Delete,
                 Some(m.reservation_id),
                 None,
-                time::OffsetDateTime::now_utc(),
+                crate::infra::storage::stored_now(),
             )?;
             let op_id = op.op_id;
             price_book_entry_repo::delete_empty(tx, &scope, tenant, id, m.version).await?;

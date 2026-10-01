@@ -279,7 +279,7 @@ pub(super) async fn create(
         return Err(support::missing().into());
     }
     require_book_read(tx, books, tenant, input.book_id).await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     // @cpt-begin:cpt-cf-bss-pricing-flow-plans:p1:inst-plans-flow-1
     let p = plan_repo::insert(
         tx,
@@ -407,7 +407,7 @@ pub(super) async fn patch(
     let tenant = ctx.subject_tenant_id();
     let m = find_plan(tx, scope, tenant, id).await?;
     support::check_version(version, m.version)?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     plan_repo::rename(tx, scope, tenant, id, m.version, input.name.clone(), now).await?;
     let m = plan_entity::Model {
         name: input.name,
@@ -478,7 +478,7 @@ async fn copy_in(
     }
     let children = AccessScope::for_tenant(tenant);
     let p = find_plan(tx, scope, tenant, plan_id).await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
     plan_revisions::catch_up(tx, outbox, tenant, p.id, now, correlation).await?;
     let revisions = plan_revision_repo::for_plan(tx, &children, tenant, p.id).await?;
@@ -685,7 +685,7 @@ async fn clone_in(
         .transpose()?;
     let children = AccessScope::for_tenant(tenant);
     let from = find_plan(tx, scope, tenant, source).await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
     plan_revisions::catch_up(tx, outbox, tenant, from.id, now, correlation).await?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
@@ -822,7 +822,7 @@ async fn unschedule_in(
     }
     let children = AccessScope::for_tenant(tenant);
     let r = find_revision(tx, scope, tenant, id).await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
     plan_revisions::catch_up(tx, outbox, tenant, r.plan_id, now, correlation).await?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-switch:p1:inst-plans-revision-switch-3
@@ -888,7 +888,7 @@ pub(super) async fn patch_revision(
     let m = find_revision(tx, scope, tenant, id).await?;
     editable(&m, ctx)?;
     support::check_version(version, m.version)?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let mut next = m.clone();
     if let Some(from) = input.available_from {
         next.available_from = support::date(from, "available_from")?;

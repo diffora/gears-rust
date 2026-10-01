@@ -39,6 +39,8 @@ pub struct AuthoringState {
     pub hub: Arc<toolkit::ClientHub>,
     /// Where every pricing event is enqueued, inside the transaction of its act.
     pub outbox: crate::infra::events::EventSink,
+    /// The clock the approval doors read their instant from: the wall clock, or a test's.
+    clock: Arc<dyn crate::infra::reference_work::Clock>,
     pipeline: tokio::sync::Mutex<Option<Pipeline>>,
 }
 /// The running outbox processor: the broker SDK's producer, or the holding one.
@@ -93,8 +95,15 @@ impl AuthoringState {
             db,
             hub,
             outbox,
+            clock: Arc::new(crate::infra::reference_work::WallClock),
             pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })
+    }
+    /// The same state with the approval doors reading `clock`; tests inject one whose instants
+    /// carry digits finer than a microsecond, which the wall clock of some hosts never has.
+    #[must_use]
+    pub fn with_clock(self, clock: Arc<dyn crate::infra::reference_work::Clock>) -> Self {
+        Self { clock, ..self }
     }
     pub(crate) async fn stop(&self) {
         match self.pipeline.lock().await.take() {
@@ -955,6 +964,7 @@ async fn submit_price(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -993,6 +1003,7 @@ async fn submit_plan_revision(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1082,6 +1093,7 @@ async fn publish_changes(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1309,6 +1321,7 @@ async fn approve_unit(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1352,6 +1365,7 @@ async fn reject_unit(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1393,6 +1407,7 @@ async fn withdraw_unit(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,

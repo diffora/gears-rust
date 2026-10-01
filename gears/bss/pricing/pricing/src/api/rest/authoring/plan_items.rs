@@ -232,7 +232,7 @@ pub(super) async fn patch(
         .into();
     m.included_qty = None;
     m.qty_min = None;
-    m.updated_at = time::OffsetDateTime::now_utc();
+    m.updated_at = crate::infra::storage::stored_now();
     plan_item_repo::update_draft(tx, &children, m.clone()).await?;
     m.version += 1;
     support::audit(tx, ctx, correlation, "plan_item.patch", id, m.version).await?;
@@ -323,7 +323,7 @@ pub async fn create(
         );
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
-            let now = time::OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let receipt_scope = AccessScope::for_tenant(tenant);
             let claim = idem::claim_idempotency_key(
                 tx,
@@ -411,7 +411,7 @@ pub(crate) async fn remove(
     if item.reference_state == ReferenceState::ConfirmationPending.as_str() {
         return Err(support::conflict("ITEM_CONFIRMATION_PENDING").into());
     }
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let op = reference_work::plan_item::delete_op(ctx, &item, correlation, now)?;
     let op_id = op.op_id;
     plan_item_repo::delete_draft(tx, scope, tenant, id, item.version).await?;

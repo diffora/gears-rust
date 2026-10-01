@@ -282,7 +282,7 @@ async fn run(
     kind: SubmitKind,
 ) -> Result<Response, CanonicalError> {
     let payload = json_body(body)?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let tenant = ctx.subject_tenant_id();
     // The submitter's `note`, on each of the three doors: stored on the unit (`submit_note`,
     // P-D-219) and on the submit's audit row, which the history shows (P-D-213). The body's other
@@ -575,7 +575,7 @@ async fn unfence(
                     "sku",
                     id,
                     None,
-                    OffsetDateTime::now_utc(),
+                    crate::infra::storage::stored_now(),
                     repo::LifecycleMove::between(found, sku.lifecycle),
                 )
                 .await?;

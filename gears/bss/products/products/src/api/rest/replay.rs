@@ -24,7 +24,7 @@ pub(super) fn input(
             endpoint,
             key,
             crate::domain::idempotency::payload_digest(body).to_vec(),
-            time::OffsetDateTime::now_utc(),
+            crate::infra::storage::stored_now(),
             state.idempotency_retention_hours,
         )
     }))

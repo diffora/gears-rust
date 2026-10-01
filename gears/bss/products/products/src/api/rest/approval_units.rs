@@ -564,7 +564,7 @@ async fn get(
                     ctx.subject_tenant_id(),
                     unit.ref_id,
                     ttl,
-                    OffsetDateTime::now_utc(),
+                    crate::infra::storage::stored_now(),
                 )
                 .await?;
                 // A never-published draft may be deleted after its unit was rejected or withdrawn
@@ -657,7 +657,7 @@ async fn subject(
         tenant_id: store.tenant_id,
         outbox: outbox.clone(),
         actor: ctx.subject_id(),
-        now: OffsetDateTime::now_utc(),
+        now: crate::infra::storage::stored_now(),
         usage_type: usage,
     };
     let fence = repo::find_sku_fence(tx, &sku_scope, store.tenant_id, unit.ref_id)
@@ -802,7 +802,7 @@ async fn vote(
             let sub = subject(&outbox, tx, &store, &ctx, &unit, usage).await?;
             // P-D-213: the SKU's lifecycle before the decision, and after it below.
             let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
-            let now = OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let outcome = match action {
                 Vote::Approve => {
                     if unit.kind != KIND_SKU_RETIRE

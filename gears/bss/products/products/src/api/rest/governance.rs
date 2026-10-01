@@ -187,7 +187,15 @@ pub(super) async fn touch(
             move |tx| {
                 let scope = scope.clone();
                 Box::pin(async move {
-                    expire(tx, &scope, tenant, id, ttl, OffsetDateTime::now_utc()).await
+                    expire(
+                        tx,
+                        &scope,
+                        tenant,
+                        id,
+                        ttl,
+                        crate::infra::storage::stored_now(),
+                    )
+                    .await
                 })
             },
         )

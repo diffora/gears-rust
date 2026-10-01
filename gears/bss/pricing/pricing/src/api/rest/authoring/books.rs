@@ -61,7 +61,7 @@ pub async fn create(
     body: PriceBookCreate,
 ) -> Result<Response, DoorError> {
     let tenant = ctx.subject_tenant_id();
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let receipt_scope = AccessScope::for_tenant(tenant);
     let endpoint = "/bss-pricing/v1/price-books";
     let claim = idem::claim_idempotency_key(
@@ -145,7 +145,7 @@ pub async fn patch(
         m.description = description;
     }
     validate(&m)?;
-    m.updated_at = time::OffsetDateTime::now_utc();
+    m.updated_at = crate::infra::storage::stored_now();
     book_repo::update(tx, scope, m.clone()).await?;
     m.version += 1;
     audit(tx, ctx, correlation, "price_book.update", id, m.version).await?;
