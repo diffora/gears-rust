@@ -1,4 +1,5 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-derived-usage-type-rules:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-derived-usage-type-pin:p1
 //! Derived usage types: the create and new-version rules (P-D-229, P-D-231).
 //!
 //! A derived usage type is a tenant's catalog data: a stable `id`, a `code` unique in the tenant, a
@@ -13,6 +14,10 @@
 //! `USAGE_TYPE_UNRESOLVED`, an unreachable or unconfigured catalog 503 `USAGE_TYPE_UNAVAILABLE`, and
 //! a catalog that refuses the caller 403 `USAGE_TYPE_FORBIDDEN`. A derived input is refused before
 //! the catalog is asked: [`derived::validate`] refuses the `products.derived/` prefix.
+//!
+//! A usage SKU names a version by its meter id and pins it at its first publish (P-D-232):
+//! [`judge_binding`] is the binding rule the draft doors and the publish rule share, and
+//! [`pin_moves`] the pin rule a change is judged by, at submit and at apply.
 use crate::domain::caps;
 use crate::domain::error::DomainError;
 use crate::domain::recognized::UsageTypeAnswer;
@@ -37,6 +42,14 @@ pub const DECLARATION_INVALID: &str = "DERIVED_DECLARATION_INVALID";
 pub const CODE_TAKEN: &str = "DERIVED_CODE_TAKEN";
 /// The head of a version's `accrual_policy_version`: `derived-v1:<digest hex>`.
 pub const ACCRUAL_POLICY_PREFIX: &str = "derived-v1:";
+/// A SKU's derived ref the tenant does not hold (P-D-232): 400 on `usage_type_ref`.
+pub const USAGE_TYPE_UNKNOWN: &str = "DERIVED_USAGE_TYPE_UNKNOWN";
+/// A SKU's unit other than its derived version's output unit (P-D-232): 400 on `unit`.
+pub const UNIT_MISMATCH: &str = "DERIVED_UNIT_MISMATCH";
+/// A change that moves a published SKU's derived pin (P-D-232): 400 at submit, 409 at apply.
+pub const PIN_IMMUTABLE: &str = "DERIVED_PIN_IMMUTABLE";
+/// The binding's codes: they refuse a SKU's write, so they name the SKU, not the derived type.
+pub const SKU_BINDING_CODES: [&str; 3] = [USAGE_TYPE_UNKNOWN, UNIT_MISMATCH, PIN_IMMUTABLE];
 
 // The SDK's caps are the SKU's (Run 1's note): a derived output unit is the selling SKU's unit, and
 // an input ref is a usage-type ref.
@@ -219,6 +232,79 @@ pub async fn resolve_inputs(
         Err(DomainError::Validation(unresolved))
     }
 }
+
+/// A usage SKU's derived ref as this gear's store answers it (P-D-232): the tenant's version, read
+/// by its meter id, and the output unit the SKU sells.
+#[domain_model]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedPin {
+    /// `products.derived/<code>@<n>`, canonical.
+    pub meter: String,
+    /// The version's `output_unit`.
+    pub output_unit: String,
+}
+
+/// Whether `reference` names a derived usage type. The `products.derived/` prefix is reserved, so a
+/// GTS id never starts with it (decision 4): a ref that does is judged here, whatever follows, and
+/// is never a catalog's question.
+#[must_use]
+pub fn is_derived_ref(reference: &str) -> bool {
+    reference.starts_with(derived::DERIVED_METER_PREFIX)
+}
+
+/// The binding rule (P-D-232): a derived `reference` binds when `pin` is the tenant's version of it
+/// and the SKU's `unit`, when it names one, is that version's output unit. Otherwise it records 400
+/// [`USAGE_TYPE_UNKNOWN`] on `usage_type_ref`, or [`UNIT_MISMATCH`] on `unit`. A blank unit is no
+/// unit: a draft may name its unit later, and a publish needs one (`USAGE_NEEDS_METER`).
+pub fn judge_binding(
+    report: &mut ValidationReport,
+    reference: &str,
+    unit: Option<&str>,
+    pin: Option<&DerivedPin>,
+) {
+    let Some(pin) = pin.filter(|p| p.meter == reference) else {
+        report.violate(
+            USAGE_TYPE_UNKNOWN,
+            "usage_type_ref",
+            format!("the tenant holds no derived usage type version {reference}"),
+        );
+        return;
+    };
+    if let Some(unit) = unit.filter(|u| !u.trim().is_empty())
+        && unit != pin.output_unit
+    {
+        report.violate(
+            UNIT_MISMATCH,
+            "unit",
+            format!(
+                "{reference} sells {}; a usage SKU on it sells that unit",
+                pin.output_unit
+            ),
+        );
+    }
+}
+
+/// The pin rule (P-D-232, M1): a published usage SKU's derived usage type never moves. True when
+/// the current or the proposed ref is derived and the two differ: `@1` → `@2`, GTS → derived,
+/// derived → GTS, and a derived ref dropped (a type change included). A new formula version is
+/// sold through a new usage SKU.
+#[must_use]
+pub fn pin_moves(current: Option<&str>, proposed: Option<&str>) -> bool {
+    current != proposed
+        && (current.is_some_and(is_derived_ref) || proposed.is_some_and(is_derived_ref))
+}
+
+/// The pin rule's refusal: 400 [`PIN_IMMUTABLE`] on `usage_type_ref`.
+#[must_use]
+pub fn pin_immutable() -> DomainError {
+    let mut report = ValidationReport::new();
+    report.violate(PIN_IMMUTABLE, "usage_type_ref", PIN_DETAIL);
+    DomainError::Validation(report)
+}
+
+/// What a [`PIN_IMMUTABLE`] refusal says, at submit and at apply.
+pub const PIN_DETAIL: &str = "a usage SKU keeps the derived usage type it was first published \
+     on; sell another version through a new usage SKU";
 
 #[cfg(test)]
 #[path = "derived_tests.rs"]

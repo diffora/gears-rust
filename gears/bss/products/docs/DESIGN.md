@@ -55,8 +55,8 @@ Every PRD FR and NFR appears once in this allocation. Section references identif
 | `cpt-cf-bss-products-fr-sku-define` | Independent tenant-scoped identity and draft authoring | §3.1 Sku; §3.2 Registry; §3.7 unique code/name indexes |
 | `cpt-cf-bss-products-fr-sku-type-frozen` | Live references exclude type changes | §2.1 Fence before count; §3.1 type fence; §3.7 registry predicates |
 | `cpt-cf-bss-products-fr-sku-descriptors` | Governed, dated billing descriptors | §3.1 SkuVersion; §3.6 GL change |
-| `cpt-cf-bss-products-fr-sku-metering` | Usage metering resolves at submit and apply | §3.1 type rules; §3.5 usage-type catalog |
-| `cpt-cf-bss-products-fr-derived-usage-type` | A derived meter is data with one evaluator, stored append-only | §3.1 derived usage declaration and type; §3.3 derived usage type doors; §3.4 products-sdk; §3.7 derived usage tables |
+| `cpt-cf-bss-products-fr-sku-metering` | Usage metering resolves at submit and apply | §3.1 type rules and the derived pin; §3.5 usage-type catalog and its derived sibling |
+| `cpt-cf-bss-products-fr-derived-usage-type` | A derived meter is data with one evaluator, stored append-only, pinned by a usage SKU at its first publish | §3.1 derived usage declaration, type and pin; §3.3 derived usage type doors and the SKU doors' derived codes; §3.4 products-sdk; §3.5 the derived sibling; §3.7 derived usage tables |
 | `cpt-cf-bss-products-fr-sku-bundle` | Bundle identity supports sold-as only | §3.1 bundle rules; §3.5 Pricing; §3.6 reserve/write/confirm |
 | `cpt-cf-bss-products-fr-sku-lifecycle` | One approval shape governs lifecycle | §3.1 lifecycle; §3.2 Approvals; §3.6 fenced retirement |
 | `cpt-cf-bss-products-fr-sku-versions` | Durable history determines dated truth | §3.3 dated read; §3.7 version table and ordering |
@@ -196,8 +196,18 @@ validates with:
 (§3.3). A version stores the declaration as the doors serve it and its digest, taken once at the write through `aws-lc-rs`;
 every read answers the stored digest. A write judges the declaration (the SDK's rules and the wire shape's, each refusal 400
 `DERIVED_DECLARATION_INVALID` naming its rule), then resolves each input through the `UsageTypeCatalog` port as the
-caller, as a usage SKU's publish does (P-D-184, P-D-207). A usage SKU's pin and the meter-semantics provider are later runs;
-until they land, no derived meter can be sold.
+caller, as a usage SKU's publish does (P-D-184, P-D-207). The meter-semantics provider is a later run; until it lands, no
+pricing usage entry can name a derived meter.
+
+**The derived pin** (P-D-232). A usage SKU names a derived version by `usage_type_ref = "products.derived/<code>@<n>"`.
+The derived check comes first at the draft doors, at the resolution a submit or an approve makes, and in the publish rule:
+the gear reads the tenant's version from its own store, before the unconfigured catalog's early answer and before any
+catalog call, so the catalog is never asked for a derived ref. The ref binds when the tenant holds that version and the
+SKU's unit, when named, is its output unit: otherwise 400 `DERIVED_USAGE_TYPE_UNKNOWN` (one answer for an unknown code or
+version, another tenant's type and a non-canonical id) or `DERIVED_UNIT_MISMATCH`. A draft may move its pin; a published
+SKU keeps it. `SkuChange::validate_change` refuses, at submit (400) and at apply (409), `DERIVED_PIN_IMMUTABLE`, a change
+whose current or proposed ref is derived when the two differ: another version, GTS to derived, derived to GTS, a dropped
+ref. A new formula version is sold through a new usage SKU (M1).
 
 The `sku` row holds the latest applied content, possibly future-effective. `revision` is the SKU concurrency
 version for ETag, If-Match and compare-and-swap; `published_version` identifies each published
@@ -335,13 +345,13 @@ registration and standardized errors.
 
 | Surface | Routes | Contract |
 | --- | --- | --- |
-| SKU authoring | `POST /skus`; `PATCH /skus/{id}`; `DELETE /skus/{id}` | Create independent draft, `category_id` optional; patch drafts only (`category_id: null` clears it); reject edits while pending. Delete only a never-published draft, by its author, under `If-Match`: 204 and an audit row; `SKU_NOT_DRAFT`, `ROW_LOCKED_PENDING`, `SKU_REFERENCED` (P-D-206). |
-| Usage-type picker | `GET /usage-types?q&kind&limit&cursor` | products:author; the `UsageTypeCatalog` the publish gate resolves against, read as the caller: `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable, 200 `[]` when empty. `q` is a case-insensitive substring of the id; over the usage collector products applies it, asking the collector with `kind eq` only, over at most 1000 types of that kind in id order, with a cursor bound to `q` and `kind` (400 when replayed with others); past 1000, 503 `USAGE_TYPE_CATALOG_TOO_LARGE` (P-D-207). |
+| SKU authoring | `POST /skus`; `PATCH /skus/{id}`; `DELETE /skus/{id}` | Create independent draft, `category_id` optional; patch drafts only (`category_id: null` clears it); reject edits while pending. A `usage_type_ref` of the form `products.derived/<code>@<n>` is judged from the tenant's derived store, never the catalog: 400 `DERIVED_USAGE_TYPE_UNKNOWN` or `DERIVED_UNIT_MISMATCH`; a draft may move it (P-D-232). Delete only a never-published draft, by its author, under `If-Match`: 204 and an audit row; `SKU_NOT_DRAFT`, `ROW_LOCKED_PENDING`, `SKU_REFERENCED` (P-D-206). |
+| Usage-type picker | `GET /usage-types?q&kind&limit&cursor` | products:author; the GTS usage types of the `UsageTypeCatalog` the publish gate resolves against, read as the caller (derived usage types have their own list, `GET /derived-usage-types`, P-D-232): `{ source, items, page_info }`; 403 when the catalog refuses the caller, 501 unconfigured, 503 unreachable, 200 `[]` when empty. `q` is a case-insensitive substring of the id; over the usage collector products applies it, asking the collector with `kind eq` only, over at most 1000 types of that kind in id order, with a cursor bound to `q` and `kind` (400 when replayed with others); past 1000, 503 `USAGE_TYPE_CATALOG_TOO_LARGE` (P-D-207). |
 | SKU reads | `GET /skus?$filter&$orderby&$top&cursor&q&priced&in_plan`; `GET /skus/counts?$filter&q&priced&in_plan`; `GET /skus/{id}` | Tenant-scoped list on the toolkit's OData (P-D-210): `$filter` over id, code, name, lifecycle, type, category_id (`eq null`: none) and pending_unit_id (`ne null`: in review); `$orderby` code, name or updated_at, tie-break id; `$top`/`limit` 50, clamped at 200; `cursor` from `page_info`; `q` a literal case-insensitive substring of code, name, unit, usage type and GL code; `priced` and `in_plan` keep or drop pricing's sets from the port's `usage_sets`, 403 `USAGE_FORBIDDEN` or 503 `USAGE_UNAVAILABLE` when it cannot answer (P-D-212). Other keys, `$select` and `$count` are 400. The tab counts `{ all, draft, published, deprecated, retiring, retired, in_review }` narrow alike, without `$filter`'s top-level `lifecycle` terms (P-D-211). SKU card. Each list item and the card carry `usage` { entries, currencies, prices { approved, pending, draft }, plans } from pricing's `SkuUsageV1` port, one call per page, or `null` when the port is absent, refuses or cannot answer; the read never fails for it (P-D-197). |
 | SKU history | `GET /skus/{id}/history?$top&cursor` | products:read; the SKU's audit rows and its approval units' rows, in the order the acts wrote them (`audit_id`, a UUID v7 minted in the act's transaction), as `Page<ProductsSkuHistoryEntry>`: `{ at, actor, action, from_lifecycle, to_lifecycle, unit_id, unit_kind, note }`; `$top`/`limit` 50, clamped at 200; other keys 400; 404 for a foreign SKU or a deleted draft (P-D-213). |
 | Versions | `GET /skus/{id}/versions`; `GET /skus/{id}/versions/as-of?date=<date>` | The history is always an array, oldest first (empty before the first publication); any query key is 400. The dated read answers one version: greatest effective_from not after `date`, then greatest published_version; 404 `NO_VERSION_IN_FORCE` before the first version; a missing or malformed `date` is 400 (P-D-214). |
 | Publication | `POST /skus/{id}/submit` | Submit `sku_publish`. An optional body `{ note }` carries the submitter's note (P-D-219). |
-| Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`; an optional `note` (P-D-213, P-D-219). |
+| Change | `POST /skus/{id}/changes` | Published/deprecated content and/or lifecycle proposal; effective_from defaults to today; submit `sku_change`; an optional `note` (P-D-213, P-D-219). A change that moves a derived pin is 400 `DERIVED_PIN_IMMUTABLE` before any catalog is asked, and again at apply (409) (P-D-232). |
 | Retirement/recovery | `POST /skus/{id}/retire`; `POST /skus/{id}/unfence` | Guarded fence and `sku_retire` submission in one transaction, with an optional body `{ note }` (P-D-219); unfence only expired orphans. |
 | Reference reads | `GET /skus/{id}/references` | products:read; live rows by default; include_released=true adds history with released_at, released_by, forced and release_reason. Live summary retains price_book_entries/plans/reserved totals and adds by_owner maps keyed by owner then kind, plus each owner’s reserved subset. |
 | Reserve | `POST /skus/{id}/references/reserve { owner, kind, ref_id }` | 201 `{ reservation_id }`, or 200 existing live logical reservation; fenced SKU refuses a new reservation. |
@@ -378,6 +388,8 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | `CATEGORY_DEFAULT_TAKEN` | 409; a concurrent write made another category the default between this move's clear and its set (P-D-218) |
 | `DERIVED_CODE_TAKEN` | 409; the tenant has a derived usage type with this code (P-D-231) |
 | `DERIVED_DECLARATION_INVALID` | 400 on `declaration`, the detail led by the rule the SDK or the wire shape refused (P-D-231) |
+| `DERIVED_USAGE_TYPE_UNKNOWN`, `DERIVED_UNIT_MISMATCH` | 400 on `usage_type_ref` or `unit` at a SKU's draft save, submit or change; 409 at apply. The tenant holds no such derived version, or the unit is not its output unit; names the SKU (P-D-232) |
+| `DERIVED_PIN_IMMUTABLE` | 400 at a change's submit, 409 at its apply; the change moves a published usage SKU's derived pin; names the SKU (P-D-232) |
 | `NOTE_TOO_LONG` | 400; a submitter's note over 2000 characters on submit, changes or retire, or a vote's note on approve or reject; nothing is written (P-D-219, P-D-225) |
 | `FIELD_TOO_LONG` | 400 on the field; a text over its cap on a SKU create, draft PATCH or change, a category create or rename, or a forced release's reason; nothing is written (P-D-225) |
 | `SKU_TYPE_FROZEN`, `SKU_REFERENCED`, `SKU_FENCED`, `REFERENCE_RELEASED` | 409; live reference, fence or terminal reservation conflict |
@@ -436,6 +448,11 @@ catalog (P-D-184, carried from P-D-183 (backup); spec §4, §15). The catalog is
 catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN` at submit and approve, and does not block a
 draft save; `GET /usage-types` serves the listing half of the port under products:author, so an author
 needs usage-collector read granted with the role (P-D-207).
+
+The port has a derived sibling (P-D-232): a `products.derived/<code>@<n>` ref names the tenant's derived usage type
+version, which the gear reads from its own store (§3.7), first, at draft save, submit and apply. The catalog is never
+asked for it, configured or not, and its picker lists GTS types only; derived types are listed by
+`GET /derived-usage-types` (P-D-231).
 
 `SkuUsageV1` is the second port in `products-sdk`, and pricing fills it (P-D-197; pricing D-428). Pricing
 registers it in `ClientHub` at its init; Products resolves it at each `GET /skus` and `GET /skus/{id}`, calls
@@ -985,7 +1002,7 @@ defined here.
 | `cpt-cf-bss-products-fr-sku-type-frozen` | 02 | `sku-categories` |
 | `cpt-cf-bss-products-fr-sku-descriptors` | 03 | `lifecycle-approvals` |
 | `cpt-cf-bss-products-fr-sku-metering` | 02 | `sku-categories` |
-| `cpt-cf-bss-products-fr-derived-usage-type` | none (P-D-230, P-D-231) | `derived-usage-types` |
+| `cpt-cf-bss-products-fr-derived-usage-type` | none (P-D-230, P-D-231, P-D-232) | `derived-usage-types` |
 | `cpt-cf-bss-products-fr-sku-bundle` | 02 | `sku-categories` |
 | `cpt-cf-bss-products-fr-sku-lifecycle` | 03 | `lifecycle-approvals` |
 | `cpt-cf-bss-products-fr-sku-versions` | 02 | `sku-categories` |
@@ -1004,4 +1021,4 @@ registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → th
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
 shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
 P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
-picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes; P-D-231 → the derived usage type's storage, doors, grants and audit. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes; P-D-231 → the derived usage type's storage, doors, grants and audit; P-D-232 → a usage SKU's derived ref and its pin. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

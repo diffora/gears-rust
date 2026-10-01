@@ -1,12 +1,16 @@
 //! Changes preserve the proposed lifecycle and effective date in review content.
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-change-effective-from:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-sku-type-frozen:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-derived-usage-type-pin:p1
 use super::{
     KIND_SKU_CHANGE, SkuProposal, apply_error, decode, invalid, json, publish::SkuPublish,
     require_category, sku, store_err,
 };
 use crate::{
-    domain::sku::{SkuPatch, apply_patch, changed_fields, lifecycle_edge},
+    domain::{
+        derived,
+        sku::{SkuPatch, apply_patch, changed_fields, lifecycle_edge},
+    },
     infra::{broker, events, storage::repo},
 };
 use bss_approval::{ApprovalError, ApprovalSubject, ItemRef, Unit};
@@ -211,6 +215,18 @@ impl SkuChange {
                     "ILLEGAL_TRANSITION",
                     "lifecycle",
                     "use the fenced retire operation to retire",
+                ));
+            }
+            // P-D-232 (M1): a published usage SKU keeps its derived pin. Judged against the head
+            // as it is now, at submit and again at apply, whatever the fence or the type says.
+            if derived::pin_moves(
+                s.usage_type_ref.as_deref(),
+                proposed.content.usage_type_ref.as_deref(),
+            ) {
+                return Err(invalid(
+                    derived::PIN_IMMUTABLE,
+                    "usage_type_ref",
+                    derived::PIN_DETAIL,
                 ));
             }
             if proposed.content.r#type != s.r#type || self.fence_op_id.is_some() {

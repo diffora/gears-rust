@@ -18,7 +18,7 @@ use crate::{
             change::SkuChange, publish::SkuPublish, retire::SkuRetire,
         },
         error::DomainError,
-        recognized::UsageTypeAnswer,
+        recognized::UsageRefAnswer,
         sku::SkuPatch,
     },
     infra::{
@@ -134,9 +134,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("approve_unit")
         .description(
             "Approves the unit at the generation its reviewer saw. The note is at most 2000 \
-             characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a \
-             longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
-             SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+             characters (the approval engine's cap). The apply judges the SKU as it is then: a \
+             change that would move a derived pin, or leave a unit other than the pinned \
+             version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on \
+             a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 \
+             SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, \
+             DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         )
         .tag("Approval units")
         .authenticated()
@@ -497,7 +500,7 @@ async fn subject(
     store: &repo::ProductsApprovalStore,
     ctx: &SecurityContext,
     unit: &Unit,
-    usage: Option<UsageTypeAnswer>,
+    usage: Option<UsageRefAnswer>,
 ) -> Result<Subject, TxError> {
     let sku_scope = AccessScope::for_tenant(store.tenant_id);
     let base = SkuPublish {

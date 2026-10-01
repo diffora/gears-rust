@@ -29,7 +29,7 @@ use crate::{
     authz::{access_scope, actions, labels, resource_types},
     domain::{
         derived::{
-            self, ACTION_CREATE, ACTION_VERSION, CODE_TAKEN, DerivedUsageType,
+            self, ACTION_CREATE, ACTION_VERSION, CODE_TAKEN, DerivedPin, DerivedUsageType,
             DerivedUsageTypeVersion, NewDerivedType, NewDerivedVersion, SUBJECT_KIND,
         },
         error::DomainError,
@@ -709,6 +709,44 @@ async fn get_derived_usage_type_version(
         .ok_or_else(|| not_found(&code, Some(&n)))?;
     let body = version_dto(&t, &v).map_err(|e| repo_error_to_canonical(&e))?;
     Ok(Json(body).into_response())
+}
+
+/// A usage SKU's derived `reference` as the tenant's store holds it (P-D-232): the version its meter
+/// id names and that version's output unit, or `None` when the ref is not canonical or the tenant
+/// holds no such code or version. The read is tenant-scoped, and the usage-type catalog is never
+/// asked: a derived usage type is this gear's own data.
+///
+/// # Errors
+/// A storage failure, or a stored declaration that does not read (a corrupt row): 500.
+pub(super) async fn pin(
+    state: &ApiState,
+    tenant: Uuid,
+    reference: &str,
+) -> Result<Option<DerivedPin>, CanonicalError> {
+    let Ok(meter) = MeterId::parse(reference) else {
+        return Ok(None);
+    };
+    let scope = AccessScope::for_tenant(tenant);
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    let Some(t) = store::find_type(&conn, &scope, tenant, meter.code())
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+    else {
+        return Ok(None);
+    };
+    let Some(v) = store::find_version(&conn, &scope, tenant, t.id, meter.version())
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+    else {
+        return Ok(None);
+    };
+    let declaration = version_dto(&t, &v)
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .declaration;
+    Ok(Some(DerivedPin {
+        meter: meter.format(),
+        output_unit: declaration.output_unit,
+    }))
 }
 
 #[cfg(test)]

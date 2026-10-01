@@ -37,9 +37,10 @@ macro_rules! on {
 
 impl Refused {
     /// A missing row names its kind (`what`); a reference is a SKU's. An approval refusal and a
-    /// stale unit refuse the unit, a `CATEGORY_` code the category, and a `DERIVED_` code the
-    /// derived usage type (P-D-231). Every other refusal is a write or a read of a SKU, the
-    /// registry's own resource.
+    /// stale unit refuse the unit, a `CATEGORY_` code the category, and a `DERIVED_` code of the
+    /// derived doors the derived usage type (P-D-231). The binding's `DERIVED_` codes refuse a
+    /// SKU's write, so they name the SKU (P-D-232). Every other refusal is a write or a read of a
+    /// SKU, the registry's own resource.
     fn of(err: &DomainError) -> Self {
         match err {
             DomainError::NotFound {
@@ -47,7 +48,7 @@ impl Refused {
                 ..
             } => Self::DerivedUsageType,
             DomainError::Conflict { code, .. } | DomainError::Forbidden { code, .. }
-                if code.starts_with("DERIVED_") =>
+                if names_the_derived_type(code) =>
             {
                 Self::DerivedUsageType
             }
@@ -55,7 +56,7 @@ impl Refused {
                 if report
                     .violations()
                     .iter()
-                    .any(|v| v.code.starts_with("DERIVED_")) =>
+                    .any(|v| names_the_derived_type(v.code)) =>
             {
                 Self::DerivedUsageType
             }
@@ -76,6 +77,11 @@ impl Refused {
             _ => Self::Sku,
         }
     }
+}
+
+/// A `DERIVED_` code of the derived doors (P-D-231), not of a SKU's binding (P-D-232).
+fn names_the_derived_type(code: &str) -> bool {
+    code.starts_with("DERIVED_") && !crate::domain::derived::SKU_BINDING_CODES.contains(&code)
 }
 
 /// Shared canonical error constructor.

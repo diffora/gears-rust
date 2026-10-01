@@ -228,3 +228,83 @@ fn the_accrual_policy_version_carries_the_stored_digest() {
         format!("derived-v1:{}", "ab".repeat(32))
     );
 }
+
+const AT_1: &str = "products.derived/cloudlets@1";
+const AT_2: &str = "products.derived/cloudlets@2";
+const CLOUDLET_UNIT: &str = "cloudlet\u{b7}hour";
+
+fn pin(meter: &str) -> DerivedPin {
+    DerivedPin {
+        meter: meter.to_owned(),
+        output_unit: CLOUDLET_UNIT.to_owned(),
+    }
+}
+fn judged(reference: &str, unit: Option<&str>, pin: Option<&DerivedPin>) -> Vec<(String, String)> {
+    let mut report = ValidationReport::new();
+    judge_binding(&mut report, reference, unit, pin);
+    report
+        .violations()
+        .iter()
+        .map(|v| (v.code.to_owned(), v.subject.clone()))
+        .collect()
+}
+
+/// The reserved prefix alone makes a ref derived (decision 4): a GTS id never starts with it.
+#[test]
+fn a_ref_is_derived_by_its_reserved_prefix() {
+    for reference in [AT_1, "products.derived/x@01", "products.derived/"] {
+        assert!(is_derived_ref(reference), "{reference}");
+    }
+    for reference in [
+        "usage:storage",
+        "products.derivedx/a@1",
+        " products.derived/a@1",
+        "",
+    ] {
+        assert!(!is_derived_ref(reference), "{reference:?}");
+    }
+}
+
+/// P-D-232: a derived ref binds when its version is the tenant's and the unit, when named, is the
+/// version's output unit; a blank unit is no unit. A pin of another meter binds nothing.
+#[test]
+fn a_derived_ref_binds_to_its_version_and_its_output_unit() {
+    let at_1 = pin(AT_1);
+    assert!(judged(AT_1, Some(CLOUDLET_UNIT), Some(&at_1)).is_empty());
+    assert!(judged(AT_1, None, Some(&at_1)).is_empty());
+    assert!(judged(AT_1, Some("  "), Some(&at_1)).is_empty());
+    let unknown = vec![(USAGE_TYPE_UNKNOWN.to_owned(), "usage_type_ref".to_owned())];
+    assert_eq!(judged(AT_1, Some(CLOUDLET_UNIT), None), unknown);
+    assert_eq!(judged(AT_2, Some(CLOUDLET_UNIT), Some(&at_1)), unknown);
+    assert_eq!(
+        judged(AT_1, Some("GB"), Some(&at_1)),
+        vec![(UNIT_MISMATCH.to_owned(), "unit".to_owned())]
+    );
+    assert_eq!(USAGE_TYPE_UNKNOWN, "DERIVED_USAGE_TYPE_UNKNOWN");
+    assert_eq!(UNIT_MISMATCH, "DERIVED_UNIT_MISMATCH");
+    assert_eq!(PIN_IMMUTABLE, "DERIVED_PIN_IMMUTABLE");
+}
+
+/// P-D-232's pin: refused when the current or the proposed ref is derived and the two differ.
+#[test]
+fn the_pin_moves_only_between_gts_refs() {
+    let gts = Some("usage:storage");
+    let other = Some("usage:other");
+    for (current, proposed, moves) in [
+        (Some(AT_1), Some(AT_2), true),
+        (gts, Some(AT_1), true),
+        (Some(AT_1), gts, true),
+        (Some(AT_1), None, true),
+        (None, Some(AT_1), true),
+        (Some(AT_1), Some(AT_1), false),
+        (gts, other, false),
+        (gts, None, false),
+        (None, None, false),
+    ] {
+        assert_eq!(
+            pin_moves(current, proposed),
+            moves,
+            "{current:?} -> {proposed:?}"
+        );
+    }
+}

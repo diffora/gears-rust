@@ -18,16 +18,20 @@
 - [2. Actor Flows (CDSL)](#2-actor-flows-cdsl)
   - [Author declares a derived usage type](#author-declares-a-derived-usage-type)
   - [Pricing author reads a version](#pricing-author-reads-a-version)
+  - [Author sells a derived version through a usage SKU](#author-sells-a-derived-version-through-a-usage-sku)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [declaration-judged](#declaration-judged)
   - [inputs-resolve](#inputs-resolve)
   - [version-append](#version-append)
+  - [sku-binding](#sku-binding)
+  - [pin-holds](#pin-holds)
 - [4. States (CDSL)](#4-states-cdsl)
   - [Derived usage type states](#derived-usage-type-states)
 - [5. Definitions of Done](#5-definitions-of-done)
   - [Append-only store on both backends](#append-only-store-on-both-backends)
   - [Declarations judged by the SDK's rules](#declarations-judged-by-the-sdks-rules)
   - [Five doors with their grants and audit](#five-doors-with-their-grants-and-audit)
+  - [A usage SKU pins its derived version](#a-usage-sku-pins-its-derived-version)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
 
 <!-- /toc -->
@@ -38,15 +42,16 @@
 
 This feature stores and serves derived usage types: composite meters, such as a cloudlet-hour computed from RAM and CPU usage,
 declared as versioned catalog data (P-D-229). The declaration, its grammar, its evaluator and its canonical bytes are the
-SDK's (`bss_products_sdk::derived`, P-D-230); this feature adds the storage, the doors, the grants and the audit (P-D-231).
-It has no design slice of its own: [DESIGN](../DESIGN.md) §3.1, §3.3 and §3.7 are its design, and
-[DECOMPOSITION](../DECOMPOSITION.md) entry 2.5 places it. A usage SKU's pin and the meter-semantics answer to pricing are
-later runs of the same plan.
+SDK's (`bss_products_sdk::derived`, P-D-230); this feature adds the storage, the doors, the grants and the audit (P-D-231),
+and a usage SKU's binding to a version, pinned at its first publish (P-D-232). It has no design slice of its own:
+[DESIGN](../DESIGN.md) §3.1, §3.3, §3.5 and §3.7 are its design, and [DECOMPOSITION](../DECOMPOSITION.md) entry 2.5 places
+it. The meter-semantics answer to pricing is a later run of the same plan.
 
 ### 1.2 Purpose
 
-Let a catalog author declare a derived usage type once per formula, keep every version immutable, and give a pricing author
-the exact meter reference, unit and accrual policy version a usage policy names.
+Let a catalog author declare a derived usage type once per formula, keep every version immutable, sell a version through a
+usage SKU that keeps it from its first publish, and give a pricing author the exact meter reference, unit and accrual policy
+version a usage policy names.
 
 Requirements: `cpt-cf-bss-products-fr-derived-usage-type`.
 
@@ -57,10 +62,11 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 ### 1.4 References
 
-- [PRD](../PRD.md): `fr-derived-usage-type` and AC #30.
-- [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration and type), §3.3 (the doors), §3.7 (the tables).
-- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231.
-- The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, run 2.
+- [PRD](../PRD.md): `fr-derived-usage-type`, AC #30 and AC #31.
+- [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration, type and pin), §3.3 (the doors and the SKU doors' derived
+  codes), §3.5 (the catalog port's derived sibling), §3.7 (the tables).
+- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232.
+- The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 2 and 3.
 
 ## 2. Actor Flows (CDSL)
 
@@ -80,6 +86,15 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 1. [ ] - `p1` - Ask `sku:read`; the compiled scope and the caller's tenant filter every read - `inst-derived-read-scope`
 2. [ ] - `p1` - List the tenant's types by code, 50 to a page and at most 200, with a cursor and each type's latest version; read one type with its versions' headers - `inst-derived-read-list`
 3. [ ] - `p1` - Read one version: the declaration, the stored digest, `meter_ref` `{usage_type_id: "products.derived/<code>@<n>", version: "<n>"}`, `canonical_unit` and `accrual_policy_version` `derived-v1:<digest>`; a non-canonical `n`, an unknown code or version, and another tenant's type are 404 - `inst-derived-read-version`
+
+### Author sells a derived version through a usage SKU
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-derived-usage-types-sku-pins`
+
+1. [ ] - `p1` - Author creates or edits a usage draft with `usage_type_ref = "products.derived/<code>@<n>"` and the version's output unit; the ref is judged by algorithm sku-binding before any catalog is asked, configured or not - `inst-derived-sku-draft`
+2. [ ] - `p1` - A draft that was never published may move to another version by PATCH, judged again - `inst-derived-sku-repin`
+3. [ ] - `p1` - Submit and approve resolve the ref from the store, never the catalog; the publish rule judges the binding at submit and at apply, and the first publish pins the version - `inst-derived-sku-publish`
+4. [ ] - `p1` - A change of the published SKU is judged by algorithm pin-holds, at submit and again at apply - `inst-derived-sku-change`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -105,6 +120,21 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 1. [ ] - `p1` - In the write's transaction, find the type, take its latest version and insert n + 1; a lost race on the number is 409 CONTENDED - `inst-derived-append-number`
 2. [ ] - `p1` - Write the audit row `derived_usage_type.version` with the type's id and n in the same transaction; an audit failure rolls the version back - `inst-derived-append-audit`
 
+### sku-binding
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-derived-usage-types-sku-binding`
+
+1. [ ] - `p1` - A ref that starts with the reserved prefix `products.derived/` is derived, whatever follows; it is judged first, before the unconfigured catalog's early answer and before any catalog call - `inst-derived-binding-first`
+2. [ ] - `p1` - Parse the meter id; read the type by code and the version under the caller's tenant; a non-canonical id, an unknown code or version, and another tenant's type are one 400 DERIVED_USAGE_TYPE_UNKNOWN on `usage_type_ref` - `inst-derived-binding-version`
+3. [ ] - `p1` - A unit the SKU names that is not the version's output unit is 400 DERIVED_UNIT_MISMATCH on `unit`; a draft may leave its unit for later, and its publish then needs one (USAGE_NEEDS_METER) - `inst-derived-binding-unit`
+
+### pin-holds
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-derived-usage-types-pin-holds`
+
+1. [ ] - `p1` - Compare the head's ref with the proposed ref; when either is derived and they differ, refuse DERIVED_PIN_IMMUTABLE on `usage_type_ref`: another version, GTS to derived, derived to GTS, a dropped ref (a type change included) - `inst-derived-pin-compare`
+2. [ ] - `p1` - At submit the change door refuses it before resolving the proposal (400), and the subject again in the transaction; at apply the subject judges the head it finds (409) - `inst-derived-pin-when`
+
 ## 4. States (CDSL)
 
 ### Derived usage type states
@@ -113,10 +143,11 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 1. [ ] - `p1` - A type has no lifecycle: create gives it version 1, and no door renames, retires or deletes it (O-1).
 2. [ ] - `p1` - A version is immutable from its insert: the storage refuses every update and delete; a new formula is a new version.
+3. [ ] - `p1` - A usage SKU's derived pin moves only while the SKU is a draft that was never published; its first publish fixes it, and a new formula is sold through a new usage SKU (M1).
 
 ## 5. Definitions of Done
 
-These definitions own this feature's 3 DoDs. Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
+These definitions own this feature's 4 DoDs. Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
 
 ### Append-only store on both backends
 
@@ -153,13 +184,26 @@ Two writes under `author` on `derived_usage_type` and three reads under `sku:rea
 each in their transaction (`subject_kind = derived_usage_type`, the type's id, the version); the list pages as the SKU list
 does (DESIGN §3.3; P-D-231).
 
+### A usage SKU pins its derived version
+
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-usage-type-pin`
+
+Verified by the plan's run 3 (the tests P-D-232 lists); implementation markers in `products/src/domain/derived.rs`,
+`products/src/domain/approvals/change.rs` and `products/src/api/rest/governance.rs`.
+
+A usage SKU's `products.derived/<code>@<n>` ref is judged from the tenant's store first, at draft save, submit and apply,
+and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED_UNIT_MISMATCH. A draft may move it; a
+published SKU keeps it, and a change that moves it is DERIVED_PIN_IMMUTABLE at submit (400) and at apply (409). The three
+codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
+
 ## 6. Acceptance Criteria
 
-Each criterion below corresponds to exactly one DoD above and cites [PRD §9](../PRD.md#9-acceptance-criteria). The pin of a
-usage SKU and the meter-semantics answer are not part of this feature yet.
+Each criterion below corresponds to exactly one DoD above and cites [PRD §9](../PRD.md#9-acceptance-criteria). The
+meter-semantics answer is not part of this feature yet.
 
 | DoD | PRD trace | Given / When / Then |
 | --- | --- | --- |
 | `cpt-cf-bss-products-dod-derived-usage-type-store` | AC #29, #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given a stored version, when anything updates or deletes it on either engine, then the storage refuses; a version naming another tenant's type is refused by its key, and a second type with the tenant's code by its index. |
 | `cpt-cf-bss-products-dod-derived-usage-type-rules` | AC #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given a declaration that breaks a rule, when it is created or added as a version, then it is 400 DERIVED_DECLARATION_INVALID naming the rule and nothing is written; given the cloudlet, its stored digest is the SHA-256 of its canonical bytes. |
 | `cpt-cf-bss-products-dod-derived-usage-type-doors` | AC #28, #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given an author with `author` on `derived_usage_type`, when the cloudlet is created and a second version added, then both read back with their meter ids and version 1 is unchanged, each write has its audit row, a replayed key answers the first receipt, another tenant reads nothing, and a caller with only `sku:read` reads and cannot write. |
+| `cpt-cf-bss-products-dod-derived-usage-type-pin` | AC #31; `cpt-cf-bss-products-fr-derived-usage-type` | Given the tenant's derived type with versions 1 and 2 and a catalog configured or not, when a usage SKU is created on version 1 with its output unit, published and then changed, then the catalog is never asked; an unknown version or another unit is refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to or from a GTS ref, or one that drops the ref is refused at submit (400) and at apply (409). |

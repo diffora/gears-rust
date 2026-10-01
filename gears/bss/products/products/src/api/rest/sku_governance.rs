@@ -13,6 +13,7 @@ use crate::{
         approvals::{
             Subject, change::SkuChange, check_note, publish::SkuPublish, retire::SkuRetire,
         },
+        derived,
         sku::{SkuPatch, apply_patch},
         validation::ValidationReport,
     },
@@ -59,6 +60,15 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = OperationBuilder::post("/bss-products/v1/skus/{id}/submit")
         .operation_id("bss_products.submit_sku")
         .summary("submit_sku")
+        .description(
+            "Submits a draft SKU for publication; at quorum 0 the submit is the publish. A usage \
+             SKU's GTS ref is resolved through the usage-type catalog (P-D-184); a derived ref \
+             (`products.derived/<code>@<n>`) is read from this gear's store, never from the \
+             catalog, and the first publish pins it (P-D-232). Refusals include 400 \
+             USAGE_NEEDS_METER, USAGE_TYPE_UNRESOLVED, DERIVED_USAGE_TYPE_UNKNOWN and \
+             DERIVED_UNIT_MISMATCH, 400 NOTE_TOO_LONG, 403 USAGE_TYPE_FORBIDDEN, 409 NOT_A_DRAFT \
+             and 503 USAGE_TYPE_UNAVAILABLE.",
+        )
         .tag("SKU governance")
         .authenticated()
         .no_license_required()
@@ -86,8 +96,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "Submits a change of a published SKU for approval, effective from `effective_from`. \
              The texts it carries have the caps of the create (P-D-225), and the note at most \
-             2000 characters. Refusals include 400 FIELD_TOO_LONG on a text over its cap and 400 \
-             NOTE_TOO_LONG on the note.",
+             2000 characters. A usage SKU keeps the derived usage type it was first published on \
+             (P-D-232): a change that moves it to another version, to a GTS ref, from a GTS ref, \
+             or drops it (a type change included) is refused before any catalog is asked. \
+             Refusals include 400 FIELD_TOO_LONG on a text over its cap, 400 NOTE_TOO_LONG on \
+             the note, 400 DERIVED_PIN_IMMUTABLE, and 400 DERIVED_UNIT_MISMATCH for a unit other \
+             than the pinned version's output unit.",
         )
         .tag("SKU governance")
         .authenticated()
@@ -358,6 +372,16 @@ async fn execute(
     .await
     .map_err(tx_to_canonical)?;
     let proposed = apply_patch(&SkuContent::from(&current), &patch);
+    // P-D-232: a change that moves a derived pin is refused before any catalog is asked. The rule
+    // is `SkuChange::validate_change`'s, judged again in the transaction and at apply.
+    if matches!(kind, SubmitKind::Change)
+        && derived::pin_moves(
+            current.usage_type_ref.as_deref(),
+            proposed.usage_type_ref.as_deref(),
+        )
+    {
+        return Err(derived::pin_immutable().into());
+    }
     let usage = if matches!(kind, SubmitKind::Retire) {
         None
     } else {

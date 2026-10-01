@@ -41783,7 +41783,7 @@
     },
     "/bss-products/v1/approval-units/{id}/approve": {
       "post": {
-        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+        "description": "Approves the unit at the generation its reviewer saw. The note is at most 2000 characters (the approval engine's cap). The apply judges the SKU as it is then: a change that would move a derived pin, or leave a unit other than the pinned version's output unit, is refused (P-D-232). Refusals include 400 NOTE_TOO_LONG on a longer note, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION, 409 DUPLICATE_VOTE, and the apply's 409 DERIVED_PIN_IMMUTABLE, DERIVED_UNIT_MISMATCH or DERIVED_USAGE_TYPE_UNKNOWN.",
         "operationId": "bss_products.approve_unit",
         "parameters": [
           {
@@ -43835,7 +43835,7 @@
         }
       },
       "post": {
-        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        "description": "Creates a draft SKU of the tenant. Its texts have explicit caps, in characters (P-D-225): code 64, name 200, description 2000, gl_code, tax_category and unit 64, invoice_line_template 2000, usage_type_ref 512. A usage_type_ref of the form `products.derived/<code>@<n>` names one version of the tenant's derived usage type, read from this gear's store; the usage-type catalog is never asked for it (P-D-232). Refusals: 400 VALIDATION, or 400 FIELD_TOO_LONG on a text over its cap; 400 USAGE_TYPE_UNRESOLVED for a GTS ref the configured catalog does not know; 400 DERIVED_USAGE_TYPE_UNKNOWN for a derived ref the tenant does not hold, or one not in that form; 400 DERIVED_UNIT_MISMATCH for a unit other than that version's output unit; 404 for a category the tenant does not hold; 409 SKU_CODE_TAKEN, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.create_sku",
         "parameters": [
           {
@@ -44323,7 +44323,7 @@
         ]
       },
       "patch": {
-        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
+        "description": "Edits a draft SKU under If-Match; a field the body leaves out is unchanged. The texts it carries have the caps of the create (P-D-225). A draft never published may move its derived usage type to another version (P-D-232). Refusals include 400 VALIDATION, 400 FIELD_TOO_LONG on a text over its cap, 400 USAGE_TYPE_UNRESOLVED, 400 DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH as at the create, 404, and 409 NOT_A_DRAFT, ROW_LOCKED_PENDING, STALE_REVISION, SKU_NAME_TAKEN or CATEGORY_RETIRED.",
         "operationId": "bss_products.update_sku_draft",
         "parameters": [
           {
@@ -44451,7 +44451,7 @@
     },
     "/bss-products/v1/skus/{id}/changes": {
       "post": {
-        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. Refusals include 400 FIELD_TOO_LONG on a text over its cap and 400 NOTE_TOO_LONG on the note.",
+        "description": "Submits a change of a published SKU for approval, effective from `effective_from`. The texts it carries have the caps of the create (P-D-225), and the note at most 2000 characters. A usage SKU keeps the derived usage type it was first published on (P-D-232): a change that moves it to another version, to a GTS ref, from a GTS ref, or drops it (a type change included) is refused before any catalog is asked. Refusals include 400 FIELD_TOO_LONG on a text over its cap, 400 NOTE_TOO_LONG on the note, 400 DERIVED_PIN_IMMUTABLE, and 400 DERIVED_UNIT_MISMATCH for a unit other than the pinned version's output unit.",
         "operationId": "bss_products.change_sku",
         "parameters": [
           {
@@ -45064,6 +45064,7 @@
     },
     "/bss-products/v1/skus/{id}/submit": {
       "post": {
+        "description": "Submits a draft SKU for publication; at quorum 0 the submit is the publish. A usage SKU's GTS ref is resolved through the usage-type catalog (P-D-184); a derived ref (`products.derived/<code>@<n>`) is read from this gear's store, never from the catalog, and the first publish pins it (P-D-232). Refusals include 400 USAGE_NEEDS_METER, USAGE_TYPE_UNRESOLVED, DERIVED_USAGE_TYPE_UNKNOWN and DERIVED_UNIT_MISMATCH, 400 NOTE_TOO_LONG, 403 USAGE_TYPE_FORBIDDEN, 409 NOT_A_DRAFT and 503 USAGE_TYPE_UNAVAILABLE.",
         "operationId": "bss_products.submit_sku",
         "parameters": [
           {

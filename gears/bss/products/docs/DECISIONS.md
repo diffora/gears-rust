@@ -62,6 +62,7 @@
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 | P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment |
 | P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
+| P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231 |
 
 ## Entries
 
@@ -77,6 +78,12 @@ not a blanket 503 on authoring. Submit validates the proposed metering and `appl
 publication or change. Publication requires both `usage_type_ref` and `unit` and fails closed: an
 unresolvable ref is `USAGE_TYPE_UNRESOLVED`, an unreachable configured catalog is 503. P-D-207 amends this
 entry: a catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN`, and the picker is `GET /usage-types`.
+
+**Amended by P-D-232 (2026-10-01): the catalog port has a derived sibling.** A ref `products.derived/<code>@<n>` names
+the tenant's derived usage type version (P-D-231) and is read from this gear's own store. It is judged first, at draft
+save, submit and apply, before the unconfigured catalog's early answer and before any catalog call: the catalog is never
+asked for it, configured or not. Its refusals are 400 `DERIVED_USAGE_TYPE_UNKNOWN` and `DERIVED_UNIT_MISMATCH`. A GTS
+ref keeps everything above.
 
 **Traceability:** [PRD `fr-sku-metering`](PRD.md#fr-sku-metering); spec §4, §6 and §15
 (the usage-type catalog design remains in force, with the picker's path and gate changed by P-D-207).
@@ -502,6 +509,11 @@ role; without it submit and approve answer 403 `USAGE_TYPE_FORBIDDEN`.
 
 **Source:** Owner, 2026-09-27 (option b); phase 6 plan rev 2 (validation D5, asks 6 and 13; plan review H2, L9);
 the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
+
+**Amended by P-D-232 (2026-10-01).** The picker `GET /usage-types` lists GTS usage types only, the catalog's. Derived
+usage types have their own list, `GET /derived-usage-types`, under `sku:read` (P-D-231). A derived ref is never read
+through the catalog, so a catalog that refuses the caller, or does not answer, neither refuses nor delays a usage SKU on
+a derived version.
 
 #### P-D-208 [M] A retired SKU no longer keeps its category in use
 
@@ -1319,3 +1331,74 @@ and what the doors answer. Migration `m20261001_000011_derived_usage_type`, the 
 **Source:** The derived usage types implementation plan, rev 3: design decisions 4, 8 and 9 and run 2, on the owner's
 answers of 2026-10-01 (O-1: versions are append-only, with no approval of their own; O-2: the meter id; O-3: reads under
 `sku:read`, writes under `author` on `derived_usage_type`). Implements P-D-229 and P-D-230.
+
+**Amended by P-D-232 (2026-10-01).**
+- A usage SKU now names a derived version and pins it at its first publish (the "Not built yet" line above is done for
+  the pin; the meter-semantics answer is still to come).
+- Only the derived doors' own `DERIVED_` codes name the `derived_usage_type` resource. The binding's codes
+  (`DERIVED_USAGE_TYPE_UNKNOWN`, `DERIVED_UNIT_MISMATCH`, `DERIVED_PIN_IMMUTABLE`) refuse a SKU's write and name the SKU.
+
+#### P-D-232 [H] A usage SKU pins a derived usage type at its first publish
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-231 stores derived usage types. This entry fixes how a usage SKU names one and keeps it: design decision 7 of the plan,
+on the owner's M1 and O-2. `domain/derived.rs`, `domain/sku.rs`, `domain/approvals/change.rs`, `api/rest/skus.rs`,
+`api/rest/governance.rs`, `api/rest/sku_governance.rs` and `api/rest/derived_usage_types.rs` carry it.
+- **The ref (O-2).** A usage SKU names a derived meter by `usage_type_ref = "products.derived/<code>@<n>"`, tenant-scoped.
+  The prefix is reserved (P-D-230), so a ref that starts with it is derived whatever follows, and is never a catalog's
+  question.
+- **The derived check comes first**, at three sites:
+  - the draft doors (`resolve_draft_ref`: the create, and a PATCH that changes the ref, or the unit of a derived ref);
+  - the resolution a submit or an approve makes before its transaction (`governance::resolve`);
+  - the publish rule (`validate_publish`), at submit and at apply, for a publish and for a change.
+
+  At the first two it reads the tenant's version from this gear's store: `MeterId::parse`, then the type by code and the
+  version, under the caller's tenant (`AccessScope::for_tenant`). At draft save that is before the unconfigured catalog's
+  early `Ok`; everywhere it is before any catalog call. The catalog is never asked for a derived ref, configured or not, so
+  a usage SKU on a derived version saves, publishes and is approved with no catalog configured (P-D-184, P-D-207 amended).
+- **The binding.** A derived ref binds when the tenant holds that version and the SKU's unit, when it names one, is that
+  version's `output_unit`, exactly. Otherwise:
+  - 400 `DERIVED_USAGE_TYPE_UNKNOWN` on `usage_type_ref`, ONE answer for an unknown code, an unknown version, another
+    tenant's type, a version that is not canonical (`@01`, `@0`) and a ref with no version;
+  - 400 `DERIVED_UNIT_MISMATCH` on `unit`.
+
+  A draft may leave its unit for later, as a GTS draft may, and a blank unit is no unit; the publish then needs one
+  (`USAGE_NEEDS_METER`). At publish, `validate_publish` judges a derived ref by the stored version the door read
+  (`UsageRefAnswer::Derived`): no catalog answer binds it, `Resolved` included, and a derived answer binds no GTS ref.
+- **The pin (M1).** `SkuChange::validate_change` refuses a change when the current or the proposed `usage_type_ref` is
+  derived and the two differ: `@1` → `@2`, GTS → derived, derived → GTS, and a derived ref dropped, alone or by a type
+  change. It judges the head as it is, at submit and again at apply, before the fence and type checks.
+  - At submit the refusal is 400 `DERIVED_PIN_IMMUTABLE` on `usage_type_ref`. The change door applies the same rule before
+    it resolves the proposal, so no catalog is asked for a change the pin refuses: a derived → GTS change is 400, not a
+    503, when no catalog is configured.
+  - At apply it is 409 `DERIVED_PIN_IMMUTABLE`, as every apply refusal is a conflict (`ApplyRefused`).
+  - A change that keeps the ref still applies; one that moves the unit off the pinned version's output unit is 400
+    `DERIVED_UNIT_MISMATCH`.
+  - A draft that was never published may move its pin by PATCH: only the insert writes `draft`, and a draft holds no
+    reservation. A new formula version is sold through a new usage SKU, then a new entry and a new plan revision, as a
+    usage chain's metering is fixed (pricing D-402).
+- **Measured: the stale apply.** A unit's fingerprint covers only what it proposes (`bss_approval` `snapshot_hash`). A
+  concurrent writer that moves only fields the change overrides changes no proposal, so the approve is not refreshed and
+  the apply runs at the same generation; the apply judges the head it finds, and the pin refuses it. A writer that also
+  moves a field the change keeps refreshes the unit first (`UNIT_STALE`), and the approve of the new generation is refused
+  at apply the same way.
+- **The resource.** The three codes refuse a SKU's write, so they name the SKU (`cf.bss.products.sku.v1~`); only the
+  derived doors' own `DERIVED_` codes name `derived_usage_type` (P-D-231 amended, P-D-223).
+- **A store failure** in the derived read is a 500, as every repository read of the SKU doors is.
+- **The served texts** of the create, the draft PATCH, the submit (which had none), the change and the approve name the
+  new codes.
+- **Not built yet.** Products does not answer pricing's meter semantics yet (the plan's run 4). Until then a usage SKU on
+  a derived version publishes, but no pricing usage entry can name its meter (P-D-229).
+- **The tests.** `api/rest/derived_binding_tests.rs`, every case with the catalog configured and unconfigured, and a
+  counting catalog that must stay at zero: a derived draft created, submitted and approved; the unknown refs at the create
+  and a PATCH; a unit mismatch at the create, a PATCH and a change, and a draft without its unit; a draft moving `@1` →
+  `@2` and publishing on `@2`; the pin at submit for `@1` → `@2`, derived → GTS, a type change dropping the ref and a dropped
+  ref, with no unit recorded and no fence left; GTS → derived refused while GTS → GTS applies; a stale type change refused
+  at apply after a concurrent writer pinned the head, and (configured) a stale GTS → GTS change refused at apply after its
+  refresh. `domain/derived_tests.rs`: the reserved prefix, the binding and the pin's truth table. `domain/sku_tests.rs`:
+  `validate_publish` on a derived ref. `infra/error_mapping_tests.rs`: the three codes name the SKU.
+
+**Source:** The derived usage types implementation plan, rev 3: design decision 7 and run 3, on the owner's answers of
+2026-10-01 (M1: a usage SKU's derived pin is fixed at its first publish, a new formula version is sold through a new usage
+SKU, a never-published draft may change its pin; O-2: the ref). Implements P-D-229's pin (its amendment).
