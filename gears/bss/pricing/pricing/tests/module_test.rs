@@ -40,6 +40,7 @@ fn declared_paths() -> Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("POST", "/bss-pricing/v1/plans"),
         ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -123,7 +124,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 54);
+    assert_eq!(registered.len(), 55);
     assert!(router.has_routes());
 }
 
@@ -202,8 +203,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // a claimed key's stored status is read back by one function (`support::stored_status`,
         // PS-43), where the claim and the book create each read it; + 2: run 9.3's counts door
         // (D-470), its registration and its 200 answer; + 4: run 9.6's reservations read and
-        // effective-policy read (D-480, D-481), each registration and its 200 answer.
-        ("StatusCode::", 2, 108),
+        // effective-policy read (D-480, D-481), each registration and its 200 answer;
+        // + 2: run 9.8b's plans counts (D-485), its registration and its 200 answer.
+        ("StatusCode::", 2, 110),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -304,7 +306,7 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 54);
+    assert_eq!(described, 55);
 }
 
 /// Every answer that sets an `ETag` declares the header on its success response, and nothing else
@@ -407,6 +409,7 @@ async fn no_operation_declares_a_422() {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true

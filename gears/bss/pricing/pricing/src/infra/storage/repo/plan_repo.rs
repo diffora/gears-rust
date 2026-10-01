@@ -1,11 +1,17 @@
 //! Scoped plan persistence with conditional versions (D-394).
 use super::{driver_failure, map_unique, matched};
 use crate::infra::storage::{RepoError, entity::plan as e};
-use sea_orm::sea_query::{Expr, ExprTrait};
-use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, Set};
+use sea_orm::sea_query::{Expr, ExprTrait, Func};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QuerySelect, Set};
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, PaginateOdataTryError, escape_like,
+    filter_node_to_condition, paginate_odata_try,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::filter::{FieldKind, FilterField, convert_expr_to_filter_node};
+use toolkit_odata::{ODataOrderBy, ODataQuery, OrderKey, Page, SortDir};
 use uuid::Uuid;
 fn key(tenant: Uuid, id: Uuid) -> Condition {
     Condition::all()
@@ -30,14 +36,28 @@ pub async fn insert(
         created_by: Set(m.created_by),
         created_at: Set(m.created_at),
         updated_at: Set(m.updated_at),
+        work_revision_id: Set(None),
+        work_state: Set(None),
+        scheduled_revision_id: Set(None),
+        scheduled_from: Set(None),
+        published_revision_id: Set(None),
+        current_book_id: Set(None),
+        current_currency: Set(None),
+        last_activity_at: Set(m.updated_at),
     };
-    e::Entity::insert(active.clone())
+    let saved = e::Entity::insert(active.clone())
         .secure()
         .scope_with_model(scope, &active)
         .map_err(|e| driver_failure("insert plan scope".into(), e))?
         .exec_with_returning(runner)
         .await
-        .map_err(|e| map_unique("insert plan".into(), e))
+        .map_err(|e| map_unique("insert plan".into(), e))?;
+    super::plan_summary::refresh(runner, scope, m.tenant_id, saved.id).await?;
+    find(runner, scope, m.tenant_id, saved.id)
+        .await?
+        .ok_or(RepoError::Conflict {
+            code: "PLAN_NOT_FOUND",
+        })
 }
 /// Read by tenant and identity within the authorized scope.
 /// # Errors
@@ -111,36 +131,7 @@ pub async fn naming_sku(
     tenant: Uuid,
     sku: Uuid,
 ) -> Result<Vec<e::Model>, RepoError> {
-    use crate::domain::plan::RevisionState;
-    use crate::infra::storage::entity::{
-        plan_item as item, plan_revision as revision, price_book_entry as entry,
-    };
-    let naming = sea_orm::sea_query::Query::select()
-        .expr(Expr::val(1))
-        .from(revision::Entity)
-        .inner_join(
-            item::Entity,
-            Expr::col((item::Entity, item::Column::RevisionId))
-                .equals((revision::Entity, revision::Column::Id)),
-        )
-        .inner_join(
-            entry::Entity,
-            Expr::col((entry::Entity, entry::Column::Id))
-                .equals((item::Entity, item::Column::PriceBookEntryId)),
-        )
-        .and_where(
-            Expr::col((revision::Entity, revision::Column::PlanId))
-                .equals((e::Entity, e::Column::Id)),
-        )
-        .and_where(Expr::col((revision::Entity, revision::Column::TenantId)).eq(tenant))
-        .and_where(
-            Expr::col((revision::Entity, revision::Column::State))
-                .ne(RevisionState::Superseded.as_str()),
-        )
-        .and_where(Expr::col((item::Entity, item::Column::TenantId)).eq(tenant))
-        .and_where(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
-        .and_where(Expr::col((entry::Entity, entry::Column::SkuId)).eq(sku))
-        .to_owned();
+    let naming = sku_revisions(tenant, sku);
     e::Entity::find()
         .secure()
         .scope_with(scope)
@@ -176,7 +167,8 @@ pub async fn rename(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("rename plan".into(), e))?;
-    matched(result.rows_affected, "STALE_REVISION")
+    matched(result.rows_affected, "STALE_REVISION")?;
+    super::plan_summary::refresh(runner, scope, tenant, id).await
 }
 /// Write the revision number a revision's apply publishes, at the version the caller read.
 /// # Errors
@@ -200,7 +192,8 @@ pub async fn set_published(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("publish plan projection".into(), e))?;
-    matched(result.rows_affected, "STALE_REVISION")
+    matched(result.rows_affected, "STALE_REVISION")?;
+    super::plan_summary::refresh(runner, scope, tenant, id).await
 }
 /// Advance the revision number a due switch publishes (D-448), in the caller's transaction.
 /// `published_rev` is a projection of the revisions, not an edit of the plan: neither the plan's
@@ -258,4 +251,358 @@ pub async fn delete_unpublished(
         .await
         .map_err(|e| driver_failure("delete unpublished plan".into(), e))?;
     matched(result.rows_affected, "STALE_REVISION")
+}
+
+/// Revisions whose items name `sku` through an entry, correlated to the plan row (D-434).
+fn sku_revisions(tenant: Uuid, sku: Uuid) -> sea_orm::sea_query::SelectStatement {
+    use crate::domain::plan::RevisionState;
+    use crate::infra::storage::entity::{
+        plan_item as item, plan_revision as revision, price_book_entry as entry,
+    };
+    sea_orm::sea_query::Query::select()
+        .expr(Expr::val(1))
+        .from(revision::Entity)
+        .inner_join(
+            item::Entity,
+            Expr::col((item::Entity, item::Column::RevisionId))
+                .equals((revision::Entity, revision::Column::Id)),
+        )
+        .inner_join(
+            entry::Entity,
+            Expr::col((entry::Entity, entry::Column::Id))
+                .equals((item::Entity, item::Column::PriceBookEntryId)),
+        )
+        .and_where(
+            Expr::col((revision::Entity, revision::Column::PlanId))
+                .equals((e::Entity, e::Column::Id)),
+        )
+        .and_where(Expr::col((revision::Entity, revision::Column::TenantId)).eq(tenant))
+        .and_where(
+            Expr::col((revision::Entity, revision::Column::State))
+                .ne(RevisionState::Superseded.as_str()),
+        )
+        .and_where(Expr::col((item::Entity, item::Column::TenantId)).eq(tenant))
+        .and_where(Expr::col((entry::Entity, entry::Column::TenantId)).eq(tenant))
+        .and_where(Expr::col((entry::Entity, entry::Column::SkuId)).eq(sku))
+        .to_owned()
+}
+
+/// `selling` as 1 or 0 from the stored columns and the request's day (D-484).
+fn selling_flag(today: time::Date) -> Expr {
+    Expr::case(
+        Condition::any()
+            .add(e::Column::PublishedRevisionId.is_not_null())
+            .add(
+                Condition::all()
+                    .add(e::Column::ScheduledFrom.is_not_null())
+                    .add(e::Column::ScheduledFrom.lte(today)),
+            ),
+        Expr::val(1),
+    )
+    .finally(Expr::val(0))
+    .into()
+}
+
+/// `change` from the stored columns and the request's day (D-484).
+fn change_expr(today: time::Date) -> Expr {
+    Func::coalesce([
+        Expr::col((e::Entity, e::Column::WorkState)),
+        Expr::case(e::Column::ScheduledFrom.gt(today), Expr::val("scheduled"))
+            .finally(Expr::val("none"))
+            .into(),
+    ])
+    .into()
+}
+
+/// The page size when the caller names none, and the most a page holds (D-485). Past 500 plans a
+/// caller follows `next_cursor`.
+pub const PLAN_PAGE: LimitCfg = LimitCfg {
+    default: 500,
+    max: 500,
+};
+
+/// Fields of the plans pager. `book_id` and `currency` are the current revision's. `id` is the
+/// tie-break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PlanListField {
+    Id,
+    Code,
+    Name,
+    BookId,
+    Currency,
+    LastActivityAt,
+}
+impl FilterField for PlanListField {
+    const FIELDS: &'static [Self] = &[
+        Self::Id,
+        Self::Code,
+        Self::Name,
+        Self::BookId,
+        Self::Currency,
+        Self::LastActivityAt,
+    ];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::Code => "code",
+            Self::Name => "name",
+            Self::BookId => "book_id",
+            Self::Currency => "currency",
+            Self::LastActivityAt => "last_activity_at",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        match self {
+            Self::Id | Self::BookId => FieldKind::Uuid,
+            Self::Code | Self::Name | Self::Currency => FieldKind::String,
+            Self::LastActivityAt => FieldKind::DateTimeUtc,
+        }
+    }
+    fn nullable(&self) -> bool {
+        matches!(self, Self::BookId | Self::Currency)
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS.iter().copied().find(|f| f.name() == name)
+    }
+}
+impl PlanListField {
+    #[must_use]
+    pub const fn orderable(self) -> bool {
+        matches!(
+            self,
+            Self::Id | Self::Code | Self::Name | Self::LastActivityAt
+        )
+    }
+    fn column(self) -> e::Column {
+        match self {
+            Self::Id => e::Column::Id,
+            Self::Code => e::Column::Code,
+            Self::Name => e::Column::Name,
+            Self::BookId => e::Column::CurrentBookId,
+            Self::Currency => e::Column::CurrentCurrency,
+            Self::LastActivityAt => e::Column::LastActivityAt,
+        }
+    }
+}
+/// How the pager reads a plan row.
+pub struct PlanListMapping;
+impl FieldToColumn<PlanListField> for PlanListMapping {
+    type Column = e::Column;
+    fn map_field(field: PlanListField) -> e::Column {
+        field.column()
+    }
+    fn is_orderable(field: PlanListField) -> bool {
+        field.orderable()
+    }
+}
+impl ODataFieldMapping<PlanListField> for PlanListMapping {
+    type Entity = e::Entity;
+    fn extract_cursor_value(model: &e::Model, field: PlanListField) -> sea_orm::Value {
+        match field {
+            PlanListField::Id => sea_orm::Value::Uuid(Some(model.id)),
+            PlanListField::Code => sea_orm::Value::String(Some(model.code.clone())),
+            PlanListField::Name => sea_orm::Value::String(Some(model.name.clone())),
+            PlanListField::BookId => sea_orm::Value::Uuid(model.current_book_id),
+            PlanListField::Currency => sea_orm::Value::String(model.current_currency.clone()),
+            PlanListField::LastActivityAt => {
+                sea_orm::Value::TimeDateTimeWithTimeZone(Some(model.last_activity_at))
+            }
+        }
+    }
+}
+
+/// What the list narrows by, besides `$filter`.
+#[derive(Debug, Clone)]
+pub struct PlanListFilter {
+    pub text: Option<String>,
+    pub sku: Option<Uuid>,
+    pub selling: Option<bool>,
+    /// Empty: every change. Otherwise the derived `change` is one of these tokens.
+    pub change: Vec<String>,
+    pub today: time::Date,
+}
+
+/// A list read refused or failed.
+#[derive(Debug)]
+pub enum PlanListError {
+    Query(toolkit_odata::Error),
+    Repo(RepoError),
+}
+
+fn folded(backend: sea_orm::DbBackend, expr: Expr) -> Expr {
+    if backend == sea_orm::DbBackend::Postgres {
+        Expr::cust_with_expr(
+            format!(
+                r#"lower($1 COLLATE "{}")"#,
+                super::book_repo::PG_FOLD_COLLATION
+            ),
+            expr,
+        )
+    } else {
+        Expr::expr(Func::lower(expr))
+    }
+}
+
+fn text_condition(text: &str, backend: sea_orm::DbBackend) -> Condition {
+    use sea_orm::sea_query::BinOper;
+    let pattern = format!("%{}%", escape_like(text));
+    [e::Column::Code, e::Column::Name]
+        .into_iter()
+        .fold(Condition::any(), |any, column| {
+            let lowered = folded(backend, Expr::val(pattern.clone())).binary(
+                BinOper::Escape,
+                Expr::Constant(sea_orm::Value::Char(Some('\\'))),
+            );
+            any.add(folded(backend, Expr::col((e::Entity, column))).binary(BinOper::Like, lowered))
+        })
+}
+
+fn narrowed(tenant: Uuid, backend: sea_orm::DbBackend, filter: &PlanListFilter) -> Condition {
+    let mut c = Condition::all().add(e::Column::TenantId.eq(tenant));
+    if let Some(text) = filter.text.as_deref() {
+        c = c.add(text_condition(text, backend));
+    }
+    if let Some(sku) = filter.sku {
+        c = c.add(Expr::exists(sku_revisions(tenant, sku)));
+    }
+    if let Some(selling) = filter.selling {
+        c = c.add(selling_flag(filter.today).eq(i32::from(selling)));
+    }
+    if !filter.change.is_empty() {
+        c = c.add(change_expr(filter.today).is_in(filter.change.clone()));
+    }
+    c
+}
+
+fn map_page_error(error: PaginateOdataTryError<RepoError>) -> PlanListError {
+    match error {
+        PaginateOdataTryError::OData(toolkit_odata::Error::Db(message)) => {
+            PlanListError::Repo(RepoError::Driver {
+                context: "list plans".into(),
+                source: sea_orm::DbErr::Custom(message),
+            })
+        }
+        PaginateOdataTryError::OData(other) => PlanListError::Query(other),
+        PaginateOdataTryError::MapError(error) => PlanListError::Repo(error),
+    }
+}
+
+/// One page of the tenant's plans (D-485). The day-dependent axes are predicates on the stored
+/// summary. `$top` defaults to 500 and is clamped at 500. Tie-break `id` follows the order.
+/// # Errors
+/// [`PlanListError::Query`] for a value, order field or cursor the pager refuses;
+/// [`PlanListError::Repo`] for storage.
+pub async fn page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    filter: &PlanListFilter,
+    query: &ODataQuery,
+) -> Result<Page<e::Model>, PlanListError> {
+    let mut query = query.clone();
+    if query.cursor.is_none() && query.order.0.is_empty() {
+        query.order = ODataOrderBy(vec![OrderKey {
+            field: PlanListField::Code.name().to_owned(),
+            dir: SortDir::Asc,
+        }]);
+    }
+    let tie = query.order.0.first().map_or(SortDir::Asc, |key| key.dir);
+    let select = e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(narrowed(tenant, backend, filter));
+    paginate_odata_try::<PlanListField, PlanListMapping, e::Entity, e::Model, _, RepoError, _>(
+        select,
+        runner,
+        &query,
+        (PlanListField::Id.name(), tie),
+        PLAN_PAGE,
+        Ok,
+    )
+    .await
+    .map_err(map_page_error)
+}
+
+/// The counts under the same narrowing, one grouped statement (D-485).
+/// # Errors
+/// A `$filter` the list refuses, or storage.
+pub async fn count(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    backend: sea_orm::DbBackend,
+    filter: &PlanListFilter,
+    query: &ODataQuery,
+) -> Result<PlanCounts, PlanListError> {
+    #[derive(Debug, sea_orm::FromQueryResult)]
+    struct Bucket {
+        selling: i64,
+        change: String,
+        n: i64,
+    }
+    let mut condition = narrowed(tenant, backend, filter);
+    if let Some(ast) = query.filter.as_deref() {
+        let node = convert_expr_to_filter_node::<PlanListField>(ast).map_err(|e| {
+            PlanListError::Query(toolkit_odata::Error::InvalidFilter(e.to_string()))
+        })?;
+        condition = condition.add(
+            filter_node_to_condition::<PlanListField, PlanListMapping>(&node)
+                .map_err(toolkit_odata::Error::InvalidFilter)
+                .map_err(PlanListError::Query)?,
+        );
+    }
+    let selling = selling_flag(filter.today);
+    let change = change_expr(filter.today);
+    let rows = e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(condition)
+        .project_all(runner, |q| {
+            q.select_only()
+                .expr_as(selling.clone(), "selling")
+                .expr_as(change.clone(), "change")
+                .column_as(e::Column::Id.count(), "n")
+                .group_by(selling.clone())
+                .group_by(change.clone())
+                .into_model::<Bucket>()
+        })
+        .await
+        .map_err(|e| PlanListError::Repo(driver_failure("count plans".into(), e)))?;
+    let mut counts = PlanCounts::default();
+    for row in rows {
+        let n = u64::try_from(row.n).map_err(|_| {
+            PlanListError::Repo(RepoError::CorruptRow(format!("plan count {}", row.n)))
+        })?;
+        counts.total = counts.total.saturating_add(n);
+        if row.selling == 0 {
+            counts.selling_false = counts.selling_false.saturating_add(n);
+        } else {
+            counts.selling_true = counts.selling_true.saturating_add(n);
+        }
+        match row.change.as_str() {
+            "none" => counts.none = n,
+            "draft" => counts.draft = n,
+            "pending" => counts.pending = n,
+            "scheduled" => counts.scheduled = n,
+            other => {
+                return Err(PlanListError::Repo(RepoError::CorruptRow(format!(
+                    "plan change {other:?}"
+                ))));
+            }
+        }
+    }
+    Ok(counts)
+}
+
+/// One grouped count of the list's narrowing (D-485).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PlanCounts {
+    pub selling_true: u64,
+    pub selling_false: u64,
+    pub none: u64,
+    pub draft: u64,
+    pub pending: u64,
+    pub scheduled: u64,
+    pub total: u64,
 }

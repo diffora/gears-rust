@@ -27,6 +27,8 @@ const PRICE_STATUS: &[&str] = &[
 const SKU_ENTRY_STATUS: &[&str] = &["priced", "scheduled", "unpriced"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
 const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "superseded"];
+/// How a plan's list row is changing (D-485).
+const PLAN_CHANGE: &[&str] = &["none", "draft", "pending", "scheduled"];
 const RESOLVED_REVISION: &[&str] = &["published", "superseded", "scheduled"];
 const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach"];
 const OP_STATE: &[&str] = &["reserving", "written", "cancelling", "releasing", "done"];
@@ -68,6 +70,7 @@ const CLOSED: &[Closed] = &[
     ),
     ("PricingPlanItemReadDto", "state", REVISION, false),
     ("PricingPlanRevisionHeader", "state", REVISION, false),
+    ("PricingPlanDto", "change", PLAN_CHANGE, false),
     ("PricingPlanRevisionDto", "state", REVISION, false),
     ("PricingPlanEntrySummary", "charge_kind", CHARGE_KIND, false),
     ("PricingPlanEntrySummary", "period", PERIOD, true),

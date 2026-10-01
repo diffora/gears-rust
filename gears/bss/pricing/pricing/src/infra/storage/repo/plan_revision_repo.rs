@@ -95,13 +95,15 @@ pub async fn insert(
         created_at: Set(m.created_at),
         updated_at: Set(m.updated_at),
     };
-    e::Entity::insert(active.clone())
+    let saved = e::Entity::insert(active.clone())
         .secure()
         .scope_with_model(scope, &active)
         .map_err(|e| driver_failure("insert plan revision scope".into(), e))?
         .exec_with_returning(runner)
         .await
-        .map_err(|e| map_revision_unique("insert plan revision", e, &state))
+        .map_err(|e| map_revision_unique("insert plan revision", e, &state))?;
+    super::plan_summary::refresh(runner, scope, m.tenant_id, m.plan_id).await?;
+    Ok(saved)
 }
 /// Read by tenant and identity within the authorized scope.
 /// # Errors
@@ -271,7 +273,8 @@ pub async fn update_draft(
         .exec(runner)
         .await
         .map_err(|e| map_unique("update plan revision".into(), e))?;
-    matched(result.rows_affected, "STALE_REVISION")
+    matched(result.rows_affected, "STALE_REVISION")?;
+    super::plan_summary::refresh(runner, scope, m.tenant_id, m.plan_id).await
 }
 /// Acquire pending ownership only on an unlocked draft at the observed version.
 /// # Errors
@@ -298,7 +301,12 @@ pub async fn try_lock(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("lock plan revision conditionally".into(), e))?;
-    Ok(result.rows_affected == 1)
+    if result.rows_affected == 1 {
+        super::plan_summary::refresh_revision(runner, scope, tenant, id).await?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 /// A rejected or withdrawn unit returns its revision to an editable draft.
 /// # Errors
@@ -324,7 +332,8 @@ pub async fn unlock(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("unlock plan revision".into(), e))?;
-    matched(result.rows_affected, "STALE_REVISION")
+    matched(result.rows_affected, "STALE_REVISION")?;
+    super::plan_summary::refresh_revision(runner, scope, tenant, id).await
 }
 /// Publish the revision its unit holds; the lock turns into `approved_by_unit_id`.
 /// # Errors
@@ -364,7 +373,8 @@ pub async fn publish(
                 RevisionState::Published.as_str(),
             )
         })?;
-    matched(result.rows_affected, "REVISION_NOT_PENDING")
+    matched(result.rows_affected, "REVISION_NOT_PENDING")?;
+    super::plan_summary::refresh_revision(runner, scope, tenant, id).await
 }
 /// Supersede a published revision at the version the caller read.
 /// # Errors
@@ -396,7 +406,8 @@ pub async fn supersede(
         .await
         .map_err(|e| driver_failure("supersede plan revision".into(), e))?;
     // @cpt-end:cpt-cf-bss-pricing-algo-plans-revision-apply:p1:inst-plans-revision-apply-4
-    matched(result.rows_affected, "STALE_REVISION")
+    matched(result.rows_affected, "STALE_REVISION")?;
+    super::plan_summary::refresh_revision(runner, scope, tenant, id).await
 }
 /// The UTC day of `now`: the day a revision's `available_from` is compared with (D-447).
 fn utc_day(now: time::OffsetDateTime) -> time::Date {
@@ -449,7 +460,8 @@ pub async fn schedule(
                 RevisionState::Scheduled.as_str(),
             )
         })?;
-    matched(result.rows_affected, "REVISION_NOT_PENDING")
+    matched(result.rows_affected, "REVISION_NOT_PENDING")?;
+    super::plan_summary::refresh_revision(runner, scope, tenant, id).await
 }
 /// What [`switch_due`] switched (D-448): what a `PlanRevisionPublished` for it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,6 +584,8 @@ pub async fn switch_due(
         };
     }
     super::plan_repo::advance_published(runner, scope, tenant, plan_id, due.rev_no).await?;
+    // Once, after the projection. `advance_published` does not refresh again.
+    super::plan_summary::refresh(runner, scope, tenant, plan_id).await?;
     Ok(Some(Switched {
         superseded_revision_id,
         revision_id: due.id,
@@ -614,7 +628,8 @@ pub async fn unschedule(
         .map_err(|e| {
             map_revision_unique("unschedule plan revision", e, RevisionState::Draft.as_str())
         })?;
-    matched(result.rows_affected, "REVISION_NOT_SCHEDULED")
+    matched(result.rows_affected, "REVISION_NOT_SCHEDULED")?;
+    super::plan_summary::refresh_revision(runner, scope, tenant, id).await
 }
 /// The switch job's scan (D-448): the due scheduled revisions of EVERY tenant on `today`, by
 /// `available_from` then id, at most `limit`. Cross-tenant by design (`AccessScope::allow_all()`,
@@ -650,6 +665,9 @@ pub async fn delete_draft(
 ) -> Result<(), RepoError> {
     use crate::infra::storage::entity::plan_item;
     use toolkit_db::secure::SecureDeleteExt;
+    let plan_id = find(runner, scope, tenant, id)
+        .await?
+        .map(|revision| revision.plan_id);
     let items = sea_orm::sea_query::Query::select()
         .expr(Expr::val(1))
         .from(plan_item::Entity)
@@ -663,5 +681,9 @@ pub async fn delete_draft(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("delete draft plan revision".into(), e))?;
-    matched(result.rows_affected, "STALE_REVISION")
+    matched(result.rows_affected, "STALE_REVISION")?;
+    if let Some(plan_id) = plan_id {
+        super::plan_summary::refresh(runner, scope, tenant, plan_id).await?;
+    }
+    Ok(())
 }

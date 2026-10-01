@@ -38,6 +38,7 @@ fn census() -> census::Routes {
         ("PUT", "/bss-pricing/v1/approval-policy"),
         ("POST", "/bss-pricing/v1/plans"),
         ("GET", "/bss-pricing/v1/plans"),
+        ("GET", "/bss-pricing/v1/plans/counts"),
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("PATCH", "/bss-pricing/v1/plans/{id}"),
         ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
@@ -82,7 +83,7 @@ async fn the_census_covers_every_route_the_routers_register() {
     assert_eq!(census::source_routes(), registered);
     assert_eq!(census::readers("require_authenticated("), registered);
     assert_eq!(census::readers("authz::access_scope("), registered);
-    assert_eq!(registered.len(), 54);
+    assert_eq!(registered.len(), 55);
     assert_eq!(bss_pricing::authz::labels::ALL.len(), 7);
     let permissions: Vec<_> = toolkit_gts::inventory::iter::<toolkit_gts::InventoryInstance>
         .into_iter()
@@ -127,7 +128,7 @@ async fn no_rest_door_serves_pricings_system_actor() {
             (method.to_owned(), path.to_owned())
         })
         .collect();
-    assert_eq!(doors.len(), 54, "every served door");
+    assert_eq!(doors.len(), 55, "every served door");
     for (method, template) in doors {
         let path = template
             .replace("{id}", &uuid::Uuid::new_v4().to_string())
@@ -179,7 +180,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
     // the doors.
     for (needle, more) in [("require_authenticated(", 2), ("authz::access_scope(", 5)] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), 2);
-        assert_eq!(census::production_count(needle), 54 + more, "{needle}");
+        assert_eq!(census::production_count(needle), 55 + more, "{needle}");
     }
     let routes = census::registrations(census::CONTROL);
     assert_eq!(
@@ -189,7 +190,7 @@ fn the_authentication_and_authz_parsers_have_positive_controls() {
             .count(),
         2
     );
-    assert_eq!(census::source_routes().len(), 54);
+    assert_eq!(census::source_routes().len(), 55);
 }
 
 #[test]
@@ -261,6 +262,7 @@ fn every_mounted_router_is_merged_into_both_censuses() {
 // Run 3.3 plans: method | path | resource:action | If-Match | Idempotency-Key
 // POST /plans plan:author (then price_book:read, D-456) false true
 // GET /plans plan:read false false
+// GET /plans/counts plan:read false false (D-485)
 // GET /plans/{id} plan:read false false
 // PATCH /plans/{id} plan:author true false
 // POST /plans/{id}/revisions plan:author false true

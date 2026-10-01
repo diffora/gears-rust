@@ -63,6 +63,7 @@ mod m20260929_000017_revision_scheduled;
 mod m20260930_000018_usage_rating_policy;
 
 mod m20260930_000019_commercial_receipts;
+mod m20261002_000020_plan_summary;
 
 /// Coordination followed by pricing-owned migrations.
 pub struct Migrator;
@@ -91,6 +92,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260929_000017_revision_scheduled::Migration),
             Box::new(m20260930_000018_usage_rating_policy::Migration),
             Box::new(m20260930_000019_commercial_receipts::Migration),
+            Box::new(m20261002_000020_plan_summary::Migration),
         ]
     }
 }

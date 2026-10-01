@@ -3,7 +3,7 @@ use super::{
     AuthoringState,
     caps::Capped,
     dto, plan_items, plans,
-    support::{authz_failure, etag, header, require_authenticated, response, transaction},
+    support::{authz_failure, etag, header, require_authenticated, transaction},
 };
 use crate::{
     api::rest::{correlation, preconditions},
@@ -57,35 +57,7 @@ pub(super) fn routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
-    let router = OperationBuilder::get("/bss-pricing/v1/plans")
-        .operation_id("bss_pricing.list_plans")
-        .summary("List the plans")
-        .description(
-            "Lists the tenant's plans by code, each with the headers of its revisions as they \
-             read today (a scheduled revision whose date has come reads published, D-447), each \
-             header with its author and when it was submitted and approved (D-461). Each plan names \
-             its current revision (the draft or pending one, else the scheduled one, else the \
-             published one in effect) with its item count, item SKUs and author, and the \
-             published revision in effect (D-460). With sku_id, only the plans that have a draft, \
-             pending, scheduled or published revision whose items name the SKU through a price \
-             book entry (D-434; an included item without an entry does not count), in the same \
-             shape: so a plan's current sku_ids, which name every item, may differ from what the \
-             filter keeps. Four statements whatever the number of plans. Refusals: 400 \
-             QUERY_INVALID for a malformed sku_id or any other key.",
-        )
-        .tag("Pricing")
-        .authenticated()
-        .no_license_required()
-        .query_param(
-            "sku_id",
-            false,
-            "Only the plans selling this SKU through an entry",
-        )
-        .handler(list_plans)
-        .json_response_with_schema::<dto::PricingPlanList>(openapi, StatusCode::OK, "Response")
-        .standard_errors(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    let router = super::plan_list::register(router, openapi);
     let router = OperationBuilder::get("/bss-pricing/v1/plans/{id}")
         .operation_id("bss_pricing.get_plan")
         .summary("Read a plan")
@@ -302,35 +274,6 @@ async fn create_plan(
                 input,
             )
             .await
-        })
-    })
-    .await
-}
-async fn list_plans(
-    Extension(state): Extension<Arc<AuthoringState>>,
-    Extension(enforcer): Extension<PolicyEnforcer>,
-    ctx: Option<Extension<SecurityContext>>,
-    uri: axum::http::Uri,
-) -> Result<Response, CanonicalError> {
-    let ctx = require_authenticated(ctx)?;
-    let scope = authz::access_scope(
-        &enforcer,
-        &ctx,
-        &resource_types::PLAN,
-        actions::READ,
-        None,
-        None,
-    )
-    .await
-    .map_err(authz_failure)?;
-    let axum::extract::Query(query) =
-        axum::extract::Query::<dto::PricingPlanQuery>::try_from_uri(&uri)
-            .map_err(|_| super::support::invalid("query", "QUERY_INVALID"))?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            let body = plans::list(tx, &scope, ctx.subject_tenant_id(), query.sku_id).await?;
-            Ok(response(StatusCode::OK, &body, None)?)
         })
     })
     .await

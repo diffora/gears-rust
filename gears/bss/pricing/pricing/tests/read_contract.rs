@@ -1181,9 +1181,10 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
         assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
         measured += 1;
     }
-    // 24 since run 9.6's reservations read and effective-policy read (D-480, D-481), which
+    // 25 since run 9.8b's plans counts (D-485). 24 was run 9.6's reservations read and
+    // effective-policy read (D-480, D-481), which
     // declare no ETag. 22 was run 9.3's unit counts (D-470).
-    assert_eq!(measured, 24, "every GET operation is measured");
+    assert_eq!(measured, 25, "every GET operation is measured");
 }
 
 // ------------------------------------------------------------------ phase 9 review R27: the writes' ETag
