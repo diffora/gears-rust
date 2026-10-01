@@ -70,7 +70,7 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
 | D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461, D-472, D-486 |
+| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461, D-472, D-483, D-486 |
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
@@ -109,7 +109,8 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469; amended by the phase 9 review (C, R32; fix run 9.5d-1; I, fix run 9.5d-2) |
 | D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2); amended by the phase 9 review (E, fix run 9.5d-1) |
 | D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
-| D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1) |
+| D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1), D-483 |
+| D-483 | M | A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id) | DECIDED 2026-10-01 · Owner, 2026-10-01 (asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4); amends D-434, D-473 |
 | D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
 
 ## Entries
@@ -557,7 +558,9 @@ D-472 amends this entry: each entry of the SKU's list also carries next_price, c
 
 D-486 amends this entry: the list narrows, orders and pages in memory, and each entry carries status and changing. The read still makes seven statements.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460, D-461, D-472, D-486.
+D-483 amends this entry: GET /price-books/{id}/entries, whose entries carry this entry's current_price under the same per-book rule, pages on the toolkit's pager, 500 entries by default and at most 500, in the order (sku_id, charge_kind, model, id). The money is judged once per request on the book, so a page shows it on every entry or on none.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460, D-461, D-472, D-483, D-486.
 
 #### D-435 [M] An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216)
 
@@ -1196,7 +1199,28 @@ The Price Books screen shows a book's prices on a date the user picks: what was 
 
 Breaking for a caller that sends GET /price-books/{id}/entries a query key: the key was ignored and is now 400 QUERY_INVALID. The deploy notes name it.
 
-**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 37); phase 9 plan rev 2 (decision 13; plan review M5, L6). Amends D-440 and D-472. Amended by the phase 9 review, R1 (fix run 9.5d-1): an as_of other than today takes price_book read on the book (D-440, "every price is money").
+D-483 amends this entry. The list takes as_of, limit (alias $top), cursor (alias $skiptoken) and $filter, so limit, cursor, $top and $skiptoken are no longer 400 QUERY_INVALID; any other plain key, or one given twice, still is. The cursor carries the day, so every page of a read is judged on its one as_of, and a cursor replayed on another day is 400 FILTER_MISMATCH. PRICE_BOOK_READ_REQUIRED is judged before any entry is read: at the base of run 9.8 the entries were read first, though no price or usage. The seven statements hold per page.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 37); phase 9 plan rev 2 (decision 13; plan review M5, L6). Amends D-440 and D-472. Amended by the phase 9 review, R1 (fix run 9.5d-1): an as_of other than today takes price_book read on the book (D-440, "every price is money"). Amended by D-483.
+
+#### D-483 [M] A book's entries page on the toolkit's pager, in the order (sku_id, charge_kind, model, id)
+
+**Status:** DECIDED 2026-10-01.
+
+GET /price-books/{id}/entries answered every entry of the book on one page, sorted in memory (ask 51). The Price Books screen pages a large book and narrows it to the SKUs the user searched for.
+
+- **The pager.** The list pages on the toolkit's OData pager, as the book list does (D-442). limit (alias $top) defaults to 500 and is clamped at 500; a limit of 0 is the pager's 400. cursor (alias $skiptoken) continues from page_info.next_cursor. $filter takes sku_id (eq, ne, in), charge_kind, model and reference_state. The three closed sets compare (eq, ne, in) with one of their values only, else 400; the filter is judged before any read. The door declares the vocabulary with .with_odata_filter, as theme I declares the unit lists' order. $orderby, $select and $count are 400. PricingPriceBookEntryList gains page_info { next_cursor, prev_cursor, limit }.
+- **The order.** (sku_id, charge_kind, model, id), all ascending and all non-null. It replaces the in-memory order (sku_id, charge_kind, period or "", id). period is null for usage and one-time entries, and the toolkit cursor codec cannot carry a null. So month and year entries of one recurring SKU and one model now follow their id. Before, all month entries came before all year entries. That is a served order change. GET /price-books/{id}/export keeps the old order, because it reads the whole book on one answer.
+- **The cursor.** Its hash is the first 8 bytes of the SHA-256 of the extractor's $filter hash and the day the page is judged on, as hex. So a cursor replayed under another $filter, or on another as_of, is 400 FILTER_MISMATCH. as_of of today and no as_of are one narrowing. A cursor minted without as_of before midnight is 400 FILTER_MISMATCH after it: the client reads the list again, because a read never mixes two days.
+- **The money and the day hold per page.** Every page carries the usage split, current_price and next_price on the read's one day (D-473). The money's second judgement (D-434, D-440) is made once per request on the book, so every page shows the money or none does.
+- **Refusals, in order.** 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for a plain key other than as_of, limit and cursor, or one given twice; 400 DATE_INVALID; the pager's 400s ($orderby, $select, $count, a filter it does not take, limit 0, a cursor that does not read, $orderby beside a cursor); 400 FILTER_MISMATCH; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED (D-473), judged before any entry, price or usage is read.
+- **No q.** SKU names live in Products. The screen searches with GET /bss-products/v1/skus?q= and narrows this list with $filter=sku_id in (...). The served text says so.
+- **The statements.** A page makes D-472's seven statements whatever its size and place: the book, the book under the money's grant, the page, the three usage reads and the default chain. The usage and the prices are read for the page's entries only. A refused dated read reads the book alone.
+- **The tests.** tests/entry_paging.rs (SQLite) and tests/postgres_entry_paging.rs: the pages at every size from 1 to past the book join into the one order, across a usage SKU's model boundary and a recurring group's id-only boundary, and prev_cursor reads the first page again; each filter field alone and together, paged by one, and the refused filters; the 500 default and the clamp on 501 entries; the cursor under another $filter or as_of; the pager's refusals before the book; the as_of 403 with the book its only read; the day on every page; seven statements for the first page of 501, its last page and a filtered page; and the served text, parameters and vocabulary. tests/contract/price_book_entry_usage.json gains page_info and nothing else.
+
+Breaking for a book of more than 500 entries: a caller that does not follow next_cursor sees the first 500, as D-442 said of the book list. Breaking for a caller that reads the order: within one SKU and charge kind, the entries follow model, then id, where month entries came before year entries. The deploy notes name both, with the stand's largest book (entries per book) measured before the deploy.
+
+**Source:** Owner, 2026-10-01 (the pricing-mfe asks v4, 51); phase 9 plan rev 4 (run 9.8; review H3, A4). Amends D-434 and D-473.
 
 #### D-486 [M] A SKU's entries narrow, order and page in memory
 
