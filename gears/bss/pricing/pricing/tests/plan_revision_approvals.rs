@@ -138,6 +138,18 @@ async fn checks(f: &Fixture, revision: Uuid) -> Value {
     assert_eq!(s, 200, "{b}");
     b
 }
+/// The red rows of a checks answer, as the `REVISION_CHECKS_RED` body carries them.
+fn checks_red_rows(checks: &Value) -> Value {
+    Value::Array(
+        checks["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["ok"] == false)
+            .cloned()
+            .collect(),
+    )
+}
 fn red_codes(checks: &Value) -> Vec<String> {
     checks["checks"]
         .as_array()
@@ -160,11 +172,11 @@ async fn a_green_revision_submits_under_its_key_and_quorum_zero_publishes_it_at_
         "an Idempotency-Key is required"
     );
     assert_eq!(
-        f.call("POST", &path, json!({"note":"x"}), None, Some("body"))
+        f.call("POST", &path, json!({"generation":1}), None, Some("body"))
             .await
             .0,
         400,
-        "the submit takes no body"
+        "the submit's body carries a note and nothing else (D-464)"
     );
     let (s, receipt) = submit(&f, &f.ctx, g.revision, "submit").await;
     assert_eq!(s, 201, "{receipt}");
@@ -182,12 +194,10 @@ async fn a_green_revision_submits_under_its_key_and_quorum_zero_publishes_it_at_
         json!({
             "book_id": revision(&f, g.revision).await["book_id"],
             "available_from": null,
-            "items": [{
-                "sku_id": g.sku, "price_book_entry_id": g.entry, "treatment": "paid",
-                "included_qty": null, "qty_min": null,
-            }],
+            "items": [{"sku_id": g.sku, "price_book_entry_id": g.entry}],
         }),
-        "the fingerprinted content is the business content only: {snapshot}"
+        "the fingerprinted content is the business content only, an item its SKU and its \
+         entry (D-467): {snapshot}"
     );
     assert_eq!(
         snapshot["before"],
@@ -245,7 +255,13 @@ async fn a_red_revision_is_refused_with_the_checks_doors_red_checks_and_no_unit(
         .map(|c| c["code"].as_str().unwrap())
         .collect();
     assert_eq!(codes, expected, "the same checks as the checks door: {b}");
-    for field in ["label", "detail", "blocked_by"] {
+    for field in [
+        "label",
+        "detail",
+        "blocked_by",
+        "subjects",
+        "blocked_by_prices",
+    ] {
         assert!(!detail[0][field].is_null(), "{field}: {detail}");
     }
     assert!(units(&f).await.is_empty(), "no unit is written");
@@ -262,7 +278,7 @@ async fn a_red_revision_names_the_pending_price_unit_that_blocks_it() {
     let (_, rev) = plan(&f, "pro", eur).await;
     let sku = catalog.sku(SkuType::Usage);
     let e = entry(&f, eur, sku, "usage", None).await;
-    item(&f, rev, sku, Some(e), "paid").await;
+    let it = item(&f, rev, sku, Some(e), "paid").await;
     let (_, _, tag) = f
         .call("GET", "/approval-policy", json!({}), None, None)
         .await;
@@ -303,6 +319,20 @@ async fn a_red_revision_names_the_pending_price_unit_that_blocks_it() {
     let detail: Value = serde_json::from_str(b["detail"].as_str().unwrap()).unwrap();
     assert_eq!(detail[0]["code"], "ITEM_UNCOVERED");
     assert_eq!(detail[0]["blocked_by"], json!([receipt["unit"]["id"]]));
+    // D-466: the refusal's rows carry the checks door's subjects and blocking prices.
+    assert_eq!(
+        detail[0]["subjects"],
+        json!([{"item_id":it.id,"sku_id":sku,"price_book_entry_id":e}])
+    );
+    assert_eq!(
+        detail[0]["blocked_by_prices"],
+        json!([{"unit_id":receipt["unit"]["id"],"price_id":price,"price_book_entry_id":e}])
+    );
+    assert_eq!(
+        detail,
+        checks_red_rows(&checks(&f, rev).await),
+        "the checks door's rows"
+    );
     assert!(
         text(&b).contains(receipt["unit"]["id"].as_str().unwrap()),
         "the field violation names the blocking unit too: {b}"
@@ -1023,4 +1053,88 @@ async fn an_approved_repricing_reaches_the_published_revision_and_a_rejected_one
     assert_eq!(revision(&f, g.revision).await["state"], "published");
     assert_eq!(plan_of(&f, g.plan).await["published_rev"], 1);
     assert_eq!(outbox_events(&f.dsn, PUBLISHED).await.len(), 1);
+}
+
+/// POST `path` with the body as these bytes (no body at all included), as the fixture's user.
+async fn posted(f: &Fixture, path: &str, body: &str, key: &str) -> (u16, Value) {
+    plan_support::entry_support::request_raw(&f.app, &f.ctx, "POST", path, body, Some(key)).await
+}
+
+/// D-464: the plan submit takes an optional `{ note }`, the submitter's note, stored on the unit
+/// as `submit_note` (the receipt and the unit read carry it). No body, `{}` and `note: null` carry
+/// no note; any other key is 400 `BODY_UNEXPECTED`. A note over 2000 characters is 400
+/// `NOTE_TOO_LONG`, judged before any read (an unknown revision answers it too) and with nothing
+/// written; 2000 two-byte characters pass.
+#[tokio::test]
+async fn a_plan_submit_carries_the_submitters_note() {
+    let (f, catalog) = setup().await;
+    policy(&f, 1).await;
+    let submit_path = |g: &Green| format!("/plan-revisions/{}/submit", g.revision);
+    let noted = green(&f, &catalog, "noted").await;
+    let (s, b) = posted(
+        &f,
+        &submit_path(&noted),
+        r#"{"note":"the seats moved to the new book"}"#,
+        "noted",
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["unit"]["submit_note"], "the seats moved to the new book");
+    let (s, card, _) = f
+        .call(
+            "GET",
+            &format!("/approval-units/{}", b["unit"]["id"].as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{card}");
+    assert_eq!(
+        card["submit_note"], "the seats moved to the new book",
+        "stored"
+    );
+    for (code, body) in [("none", ""), ("empty", "{}"), ("null", r#"{"note":null}"#)] {
+        let g = green(&f, &catalog, code).await;
+        let (s, b) = posted(&f, &submit_path(&g), body, code).await;
+        assert_eq!(s, 201, "{code}: {b}");
+        assert_eq!(b["unit"]["submit_note"], json!(null), "{code}: {b}");
+    }
+    let at_cap = green(&f, &catalog, "at-cap").await;
+    let long = "\u{e9}".repeat(2000);
+    let (s, b) = posted(
+        &f,
+        &submit_path(&at_cap),
+        &json!({ "note": long }).to_string(),
+        "at-cap",
+    )
+    .await;
+    assert_eq!(s, 201, "{b}");
+    assert_eq!(b["unit"]["submit_note"], json!(long));
+    let over = green(&f, &catalog, "over").await;
+    let too_long = json!({ "note": "\u{e9}".repeat(2001) }).to_string();
+    for (key, path) in [
+        ("over", submit_path(&over)),
+        (
+            "over-unknown",
+            format!("/plan-revisions/{}/submit", Uuid::new_v4()),
+        ),
+    ] {
+        let (s, b) = posted(&f, &path, &too_long, key).await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(text(&b).contains("NOTE_TOO_LONG"), "{key}: {b}");
+    }
+    for (key, body) in [
+        ("stray", r#"{"x":1}"#),
+        ("stray-beside", r#"{"note":"a","x":1}"#),
+    ] {
+        let (s, b) = posted(&f, &submit_path(&over), body, key).await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(text(&b).contains("BODY_UNEXPECTED"), "{key}: {b}");
+    }
+    assert_eq!(
+        revision(&f, over.revision).await["state"],
+        "draft",
+        "nothing written"
+    );
 }

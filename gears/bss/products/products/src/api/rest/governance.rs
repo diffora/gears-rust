@@ -74,6 +74,21 @@ pub async fn lifecycle(
         .await
         .map(|s| s.lifecycle)
 }
+/// The lifecycle an apply's audit row records as its `to` (P-D-249): a dated change that has not
+/// arrived records its next lifecycle, and every other act records the lifecycle in force.
+pub async fn recorded_to(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<bss_products_sdk::models::Lifecycle, TxError> {
+    find(tx, &AccessScope::for_tenant(tenant), tenant, id)
+        .await
+        .map(|sku| recorded_lifecycle(&sku))
+}
+pub(super) fn recorded_lifecycle(sku: &Sku) -> bss_products_sdk::models::Lifecycle {
+    sku.lifecycle_next
+        .map_or(sku.lifecycle, |next| next.lifecycle)
+}
 pub(super) async fn resolve(
     state: &ApiState,
     ctx: &SecurityContext,
@@ -187,7 +202,15 @@ pub(super) async fn touch(
             move |tx| {
                 let scope = scope.clone();
                 Box::pin(async move {
-                    expire(tx, &scope, tenant, id, ttl, OffsetDateTime::now_utc()).await
+                    expire(
+                        tx,
+                        &scope,
+                        tenant,
+                        id,
+                        ttl,
+                        crate::infra::storage::stored_now(),
+                    )
+                    .await
                 })
             },
         )

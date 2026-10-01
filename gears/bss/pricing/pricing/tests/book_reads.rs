@@ -10,7 +10,10 @@ use book_support::{
     stored_book, stored_entry, stored_price, today, unit_on,
 };
 use bss_approval::UnitState;
-use bss_pricing::infra::storage::entity::price;
+use bss_pricing::infra::storage::{
+    entity::price,
+    repo::{price_book_entry_repo, price_repo},
+};
 use bss_products_sdk::models::SkuType;
 use plan_support::{
     Catalog, Fixture, entry_support, holding, id_of, item, plan, publish, request, setup, stranger,
@@ -105,7 +108,7 @@ async fn a_plan_names_only_a_book_its_author_may_read() {
                     &f.ctx,
                     "POST",
                     "/plans",
-                    json!({"code":format!("new-{tag}"),"name":"New","book_id":eur}),
+                    json!({"code":format!("new-{tag}").to_uppercase(),"name":"New","book_id":eur}),
                     None,
                     Some(&format!("create-{tag}")),
                 )
@@ -115,7 +118,7 @@ async fn a_plan_names_only_a_book_its_author_may_read() {
                     &f.ctx,
                     "POST",
                     &format!("/plans/{source}/clone"),
-                    json!({"code":format!("clone-{tag}"),"name":"Clone"}),
+                    json!({"code":format!("clone-{tag}").to_uppercase(),"name":"Clone"}),
                     None,
                     Some(&format!("clone-{tag}")),
                 )
@@ -1430,6 +1433,31 @@ async fn submit_reads(
             .await;
         assert_eq!(s, 201, "{body}");
         assert_eq!(body["applied"], quorum == 0, "{body}");
+        // The phase 9 review's R44: the receipt reads the unit's items and its decisions once
+        // each and builds its prices and its unit from them. Under quorum 0 the apply's event reads
+        // the items once more, and the decided event the decisions.
+        let selects = |table: &str| {
+            recorder
+                .events()
+                .into_iter()
+                .filter(|q| {
+                    q.table.as_deref() == Some(table)
+                        && q.sql
+                            .trim_start()
+                            .to_ascii_uppercase()
+                            .starts_with("SELECT")
+                })
+                .count()
+        };
+        let once = if quorum == 0 { 2 } else { 1 };
+        assert_eq!(
+            (
+                selects("pricing_approval_unit_item"),
+                selects("pricing_approval_decision")
+            ),
+            (once, once),
+            "quorum {quorum}: the unit's items and decisions, read once"
+        );
         runs.push(
             recorder
                 .events()
@@ -1603,6 +1631,8 @@ async fn the_unit_list_pages_in_submission_order() {
         pages += 1;
         assert!(page["items"].as_array().unwrap().len() <= 2, "{page}");
         seen.extend(ids(&page));
+        // Bounded: a cursor that does not advance fails here instead of hanging.
+        assert!(pages <= 3, "the cursor does not advance: {seen:?}");
         match page["page_info"]["next_cursor"].as_str() {
             Some(cursor) => {
                 path = format!(
@@ -1631,4 +1661,1074 @@ async fn the_unit_list_pages_in_submission_order() {
     assert!(code_of(&b).contains("QUERY_INVALID"), "{b}");
     let clamped = ok(&f, &format!("/approval-units?book_id={book}&limit=1000")).await;
     assert_eq!(clamped["page_info"]["limit"], 500, "{clamped}");
+}
+
+// ------------------------------------------------------------------ counts, the order, a light list (D-470)
+
+/// What `GET /approval-units/counts` answers for `items`, the units the list pages through under
+/// the same narrowing: every state and every kind named, 0 when none, and the total.
+fn counted(items: &[Value]) -> Value {
+    let n = |key: &str, value: &str| items.iter().filter(|u| u[key] == value).count();
+    json!({
+        "by_state": {
+            "pending": n("state", "pending"),
+            "approved": n("state", "approved"),
+            "rejected": n("state", "rejected"),
+            "withdrawn": n("state", "withdrawn"),
+        },
+        "by_kind": {
+            "prices": n("kind", "prices"),
+            "plan_revision": n("kind", "plan_revision"),
+        },
+        "total": items.len(),
+    })
+}
+/// A whole second, so a stored instant and one a test writes into a cursor are the same.
+fn whole_second(at: time::OffsetDateTime) -> time::OffsetDateTime {
+    at.replace_nanosecond(0).unwrap()
+}
+
+/// D-470 (ask 42, plan review L11): `GET /approval-units/counts` counts what the list pages
+/// through under the list's whole narrowing (`state`, `kind`, and `ref_id` or `book_id`), by state
+/// and by kind, every state and kind named; `total` is the list's length. A narrowing the list
+/// refuses is refused the same way, and the counts take nothing but the narrowing.
+#[tokio::test]
+async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
+    let (f, _catalog) = setup().await;
+    let (a, b) = (
+        plan_support::book(&f, "counted-a").await,
+        plan_support::book(&f, "counted-b").await,
+    );
+    let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
+    let decided = Some(t0 + time::Duration::minutes(30));
+    for (i, (kind, reference, state)) in [
+        ("prices", a, UnitState::Pending),
+        ("prices", a, UnitState::Pending),
+        ("prices", a, UnitState::Approved),
+        ("prices", a, UnitState::Rejected),
+        ("prices", b, UnitState::Pending),
+        ("prices", b, UnitState::Withdrawn),
+        ("plan_revision", a, UnitState::Pending),
+        ("plan_revision", b, UnitState::Approved),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let done = (state != UnitState::Pending).then_some(decided).flatten();
+        let at = t0 + time::Duration::minutes(i64::try_from(i).unwrap());
+        unit_on(&f, kind, reference, state, at, done).await;
+    }
+    let whole = ok(&f, "/approval-units/counts").await;
+    assert_eq!(
+        whole,
+        json!({
+            "by_state": {"pending": 4, "approved": 2, "rejected": 1, "withdrawn": 1},
+            "by_kind": {"prices": 6, "plan_revision": 2},
+            "total": 8,
+        })
+    );
+    for narrowing in [
+        String::new(),
+        "state=pending".into(),
+        "state=approved&kind=plan_revision".into(),
+        "kind=prices".into(),
+        format!("ref_id={a}"),
+        format!("book_id={b}"),
+        format!("ref_id={a}&book_id={a}"),
+        format!("state=pending&kind=prices&book_id={a}"),
+    ] {
+        let listed = f.all_units(&narrowing).await;
+        let counts = ok(&f, &format!("/approval-units/counts?{narrowing}")).await;
+        assert_eq!(counts, counted(&listed), "{narrowing}");
+    }
+    // The list's refusals, the same code on the same field. A kind is one pricing records
+    // (phase 9 review R6, R24): any other, an empty one included, is 400 QUERY_INVALID on kind.
+    for narrowing in [
+        "state=bogus".to_owned(),
+        format!("ref_id={a}&book_id={b}"),
+        "ref_id=not-a-uuid".into(),
+        "book_id=7".into(),
+        "kind=promotion".into(),
+        "kind=".into(),
+        "kind=PRICES".into(),
+        format!("kind={}", "p".repeat(5000)),
+    ] {
+        let (ls, lb, _) = get(&f, &format!("/approval-units?{narrowing}")).await;
+        let (cs, cb, _) = get(&f, &format!("/approval-units/counts?{narrowing}")).await;
+        assert_eq!(ls, 400, "{narrowing}: {lb}");
+        assert_eq!(cs, 400, "{narrowing}: {cb}");
+        assert!(!lb["context"].is_null(), "{narrowing}: {lb}");
+        assert_eq!(cb["context"], lb["context"], "{narrowing}");
+        if narrowing.starts_with("kind=") {
+            let violation = &lb["context"]["field_violations"][0];
+            assert_eq!(
+                (&violation["field"], &violation["reason"]),
+                (&json!("kind"), &json!("QUERY_INVALID")),
+                "{narrowing}: {lb}"
+            );
+        }
+    }
+    // Only the narrowing: no page, no order, no impact.
+    for extra in [
+        "limit=5",
+        "cursor=abc",
+        "$orderby=submitted_at%20desc",
+        "impact=false",
+        "q=x",
+    ] {
+        let (s, b, _) = get(&f, &format!("/approval-units/counts?{extra}")).await;
+        assert_eq!(s, 400, "{extra}: {b}");
+        assert!(code_of(&b).contains("QUERY_INVALID"), "{extra}: {b}");
+        // The phase 9 review's R43: the refusal names the key the counts do not take.
+        let key = extra.split('=').next().unwrap();
+        let said = b["context"]["field_violations"][0]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(said.contains(key), "{extra}: {b}");
+    }
+}
+
+/// D-470: the counts are ONE grouped statement whatever the number of units, read outside any
+/// transaction.
+#[tokio::test]
+async fn the_unit_counts_read_one_grouped_statement_for_10_and_100_units() {
+    let (f, _catalog, recorder) = recorded().await;
+    let now = whole_second(time::OffsetDateTime::now_utc());
+    let states = [
+        UnitState::Pending,
+        UnitState::Approved,
+        UnitState::Rejected,
+        UnitState::Withdrawn,
+    ];
+    let mut runs = Vec::new();
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("counted-{n}")).await;
+        for i in 0..n {
+            let state = states[i % 4];
+            let kind = if i % 3 == 0 {
+                "plan_revision"
+            } else {
+                "prices"
+            };
+            let done = (state != UnitState::Pending).then_some(now);
+            unit_on(&f, kind, b, state, now, done).await;
+        }
+        recorder.clear();
+        let counts = ok(&f, &format!("/approval-units/counts?book_id={b}")).await;
+        assert_eq!(counts["total"], n, "{counts}");
+        let statements = pricing_statements(&recorder);
+        assert_eq!(statements.len(), 1, "{statements:#?}");
+        assert!(
+            statements[0].0.to_ascii_uppercase().contains("GROUP BY"),
+            "{statements:#?}"
+        );
+        // The phase 9 review's R32: one statement is its own snapshot, so the counts read it on
+        // the plain connection, never in the doors' serializable transaction.
+        let in_tx: Vec<bool> = recorder
+            .events()
+            .into_iter()
+            .filter(|q| {
+                q.table
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("pricing_"))
+            })
+            .map(|q| q.in_tx)
+            .collect();
+        assert_eq!(in_tx, [false], "the counts run outside any transaction");
+        runs.push(statements);
+    }
+    same("unit counts", &runs[0], &runs[1]);
+}
+
+/// D-470 (ask 42): `$orderby=submitted_at desc` pages the units newest first, the id breaking a
+/// tie in the same direction; `submitted_at asc`, `submitted_at` alone and no `$orderby` are the
+/// submission order of D-458. Every page size walks the same whole list, so a tie split by a page
+/// boundary is neither lost nor repeated.
+#[tokio::test]
+async fn the_unit_list_pages_newest_first_with_the_id_breaking_a_tie_the_same_way() {
+    let (f, _catalog) = setup().await;
+    let book = plan_support::book(&f, "newest").await;
+    let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
+    let mut submitted = Vec::new();
+    for minutes in [0_i64, 1, 1, 1, 2, 3] {
+        let at = t0 + time::Duration::minutes(minutes);
+        let id = unit_on(&f, "prices", book, UnitState::Pending, at, None).await;
+        submitted.push((at, id));
+    }
+    submitted.sort();
+    let ascending: Vec<String> = submitted.iter().map(|(_, id)| id.to_string()).collect();
+    let descending: Vec<String> = ascending.iter().rev().cloned().collect();
+    let narrowing = format!("book_id={book}");
+    for (order, expected) in [
+        ("", &ascending),
+        ("&$orderby=submitted_at", &ascending),
+        ("&$orderby=submitted_at%20asc", &ascending),
+        ("&$orderby=submitted_at%20desc", &descending),
+    ] {
+        let whole = ok(&f, &format!("/approval-units?{narrowing}{order}")).await;
+        assert_eq!(&ids(&whole), expected, "{order}");
+        for limit in 1..=5 {
+            let mut seen = Vec::new();
+            let mut path = format!("/approval-units?{narrowing}{order}&limit={limit}");
+            let mut pages = 0;
+            loop {
+                let page = ok(&f, &path).await;
+                seen.extend(ids(&page));
+                // Bounded: a cursor that does not advance fails here instead of hanging.
+                pages += 1;
+                assert!(
+                    seen.len() <= expected.len() && pages <= expected.len() + 1,
+                    "{order} by {limit}: the cursor does not advance: {seen:?}"
+                );
+                match page["page_info"]["next_cursor"].as_str() {
+                    // A continuation sends its cursor alone: the cursor carries the order.
+                    Some(cursor) => {
+                        path = format!(
+                            "/approval-units?{narrowing}&limit={limit}&cursor={}",
+                            encode(cursor)
+                        );
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(&seen, expected, "{order} by {limit}");
+        }
+    }
+}
+
+/// The phase 9 review's R67 (products) and its twin here: a refused `$orderby` names the key it
+/// refuses, never the whole order, so `submitted_at`, which the list takes, is never called
+/// unsupported.
+#[tokio::test]
+async fn a_refused_order_names_the_key_it_refuses() {
+    let (f, _) = setup().await;
+    for (order, said) in [
+        ("code", "field: code"),
+        ("submitted_at%20desc,id%20desc", "field: id"),
+        (
+            "submitted_at%20desc,submitted_at%20asc",
+            "only one key, submitted_at, is accepted",
+        ),
+    ] {
+        let (s, b, _) = get(&f, &format!("/approval-units?$orderby={order}")).await;
+        assert_eq!(s, 400, "{order}: {b}");
+        let text = b.to_string();
+        assert!(
+            text.contains("INVALID_ORDERBY_FIELD") && text.contains(said),
+            "{order}: {b}"
+        );
+        assert!(!text.contains("submitted_at desc,"), "{order}: {b}");
+    }
+}
+
+/// D-470 (plan review M4): the order is not part of the narrowing's hash, so a cursor minted
+/// before the descending order existed still continues; a cursor carries its order, and a
+/// continuation follows it; `$orderby` beside a cursor is the toolkit's 400 `ORDER_WITH_CURSOR`;
+/// an order the list does not take is 400 `INVALID_ORDERBY_FIELD`.
+#[tokio::test]
+async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continues() {
+    use toolkit_odata::{CursorV1, SortDir};
+    // The narrowing hash of `kind=prices` as the list minted it before run 9.3: the first 8 bytes
+    // of the SHA-256 of {"kind":"prices","ref_id":null,"state":null}, with no order in it.
+    const BEFORE: &str = "a1a21e85af067d2d";
+    let (f, _catalog) = setup().await;
+    let book = plan_support::book(&f, "cursors").await;
+    let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
+    let mut units = Vec::new();
+    for minutes in 0..5_i64 {
+        let at = t0 + time::Duration::minutes(minutes);
+        units.push((
+            at,
+            unit_on(&f, "prices", book, UnitState::Pending, at, None).await,
+        ));
+    }
+    let named = |range: &[(time::OffsetDateTime, Uuid)]| -> Vec<String> {
+        range.iter().map(|(_, id)| id.to_string()).collect()
+    };
+    let format = time::format_description::parse_borrowed::<2>(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z",
+    )
+    .unwrap();
+    let (at, id) = units[2];
+    let before = CursorV1 {
+        k: vec![at.format(&format).unwrap(), id.to_string()],
+        o: SortDir::Asc,
+        s: "+submitted_at,+id".into(),
+        f: Some(BEFORE.into()),
+        d: "fwd".into(),
+    }
+    .encode()
+    .unwrap();
+    let rest = ok(&f, &format!("/approval-units?kind=prices&cursor={before}")).await;
+    assert_eq!(ids(&rest), named(&units[3..]), "a cursor minted before 9.3");
+    let mut newest_first: Vec<_> = units.clone();
+    newest_first.reverse();
+    for (order, signed, first, second) in [
+        (
+            "",
+            "+submitted_at,+id",
+            named(&units[..2]),
+            named(&units[2..4]),
+        ),
+        (
+            "&$orderby=submitted_at%20desc",
+            "-submitted_at,-id",
+            named(&newest_first[..2]),
+            named(&newest_first[2..4]),
+        ),
+    ] {
+        let page = ok(&f, &format!("/approval-units?kind=prices&limit=2{order}")).await;
+        assert_eq!(ids(&page), first, "{order}");
+        let token = page["page_info"]["next_cursor"].as_str().unwrap();
+        let cursor = CursorV1::decode(token).unwrap();
+        assert_eq!(
+            (cursor.f.as_deref(), cursor.s.as_str()),
+            (Some(BEFORE), signed),
+            "{order}: the same narrowing hash, its own order"
+        );
+        let next = ok(
+            &f,
+            &format!("/approval-units?kind=prices&limit=2&cursor={token}"),
+        )
+        .await;
+        assert_eq!(ids(&next), second, "{order}: the cursor's order");
+        for orderby in ["submitted_at%20desc", "submitted_at%20asc", "submitted_at"] {
+            let (s, b, _) = get(
+                &f,
+                &format!("/approval-units?kind=prices&cursor={token}&$orderby={orderby}"),
+            )
+            .await;
+            assert_eq!(s, 400, "{orderby}: {b}");
+            assert!(code_of(&b).contains("ORDER_WITH_CURSOR"), "{orderby}: {b}");
+        }
+    }
+    for bad in [
+        "id%20desc",
+        "submitted_at%20up",
+        "submitted_at%20desc,id%20desc",
+        "kind",
+    ] {
+        let (s, b, _) = get(&f, &format!("/approval-units?kind=prices&$orderby={bad}")).await;
+        assert_eq!(s, 400, "{bad}: {b}");
+        assert!(code_of(&b).contains("INVALID_ORDERBY_FIELD"), "{bad}: {b}");
+    }
+}
+
+/// The tables the last request's statements on pricing's tables read, in order.
+fn tables_read(recorder: &toolkit_db::test_support::QueryRecorder) -> Vec<String> {
+    recorder
+        .events()
+        .into_iter()
+        .filter_map(|q| q.table.filter(|t| t.starts_with("pricing_")))
+        .collect()
+}
+
+/// D-470 (plan review M3): `impact=false` skips the live impact read. Each unit answers
+/// `impact: null`; the page reads its units, their items (whether its reader may approve a unit
+/// judges them, D-471) and their decisions, and no plan. `impact=true` is the default. A value that
+/// is not a boolean is 400 `QUERY_INVALID`.
+#[tokio::test]
+async fn impact_false_serves_no_impact_and_reads_no_plan() {
+    let (f, catalog, recorder) = recorded().await;
+    let now = time::OffsetDateTime::now_utc();
+    let b = plan_support::book(&f, "light").await;
+    for i in 0..3 {
+        let sku = catalog.sku(SkuType::Usage);
+        let e = stored_entry(&f, b, sku, "per_unit", now).await;
+        let (_, revision) = plan(&f, &format!("light-{i}"), b).await;
+        item(&f, revision, sku, Some(e), "paid").await;
+        priced_unit(&f, b, e, now).await;
+    }
+    recorder.clear();
+    let heavy = ok(&f, &format!("/approval-units?book_id={b}")).await;
+    let heavy_tables = tables_read(&recorder);
+    recorder.clear();
+    let light = ok(&f, &format!("/approval-units?book_id={b}&impact=false")).await;
+    let light_tables = tables_read(&recorder);
+    // The phase 9 review's R46: without the impact, the items are read for their authors only
+    // (the flag's separation of duties), never their content.
+    let items_read: Vec<String> = recorder
+        .events()
+        .into_iter()
+        .filter(|q| q.table.as_deref() == Some("pricing_approval_unit_item"))
+        .map(|q| q.sql)
+        .collect();
+    assert_eq!(items_read.len(), 1, "{items_read:#?}");
+    assert!(
+        items_read[0].contains("created_by")
+            && !items_read[0].contains("before_json")
+            && !items_read[0].contains("after_json"),
+        "the authors alone: {items_read:#?}"
+    );
+    assert_eq!(
+        light_tables,
+        [
+            "pricing_approval_unit",
+            "pricing_approval_unit_item",
+            "pricing_approval_decision",
+        ],
+        "the units, their items and their decisions, and no plan"
+    );
+    assert!(
+        heavy_tables.len() > light_tables.len()
+            && heavy_tables.iter().any(|t| t.starts_with("pricing_plan")),
+        "the default reads the plans: {heavy_tables:?}"
+    );
+    assert_eq!(ids(&light), ids(&heavy));
+    for (l, h) in light["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(heavy["items"].as_array().unwrap())
+    {
+        assert_eq!(l["impact"], Value::Null, "{l}");
+        assert_eq!(h["impact"]["plans"].as_array().unwrap().len(), 1, "{h}");
+        let mut without = h.clone();
+        without["impact"] = Value::Null;
+        assert_eq!(*l, without, "only the impact differs");
+    }
+    assert_eq!(
+        ok(&f, &format!("/approval-units?book_id={b}&impact=true")).await,
+        heavy
+    );
+    let (s, bad, _) = get(&f, &format!("/approval-units?book_id={b}&impact=maybe")).await;
+    assert_eq!(s, 400, "{bad}");
+    assert!(code_of(&bad).contains("QUERY_INVALID"), "{bad}");
+}
+
+// ------------------------------------------------------------------ the next price (D-472)
+
+/// The display status of a price that waits for its day: an approved price is scheduled, a draft
+/// or a pending one shows its state.
+fn waiting(state: &str) -> &str {
+    if state == "approved" {
+        "scheduled"
+    } else {
+        state
+    }
+}
+/// A temporary approved price of `entry` from `from` until `until` and its return from `until` to
+/// `base`, linked as the pair builder links them (`domain::price::temporary`): the return names
+/// the temporary price as its pair and `base` as the price it returns to. The temporary half's
+/// own link to its return is left out (the pair's two links are circular foreign keys, and the
+/// reads never follow them). `(temporary, return)`.
+async fn stored_pair(
+    f: &Fixture,
+    entry: Uuid,
+    base: &price::Model,
+    version_no: i32,
+    window: (time::Date, time::Date),
+) -> (price::Model, price::Model) {
+    let (conn, scope) = (f.db.conn().unwrap(), plan_support::scope(f));
+    let e = price_book_entry_repo::find(&conn, &scope, f.ctx.subject_tenant_id(), entry)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut temporary = entry_support::price(&e);
+    temporary.id = Uuid::now_v7();
+    temporary.version_no = version_no;
+    temporary.state = "approved".into();
+    temporary.effective_from = window.0;
+    temporary.effective_to = Some(window.1);
+    temporary.temporary_until = Some(window.1);
+    let temporary = price_repo::insert(&conn, &scope, temporary).await.unwrap();
+    let mut back = entry_support::price(&e);
+    back.id = Uuid::now_v7();
+    back.version_no = version_no + 1;
+    back.state = "approved".into();
+    back.effective_from = window.1;
+    back.paired_price_id = Some(temporary.id);
+    back.return_of_price_id = Some(base.id);
+    let back = price_repo::insert(&conn, &scope, back).await.unwrap();
+    (temporary, back)
+}
+/// The item of `entry` in a list answer, or the answer itself when it is a single read.
+fn the_entry(body: Value, entry: Uuid) -> Value {
+    if body["items"].is_array() {
+        body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == entry.to_string())
+            .unwrap()
+            .clone()
+    } else {
+        body
+    }
+}
+
+/// A chain's shape: its name, its rows, the index of its current price and of its next price.
+type Shape = (&'static str, Vec<Row>, Option<usize>, Option<usize>);
+/// A shape as stored: its name, its entry, its SKU, its current price and its next price.
+type Expected = (
+    String,
+    Uuid,
+    Uuid,
+    Option<price::Model>,
+    Option<price::Model>,
+);
+
+/// D-472 (ask 26): each entry read names the default chain's next price: its earliest scheduled
+/// price, else its newest draft or pending price (the highest `version_no`, then the latest
+/// `created_at`), else null. A value chain never counts, nor a rejected price. The book's list,
+/// the single read and the SKU's entries agree, and each headline price is the very price the
+/// entry's prices list answers.
+// Probed in run 9.4: the scheduled price chosen by storage order; a draft beating a scheduled
+// price; the newest draft by created_at; a value chain's price as the next one.
+#[tokio::test]
+async fn an_entry_names_its_next_price_in_each_chain_shape() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let t = today();
+    let earlier = time::OffsetDateTime::now_utc() - days(1);
+    let shapes: Vec<Shape> = vec![
+        (
+            "a scheduled price after the current one",
+            vec![
+                Row::new(1, "approved", t - days(10)).to(t + days(10)),
+                // Stored before the earlier start: the earliest start wins, not the first row.
+                Row::new(3, "approved", t + days(20)),
+                Row::new(2, "approved", t + days(10)).to(t + days(20)),
+                // A draft or a pending price comes only after every scheduled one.
+                Row::new(9, "draft", t + days(30)),
+                Row::new(8, "pending", t + days(25)),
+            ],
+            Some(0),
+            Some(2),
+        ),
+        (
+            "only drafts",
+            vec![
+                Row::new(1, "draft", t + days(5)),
+                // The highest version_no wins, though written earlier and starting earlier.
+                Row::new(2, "draft", t + days(3)).updated(earlier),
+            ],
+            None,
+            Some(1),
+        ),
+        (
+            "only pending prices",
+            vec![
+                Row::new(3, "pending", t + days(2)),
+                Row::new(2, "pending", t + days(9)),
+            ],
+            None,
+            Some(0),
+        ),
+        (
+            "drafts and pending prices",
+            vec![
+                Row::new(4, "pending", t + days(8)),
+                Row::new(5, "draft", t + days(2)),
+                // A rejected price never counts, whatever its version.
+                Row::new(6, "rejected", t + days(1)),
+            ],
+            None,
+            Some(1),
+        ),
+        (
+            "nothing after the current one",
+            vec![Row::new(1, "approved", t - days(5))],
+            Some(0),
+            None,
+        ),
+        ("no price", vec![], None, None),
+        (
+            "only a rejected price",
+            vec![Row::new(1, "rejected", t + days(1))],
+            None,
+            None,
+        ),
+        (
+            "a scheduled price and nothing in force",
+            vec![
+                Row::new(1, "approved", t + days(3)),
+                Row::new(2, "draft", t + days(4)),
+            ],
+            None,
+            Some(0),
+        ),
+        (
+            "value chains beside the default",
+            vec![
+                Row::new(1, "approved", t - days(5)),
+                Row::new(2, "approved", t + days(5)).on("eu"),
+                Row::new(3, "draft", t + days(6)).on("eu"),
+                Row::new(4, "pending", t + days(7)).on("apac"),
+            ],
+            Some(0),
+            None,
+        ),
+        (
+            "a value chain's scheduled price beside the default's draft",
+            vec![
+                Row::new(1, "draft", t + days(3)),
+                Row::new(2, "approved", t + days(2)).on("eu"),
+            ],
+            None,
+            Some(0),
+        ),
+    ];
+    let mut expected: Vec<Expected> = Vec::new();
+    for (shape, rows, current, next) in shapes {
+        let sku = catalog.sku(SkuType::Usage);
+        let e = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
+        let mut stored = Vec::new();
+        for row in rows {
+            stored.push(stored_price(&f, e, row).await);
+        }
+        expected.push((
+            shape.to_owned(),
+            e,
+            sku,
+            current.map(|i| stored[i].clone()),
+            next.map(|i| stored[i].clone()),
+        ));
+    }
+    // A temporary pair in force: the temporary price is current and its return is next. A pair
+    // still to come: the base price is current and the temporary price is next.
+    for (shape, window) in [
+        ("a temporary pair in force", (t - days(2), t + days(3))),
+        ("a temporary pair to come", (t + days(4), t + days(8))),
+    ] {
+        let sku = catalog.sku(SkuType::Usage);
+        let e = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
+        let base = stored_price(&f, e, Row::new(1, "approved", t - days(30)).to(window.0)).await;
+        let (temporary, back) = stored_pair(&f, e, &base, 2, window).await;
+        let (current, next) = if window.0 <= t {
+            (temporary, back)
+        } else {
+            (base, temporary)
+        };
+        expected.push((shape.to_owned(), e, sku, Some(current), Some(next)));
+    }
+    let listed = ok(&f, &format!("/price-books/{eur}/entries")).await;
+    for (shape, e, sku, current, next) in &expected {
+        let item = the_entry(listed.clone(), *e);
+        assert!(
+            item.as_object().unwrap().contains_key("next_price"),
+            "{shape}: null, never absent: {item}"
+        );
+        let prices = ok(&f, &format!("/price-book-entries/{e}/prices")).await;
+        let answered = |p: &Option<price::Model>| {
+            p.as_ref().map_or(Value::Null, |p| {
+                prices["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|i| i["id"] == p.id.to_string())
+                    .unwrap()
+                    .clone()
+            })
+        };
+        assert_eq!(
+            item["current_price"],
+            answered(current),
+            "{shape}: {item:#}"
+        );
+        assert_eq!(item["next_price"], answered(next), "{shape}: {item:#}");
+        if let Some(n) = next {
+            assert_eq!(item["next_price"]["status"], waiting(&n.state), "{shape}");
+        }
+        let headline = |b: &Value| (b["current_price"].clone(), b["next_price"].clone());
+        let read = ok(&f, &format!("/price-book-entries/{e}")).await;
+        assert_eq!(headline(&read), headline(&item), "{shape}: the single read");
+        let across = ok(&f, &format!("/price-book-entries?sku_id={sku}")).await;
+        assert_eq!(
+            headline(&the_entry(across, *e)),
+            headline(&item),
+            "{shape}: the SKU's entries"
+        );
+    }
+}
+
+/// D-472: the next price is money, shown as the price in force is (D-434): null, never absent,
+/// without `price_book` read on the entry's book, on each of the three entry reads.
+// Probed in run 9.4: the next price shown without the money's grant.
+#[tokio::test]
+async fn the_next_price_is_shown_only_with_price_book_read_on_its_book() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let other = plan_support::book(&f, "other").await;
+    let t = today();
+    let sku = catalog.sku(SkuType::Usage);
+    let entry = stored_entry(&f, eur, sku, "per_unit", time::OffsetDateTime::now_utc()).await;
+    stored_price(&f, entry, Row::new(1, "approved", t - days(1))).await;
+    let next = stored_price(&f, entry, Row::new(2, "approved", t + days(1))).await;
+    let paths = [
+        format!("/price-book-entries/{entry}"),
+        format!("/price-books/{eur}/entries"),
+        format!("/price-book-entries?sku_id={sku}"),
+    ];
+    for path in &paths {
+        assert_eq!(
+            the_entry(ok(&f, path).await, entry)["next_price"]["id"],
+            next.id.to_string(),
+            "{path}"
+        );
+    }
+    let entry_reader = holding(&f, "price_book_entry:read");
+    for path in &paths {
+        let (status, body, _) = f
+            .call_as(&entry_reader, "GET", path, json!({}), None, None)
+            .await;
+        assert_eq!(status, 200, "{path}: {body}");
+        let item = the_entry(body, entry);
+        assert!(
+            item.as_object().unwrap().contains_key("next_price") && item["next_price"].is_null(),
+            "{path}: {item}"
+        );
+    }
+    for (app, shown) in [
+        (money_app(&f, Some(vec![other]), false), false),
+        (money_app(&f, Some(vec![eur]), false), true),
+    ] {
+        for path in &paths {
+            let (status, body, _) = request(&app, &f.ctx, "GET", path, json!({}), None, None).await;
+            assert_eq!(status, 200, "{path}: {body}");
+            let item = the_entry(body, entry);
+            assert_eq!(item["next_price"].is_null(), !shown, "{path}: {item}");
+        }
+    }
+}
+
+/// D-472 (plan review L7): the next price comes from the read the price in force comes from,
+/// widened to the default chain's drafts and pending prices, so the book's entries list keeps its
+/// seven statements for 10 and for 100 entries — the book, its entries, the book under the
+/// money's grant, the three usage reads (the price counts, the plan items that name the entries,
+/// their revisions) and the default chain — with or without `as_of` (D-473).
+// Probed in run 9.4: the next price read one entry at a time.
+#[tokio::test]
+async fn the_entries_list_reads_both_headline_prices_in_seven_statements_for_10_and_100_entries() {
+    let (f, catalog, recorder) = recorded().await;
+    let t = today();
+    let mut lists = Vec::new();
+    for n in [10, 100] {
+        let b = plan_support::book(&f, &format!("headline-{n}")).await;
+        // Two entries in a plan's draft, so the usage reads the items' revisions too.
+        let (_, revision) = plan(&f, &format!("headline-{n}"), b).await;
+        for i in 0..n {
+            let sku = catalog.sku(SkuType::Usage);
+            let e = plan_support::entry(&f, b, sku, "usage", None).await;
+            if i < 2 {
+                item(&f, revision, sku, Some(e), "paid").await;
+            }
+            stored_price(&f, e, Row::new(1, "approved", t - days(1))).await;
+            if i % 2 == 0 {
+                stored_price(&f, e, Row::new(2, "approved", t + days(5))).await;
+            }
+            stored_price(&f, e, Row::new(3, "draft", t + days(6))).await;
+            stored_price(&f, e, Row::new(4, "pending", t + days(7))).await;
+        }
+        for query in [String::new(), format!("?as_of={}", t + days(6))] {
+            let path = format!("/price-books/{b}/entries{query}");
+            let seen = statements(&f, &recorder, &path, n).await;
+            assert_eq!(seen.len(), 7, "{path}: {seen:#?}");
+            lists.push(seen);
+            for item in ok(&f, &path).await["items"].as_array().unwrap() {
+                assert!(
+                    !item["current_price"].is_null() && !item["next_price"].is_null(),
+                    "{path}: {item}"
+                );
+            }
+        }
+    }
+    same("entries", &lists[0], &lists[2]);
+    same("entries on a date", &lists[1], &lists[3]);
+}
+
+// ------------------------------------------------------------------ the entries list on a date (D-473)
+
+/// D-473 (ask 37, plan review M5): `as_of` dates the whole answer of the book's entries list —
+/// the price in force, the next price, each price's status and the usage split are judged on
+/// that one day (D-440) — and today is the default. The single read keeps today.
+// Probed in run 9.4: the next price judged on today under as_of; the usage split judged on today
+// under as_of.
+#[tokio::test]
+async fn the_entries_list_judges_every_price_on_its_as_of_date() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let t = today();
+    let entry = stored_entry(
+        &f,
+        eur,
+        catalog.sku(SkuType::Usage),
+        "per_unit",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await;
+    let mut prices = Vec::new();
+    for row in [
+        Row::new(1, "approved", t - days(30)).to(t - days(10)),
+        Row::new(2, "approved", t - days(10)).to(t + days(10)),
+        Row::new(3, "approved", t + days(10)).to(t + days(20)),
+        Row::new(4, "approved", t + days(20)),
+        Row::new(5, "pending", t + days(25)),
+        Row::new(9, "draft", t + days(30)),
+        // A value chain's price: counted on its own window, never a headline.
+        Row::new(6, "approved", t - days(5)).on("eu"),
+    ] {
+        prices.push(stored_price(&f, entry, row).await);
+    }
+    let id = |i: Option<usize>| i.map_or(Value::Null, |i| json!(prices[i].id.to_string()));
+    // (as_of, the current price, the next price, the approved (scheduled, active, superseded))
+    for (as_of, current, next, split) in [
+        (t - days(40), None, Some(0), (5, 0, 0)),
+        (t - days(20), Some(0), Some(1), (4, 1, 0)),
+        (t, Some(1), Some(2), (2, 2, 1)),
+        // The day a price ends is its successor's.
+        (t + days(10), Some(2), Some(3), (1, 2, 2)),
+        // After a scheduled start (M5): that price is in force, the next is the one after it.
+        (t + days(15), Some(2), Some(3), (1, 2, 2)),
+        // After the last scheduled start: the next is the newest draft or pending price.
+        (t + days(20), Some(3), Some(5), (0, 2, 3)),
+    ] {
+        let body = ok(&f, &format!("/price-books/{eur}/entries?as_of={as_of}")).await;
+        let item = &body["items"][0];
+        assert_eq!(
+            item["current_price"]["id"],
+            id(current),
+            "{as_of}: {item:#}"
+        );
+        assert_eq!(item["next_price"]["id"], id(next), "{as_of}: {item:#}");
+        // The statuses agree with the day: the current price is active on it, the next waits.
+        if current.is_some() {
+            assert_eq!(item["current_price"]["status"], "active", "{as_of}");
+        }
+        if let Some(n) = next {
+            assert_eq!(
+                item["next_price"]["status"],
+                waiting(&prices[n].state),
+                "{as_of}"
+            );
+        }
+        assert_eq!(item["usage"], dated(split, 1, 1, 0, 0), "{as_of}: {item:#}");
+    }
+    // Without as_of the day is today, the same answer as as_of today.
+    assert_eq!(
+        ok(&f, &format!("/price-books/{eur}/entries")).await,
+        ok(&f, &format!("/price-books/{eur}/entries?as_of={t}")).await
+    );
+    // The single read takes no as_of: it stays dated on today.
+    let read = ok(
+        &f,
+        &format!("/price-book-entries/{entry}?as_of={}", t + days(15)),
+    )
+    .await;
+    assert_eq!(read["current_price"]["id"], id(Some(1)), "{read:#}");
+    assert_eq!(read["next_price"]["id"], id(Some(2)), "{read:#}");
+}
+
+/// D-473: a date before the book's `valid_from`, or on or after its `valid_until`, still answers
+/// with the prices in force then (the served text says such a price is not sellable).
+#[tokio::test]
+async fn a_date_outside_the_books_validity_answers_the_prices_in_force_then() {
+    let (f, catalog) = setup().await;
+    let t = today();
+    let (from, until) = (t + days(10), t + days(40));
+    let book = door_book(
+        &f,
+        "VALID",
+        "Valid",
+        "EUR",
+        Some(&from.to_string()),
+        Some(&until.to_string()),
+    )
+    .await;
+    let entry = stored_entry(
+        &f,
+        book,
+        catalog.sku(SkuType::Usage),
+        "per_unit",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await;
+    let first = stored_price(
+        &f,
+        entry,
+        Row::new(1, "approved", t - days(5)).to(t + days(20)),
+    )
+    .await;
+    let second = stored_price(&f, entry, Row::new(2, "approved", t + days(20))).await;
+    let draft = stored_price(&f, entry, Row::new(3, "draft", t + days(50))).await;
+    for (as_of, current, next) in [
+        (t - days(1), &first, &second),
+        (t + days(15), &first, &second),
+        (until, &second, &draft),
+        (t + days(100), &second, &draft),
+    ] {
+        let body = ok(&f, &format!("/price-books/{book}/entries?as_of={as_of}")).await;
+        let item = &body["items"][0];
+        assert_eq!(
+            (&item["current_price"]["id"], &item["next_price"]["id"]),
+            (&json!(current.id.to_string()), &json!(next.id.to_string())),
+            "{as_of}: {item:#}"
+        );
+    }
+}
+
+/// D-473 (plan review L6): `as_of` is a `YYYY-MM-DD` date, else 400 `DATE_INVALID`; any other key,
+/// or `as_of` twice, is 400 `QUERY_INVALID`, the house rule. D-440's order: 403 for entry read,
+/// 503 for the money's policy, 400 for the query, then 404 for the book.
+// Probed in run 9.4: an unknown key ignored; the book judged before the date.
+#[tokio::test]
+async fn the_entries_list_refuses_a_date_it_cannot_read_and_any_other_key() {
+    let (f, _) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let path = format!("/price-books/{eur}/entries");
+    for bad in [
+        "2026-13-01",
+        "2026-02-30",
+        "20260105",
+        "tomorrow",
+        "",
+        "2026-01-05T00:00:00Z",
+        "%202026-01-05",
+    ] {
+        let (s, b, _) = get(&f, &format!("{path}?as_of={bad}")).await;
+        assert_eq!(s, 400, "{bad}: {b}");
+        assert!(
+            code_of(&b).contains("DATE_INVALID") && code_of(&b).contains("as_of"),
+            "{bad}: {b}"
+        );
+    }
+    for query in [
+        "?asof=2026-01-05",
+        "?limit=5",
+        "?as_of=2026-01-05&as_of=2026-01-06",
+        "?status=active",
+        "?$top=5",
+    ] {
+        let (s, b, _) = get(&f, &format!("{path}{query}")).await;
+        assert_eq!(s, 400, "{query}: {b}");
+        assert!(code_of(&b).contains("QUERY_INVALID"), "{query}: {b}");
+    }
+    let bad = "?as_of=tomorrow";
+    let (s, _, _) = request(
+        &f.denied,
+        &f.ctx,
+        "GET",
+        &format!("{path}{bad}"),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 403, "authorization first");
+    let (s, b, _) = request(
+        &money_app(&f, None, true),
+        &f.ctx,
+        "GET",
+        &format!("{path}{bad}"),
+        json!({}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(s, 503, "the money's policy before the query: {b}");
+    let unknown = format!("/price-books/{}/entries", Uuid::new_v4());
+    let (s, b, _) = get(&f, &format!("{unknown}{bad}")).await;
+    assert_eq!(s, 400, "the query before the book: {b}");
+    let (s, b, _) = get(&f, &format!("{unknown}?as_of=2026-01-05")).await;
+    assert_eq!(s, 404, "{b}");
+}
+
+/// D-473 amended (phase 9 review R1): the usage split moves with the start and the end of every
+/// approved price, so an `as_of` other than today is money (D-440). Without `price_book` read on
+/// the book — entry read alone, or a grant narrowed to another book — it is 403
+/// `PRICE_BOOK_READ_REQUIRED`, judged after the book's 404 and before any price or usage is read;
+/// no `as_of`, or today's, answers 200 as before, and a grant that admits the book reads any day.
+#[tokio::test]
+async fn a_dated_entries_list_takes_price_book_read_on_its_book() {
+    let (f, catalog) = setup().await;
+    let eur = plan_support::book(&f, "eur").await;
+    let other = plan_support::book(&f, "other").await;
+    let t = today();
+    let entry = stored_entry(
+        &f,
+        eur,
+        catalog.sku(SkuType::Usage),
+        "per_unit",
+        time::OffsetDateTime::now_utc(),
+    )
+    .await;
+    stored_price(&f, entry, Row::new(1, "approved", t - days(1))).await;
+    stored_price(&f, entry, Row::new(2, "approved", t + days(5))).await;
+    let path = format!("/price-books/{eur}/entries");
+    let entry_reader = holding(&f, "price_book_entry:read");
+    let today_only = |s: u16, b: &Value, query: &str, dated: bool| {
+        if dated {
+            assert_eq!(s, 403, "{query}: {b}");
+            assert!(
+                code_of(b).contains("PRICE_BOOK_READ_REQUIRED"),
+                "{query}: {b}"
+            );
+        } else {
+            assert_eq!(s, 200, "{query}: {b}");
+            let item = &b["items"][0];
+            assert!(
+                item["current_price"].is_null() && item["next_price"].is_null(),
+                "{query}: {b}"
+            );
+        }
+    };
+    let queries = [
+        (String::new(), false),
+        (format!("?as_of={t}"), false),
+        (format!("?as_of={}", t + days(5)), true),
+        (format!("?as_of={}", t - days(1)), true),
+        ("?as_of=2020-01-01".to_owned(), true),
+    ];
+    for (query, dated) in &queries {
+        let (s, b, _) = f
+            .call_as(
+                &entry_reader,
+                "GET",
+                &format!("{path}{query}"),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        today_only(s, &b, query, *dated);
+        let narrowed = money_app(&f, Some(vec![other]), false);
+        let (s, b, _) = request(
+            &narrowed,
+            &f.ctx,
+            "GET",
+            &format!("{path}{query}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+        today_only(s, &b, query, *dated);
+        let admitted = money_app(&f, Some(vec![eur]), false);
+        let (s, b, _) = request(
+            &admitted,
+            &f.ctx,
+            "GET",
+            &format!("{path}{query}"),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(s, 200, "{query}: {b}");
+        let item = &b["items"][0];
+        assert!(
+            item["current_price"].is_object() || item["next_price"].is_object(),
+            "{query}: {b}"
+        );
+    }
+    // The book is judged before the money: an unknown book is 404 whatever the day.
+    let unknown = format!(
+        "/price-books/{}/entries?as_of={}",
+        Uuid::new_v4(),
+        t + days(5)
+    );
+    let (s, b, _) = f
+        .call_as(&entry_reader, "GET", &unknown, json!({}), None, None)
+        .await;
+    assert_eq!(s, 404, "{b}");
 }

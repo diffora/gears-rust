@@ -3,7 +3,7 @@
 //! door's serializable transaction.
 //!
 //! The fingerprinted `after` is the revision's business content only: its book, its sale date
-//! and its items (SKU, entry, treatment, included quantity, minimum quantity), in SKU order —
+//! and its items (SKU and entry, D-467), in SKU order —
 //! never a version, a lock or an item's reference columns, which the reference machine moves
 //! while the unit is pending. The item SKUs' current descriptors are read fresh for the reviewer
 //! and kept beside `after`, never in it: a GL change must not refresh a pending unit (D-408).
@@ -54,6 +54,79 @@ pub const ITEM_TYPE: &str = "plan_revision";
 /// the Subscriptions integration reports its pins.
 pub const SUBSCRIPTIONS_UNAVAILABLE: &str = "unavailable until the Subscriptions integration";
 
+/// The stored revisions as the effective-state rule reads them (D-447), in their order; a state
+/// outside the closed set is a corrupt row naming the revision (D-439).
+/// # Errors
+/// `CorruptRow`.
+pub fn stored_revisions(
+    rows: &[plan_revision::Model],
+) -> Result<Vec<plan::StoredRevision>, RepoError> {
+    rows.iter()
+        .map(|m| {
+            Ok(plan::StoredRevision {
+                id: m.id,
+                plan_id: m.plan_id,
+                rev_no: m.rev_no,
+                state: m.state.parse::<RevisionState>().map_err(|_| {
+                    RepoError::CorruptRow(format!(
+                        "revision {} state: {:?} is not a revision state",
+                        m.id, m.state
+                    ))
+                })?,
+                available_from: m.available_from,
+                published_at: m.published_at,
+            })
+        })
+        .collect()
+}
+/// The revisions as they read on `today` (D-447), in the order of `rows`: a due scheduled
+/// revision reads published, its plan's stored-published one superseded. A read derives; it never
+/// writes.
+/// # Errors
+/// `CorruptRow` for a state outside the closed set.
+pub fn effective_revisions(
+    rows: &[plan_revision::Model],
+    today: Date,
+) -> Result<Vec<plan::EffectiveRevision>, RepoError> {
+    Ok(plan::effective(&stored_revisions(rows)?, today))
+}
+/// The item SKUs of the published revision in effect among ONE plan's `revisions` as they read on
+/// a day (D-447): the SKUs a deprecated SKU may be carried from (D-408) and added again (D-465).
+/// # Errors
+/// Storage failures.
+pub async fn in_effect_skus(
+    tx: &impl DBRunner,
+    children: &AccessScope,
+    tenant: Uuid,
+    revisions: &[plan::EffectiveRevision],
+) -> Result<Vec<Uuid>, RepoError> {
+    Ok(match plan::in_effect(revisions) {
+        Some(published) => plan_item_repo::for_revision(tx, children, tenant, published.id)
+            .await?
+            .into_iter()
+            .map(|i| i.sku_id)
+            .collect(),
+        None => Vec::new(),
+    })
+}
+/// The item SKUs of the published revision in effect on `today` of the plan `plan_id` (D-465):
+/// a deprecated SKU among them may be added to its draft again, as the checks carry it (D-408).
+/// The item door and the create op's SKU re-read judge by it; a clone is a new plan, with none.
+/// # Errors
+/// Storage failures; `CorruptRow` for a state outside the closed set.
+pub async fn published_skus(
+    tx: &impl DBRunner,
+    tenant: Uuid,
+    plan_id: Uuid,
+    today: Date,
+) -> Result<Vec<Uuid>, RepoError> {
+    let children = AccessScope::for_tenant(tenant);
+    let revisions = effective_revisions(
+        &plan_revision_repo::for_plan(tx, &children, tenant, plan_id).await?,
+        today,
+    )?;
+    in_effect_skus(tx, &children, tenant, &revisions).await
+}
 /// What a revision's publication touches that pricing can measure: nothing yet, since
 /// publishing a revision moves no existing pin (D-394).
 #[must_use]
@@ -139,7 +212,10 @@ pub async fn catch_up(
     Ok(Some(switched))
 }
 
-/// A revision's business content, the unit's `after` (and `before` for the published one).
+/// A revision's business content, the unit's `after` (and `before` for the published one): each
+/// item is its SKU and its entry (D-467). A unit submitted before D-467 fingerprinted each item's
+/// treatment and quantities too, so its first vote or reject after D-467 finds its content changed
+/// and refreshes it once, at the next generation (`bss_approval`'s stale refresh).
 #[must_use]
 pub fn content(revision: &plan_revision::Model, items: &[plan_item::Model]) -> Value {
     let mut items: Vec<&plan_item::Model> = items.iter().collect();
@@ -152,9 +228,6 @@ pub fn content(revision: &plan_revision::Model, items: &[plan_item::Model]) -> V
             .map(|i| json!({
                 "sku_id": i.sku_id,
                 "price_book_entry_id": i.price_book_entry_id,
-                "treatment": i.treatment,
-                "included_qty": i.included_qty,
-                "qty_min": i.qty_min,
             }))
             .collect::<Vec<_>>(),
     })

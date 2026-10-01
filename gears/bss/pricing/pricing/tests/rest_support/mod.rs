@@ -196,6 +196,7 @@ impl Harness {
             ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
             ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
             ("GET", "/bss-pricing/v1/approval-units"),
+            ("GET", "/bss-pricing/v1/approval-units/counts"),
             ("GET", "/bss-pricing/v1/approval-units/{id}"),
             ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
             ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
@@ -262,6 +263,7 @@ impl Harness {
 // GET /price-books/{id}/publish-changes price_book:read false false
 // POST /price-books/{id}/publish-changes price_book:submit false true
 // GET /approval-units approval_unit:read false false
+// GET /approval-units/counts approval_unit:read false false (D-470)
 // GET /approval-units/{id} approval_unit:read false false
 // POST /approval-units/{id}/approve approval_unit:approve false true
 // POST /approval-units/{id}/reject approval_unit:approve false true

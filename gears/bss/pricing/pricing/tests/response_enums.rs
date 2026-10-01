@@ -23,7 +23,8 @@ const PRICE_STATUS: &[&str] = &[
     "active",
     "superseded",
 ];
-const TREATMENT: &[&str] = &["paid", "optional", "included"];
+/// Where a SKU's entry stands today (D-486). Not a price's display status.
+const SKU_ENTRY_STATUS: &[&str] = &["priced", "scheduled", "unpriced"];
 const ITEM_REFERENCE: &[&str] = &["unreserved", "confirmation_pending", "confirmed", "lost"];
 const REVISION: &[&str] = &["draft", "pending", "scheduled", "published", "superseded"];
 const RESOLVED_REVISION: &[&str] = &["published", "superseded", "scheduled"];
@@ -31,6 +32,7 @@ const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach"];
 const OP_STATE: &[&str] = &["reserving", "written", "cancelling", "releasing", "done"];
 const OP_REF_KIND: &[&str] = &["price_book_entry", "plan_item"];
 const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];
+const UNIT_KIND: &[&str] = &["prices", "plan_revision"];
 const DECISION: &[&str] = &["approve", "reject"];
 const VOTE_OUTCOME: &[&str] = &["pending", "applied", "rejected", "withdrawn"];
 const TIMING: &[&str] = &["advance", "arrears"];
@@ -57,7 +59,7 @@ const CLOSED: &[Closed] = &[
     ("PricingPriceDto", "eligibility", ELIGIBILITY, false),
     ("PricingPriceDto", "state", PRICE_STATE, false),
     ("PricingPriceDto", "status", PRICE_STATUS, false),
-    ("PricingPlanItemDto", "treatment", TREATMENT, false),
+    ("PricingSkuEntryDto", "status", SKU_ENTRY_STATUS, false),
     (
         "PricingPlanItemDto",
         "reference_state",
@@ -71,11 +73,13 @@ const CLOSED: &[Closed] = &[
     ("PricingReferenceOpDto", "state", OP_STATE, false),
     ("PricingReferenceOpDto", "ref_kind", OP_REF_KIND, false),
     ("PricingApprovalUnitDto", "state", UNIT_STATE, false),
+    // The phase 9 review's theme C: no CHECK holds the kind, but the repository reads it through
+    // its closed set, so a row outside it is a corrupt row (500), never served.
+    ("PricingApprovalUnitDto", "kind", UNIT_KIND, false),
     ("PricingDecisionDto", "decision", DECISION, false),
     ("PricingVoteReceipt", "outcome", VOTE_OUTCOME, false),
     ("PricingSettingsDto", "default_timing", TIMING, false),
     ("PricingResolveDto", "state", RESOLVED_REVISION, false),
-    ("PricingResolveItemDto", "treatment", TREATMENT, false),
     ("PricingResolveItemDto", "charge_kind", CHARGE_KIND, true),
     ("PricingResolveItemDto", "period", PERIOD, true),
     ("PricingResolveItemDto", "model", MODEL, true),
@@ -93,12 +97,11 @@ const CLOSED: &[Closed] = &[
 ];
 
 /// Response fields that stay `string` (D-439): no CHECK guards the stored set (`default_rounding`
-/// and the resolve's copy of it, D-437; the approval unit's `kind` and `ref_type`), or the value is
-/// a code vocabulary or an open value rather than a state (`code`, `chain`).
+/// and the resolve's copy of it, D-437; the approval unit's `ref_type`), or the value is a code
+/// vocabulary or an open value rather than a state (`code`, `chain`).
 const KEPT_STRING: &[(&str, &str)] = &[
     ("PricingSettingsDto", "default_rounding"),
     ("PricingResolveDto", "rounding_policy"),
-    ("PricingApprovalUnitDto", "kind"),
     ("PricingApprovalUnitDto", "ref_type"),
     ("PricingPlanCheckDto", "code"),
     ("PricingProposedPrice", "chain"),
@@ -110,8 +113,6 @@ const REQUEST_STRING: &[(&str, &str)] = &[
     ("PricingPriceBookEntryCreate", "period"),
     ("PricingPriceCreate", "eligibility"),
     ("PricingPricePatch", "eligibility"),
-    ("PricingPlanItemCreate", "treatment"),
-    ("PricingPlanItemPatch", "treatment"),
     ("PricingSettingsPut", "default_timing"),
     ("PricingSettingsPut", "default_rounding"),
     ("PricingApprovalPolicyPut", "kind"),
@@ -278,5 +279,40 @@ async fn request_bodies_keep_strings_so_the_doors_keep_their_codes() {
         assert!(seen.contains(schema), "{schema} is a request body");
         let p = property(&api, schema, field).unwrap_or_else(|| panic!("{schema}.{field}"));
         assert!(plain_string(p), "{schema}.{field}: {p}");
+    }
+}
+
+/// D-467: a plan item is a SKU and its entry. No plan item schema, request or response, and no
+/// resolved item carries `treatment`, `included_qty` or `qty_min`; the treatment's closed set is
+/// gone from the spec, and the create requires its entry.
+#[tokio::test]
+async fn no_plan_item_schema_carries_treatment_or_the_quantities() {
+    let api = served().await;
+    for schema in [
+        "PricingPlanItemCreate",
+        "PricingPlanItemPatch",
+        "PricingPlanItemDto",
+        "PricingPlanItemReadDto",
+        "PricingResolveItemDto",
+    ] {
+        assert!(!component(&api, schema).is_null(), "{schema} is served");
+        for key in ["treatment", "included_qty", "qty_min"] {
+            assert!(property(&api, schema, key).is_none(), "{schema}.{key}");
+        }
+    }
+    assert!(
+        api["components"]["schemas"]
+            .get("PricingTreatment")
+            .is_none(),
+        "no schema names a treatment"
+    );
+    let required = component(&api, "PricingPlanItemCreate")["required"]
+        .as_array()
+        .unwrap();
+    for field in ["sku_id", "price_book_entry_id"] {
+        assert!(
+            required.contains(&Value::from(field)),
+            "{field}: {required:?}"
+        );
     }
 }

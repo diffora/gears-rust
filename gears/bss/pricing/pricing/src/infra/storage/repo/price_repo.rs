@@ -403,11 +403,12 @@ pub async fn count_by_key_and_value(
         .await
         .map_err(|e| driver_failure("count prices by dimension key and value".into(), e))
 }
-/// The approved prices of the DEFAULT chain (no dimension value) of the entries, in ONE statement
-/// whatever their number (D-434): what the price in force of each is chosen from.
+/// The approved, pending and draft prices of the DEFAULT chain (no dimension value) of the
+/// entries — never a rejected one — in ONE statement whatever their number (D-434, D-472): what the
+/// price in force and the next price of each are chosen from.
 /// # Errors
 /// Returns typed database failures.
-pub async fn approved_default_chain(
+pub async fn default_chain(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant: Uuid,
@@ -423,13 +424,17 @@ pub async fn approved_default_chain(
             Condition::all()
                 .add(e::Column::TenantId.eq(tenant))
                 .add(e::Column::PriceBookEntryId.is_in(entries.iter().copied()))
-                .add(e::Column::State.eq(crate::domain::price::PriceState::Approved.as_str()))
+                .add(e::Column::State.is_in([
+                    PriceState::Approved.as_str(),
+                    PriceState::Pending.as_str(),
+                    PriceState::Draft.as_str(),
+                ]))
                 .add(e::Column::DimValue.is_null()),
         )
         .order_by(e::Column::Id, Order::Asc)
         .all(runner)
         .await
-        .map_err(|e| driver_failure("list approved default-chain prices".into(), e))
+        .map_err(|e| driver_failure("list default-chain prices".into(), e))
 }
 /// Remove a draft only at its current version and outside an approval unit.
 /// # Errors

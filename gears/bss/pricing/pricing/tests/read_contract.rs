@@ -262,8 +262,8 @@ async fn a_published_revision_resolves_every_item_in_the_frozen_shape_and_writes
         "keep_for_bound": false
     });
     let item = json!({
-        "item_id": w.item, "sku_id": w.sku, "treatment": "paid", "included_qty": null,
-        "qty_min": null, "price_book_entry_id": w.entry, "charge_kind": "recurring",
+        "item_id": w.item, "sku_id": w.sku, "price_book_entry_id": w.entry,
+        "charge_kind": "recurring",
         "period": "month", "model": "flat", "sku_version": null,
         "invoice_line_template": {"value": null, "source": null},
         "gl_code": {"value": null, "source": null},
@@ -772,7 +772,7 @@ async fn item_id_resolves_that_item_only_and_an_item_the_revision_lacks_is_404()
     let items = b["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{b}");
     assert_eq!(items[0]["item_id"], json!(included));
-    assert_eq!(items[0]["treatment"], "included");
+    assert!(items[0].get("treatment").is_none(), "D-467: {b}");
     assert_eq!(items[0]["price_book_entry_id"], json!(null));
     assert_eq!(items[0]["charge_kind"], json!(null));
     assert_eq!(
@@ -1402,7 +1402,8 @@ async fn exactly_the_reads_that_declare_an_etag_answer_one() {
         assert_eq!(!tag.is_empty(), declares, "{path}: ETag {tag:?}");
         measured += 1;
     }
-    assert_eq!(measured, 21, "every GET operation is measured");
+    // 22 since run 9.3's unit counts (D-470), which declare no ETag.
+    assert_eq!(measured, 22, "every GET operation is measured");
 }
 
 // ------------------------------------------------------------------ phase 4 review F1: what was refused

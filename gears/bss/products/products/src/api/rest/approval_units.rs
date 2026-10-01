@@ -6,7 +6,10 @@ use super::{
     ApiState, TxError, category_tx_config,
     closed_sets::ProductsVoteOutcome,
     contention_db_err,
-    dto::{UnitDto, UnitList, VoteReceipt, VoteRequest},
+    dto::{
+        ProductsApprovalUnitCounts, ProductsApprovalUnitKindCounts,
+        ProductsApprovalUnitStateCounts, UnitDto, UnitList, VoteReceipt, VoteRequest,
+    },
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
     unit_tx_to_canonical,
 };
@@ -14,7 +17,7 @@ use crate::{
     authz::{actions, resource_types},
     domain::{
         approvals::{
-            KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE, SkuProposal, Subject,
+            ApprovalKind, KIND_SKU_CHANGE, KIND_SKU_RETIRE, SkuProposal, Subject,
             change::SkuChange, publish::SkuPublish, retire::SkuRetire,
         },
         error::DomainError,
@@ -58,6 +61,18 @@ struct ListQuery {
     limit: Option<u64>,
     /// The opaque continuation of a page's `page_info.next_cursor`.
     cursor: Option<String>,
+    /// `submitted_at asc` (the default, P-D-224) or `submitted_at desc` (P-D-227); the id breaks a
+    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
+    #[serde(rename = "$orderby")]
+    orderby: Option<String>,
+}
+/// `GET /approval-units/counts` (P-D-227): the list's narrowing, and nothing else.
+#[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
+struct CountsQuery {
+    state: Option<String>,
+    kind: Option<String>,
+    ref_id: Option<Uuid>,
 }
 #[derive(Clone, Copy)]
 enum Vote {
@@ -73,11 +88,19 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("list_approval_units")
         .description(
             "One page of the tenant's approval units in submission order (P-D-224), filtered by \
-             state, kind and SKU, each with its stored snapshot and the decisions of every \
-             generation. `limit` (default 200, clamped at 500) and `cursor` from `page_info` \
-             page it. Refusals: 400 for an unknown state or a query that does not parse; 400 \
-             FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a \
-             cursor that does not read.",
+             state, kind and SKU, each with its stored snapshot, the decisions of every \
+             generation and caller_can_approve, whether the caller may approve it now (the \
+             approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, \
+             and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the \
+             same direction (P-D-227). A client merging pages of several gears compares \
+             submitted_at as an instant, never as text, then the id as lower-case hex. `limit` \
+             (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
+             its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state, \
+             a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that \
+             does not parse; 400 FILTER_MISMATCH for a cursor replayed with \
+             another state, kind or SKU; 400 for a cursor that does not read; 400 \
+             ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any \
+             other order.",
         )
         .tag("Approval units")
         .authenticated()
@@ -102,8 +125,53 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
+        .query_param_typed(
+            "$orderby",
+            false,
+            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "string",
+        )
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-products/v1/approval-units/counts")
+        .operation_id("bss_products.count_approval_units")
+        .summary("count_approval_units")
+        .description(
+            "Counts the tenant's approval units that the list's narrowing keeps (state, kind and \
+             SKU), under the list's own grant: by_state (pending, approved, rejected, withdrawn), \
+             by_kind (sku_publish, sku_change, sku_retire), each named with 0 when none, and \
+             total, the length of the list under the same narrowing (P-D-227). It reads one \
+             grouped statement, whatever the number of units. It takes nothing but the narrowing. \
+             Refusals: the list's: 400 for an unknown state, a kind other than sku_publish, \
+             sku_change or sku_retire (on kind), or a query that does not parse, and 400 for any \
+             other key (limit, cursor, $orderby).",
+        )
+        .tag("Approval units")
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "state",
+            false,
+            "Unit state: pending, approved, rejected or withdrawn",
+            "string",
+        )
+        .query_param_typed(
+            "kind",
+            false,
+            "Approval kind: sku_publish, sku_change or sku_retire",
+            "string",
+        )
+        .query_param_typed("ref_id", false, "SKU id (a UUID)", "string")
+        .handler(counts)
+        .json_response_with_schema::<ProductsApprovalUnitCounts>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -159,10 +227,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("reject_unit")
         .description(
             "Rejects the unit at the generation its reviewer saw; a reject needs a note. The \
-             note is at most 2000 characters (the approval engine's cap). Refusals include 400 \
-             NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 \
-             GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 \
-             DUPLICATE_VOTE.",
+             note is at most 2000 characters (the approval engine's cap). A reject judges no \
+             separation of duties: the submitter and the SKU's creator may reject (P-D-228). \
+             Refusals include 400 NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without \
+             one, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, and 409 DUPLICATE_VOTE \
+             or UNIT_ALREADY_DECIDED.",
         )
         .tag("Approval units")
         .authenticated()
@@ -271,30 +340,18 @@ async fn list(
     .await?;
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
-    let filter = q
-        .state
-        .as_deref()
-        .map(|s| {
-            UnitState::parse(s)
-                .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
-        })
-        .transpose()?;
-    let filter = repo::UnitListFilter {
-        state: filter,
-        kind: q.kind,
-        ref_id: q.ref_id,
-    };
-    let page = unit_page(&filter, q.limit, q.cursor.as_deref())?;
-    let tenant = ctx.subject_tenant_id();
+    let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
+    let (page, direction) = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
+    let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let list = state
         .db
         .db()
         .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
             let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
             Box::pin(async move {
-                // One page, and all its units' decisions in one read (P-D-224): the same
-                // statements whatever the page's size.
-                let page = repo::page_units(tx, &scope, tenant, &filter, &page)
+                // One page, all its units' decisions and all their items, one read each
+                // (P-D-224, P-D-228): the same statements whatever the page's size.
+                let page = repo::page_units(tx, &scope, tenant, &filter, &page, direction)
                     .await
                     .map_err(|e| match e {
                         repo::UnitListError::Query(e) => TxError::OData(e),
@@ -304,21 +361,25 @@ async fn list(
                 let mut decisions = repo::decisions_of_units(tx, &scope, tenant, &ids)
                     .await
                     .map_err(TxError::Repo)?;
+                // The items' authors alone: the flag judges who authored an item, never its
+                // content (the phase 9 review's R73, R74).
+                let mut authored = repo::item_authors_of_units(tx, &scope, tenant, &ids)
+                    .await
+                    .map_err(TxError::Repo)?;
                 let items = page
                     .items
                     .into_iter()
                     .map(|unit| {
                         let id = unit.id;
-                        let mut dto = UnitDto::from(unit);
-                        dto.decisions = decisions
-                            .remove(&id)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(Into::into)
-                            .collect();
-                        dto
+                        UnitDto::of(
+                            unit,
+                            &authored.remove(&id).unwrap_or_default(),
+                            decisions.remove(&id).unwrap_or_default(),
+                            reader,
+                        )
+                        .map_err(TxError::Repo)
                     })
-                    .collect();
+                    .collect::<Result<_, _>>()?;
                 Ok(UnitList {
                     items,
                     page_info: page.page_info,
@@ -329,17 +390,78 @@ async fn list(
         .map_err(tx_to_canonical)?;
     Ok(Json(list).into_response())
 }
+/// The unit list's narrowing, which the counts take too (P-D-224, P-D-227): a known state (else
+/// 400 on `state`), a kind products records (else 400 on `kind`) and the SKU.
+fn narrowing(
+    state: Option<&str>,
+    kind: Option<&str>,
+    ref_id: Option<Uuid>,
+) -> Result<repo::UnitListFilter, CanonicalError> {
+    let state = state
+        .map(|s| {
+            UnitState::parse(s)
+                .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
+        })
+        .transpose()?;
+    let kind = kind
+        .map(|k| {
+            ApprovalKind::parse(k).ok_or_else(|| {
+                CanonicalError::from(g::validation(
+                    "kind",
+                    "unknown approval kind: sku_publish, sku_change or sku_retire",
+                ))
+            })
+        })
+        .transpose()?;
+    Ok(repo::UnitListFilter {
+        state,
+        kind,
+        ref_id,
+    })
+}
+/// The unit list's order (P-D-227): `submitted_at` ascending (also when omitted, P-D-224) or
+/// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
+    let Some(raw) = orderby else {
+        return Ok(toolkit_odata::SortDir::Asc);
+    };
+    let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    match order.0.as_slice() {
+        [] => Ok(toolkit_odata::SortDir::Asc),
+        [key] if key.field == "submitted_at" => Ok(key.dir),
+        // The refusal names the key it refuses, never the whole order, so a supported field is
+        // never called unsupported (the phase 9 review's R67).
+        keys => Err(toolkit_odata::Error::InvalidOrderByField(
+            keys.iter()
+                .find(|key| key.field != "submitted_at")
+                .map_or_else(
+                    || "only one key, submitted_at, is accepted".to_owned(),
+                    |key| key.field.clone(),
+                ),
+        )
+        .into()),
+    }
+}
 /// The unit list's page (P-D-224): `limit`, and `cursor` from a page's `page_info`, which carries a
 /// hash of the narrowing (`state`, `kind` and `ref_id`), so a cursor replayed under another is 400
-/// `FILTER_MISMATCH`, as pricing's list's is (D-458).
+/// `FILTER_MISMATCH`, as pricing's list's is (D-458). The order is not part of the hash
+/// (P-D-227): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so every
+/// cursor minted before the descending order still reads. `$orderby` beside a cursor is the toolkit's 400
+/// `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
 fn unit_page(
     filter: &repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
-) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    orderby: Option<&str>,
+) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+    if cursor.is_some() && orderby.is_some() {
+        return Err(toolkit_odata::Error::OrderWithCursor.into());
+    }
+    let direction = unit_order(orderby)?;
     let narrowing = serde_json::json!({
         "state": filter.state.map(UnitState::as_str),
-        "kind": filter.kind,
+        "kind": filter.kind.map(ApprovalKind::as_str),
         "ref_id": filter.ref_id,
     });
     let hash = super::sku_list::cursor_hash(&narrowing);
@@ -354,23 +476,85 @@ fn unit_page(
         }
         query = query.with_cursor(cursor);
     }
-    Ok(query)
+    Ok((query, direction))
 }
-/// Every embedded unit reports the decisions actually stored for all generations.
-async fn with_decisions(
+/// `GET /approval-units/counts` (P-D-227): under the list's grant, the list's narrowing, counted
+/// by state and kind in ONE grouped statement, read outside any transaction.
+async fn counts(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    query: Result<Query<CountsQuery>, QueryRejection>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = g::scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+    )
+    .await?;
+    let Query(q) =
+        query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
+    let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
+    // One grouped statement is its own snapshot: it runs on the plain connection, never in the
+    // serializable transaction category writes take, whose read locks over the scanned units
+    // would push concurrent submits and votes into serialization failures (the phase 9 review's
+    // R32).
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    let rows = repo::count_units(&conn, &scope, ctx.subject_tenant_id(), &filter)
+        .await
+        .map_err(|e| tx_to_canonical(TxError::Repo(e)))?;
+    let mut by_state = ProductsApprovalUnitStateCounts::default();
+    let mut by_kind = ProductsApprovalUnitKindCounts::default();
+    let mut total = 0_u64;
+    for row in rows {
+        *match row.state {
+            UnitState::Pending => &mut by_state.pending,
+            UnitState::Approved => &mut by_state.approved,
+            UnitState::Rejected => &mut by_state.rejected,
+            UnitState::Withdrawn => &mut by_state.withdrawn,
+        } += row.units;
+        *match row.kind {
+            ApprovalKind::SkuPublish => &mut by_kind.sku_publish,
+            ApprovalKind::SkuChange => &mut by_kind.sku_change,
+            ApprovalKind::SkuRetire => &mut by_kind.sku_retire,
+        } += row.units;
+        total += row.units;
+    }
+    Ok(Json(ProductsApprovalUnitCounts {
+        by_state,
+        by_kind,
+        total,
+    })
+    .into_response())
+}
+/// A unit as `reader` reads it in a receipt: the decisions actually stored for all generations, and
+/// whether `reader` may approve it over its stored items' authors (P-D-228), one statement each;
+/// the items' content is not read (the phase 9 review's R70, R72).
+pub(super) async fn as_read_by(
     tx: &DbTx<'_>,
     store: &repo::ProductsApprovalStore,
     unit: Unit,
+    reader: Uuid,
 ) -> Result<UnitDto, TxError> {
-    let decisions = store
-        .decisions(tx, unit.id)
-        .await?
-        .into_iter()
-        .map(Into::into)
-        .collect();
-    let mut dto = UnitDto::from(unit);
-    dto.decisions = decisions;
-    Ok(dto)
+    let authors = authors_of(tx, store, unit.id).await?;
+    let decisions = store.decisions(tx, unit.id).await?;
+    UnitDto::of(unit, &authors, decisions, reader).map_err(TxError::Repo)
+}
+/// The authors of one unit's stored items, in one statement that reads nothing else.
+async fn authors_of(
+    tx: &DbTx<'_>,
+    store: &repo::ProductsApprovalStore,
+    unit: Uuid,
+) -> Result<Vec<Uuid>, TxError> {
+    Ok(
+        repo::item_authors_of_units(tx, &store.scope, store.tenant_id, &[unit])
+            .await
+            .map_err(TxError::Repo)?
+            .remove(&unit)
+            .unwrap_or_default(),
+    )
 }
 
 async fn get(
@@ -407,7 +591,7 @@ async fn get(
                     ctx.subject_tenant_id(),
                     unit.ref_id,
                     ttl,
-                    OffsetDateTime::now_utc(),
+                    crate::infra::storage::stored_now(),
                 )
                 .await?;
                 // A never-published draft may be deleted after its unit was rejected or withdrawn
@@ -415,14 +599,10 @@ async fn get(
                 let live = repo::find_sku(tx, &scope, ctx.subject_tenant_id(), unit.ref_id)
                     .await
                     .map_err(TxError::Repo)?;
-                let decisions = store
-                    .decisions(tx, id)
-                    .await?
-                    .into_iter()
-                    .map(Into::into)
-                    .collect();
-                let mut dto = UnitDto::from(unit);
-                dto.decisions = decisions;
+                let authors = authors_of(tx, &store, id).await?;
+                let decisions = store.decisions(tx, id).await?;
+                let mut dto = UnitDto::of(unit, &authors, decisions, ctx.subject_id())
+                    .map_err(TxError::Repo)?;
                 dto.impact_live = live
                     .map(|live| {
                         serde_json::to_value(super::dto::SkuDto::from(live))
@@ -505,7 +685,7 @@ async fn subject(
         tenant_id: store.tenant_id,
         outbox: outbox.clone(),
         actor: ctx.subject_id(),
-        now: OffsetDateTime::now_utc(),
+        now: crate::infra::storage::stored_now(),
         usage_type: usage,
     };
     let fence = repo::find_sku_fence(tx, &sku_scope, store.tenant_id, unit.ref_id)
@@ -515,15 +695,19 @@ async fn subject(
             what: "sku",
             id: unit.ref_id,
         }))?;
-    match unit.kind.as_str() {
-        KIND_SKU_PUBLISH => Ok(Subject::Publish(base)),
-        KIND_SKU_RETIRE => Ok(Subject::Retire(SkuRetire {
+    // The repository read the kind through its closed set; a kind outside it stays a store
+    // failure here, never judged as another kind.
+    let kind = ApprovalKind::parse(&unit.kind)
+        .ok_or_else(|| TxError::from(ApprovalError::Store("unknown approval kind".into())))?;
+    match kind {
+        ApprovalKind::SkuPublish => Ok(Subject::Publish(base)),
+        ApprovalKind::SkuRetire => Ok(Subject::Retire(SkuRetire {
             base,
             fence_op_id: fence
                 .fence_op_id
                 .ok_or_else(|| g::conflict("SKU_FENCED", "retire fence missing"))?,
         })),
-        KIND_SKU_CHANGE => {
+        ApprovalKind::SkuChange => {
             let items = store.items(tx, unit.id).await?;
             let item = items
                 .first()
@@ -549,9 +733,6 @@ async fn subject(
                 },
             }))
         }
-        _ => Err(TxError::from(ApprovalError::Store(
-            "unknown approval kind".into(),
-        ))),
     }
 }
 async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuContent, TxError> {
@@ -650,7 +831,7 @@ async fn vote(
             let sub = subject(&outbox, tx, &store, &ctx, &unit, usage).await?;
             // P-D-213: the SKU's lifecycle before the decision, and after it below.
             let found = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
-            let now = OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let outcome = match action {
                 Vote::Approve => {
                     if unit.kind != KIND_SKU_RETIRE
@@ -735,7 +916,7 @@ async fn vote(
                 have,
                 need,
                 outcome: label,
-                unit: with_decisions(tx, &store, unit).await?,
+                unit: as_read_by(tx, &store, unit, ctx.subject_id()).await?,
             };
             replay::finish(
                 tx,
@@ -789,7 +970,7 @@ async fn decision_audit(
     now: OffsetDateTime,
 ) -> Result<(), TxError> {
     let action = audited.action();
-    let left = g::lifecycle(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
+    let left = g::recorded_to(tx, ctx.subject_tenant_id(), unit.ref_id).await?;
     let moved = repo::LifecycleMove::between(found, left);
     g::audit(tx, ctx, action, "approval_unit", unit.id, note, now, moved).await
 }

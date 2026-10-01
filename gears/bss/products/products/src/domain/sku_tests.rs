@@ -84,17 +84,14 @@ fn the_type_is_frozen_once_a_price_book_entry_exists() {
     ));
 }
 #[test]
-fn lifecycle_edges_are_the_spec_ones_including_the_fence_return_paths() {
+fn lifecycle_edges_are_publish_deprecate_and_retire() {
     use Lifecycle::*;
     for (f, t, ok) in [
         (Draft, Published, true),
         (Published, Deprecated, true),
         (Deprecated, Published, true),
-        (Published, Retiring, true),
-        (Deprecated, Retiring, true),
-        (Retiring, Retired, true),
-        (Retiring, Published, true),
-        (Retiring, Deprecated, true),
+        (Published, Retired, true),
+        (Deprecated, Retired, true),
         (Draft, Retired, false),
         (Retired, Published, false),
         (Published, Draft, false),

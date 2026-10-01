@@ -16,9 +16,9 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
     assert!(gear.runtime.load_full().is_some());
     assert_eq!(
         crate::infra::storage::migrations::Migrator::migrations().len(),
-        12,
-        "the schema guard, coordination and the ten PriceBook migrations (000009: the unit's \
-         note, P-D-219; 000010: no retired default, P-D-220)"
+        13,
+        "the schema guard, coordination and the eleven PriceBook migrations (000009: the unit's \
+         note, P-D-219; 000010: no retired default, P-D-220; 000011: retire_pending, P-D-248)"
     );
     let openapi = OpenApiRegistryImpl::new();
     let router = gear.register_rest(&ctx, Router::new(), &openapi)?;
@@ -53,6 +53,7 @@ async fn configured_gear_registers_implemented_routes() -> anyhow::Result<()> {
         "bss_products.retire_sku",
         "bss_products.unfence_sku",
         "bss_products.list_approval_units",
+        "bss_products.count_approval_units",
         "bss_products.get_approval_unit",
         "bss_products.approve_unit",
         "bss_products.reject_unit",
@@ -144,6 +145,7 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
             "lifecycle",
             "name",
             "pending_unit_id",
+            "retire_pending",
             "type"
         ],
         "{list}"
@@ -316,10 +318,11 @@ async fn registered_products_client_reads_drafts_and_hides_foreign_rows() {
 // ------------------------------------------------------------------ P-D-217: closed sets
 
 const SKU_TYPE: &[&str] = &["recurring", "usage", "one_time", "bundle"];
-const LIFECYCLE: &[&str] = &["draft", "published", "deprecated", "retiring", "retired"];
+const LIFECYCLE: &[&str] = &["draft", "published", "deprecated", "retired"];
 const TIMING: &[&str] = &["advance", "arrears"];
 const CATEGORY_STATUS: &[&str] = &["active", "retired"];
 const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];
+const UNIT_KIND: &[&str] = &["sku_publish", "sku_change", "sku_retire"];
 const DECISION: &[&str] = &["approve", "reject"];
 const VOTE_OUTCOME: &[&str] = &["pending", "applied", "rejected", "withdrawn"];
 const REFERENCE_KIND: &[&str] = &["price_book_entry", "plan_item", "sold_as"];
@@ -330,6 +333,7 @@ type Closed = (&'static str, &'static str, &'static [&'static str], bool);
 const CLOSED: &[Closed] = &[
     ("SkuDto", "type", SKU_TYPE, false),
     ("SkuDto", "lifecycle", LIFECYCLE, false),
+    ("LifecycleNextDto", "lifecycle", LIFECYCLE, false),
     ("SkuDto", "billing_timing", TIMING, true),
     ("SkuContentDto", "type", SKU_TYPE, false),
     ("SkuContentDto", "billing_timing", TIMING, true),
@@ -337,6 +341,9 @@ const CLOSED: &[Closed] = &[
     ("ProductsSkuHistoryEntry", "from_lifecycle", LIFECYCLE, true),
     ("ProductsSkuHistoryEntry", "to_lifecycle", LIFECYCLE, true),
     ("UnitDto", "state", UNIT_STATE, false),
+    // The phase 9 review's theme C: no CHECK holds the kind, but the repository reads it through
+    // its closed set, so a row outside it is a corrupt row (500), never served.
+    ("UnitDto", "kind", UNIT_KIND, false),
     ("DecisionDto", "decision", DECISION, false),
     ("VoteReceipt", "outcome", VOTE_OUTCOME, false),
     ("ReferenceDto", "kind", REFERENCE_KIND, false),
@@ -346,14 +353,13 @@ const CLOSED: &[Closed] = &[
 ];
 
 /// P-D-217: response fields that stay `string`. No CHECK guards the stored set (the audit
-/// `action`, the approval unit's `kind` and `ref_type`, a reference's `owner`), the value is not
+/// `action` and `unit_kind`, the approval unit's `ref_type`, a reference's `owner`), the value is not
 /// this gear's (a usage type's `kind`, the collector's), it names the wired catalog (`source`), or
 /// the kept `/browse` envelope carries the catalog port's vocabulary verbatim (`CatalogSku`: "not
 /// an enum").
 const KEPT_STRING: &[(&str, &str)] = &[
     ("ProductsSkuHistoryEntry", "action"),
     ("ProductsSkuHistoryEntry", "unit_kind"),
-    ("UnitDto", "kind"),
     ("UnitDto", "ref_type"),
     ("ReferenceDto", "owner"),
     ("ReferenceReceipt", "owner"),
@@ -618,4 +624,85 @@ async fn a_registered_usage_type_catalog_is_bounded_by_the_resolver_timeout() {
     .await
     .expect("the list is bounded");
     assert_eq!(listed.unwrap_err().status_code(), 503);
+}
+
+/// P-D-227 (ask 42): the counts op declares its 503, as every products op does, its narrowing and
+/// its answer; the list names its order and its refusals.
+#[tokio::test]
+async fn the_unit_reads_say_how_they_count_and_order() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let counts = &api["paths"]["/bss-products/v1/approval-units/counts"]["get"];
+    assert!(
+        !counts["responses"]["503"].is_null(),
+        "the counts declare 503: {counts}"
+    );
+    let names = |op: &serde_json::Value| -> Vec<String> {
+        op["parameters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["in"] == "query")
+            .map(|p| p["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(counts), ["state", "kind", "ref_id"]);
+    let text = counts["description"].as_str().unwrap_or_default();
+    for said in [
+        "by_state",
+        "by_kind",
+        "total",
+        "one grouped statement",
+        // The phase 9 review's theme C: a kind products does not record is refused.
+        "a kind other than sku_publish, sku_change or sku_retire (on kind)",
+    ] {
+        assert!(text.contains(said), "the counts say {said}: {text}");
+    }
+    assert_eq!(
+        counts["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ProductsApprovalUnitCounts",
+        "{counts}"
+    );
+    let list = &api["paths"]["/bss-products/v1/approval-units"]["get"];
+    assert!(names(list).iter().any(|n| n == "$orderby"), "{list}");
+    let text = list["description"].as_str().unwrap_or_default();
+    for said in [
+        "submitted_at desc",
+        "ORDER_WITH_CURSOR",
+        "INVALID_ORDERBY_FIELD",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
+    }
+    Ok(())
+}
+
+/// P-D-228 (ask 28): every unit carries `caller_can_approve`, a required boolean whose text says
+/// it judges Approve only and not the grant, and the list's text names it; the reject door no
+/// longer claims `SOD_VIOLATION`, which only the approve answers.
+#[tokio::test]
+async fn every_unit_says_whether_its_reader_may_approve_it() -> anyhow::Result<()> {
+    let api = served_spec().await?;
+    let list = api["paths"]["/bss-products/v1/approval-units"]["get"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(list.contains("caller_can_approve"), "{list}");
+    let flag = property(&api, "UnitDto", "caller_can_approve").expect("the flag");
+    assert_eq!(flag["type"], "boolean", "{flag}");
+    assert!(
+        component(&api, "UnitDto")["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "caller_can_approve")
+    );
+    let said = flag["description"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("Approve only") && said.contains("403"),
+        "the flag says what it judges: {said}"
+    );
+    let reject = api["paths"]["/bss-products/v1/approval-units/{id}/reject"]["post"]["description"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!reject.contains("SOD_VIOLATION"), "{reject}");
+    assert!(reject.contains("separation of duties"), "{reject}");
+    Ok(())
 }

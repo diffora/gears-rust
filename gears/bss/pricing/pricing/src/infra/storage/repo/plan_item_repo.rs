@@ -43,14 +43,38 @@ async fn entry_in_tenant(
     }
     Ok(())
 }
-/// Insert an item into an unlocked draft revision of the tenant. The revision and the item's
-/// entry are re-read here, in the caller's transaction, so a racing submit, book change or
-/// delete orders against this write (D-407): the entry must be an entry of the revision's book
-/// for the item's own SKU.
+/// `m` in the row shape every write stores from D-467 on: the treatment `plan::stored_treatment`
+/// derives from its entry (`paid`, or `included` for a copy of a legacy item without one, the one
+/// entry-less row the column's CHECK admits) and no quantity, whatever `m` carries.
+fn d467_shape(mut m: e::Model) -> e::Model {
+    m.treatment = crate::domain::plan::stored_treatment(m.price_book_entry_id)
+        .as_str()
+        .into();
+    m.included_qty = None;
+    m.qty_min = None;
+    m
+}
+/// Insert an item into an unlocked draft revision of the tenant, in D-467's row shape whatever
+/// `m` carries (`d467_shape`): every writer of a plan item stores it, so none has to repeat it.
+/// The revision and the item's entry are re-read here, in the caller's transaction, so a racing
+/// submit, book change or delete orders against this write (D-407): the entry must be an entry
+/// of the revision's book for the item's own SKU. Answers the row as stored.
 /// # Errors
 /// `REVISION_NOT_FOUND`, `REVISION_NOT_DRAFT`, `ENTRY_NOT_FOUND`, `ITEM_BOOK_FOREIGN`,
 /// `ITEM_ENTRY_SKU_MISMATCH` or `ITEM_SKU_TAKEN`; database failures keep their type.
 pub async fn insert(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    m: e::Model,
+) -> Result<e::Model, RepoError> {
+    insert_as_given(runner, scope, d467_shape(m)).await
+}
+/// [`insert`] of `m` exactly as given, its treatment and quantities included: the row shape of
+/// before D-467. No door writes through it; it seeds the legacy rows the suites read, and the
+/// tests of the column CHECKs.
+/// # Errors
+/// As [`insert`]; a shape the column CHECKs refuse is a database failure.
+pub async fn insert_as_given(
     runner: &impl DBRunner,
     scope: &AccessScope,
     m: e::Model,
@@ -145,6 +169,50 @@ pub async fn for_revision(
         .await
         .map_err(|e| driver_failure("list plan items of a revision".into(), e))
 }
+/// One item's revision and SKU, a row of [`skus_of_revisions`].
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct RevisionSkuRow {
+    revision_id: Uuid,
+    sku_id: Uuid,
+}
+/// The item SKUs of every revision among `revisions`, each revision's in ascending order, in ONE
+/// statement whatever their number (D-460: the plans list's current revisions). The statement
+/// runs for an empty list too (the query builder renders it `1 = 2`), so a list that reads it
+/// makes the same statements for any number of rows; a revision without items has no key.
+/// # Errors
+/// Returns typed database failures.
+pub async fn skus_of_revisions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    revisions: &[Uuid],
+) -> Result<std::collections::BTreeMap<Uuid, Vec<Uuid>>, RepoError> {
+    use sea_orm::{QueryOrder, QuerySelect};
+    let mut grouped: std::collections::BTreeMap<Uuid, Vec<Uuid>> =
+        std::collections::BTreeMap::new();
+    for row in e::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(e::Column::TenantId.eq(tenant))
+                .add(e::Column::RevisionId.is_in(revisions.iter().copied())),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(e::Column::RevisionId)
+                .column(e::Column::SkuId)
+                .order_by(e::Column::RevisionId, Order::Asc)
+                .order_by(e::Column::SkuId, Order::Asc)
+                .into_model::<RevisionSkuRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("read the item SKUs of revisions".into(), e))?
+    {
+        grouped.entry(row.revision_id).or_default().push(row.sku_id);
+    }
+    Ok(grouped)
+}
 /// Whether any plan item names an entry (`ENTRY_IN_USE`, D-408).
 /// # Errors
 /// Returns typed database failures.
@@ -193,12 +261,24 @@ pub async fn naming_entries(
         .await
         .map_err(|e| driver_failure("list plan items naming entries".into(), e))
 }
-/// Change an item's treatment, quantities or entry at the version the caller read, only while
-/// its revision is an unlocked draft; the SKU never changes.
+/// Change an item's entry at the version the caller read, only while its revision is an unlocked
+/// draft, and rewrite the row in D-467's shape whatever `m` carries (`d467_shape`); the SKU never
+/// changes.
 /// # Errors
 /// `ENTRY_NOT_FOUND` for an entry outside the tenant; `STALE_REVISION` for a lost version or a
 /// revision that is no longer an unlocked draft.
 pub async fn update_draft(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    m: e::Model,
+) -> Result<(), RepoError> {
+    update_draft_as_given(runner, scope, d467_shape(m)).await
+}
+/// [`update_draft`] of `m` exactly as given, its treatment and quantities included: the legacy
+/// row shape. No door writes through it; it seeds the legacy rows the suites read.
+/// # Errors
+/// As [`update_draft`].
+pub async fn update_draft_as_given(
     runner: &impl DBRunner,
     scope: &AccessScope,
     m: e::Model,

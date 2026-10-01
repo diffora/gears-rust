@@ -185,6 +185,40 @@ pub fn own_version_at<'a>(
         .rev()
         .find(|r| r.effective_from <= date && r.effective_to.is_none_or(|end| date < end))
 }
+/// One price of an entry's default chain as the next-price rule reads it (D-472): the columns
+/// the choice depends on.
+#[toolkit_macros::domain_model]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainPrice {
+    pub id: Uuid,
+    pub state: PriceState,
+    pub effective_from: Date,
+    pub version_no: i32,
+    pub created_at: time::OffsetDateTime,
+}
+/// The default chain's next price after `day` (D-472), of one entry's default-chain prices, the
+/// headline rule beside [`own_version_at`]: its earliest approved price that starts after the day
+/// (a scheduled price; two approved prices of a chain never share a start, and the highest
+/// `version_no` would win as it wins in force), else its newest draft or pending price — the
+/// highest `version_no`, then the latest `created_at`, then the highest id — else `None`. A
+/// rejected price is never one.
+#[must_use]
+pub fn next_of(chain: &[ChainPrice], day: Date) -> Option<&ChainPrice> {
+    chain
+        .iter()
+        .filter(|p| p.state == PriceState::Approved && p.effective_from > day)
+        .min_by(|a, b| {
+            a.effective_from
+                .cmp(&b.effective_from)
+                .then(b.version_no.cmp(&a.version_no))
+        })
+        .or_else(|| {
+            chain
+                .iter()
+                .filter(|p| matches!(p.state, PriceState::Draft | PriceState::Pending))
+                .max_by_key(|p| (p.version_no, p.created_at, p.id))
+        })
+}
 /// Prefer the value's in-force price, then the default chain.
 #[must_use]
 pub fn version_at<'a>(

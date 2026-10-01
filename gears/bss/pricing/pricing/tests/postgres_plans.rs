@@ -375,14 +375,14 @@ async fn postgres_pricing_plan_item_keys_checks_and_reference() {
         updated_at: now(),
     };
     assert_eq!(
-        plan_item_repo::insert(&conn, &s.scope, item.clone())
+        plan_item_repo::insert_as_given(&conn, &s.scope, item.clone())
             .await
             .unwrap(),
         item,
         "the quantity reads back as exact text"
     );
     conflict(
-        plan_item_repo::insert(
+        plan_item_repo::insert_as_given(
             &conn,
             &s.scope,
             plan_item::Model {
@@ -430,7 +430,9 @@ async fn postgres_pricing_plan_item_keys_checks_and_reference() {
         ),
     ] {
         assert!(
-            plan_item_repo::insert(&conn, &s.scope, m).await.is_err(),
+            plan_item_repo::insert_as_given(&conn, &s.scope, m)
+                .await
+                .is_err(),
             "{what}"
         );
     }
@@ -724,13 +726,14 @@ async fn postgres_pricing_plan_revision_switch_due_racing_itself_switches_once()
 
 // ------------------------------------------------------------------ the doors on Postgres (run 3.5)
 
+use bss_pricing::infra::reference_work::{Clock, WallClock};
 use bss_products_sdk::{
     ReferenceRegistryV1,
     models::{ReferenceKind, ReferenceState, ReservationReceipt, Sku, SkuType, SkuVersion},
 };
 use plan_support::{
     Catalog, Fixture,
-    entry_support::{app_for, state_on, user_of},
+    entry_support::{app_for, state_with_clock, user_of},
     id_of, scope,
 };
 use serde_json::{Value, json};
@@ -834,8 +837,17 @@ struct Pools {
     gate_b: Arc<Gated>,
 }
 async fn pool(pg: &pg_support::Pg, registry: Arc<Gated>, ctx: &SecurityContext) -> Fixture {
+    pool_with_clock(pg, registry, ctx, Arc::new(WallClock)).await
+}
+/// A pool whose approval doors read `clock`.
+async fn pool_with_clock(
+    pg: &pg_support::Pg,
+    registry: Arc<Gated>,
+    ctx: &SecurityContext,
+    clock: Arc<dyn Clock>,
+) -> Fixture {
     let db = DBProvider::<DbError>::new(pg.db().await);
-    let state = state_on(db.clone(), registry).await;
+    let state = state_with_clock(db.clone(), registry, clock).await;
     let app = app_for(state.clone(), ctx.subject_tenant_id());
     Fixture {
         dsn: plan_support::entry_support::TestDsn::of(pg.url(true)),
@@ -982,7 +994,7 @@ async fn postgres_an_item_add_reaching_its_write_after_the_lock_is_refused() {
     let mut add = Box::pin(p.a.call(
         "POST",
         &path,
-        json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"}),
+        json!({"sku_id":sku,"price_book_entry_id":entry}),
         None,
         Some("add"),
     ));
@@ -1038,7 +1050,7 @@ async fn postgres_an_item_add_committed_inside_a_submit_is_carried_by_the_unit()
         p.a.call(
             "POST",
             &add_path(revision),
-            json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"}),
+            json!({"sku_id":sku,"price_book_entry_id":entry}),
             None,
             Some("add"),
         )
@@ -1068,7 +1080,7 @@ async fn postgres_an_item_add_racing_a_publishing_submit_never_lands_after_the_l
     for round in 0..6 {
         let (_, revision, book) = green_plan(&p, &format!("race-{round}")).await;
         let (sku, entry) = priced(&p.a, &p.catalog, book).await;
-        let add_body = json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"});
+        let add_body = json!({"sku_id":sku,"price_book_entry_id":entry});
         let (add_key, submit_key) = (format!("add-{round}"), format!("submit-{round}"));
         let (submit_at, add_at) = (submit_path(revision), add_path(revision));
         let submit =
@@ -1175,7 +1187,7 @@ async fn postgres_an_item_create_and_a_copied_items_attach_round_trip_through_th
     let (plan, revision) = plan_support::plan(&p.a, "trip", book).await;
     let plan = id_of(&plan["id"]);
     let (sku, entry) = priced(&p.a, &p.catalog, book).await;
-    let body = json!({"sku_id":sku,"price_book_entry_id":entry,"treatment":"paid"});
+    let body = json!({"sku_id":sku,"price_book_entry_id":entry});
     let (s, created, _) =
         p.a.call("POST", &add_path(revision), body.clone(), None, Some("add"))
             .await;
@@ -1296,7 +1308,7 @@ async fn postgres_pricing_usage_sets_read_set_based() {
     };
     // The seed's entry is named by its draft revision: priced and in plan.
     let live = s.entry.sku_id;
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, s.revision.id, live, Some(s.entry.id), "paid"),
@@ -1319,7 +1331,7 @@ async fn postgres_pricing_usage_sets_read_set_based() {
     let superseded = plan_revision_repo::insert(&conn, &s.scope, revision(&old_plan, &s.book, 1))
         .await
         .unwrap();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, superseded.id, old, Some(old_entry.id), "paid"),
@@ -1340,7 +1352,7 @@ async fn postgres_pricing_usage_sets_read_set_based() {
         .unwrap();
     // Named by an included item with no entry: neither.
     let included = Uuid::new_v4();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, s.revision.id, included, None, "included"),
@@ -1373,7 +1385,7 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     let conn = s.provider.conn().unwrap();
     let sku = s.entry.sku_id;
     // The seed's draft revision names the seed's entry: the plan "pro" sells the SKU.
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, s.revision.id, sku, Some(s.entry.id), "paid"),
@@ -1388,7 +1400,7 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     let old = plan_revision_repo::insert(&conn, &s.scope, revision(&gone, &s.book, 1))
         .await
         .unwrap();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, old.id, sku, Some(s.entry.id), "paid"),
@@ -1413,7 +1425,7 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     let f1 = plan_revision_repo::insert(&conn, &s.scope, revision(&free, &s.book, 1))
         .await
         .unwrap();
-    plan_item_repo::insert(
+    plan_item_repo::insert_as_given(
         &conn,
         &s.scope,
         usage_item(&s, f1.id, sku, None, "included"),
@@ -1501,9 +1513,10 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
         }
     };
     let default_approved = price_of(s.entry.id, "approved", None);
+    let default_draft = price_of(s.entry.id, "draft", None);
     let rows = [
         default_approved.clone(),
-        price_of(s.entry.id, "draft", None),
+        default_draft.clone(),
         price_of(keyed.id, "approved", Some("eu")),
         price_of(keyed.id, "rejected", Some("eu")),
         price_of(keyed.id, "pending", Some("us")),
@@ -1511,13 +1524,16 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
     for p in rows {
         price_repo::insert(&conn, &s.scope, p).await.unwrap();
     }
-    let chain =
-        price_repo::approved_default_chain(&conn, &s.scope, s.tenant, &[s.entry.id, keyed.id])
-            .await
-            .unwrap();
+    let chain = price_repo::default_chain(&conn, &s.scope, s.tenant, &[s.entry.id, keyed.id])
+        .await
+        .unwrap();
+    // D-472: the default chain's approved, pending and draft prices, in id order; never a value
+    // chain's price nor a rejected one.
+    let mut default_chain = vec![default_approved.id, default_draft.id];
+    default_chain.sort();
     assert_eq!(
         chain.iter().map(|p| p.id).collect::<Vec<_>>(),
-        [default_approved.id]
+        default_chain
     );
     assert_eq!(
         price_book_entry_repo::named_keys(&conn, s.tenant)
@@ -1545,5 +1561,184 @@ async fn postgres_the_sku_reads_and_the_value_counts_read_set_based() {
             .await
             .unwrap()
             .is_empty()
+    );
+}
+
+// ------------------------------------------------------------------ the instants a write answers
+
+/// The wall clock with 789 nanoseconds past its microsecond: a Linux host's instants carry
+/// digits Postgres does not keep, and the clock of some hosts never has them. It records every
+/// instant it hands out.
+#[derive(Default)]
+struct FineClock(std::sync::Mutex<Vec<time::OffsetDateTime>>);
+impl FineClock {
+    fn handed(&self) -> Vec<time::OffsetDateTime> {
+        self.0.lock().unwrap().clone()
+    }
+}
+impl Clock for FineClock {
+    fn now(&self) -> time::OffsetDateTime {
+        let t = time::OffsetDateTime::now_utc();
+        let fine = t.replace_nanosecond(t.microsecond() * 1_000 + 789).unwrap();
+        self.0.lock().unwrap().push(fine);
+        fine
+    }
+}
+async fn read_unit(f: &Fixture, unit: &Value) -> Value {
+    let (s, b, _) = f
+        .call(
+            "GET",
+            &format!("/approval-units/{}", unit.as_str().unwrap()),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    b
+}
+/// Each `(what, answered, read)` names one instant twice: the write's answer and the read's.
+fn same_instants(pairs: &[(&str, &Value, &Value)]) {
+    for (what, answered, read) in pairs {
+        assert!(answered.is_string(), "{what}: {answered}");
+        assert_eq!(
+            answered, read,
+            "{what}: the answer is not what the read returns"
+        );
+    }
+}
+
+/// D-453, D-461: a write answers the instants it stored. Postgres keeps whole microseconds, so an
+/// answer that echoed its clock's `…:00.123456789Z` would disagree with every later read's
+/// `…:00.123456Z`. Driven by a clock with sub-microsecond digits: the plan submit applied at once
+/// (quorum 0) answers its revision's `submitted_at` and `approved_at` and its unit's
+/// `submitted_at` and `decided_at` as the revision read and the unit read return them; a price
+/// submit answers its pending unit's `submitted_at`, and the approve that applies it the
+/// `decided_at` the unit read returns.
+#[tokio::test]
+#[ignore = "needs the Postgres harness"]
+async fn postgres_a_write_answers_the_instants_its_reads_return() {
+    let pg = pg_support::Pg::applied().await;
+    let catalog = Arc::new(Catalog::default());
+    let registry = Arc::new(Gated {
+        catalog: catalog.clone(),
+        reserve: Gate::default(),
+        read: Gate::default(),
+    });
+    let clock = Arc::new(FineClock::default());
+    let f = pool_with_clock(&pg, registry, &user_of(Uuid::new_v4()), clock.clone()).await;
+    let book = plan_support::book(&f, "fine").await;
+    let (_, revision) = plan_support::plan(&f, "fine", book).await;
+    let (sku, entry) = priced(&f, &catalog, book).await;
+    plan_support::item(&f, revision, sku, Some(entry), "paid").await;
+    quorum(&f, 0).await;
+    let (s, receipt, _) = f
+        .call(
+            "POST",
+            &submit_path(revision),
+            json!({}),
+            None,
+            Some("submit"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["revision"]["state"], "published", "{receipt}");
+    let handed = clock.handed();
+    assert_eq!(
+        handed.len(),
+        1,
+        "the submit read the clock once: {handed:?}"
+    );
+    assert_eq!(handed[0].nanosecond() % 1_000, 789);
+    let read = read_revision(&f, revision).await;
+    let unit = read_unit(&f, &receipt["unit"]["id"]).await;
+    same_instants(&[
+        (
+            "revision.submitted_at",
+            &receipt["revision"]["submitted_at"],
+            &read["submitted_at"],
+        ),
+        (
+            "revision.approved_at",
+            &receipt["revision"]["approved_at"],
+            &read["approved_at"],
+        ),
+        (
+            "unit.submitted_at",
+            &receipt["unit"]["submitted_at"],
+            &unit["submitted_at"],
+        ),
+        (
+            "unit.decided_at",
+            &receipt["unit"]["decided_at"],
+            &unit["decided_at"],
+        ),
+    ]);
+    let stored = time::OffsetDateTime::parse(
+        read["submitted_at"].as_str().unwrap(),
+        &time::format_description::well_known::Rfc3339,
+    )
+    .unwrap();
+    assert_eq!(
+        stored,
+        handed[0]
+            .replace_microsecond(handed[0].microsecond())
+            .unwrap(),
+        "the clock's instant, cut to its microsecond"
+    );
+
+    let (s, created, _) = f
+        .call(
+            "POST",
+            &format!("/price-book-entries/{entry}/prices"),
+            json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-01-01"}),
+            None,
+            Some("price"),
+        )
+        .await;
+    assert_eq!(s, 201, "{created}");
+    let price = created["items"][0]["id"].as_str().unwrap().to_owned();
+    let (s, receipt, _) = f
+        .call(
+            "POST",
+            &format!("/prices/{price}/submit"),
+            json!({}),
+            None,
+            Some("price-submit"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["applied"], false, "{receipt}");
+    let unit = read_unit(&f, &receipt["unit"]["id"]).await;
+    same_instants(&[(
+        "prices unit.submitted_at",
+        &receipt["unit"]["submitted_at"],
+        &unit["submitted_at"],
+    )]);
+    let reviewer = user_of(f.ctx.subject_tenant_id());
+    let (s, vote, _) = f
+        .call_as(
+            &reviewer,
+            "POST",
+            &format!(
+                "/approval-units/{}/approve",
+                receipt["unit"]["id"].as_str().unwrap()
+            ),
+            json!({"generation":1}),
+            None,
+            Some("approve"),
+        )
+        .await;
+    assert_eq!((s, &vote["outcome"]), (200, &json!("applied")), "{vote}");
+    let unit = read_unit(&f, &receipt["unit"]["id"]).await;
+    same_instants(&[(
+        "prices unit.decided_at",
+        &vote["unit"]["decided_at"],
+        &unit["decided_at"],
+    )]);
+    assert_eq!(
+        clock.handed().len(),
+        3,
+        "the plan submit, the price submit and the approve each read the clock once"
     );
 }

@@ -1,15 +1,15 @@
 //! SKU heads, conditional locks and local reference fences.
 //! @cpt-dod:cpt-cf-bss-products-dod-unit-store:p1
 use super::{HeadWrite, category_repo::require_active_category, driver_failure, map_unique};
-use crate::domain::sku::NewSku;
+use crate::domain::sku::{LifecycleHead, NewSku, effective_lifecycle};
 use crate::infra::storage::{
     RepoError,
     entity::{sku, sku_reference},
 };
-use bss_products_sdk::models::{BillingTiming, Lifecycle, Sku, SkuContent, SkuType};
-use sea_orm::sea_query::{Expr, ExprTrait, Query};
+use bss_products_sdk::models::{BillingTiming, Lifecycle, LifecycleNext, Sku, SkuContent, SkuType};
+use sea_orm::sea_query::{Expr, ExprTrait, Query, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order, QueryOrder, QuerySelect, Set};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -20,7 +20,96 @@ fn key(tenant: Uuid, id: Uuid) -> Condition {
         .add(sku::Column::TenantId.eq(tenant))
         .add(sku::Column::Id.eq(id))
 }
+/// The lifecycle in force on `today` (P-D-249): `lifecycle_next` once `lifecycle_next_from` has
+/// arrived, otherwise the stored `lifecycle`. One expression for every SQL predicate.
+pub(crate) fn effective_lifecycle_expr(today: Date) -> SimpleExpr {
+    Expr::case(
+        Expr::col((sku::Entity, sku::Column::LifecycleNextFrom)).lte(today),
+        Expr::col((sku::Entity, sku::Column::LifecycleNext)),
+    )
+    .finally(Expr::col((sku::Entity, sku::Column::Lifecycle)))
+    .into()
+}
+fn today() -> Date {
+    crate::infra::storage::stored_now().date()
+}
+fn lifecycle_in_force(row: &sku::Model) -> Result<Lifecycle, RepoError> {
+    let stored = Lifecycle::parse(&row.lifecycle)
+        .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
+    let next = row
+        .lifecycle_next
+        .as_deref()
+        .map(|token| {
+            Lifecycle::parse(token).ok_or_else(|| {
+                RepoError::CorruptRow(format!("SKU {} lifecycle_next {token}", row.id))
+            })
+        })
+        .transpose()?;
+    Ok(effective_lifecycle(
+        LifecycleHead {
+            lifecycle: stored,
+            next,
+            next_from: row.lifecycle_next_from,
+        },
+        today(),
+    ))
+}
+/// Fold a due `lifecycle_next` into `lifecycle` before a head write, so the write's predicate
+/// sees the lifecycle in force (P-D-249). A read never depends on this.
+async fn fold_due(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    filter: Condition,
+) -> Result<(), RepoError> {
+    sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::Lifecycle,
+            Expr::col(sku::Column::LifecycleNext),
+        )
+        .col_expr(sku::Column::LifecycleNext, Expr::value(None::<String>))
+        .col_expr(sku::Column::LifecycleNextFrom, Expr::value(None::<Date>))
+        .filter(
+            filter
+                .add(sku::Column::LifecycleNext.is_not_null())
+                .add(sku::Column::LifecycleNextFrom.lte(today())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("fold SKU lifecycle".into(), e))?;
+    Ok(())
+}
+async fn fold_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    id: Uuid,
+) -> Result<(), RepoError> {
+    fold_due(runner, scope, key(tenant, id)).await
+}
 pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
+    let stored = Lifecycle::parse(&m.lifecycle)
+        .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", m.lifecycle)))?;
+    let next = m
+        .lifecycle_next
+        .as_deref()
+        .map(|token| {
+            Lifecycle::parse(token).ok_or_else(|| {
+                RepoError::CorruptRow(format!("SKU {} lifecycle_next {token}", m.id))
+            })
+        })
+        .transpose()?;
+    let day = today();
+    let head = LifecycleHead {
+        lifecycle: stored,
+        next,
+        next_from: m.lifecycle_next_from,
+    };
+    let lifecycle_next = match (next, m.lifecycle_next_from) {
+        (Some(lifecycle), Some(from)) if from > day => Some(LifecycleNext { lifecycle, from }),
+        _ => None,
+    };
     Ok(Sku {
         id: m.id,
         tenant_id: m.tenant_id,
@@ -31,8 +120,9 @@ pub(crate) fn sku_of(m: sku::Model) -> Result<Sku, RepoError> {
         category_id: m.category_id,
         description: m.description,
         sellable: m.sellable,
-        lifecycle: Lifecycle::parse(&m.lifecycle)
-            .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", m.lifecycle)))?,
+        lifecycle: effective_lifecycle(head, day),
+        retire_pending: m.retire_pending,
+        lifecycle_next,
         revision: m.revision,
         published_version: m.published_version,
         gl_code: m.gl_code,
@@ -91,7 +181,6 @@ pub async fn insert_sku(
         description: Set(new.description),
         sellable: Set(new.sellable),
         lifecycle: Set("draft".into()),
-        fence_prior_lifecycle: Set(None),
         fenced_at: Set(None),
         fence_op_id: Set(None),
         revision: Set(1),
@@ -103,6 +192,9 @@ pub async fn insert_sku(
         usage_type_ref: Set(new.usage_type_ref),
         unit: Set(new.unit),
         type_change_pending: Set(false),
+        retire_pending: Set(false),
+        lifecycle_next: Set(None),
+        lifecycle_next_from: Set(None),
         pending_unit_id: Set(None),
         approved_by_unit_id: Set(None),
         created_by: Set(created_by),
@@ -161,7 +253,7 @@ pub async fn list_skus(
         c = c.add(filter.clone());
     }
     if let Some(v) = q.lifecycle {
-        c = c.add(sku::Column::Lifecycle.eq(v.as_str()));
+        c = c.add(effective_lifecycle_expr(today()).eq(v.as_str()));
     }
     if let Some(v) = &q.after_code {
         c = c.add(sku::Column::Code.gt(v));
@@ -198,7 +290,7 @@ pub async fn distinct_tax_categories(
         .filter(
             Condition::all()
                 .add(sku::Column::TenantId.eq(tenant_id))
-                .add(sku::Column::Lifecycle.eq(Lifecycle::Published.as_str()))
+                .add(effective_lifecycle_expr(today()).eq(Lifecycle::Published.as_str()))
                 .add(sku::Column::TaxCategory.is_not_null()),
         )
         .project_all(runner, |q| {
@@ -280,6 +372,7 @@ pub async fn update_sku_draft(
     now: OffsetDateTime,
 ) -> Result<HeadWrite<Sku>, RepoError> {
     require_category(runner, scope, tenant_id, content.category_id).await?;
+    fold_head(runner, scope, tenant_id, id).await?;
     let r = content_update(scope, content, now)
         .filter(
             key(tenant_id, id)
@@ -304,6 +397,7 @@ pub async fn write_sku_content(
     now: OffsetDateTime,
 ) -> Result<Sku, RepoError> {
     require_category(runner, scope, tenant_id, content.category_id).await?;
+    fold_head(runner, scope, tenant_id, id).await?;
     let r = content_update(scope, content, now)
         .col_expr(
             sku::Column::PublishedVersion,
@@ -330,10 +424,13 @@ pub async fn set_lifecycle(
     to: Lifecycle,
     now: OffsetDateTime,
 ) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
     let r = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(sku::Column::Lifecycle, Expr::value(to.as_str()))
+        .col_expr(sku::Column::LifecycleNext, Expr::value(None::<String>))
+        .col_expr(sku::Column::LifecycleNextFrom, Expr::value(None::<Date>))
         .col_expr(sku::Column::UpdatedAt, Expr::value(now))
         .col_expr(
             sku::Column::Revision,
@@ -345,6 +442,70 @@ pub async fn set_lifecycle(
         .exec(runner)
         .await
         .map_err(|e| driver_failure("set SKU lifecycle".into(), e))?;
+    written(runner, scope, tenant_id, id, r.rows_affected).await
+}
+/// Store a lifecycle that takes effect on `on`, leaving the head's lifecycle until that day
+/// (P-D-249). `from` is the lifecycle in force, which the fold has written first.
+/// # Errors
+/// Returns scoped storage failures. `Unmatched` when the head is not in `from`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the dated lifecycle write names the head, the states it may leave, the target and the date"
+)]
+pub async fn set_lifecycle_next(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    from: &[Lifecycle],
+    target: Lifecycle,
+    on: Date,
+    now: OffsetDateTime,
+) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
+    let r = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(sku::Column::LifecycleNext, Expr::value(target.as_str()))
+        .col_expr(sku::Column::LifecycleNextFrom, Expr::value(on))
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .col_expr(
+            sku::Column::Revision,
+            Expr::col(sku::Column::Revision).add(1_i64),
+        )
+        .filter(
+            key(tenant_id, id).add(sku::Column::Lifecycle.is_in(from.iter().map(|v| v.as_str()))),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("set SKU lifecycle next".into(), e))?;
+    written(runner, scope, tenant_id, id, r.rows_affected).await
+}
+/// Drop a pending lifecycle change (an undo, or a retire that clears it).
+/// # Errors
+/// Returns scoped storage failures.
+pub async fn clear_lifecycle_next(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    id: Uuid,
+    now: OffsetDateTime,
+) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
+    let r = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(sku::Column::LifecycleNext, Expr::value(None::<String>))
+        .col_expr(sku::Column::LifecycleNextFrom, Expr::value(None::<Date>))
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .col_expr(
+            sku::Column::Revision,
+            Expr::col(sku::Column::Revision).add(1_i64),
+        )
+        .filter(key(tenant_id, id))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure("clear SKU lifecycle next".into(), e))?;
     written(runner, scope, tenant_id, id, r.rows_affected).await
 }
 /// The two operations that exclude every live local reference.
@@ -365,6 +526,7 @@ pub async fn fence_sku(
     op_id: Uuid,
     now: OffsetDateTime,
 ) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
     let live = Query::select()
         .expr(Expr::val(1))
         .from(sku_reference::Entity)
@@ -378,18 +540,14 @@ pub async fn fence_sku(
         .col_expr(sku::Column::FencedAt, Expr::value(now))
         .col_expr(sku::Column::FenceOpId, Expr::value(op_id));
     q = match kind {
-        Fence::Retire => q
-            .col_expr(
-                sku::Column::FencePriorLifecycle,
-                Expr::col(sku::Column::Lifecycle),
-            )
-            .col_expr(sku::Column::Lifecycle, Expr::value("retiring")),
+        Fence::Retire => q.col_expr(sku::Column::RetirePending, Expr::value(true)),
         Fence::TypeChange => q.col_expr(sku::Column::TypeChangePending, Expr::value(true)),
     };
     let r = q
         .filter(
             key(tenant_id, id)
-                .add(sku::Column::Lifecycle.is_in(["published", "deprecated"]))
+                .add(effective_lifecycle_expr(today()).is_in(["published", "deprecated"]))
+                .add(sku::Column::RetirePending.eq(false))
                 .add(sku::Column::PendingUnitId.is_null())
                 .add(sku::Column::FencedAt.is_null())
                 .add(sku::Column::TypeChangePending.eq(false))
@@ -404,26 +562,20 @@ fn clear_fence(
     scope: &AccessScope,
     retired: bool,
 ) -> toolkit_db::secure::SecureUpdateMany<sku::Entity, toolkit_db::secure::Scoped> {
-    let lifecycle = Expr::case(
-        sku::Column::FencePriorLifecycle.is_not_null(),
-        if retired {
-            Expr::value("retired")
-        } else {
-            Expr::col(sku::Column::FencePriorLifecycle)
-        },
-    )
-    .finally(Expr::col(sku::Column::Lifecycle));
-    sku::Entity::update_many()
+    let mut q = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(sku::Column::Lifecycle, lifecycle.into())
         .col_expr(sku::Column::TypeChangePending, Expr::value(false))
+        .col_expr(sku::Column::RetirePending, Expr::value(false))
         .col_expr(sku::Column::FencedAt, Expr::value(None::<OffsetDateTime>))
-        .col_expr(sku::Column::FenceOpId, Expr::value(None::<Uuid>))
-        .col_expr(
-            sku::Column::FencePriorLifecycle,
-            Expr::value(None::<String>),
-        )
+        .col_expr(sku::Column::FenceOpId, Expr::value(None::<Uuid>));
+    if retired {
+        q = q
+            .col_expr(sku::Column::Lifecycle, Expr::value("retired"))
+            .col_expr(sku::Column::LifecycleNext, Expr::value(None::<String>))
+            .col_expr(sku::Column::LifecycleNextFrom, Expr::value(None::<Date>));
+    }
+    q
 }
 /// Operator/TTL release cannot touch a fence held by a pending unit.
 /// # Errors
@@ -435,6 +587,7 @@ pub async fn unfence_sku(
     id: Uuid,
     op_id: Option<Uuid>,
 ) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
     let mut c = key(tenant_id, id).add(sku::Column::PendingUnitId.is_null());
     if let Some(op) = op_id {
         c = c.add(sku::Column::FenceOpId.eq(op));
@@ -463,6 +616,7 @@ pub async fn unlock_and_unfence(
     approved_by: Option<Uuid>,
     retired: bool,
 ) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
     let mut q =
         clear_fence(scope, retired).col_expr(sku::Column::PendingUnitId, Expr::value(None::<Uuid>));
     if let Some(approved_by) = approved_by {
@@ -490,6 +644,7 @@ pub async fn try_lock_sku(
     unit_id: Uuid,
     expected_revision: i64,
 ) -> Result<bool, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
     let r = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -515,6 +670,7 @@ pub async fn unlock_sku(
     unit_id: Uuid,
     approved_by: Option<Uuid>,
 ) -> Result<HeadWrite<Sku>, RepoError> {
+    fold_head(runner, scope, tenant_id, id).await?;
     let mut q = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -567,6 +723,7 @@ pub async fn delete_draft_sku(
     expected_revision: i64,
 ) -> Result<bool, RepoError> {
     use toolkit_db::secure::SecureDeleteExt;
+    fold_head(runner, scope, tenant_id, id).await?;
     let r = sku::Entity::delete_many()
         .secure()
         .scope_with(scope)
@@ -629,8 +786,7 @@ async fn lift(
     tenant: Uuid,
     fenced: &sku::Model,
 ) -> Result<Option<ExpiredFence>, RepoError> {
-    let from = Lifecycle::parse(&fenced.lifecycle)
-        .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", fenced.lifecycle)))?;
+    let from = lifecycle_in_force(fenced)?;
     Ok(
         match unfence_sku(runner, scope, tenant, fenced.id, fenced.fence_op_id).await? {
             HeadWrite::Written(s) => Some(ExpiredFence {
@@ -695,11 +851,10 @@ pub async fn expire_orphan_fences(
     if fenced.is_empty() {
         return Ok(Vec::new());
     }
+    fold_due(runner, scope, orphan()).await?;
     let mut found = std::collections::HashMap::with_capacity(fenced.len());
     for row in &fenced {
-        let from = Lifecycle::parse(&row.lifecycle)
-            .ok_or_else(|| RepoError::CorruptRow(format!("SKU lifecycle {}", row.lifecycle)))?;
-        found.insert(row.id, from);
+        found.insert(row.id, lifecycle_in_force(row)?);
     }
     let mut lifted = clear_fence(scope, false)
         .filter(orphan())

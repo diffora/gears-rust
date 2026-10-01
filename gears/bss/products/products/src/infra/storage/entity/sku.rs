@@ -4,6 +4,10 @@ use toolkit_db_macros::Scopable;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "products_sku")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
+)]
 #[secure(tenant_col = "tenant_id", resource_col = "id", no_owner, no_type)]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
@@ -18,7 +22,6 @@ pub struct Model {
     pub description: String,
     pub sellable: bool,
     pub lifecycle: String,
-    pub fence_prior_lifecycle: Option<String>,
     pub fenced_at: Option<TimeDateTimeWithTimeZone>,
     pub fence_op_id: Option<Uuid>,
     pub revision: i64,
@@ -30,6 +33,11 @@ pub struct Model {
     pub usage_type_ref: Option<String>,
     pub unit: Option<String>,
     pub type_change_pending: bool,
+    /// Set while a retire is in review (P-D-248). The lifecycle column is unchanged.
+    pub retire_pending: bool,
+    /// The lifecycle a dated change will install, with [`Self::lifecycle_next_from`] (P-D-249).
+    pub lifecycle_next: Option<String>,
+    pub lifecycle_next_from: Option<TimeDate>,
     pub pending_unit_id: Option<Uuid>,
     pub approved_by_unit_id: Option<Uuid>,
     pub created_by: Uuid,

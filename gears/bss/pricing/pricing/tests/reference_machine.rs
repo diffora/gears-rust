@@ -175,18 +175,30 @@ fn a_stored_item_input_reads_with_a_field_it_does_not_know_or_lacks() {
         })
         .to_string()
     };
-    let later = stored(serde_json::json!({
-        "sku_id": Uuid::nil(), "price_book_entry_id": null, "treatment": "paid",
-        "included_qty": null, "qty_min": null, "a_later_field": "x"
+    let entry = Uuid::from_u128(7);
+    // An op stored before D-467 carries treatment and the quantities: they are ignored.
+    let before_d467 = stored(serde_json::json!({
+        "sku_id": Uuid::nil(), "price_book_entry_id": entry, "treatment": "paid",
+        "included_qty": null, "qty_min": 1, "a_later_field": "x"
     }));
-    let work: Work = serde_json::from_str(&later).unwrap();
+    let work: Work = serde_json::from_str(&before_d467).unwrap();
     let Target::PlanItem {
         input: Some(input), ..
     } = work.target
     else {
         panic!("a plan item target");
     };
-    assert_eq!(input.treatment, "paid");
+    assert_eq!(input.price_book_entry_id, Some(entry));
     let earlier = stored(serde_json::json!({"sku_id": Uuid::nil(), "treatment": "included"}));
-    assert!(serde_json::from_str::<Work>(&earlier).is_ok(), "{earlier}");
+    let work: Work = serde_json::from_str(&earlier).unwrap();
+    let Target::PlanItem {
+        input: Some(input), ..
+    } = work.target
+    else {
+        panic!("a plan item target");
+    };
+    assert_eq!(
+        input.price_book_entry_id, None,
+        "a legacy included item's op"
+    );
 }

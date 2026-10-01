@@ -9,7 +9,7 @@
 use super::dto::{
     PriceBookCreate, PriceBookPatch, PricingDimensionKeyPatch, PricingPlanClone, PricingPlanCreate,
     PricingPlanPatch, PricingPriceBookEntryCreate, PricingPriceBookEntryPatch, PricingPriceCreate,
-    PricingPricePatch, PricingSettingsDto, PricingSettingsPut,
+    PricingPricePatch, PricingPublishChangesRequest, PricingSettingsDto, PricingSettingsPut,
 };
 use super::support::invalid_because;
 use crate::domain::caps::{
@@ -34,8 +34,9 @@ fn each(name: &str, texts: &[String], max: usize) -> Result<(), CanonicalError> 
     texts.iter().try_for_each(|text| field(name, text, max))
 }
 /// A note keeps its own code: 400 `NOTE_TOO_LONG` on `note`, as a vote's note (the approval
-/// engine) and products' submit notes answer it.
-fn note(text: Option<&str>) -> Result<(), CanonicalError> {
+/// engine) and products' submit notes answer it. A submit's note (D-464) is judged here too, by
+/// its door, before any read: the engine's submit caps none.
+pub(super) fn note(text: Option<&str>) -> Result<(), CanonicalError> {
     if text.is_some_and(|t| over(t, NOTE_MAX_CHARS)) {
         Err(invalid_because(
             "note",
@@ -93,6 +94,11 @@ impl Capped for PricingPriceCreate {
 impl Capped for PricingPricePatch {
     fn caps(&self) -> Result<(), CanonicalError> {
         note(self.note.as_ref().and_then(Option::as_deref))
+    }
+}
+impl Capped for PricingPublishChangesRequest {
+    fn caps(&self) -> Result<(), CanonicalError> {
+        note(self.note.as_deref())
     }
 }
 // An entry's `dimension_key` names a declared key (400 `DIM_NOT_DECLARED` otherwise), so it is not

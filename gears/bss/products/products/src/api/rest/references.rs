@@ -358,7 +358,7 @@ async fn release(
                 )
                 .await;
             }
-            let now = time::OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let row = repo::find_reference(tx, &scope, tenant, id)
                 .await
                 .map_err(TxError::Repo)?
@@ -468,7 +468,7 @@ pub(crate) async fn reserve_tx(
     let tenant = ctx.subject_tenant_id();
     g::find(tx, scope, tenant, id).await?;
     let scope = AccessScope::for_tenant(tenant);
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     g::expire(tx, &scope, tenant, id, ttl, now).await?;
     if let Some(row) = repo::find_live_reference(tx, &scope, tenant, owner, kind, ref_id)
         .await
@@ -483,21 +483,8 @@ pub(crate) async fn reserve_tx(
         return Ok((row, false));
     }
     let s = g::find(tx, &scope, tenant, id).await?;
-    // Distinguish the actual retirement fence from an unfenced retiring head.
-    // Both refuse adoption; normal retire operations retain their existing SKU_FENCED code.
-    let retiring_fence = if s.lifecycle == bss_products_sdk::Lifecycle::Retiring {
-        repo::find_sku_fence(tx, &scope, tenant, id)
-            .await
-            .map_err(TxError::Repo)?
-            .is_some_and(|row| {
-                row.fenced_at.is_some()
-                    || row.fence_op_id.is_some()
-                    || row.pending_unit_id.is_some()
-            })
-    } else {
-        false
-    };
-    reservation_allowed(s.lifecycle, s.type_change_pending || retiring_fence)
+    // A retire under review refuses a new reservation as a fence does (P-D-248): SKU_FENCED.
+    reservation_allowed(s.lifecycle, s.type_change_pending || s.retire_pending)
         .map_err(TxError::Refused)?;
     let row = repo::reserve_reference(
         tx,
@@ -551,7 +538,7 @@ pub(crate) async fn confirm_tx(
     let tenant = acting.ctx.subject_tenant_id();
     let row = owned(tx, scope, acting.ctx, owner, id).await?;
     let scope = AccessScope::for_tenant(tenant);
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     g::expire(tx, &scope, tenant, row.sku_id, ttl, now).await?;
     match repo::confirm_reference(tx, &scope, tenant, id, now)
         .await
@@ -587,7 +574,7 @@ pub(crate) async fn release_tx(
     let ctx = acting.ctx;
     let tenant = ctx.subject_tenant_id();
     let row = owned(tx, scope, ctx, owner, id).await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     g::expire(tx, scope, tenant, row.sku_id, ttl, now).await?;
     if let repo::HeadWrite::Written(row) =
         repo::release_reference(tx, scope, tenant, id, ctx.subject_id(), None, false, now)

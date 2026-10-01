@@ -100,6 +100,8 @@ fn sku(n: u128, name: &str, code: &str, kind: SkuType, usage_type: Option<&str>)
         usage_type_ref: usage_type.map(str::to_owned),
         unit: usage_type.map(|_| "GB-month".to_owned()),
         type_change_pending: false,
+        retire_pending: false,
+        lifecycle_next: None,
         pending_unit_id: None,
         approved_by_unit_id: None,
         created_by: id(0),
@@ -284,21 +286,13 @@ fn confirmed() -> Reference {
         reservation_id: Some(id(99)),
     }
 }
-fn item(n: u128, sku: u128, entry: Option<u128>, treatment: Treatment) -> Item {
+/// An item: a SKU and its entry (D-467); `None` is a legacy item stored without an entry.
+fn item(n: u128, sku: u128, entry: Option<u128>) -> Item {
     Item {
         id: id(n),
         sku_id: id(sku),
         price_book_entry_id: entry.map(id),
-        treatment,
-        included_qty: None,
-        qty_min: None,
         reference: confirmed(),
-    }
-}
-fn included(n: u128, sku: u128, entry: Option<u128>, qty: Option<&str>) -> Item {
-    Item {
-        included_qty: qty.map(dec),
-        ..item(n, sku, entry, Treatment::Included)
     }
 }
 /// A plan on `book` with `items`, in the prototype's whole world of SKUs, entries and books.
@@ -335,15 +329,9 @@ fn basic() -> PlanContext {
         "Basic",
         EUR,
         vec![
-            Item {
-                qty_min: Some(1),
-                ..item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid)
-            },
-            included(2, STORAGE, Some(E_STORAGE), Some("10")),
-            Item {
-                qty_min: Some(0),
-                ..item(3, SUPPORT, Some(E_SUPPORT_Y), Treatment::Optional)
-            },
+            item(1, WP_BASIC, Some(E_WPB_M)),
+            item(2, STORAGE, Some(E_STORAGE)),
+            item(3, SUPPORT, Some(E_SUPPORT_Y)),
         ],
     )
 }
@@ -352,12 +340,8 @@ fn pro() -> PlanContext {
         "Pro",
         EUR,
         vec![
-            Item {
-                qty_min: Some(1),
-                ..item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid)
-            },
-            included(2, STORAGE, Some(E_STORAGE), Some("100")),
-            included(3, SUPPORT, None, None),
+            item(1, WP_BASIC, Some(E_WPB_M)),
+            item(2, STORAGE, Some(E_STORAGE)),
         ],
     )
 }
@@ -366,11 +350,8 @@ fn pro_usd() -> PlanContext {
         "Pro (USD)",
         USD,
         vec![
-            Item {
-                qty_min: Some(1),
-                ..item(1, WP_BASIC, Some(E_USD_WPB_M), Treatment::Paid)
-            },
-            included(2, STORAGE, Some(E_USD_STORAGE), Some("100")),
+            item(1, WP_BASIC, Some(E_USD_WPB_M)),
+            item(2, STORAGE, Some(E_USD_STORAGE)),
         ],
     )
 }
@@ -422,11 +403,7 @@ fn prototype_pro_is_ready_and_its_storage_is_covered_by_v2() {
 
 #[test]
 fn prototype_an_item_priced_in_another_book_is_refused() {
-    let foreign = ctx(
-        "P",
-        USD,
-        vec![item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid)],
-    );
+    let foreign = ctx("P", USD, vec![item(1, WP_BASIC, Some(E_WPB_M))]);
     let fc = check(&foreign, "ITEM_BOOK_FOREIGN").unwrap();
     assert!(!fc.ok);
     assert!(
@@ -440,11 +417,7 @@ fn prototype_an_item_priced_in_another_book_is_refused() {
     let mut no_book = ctx("P", EUR, vec![]);
     no_book.books.clear();
     assert!(red(&no_book, "PLAN_BOOK"));
-    let gbp = ctx(
-        "P",
-        GBP,
-        vec![item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid)],
-    );
+    let gbp = ctx("P", GBP, vec![item(1, WP_BASIC, Some(E_WPB_M))]);
     assert!(red(&gbp, "ITEM_BOOK_FOREIGN"));
 }
 
@@ -454,8 +427,8 @@ fn prototype_two_items_on_one_usage_type_is_a_double_charge() {
         "Dup",
         EUR,
         vec![
-            item(1, STORAGE, Some(E_STORAGE), Treatment::Paid),
-            item(2, STORAGE_COLD, Some(E_STORAGE_COLD), Treatment::Paid),
+            item(1, STORAGE, Some(E_STORAGE)),
+            item(2, STORAGE_COLD, Some(E_STORAGE_COLD)),
         ],
     );
     assert!(red(&dup, "METER_DUPLICATE"));
@@ -463,27 +436,19 @@ fn prototype_two_items_on_one_usage_type_is_a_double_charge() {
 
 #[test]
 fn prototype_a_bundle_sku_is_never_an_item() {
-    let with_bundle = ctx("P", EUR, vec![included(1, SUITE, None, None)]);
+    let with_bundle = ctx("P", EUR, vec![item(1, SUITE, None)]);
     assert!(red(&with_bundle, "ITEM_BUNDLE_SKU"));
 }
 
 #[test]
 fn prototype_an_item_charges_the_way_its_sku_is_typed() {
-    let clash = ctx(
-        "P",
-        EUR,
-        vec![item(1, SUPPORT, Some(E_STORAGE), Treatment::Paid)],
-    );
+    let clash = ctx("P", EUR, vec![item(1, SUPPORT, Some(E_STORAGE))]);
     assert!(red(&clash, "CHARGE_KIND_SKU_TYPE"));
 }
 
 #[test]
 fn prototype_a_contract_book_sells_only_inside_its_validity() {
-    let contract = ctx(
-        "P",
-        CONTRACT,
-        vec![item(1, WP_BASIC, Some(E_C1), Treatment::Paid)],
-    );
+    let contract = ctx("P", CONTRACT, vec![item(1, WP_BASIC, Some(E_C1))]);
     assert!(green(&contract, "PLAN_BOOK_VALIDITY"));
     let mut late = contract;
     late.revision.available_from = Some(date("2027-01-05"));
@@ -509,11 +474,7 @@ fn prototype_plan_from_and_plan_billing() {
 
 #[test]
 fn the_check_list_is_the_plans_codes_in_order() {
-    let c = ctx(
-        "P",
-        CONTRACT,
-        vec![item(1, WP_BASIC, Some(E_C1), Treatment::Paid)],
-    );
+    let c = ctx("P", CONTRACT, vec![item(1, WP_BASIC, Some(E_C1))]);
     let codes: Vec<_> = checks(&c, today()).into_iter().map(|k| k.code).collect();
     assert_eq!(
         codes,
@@ -531,7 +492,6 @@ fn the_check_list_is_the_plans_codes_in_order() {
             "ITEM_UNCOVERED",
             "FREQUENCY_MIXED",
             "METER_DUPLICATE",
-            "INCLUDED_QTY",
             "ITEM_SKU_DEPRECATED",
             "ITEM_SKU_UNAVAILABLE",
             "ITEM_REFERENCE_PENDING",
@@ -541,6 +501,184 @@ fn the_check_list_is_the_plans_codes_in_order() {
         ]
     );
     assert!(ready(&checks(&c, today())), "{:?}", checks(&c, today()));
+}
+
+/// The subject an item of `c` is (D-466): the item, its SKU and the entry it names.
+fn subject_of(c: &PlanContext, n: u128) -> Subject {
+    let it = c.items.iter().find(|i| i.id == id(n)).unwrap();
+    Subject {
+        item_id: it.id,
+        sku_id: it.sku_id,
+        price_book_entry_id: it.price_book_entry_id,
+    }
+}
+
+/// D-466: a table over EVERY check code the checks emit, each with a context that turns it red
+/// (the two information rows are always green), naming the items it reports. The codes are
+/// enumerated from what `checks` answers over the table's contexts, not from a list in the docs;
+/// every other row of each context is judged too: a green row names no item and no price.
+#[test]
+fn every_check_code_names_the_items_that_turn_it_red() {
+    let named = |c: &PlanContext, items: &[u128]| -> Vec<Subject> {
+        items.iter().map(|n| subject_of(c, *n)).collect()
+    };
+    let mut table: Vec<(&str, PlanContext, Vec<u128>)> = Vec::new();
+    let mut unnamed = pro();
+    unnamed.plan.name = "  ".into();
+    table.push(("PLAN_NAME", unnamed, vec![]));
+    let mut bookless = pro();
+    bookless.books.retain(|b| b.id != id(EUR));
+    table.push(("PLAN_BOOK", bookless, vec![]));
+    let mut late = ctx("P", CONTRACT, vec![item(1, WP_BASIC, Some(E_C1))]);
+    late.revision.available_from = Some(date("2027-01-05"));
+    table.push(("PLAN_BOOK_VALIDITY", late, vec![]));
+    table.push(("PLAN_ITEMS", ctx("P", EUR, vec![]), vec![]));
+    table.push((
+        "ITEM_ENTRY_MISSING",
+        ctx(
+            "P",
+            EUR,
+            vec![item(1, WP_BASIC, Some(E_WPB_M)), item(2, SUPPORT, None)],
+        ),
+        vec![2],
+    ));
+    table.push((
+        "ITEM_ENTRY_SKU_MISMATCH",
+        ctx("P", EUR, vec![item(1, STORAGE_COLD, Some(E_STORAGE))]),
+        vec![1],
+    ));
+    let mut lost_entry = pro();
+    lost_entry
+        .entries
+        .iter_mut()
+        .find(|e| e.id == id(E_WPB_M))
+        .unwrap()
+        .reference_state = EntryReference::Lost;
+    table.push(("ITEM_ENTRY_LOST", lost_entry, vec![1]));
+    table.push((
+        "ITEM_BUNDLE_SKU",
+        ctx(
+            "P",
+            EUR,
+            vec![item(1, WP_BASIC, Some(E_WPB_M)), item(2, SUITE, None)],
+        ),
+        vec![2],
+    ));
+    table.push((
+        "CHARGE_KIND_SKU_TYPE",
+        ctx("P", EUR, vec![item(1, SUPPORT, Some(E_STORAGE))]),
+        vec![1],
+    ));
+    table.push((
+        "ITEM_BOOK_FOREIGN",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, WP_BASIC, Some(E_P_WPB_M)),
+                item(2, STORAGE, Some(E_STORAGE)),
+            ],
+        ),
+        vec![1],
+    ));
+    let mut early = pro();
+    early.revision.available_from = Some(date("2025-12-01"));
+    table.push(("ITEM_UNCOVERED", early, vec![1, 2]));
+    table.push(("FREQUENCY_MIXED", basic(), vec![1, 3]));
+    table.push((
+        "METER_DUPLICATE",
+        ctx(
+            "P",
+            EUR,
+            vec![
+                item(1, STORAGE, Some(E_STORAGE)),
+                item(2, WP_BASIC, Some(E_WPB_M)),
+                item(3, STORAGE_COLD, Some(E_STORAGE_COLD)),
+            ],
+        ),
+        vec![1, 3],
+    ));
+    let mut deprecated = pro();
+    deprecated
+        .skus
+        .iter_mut()
+        .find(|s| s.id == id(WP_BASIC))
+        .unwrap()
+        .lifecycle = Lifecycle::Deprecated;
+    table.push(("ITEM_SKU_DEPRECATED", deprecated, vec![1]));
+    let mut retired = pro();
+    retired
+        .skus
+        .iter_mut()
+        .find(|s| s.id == id(STORAGE))
+        .unwrap()
+        .lifecycle = Lifecycle::Retired;
+    table.push(("ITEM_SKU_UNAVAILABLE", retired, vec![2]));
+    let mut unreserved = pro();
+    unreserved.items[0].reference = Reference {
+        state: ReferenceState::Unreserved,
+        reservation_id: None,
+    };
+    table.push(("ITEM_REFERENCE_PENDING", unreserved, vec![1]));
+    let mut lost = pro();
+    lost.items[1].reference = Reference {
+        state: ReferenceState::Lost,
+        reservation_id: Some(id(97)),
+    };
+    table.push(("ITEM_REFERENCE_LOST", lost, vec![2]));
+    table.push(("DESCRIPTORS", pro(), vec![]));
+    table.push(("APPROVAL", pro(), vec![]));
+
+    let mut emitted = BTreeSet::new();
+    for (code, c, items) in &table {
+        let rows = checks(c, today());
+        emitted.extend(rows.iter().map(|k| k.code));
+        let k = rows
+            .iter()
+            .find(|k| k.code == *code)
+            .unwrap_or_else(|| panic!("{code} is not emitted by its context"));
+        assert_eq!(k.ok, k.info, "{code} is red, or an information row: {k:?}");
+        assert_eq!(k.subjects, named(c, items), "{code}: {k:?}");
+        for other in &rows {
+            if other.ok {
+                assert!(
+                    other.subjects.is_empty() && other.blocked_by_prices.is_empty(),
+                    "{code}'s context: the green {} names nothing: {other:?}",
+                    other.code
+                );
+            }
+            let units: BTreeSet<Uuid> = other.blocked_by_prices.iter().map(|p| p.unit_id).collect();
+            assert_eq!(
+                other.blocked_by,
+                units.into_iter().collect::<Vec<_>>(),
+                "{code}'s context: {} names exactly its prices' units",
+                other.code
+            );
+        }
+    }
+    let tabled: BTreeSet<&str> = table.iter().map(|(code, _, _)| *code).collect();
+    assert_eq!(
+        tabled, emitted,
+        "the table covers every code the checks emit"
+    );
+    let early = &table
+        .iter()
+        .find(|(code, _, _)| *code == "ITEM_UNCOVERED")
+        .unwrap()
+        .1;
+    let uncovered = checks(early, today())
+        .into_iter()
+        .find(|k| k.code == "ITEM_UNCOVERED")
+        .unwrap();
+    assert_eq!(
+        uncovered.blocked_by_prices,
+        vec![BlockingPrice {
+            unit_id: id(AP_STORAGE_V3),
+            price_id: Uuid::from_u128(E_STORAGE * 1000 + 3),
+            price_book_entry_id: id(E_STORAGE),
+        }],
+        "the pending storage price blocks the uncovered storage item"
+    );
 }
 
 #[test]
@@ -561,11 +699,7 @@ fn plan_book_is_the_revisions_book() {
 
 #[test]
 fn plan_book_validity_is_judged_on_the_sale_date() {
-    let mut c = ctx(
-        "P",
-        CONTRACT,
-        vec![item(1, WP_BASIC, Some(E_C1), Treatment::Paid)],
-    );
+    let mut c = ctx("P", CONTRACT, vec![item(1, WP_BASIC, Some(E_C1))]);
     c.revision.available_from = Some(date("2026-12-31"));
     assert!(red(&c, "PLAN_BOOK_VALIDITY"), "the end is exclusive");
     c.revision.available_from = Some(date("2026-12-30"));
@@ -578,32 +712,36 @@ fn plan_items_needs_at_least_one() {
     assert!(green(&pro(), "PLAN_ITEMS"));
 }
 
+/// D-467: every item points at a price. An item without an entry, a legacy included item among
+/// them, is red, as is an entry the context lacks; it is not also uncovered, and it meters
+/// nothing.
 #[test]
-fn item_entry_missing_is_a_priced_item_without_an_entry() {
-    let c = ctx("P", EUR, vec![item(1, WP_BASIC, None, Treatment::Paid)]);
-    assert!(red(&c, "ITEM_ENTRY_MISSING"));
-    let c = ctx(
+fn item_entry_missing_is_any_item_without_an_entry() {
+    let legacy = ctx(
         "P",
         EUR,
-        vec![item(1, WP_BASIC, Some(777), Treatment::Optional)],
+        vec![item(1, WP_BASIC, Some(E_WPB_M)), item(2, STORAGE, None)],
     );
-    assert!(red(&c, "ITEM_ENTRY_MISSING"), "an entry the context lacks");
+    let k = check(&legacy, "ITEM_ENTRY_MISSING").unwrap();
+    assert!(!k.ok);
+    assert_eq!(k.label, "Every item points at a price");
+    assert_eq!(k.subjects, vec![subject_of(&legacy, 2)]);
     assert!(
-        green(&pro(), "ITEM_ENTRY_MISSING"),
-        "an included item may name none"
+        green(&legacy, "ITEM_UNCOVERED"),
+        "reported once, as missing"
     );
-    let cov = item_coverage(&pro(), &pro().items[2], today());
-    assert!(cov.ok);
-    assert_eq!(cov.detail, "no charge");
+    let cov = item_coverage(&legacy, &legacy.items[1], today());
+    assert!(!cov.ok);
+    assert_eq!(cov.detail, "no price");
+    let c = ctx("P", EUR, vec![item(1, WP_BASIC, Some(777))]);
+    assert!(red(&c, "ITEM_ENTRY_MISSING"), "an entry the context lacks");
+    assert!(green(&pro(), "ITEM_ENTRY_MISSING"));
+    assert!(ready(&checks(&pro(), today())));
 }
 
 #[test]
 fn item_entry_sku_mismatch_is_an_entry_of_another_sku() {
-    let c = ctx(
-        "P",
-        EUR,
-        vec![item(1, STORAGE_COLD, Some(E_STORAGE), Treatment::Paid)],
-    );
+    let c = ctx("P", EUR, vec![item(1, STORAGE_COLD, Some(E_STORAGE))]);
     assert!(red(&c, "ITEM_ENTRY_SKU_MISMATCH"));
     assert!(green(&pro(), "ITEM_ENTRY_SKU_MISMATCH"));
 }
@@ -622,7 +760,7 @@ fn item_entry_lost_is_an_entry_whose_reference_is_lost() {
 
 #[test]
 fn item_bundle_sku_is_red_for_a_bundle_item() {
-    let c = ctx("P", EUR, vec![included(1, SUITE_CLOSED, None, None)]);
+    let c = ctx("P", EUR, vec![item(1, SUITE_CLOSED, None)]);
     assert!(red(&c, "ITEM_BUNDLE_SKU"));
     assert!(green(&pro(), "ITEM_BUNDLE_SKU"));
 }
@@ -642,11 +780,7 @@ fn charge_kind_sku_type_compares_the_entry_kind_with_the_fresh_sku_type() {
 
 #[test]
 fn item_book_foreign_is_an_entry_of_another_book_even_in_the_same_currency() {
-    let c = ctx(
-        "P",
-        EUR,
-        vec![item(1, WP_BASIC, Some(E_P_WPB_M), Treatment::Paid)],
-    );
+    let c = ctx("P", EUR, vec![item(1, WP_BASIC, Some(E_P_WPB_M))]);
     let fc = check(&c, "ITEM_BOOK_FOREIGN").unwrap();
     assert!(!fc.ok);
     assert!(
@@ -694,6 +828,21 @@ fn item_uncovered_names_every_pending_unit_of_the_uncovered_entry() {
     let k = check(&c, "ITEM_UNCOVERED").unwrap();
     assert!(!k.ok);
     assert_eq!(k.blocked_by, vec![id(501), id(502)], "distinct and ordered");
+    // D-466: one row per pending price, ordered by unit then price, each naming its entry.
+    let blocking = |unit: u128, price: u128| BlockingPrice {
+        unit_id: id(unit),
+        price_id: Uuid::from_u128(price),
+        price_book_entry_id: id(31),
+    };
+    assert_eq!(
+        k.blocked_by_prices,
+        vec![
+            blocking(501, 31_002),
+            blocking(501, 31_009),
+            blocking(502, 31_001)
+        ]
+    );
+    assert_eq!(k.subjects, vec![subject_of(&c, 2)]);
     assert!(k.detail.contains("Storage"), "{}", k.detail);
     let green_check = check(&pro(), "ITEM_UNCOVERED").unwrap();
     assert!(green_check.ok);
@@ -709,7 +858,7 @@ fn item_uncovered_is_judged_per_dimension_value_with_the_default_as_fallback() {
         e
     };
     let with = |e: Entry| {
-        let mut c = ctx("P", EUR, vec![included(1, STORAGE, Some(32), Some("100"))]);
+        let mut c = ctx("P", EUR, vec![item(1, STORAGE, Some(32))]);
         c.dimension_values = region();
         c.entries.push(e);
         c
@@ -797,42 +946,30 @@ fn frequency_mixed_is_two_recurring_periods() {
     assert!(green(&pro(), "FREQUENCY_MIXED"));
 }
 
+/// D-467: only an item with an entry meters its usage type; one without an entry is
+/// `ITEM_ENTRY_MISSING` instead, whatever it was stored as.
 #[test]
-fn meter_duplicate_counts_an_included_item_without_an_entry() {
+fn meter_duplicate_counts_only_items_with_an_entry() {
     let c = ctx(
         "P",
         EUR,
         vec![
-            item(1, STORAGE, Some(E_STORAGE), Treatment::Paid),
-            included(2, STORAGE_COLD, None, Some("5")),
+            item(1, STORAGE, Some(E_STORAGE)),
+            item(2, STORAGE_COLD, Some(E_STORAGE_COLD)),
         ],
     );
     assert!(red(&c, "METER_DUPLICATE"));
+    let legacy = ctx(
+        "P",
+        EUR,
+        vec![
+            item(1, STORAGE, Some(E_STORAGE)),
+            item(2, STORAGE_COLD, None),
+        ],
+    );
+    assert!(green(&legacy, "METER_DUPLICATE"));
+    assert!(red(&legacy, "ITEM_ENTRY_MISSING"));
     assert!(green(&pro(), "METER_DUPLICATE"));
-}
-
-#[test]
-fn included_qty_is_required_on_included_usage_and_refused_elsewhere() {
-    let missing = ctx("P", EUR, vec![included(1, STORAGE, Some(E_STORAGE), None)]);
-    assert!(red(&missing, "INCLUDED_QTY"));
-    let on_recurring = ctx("P", EUR, vec![included(1, SUPPORT, None, Some("1"))]);
-    assert!(red(&on_recurring, "INCLUDED_QTY"));
-    let on_paid_recurring = ctx(
-        "P",
-        EUR,
-        vec![Item {
-            included_qty: Some(dec("2")),
-            ..item(1, WP_BASIC, Some(E_WPB_M), Treatment::Paid)
-        }],
-    );
-    assert!(red(&on_paid_recurring, "INCLUDED_QTY"));
-    assert!(green(&pro(), "INCLUDED_QTY"));
-    let zero = ctx(
-        "P",
-        EUR,
-        vec![included(1, STORAGE, Some(E_STORAGE), Some("0"))],
-    );
-    assert!(green(&zero, "INCLUDED_QTY"), "zero is a quantity");
 }
 
 #[test]
@@ -867,7 +1004,7 @@ fn item_sku_deprecated_may_only_be_carried_over_within_the_same_plan() {
 
 #[test]
 fn item_sku_unavailable_is_a_draft_retiring_retired_or_unknown_sku() {
-    for lifecycle in [Lifecycle::Draft, Lifecycle::Retiring, Lifecycle::Retired] {
+    for lifecycle in [Lifecycle::Draft, Lifecycle::Retired] {
         let mut c = pro();
         c.skus
             .iter_mut()
@@ -877,9 +1014,18 @@ fn item_sku_unavailable_is_a_draft_retiring_retired_or_unknown_sku() {
         assert!(red(&c, "ITEM_SKU_UNAVAILABLE"), "{lifecycle:?}");
     }
     let mut unknown = pro();
-    unknown.skus.retain(|s| s.id != id(SUPPORT));
+    unknown.skus.retain(|s| s.id != id(STORAGE));
     assert!(red(&unknown, "ITEM_SKU_UNAVAILABLE"));
     assert!(green(&pro(), "ITEM_SKU_UNAVAILABLE"));
+}
+
+#[test]
+fn a_retire_pending_sku_is_unavailable() {
+    let mut c = pro();
+    let sku = c.skus.iter_mut().find(|s| s.id == id(STORAGE)).unwrap();
+    sku.lifecycle = Lifecycle::Published;
+    sku.retire_pending = true;
+    assert!(red(&c, "ITEM_SKU_UNAVAILABLE"));
 }
 
 #[test]
@@ -980,10 +1126,7 @@ fn spec_8_a_revision_blocked_by_a_pending_price_unit_turns_green_once_it_is_appr
         }],
     );
     c.entries.push(add_on.clone());
-    c.items.push(Item {
-        qty_min: Some(0),
-        ..item(4, STORAGE_COLD, Some(40), Treatment::Optional)
-    });
+    c.items.push(item(4, STORAGE_COLD, Some(40)));
     // Storage and cold storage share a meter; this revision replaces storage with cold storage.
     c.items.remove(1);
     let blocked = checks(&c, today());

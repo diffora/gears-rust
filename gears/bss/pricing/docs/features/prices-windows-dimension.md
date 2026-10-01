@@ -100,7 +100,7 @@ Holding multiple permissions never bypasses separation of duties.
 1. [ ] - `p1` - Derive permitted models from charge kind for the entry's model, chosen at its create (D-427); validate each price's money against its entry's model, nonnegative prices and coherent model parameters. - `inst-prices-windows-dimension-model-and-floor-1`
 2. [ ] - `p1` - Evaluate per_unit, graduated, volume and package with decimal arithmetic and half-open tier bands; recurring/one_time allow flat or per_unit. - `inst-prices-windows-dimension-model-and-floor-2`
 3. [ ] - `p1` - Preserve usage package size and SKU (unit, usage_type_ref) read as of each price's start across successors, a start before the SKU's first version reading that first version (D-402); CHAIN_MODEL_CHANGED fails submit and is rechecked at apply. The model cannot change on a chain: it is the entry's (D-427). - `inst-prices-windows-dimension-model-and-floor-3`
-4. [ ] - `p1` - Aggregate rated amounts after included quantities by price/subscription/period across every bound value and slice; apply the prorated price floor, then promotions; not built in pricing, Rating applies the floor and pricing stores and validates min_fee (D-415). - `inst-prices-windows-dimension-model-and-floor-4`
+4. [ ] - `p1` - Aggregate rated amounts by price/subscription/period across every bound value and slice (no plan carries an included quantity since D-467); apply the prorated price floor, then promotions; not built in pricing, Rating applies the floor and pricing stores and validates min_fee (D-415). - `inst-prices-windows-dimension-model-and-floor-4`
 
 ### reserve-write-confirm
 
@@ -171,7 +171,7 @@ Requirement: `cpt-cf-bss-pricing-fr-pair-guard`; PRD AC #6.
 
 Not built in pricing (D-415): Rating applies the floor; pricing stores and validates min_fee. This DoD stays unticked.
 
-Minimum fee is one floor per price/subscription/period after included quantities and before promotions. Shared values and slices are aggregated, and covered-period fraction prorates the floor (spec §2 decision 13).
+Minimum fee is one floor per price/subscription/period before promotions; no plan carries an included quantity to deduct first (D-467). Shared values and slices are aggregated, and covered-period fraction prorates the floor (spec §2 decision 13).
 
 Requirement: `cpt-cf-bss-pricing-fr-min-fee`; PRD AC #7.
 

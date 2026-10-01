@@ -422,6 +422,8 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
     let pro = live(&f, &catalog, "pro").await;
     let (rev2, unit) = waiting(&f, &pro, days(2), &f.user()).await;
     let waiting_item = items(&f, rev2).await[0].id;
+    // The item create is refused before it reads the entry it names.
+    let waiting_entry = Uuid::new_v4();
     let unit_id = unit.as_str().unwrap().to_owned();
     let refused: Vec<Door> = vec![
         (
@@ -475,7 +477,7 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
         (
             "POST",
             format!("/plan-revisions/{rev2}/items"),
-            json!({"sku_id":catalog.sku(SkuType::Usage),"treatment":"included"}),
+            json!({"sku_id":catalog.sku(SkuType::Usage),"price_book_entry_id":waiting_entry}),
             None,
             Some("item"),
             "REVISION_NOT_DRAFT",
@@ -483,7 +485,7 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
         (
             "PATCH",
             format!("/plan-items/{waiting_item}"),
-            json!({"treatment":"optional"}),
+            json!({}),
             Some(etag(&f, &format!("/plan-items/{waiting_item}")).await),
             None,
             "REVISION_NOT_DRAFT",
@@ -531,7 +533,7 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
         .call(
             "POST",
             &format!("/plans/{}/clone", pro.plan),
-            json!({"code":"copy","name":"Copy"}),
+            json!({"code":"COPY","name":"Copy"}),
             None,
             Some("clone"),
         )
@@ -542,7 +544,7 @@ async fn no_door_opens_or_moves_a_revision_beside_a_scheduled_one() {
         .call(
             "POST",
             "/plans",
-            json!({"code":"new","name":"New","book_id":pro.book}),
+            json!({"code":"NEW","name":"New","book_id":pro.book}),
             None,
             Some("new"),
         )
@@ -912,7 +914,7 @@ async fn the_clone_door_catches_up_and_clones_the_revision_in_effect() {
         .call(
             "POST",
             &format!("/plans/{}/clone", pro.plan),
-            json!({"code":"copy","name":"Copy"}),
+            json!({"code":"COPY","name":"Copy"}),
             None,
             Some("clone"),
         )
@@ -1116,10 +1118,12 @@ async fn the_checks_answer_a_due_revision_the_same_before_and_after_the_switch_i
     }
 }
 
-/// D-453: the plan list derives in memory over the revisions it already read: two statements on
-/// pricing's tables with due scheduled revisions among them, as without.
+/// D-453: the plan list derives in memory over the revisions it already read: its statements on
+/// pricing's tables are the same with due scheduled revisions among them as without. D-460 and
+/// D-461 amend the count from two to four (the current revisions' items, the units the
+/// revisions name).
 #[tokio::test]
-async fn the_plan_list_derives_in_its_two_statements() {
+async fn the_plan_list_derives_in_its_four_statements() {
     let (db, recorder, tenant, dsn) = entry_support::recorded_db().await;
     let catalog = Arc::new(Catalog::default());
     let f = Fixture::on(db, tenant, dsn, catalog.clone()).await;
@@ -1139,7 +1143,7 @@ async fn the_plan_list_derives_in_its_two_statements() {
         })
         .map(|q| q.sql)
         .collect();
-    assert_eq!(statements.len(), 2, "{statements:#?}");
+    assert_eq!(statements.len(), 4, "{statements:#?}");
     let items = listed["items"].as_array().unwrap();
     assert_eq!(items.len(), 3);
     for p in items {
@@ -1259,17 +1263,14 @@ async fn a_scheduled_revision_on_another_book_holds_it_in_the_counts() {
     .unwrap();
     assert_eq!(usage[0].plans, 1, "one plan, through both books");
     // A book with no entry that only a waiting revision is on cannot be deleted: BOOK_IN_PLAN.
+    // D-467: such a revision holds only legacy items stored without an entry, which no submit
+    // passes any more (ITEM_ENTRY_MISSING), so it is published and scheduled through the
+    // repositories, as the stand's legacy rows were.
     let (f, catalog) = setup().await;
     let eur = book(&f, "eur").await;
     let (p, rev1) = plan(&f, "bare", eur).await;
     plan_support::item_with_qty(&f, rev1, catalog.sku(SkuType::Usage), "10").await;
-    policy(&f, 0).await;
-    let (s, b) = submit(&f, &f.ctx, rev1, "rev1").await;
-    assert_eq!(
-        (s, &b["revision"]["state"]),
-        (201, &json!("published")),
-        "{b}"
-    );
+    plan_support::publish(&f, id_of(&p["id"]), rev1).await;
     let empty = book(&f, "empty").await;
     let rev2 = copy(&f, id_of(&p["id"]), "copy").await;
     let path = format!("/plan-revisions/{rev2}");
@@ -1284,9 +1285,17 @@ async fn a_scheduled_revision_on_another_book_holds_it_in_the_counts() {
         )
         .await;
     assert_eq!(s, 200, "{b}");
-    let (s, receipt) = submit(&f, &f.ctx, rev2, "rev2").await;
-    assert_eq!(s, 201, "{receipt}");
-    assert_eq!(receipt["revision"]["state"], "scheduled", "{receipt}");
+    let unit = plan_support::lock(&f, rev2).await;
+    plan_revision_repo::schedule(
+        &f.db.conn().unwrap(),
+        &scope(&f),
+        f.ctx.subject_tenant_id(),
+        rev2,
+        unit,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         stats(get(&f, &format!("/price-books/{empty}")).await),
         (json!(1), json!(0))

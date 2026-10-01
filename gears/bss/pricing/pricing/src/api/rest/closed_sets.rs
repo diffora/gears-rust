@@ -6,13 +6,13 @@
 //! error); a stored token is read back with `stored`, where a token outside the set — its column's
 //! CHECK forbids one — is `CorruptRow` naming the row, a 500, never a panic.
 use crate::domain::{
-    plan::{ReferenceState as ItemReference, RevisionState, Treatment},
+    plan::{ReferenceState as ItemReference, RevisionState},
     price::{DisplayStatus, Eligibility, PriceState},
     price_book_entry::{ChargeKind, Model, OpState, ReferenceState as EntryReference},
     reference_op::OpKind,
     resolve::Source,
 };
-use crate::infra::storage::RepoError;
+use crate::infra::{approval_kinds::Kind as ApprovalKind, storage::RepoError};
 use bss_approval::{UnitState, Verdict};
 
 macro_rules! closed_set {
@@ -117,10 +117,6 @@ closed_set!(
     }
 );
 closed_set!(
-    /// How a plan item is sold.
-    PricingTreatment from Treatment { Paid => "paid", Optional => "optional", Included => "included" }
-);
-closed_set!(
     /// Where a plan item's SKU reference stands with Products.
     PricingItemReferenceState from ItemReference {
         Unreserved => "unreserved",
@@ -184,6 +180,11 @@ closed_set!(
     }
 );
 closed_set!(
+    /// A kind of approval unit pricing records (spec §6). No CHECK holds the stored column: the
+    /// repository reads it through this set, so a unit of another kind is a corrupt row (500).
+    PricingApprovalKind from ApprovalKind { Prices => "prices", PlanRevision => "plan_revision" }
+);
+closed_set!(
     /// One reviewer's decision.
     PricingDecisionKind from Verdict { Approve => "approve", Reject => "reject" }
 );
@@ -203,6 +204,15 @@ closed_set!(
 closed_set!(
     /// Where a resolved invoice input came from (D-421).
     PricingResolveSource from Source { Entry => "entry", Sku => "sku", Tenant => "tenant" }
+);
+closed_set!(
+    /// Where a SKU's entry stands today (D-486): an approved price in force, else one that
+    /// starts later, else neither. Not a price's display status.
+    PricingSkuEntryStatus {
+        Priced => "priced",
+        Scheduled => "scheduled",
+        Unpriced => "unpriced",
+    }
 );
 
 #[cfg(test)]

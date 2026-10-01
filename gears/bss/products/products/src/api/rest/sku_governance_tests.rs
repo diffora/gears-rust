@@ -932,7 +932,8 @@ async fn a_reserve_and_a_fence_racing_end_consistent() {
         }
         (409, 200) => {
             assert_eq!(problem_code(&reserve.1), "SKU_FENCED");
-            assert_eq!(f.card().await["lifecycle"], "retiring");
+            assert_eq!(f.card().await["lifecycle"], "published");
+            assert_eq!(f.card().await["retire_pending"], true);
         }
         other => panic!("inconsistent race {other:?}: {reserve:?}, {retire:?}"),
     }
@@ -1115,6 +1116,7 @@ const DOOR_ACTIONS: &[(&str, &str)] = &[
     ("bss_products.retire_sku", "submit"),
     ("bss_products.unfence_sku", "submit"),
     ("bss_products.list_approval_units", "read"),
+    ("bss_products.count_approval_units", "read"),
     ("bss_products.get_approval_unit", "read"),
     ("bss_products.approve_unit", "approve"),
     ("bss_products.reject_unit", "approve"),
@@ -1461,11 +1463,13 @@ async fn the_unit_list_pages_in_submission_order() {
     assert_eq!(every, units);
 }
 
-/// RS-03 (P-D-224): a page of the unit list reads its units and all their decisions in the same
-/// statements for 10 and for 100 units, each with a vote; it read each unit's decisions on its own.
+/// RS-03 (P-D-224, amended by P-D-228): a page of the unit list reads its units, all their
+/// decisions and all their items in three statements for 10 and for 100 units, each with a vote;
+/// it read each unit's decisions on its own. The counts (P-D-227) are one grouped statement.
 #[tokio::test]
 async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units() {
     let mut runs = Vec::new();
+    let mut count_runs = Vec::new();
     for n in [10, 100] {
         let (f, recorder) = Fixture::recorded(2).await;
         for i in 0..n {
@@ -1497,9 +1501,102 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
                 .all(|u| u["decisions"].as_array().unwrap().len() == 1),
             "every unit carries its vote"
         );
-        runs.push(products_statements(&recorder));
+        assert!(
+            items.iter().all(|u| u["caller_can_approve"] == false),
+            "the reviewer voted on each"
+        );
+        let statements = products_statements(&recorder);
+        // P-D-228 (plan review H1): the page, its units' decisions and their items, whose
+        // authors the flag's separation of duties reads.
+        assert_eq!(statements.len(), 3, "{statements:#?}");
+        // The phase 9 review's R73, R74: the items are read for their authors alone, never their
+        // content.
+        let items_read: Vec<&String> = statements
+            .iter()
+            .filter(|sql| sql.contains("products_approval_unit_item"))
+            .collect();
+        assert!(
+            items_read.len() == 1
+                && items_read[0].contains("created_by")
+                && !items_read[0].contains("before_json")
+                && !items_read[0].contains("after_json"),
+            "{statements:#?}"
+        );
+        runs.push(statements);
+        // P-D-227: the counts are ONE grouped statement, read on the plain connection, never in
+        // the serializable transaction category writes take (the phase 9 review's R32).
+        recorder.clear();
+        let (status, counts) = f.units("/counts").await;
+        assert_eq!(status, 200, "{counts}");
+        assert_eq!(counts["total"], n, "{counts}");
+        let statements = products_statements(&recorder);
+        assert_eq!(statements.len(), 1, "{statements:#?}");
+        assert!(
+            statements[0].to_ascii_uppercase().contains("GROUP BY"),
+            "{statements:#?}"
+        );
+        let in_tx: Vec<bool> = recorder
+            .events()
+            .into_iter()
+            .filter(|q| {
+                q.table
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("products_"))
+            })
+            .map(|q| q.in_tx)
+            .collect();
+        assert_eq!(in_tx, [false], "the counts run outside any transaction");
+        count_runs.push(statements);
     }
     assert_eq!(runs[0], runs[1]);
+    assert_eq!(count_runs[0], count_runs[1]);
+}
+/// The phase 9 review's R70 and R72 (P-D-228 amended): the submit receipt, the card and the vote
+/// receipt read the unit's item authors alone for `caller_can_approve`, never the items' content;
+/// the engine's own approve still reads its items.
+#[tokio::test]
+async fn the_card_and_the_receipts_read_the_item_authors_alone() {
+    let (f, recorder) = Fixture::recorded(2).await;
+    // (reads of the items' content, reads of their authors alone)
+    let item_reads = || {
+        let reads: Vec<String> = products_statements(&recorder)
+            .into_iter()
+            .filter(|sql| {
+                sql.contains("products_approval_unit_item")
+                    && sql.trim_start().to_ascii_uppercase().starts_with("SELECT")
+            })
+            .collect();
+        let content = reads
+            .iter()
+            .filter(|sql| sql.contains("after_json"))
+            .count();
+        (content, reads.len() - content)
+    };
+    recorder.clear();
+    let unit = f.submit(f.id).await;
+    assert_eq!(item_reads(), (0, 1), "the submit receipt");
+    recorder.clear();
+    let (status, card) = f.units(&format!("/{unit}")).await;
+    assert_eq!(status, 200, "{card}");
+    assert_eq!(card["caller_can_approve"], true, "{card}");
+    assert_eq!(item_reads(), (0, 1), "the card");
+    recorder.clear();
+    let (status, b) = call(
+        &f.app,
+        &f.reviewer,
+        Method::POST,
+        &format!("/approval-units/{unit}/approve"),
+        json!({"generation":1}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["unit"]["caller_can_approve"], false, "{b}");
+    assert_eq!(
+        item_reads(),
+        (1, 1),
+        "the engine's items and the receipt's authors"
+    );
 }
 /// RS-23 (P-D-226): the SDK's `Sku` and `SkuVersion` read the doors' JSON (instants RFC 3339,
 /// the effective date `YYYY-MM-DD`, as `SkuDto` and `SkuVersionDto` write them) and write it back
@@ -2505,18 +2602,6 @@ async fn bound_registry_refusals_match_rest_codes() {
         problem_code(&rest)
     );
     assert_eq!(problem_code(&rest), "SKU_FENCED");
-    // SKU_RETIRING is the existing domain refusal for an unfenced retiring head.
-    assert_eq!(
-        canonical_code(
-            crate::domain::references::reservation_allowed(
-                bss_products_sdk::Lifecycle::Retiring,
-                false
-            )
-            .unwrap_err()
-            .into()
-        ),
-        "SKU_RETIRING"
-    );
 }
 #[tokio::test]
 async fn bound_registry_fresh_head_and_dated_versions() {
@@ -2671,26 +2756,26 @@ async fn bound_registry_serves_a_principal_without_a_subject_type() {
     );
 }
 #[tokio::test]
-async fn bound_registry_unfenced_retiring_head_matches_rest_refusal() {
-    use bss_products_sdk::{Lifecycle, ReferenceKind, ReferenceRegistryV1};
+async fn bound_registry_retire_pending_matches_rest_refusal() {
+    use bss_products_sdk::{ReferenceKind, ReferenceRegistryV1};
     let f = Fixture::new(0).await;
     f.publish().await;
     let db = f.state.db.db();
     let conn = db.conn().unwrap();
     let scope = toolkit_db::secure::AccessScope::for_tenant(f.tenant);
-    repo::set_lifecycle(
+    repo::fence_sku(
         &conn,
         &scope,
         f.tenant,
         f.id,
-        &[Lifecycle::Published],
-        Lifecycle::Retiring,
+        repo::Fence::Retire,
+        uuid::Uuid::new_v4(),
         time::OffsetDateTime::now_utc(),
     )
     .await
     .unwrap();
     let (_, rest) = f.reserve(Uuid::new_v4()).await;
-    assert_eq!(problem_code(&rest), "SKU_RETIRING");
+    assert_eq!(problem_code(&rest), "SKU_FENCED");
     let error = local(&f, "pricing")
         .reserve(
             &f.author,
@@ -3309,3 +3394,603 @@ mod submit_note_tests;
 
 #[path = "caps_tests.rs"]
 mod caps_tests;
+
+// ------------------------------------------------------------------ counts, the order (P-D-227)
+
+/// A unit of the fixture tenant written through the store: `kind` on `ref_id`, in `state`,
+/// submitted at `at`, with one item; its id.
+async fn stored_unit(
+    f: &Fixture,
+    kind: &str,
+    ref_id: Uuid,
+    state: bss_approval::UnitState,
+    at: time::OffsetDateTime,
+) -> Uuid {
+    use bss_approval::{ItemRef, Store, Unit, UnitState};
+    let (id, tenant, kind) = (Uuid::now_v7(), f.tenant, kind.to_owned());
+    f.state
+        .db
+        .db()
+        .transaction_with_retry(
+            toolkit_db::secure::TxConfig::default(),
+            crate::api::rest::contention_db_err,
+            move |tx| {
+                let kind = kind.clone();
+                Box::pin(async move {
+                    repo::ProductsApprovalStore {
+                        scope: toolkit_db::secure::AccessScope::for_tenant(tenant),
+                        tenant_id: tenant,
+                    }
+                    .insert_unit(
+                        tx,
+                        &Unit {
+                            id,
+                            tenant_id: tenant,
+                            kind,
+                            ref_type: "sku".into(),
+                            ref_id,
+                            state,
+                            common_effective_date: None,
+                            quorum_required: 1,
+                            generation: 1,
+                            submitted_by: Uuid::new_v4(),
+                            submitted_at: at,
+                            submit_note: None,
+                            decided_at: (state != UnitState::Pending).then_some(at),
+                            decided_note: None,
+                            snapshot: json!({}),
+                            snapshot_hash: "hash".into(),
+                            version: 1,
+                        },
+                        &[ItemRef {
+                            item_type: "sku".into(),
+                            item_id: ref_id,
+                            created_by: Uuid::new_v4(),
+                            before: None,
+                            after: json!({}),
+                        }],
+                    )
+                    .await
+                    .map_err(crate::api::rest::TxError::from)
+                })
+            },
+        )
+        .await
+        .map_err(|_| "the unit is stored")
+        .unwrap();
+    id
+}
+/// A whole second, so a stored instant and one a test writes into a cursor are the same.
+fn whole_second(at: time::OffsetDateTime) -> time::OffsetDateTime {
+    at.replace_nanosecond(0).unwrap()
+}
+/// The ids of a page's units, in its order.
+fn unit_ids(page: &Value) -> Vec<String> {
+    page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+/// What `GET /approval-units/counts` answers for `items`, the units the list pages through under
+/// the same narrowing: every state and every kind named, 0 when none, and the total.
+fn counted(items: &[Value]) -> Value {
+    let n = |key: &str, value: &str| items.iter().filter(|u| u[key] == value).count();
+    json!({
+        "by_state": {
+            "pending": n("state", "pending"),
+            "approved": n("state", "approved"),
+            "rejected": n("state", "rejected"),
+            "withdrawn": n("state", "withdrawn"),
+        },
+        "by_kind": {
+            "sku_publish": n("kind", "sku_publish"),
+            "sku_change": n("kind", "sku_change"),
+            "sku_retire": n("kind", "sku_retire"),
+        },
+        "total": items.len(),
+    })
+}
+
+/// P-D-227 (ask 42, plan review L11): `GET /approval-units/counts` counts what the list pages
+/// through under the list's whole narrowing (`state`, `kind`, `ref_id`), by state and by kind,
+/// every state and kind named; `total` is the list's length. A narrowing the list refuses is
+/// refused the same way, and the counts take nothing but the narrowing.
+#[tokio::test]
+async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
+    use bss_approval::UnitState;
+    let f = Fixture::new(1).await;
+    let (a, b) = (f.id, Uuid::new_v4());
+    let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
+    for (i, (kind, reference, state)) in [
+        ("sku_publish", a, UnitState::Pending),
+        ("sku_publish", a, UnitState::Rejected),
+        ("sku_publish", a, UnitState::Withdrawn),
+        ("sku_change", a, UnitState::Approved),
+        ("sku_change", b, UnitState::Pending),
+        ("sku_retire", b, UnitState::Pending),
+        ("sku_retire", b, UnitState::Approved),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = t0 + time::Duration::minutes(i64::try_from(i).unwrap());
+        stored_unit(&f, kind, reference, state, at).await;
+    }
+    let (status, whole) = f.units("/counts").await;
+    assert_eq!(status, 200, "{whole}");
+    assert_eq!(
+        whole,
+        json!({
+            "by_state": {"pending": 3, "approved": 2, "rejected": 1, "withdrawn": 1},
+            "by_kind": {"sku_publish": 3, "sku_change": 2, "sku_retire": 2},
+            "total": 7,
+        })
+    );
+    for narrowing in [
+        String::new(),
+        "state=pending".into(),
+        "state=approved&kind=sku_retire".into(),
+        "kind=sku_publish".into(),
+        format!("ref_id={a}"),
+        format!("state=pending&kind=sku_change&ref_id={b}"),
+    ] {
+        let listed = f.all_units(&narrowing).await;
+        let (status, counts) = f.units(&format!("/counts?{narrowing}")).await;
+        assert_eq!(status, 200, "{narrowing}: {counts}");
+        assert_eq!(counts, counted(&listed), "{narrowing}");
+    }
+    // The list's refusals, the same code on the same field. A kind is one products records
+    // (phase 9 review R30): any other, an empty one included, is 400 VALIDATION on kind.
+    let long = format!("kind={}", "s".repeat(5000));
+    for narrowing in [
+        "state=bogus",
+        "ref_id=not-a-uuid",
+        "kind=promotion",
+        "kind=",
+        "kind=SKU_PUBLISH",
+        long.as_str(),
+    ] {
+        let (ls, lb) = f.units(&format!("?{narrowing}")).await;
+        let (cs, cb) = f.units(&format!("/counts?{narrowing}")).await;
+        assert_eq!(ls, 400, "{narrowing}: {lb}");
+        assert_eq!(cs, 400, "{narrowing}: {cb}");
+        assert_eq!(problem_code(&cb), problem_code(&lb), "{narrowing}: {cb}");
+        assert!(!lb["context"].is_null(), "{narrowing}: {lb}");
+        assert_eq!(cb["context"], lb["context"], "{narrowing}");
+        if narrowing.starts_with("kind=") {
+            let violation = &lb["context"]["violations"][0];
+            assert_eq!(
+                (&violation["subject"], &violation["type"]),
+                (&json!("kind"), &json!("VALIDATION")),
+                "{narrowing}: {lb}"
+            );
+        }
+    }
+    // Only the narrowing: no page and no order.
+    for extra in [
+        "limit=5",
+        "cursor=abc",
+        "$orderby=submitted_at%20desc",
+        "q=x",
+    ] {
+        let (status, b) = f.units(&format!("/counts?{extra}")).await;
+        assert_eq!(status, 400, "{extra}: {b}");
+    }
+}
+
+/// The phase 9 review's theme C (R34, R38, R68): the repository reads a unit's kind and state
+/// through their closed sets, so a stored kind products does not record and a state written around
+/// its CHECK are corrupt rows: the list, the counts and the card refuse the same row with a 500
+/// that does not echo it, under every narrowing that keeps it, and a narrowing that does not
+/// keep it still serves.
+#[tokio::test]
+async fn a_unit_of_an_unknown_kind_or_state_is_a_corrupt_row_on_every_read() {
+    use crate::test_support::id_matches;
+    use bss_approval::UnitState;
+    use sea_orm::{ConnectionTrait, Database};
+    let f = Fixture::new(1).await;
+    let at = whole_second(time::OffsetDateTime::now_utc());
+    stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await;
+    let foreign = stored_unit(&f, "promotion", f.id, UnitState::Pending, at).await;
+    for path in [
+        String::new(),
+        "?state=pending".to_owned(),
+        format!("?ref_id={}", f.id),
+        "/counts".to_owned(),
+        "/counts?state=pending".to_owned(),
+        format!("/{foreign}"),
+    ] {
+        let (status, b) = f.units(&path).await;
+        assert_eq!(status, 500, "{path}: {b}");
+        assert!(!b.to_string().contains("promotion"), "{path}: {b}");
+    }
+    let (status, b) = f.units("/counts?kind=sku_publish").await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["total"], 1, "{b}");
+    // A stored state outside its set: the CHECK refuses the write, so it is written around it.
+    let other = Fixture::new(1).await;
+    let poisoned = stored_unit(&other, "sku_publish", other.id, UnitState::Pending, at).await;
+    let raw = Database::connect(&other.dsn).await.unwrap();
+    let update = format!(
+        "UPDATE products_approval_unit SET state = 'archived' WHERE {}",
+        id_matches("id", poisoned)
+    );
+    let refused = raw.execute_unprepared(&update).await.unwrap_err();
+    assert!(refused.to_string().contains("CHECK"), "{refused}");
+    raw.execute_unprepared("PRAGMA ignore_check_constraints = ON")
+        .await
+        .unwrap();
+    assert_eq!(
+        raw.execute_unprepared(&update)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    raw.close().await.unwrap();
+    for path in [
+        String::new(),
+        "/counts".to_owned(),
+        "/counts?kind=sku_publish".to_owned(),
+        format!("/{poisoned}"),
+    ] {
+        let (status, b) = other.units(&path).await;
+        assert_eq!(status, 500, "{path}: {b}");
+        assert!(!b.to_string().contains("archived"), "{path}: {b}");
+    }
+}
+
+/// P-D-227 (ask 42): `$orderby=submitted_at desc` pages the units newest first, the id breaking a
+/// tie in the same direction; `submitted_at asc`, `submitted_at` alone and no `$orderby` are the
+/// submission order of P-D-224. Every page size walks the same whole list, so a tie split by a page
+/// boundary is neither lost nor repeated.
+#[tokio::test]
+async fn the_unit_list_pages_newest_first_with_the_id_breaking_a_tie_the_same_way() {
+    use bss_approval::UnitState;
+    let f = Fixture::new(1).await;
+    let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
+    let mut submitted = Vec::new();
+    for minutes in [0_i64, 1, 1, 1, 2, 3] {
+        let at = t0 + time::Duration::minutes(minutes);
+        let id = stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await;
+        submitted.push((at, id));
+    }
+    submitted.sort();
+    let ascending: Vec<String> = submitted.iter().map(|(_, id)| id.to_string()).collect();
+    let descending: Vec<String> = ascending.iter().rev().cloned().collect();
+    for (order, expected) in [
+        ("", &ascending),
+        ("&$orderby=submitted_at", &ascending),
+        ("&$orderby=submitted_at%20asc", &ascending),
+        ("&$orderby=submitted_at%20desc", &descending),
+    ] {
+        let (status, whole) = f.units(&format!("?kind=sku_publish{order}")).await;
+        assert_eq!(status, 200, "{whole}");
+        assert_eq!(&unit_ids(&whole), expected, "{order}");
+        for limit in 1..=5 {
+            let mut seen = Vec::new();
+            let mut query = format!("?kind=sku_publish{order}&limit={limit}");
+            let mut pages = 0;
+            loop {
+                let (status, page) = f.units(&query).await;
+                assert_eq!(status, 200, "{query}: {page}");
+                seen.extend(unit_ids(&page));
+                // Bounded: a cursor that does not advance fails here instead of hanging.
+                pages += 1;
+                assert!(
+                    seen.len() <= expected.len() && pages <= expected.len() + 1,
+                    "{order} by {limit}: the cursor does not advance: {seen:?}"
+                );
+                match page["page_info"]["next_cursor"].as_str() {
+                    // A continuation sends its cursor alone: the cursor carries the order.
+                    Some(cursor) => {
+                        query = format!("?kind=sku_publish&limit={limit}&cursor={cursor}");
+                    }
+                    None => break,
+                }
+            }
+            assert_eq!(&seen, expected, "{order} by {limit}");
+        }
+    }
+}
+
+/// The phase 9 review's R67: a refused `$orderby` names the key it refuses, never the whole order,
+/// so `submitted_at`, which the list takes, is never called unsupported.
+#[tokio::test]
+async fn a_refused_order_names_the_key_it_refuses() {
+    let f = Fixture::new(1).await;
+    for (order, said) in [
+        ("code", "field: code"),
+        ("submitted_at%20desc,id%20desc", "field: id"),
+        (
+            "submitted_at%20desc,submitted_at%20asc",
+            "only one key, submitted_at, is accepted",
+        ),
+    ] {
+        let (status, b) = f.units(&format!("?$orderby={order}")).await;
+        assert_eq!(status, 400, "{order}: {b}");
+        let text = b.to_string();
+        assert!(
+            text.contains("INVALID_ORDERBY_FIELD") && text.contains(said),
+            "{order}: {b}"
+        );
+        assert!(!text.contains("submitted_at desc,"), "{order}: {b}");
+    }
+}
+
+/// P-D-227 (plan review M4): the order is not part of the narrowing's hash, so a cursor minted
+/// before the descending order existed still continues; a cursor carries its order, and a
+/// continuation follows it; `$orderby` beside a cursor is the toolkit's 400 `ORDER_WITH_CURSOR`;
+/// an order the list does not take is 400 `INVALID_ORDERBY_FIELD`.
+#[tokio::test]
+async fn a_cursor_keeps_its_order_and_one_minted_before_the_order_still_continues() {
+    use bss_approval::UnitState;
+    use toolkit_odata::{CursorV1, SortDir};
+    // The narrowing hash of the unnarrowed list as it was minted before run 9.3: the first 8 bytes
+    // of the SHA-256 of {"kind":null,"ref_id":null,"state":null}, with no order in it.
+    const BEFORE: &str = "f71fffbdfa52de1f";
+    let f = Fixture::new(1).await;
+    let t0 = whole_second(time::OffsetDateTime::now_utc()) - time::Duration::hours(1);
+    let mut units = Vec::new();
+    for minutes in 0..5_i64 {
+        let at = t0 + time::Duration::minutes(minutes);
+        units.push((
+            at,
+            stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await,
+        ));
+    }
+    let named = |range: &[(time::OffsetDateTime, Uuid)]| -> Vec<String> {
+        range.iter().map(|(_, id)| id.to_string()).collect()
+    };
+    let format = time::format_description::parse_borrowed::<2>(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z",
+    )
+    .unwrap();
+    let (at, id) = units[2];
+    let before = CursorV1 {
+        k: vec![at.format(&format).unwrap(), id.to_string()],
+        o: SortDir::Asc,
+        s: "+submitted_at,+id".into(),
+        f: Some(BEFORE.into()),
+        d: "fwd".into(),
+    }
+    .encode()
+    .unwrap();
+    let (status, rest) = f.units(&format!("?cursor={before}")).await;
+    assert_eq!(status, 200, "{rest}");
+    assert_eq!(
+        unit_ids(&rest),
+        named(&units[3..]),
+        "a cursor minted before 9.3"
+    );
+    let mut newest_first = units.clone();
+    newest_first.reverse();
+    for (order, signed, first, second) in [
+        (
+            "",
+            "+submitted_at,+id",
+            named(&units[..2]),
+            named(&units[2..4]),
+        ),
+        (
+            "&$orderby=submitted_at%20desc",
+            "-submitted_at,-id",
+            named(&newest_first[..2]),
+            named(&newest_first[2..4]),
+        ),
+    ] {
+        let (status, page) = f.units(&format!("?limit=2{order}")).await;
+        assert_eq!(status, 200, "{page}");
+        assert_eq!(unit_ids(&page), first, "{order}");
+        let token = page["page_info"]["next_cursor"].as_str().unwrap();
+        let cursor = CursorV1::decode(token).unwrap();
+        assert_eq!(
+            (cursor.f.as_deref(), cursor.s.as_str()),
+            (Some(BEFORE), signed),
+            "{order}: the same narrowing hash, its own order"
+        );
+        let (status, next) = f.units(&format!("?limit=2&cursor={token}")).await;
+        assert_eq!(status, 200, "{next}");
+        assert_eq!(unit_ids(&next), second, "{order}: the cursor's order");
+        for orderby in ["submitted_at%20desc", "submitted_at%20asc", "submitted_at"] {
+            let (status, b) = f
+                .units(&format!("?cursor={token}&$orderby={orderby}"))
+                .await;
+            assert_eq!(status, 400, "{orderby}: {b}");
+            assert!(
+                b.to_string().contains("ORDER_WITH_CURSOR"),
+                "{orderby}: {b}"
+            );
+        }
+    }
+    for bad in [
+        "id%20desc",
+        "submitted_at%20up",
+        "submitted_at%20desc,id%20desc",
+        "kind",
+    ] {
+        let (status, b) = f.units(&format!("?$orderby={bad}")).await;
+        assert_eq!(status, 400, "{bad}: {b}");
+        assert!(
+            b.to_string().contains("INVALID_ORDERBY_FIELD"),
+            "{bad}: {b}"
+        );
+    }
+}
+
+// ------------------------------------------------------------------ whether a reader may approve (P-D-228)
+
+impl Fixture {
+    /// `caller_can_approve` as `who` reads it on the unit's card and in the list, which agree.
+    async fn flag(&self, who: &SecurityContext, unit: &str) -> bool {
+        let (status, card) = call(
+            &self.app,
+            who,
+            Method::GET,
+            &format!("/approval-units/{unit}"),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{card}");
+        let (status, list) = call(
+            &self.app,
+            who,
+            Method::GET,
+            &format!("/approval-units?ref_id={}", self.id),
+            json!({}),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{list}");
+        let listed = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == unit)
+            .unwrap()
+            .clone();
+        let flag = card["caller_can_approve"].as_bool().expect("a boolean");
+        assert_eq!(
+            listed["caller_can_approve"].as_bool(),
+            Some(flag),
+            "the list and the card agree: {listed} {card}"
+        );
+        flag
+    }
+    /// A vote on `unit` by `who` at `generation`.
+    async fn vote_as(
+        &self,
+        who: &SecurityContext,
+        unit: &str,
+        action: &str,
+        generation: i32,
+    ) -> (u16, Value) {
+        call(
+            &self.app,
+            who,
+            Method::POST,
+            &format!("/approval-units/{unit}/{action}"),
+            json!({"generation":generation,"note":"reviewed"}),
+            None,
+        )
+        .await
+    }
+}
+
+/// P-D-228 (ask 28, plan review H1): every unit read says whether its reader may approve the
+/// unit, judged by the approval library's own predicate (pricing D-459) over the unit's stored
+/// items and its decisions, so the flag is what the vote door answers that reader on the same
+/// rows: false for the SKU's creator (the author of the unit's item) and the submitter
+/// (separation of duties), for a reviewer who voted in the current generation and for anyone on a
+/// decided unit; true for a fresh reviewer and for one whose vote a refresh made stale. The card
+/// and the list agree, and the receipts answer their caller's flag.
+#[tokio::test]
+async fn caller_can_approve_is_what_the_vote_door_answers_each_reader() {
+    let f = Fixture::new(3).await;
+    let author = f.author.clone();
+    let (submitter, prior, fresh, stale) = (
+        authed_ctx(f.tenant),
+        authed_ctx(f.tenant),
+        authed_ctx(f.tenant),
+        authed_ctx(f.tenant),
+    );
+    let (status, receipt) = call(
+        &f.app,
+        &submitter,
+        Method::POST,
+        &format!("/skus/{}/submit", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{receipt}");
+    assert_eq!(
+        receipt["unit"]["caller_can_approve"], false,
+        "the submitter's receipt"
+    );
+    let unit = receipt["unit"]["id"].as_str().unwrap().to_owned();
+    let (status, b) = f.vote_as(&stale, &unit, "approve", 1).await;
+    assert_eq!((status, b["have"].clone()), (200, json!(1)), "{b}");
+    assert_eq!(b["unit"]["caller_can_approve"], false, "a voter's receipt");
+    assert!(
+        f.flag(&fresh, &unit).await,
+        "a fresh reviewer before the drift"
+    );
+    // The SKU's content drifts: the next vote refreshes the unit and the first vote turns stale.
+    let (db, scope) = repo_connection(&f.dsn, f.tenant).await;
+    let conn = db.conn().unwrap();
+    let mut content = bss_products_sdk::models::SkuContent::from(
+        &repo::find_sku(&conn, &scope, f.tenant, f.id)
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    content.description = "changed".into();
+    repo::write_sku_content(
+        &conn,
+        &scope,
+        f.tenant,
+        f.id,
+        &content,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .unwrap();
+    let (status, b) = f.vote_as(&prior, &unit, "approve", 1).await;
+    assert_eq!(status, 400, "{b}");
+    assert_eq!(problem_code(&b), "UNIT_STALE");
+    let (status, b) = f.vote_as(&prior, &unit, "approve", 2).await;
+    assert_eq!((status, b["have"].clone()), (200, json!(1)), "{b}");
+    for (who, name, status, answer) in [
+        (&author, "the SKU's creator", 403, "SOD_VIOLATION"),
+        (&submitter, "the submitter", 403, "SOD_VIOLATION"),
+        (&prior, "a voter of this generation", 409, "DUPLICATE_VOTE"),
+        (&fresh, "a fresh reviewer", 200, "pending"),
+        (&stale, "a voter of an earlier generation", 200, "applied"),
+    ] {
+        let flag = f.flag(who, &unit).await;
+        let (s, b) = f.vote_as(who, &unit, "approve", 2).await;
+        assert_eq!(flag, s == 200, "{name}: the flag {flag}, the door {s}: {b}");
+        assert_eq!(s, status, "{name}: {b}");
+        if s == 200 {
+            assert_eq!(b["outcome"], answer, "{name}: {b}");
+        } else {
+            assert_eq!(problem_code(&b), answer, "{name}: {b}");
+        }
+    }
+    let late = authed_ctx(f.tenant);
+    for who in [&late, &fresh, &author] {
+        assert!(!f.flag(who, &unit).await, "a decided unit");
+    }
+    let (status, b) = f.vote_as(&late, &unit, "approve", 2).await;
+    assert_eq!(status, 409, "{b}");
+    assert_eq!(problem_code(&b), "UNIT_ALREADY_DECIDED");
+}
+
+/// P-D-228 (plan review M2): the flag is about Approve only. The engine's reject judges no
+/// separation of duties, so the submitter may reject a unit that their flag says they may not
+/// approve, and the reject door's text no longer claims `SOD_VIOLATION`.
+#[tokio::test]
+async fn the_submitter_rejects_what_the_flag_says_they_may_not_approve() {
+    let f = Fixture::new(1).await;
+    let submitter = authed_ctx(f.tenant);
+    let (status, receipt) = call(
+        &f.app,
+        &submitter,
+        Method::POST,
+        &format!("/skus/{}/submit", f.id),
+        json!({}),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{receipt}");
+    let unit = receipt["unit"]["id"].as_str().unwrap().to_owned();
+    assert!(!f.flag(&submitter, &unit).await);
+    assert!(!f.flag(&f.author, &unit).await, "the SKU's creator");
+    let (status, b) = f.vote_as(&submitter, &unit, "reject", 1).await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["outcome"], "rejected", "{b}");
+}

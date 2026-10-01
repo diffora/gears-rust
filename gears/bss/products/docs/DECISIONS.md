@@ -49,16 +49,21 @@
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by the phase 9 review (C, fix run 9.5d-1) |
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
-| P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213 |
+| P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213; its Pricing bullet amended by pricing D-464 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
 | P-D-221 | M | The outbox wakes its sequencer after the commit (twin of pricing D-455) | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); pricing phase 8 plan rev 2 (run 8.2b) |
 | P-D-222 | H | The registry trusts pricing's system actor in-process only; no REST door serves that actor | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O1, "ok"); whole-branch review RS-02 (fix run W1b); second review of W1b M1 (fix run W1c); keeps pricing D-424 |
 | P-D-223 | M | A refusal keeps its class and names its resource | DECIDED 2026-09-29 · Whole-branch review RS-06, RS-07, RS-09, RS-25, RS-32 and W1a's `UnitNotFound` note (fix run W1b) |
-| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b) |
+| P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
+| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
+| P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
+| P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
+| P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
+| P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
 
 ## Entries
 
@@ -137,6 +142,11 @@ Apply revalidates the reference environment. A failed retirement check is `APPLY
 `SKU_REFERENCED`; the apply transaction rolls back and the SKU stays `retiring` until withdrawal or
 rejection. Pricing also refuses a new price book entry or plan item on a retiring SKU (`SKU_RETIRING`).
 
+P-D-248 amends this entry: the fence is `retire_pending`, not a `retiring` lifecycle. The SKU keeps
+`published` or `deprecated` until apply sets `retired` and clears the flag. Reject, withdraw, unfence
+and the orphan recovery clear the flag and restore nothing. A new reservation on it is still
+`SKU_FENCED`.
+
 **Traceability:** [PRD `fr-sku-retire-fenced`](PRD.md#fr-sku-retire-fenced),
 [`fr-sku-type-frozen`](PRD.md#fr-sku-type-frozen), [`fr-sku-lifecycle`](PRD.md#fr-sku-lifecycle),
 [`fr-reference-registry`](PRD.md#fr-reference-registry); spec §2 decision 17, §2.2, §4, §6.
@@ -163,7 +173,8 @@ spec §2 decision 8, §6, §14; Task 5 specifies the missing-policy fail-safe.
 
 Publish and every applied `sku_change` append a durable
 `sku_version (sku_id, published_version, effective_from, snapshot)`. A change carries `effective_from`,
-defaulting to today; publication is effective immediately. Pricing reads
+defaulting to today; publication is effective immediately. P-D-249 amends the lifecycle half: a change
+whose `effective_from` is after today stores `lifecycle_next` and leaves `lifecycle` until that date. Pricing reads
 `GET /skus/{id}/versions?as_of=<date>` for the version in force at a period's start. Earlier bindings keep
 their descriptors; no per-book approval or refreeze action exists.
 
@@ -503,7 +514,7 @@ the `q` search, 2026-09-28 (the collector's plugin takes no `contains`).
 #### P-D-208 [M] A retired SKU no longer keeps its category in use
 
 Amends P-D-186 (#9). Category retirement is refused (409 `CATEGORY_IN_USE`) only while a SKU in `draft`,
-`published`, `deprecated` or `retiring` names the category. A `retired` SKU no longer counts: nothing moves a
+`published` or `deprecated` names the category. P-D-248: a retire under review keeps one of those, so it still holds the category. The old `retiring` lifecycle no longer exists. A `retired` SKU no longer counts: nothing moves a
 retired SKU (`sku_change` takes only published or deprecated), so under P-D-186 a category that ever held one
 could never retire. `retiring` still counts, because a rejected or withdrawn retirement returns the SKU to its
 prior lifecycle. The check stays one conditional write with a `NOT EXISTS` over those four lifecycles, in the
@@ -579,8 +590,8 @@ review H1, L1–L5, L10); phase 6 review (queries F1: null equality opt-in per f
 
 #### P-D-211 [M] The SKU list's tab counts: `GET /skus/counts`
 
-`GET /skus/counts` answers `{ all, draft, published, deprecated, retiring, retired, in_review }` for the tabs
-of the SKUs screen: every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
+`GET /skus/counts` answers `{ all, draft, published, deprecated, retired, in_review }` for the tabs
+of the SKUs screen (P-D-248 drops `retiring`; `$filter` gains `retire_pending`, and `lifecycle eq 'retiring'` is 400): every SKU the narrowing keeps, those in each lifecycle, and those a pending unit locks
 (`pending_unit_id` set, in any lifecycle). It narrows as the list does, by `q`, P-D-212's `priced` and `in_plan`, and `$filter`, except that `$filter`'s `lifecycle` terms are dropped, because the counts count every
 lifecycle. Only a term that is a top-level `and` conjunct is dropped; a `lifecycle` term under `or` or `not`
 cannot go without changing what the rest means, so it is 400 `INVALID_FILTER`. The whole filter is checked as
@@ -661,16 +672,18 @@ when the fence goes), and the orphan-fence expiry wrote no row at all (plan revi
 | `sku.delete` | none | `draft` | null |
 | `approval.submit` | `sku_publish` | `draft` | `draft` |
 | `approval.submit` | `sku_change` | L | L (a type-change fence moves no lifecycle) |
-| `approval.submit` | `sku_retire` | L, or `retiring` when an orphan fence is resumed | `retiring` |
+| `approval.submit` | `sku_retire` | L | L (P-D-248: a retire submit moves no lifecycle) |
 | `approval.vote`, `approval.refreshed` | any | the lifecycle found | the same |
 | `approval.applied` (the apply at submit, quorum 0), `approval.approved` | `sku_publish` | `draft` | `published` |
 | `approval.applied`, `approval.approved` | `sku_change` | L | the proposed lifecycle, or L |
-| `approval.applied`, `approval.approved` | `sku_retire` | `retiring` | `retired` |
+| `approval.applied`, `approval.approved` | `sku_retire` | L | `retired` |
 | `approval.rejected`, `approval.withdrawn` | `sku_publish` | `draft` | `draft` |
 | `approval.rejected`, `approval.withdrawn` | `sku_change` | L | L |
-| `approval.rejected`, `approval.withdrawn` | `sku_retire` | `retiring` | the lifecycle before the fence |
-| `sku.unfence` | none | `retiring` (retire fence) or L (type-change fence) | the lifecycle before the fence, or L |
+| `approval.rejected`, `approval.withdrawn` | `sku_retire` | L | L |
+| `sku.unfence` | none | L | L (a retire fence clears `retire_pending` and moves no lifecycle) |
 | `sku.fence_expired` | none | as `sku.unfence` | as `sku.unfence` |
+
+P-D-248: rows already stored with `retiring` stay in the log (the audit CHECK still allows the token). `GET /skus/{id}/history` maps them at read, on the raw strings before `Lifecycle::parse`, so the tab never shows `retiring` and a legacy row is never a 500. A retire submit is no move, an apply is `L → retired`, and a reject, withdraw, unfence or expiry is no move.
 
 - **The orphan-fence expiry is audited** (amends P-D-189). Every SKU read runs the expiry: the list, the
   counts, the card, the versions, the references, the unit card, and the submit and reference doors. It
@@ -821,6 +834,12 @@ poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) read
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).
 
+**Amended by the phase 9 review, theme C (fix run 9.5d-1, 2026-10-01).** A unit's `kind` is an enum on every
+response, `ProductsApprovalKind` (`sku_publish`, `sku_change`, `sku_retire`). No CHECK holds the column still; the
+repository reads it through the set (`domain::approvals::ApprovalKind`), so a unit of another kind is a corrupt row
+(500), never served (P-D-227). A unit's `ref_type` and the history's `unit_kind` stay strings; the history reads the
+unit's kind through the same set, so a SKU's history refuses a unit of another kind too.
+
 #### P-D-218 [M] Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN`
 
 A tenant has at most one default category: the partial unique index `uq_products_category_default` on
@@ -875,9 +894,12 @@ the submit's audit row, and `POST /skus/{id}/submit` and `/retire` took no body 
 - **Units submitted before the migration** read `submit_note: null`. This includes a change unit whose history
   row shows its note: nothing is backfilled from the audit log (plan review L6).
 - **Pricing.** The column belongs to the one unit shape the gears share. Pricing adds it by its own migration and
-  carries it on its unit reads; its submit doors take no note (D-445).
+  carries it on its unit reads; its submit doors took no note (D-445). Pricing D-464 amends this bullet: its plan
+  revision submit takes an optional `{ note }` under this entry's body rule, and its publish-changes an optional
+  `note` beside its selection, both capped at 2000 characters; its single price's submit takes none.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3, L6).
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3, L6). Its Pricing bullet is amended by
+pricing D-464.
 
 #### P-D-220 [M] A retired category is never the default; retiring the default clears it
 
@@ -1061,6 +1083,14 @@ register.
 
 **Source:** Owner, 2026-09-29 (the dispositions' O2, answered "ok"); whole-branch review RS-03 (fix run W1b).
 
+**Amended by P-D-227 (2026-09-30).** The list also takes `$orderby=submitted_at desc`, newest first, while submission
+order stays the default. `$orderby=submitted_at asc` names that default. Any `$orderby` but `submitted_at` (asc or desc) is
+400 `INVALID_ORDERBY_FIELD`, and `$orderby` beside a `cursor` is 400 `ORDER_WITH_CURSOR`.
+
+**Amended by P-D-228 (2026-09-30).** A page also reads all its units' items in one statement more
+(`approval_repo::items_of_units`; since the phase 9 review, `item_authors_of_units`, their authors alone), so it
+makes three statements whatever its size.
+
 #### P-D-225 [M] Every text a request writes has an explicit length cap (twin of pricing D-457)
 
 **Status:** DECIDED 2026-09-29.
@@ -1113,3 +1143,172 @@ register.
   them back unchanged; `the_sdk_payload_reads_the_emitted_sku_changed_event` does the same for the event.
 
 **Source:** Whole-branch review of 2026-09-29, RS-22, RS-23, RS-24 and RS-48 (fix run W1b).
+
+#### P-D-227 [M] The approval units are counted by state and kind and list newest first on request (twin of pricing D-470)
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen of the pricing-mfe merges pricing's and products' units (the owner's option 1: two per-gear methods that
+the UI merges). It shows a badge per state and per kind and the newest units first (ask 42).
+
+- **The counts.** `GET /bss-products/v1/approval-units/counts` answers `ProductsApprovalUnitCounts { by_state { pending,
+  approved, rejected, withdrawn }, by_kind { sku_publish, sku_change, sku_retire }, total }`: every state and every kind is
+  named, 0 when none, and `total` is the number of units the list pages through under the same narrowing.
+  - It takes the list's whole narrowing (pricing plan review L11): `state`, `kind` and `ref_id`. The list and the counts read
+    one condition (`approval_repo::UnitListFilter`), so the badge and the list count the same set.
+  - A narrowing the list refuses is refused the same way: 400 `VALIDATION` on `state` for an unknown state, 400 `VALIDATION`
+    on `kind` for a kind products does not record (below), 400 `VALIDATION` on `query` for a query that does not parse.
+    It takes nothing but the narrowing: `limit`, `cursor`, `$orderby` and any other key are 400 on `query`.
+  - It counts in ONE grouped statement (`approval_repo::count_units`), whatever the number of units. A stored kind products
+    does not record is a corrupt row (500).
+  - It is authorized as the list is (products read on approval units) and declares 503 as every products op does.
+- **The descending order.** The list takes `$orderby=submitted_at desc`, newest first, and `submitted_at asc` (or
+  `submitted_at` alone), the submission order of P-D-224 and still the default. The unit id breaks a tie in the same
+  direction. Any other `$orderby` is the toolkit's 400 `INVALID_ORDERBY_FIELD`. Before this decision the list ignored an
+  `$orderby`. Its violation names the key it refuses: the other field, or "only one key, submitted_at, is accepted"
+  for a second `submitted_at` key; it named the whole order before, which called `submitted_at` unsupported (the phase 9
+  review's R67, fix run 9.5d-1; `sku_governance_tests::a_refused_order_names_the_key_it_refuses`).
+  - The order is not part of the narrowing's hash (pricing plan review M4). The cursor carries its order (`CursorV1.s`), and a
+    continuation follows it, so every cursor minted before this decision still continues ascending, never 400
+    `FILTER_MISMATCH`.
+  - `$orderby` beside a cursor is the toolkit's 400 `ORDER_WITH_CURSOR`, judged first: a continuation sends only its cursor.
+- **The merge contract** (shared with pricing D-470). A client merging the two gears' pages compares `submitted_at` as an
+  instant, never as text: the RFC 3339 rendering trims trailing zeros of the fraction and writes UTC as `Z`, so as strings
+  `…:00Z` sorts after `…:00.5Z` (the P-D-213 trap). It then compares the unit id as lower-case hex, in the same direction.
+- **The tests.** `api/rest/sku_governance_tests.rs`: the counts against the list's own pages under seven narrowings, and the
+  list's refusals refused alike by the counts; the counts in one grouped statement for 10 and 100 units (in the list's
+  statement test); the newest-first order and every page size over a three-way tie; a cursor minted before this decision (its
+  narrowing hash `f71fffbdfa52de1f`, pinned as a literal), each order's cursor with the same hash and its own order,
+  `ORDER_WITH_CURSOR` and `INVALID_ORDERBY_FIELD`. `gear_tests.rs`: the counts op's 503, parameters, schema and text, and the
+  list's; the operation census and the door census (`DOOR_ACTIONS`) name `bss_products.count_approval_units`.
+
+**Source:** Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11).
+Amends P-D-224 (the order).
+
+**Amended by the phase 9 review, theme C and R32 (fix run 9.5d-1, 2026-10-01).**
+- **The kind is a closed set.** The list and the counts take a kind products records, `sku_publish`, `sku_change` or
+  `sku_retire`: any other kind, an empty one or another case included, is 400 `VALIDATION` on `kind`, judged with the
+  narrowing, before the filter or the cursor's hash is built. Before, any text was taken, of any length, and counted
+  zero. The repository reads a stored unit's kind through the same set (`domain::approvals::ApprovalKind`: every unit
+  read, `count_units`' rows, and the SKU history's unit kind), and `UnitDto.kind` is the enum `ProductsApprovalKind`
+  (P-D-217). So the list, the card, the receipts, the votes and the counts refuse a unit of another kind alike, with
+  a 500 that does not name it; before, the counts answered 500 while the list and the card served it. The cursor's
+  hash is unchanged: it hashes the kind's stored name, as before (`f71fffbdfa52de1f` stays pinned).
+- **The counts read outside any transaction.** The one grouped statement runs on the plain connection, never under
+  `category_tx_config`'s serializable transaction: one statement is its own snapshot, and SSI read locks over the
+  scanned units could push concurrent submits and votes into serialization failures. The list's statement test pins
+  the counts' statement outside any transaction.
+- **The tests.** `api/rest/sku_governance_tests.rs`: `kind=promotion`, an empty kind, `SKU_PUBLISH` and a kind of 5000
+  characters are refused alike by the list and the counts, on `kind`; a unit of an unknown kind is 500 on the list
+  (bare, by state, by SKU), the counts (bare, by state) and the card, while a narrowing that does not keep it serves;
+  a state written around its CHECK is 500 on the list, the counts and the card. `gear_tests.rs`: the kind is an enum,
+  and the counts' text names the refusal.
+
+#### P-D-228 [M] A unit says whether its reader may approve it (twin of pricing D-471)
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen shows the Approve action only to a reviewer the vote door would take (ask 28). Separation of duties
+excludes the submitter and every author of the unit's items, and a products item's author is the SKU's creator
+(`domain/approvals/publish.rs`, `change.rs`), who is often not the submitter of a change or a retire (pricing plan review
+H1). The list and the card read no unit items, so the screen could not judge it.
+
+- **The field.** Every `UnitDto` carries `caller_can_approve`, a boolean: on `GET /approval-units`, `GET /approval-units/{id}`
+  and every receipt that carries a unit (the submit, change and retire receipts, and the vote receipts). It is true when the
+  caller may approve the unit now.
+- **One rule (pricing W2, D-459).** It is `bss_approval::approve_eligibility(unit, items, decisions, caller).refusal.is_none()`:
+  the predicate `Engine::approve` judges through, over the unit's STORED items (the current generation's, as
+  `Engine::approve` reads them) and its decisions. So it is false for a decided unit, for the submitter and for the SKU's
+  creator (`SOD_VIOLATION`), and for a caller who voted in the current generation (`DUPLICATE_VOTE`); a vote that a refresh
+  made stale does not stop its voter.
+- **Approve only (pricing plan review M2).** `Engine::reject` judges no separation of duties, so the submitter and the SKU's
+  creator may reject a unit whose flag is false. The reject door's served text claimed 403 `SOD_VIOLATION`; it now says that a
+  reject judges no separation of duties, and names 409 `UNIT_ALREADY_DECIDED`.
+- **Not the grant.** The flag does not judge products approve on approval units: without it the vote door still answers 403.
+  The field's text says so.
+- **The reads (amends P-D-224).** The list's page adds ONE grouped read of its units' items
+  (`approval_repo::items_of_units`, the twin of pricing's): a page reads its units, all their decisions and all their items,
+  three statements whatever its size; the QueryRecorder pins three for 10 and for 100 units. The card reads the unit's stored
+  items (`store.items`) beside its decisions. A receipt reads the unit's items and decisions.
+- **The tests.** `api/rest/sku_governance_tests.rs`: a publish unit at quorum 3 of a SKU created by one user and submitted by
+  another, a vote in generation 1, a content drift that refreshes the unit to generation 2 (400 `UNIT_STALE`), a vote in
+  generation 2; for the SKU's creator, the submitter, the voter of this generation, a fresh reviewer and the voter of the
+  earlier generation, the flag on the card and in the list (which agree) is exactly whether the vote door answers 200; on the
+  decided unit it is false for everyone and the door answers 409 `UNIT_ALREADY_DECIDED`; the submit and vote receipts answer
+  false for their caller. The submitter's reject answers 200 while the submitter's and the creator's flags are false. The
+  list's statement test pins three statements with the items read. `gear_tests.rs`: the field is a required boolean whose
+  text says Approve only and 403, the list's text names it, and the reject's text claims no `SOD_VIOLATION`.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2, binding; plan review
+H1, M2). Amends P-D-224 (the page's statements).
+
+**Amended by the phase 9 review, theme E (fix run 9.5d-1, 2026-10-01; R70, R72, R73, R74).** The flag reads only who
+authored a unit's items: `bss_approval::approve_eligibility` takes the authors (pricing D-459), and the page reads its
+units' item authors alone (`approval_repo::item_authors_of_units`: each item's unit and author, one statement), not the
+items with their before and after content; still three statements per page. The card and every receipt (the submit,
+change and retire receipts and the vote receipts) read their unit's item authors the same way, beside its decisions;
+the engine's own approve still reads its items. `api/rest/sku_governance_tests.rs`: the list's statement test pins the
+projection, and the card, the submit receipt and the vote receipt read the authors alone.
+
+#### P-D-229 [H] A derived usage meter is a catalog declaration that Rating evaluates
+
+**Status:** DECIDED 2026-10-01.
+
+A derived (composite) usage meter computes one quantity from other usage. A cloudlet, for example, is 128 MB of RAM and
+400 MHz of CPU, and a cloudlet-hour is computed from the RAM and CPU usage of the hour. The old implementation had such meters.
+The owner decided who does what:
+- **Products declares it.** A derived usage type, with an immutable version, names:
+  - its input usage types, each at an exact version (at least two);
+  - the formula as data: how the input quantities combine (for example the larger of the two shares), and the rounding;
+  - the granularity the formula applies at (per rating window, for example per UTC hour);
+  - its output unit.
+
+  A new formula is a new version; a published version never changes. What a cloudlet is, is a product decision, versioned
+  with the catalog.
+- **Rating evaluates it** (rating T-D-39), per subscription line and rating window. It folds each input over the window as
+  that input's own meter declares, applies the formula, then prices the output. The order matters: the larger share in each
+  hour is not the larger of the hourly sums.
+- **The usage collector reports raw meters only.** It is not asked to compute a derived quantity, and the raw levels stay
+  available for audit and for re-rating a past period.
+- **Pricing references a derived usage type exactly as a raw one.** A usage entry's rating policy names the usage type and
+  its version. The meter-semantics provider of the pricing seam plan (its external dependency E1) answers:
+  - a derived type from this declaration: the canonical unit, the inputs and their versions, the formula version;
+  - a raw type from the collector and the types registry.
+- **Not built yet.** Today a usage SKU declares exactly one metering unit, and Products has no formula store
+  (`gears/bss/rating/docs/SEAMS.md` RG2). Building the declaration (storage, authoring, and the read the provider serves) is a
+  separate run. Until then no derived meter can be sold.
+- **Supersedes:**
+  - the PriceBook spec's §3 item 11 disposition ("D — metering's concern") for derived meters; level aggregation stays
+    Rating's (rating T-D-17);
+  - Rating's "declared and delivered by the pricing gear (Slice 10)": that legacy pricing gear is gone (pricing D-423).
+
+**Source:** Owner, 2026-10-01 (asked who should compute a cloudlet from RAM and CPU usage; chose "Products declares, Rating
+evaluates, the usage collector stays raw").
+
+**Amendment (2026-10-01, the implementation plan review; approved by the owner).**
+- **Exact inputs.** An input is a GTS usage type id, and its version segment is the exact version.
+- **The input folds.** The declaration states each input's granule fold (`Sum`, `Peak`, `TimeWeighted`), because no raw meter
+  declaration exists to read it from.
+- **Granules.** The formula applies per granule (an hour), and a window's output is the sum of its granule outputs.
+- **The pricing reference.** In pricing, the meter is named by the SKU's own ref word for word:
+  `products.derived/<code>@<n>`, version `<n>`.
+- **The pin.** A usage SKU's derived ref is fixed at its first publish. A new formula version is sold through a new SKU, as a
+  usage chain's metering is fixed (pricing D-402).
+
+#### P-D-248 [H] A retire under review keeps the SKU's lifecycle
+
+**Status:** DECIDED 2026-10-01.
+
+`retiring` is not a SKU lifecycle. While a `sku_retire` unit is in review the SKU keeps `published` or `deprecated` and `retire_pending` is true, the twin of `type_change_pending`. Apply sets `retired` and clears the flag. Reject, withdraw, `POST /skus/{id}/unfence` and the orphan-fence recovery clear the flag and do not change the lifecycle. Migration `m20261001_000011_sku_lifecycle_honesty` adds the flag, converts a stored `retiring` row to `lifecycle = fence_prior_lifecycle` with the flag set, drops `fence_prior_lifecycle`, and tightens the lifecycle CHECK to draft, published, deprecated and retired. On SQLite it rebuilds the whole `m000007` family. A new reservation on a retire-pending SKU is `SKU_FENCED`. The counts drop `retiring`. `$filter` gains `retire_pending`. `lifecycle eq 'retiring'` is 400. The history maps a legacy `retiring` token at read time, on the raw strings before `Lifecycle::parse`, so the tab never shows it and the read is never a 500. New acts record the move they serve: a retire submit, reject, withdraw, unfence or expiry is no move, and an apply is `L → retired`.
+
+Pricing reads `retire_pending` instead of a `retiring` lifecycle. An entry or item create answers `SKU_RETIRING`. The revision checks answer `ITEM_SKU_UNAVAILABLE`. A lost reference is not re-reserved.
+
+**Source:** Owner, 2026-10-01 ("давай уберем этот статус и сделаем что он еще не retired пока не согласовали а сохраняется старый статус"). Phase 9 plan rev 4, run 9.8d. Amends P-D-189, P-D-208, P-D-211 and P-D-213.
+
+#### P-D-249 [H] A lifecycle change honours its date
+
+**Status:** DECIDED 2026-10-01.
+
+A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and `lifecycle_next_from` and leaves `lifecycle` as it is. A change dated today or earlier sets `lifecycle` now. The lifecycle in force on a day is `lifecycle_next` when `lifecycle_next_from` has arrived, otherwise `lifecycle`. One Rust function, `effective_lifecycle`, serves the SDK `Sku.lifecycle` and `SkuDto.lifecycle`. One SQL `CASE`, bound to the gear clock's today, serves the list filter, the counts and the other lifecycle predicates. `SkuDto.lifecycle_next` is `{ lifecycle, from }`, null when none is pending. A later change replaces a pending next, or clears it when the target is the lifecycle in force. A retire apply clears it. The first statement of a head write folds a due next into `lifecycle`, so `set_lifecycle` sees the lifecycle in force. A read does not depend on that fold. The same migration as P-D-248 adds the two columns. They are both null or both set, and a next lifecycle is never `retired`.
+
+**Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.

@@ -38,13 +38,17 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(
         tokens!(ProductsLifecycle),
-        ["draft", "published", "deprecated", "retiring", "retired"]
+        ["draft", "published", "deprecated", "retired"]
     );
     assert_eq!(tokens!(ProductsBillingTiming), ["advance", "arrears"]);
     assert_eq!(tokens!(ProductsCategoryStatus), ["active", "retired"]);
     assert_eq!(
         tokens!(ProductsUnitState),
         ["pending", "approved", "rejected", "withdrawn"]
+    );
+    assert_eq!(
+        tokens!(ProductsApprovalKind),
+        ["sku_publish", "sku_change", "sku_retire"]
     );
     assert_eq!(tokens!(ProductsDecisionKind), ["approve", "reject"]);
     assert_eq!(
@@ -92,7 +96,6 @@ fn a_mapped_set_carries_the_source_token() {
             Lifecycle::Draft,
             Lifecycle::Published,
             Lifecycle::Deprecated,
-            Lifecycle::Retiring,
             Lifecycle::Retired,
         ],
         ProductsLifecycle::ALL,
@@ -136,6 +139,17 @@ fn a_mapped_set_carries_the_source_token() {
         ProductsDecisionKind::ALL,
         ProductsDecisionKind::as_str,
     );
+}
+
+/// The approval kind carries the domain's own token for every kind (P-D-227).
+#[test]
+fn the_approval_kind_carries_the_domain_token() {
+    assert_eq!(ApprovalKind::ALL.len(), ProductsApprovalKind::ALL.len());
+    for kind in ApprovalKind::ALL {
+        assert_eq!(ProductsApprovalKind::from(kind).as_str(), kind.as_str());
+        assert_eq!(ApprovalKind::parse(kind.as_str()), Some(kind));
+    }
+    assert_eq!(ApprovalKind::parse("promotion"), None);
 }
 
 /// A stored token outside its set is `CorruptRow` naming the row and the token: never a panic,

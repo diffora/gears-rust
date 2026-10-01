@@ -47,7 +47,9 @@
 //! (paid), storage (paid) and legacy (included, a SKU Products no longer knows); revision 2
 //! (published 2026-08-20) holds pro (paid, `qty_min` 1), storage (paid), egress (optional),
 //! backup (included, 100 units, no entry), requests, requests-volume and requests-package (paid; each
-//! entry has one model, D-427: graduated, volume, package); revision 3 is a draft. Plan `trial` revision 1 is
+//! entry has one model, D-427: graduated, volume, package); revision 3 is a draft. Those
+//! treatments and quantities are the stored rows of before D-467, as the stand holds them: no
+//! answer shows them any more, and the items resolve by their SKU and entry alone. Plan `trial` revision 1 is
 //! pending and holds egress (paid): an entry a pending revision names (D-428). Products holds pro v1 from 2026-01-01 (GL 4000) and v2 from 2026-10-01 (GL 4100),
 //! and one version each of storage, egress, backup, requests, requests-volume, requests-package and
 //! promo from 2026-01-01. Plan `promo`
@@ -610,7 +612,7 @@ impl Writer<'_> {
         quantities: (Option<&str>, Option<i32>),
     ) {
         let id = self.names.mint(name);
-        plan_item_repo::insert(
+        plan_item_repo::insert_as_given(
             &self.f.db.conn().unwrap(),
             &self.scope,
             plan_item::Model {
@@ -1937,13 +1939,15 @@ pub async fn document(w: &World, golden: &str) -> Value {
     json!({ "golden": golden, "proves": proves, "exchanges": exchanges })
 }
 
-/// Drop what an authoring read computes from today (D-440): the entry reads' `current_price` and
-/// their approved prices by date (`scheduled`, `active`, `superseded`). The calendar is fixed and
-/// a frozen document holds no value of today; `tests/book_reads.rs` pins those fields.
+/// Drop what an authoring read computes from today (D-440, D-472): the entry reads'
+/// `current_price` and `next_price` and their approved prices by date (`scheduled`, `active`,
+/// `superseded`). The calendar is fixed and a frozen document holds no value of today;
+/// `tests/book_reads.rs` pins those fields.
 fn undated(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             fields.remove("current_price");
+            fields.remove("next_price");
             if let Some(Value::Object(prices)) = fields
                 .get_mut("usage")
                 .and_then(|usage| usage.get_mut("prices"))

@@ -1746,3 +1746,236 @@ async fn an_override_is_reset_to_the_default_under_if_match() {
         .collect();
     assert_eq!(actions, ["approval_policy.write", "approval_policy.reset"]);
 }
+
+/// D-464: publish-changes takes an optional `note` beside its selection, stored on the unit as
+/// `submit_note`; absent or null, none. A note over 2000 characters is 400 `NOTE_TOO_LONG`, judged
+/// before any read (a book the tenant does not hold answers it too), with nothing written. The
+/// single price's submit still takes no note: its body stays empty (400 `BODY_UNEXPECTED`).
+#[tokio::test]
+async fn publish_changes_carries_the_submitters_note_and_a_price_submit_none() {
+    let g = gov(1).await;
+    let path = format!("/price-books/{}/publish-changes", g.book);
+    let price = g.draft("one", body("2031-05-01")).await;
+    let (s, b, _) =
+        g.f.call(
+            "POST",
+            &format!("/prices/{}/submit", price[0]["id"].as_str().unwrap()),
+            json!({"note":"why"}),
+            None,
+            Some("price-noted"),
+        )
+        .await;
+    assert_eq!(s, 400, "{b}");
+    assert!(code(&b).contains("BODY_UNEXPECTED"), "{b}");
+    let too_long = json!({"note":"\u{e9}".repeat(2001)});
+    for (key, target) in [
+        ("over", path.clone()),
+        (
+            "over-unknown",
+            format!("/price-books/{}/publish-changes", Uuid::new_v4()),
+        ),
+    ] {
+        let (s, b, _) =
+            g.f.call("POST", &target, too_long.clone(), None, Some(key))
+                .await;
+        assert_eq!(s, 400, "{key}: {b}");
+        assert!(code(&b).contains("NOTE_TOO_LONG"), "{key}: {b}");
+    }
+    assert_eq!(
+        g.price(&price[0]["id"]).await.state,
+        "draft",
+        "nothing written"
+    );
+    let (s, receipt, _) =
+        g.f.call(
+            "POST",
+            &path,
+            json!({"note":"the May price"}),
+            None,
+            Some("noted"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["unit"]["submit_note"], "the May price");
+    assert_eq!(
+        g.card(&receipt["unit"]).await["submit_note"],
+        "the May price"
+    );
+    let second = g.draft("two", body("2031-06-01")).await;
+    let (s, receipt, _) =
+        g.f.call(
+            "POST",
+            &path,
+            json!({"price_ids":[second[0]["id"]],"note":null}),
+            None,
+            Some("null"),
+        )
+        .await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(receipt["unit"]["submit_note"], json!(null));
+}
+
+// ------------------------------------------------------------------ whether a reader may approve (D-471)
+
+impl Gov {
+    /// `caller_can_approve` as `who` reads it on the unit's card and in the list, which agree.
+    async fn flag(&self, who: &SecurityContext, unit: &Value) -> bool {
+        let id = unit["id"].as_str().unwrap();
+        let (s, card, _) = self
+            .f
+            .call_as(
+                who,
+                "GET",
+                &format!("/approval-units/{id}"),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{card}");
+        let (s, list, _) = self
+            .f
+            .call_as(
+                who,
+                "GET",
+                &format!("/approval-units?book_id={}", self.book),
+                json!({}),
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(s, 200, "{list}");
+        let listed = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == unit["id"])
+            .unwrap()
+            .clone();
+        let flag = card["caller_can_approve"].as_bool().expect("a boolean");
+        assert_eq!(
+            listed["caller_can_approve"].as_bool(),
+            Some(flag),
+            "the list and the card agree: {listed} {card}"
+        );
+        flag
+    }
+    /// Refresh the unit to `generation` as the engine's stale refresh does, over its items as
+    /// stored (their fingerprint still holds, so the next vote is not refreshed again): every vote
+    /// of an earlier generation turns stale.
+    async fn refreshed(&self, unit: &Value, generation: i32) {
+        use bss_approval::Store;
+        use bss_pricing::infra::storage::{RepoError, repo::approval_repo::PricingApprovalStore};
+        let id: Uuid = unit["id"].as_str().unwrap().parse().unwrap();
+        let tenant = self.f.ctx.subject_tenant_id();
+        let store = PricingApprovalStore {
+            scope: AccessScope::for_tenant(tenant),
+            tenant_id: tenant,
+        };
+        price_repo::transaction(&self.f.db.db(), move |tx| {
+            let store = store.clone();
+            Box::pin(async move {
+                let failed = |e: bss_approval::ApprovalError| RepoError::Db(e.to_string());
+                let stored = store.unit(tx, id).await.map_err(failed)?.unwrap();
+                let items = store.items(tx, id).await.map_err(failed)?;
+                let hash = bss_approval::hash::snapshot_hash(&items, stored.common_effective_date);
+                store
+                    .refresh(tx, id, &items, &stored.snapshot, &hash, generation)
+                    .await
+                    .map_err(failed)
+            })
+        })
+        .await
+        .unwrap();
+    }
+}
+
+/// D-471 (ask 28, plan W2): every unit read says whether its reader may approve the unit,
+/// judged by the approval library's own predicate over the unit's stored items and its decisions
+/// (D-459), so the flag is what the vote door answers that reader on the same rows: false for an
+/// item's author and the submitter (separation of duties), for a reviewer who voted in the current
+/// generation and for anyone on a decided unit; true for a fresh reviewer and for one whose vote a
+/// refresh made stale. The card and the list agree, and the receipts answer their caller's flag.
+#[tokio::test]
+async fn caller_can_approve_is_what_the_vote_door_answers_each_reader() {
+    let g = gov(3).await;
+    let author = g.f.ctx.clone();
+    let (submitter, prior, fresh, stale) = (g.f.user(), g.f.user(), g.f.user(), g.f.user());
+    let price = &g.draft_as(&author, "a", body("2031-03-01")).await[0];
+    let (s, receipt, _) = g.submit_as(&submitter, price, "submit").await;
+    assert_eq!(s, 201, "{receipt}");
+    assert_eq!(
+        receipt["unit"]["caller_can_approve"], false,
+        "the submitter's receipt"
+    );
+    let unit = receipt["unit"].clone();
+    let (s, b, _) = g
+        .vote(&stale, &unit, "approve", json!({"generation":1}), "stale-1")
+        .await;
+    assert_eq!((s, b["have"].clone()), (200, json!(1)), "{b}");
+    assert_eq!(b["unit"]["caller_can_approve"], false, "a voter's receipt");
+    assert!(
+        g.flag(&fresh, &unit).await,
+        "a fresh reviewer before the refresh"
+    );
+    g.refreshed(&unit, 2).await;
+    let (s, b, _) = g
+        .vote(&prior, &unit, "approve", json!({"generation":2}), "prior-2")
+        .await;
+    assert_eq!((s, b["have"].clone()), (200, json!(1)), "{b}");
+    for (who, name, status, answer) in [
+        (&author, "an item's author", 403, "SOD_VIOLATION"),
+        (&submitter, "the submitter", 403, "SOD_VIOLATION"),
+        (&prior, "a voter of this generation", 409, "DUPLICATE_VOTE"),
+        (&fresh, "a fresh reviewer", 200, "pending"),
+        (&stale, "a voter of an earlier generation", 200, "applied"),
+    ] {
+        let flag = g.flag(who, &unit).await;
+        let (s, b, _) = g
+            .vote(who, &unit, "approve", json!({"generation":2}), name)
+            .await;
+        assert_eq!(flag, s == 200, "{name}: the flag {flag}, the door {s}: {b}");
+        assert_eq!(s, status, "{name}: {b}");
+        if s == 200 {
+            assert_eq!(b["outcome"], answer, "{name}: {b}");
+        } else {
+            assert!(code(&b).contains(answer), "{name}: {b}");
+        }
+    }
+    let late = g.f.user();
+    for who in [&late, &fresh, &author] {
+        assert!(!g.flag(who, &unit).await, "a decided unit");
+    }
+    let (s, b, _) = g
+        .vote(&late, &unit, "approve", json!({"generation":2}), "late")
+        .await;
+    assert_eq!(s, 409, "{b}");
+    assert!(code(&b).contains("UNIT_ALREADY_DECIDED"), "{b}");
+}
+
+/// D-471 (plan review M2): the flag is about Approve only. The engine's reject judges no
+/// separation of duties, so the submitter and an item's author may reject a unit that their flag
+/// says they may not approve.
+#[tokio::test]
+async fn the_submitter_rejects_what_the_flag_says_they_may_not_approve() {
+    let g = gov(1).await;
+    let author = g.f.ctx.clone();
+    let submitter = g.f.user();
+    let price = &g.draft_as(&author, "a", body("2031-03-01")).await[0];
+    let (s, receipt, _) = g.submit_as(&submitter, price, "submit").await;
+    assert_eq!(s, 201, "{receipt}");
+    let unit = receipt["unit"].clone();
+    assert!(!g.flag(&submitter, &unit).await);
+    assert!(!g.flag(&author, &unit).await);
+    let (s, b, _) = g
+        .vote(
+            &submitter,
+            &unit,
+            "reject",
+            json!({"generation":1,"note":"not yet"}),
+            "reject",
+        )
+        .await;
+    assert_eq!(s, 200, "{b}");
+    assert_eq!(b["outcome"], "rejected", "{b}");
+}

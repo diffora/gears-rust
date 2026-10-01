@@ -324,7 +324,7 @@ impl PlansReading {
             .collect();
         let siblings = plan_revision_repo::for_plans(tx, &scope, tenant, &plans).await?;
         let effective: BTreeMap<Uuid, &'static str> =
-            crate::api::rest::authoring::dto::effective_revisions(&siblings, today)?
+            super::plan_revisions::effective_revisions(&siblings, today)?
                 .into_iter()
                 .map(|e| (e.id, e.state.as_str()))
                 .collect();

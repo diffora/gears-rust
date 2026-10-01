@@ -16,7 +16,8 @@ use toolkit_odata::filter::{
     FieldKind, FilterError, FilterField, FilterNode, FilterOp, ODataValue, parse_odata_filter,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 enum Field {
     Name,
     Count,
@@ -43,17 +44,7 @@ impl FilterField for Field {
     ];
 
     fn name(&self) -> &'static str {
-        match self {
-            Self::Name => "name",
-            Self::Count => "count",
-            Self::Ratio => "ratio",
-            Self::Flag => "flag",
-            Self::Parent => "parent",
-            Self::At => "at",
-            Self::Day => "day",
-            Self::Clock => "clock",
-            Self::Amount => "amount",
-        }
+        self.into()
     }
 
     fn kind(&self) -> FieldKind {
@@ -75,6 +66,7 @@ impl FilterField for Field {
     }
 }
 
+/// A nullable field of every kind admits `eq null` and `ne null`.
 #[test]
 fn eq_and_ne_null_are_accepted_on_every_kind() {
     for field in Field::FIELDS {
@@ -97,6 +89,7 @@ fn eq_and_ne_null_are_accepted_on_every_kind() {
     }
 }
 
+/// Null equality combines with other terms under `and` / `or`.
 #[test]
 fn null_equality_composes_with_other_terms() {
     let node = parse_odata_filter::<Field>("parent eq null and not (name ne null) or count gt 2")
@@ -110,6 +103,7 @@ fn null_equality_composes_with_other_terms() {
     ));
 }
 
+/// `lt`/`le`/`gt`/`ge` with `null` are refused.
 #[test]
 fn ordering_comparisons_with_null_are_refused() {
     for field in Field::FIELDS {
@@ -125,6 +119,7 @@ fn ordering_comparisons_with_null_are_refused() {
     }
 }
 
+/// `null` inside `in (...)` is refused.
 #[test]
 fn null_inside_in_is_refused() {
     for filter in [
@@ -141,6 +136,7 @@ fn null_inside_in_is_refused() {
     }
 }
 
+/// A nullable field still refuses a value of another kind.
 #[test]
 fn a_value_of_another_kind_is_still_a_type_mismatch() {
     for filter in ["parent eq 'x'", "count eq 'x'", "flag eq 1", "name eq 3"] {
@@ -156,7 +152,8 @@ fn a_value_of_another_kind_is_still_a_type_mismatch() {
 /// equality existed, and every field `ODataFilterable` derives — always has a value: `null` is
 /// refused on it as a value outside its kind, exactly as before null equality existed, with every
 /// operator and inside `in`. Its consumers (an `IdP` plugin matching users, say) never see `null`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 enum Plain {
     Name,
     Id,
@@ -167,11 +164,7 @@ impl FilterField for Plain {
     const FIELDS: &'static [Self] = &[Self::Name, Self::Id, Self::Count];
 
     fn name(&self) -> &'static str {
-        match self {
-            Self::Name => "name",
-            Self::Id => "id",
-            Self::Count => "count",
-        }
+        self.into()
     }
 
     fn kind(&self) -> FieldKind {
@@ -183,6 +176,7 @@ impl FilterField for Plain {
     }
 }
 
+/// A field that does not opt in refuses `null` with the same type mismatch as before.
 #[test]
 fn a_field_that_always_has_a_value_refuses_null_as_a_type_mismatch() {
     for field in Plain::FIELDS {

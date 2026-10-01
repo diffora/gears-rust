@@ -26,12 +26,19 @@ use crate::{
     },
 };
 use axum::{
-    http::StatusCode,
+    extract::Query,
+    http::{StatusCode, Uri},
     response::{IntoResponse, Response},
 };
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::secure::{AccessScope, DBRunner};
+use toolkit_odata::{
+    CursorV1, ODataOrderBy, OrderKey, PageInfo, SortDir,
+    filter::{FieldKind, FilterField},
+};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 pub(super) async fn find(
@@ -84,7 +91,7 @@ pub(super) async fn stored(
         tenant,
         endpoint,
         key,
-        time::OffsetDateTime::now_utc(),
+        crate::infra::storage::stored_now(),
     )
     .await
     .map_err(DoorError::from)?
@@ -178,7 +185,7 @@ pub(super) async fn create(
         );
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
-            let now = time::OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let receipt_scope = AccessScope::for_tenant(tenant);
             let claim = idem::claim_idempotency_key(
                 tx,
@@ -275,7 +282,7 @@ pub(super) async fn patch(
         }
         m.invoice_line_override = template;
     }
-    m.updated_at = time::OffsetDateTime::now_utc();
+    m.updated_at = crate::infra::storage::stored_now();
     price_book_entry_repo::update(tx, scope, m.clone()).await?;
     m.version += 1;
     support::audit(
@@ -368,7 +375,7 @@ pub(super) async fn delete(
                 OpKind::Delete,
                 Some(m.reservation_id),
                 None,
-                time::OffsetDateTime::now_utc(),
+                crate::infra::storage::stored_now(),
             )?;
             let op_id = op.op_id;
             price_book_entry_repo::delete_empty(tx, &scope, tenant, id, m.version).await?;
@@ -401,48 +408,85 @@ pub(super) async fn delete(
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
-/// The default chain's approved price in force on `today` of each of `entries` (D-434, D-440): no
-/// dimension value, started on or before the day and not ended, chosen as resolve chooses a price
-/// in force (the latest start, then the latest version), from ONE read of the entries' approved
-/// default-chain prices; an entry with none has no key. The caller has judged whose money it may
-/// show: every entry given is shown.
+/// The two prices an entry read headlines (D-440, D-472), each `None` when there is none.
+#[derive(Default)]
+pub(super) struct Headline {
+    /// The default chain's approved price in force on the day.
+    pub current: Option<super::dto::PricingPriceDto>,
+    /// The default chain's next price after the day (`domain::price::next_of`).
+    pub next: Option<super::dto::PricingPriceDto>,
+}
+/// A stored default-chain price as the next-price rule reads it.
+fn chain_price(p: &entity::price::Model) -> Result<crate::domain::price::ChainPrice, DoorError> {
+    Ok(crate::domain::price::ChainPrice {
+        id: p.id,
+        state: p.state.parse::<PriceState>().map_err(|_| {
+            crate::infra::storage::RepoError::CorruptRow(format!(
+                "price {} state {}",
+                p.id, p.state
+            ))
+        })?,
+        effective_from: p.effective_from,
+        version_no: p.version_no,
+        created_at: p.created_at,
+    })
+}
+/// The headline prices of each of `entries` on `day` (D-434, D-440, D-472), from ONE read of the
+/// entries' default-chain approved, pending and draft prices (no dimension value, never a
+/// rejected price): the price in force — started on or before the day and not ended, chosen as
+/// resolve chooses a price in force (the latest start, then the latest version) — and the next
+/// price (`domain::price::next_of`), each with its status on the day; an entry with neither has
+/// no key. The door maps the rows; both choices are the domain's. The caller has judged whose
+/// money it may show: every entry given is shown.
 /// # Errors
 /// Storage failures; a stored token outside its closed set is a corrupt row.
-pub(super) async fn in_force(
+pub(super) async fn headline(
     tx: &impl DBRunner,
     tenant: Uuid,
     entries: &[&entity::price_book_entry::Model],
-    today: time::Date,
-) -> Result<std::collections::BTreeMap<Uuid, super::dto::PricingPriceDto>, DoorError> {
+    day: time::Date,
+) -> Result<std::collections::BTreeMap<Uuid, Headline>, DoorError> {
     use crate::infra::storage::RepoError;
     let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
     let stored =
-        price_repo::approved_default_chain(tx, &AccessScope::for_tenant(tenant), tenant, &ids)
-            .await?;
+        price_repo::default_chain(tx, &AccessScope::for_tenant(tenant), tenant, &ids).await?;
     // Each entry's chain by key, grouped once: linear in the book, not entries x prices (PS-38).
     let mut chains: std::collections::BTreeMap<Uuid, Vec<&entity::price::Model>> =
         std::collections::BTreeMap::new();
     for p in &stored {
         chains.entry(p.price_book_entry_id).or_default().push(p);
     }
-    let mut current = std::collections::BTreeMap::new();
+    let mut out = std::collections::BTreeMap::new();
     for e in entries {
         let model = price_book_entry_repo::model_of(e)?;
         let chain: Vec<&entity::price::Model> = chains.get(&e.id).cloned().unwrap_or_default();
-        let prices = chain
+        // Only the approved prices are decoded: they alone can be in force.
+        let approved = chain
             .iter()
+            .filter(|p| p.state == PriceState::Approved.as_str())
             .map(|p| price_repo::to_domain(p, model))
             .collect::<Result<Vec<_>, RepoError>>()?;
-        if let Some(found) = crate::domain::price::own_version_at(&prices, e.id, today, None)
-            && let Some(row) = chain.into_iter().find(|p| p.id == found.id)
-        {
-            current.insert(
-                e.id,
-                super::dto::PricingPriceDto::at(row.clone(), &e.model, today)?,
-            );
+        let current = crate::domain::price::own_version_at(&approved, e.id, day, None)
+            .and_then(|found| chain.iter().find(|p| p.id == found.id));
+        let shown = |p: Option<&&entity::price::Model>| {
+            p.map(|p| super::dto::PricingPriceDto::at((*p).clone(), &e.model, day))
+                .transpose()
+        };
+        let views = chain
+            .iter()
+            .map(|p| chain_price(p))
+            .collect::<Result<Vec<_>, DoorError>>()?;
+        let next = crate::domain::price::next_of(&views, day)
+            .and_then(|found| chain.iter().find(|p| p.id == found.id));
+        let found = Headline {
+            current: shown(current)?,
+            next: shown(next)?,
+        };
+        if found.current.is_some() || found.next.is_some() {
+            out.insert(e.id, found);
         }
     }
-    Ok(current)
+    Ok(out)
 }
 /// Whether the caller's `price_book` read — `books`, or `None` without that grant — admits the
 /// tenant's `book`: the money's second judgement (D-434), ONE read.
@@ -460,8 +504,9 @@ pub(super) async fn shows_money(
     })
 }
 /// `GET /price-book-entries/{id}` and each item of `GET /price-books/{id}/entries` (D-428,
-/// D-440): the entries with their usage and, when `shown`, their price in force — dated on
-/// `today`, in a fixed number of statements whatever their number.
+/// D-440, D-472): the entries with their usage and, when `shown`, their price in force and their
+/// next price — all dated on `day`, today or the list's `as_of` (D-473), in a fixed number of
+/// statements whatever their number.
 /// # Errors
 /// Storage failures; a stored token outside its closed set is a corrupt row.
 pub(super) async fn read(
@@ -469,24 +514,27 @@ pub(super) async fn read(
     tenant: Uuid,
     entries: Vec<entity::price_book_entry::Model>,
     shown: bool,
-    today: time::Date,
+    day: time::Date,
 ) -> Result<Vec<super::dto::PricingPriceBookEntryReadDto>, DoorError> {
     let ids: Vec<Uuid> = entries.iter().map(|m| m.id).collect();
-    let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, today).await?;
-    let mut current = if shown {
-        in_force(tx, tenant, &entries.iter().collect::<Vec<_>>(), today).await?
+    let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, day).await?;
+    let mut headlines = if shown {
+        headline(tx, tenant, &entries.iter().collect::<Vec<_>>(), day).await?
     } else {
         std::collections::BTreeMap::new()
     };
     entries
         .into_iter()
         .map(|m| {
-            let (counted, price) = (
+            let (counted, prices) = (
                 usage.remove(&m.id).unwrap_or_default(),
-                current.remove(&m.id),
+                headlines.remove(&m.id).unwrap_or_default(),
             );
             Ok(super::dto::PricingPriceBookEntryReadDto::of(
-                m, counted, price,
+                m,
+                counted,
+                prices.current,
+                prices.next,
             )?)
         })
         .collect()
@@ -535,26 +583,29 @@ pub(super) async fn prices(
     }
     Ok(super::dto::PricingEntryPriceList { items })
 }
-/// `GET /price-book-entries?sku_id=` (D-434): the tenant's entries of one SKU across its books,
-/// each with its book's code, name and currency, its usage (D-428, dated on `today`, D-440), and
-/// the default chain's price in force today when `books` — the scope the caller's `price_book`
-/// read gives, or `None` without that grant — admits the entry's book. The entries are read under
-/// the caller's entry scope, the books' names and the usage tenant-scoped (facts of an entry the
-/// caller may read). A fixed number of set-based statements, whatever the number of entries; an
-/// unknown SKU is an empty list, never a 404 (pricing does not know which SKUs exist).
+/// `GET /price-book-entries?sku_id=` (D-434, D-486): the tenant's entries of one SKU across its
+/// books, each with its book's code, name and currency, its usage (D-428, dated on `today`,
+/// D-440), its status and changing on that day, and the default chain's price in force today and
+/// its next price (D-472) when `books` — the scope the caller's `price_book` read gives, or
+/// `None` without that grant — admits the entry's book. The entries are read under the caller's
+/// entry scope, the books' names and the usage tenant-scoped (facts of an entry the caller may
+/// read). Narrowing, order and the page are applied in memory, so the read stays a fixed number
+/// of set-based statements whatever the number of entries; an unknown SKU is an empty list, never
+/// a 404 (pricing does not know which SKUs exist).
 /// # Errors
-/// Storage failures; an entry whose book is gone is a corrupt row.
+/// Storage failures; an entry whose book is gone is a corrupt row. A cursor the page refuses is
+/// 400, judged before this read.
 pub(super) async fn for_sku(
     tx: &impl DBRunner,
     scope: &AccessScope,
     books: Option<&AccessScope>,
     tenant: Uuid,
-    sku: Uuid,
+    query: &SkuEntriesQuery,
     today: time::Date,
 ) -> Result<super::dto::PricingSkuEntryList, DoorError> {
     use crate::infra::storage::RepoError;
     use std::collections::{BTreeMap, BTreeSet};
-    let entries = price_book_entry_repo::for_skus(tx, scope, tenant, &[sku]).await?;
+    let entries = price_book_entry_repo::for_skus(tx, scope, tenant, &[query.sku]).await?;
     let book_ids: Vec<Uuid> = entries
         .iter()
         .map(|e| e.book_id)
@@ -571,7 +622,7 @@ pub(super) async fn for_sku(
     let ids: Vec<Uuid> = entries.iter().map(|e| e.id).collect();
     let mut usage = crate::infra::usage::entry_usage(tx, tenant, &ids, today).await?;
     // The money: only the entries whose book the caller's price_book read admits.
-    let mut current = if let Some(books) = books {
+    let mut headlines = if let Some(books) = books {
         let readable: BTreeSet<Uuid> = book_repo::find_many(tx, books, tenant, &book_ids)
             .await?
             .into_iter()
@@ -581,7 +632,7 @@ pub(super) async fn for_sku(
             .iter()
             .filter(|e| readable.contains(&e.book_id))
             .collect();
-        in_force(tx, tenant, &shown, today).await?
+        headline(tx, tenant, &shown, today).await?
     } else {
         BTreeMap::new()
     };
@@ -590,32 +641,513 @@ pub(super) async fn for_sku(
         let book = named.get(&e.book_id).ok_or_else(|| {
             RepoError::CorruptRow(format!("entry {} names lost book {}", e.id, e.book_id))
         })?;
-        let current_price = current.remove(&e.id);
-        let entry_usage = usage.remove(&e.id).unwrap_or_default().into();
+        let prices = headlines.remove(&e.id).unwrap_or_default();
+        let entry_usage: super::dto::PricingEntryUsage =
+            usage.remove(&e.id).unwrap_or_default().into();
+        let (status, changing) = standing(&entry_usage.prices);
         items.push(super::dto::PricingSkuEntryDto {
             entry: e.try_into()?,
             book_code: book.code.clone(),
             book_name: book.name.clone(),
             currency: book.currency.clone(),
             usage: entry_usage,
-            current_price,
+            status,
+            changing,
+            current_price: prices.current,
+            next_price: prices.next,
         });
     }
-    items.sort_by(|a, b| sku_entry_order(a).cmp(&sku_entry_order(b)));
-    Ok(super::dto::PricingSkuEntryList { items })
+    page_entries(items, query)
 }
-/// The order of a SKU's entries (D-434): book code, then the stored tokens of charge kind, period
-/// and model, then id.
-fn sku_entry_order(
-    i: &super::dto::PricingSkuEntryDto,
-) -> (&str, &'static str, &'static str, &'static str, Uuid) {
-    (
-        &i.book_code,
-        i.entry.charge_kind.as_str(),
-        i.entry
-            .period
-            .map_or("", crate::api::rest::closed_sets::PricingPeriod::as_str),
-        i.entry.model.as_str(),
-        i.entry.id,
-    )
+
+/// The fields `$orderby` may name (D-486). `id` is the tie-break, not a client key, so it is not
+/// declared here. `.with_odata_orderby` publishes the list; the door parses with `parse_orderby`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum SkuEntryOrderField {
+    BookName,
+    Status,
+}
+impl FilterField for SkuEntryOrderField {
+    const FIELDS: &'static [Self] = &[Self::BookName, Self::Status];
+    fn name(&self) -> &'static str {
+        match self {
+            Self::BookName => "book_name",
+            Self::Status => "status",
+        }
+    }
+    fn kind(&self) -> FieldKind {
+        FieldKind::String
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS
+            .iter()
+            .copied()
+            .find(|field| field.name() == name)
+    }
+}
+
+/// A parsed `GET /price-book-entries` (D-486). Every refusal is already judged.
+#[derive(Clone)]
+pub(super) struct SkuEntriesQuery {
+    sku: Uuid,
+    book_ids: Option<BTreeSet<Uuid>>,
+    currency: Option<String>,
+    q: Option<String>,
+    statuses: Option<Vec<crate::api::rest::closed_sets::PricingSkuEntryStatus>>,
+    changing: Option<bool>,
+    limit: u64,
+    order: ODataOrderBy,
+    cursor: Option<CursorV1>,
+    hash: String,
+}
+
+const PAGE_DEFAULT: u64 = 500;
+const PLAIN_KEYS: &[&str] = &[
+    "sku_id", "book_id", "currency", "q", "status", "changing", "limit", "cursor",
+];
+
+/// The query of `GET /price-book-entries` (D-486), judged before any read. `$orderby` beside a
+/// cursor is 400 `ORDER_WITH_CURSOR` before the cursor is decoded. A `$filter`, `$select`,
+/// `$count` or any other key this read does not take is 400 `QUERY_INVALID`.
+/// # Errors
+/// 400 `QUERY_INVALID`, `INVALID_ORDERBY_FIELD`, `ORDER_WITH_CURSOR`, `FILTER_MISMATCH` or
+/// `INVALID_CURSOR`.
+pub(super) fn sku_entries_query(uri: &Uri) -> Result<SkuEntriesQuery, CanonicalError> {
+    let Query(pairs) = Query::<Vec<(String, String)>>::try_from_uri(uri)
+        .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    let mut seen: Vec<&str> = Vec::new();
+    for (key, _) in &pairs {
+        let key = key.as_str();
+        if key != "$orderby" && !PLAIN_KEYS.contains(&key) {
+            return Err(support::invalid_because(
+                key,
+                "QUERY_INVALID",
+                &format!("`{key}` is not a parameter of this read"),
+            ));
+        }
+        if seen.contains(&key) {
+            return Err(support::invalid_because(
+                key,
+                "QUERY_INVALID",
+                &format!("`{key}` is given more than once"),
+            ));
+        }
+        seen.push(key);
+    }
+    if seen.contains(&"cursor") && seen.contains(&"$orderby") {
+        return Err(toolkit_odata::Error::OrderWithCursor.into());
+    }
+    let value = |name: &str| {
+        pairs
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, raw)| raw.as_str())
+    };
+    let sku = value("sku_id").ok_or_else(|| {
+        support::invalid_because("sku_id", "QUERY_INVALID", "`sku_id` is required")
+    })?;
+    let sku = Uuid::parse_str(sku)
+        .map_err(|_| support::invalid_because("sku_id", "QUERY_INVALID", "`sku_id` is a SKU id"))?;
+    let book_ids = value("book_id").map(book_ids).transpose()?;
+    let currency = value("currency").map(currency_key).transpose()?;
+    let q = value("q")
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned);
+    let statuses = value("status").map(status_keys).transpose()?;
+    let changing = value("changing").map(changing_key).transpose()?;
+    let limit = value("limit")
+        .map(|raw| {
+            raw.parse::<u64>().map_err(|_| {
+                support::invalid_because("limit", "QUERY_INVALID", "`limit` is a page size")
+            })
+        })
+        .transpose()?;
+    let hash = narrowing_hash(
+        sku,
+        book_ids.as_ref(),
+        currency.as_deref(),
+        q.as_deref(),
+        statuses.as_deref(),
+        changing,
+    )?;
+    let (order, cursor) = match value("cursor") {
+        Some(token) => {
+            let cursor = CursorV1::decode(token).map_err(CanonicalError::from)?;
+            if cursor.f.as_deref() != Some(hash.as_str()) {
+                return Err(toolkit_odata::Error::FilterMismatch.into());
+            }
+            (cursor_order(&cursor)?, Some(cursor))
+        }
+        None => (requested_order(value("$orderby"))?, None),
+    };
+    Ok(SkuEntriesQuery {
+        sku,
+        book_ids,
+        currency,
+        q,
+        statuses,
+        changing,
+        limit: clamp_limit(limit),
+        order,
+        cursor,
+        hash,
+    })
+}
+
+fn book_ids(raw: &str) -> Result<BTreeSet<Uuid>, CanonicalError> {
+    let mut ids = BTreeSet::new();
+    if raw.is_empty() {
+        return Err(support::invalid_because(
+            "book_id",
+            "QUERY_INVALID",
+            "`book_id` is one to 50 price book ids",
+        ));
+    }
+    for token in raw.split(',') {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(support::invalid_because(
+                "book_id",
+                "QUERY_INVALID",
+                "`book_id` is one to 50 price book ids",
+            ));
+        }
+        ids.insert(Uuid::parse_str(token).map_err(|_| {
+            support::invalid_because("book_id", "QUERY_INVALID", "`book_id` is a price book id")
+        })?);
+    }
+    if ids.len() > 50 {
+        return Err(support::invalid_because(
+            "book_id",
+            "QUERY_INVALID",
+            "`book_id` lists at most 50 distinct price book ids",
+        ));
+    }
+    Ok(ids)
+}
+
+fn currency_key(raw: &str) -> Result<String, CanonicalError> {
+    if crate::domain::book::currency_code(raw) {
+        Ok(raw.to_owned())
+    } else {
+        Err(support::invalid_because(
+            "currency",
+            "QUERY_INVALID",
+            "`currency` is three uppercase letters",
+        ))
+    }
+}
+
+fn status_keys(
+    raw: &str,
+) -> Result<Vec<crate::api::rest::closed_sets::PricingSkuEntryStatus>, CanonicalError> {
+    use crate::api::rest::closed_sets::PricingSkuEntryStatus;
+    if raw.is_empty() {
+        return Err(support::invalid_because(
+            "status",
+            "QUERY_INVALID",
+            "`status` is priced, scheduled or unpriced",
+        ));
+    }
+    raw.split(',')
+        .map(|token| {
+            let token = token.trim();
+            PricingSkuEntryStatus::ALL
+                .iter()
+                .copied()
+                .find(|status| status.as_str() == token)
+                .ok_or_else(|| {
+                    support::invalid_because(
+                        "status",
+                        "QUERY_INVALID",
+                        "`status` is priced, scheduled or unpriced",
+                    )
+                })
+        })
+        .collect()
+}
+
+fn changing_key(raw: &str) -> Result<bool, CanonicalError> {
+    match raw {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(support::invalid_because(
+            "changing",
+            "QUERY_INVALID",
+            "`changing` is true or false",
+        )),
+    }
+}
+
+fn clamp_limit(limit: Option<u64>) -> u64 {
+    let mut limit = limit.unwrap_or(PAGE_DEFAULT);
+    if limit == 0 {
+        limit = 1;
+    }
+    limit.min(PAGE_DEFAULT)
+}
+
+fn requested_order(raw: Option<&str>) -> Result<ODataOrderBy, CanonicalError> {
+    let Some(raw) = raw.filter(|text| !text.trim().is_empty()) else {
+        return Ok(order_of("book_name", SortDir::Asc));
+    };
+    let parsed = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    match parsed.0.as_slice() {
+        [] => Ok(order_of("book_name", SortDir::Asc)),
+        [key] if SkuEntryOrderField::from_name(&key.field).is_some() => {
+            Ok(order_of(&key.field, key.dir))
+        }
+        keys => Err(toolkit_odata::Error::InvalidOrderByField(
+            keys.iter()
+                .find(|key| SkuEntryOrderField::from_name(&key.field).is_none())
+                .map_or_else(
+                    || "only one key, book_name or status, is accepted".to_owned(),
+                    |key| key.field.clone(),
+                ),
+        )
+        .into()),
+    }
+}
+
+fn order_of(field: &str, dir: SortDir) -> ODataOrderBy {
+    ODataOrderBy(vec![
+        OrderKey {
+            field: field.to_owned(),
+            dir,
+        },
+        OrderKey {
+            field: "id".to_owned(),
+            dir,
+        },
+    ])
+}
+
+fn cursor_order(cursor: &CursorV1) -> Result<ODataOrderBy, CanonicalError> {
+    let order = ODataOrderBy::from_signed_tokens(&cursor.s)
+        .map_err(|_| CanonicalError::from(toolkit_odata::Error::InvalidCursor))?;
+    let fields_ok = matches!(
+        order.0.as_slice(),
+        [primary, id]
+            if SkuEntryOrderField::from_name(&primary.field).is_some()
+                && id.field == "id"
+                && cursor.k.len() == 2
+    );
+    if fields_ok {
+        Ok(order)
+    } else {
+        Err(toolkit_odata::Error::InvalidCursor.into())
+    }
+}
+
+fn narrowing_hash(
+    sku: Uuid,
+    book_ids: Option<&BTreeSet<Uuid>>,
+    currency: Option<&str>,
+    q: Option<&str>,
+    statuses: Option<&[crate::api::rest::closed_sets::PricingSkuEntryStatus]>,
+    changing: Option<bool>,
+) -> Result<String, CanonicalError> {
+    let book_id = book_ids.map(|ids| {
+        let mut listed: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        listed.sort();
+        listed
+    });
+    let status = statuses.map(|wanted| {
+        let mut listed: Vec<&str> = wanted.iter().map(|status| status.as_str()).collect();
+        listed.sort_unstable();
+        listed.dedup();
+        listed
+    });
+    let digest = crate::api::rest::preconditions::request_digest(&serde_json::json!({
+        "book_id": book_id,
+        "changing": changing,
+        "currency": currency,
+        "q": q,
+        "sku_id": sku,
+        "status": status,
+    }))
+    .map_err(CanonicalError::from)?;
+    Ok(digest
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut hex, byte| {
+            const DIGITS: &[u8; 16] = b"0123456789abcdef";
+            hex.push(char::from(DIGITS[usize::from(byte >> 4)]));
+            hex.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+            hex
+        }))
+}
+
+fn standing(
+    counts: &super::dto::PricingEntryPriceCounts,
+) -> (crate::api::rest::closed_sets::PricingSkuEntryStatus, bool) {
+    use crate::api::rest::closed_sets::PricingSkuEntryStatus;
+    let status = if counts.active > 0 {
+        PricingSkuEntryStatus::Priced
+    } else if counts.scheduled > 0 {
+        PricingSkuEntryStatus::Scheduled
+    } else {
+        PricingSkuEntryStatus::Unpriced
+    };
+    (status, counts.draft > 0 || counts.pending > 0)
+}
+
+fn page_entries(
+    mut items: Vec<super::dto::PricingSkuEntryDto>,
+    query: &SkuEntriesQuery,
+) -> Result<super::dto::PricingSkuEntryList, DoorError> {
+    items.retain(|item| keeps(item, query));
+    items.sort_by(|left, right| cmp_entries(left, right, &query.order));
+    let backward = query
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.d == "bwd");
+    if let Some(cursor) = &query.cursor {
+        items.retain(|item| {
+            let at = position(item, cursor, &query.order);
+            if backward {
+                at == Ordering::Less
+            } else {
+                at == Ordering::Greater
+            }
+        });
+    }
+    let limit = query.limit;
+    let has_more = u64::try_from(items.len()).unwrap_or(u64::MAX) > limit;
+    let keep = usize::try_from(limit).unwrap_or(usize::MAX);
+    if has_more {
+        if backward {
+            items = items.split_off(items.len().saturating_sub(keep));
+        } else {
+            items.truncate(keep);
+        }
+    }
+    let next_cursor = if backward || has_more {
+        items
+            .last()
+            .map(|item| cursor_token(item, &query.order, &query.hash, "fwd"))
+            .transpose()?
+    } else {
+        None
+    };
+    let prev_cursor = if query.cursor.is_some() && (!backward || has_more) {
+        items
+            .first()
+            .map(|item| cursor_token(item, &query.order, &query.hash, "bwd"))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(super::dto::PricingSkuEntryList {
+        items,
+        page_info: PageInfo {
+            next_cursor,
+            prev_cursor,
+            limit,
+        },
+    })
+}
+
+fn keeps(item: &super::dto::PricingSkuEntryDto, query: &SkuEntriesQuery) -> bool {
+    if query
+        .book_ids
+        .as_ref()
+        .is_some_and(|ids| !ids.contains(&item.entry.book_id))
+    {
+        return false;
+    }
+    if query
+        .currency
+        .as_ref()
+        .is_some_and(|currency| item.currency != *currency)
+    {
+        return false;
+    }
+    if let Some(text) = query.q.as_deref() {
+        let needle = fold(text);
+        if !fold(&item.book_code).contains(&needle) && !fold(&item.book_name).contains(&needle) {
+            return false;
+        }
+    }
+    if query
+        .statuses
+        .as_ref()
+        .is_some_and(|wanted| !wanted.contains(&item.status))
+    {
+        return false;
+    }
+    query
+        .changing
+        .is_none_or(|changing| item.changing == changing)
+}
+
+fn fold(text: &str) -> String {
+    text.to_lowercase()
+}
+
+fn cmp_entries(
+    left: &super::dto::PricingSkuEntryDto,
+    right: &super::dto::PricingSkuEntryDto,
+    order: &ODataOrderBy,
+) -> Ordering {
+    for key in &order.0 {
+        let cmp = encode_key(left, &key.field).cmp(&encode_key(right, &key.field));
+        let cmp = match key.dir {
+            SortDir::Asc => cmp,
+            SortDir::Desc => cmp.reverse(),
+        };
+        if cmp != Ordering::Equal {
+            return cmp;
+        }
+    }
+    Ordering::Equal
+}
+
+fn position(
+    item: &super::dto::PricingSkuEntryDto,
+    cursor: &CursorV1,
+    order: &ODataOrderBy,
+) -> Ordering {
+    for (index, key) in order.0.iter().enumerate() {
+        let mine = encode_key(item, &key.field);
+        let theirs = cursor.k.get(index).map_or("", String::as_str);
+        let cmp = mine.as_str().cmp(theirs);
+        if cmp == Ordering::Equal {
+            continue;
+        }
+        return match key.dir {
+            SortDir::Asc => cmp,
+            SortDir::Desc => cmp.reverse(),
+        };
+    }
+    Ordering::Equal
+}
+
+fn encode_key(item: &super::dto::PricingSkuEntryDto, field: &str) -> String {
+    match field {
+        "book_name" => item.book_name.clone(),
+        "status" => item.status.as_str().to_owned(),
+        _ => item.entry.id.to_string(),
+    }
+}
+
+fn cursor_token(
+    item: &super::dto::PricingSkuEntryDto,
+    order: &ODataOrderBy,
+    hash: &str,
+    direction: &str,
+) -> Result<String, CanonicalError> {
+    CursorV1 {
+        k: order
+            .0
+            .iter()
+            .map(|key| encode_key(item, &key.field))
+            .collect(),
+        o: order.0.first().map_or(SortDir::Asc, |key| key.dir),
+        s: order.to_signed_tokens(),
+        f: Some(hash.to_owned()),
+        d: direction.to_owned(),
+    }
+    .encode()
+    .map_err(|_| CanonicalError::internal("the cursor does not encode").create())
 }

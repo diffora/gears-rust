@@ -21,9 +21,6 @@
           {
             "item_id": "<item:pro-1/pro>",
             "sku_id": "<sku:pro>",
-            "treatment": "paid",
-            "included_qty": null,
-            "qty_min": null,
             "price_book_entry_id": "<entry:pro>",
             "charge_kind": "recurring",
             "period": "month",

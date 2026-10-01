@@ -590,7 +590,7 @@ async fn reserve_vs_both_fences_never_both_commit() {
                             if reserve {
                                 if reservation_allowed(
                                     sku.lifecycle,
-                                    sku.type_change_pending || sku.lifecycle == Lifecycle::Retiring,
+                                    sku.type_change_pending || sku.retire_pending,
                                 )
                                 .is_err()
                                 {
@@ -643,9 +643,7 @@ async fn reserve_vs_both_fences_never_both_commit() {
             .await
             .unwrap()
             .unwrap();
-        assert!(
-            !(sku.type_change_pending || sku.lifecycle == Lifecycle::Retiring) || live.is_empty()
-        );
+        assert!(!(sku.type_change_pending || sku.retire_pending) || live.is_empty());
     }
 }
 
@@ -767,4 +765,122 @@ async fn sku_versions_refuse_update_and_delete() {
         1
     );
     raw.close().await.unwrap();
+}
+
+/// A write answers what it wrote (pricing D-453, which products follows), at the storage level:
+/// Postgres keeps whole microseconds, so an instant the engine is handed survives a round trip
+/// only cut to its microsecond (`stored_instant`). A publish applied at once (quorum 0) with a cut
+/// instant reads back exactly the instants the engine answered; uncut, an instant 789 ns past its
+/// microsecond would not. That every door binds through the cut is held by
+/// `tests/stored_instant_census.rs`, not by this test, which calls the engine directly.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_submit_answers_the_instants_the_store_keeps() {
+    let f = Fixture::new().await;
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &f.db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX).unwrap(),
+    )
+    .await
+    .unwrap();
+    let handle = toolkit_db::outbox::Outbox::builder(f.db.clone())
+        .table_prefix(events::OUTBOX_TABLE_PREFIX)
+        .unwrap()
+        .queue(
+            events::QUEUE_NAME,
+            toolkit_db::outbox::Partitions::of(events::PARTITIONS),
+        )
+        .leased(events::PendingBrokerProducer)
+        .start()
+        .await
+        .unwrap();
+    let store = repo::ProductsApprovalStore {
+        scope: f.scope.clone(),
+        tenant_id: f.tenant,
+    };
+    let fine = {
+        let t = OffsetDateTime::now_utc();
+        t.replace_nanosecond(t.microsecond() * 1_000 + 789).unwrap()
+    };
+    let submit = |sku: Uuid, at: OffsetDateTime| {
+        let (store, db) = (store.clone(), f.db.clone());
+        let subject = SkuPublish {
+            scope: f.scope.clone(),
+            tenant_id: f.tenant,
+            actor: f.tenant,
+            now: at,
+            usage_type: None,
+            outbox: events::TxOutbox::new(EventSink::Interim(Arc::clone(handle.outbox()))),
+        };
+        async move {
+            db.transaction_with_retry::<_, TxError, _, _>(
+                TxConfig::serializable(),
+                db_error,
+                move |tx| {
+                    let (s, b) = (store.clone(), subject.clone());
+                    Box::pin(async move {
+                        Ok(Engine::submit(
+                            &s,
+                            &b,
+                            tx,
+                            SubmitRequest {
+                                tenant_id: b.tenant_id,
+                                ref_id: sku,
+                                item_ids: &[sku],
+                                actor: b.actor,
+                                policy: &Policy {
+                                    default_quorum: 0,
+                                    overrides: std::collections::BTreeMap::default(),
+                                },
+                                common_effective_date: None,
+                                note: None,
+                                now: b.now,
+                            },
+                        )
+                        .await?)
+                    })
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let stored = |id: Uuid| {
+        let (scope, conn) = (f.scope.clone(), f.db.conn().unwrap());
+        async move {
+            repo::find_unit(&conn, &scope, f.tenant, id)
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let cut = bss_products::infra::storage::stored_instant(fine);
+    let submitted = submit(f.sku.id, cut).await;
+    assert!(submitted.applied);
+    let read = stored(submitted.unit.id).await;
+    assert_eq!(
+        (read.submitted_at, read.decided_at),
+        (submitted.unit.submitted_at, submitted.unit.decided_at),
+        "the answer's instants are the stored unit's"
+    );
+    assert_eq!(read.submitted_at, cut);
+    // The premise: Postgres drops the digits past the microsecond.
+    let conn = f.db.conn().unwrap();
+    let cat = category(&conn, &f.scope, f.tenant, "UNCUT").await;
+    let other = repo::insert_sku(
+        &conn,
+        &f.scope,
+        f.tenant,
+        new_sku(cat, "UNCUT"),
+        f.tenant,
+        now(),
+    )
+    .await
+    .unwrap();
+    let uncut = submit(other.id, fine).await;
+    assert_ne!(
+        stored(uncut.unit.id).await.submitted_at,
+        uncut.unit.submitted_at,
+        "an uncut instant is not what Postgres keeps"
+    );
 }

@@ -72,7 +72,8 @@ impl ScopableEntity for ent::Entity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 enum Field {
     Id,
     Name,
@@ -83,11 +84,7 @@ impl FilterField for Field {
     const FIELDS: &'static [Self] = &[Self::Id, Self::Name, Self::Parent];
 
     fn name(&self) -> &'static str {
-        match self {
-            Self::Id => "id",
-            Self::Name => "name",
-            Self::Parent => "parent",
-        }
+        self.into()
     }
 
     fn kind(&self) -> FieldKind {
@@ -109,6 +106,7 @@ struct Mapper;
 impl FieldToColumn<Field> for Mapper {
     type Column = ent::Column;
 
+    /// Maps a filter field to its column.
     fn map_field(field: Field) -> ent::Column {
         match field {
             Field::Id => ent::Column::Id,
@@ -121,6 +119,7 @@ impl FieldToColumn<Field> for Mapper {
 impl ODataFieldMapping<Field> for Mapper {
     type Entity = ent::Entity;
 
+    /// Reads a row's value for a cursor field.
     fn extract_cursor_value(model: &ent::Model, field: Field) -> sea_orm::Value {
         match field {
             Field::Id => sea_orm::Value::BigInt(Some(model.id)),
@@ -130,6 +129,7 @@ impl ODataFieldMapping<Field> for Mapper {
     }
 }
 
+/// Parses a `$filter` string into a typed filter node, panicking on a parse error.
 fn node(raw: &str) -> FilterNode<Field> {
     parse_odata_filter::<Field>(raw).unwrap_or_else(|e| panic!("{raw}: {e}"))
 }
@@ -143,6 +143,7 @@ fn typed_sql(raw: &str, backend: DbBackend) -> String {
         .to_string()
 }
 
+/// The legacy `FieldMap` over the same columns, for the untyped path.
 fn field_map() -> FieldMap<ent::Entity> {
     FieldMap::new()
         .insert_with_extractor("id", ent::Column::Id, FieldKind::I64, |m: &ent::Model| {
@@ -164,6 +165,7 @@ fn legacy_sql(raw: &str, backend: DbBackend) -> String {
 
 const DIALECTS: [DbBackend; 2] = [DbBackend::Postgres, DbBackend::Sqlite];
 
+/// `eq null` / `ne null` render as `IS NULL` / `IS NOT NULL`.
 #[test]
 fn null_equality_renders_is_null_and_is_not_null() {
     for backend in DIALECTS {
@@ -187,6 +189,7 @@ fn null_equality_renders_is_null_and_is_not_null() {
     }
 }
 
+/// `contains`, `startswith` and `endswith` render a `LIKE` with `ESCAPE '\'` on both paths.
 #[test]
 fn every_string_function_carries_an_escape_clause() {
     for backend in DIALECTS {
@@ -281,11 +284,13 @@ mod execution {
         ("plain", false),
     ];
 
+    /// Returns the names sorted, for order-insensitive comparison.
     fn sorted(mut names: Vec<String>) -> Vec<String> {
         names.sort();
         names
     }
 
+    /// Runs the null-equality and literal-LIKE queries against the database at `url`.
     async fn run_suite(url: &str) -> Result<()> {
         let db = toolkit_db::connect_db(url, toolkit_db::ConnectOpts::default()).await?;
         run_migrations_for_testing(&db, vec![Box::new(CreateTable)])
@@ -382,6 +387,7 @@ mod execution {
         Ok(())
     }
 
+    /// The suite on an in-memory `SQLite` database.
     #[cfg(feature = "sqlite")]
     #[tokio::test]
     async fn sqlite() -> Result<()> {
@@ -389,6 +395,7 @@ mod execution {
         run_suite(&dut.url).await
     }
 
+    /// The suite on Postgres (needs Docker).
     #[cfg(feature = "pg")]
     #[tokio::test]
     async fn postgres() -> Result<()> {

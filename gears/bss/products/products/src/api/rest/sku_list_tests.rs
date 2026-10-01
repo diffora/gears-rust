@@ -579,7 +579,7 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
         },
         Seed {
             category: Some(x),
-            lifecycle: Lifecycle::Retiring,
+            lifecycle: Lifecycle::Published,
             ..seed("R1")
         },
         Seed {
@@ -596,7 +596,6 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
             "draft",
             "published",
             "deprecated",
-            "retiring",
             "retired",
             "in_review",
         ]
@@ -606,36 +605,36 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
     };
     let x = x.to_string();
     for (params, expected) in [
-        (vec![], vec![7, 2, 2, 1, 1, 1, 2]),
+        (vec![], vec![7, 2, 3, 1, 1, 2]),
         (
             vec![("$filter", "lifecycle eq 'draft'".to_owned())],
-            vec![7, 2, 2, 1, 1, 1, 2],
+            vec![7, 2, 3, 1, 1, 2],
         ),
         (
             vec![(
                 "$filter",
                 format!("lifecycle in ('draft', 'published') and category_id eq {x}"),
             )],
-            vec![3, 1, 1, 0, 1, 0, 1],
+            vec![3, 1, 2, 0, 0, 1],
         ),
         (
             vec![(
                 "$filter",
                 format!("category_id eq {x} and lifecycle eq 'retired'"),
             )],
-            vec![3, 1, 1, 0, 1, 0, 1],
+            vec![3, 1, 2, 0, 0, 1],
         ),
         (
             vec![("$filter", "category_id eq null".to_owned())],
-            vec![4, 1, 1, 1, 0, 1, 1],
+            vec![4, 1, 1, 1, 1, 1],
         ),
-        (vec![("q", "storage".to_owned())], vec![2, 0, 1, 0, 0, 1, 1]),
+        (vec![("q", "storage".to_owned())], vec![2, 0, 1, 0, 1, 1]),
         (
             vec![
                 ("q", "storage".to_owned()),
                 ("$filter", "pending_unit_id ne null".to_owned()),
             ],
-            vec![1, 0, 1, 0, 0, 0, 1],
+            vec![1, 0, 1, 0, 0, 1],
         ),
     ] {
         let params: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -645,7 +644,7 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
     }
     // Each lifecycle count is the length of the list narrowed to it.
     let (_, all) = d.get(&counts(&[("q", "storage")])).await;
-    for lifecycle in ["draft", "published", "deprecated", "retiring", "retired"] {
+    for lifecycle in ["draft", "published", "deprecated", "retired"] {
         let listed = d
             .codes(&list(&[
                 ("q", "storage"),
@@ -687,8 +686,9 @@ async fn the_counts_follow_the_list_without_its_lifecycle_terms() {
     }
 }
 
-/// The counts recover orphan fences in their transaction as the list does, so `retiring` agrees
-/// with the list: an expired fence counts as the lifecycle it returns to, a live one as retiring.
+/// The counts recover orphan fences in their transaction as the list does. An expired retire
+/// fence returns to its lifecycle with the flag clear; a live one stays that lifecycle with
+/// `retire_pending` (P-D-248).
 #[tokio::test]
 async fn the_counts_and_the_list_expire_orphan_fences_alike() {
     let d = Door::new().await;
@@ -718,21 +718,22 @@ async fn the_counts_and_the_list_expire_orphan_fences_alike() {
     }
     let (status, body) = d.get(&counts(&[])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["published"].as_u64(), Some(2), "{body}");
+    assert!(body.get("retiring").is_none(), "{body}");
     assert_eq!(
-        (body["retiring"].as_u64(), body["published"].as_u64()),
-        (Some(1), Some(1)),
-        "{body}"
-    );
-    assert_eq!(
-        d.codes(&list(&[("$filter", "lifecycle eq 'retiring'")]))
+        d.codes(&list(&[("$filter", "retire_pending eq true")]))
             .await,
         ["NEW"]
     );
-    assert_eq!(
-        d.codes(&list(&[("$filter", "lifecycle eq 'published'")]))
-            .await,
-        ["OLD"]
-    );
+    let mut published = d
+        .codes(&list(&[("$filter", "lifecycle eq 'published'")]))
+        .await;
+    published.sort();
+    assert_eq!(published, ["NEW", "OLD"]);
+    let refused = d
+        .refused(&list(&[("$filter", "lifecycle eq 'retiring'")]))
+        .await;
+    assert_eq!(problem_code(&refused), "INVALID_FILTER", "{refused}");
 }
 
 // ------------------------------------------------------------------ fixed statements
@@ -897,8 +898,8 @@ async fn the_fence_expiry_reads_in_the_same_statements_for_1_and_5_expired_fence
             assert_eq!(expired.len(), k, "{uri}: one audit row per fence lifted");
             let (_, body) = d.get(&counts(&[])).await;
             assert_eq!(
-                (body["published"].as_u64(), body["retiring"].as_u64()),
-                (Some(6), Some(0)),
+                (body["published"].as_u64(), body.get("retiring")),
+                (Some(6), None),
                 "{uri} k={k}: every expired fence is lifted: {body}"
             );
             traces.push(trace);
@@ -910,8 +911,8 @@ async fn the_fence_expiry_reads_in_the_same_statements_for_1_and_5_expired_fence
         );
         assert_eq!(
             traces[0].len(),
-            4,
-            "{uri}: the fences, one UPDATE, one audit INSERT, the read: {traces:#?}"
+            5,
+            "{uri}: the fold, the fences, one UPDATE, one audit INSERT, the read: {traces:#?}"
         );
     }
 }

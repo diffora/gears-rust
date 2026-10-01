@@ -33,14 +33,15 @@ impl SkuType {
     }
 }
 
-/// `retiring` is the committed fence of spec §4: set before pricing is asked for references.
+/// A SKU's lifecycle. `retiring` is not one (P-D-248): a retire under review keeps the lifecycle
+/// the SKU had and sets `retire_pending`. A stored `retiring` is a legacy audit token, mapped
+/// when the history is read, never a value of this set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifecycle {
     Draft,
     Published,
     Deprecated,
-    Retiring,
     Retired,
 }
 impl Lifecycle {
@@ -50,7 +51,6 @@ impl Lifecycle {
             Self::Draft => "draft",
             Self::Published => "published",
             Self::Deprecated => "deprecated",
-            Self::Retiring => "retiring",
             Self::Retired => "retired",
         }
     }
@@ -60,11 +60,20 @@ impl Lifecycle {
             "draft" => Some(Self::Draft),
             "published" => Some(Self::Published),
             "deprecated" => Some(Self::Deprecated),
-            "retiring" => Some(Self::Retiring),
             "retired" => Some(Self::Retired),
             _ => None,
         }
     }
+}
+
+/// A lifecycle change whose date has not arrived (P-D-249). The head's `lifecycle` stays as it
+/// was until `from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct LifecycleNext {
+    pub lifecycle: Lifecycle,
+    #[serde(with = "iso_date")]
+    pub from: Date,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,6 +120,10 @@ pub struct Category {
 /// tuples, which no door sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
+)]
 pub struct Sku {
     pub id: Uuid,
     pub tenant_id: Uuid,
@@ -122,6 +135,12 @@ pub struct Sku {
     pub description: String,
     pub sellable: bool,
     pub lifecycle: Lifecycle,
+    /// Set while a `sku_retire` unit is in review (P-D-248). The lifecycle stays.
+    #[serde(default)]
+    pub retire_pending: bool,
+    /// A dated lifecycle change that has not arrived (P-D-249). Null when none is pending.
+    #[serde(default)]
+    pub lifecycle_next: Option<LifecycleNext>,
     pub revision: i64,
     pub published_version: i64,
     pub gl_code: Option<String>,

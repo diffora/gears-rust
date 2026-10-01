@@ -3,7 +3,7 @@
 //! its `enum` (D-439), with the tokens the goldens carry.
 use crate::api::rest::closed_sets::{
     PricingChargeKind, PricingEligibility, PricingModel, PricingPeriod, PricingResolveSource,
-    PricingResolvedRevisionState, PricingTreatment,
+    PricingResolvedRevisionState,
 };
 use uuid::Uuid;
 
@@ -32,17 +32,13 @@ pub struct PricingResolveDto {
     /// Every item of the revision, or the one `item_id` names.
     pub items: Vec<PricingResolveItemDto>,
 }
-/// One item of the revision on the date: its stored fields, its SKU version and resolved invoice
-/// inputs (D-421), and its chain matrix (D-420).
+/// One item of the revision on the date: its SKU and entry (D-467), its SKU version and resolved
+/// invoice inputs (D-421), and its chain matrix (D-420).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingResolveItemDto {
     pub item_id: Uuid,
     pub sku_id: Uuid,
-    pub treatment: PricingTreatment,
-    /// Exact decimal text.
-    pub included_qty: Option<String>,
-    pub qty_min: Option<i32>,
-    /// Null for an included item without an entry, which has no chains.
+    /// Null for a legacy item stored without an entry (D-467), which has no chains.
     pub price_book_entry_id: Option<Uuid>,
     /// Null without an entry.
     pub charge_kind: Option<PricingChargeKind>,

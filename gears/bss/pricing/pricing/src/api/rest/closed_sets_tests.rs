@@ -61,7 +61,6 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
             "superseded"
         ]
     );
-    assert_eq!(tokens!(PricingTreatment), ["paid", "optional", "included"]);
     assert_eq!(
         tokens!(PricingItemReferenceState),
         ["unreserved", "confirmation_pending", "confirmed", "lost"]
@@ -90,6 +89,7 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
         tokens!(PricingUnitState),
         ["pending", "approved", "rejected", "withdrawn"]
     );
+    assert_eq!(tokens!(PricingApprovalKind), ["prices", "plan_revision"]);
     assert_eq!(tokens!(PricingDecisionKind), ["approve", "reject"]);
     assert_eq!(
         tokens!(PricingVoteOutcome),
@@ -97,6 +97,18 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
     );
     assert_eq!(tokens!(PricingBillingTiming), ["advance", "arrears"]);
     assert_eq!(tokens!(PricingResolveSource), ["entry", "sku", "tenant"]);
+}
+
+#[test]
+fn a_sku_entry_status_carries_priced_scheduled_and_unpriced() {
+    assert_eq!(
+        round_trips(
+            PricingSkuEntryStatus::ALL,
+            PricingSkuEntryStatus::as_str,
+            PricingSkuEntryStatus::stored,
+        ),
+        ["priced", "scheduled", "unpriced"]
+    );
 }
 
 /// The domain's value `d` and the wire value it maps to carry one token.
@@ -158,12 +170,6 @@ fn a_mapped_set_carries_the_domain_token() {
         PricingPriceStatus::as_str,
     );
     same(
-        Treatment::ALL,
-        PricingTreatment::ALL,
-        Treatment::as_str,
-        PricingTreatment::as_str,
-    );
-    same(
         ItemReference::ALL,
         PricingItemReferenceState::ALL,
         ItemReference::as_str,
@@ -203,6 +209,12 @@ fn a_mapped_set_carries_the_domain_token() {
         PricingUnitState::ALL,
         UnitState::as_str,
         PricingUnitState::as_str,
+    );
+    same(
+        &crate::infra::approval_kinds::Kind::ALL,
+        PricingApprovalKind::ALL,
+        crate::infra::approval_kinds::Kind::as_str,
+        PricingApprovalKind::as_str,
     );
     same(
         &[Verdict::Approve, Verdict::Reject],

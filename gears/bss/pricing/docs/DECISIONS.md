@@ -24,13 +24,13 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-385 | H | One registered dimension, independent value chains | DECIDED 2026-09-25 · §2 decision 4; §5; §14 |
 | D-386 | H | SKU type defines the entry key and allowed models | DECIDED 2026-09-25 · §2 decision 5; §5; amended by D-427 |
 | D-387 | H | Tier bands are half-open | DECIDED 2026-09-25 · §5 tier bands; §10 |
-| D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5 |
+| D-388 | H | Minimum fee is per price per subscription per period | DECIDED 2026-09-25 · §2 decision 13; §5; amended by D-467 |
 | D-389 | H | Descriptors bind from durable SKU versions | DECIDED 2026-09-25 · §2 decision 14; §2.2; §7.1 |
 | D-390 | H | Windows normalize per chain and preserve usage structure | DECIDED 2026-09-25 · §2 decision 16; §5 |
 | D-391 | H | Temporary changes keep pair identity or resume fallback | DECIDED 2026-09-25 · §5 temporary pairs; amended by D-443 |
 | D-392 | H | Publish changes is a selected book batch | DECIDED 2026-09-25 · §2 decision 7; §6; §8 |
-| D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6 |
-| D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8; amended by D-450 |
+| D-393 | H | One unit engine, quorum and generations | DECIDED 2026-09-25 · §2 decision 8; §2.2; §6; extended by D-459 |
+| D-394 | H | Plans are versioned structure bound to one book | DECIDED 2026-09-25 · §5 plans; §6; §8; amended by D-450, D-467 |
 | D-395 | H | Promotions are versioned and migrations are requests | DECIDED 2026-09-25 · §5; §6; §11 phase 3 |
 | D-396 | H | One replay store and optimistic conditional writes | DECIDED 2026-09-25 · §2.2; §3 items 23 and 27; §7.2 |
 | D-397 | H | Consumer pins replace cohorts and catalog versions | DECIDED 2026-09-25 · §2 decision 6; §7.1; §12 |
@@ -43,21 +43,21 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-404 | H | A draft belongs to its author | DECIDED 2026-09-25 · Phase 2 review (chains MEDIUM-1, docs F2); spec §6 "author ≠ approver" (finding 8) |
 | D-405 | M | Publish changes completes a selected pair | DECIDED 2026-09-25 · Phase 2 plan and reconciliation row 23; Phase 2 review (docs F4) |
 | D-406 | H | A temporary window is not crossed | DECIDED 2026-09-25 · Phase 2 second review (behaviour MEDIUM-2) |
-| D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 |
-| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453 |
+| D-407 | H | Plan items are reserved references; items are a sub-resource | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2; amended by D-467 |
+| D-408 | H | Plan checks read every SKU fresh; descriptors are information, never content | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3"; amended by D-453, D-465; extended by D-466 |
 | D-409 | H | Promotions are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; Phase 3 plan rev 3; spec §2.4 |
 | D-410 | H | Migration requests and plan retirement are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §11 phase 3 |
 | D-411 | H | The sold-as bundle and plan grants are deferred (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; spec §5 plan_revision |
 | D-412 | M | The phase 2 schema is edited in place until the first deployment | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 15; closed by D-427 |
-| D-413 | H | A copied item attaches its reference after the write | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write; amended by D-451 |
+| D-413 | H | A copied item attaches its reference after the write | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write; amended by D-451, D-467 |
 | D-414 | H | A revision's references outlive it | DECIDED 2026-09-25 · Phase 3 plan rev 2; plan review LOW 14 |
 | D-415 | H | Quote is not built; the Studio is not wired to the API (owner, 2026-09-25) | DECIDED 2026-09-25 · Owner, 2026-09-25, during Run 3.1; deviation from spec §7.1 and §11 phase 4 |
 | D-416 | H | Descriptors are read best-effort; the reads a rule needs stay hard | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F2, surface S-1, docs F1 and F2) |
 | D-417 | M | The last revision of a never-published plan takes the plan with it | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (plans F1, surface S-2) |
 | D-418 | H | A plan revision is submitted under plan:submit | DECIDED 2026-09-26 · Phase 3 review, fix run 7 (surface S-4); corrects the run 3.4 brief |
-| D-419 | H | Resolve answers one revision on one date, with the caller's pins | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b, L4, L7; amended by D-454 |
-| D-420 | H | The matrix and the walk: a binding is always in force | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); owner, 2026-09-26 (no promotion rule; rule 4 as recommended); spec §2.4, §5, §7.1; plan review H2, M4, L1 |
-| D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7 |
+| D-419 | H | Resolve answers one revision on one date, with the caller's pins | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b, L4, L7; amended by D-454, D-467 |
+| D-420 | H | The matrix and the walk: a binding is always in force | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); owner, 2026-09-26 (no promotion rule; rule 4 as recommended); spec §2.4, §5, §7.1; plan review H2, M4, L1; amended by D-467 |
+| D-421 | H | The binding carries resolved invoice inputs with their source | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); PRD AC #13; plan review H3, L7; amended by D-467 |
 | D-422 | H | The pinned price read serves approved money forever | DECIDED 2026-09-26 · Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review H4 |
 | D-423 | H | Both gears refuse a legacy or stale schema at boot | DECIDED 2026-09-26 · Phase 4 plan rev 2 (Run 4.1); plan review H1, M1, M2, L6 |
 | D-424 | H | Resolve reads SKU versions as pricing's system actor | DECIDED 2026-09-26 · Phase 4 review, fix run 8 (docs M1); amends D-421 |
@@ -70,31 +70,47 @@ and the sold-as bundle and grants (D-411), and drops quote and the Studio wiring
 | D-431 | M | The request's correlation id is minted at the authoring edge | DECIDED 2026-09-27 · Carried from D-178 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
 | D-432 | M | If-Match on every write to a versioned row, and on a draft price's DELETE | DECIDED 2026-09-27 · Carried from D-141 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27; extends D-396 |
 | D-433 | M | The audit log is append-only with a reserved sealing seam (twin of products P-D-200) | DECIDED 2026-09-27 · Carried from P-D-08, P-D-28, P-D-46, P-D-118 (backup `3a38f0b28`); decisions cleanup, owner 2026-09-27 |
-| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453 |
+| D-434 | M | Where a SKU is priced and sold: its entries across books, the plans that name it, one plan item | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-440, D-453, D-460, D-461, D-472, D-486 |
 | D-435 | M | An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-436 | M | Dimension values edit one at a time and show their use | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | D-437 | M | The default rounding is one of five modes; a tenant with no settings rounds half_even | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; the half_even default, Owner, 2026-09-28 |
 | D-438 | M | The settings offer currencies and say who changed them | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456 |
+| D-439 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of products P-D-217) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by D-467 and the phase 9 review (C, fix run 9.5d-1) |
+| D-440 | M | An entry's prices, its price in force and its approved prices by date | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-428, D-434; extended by D-456; amended by D-472, D-473 |
 | D-441 | M | Every book read carries its stats | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
 | D-442 | M | The book list pages on the toolkit's OData pager, searched by q and sku_id | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
 | D-443 | M | A temporary draft's dates move, and its pair follows | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends D-391 |
 | D-444 | M | A book has a description, and an unused book can be deleted | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-453 |
-| D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2 |
+| D-445 | L | An approval unit carries its submitter's note (twin of products P-D-219) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amended by D-464 |
 | D-446 | M | A plan revision can be stored scheduled: the state, its index and its migration | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-447 | M | A scheduled revision takes effect on its date: the effective state is derived | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-448 | M | The storage writes of a scheduled revision: schedule, switch, unschedule and the due scan | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 |
 | D-449 | M | An approval before the sale date schedules the revision | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2) |
 | D-450 | M | The switch job persists a due switch on its date and announces it once | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review H1, M4, L2, L7 |
-| D-451 | M | The copy, clone and unschedule doors catch a due switch up; one scheduled revision at a time | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M1 |
+| D-451 | M | The copy, clone and unschedule doors catch a due switch up; one scheduled revision at a time | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M1; amended by D-463 |
 | D-452 | M | A scheduled revision can be withdrawn to a draft | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M5 |
-| D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5 |
+| D-453 | M | Every read derives the effective state; the counts read the stored state | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M2, L5; amended by D-460, D-461 |
 | D-454 | M | Resolve serves a scheduled revision from its sale date | DECIDED 2026-09-29 · Owner, 2026-09-28; phase 8 plan rev 2 (run 8.2); plan review M3 |
 | D-455 | M | The outbox wakes its sequencer after the commit | DECIDED 2026-09-29 · Main sync of 2026-09-29 (toolkit-db 2bfc76aec); phase 8 plan rev 2 (run 8.2b) |
-| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440 |
-| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b |
-| D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a) |
+| D-456 | M | A plan names only a book its author may read | DECIDED 2026-09-29 · Whole-branch review PS-08 (fix run W1a); extends D-440; extended by D-463, D-468 |
+| D-457 | M | Every text a request writes has an explicit length cap | DECIDED 2026-09-29 · Whole-branch review PS-09, PS-10, X-01 (fix run W1a); twin of a products decision in W1b; extended by D-468 |
+| D-458 | M | The approval-unit list pages and reads its page set-based | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "2"); whole-branch review PS-13 (fix run W1a); amended by D-470 |
+| D-459 | M | One approve-eligibility predicate for the engine and its readers | DECIDED 2026-09-30 · Phase 9 plan rev 2 (W2, binding; plan review W2, L5); extends D-393; amended by the phase 9 review (E, fix run 9.5d-1) |
+| D-460 | M | The plans list names each plan's current revision and the one in effect | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4); amends D-434, D-453; amended by D-461 |
+| D-461 | M | A revision says who made it and when it was submitted and approved | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9); amends D-434, D-453, D-460 |
+| D-462 | M | A pending revision shows its vote progress under plan read | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5); amended by the phase 9 review (E, fix run 9.5d-1) |
+| D-463 | M | A plan's sale date on create and clone | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10); amends D-451, extends D-456 |
+| D-464 | L | A plan submit and a publish-changes carry the submitter's note | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3); amends D-445 |
+| D-465 | M | A revision may carry again a deprecated SKU its plan sells | DECIDED 2026-09-30 · Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2); amends D-408 |
+| D-466 | M | Each check row names its items and its blocking prices | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7); extends D-408 |
+| D-467 | H | A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity | DECIDED 2026-09-30 · Owner, 2026-09-30 (the included quantity, then the treatment, then qty_min removed); phase 9 plan rev 2 (run 9.2); amends D-388, D-394, D-407, D-413, D-419, D-420, D-421, D-439; amended by the phase 9 review (G, fix run 9.5d-1) |
+| D-468 | M | A new plan's code follows a declared rule | DECIDED 2026-09-30 · Owner, 2026-09-30 (ask 39, "do it"); phase 9 run 9.2 scope addition; extends D-456, D-457 |
+| D-469 | M | The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 2); phase 9 plan rev 2 (M1 and W1, binding; decisions 8 and 9; L8); extended by D-470 |
+| D-470 | M | The approval units are counted by state and kind, list newest first on request, and skip the live impact on request | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11); amends D-458, extends D-469; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
+| D-471 | M | A unit says whether its reader may approve it | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2; plan review M2); amended by the phase 9 review (E, fix run 9.5d-1) |
+| D-472 | M | An entry names its next price | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 12; plan review M5, L7); amends D-434, D-440; amended by D-473 |
+| D-473 | M | The book's entries list reads its prices on a date | DECIDED 2026-10-01 · Owner, 2026-09-30 (validation 3 item 7, "ok"); phase 9 plan rev 2 (decision 13; plan review M5, L6); amends D-440, D-472; amended by the phase 9 review R1 (fix run 9.5d-1) |
+| D-486 | M | A SKU's entries narrow, order and page in memory | DECIDED 2026-10-01 · Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; N5); amends D-434 |
 
 ## Entries
 
@@ -126,7 +142,9 @@ All tier bands use [from, to). Quantity 1000 belongs to the band beginning at 10
 
 Aggregate every bound value and slice rated by the same price, deduct included quantities, then apply its floor prorated by the fraction of the period covered, before promotions. Two values sharing a default price share one floor. Separate valued prices carry separate floors. No plan cap or plan minimum survives. Pricing stores and validates min_fee; Rating applies the floor (D-415).
 
-**Source:** §2 decision 13; §5.
+D-467 amends this entry: no plan carries an included quantity any more, so no quantity is deducted before the floor; the floor and proration stay Rating's.
+
+**Source:** §2 decision 13; §5. Amended by D-467.
 
 #### D-389 [H] Descriptors bind from durable SKU versions
 
@@ -158,13 +176,17 @@ List all draft book prices with full predecessor, proposed content and impact, p
 
 bss-approval owns the shared engine shape; pricing owns prefixed tables and subjects. Quorum is tenant policy with kind overrides and fail-safe one when * is absent. No materiality. Submitter and all item authors are excluded from approval; an item's author is its price's creator, the only principal who may edit it (D-404). Votes carry generation; drift commits refreshed items/snapshot/hash, increments generation and marks prior decisions stale (UNIT_STALE). Conditional unit version yields UNIT_CONTENDED on lost races. Quorum zero, reject and withdraw all write terminal audit and ApprovalUnitDecided. See ADR-0003.
 
-**Source:** §2 decision 8; §2.2; §6.
+D-459 extends this entry: the engine's approve rules (the terminal state, the separation of duties, the duplicate vote and which votes count) are one exported function, approve_eligibility. The engine judges a vote through it, and so does every read that shows a unit's vote count or whether its caller may approve.
+
+**Source:** §2 decision 8; §2.2; §6. Extended by D-459.
 
 #### D-394 [H] Plans are versioned structure bound to one book
 
 Phase 3 publishes immutable revisions containing one book, paid/optional/included items, minimal Grants and optional sold-as bundle. Validate recurring frequency, meter uniqueness, usage-only included quantities, SKU lifecycle, foreign-book entries, book validity and coverage per value. blocked_by is computed from pending price units. Clone makes a draft; publishing a revision never moves existing pins, and neither does the switch of a scheduled revision on its date (D-450). Grants and the sold-as bundle are deferred (D-411), and so is retirement (D-410).
 
-**Source:** §5 plans; §6; §8. Amended by D-450.
+D-467 amends this entry: a revision's items are SKUs, each with its entry in the plan's book; there are no paid, optional or included treatments and no included or minimum quantity, so neither "usage-only included quantities" nor any check keyed on a treatment remains.
+
+**Source:** §5 plans; §6; §8. Amended by D-450, D-467.
 
 #### D-395 [H] Promotions are versioned and migrations are requests
 
@@ -258,17 +280,23 @@ On one chain (entry, dim_value), a proposed price that is neither temporary nor 
 
 An item added by POST /plan-revisions/{id}/items reserves kind plan_item with ref_id = the item id, through phase 2's create op (D-401: the op before the reserve, the SKU re-read, the write, the confirm; a 503 writes nothing). plan_item is the only new reference kind of phase 3: the sold_as kind waits with the sold-as bundle (D-411). Items are POST /plan-revisions/{id}/items and PATCH or DELETE /plan-items/{id}, not a list inside PATCH /plan-revisions/{id}. This deviates from spec §7.2 on purpose: an added item is one op with its own Idempotency-Key and its own recovery, and a removed item is one delete op with its own recovery (the DELETE takes no key).
 
-**Source:** Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 (items inside the revision PATCH).
+D-467 amends this entry: the item create takes sku_id and price_book_entry_id, both required, and the item PATCH takes only price_book_entry_id; treatment, included_qty and qty_min are 400 BODY_UNEXPECTED at both doors.
+
+**Source:** Phase 3 plan rev 2; plan review HIGH 2; owner, 2026-09-25 (kind plan_item only); deviation from spec §7.2 (items inside the revision PATCH). Amended by D-467.
 
 #### D-408 [H] Plan checks read every SKU fresh; descriptors are information, never content
 
 **Status:** DECIDED 2026-09-25.
 
-Checks, submit and apply read each item's SKU through sku_for_write (D-399). A deprecated SKU may stay in a new revision of the SAME plan that carries it over from the published revision; it cannot be added, and a clone (a new plan) that carries it is red (ITEM_SKU_DEPRECATED). A draft, retiring or retired SKU is red (ITEM_SKU_UNAVAILABLE). A bundle SKU cannot be an item (ITEM_BUNDLE_SKU). An entry that a plan item names cannot be deleted (ENTRY_IN_USE). The approval snapshots of revisions and of prices carry each SKU's current descriptors for the reviewer, OUTSIDE the fingerprinted after: a GL change must not refresh every pending unit. They are gathered in collect or validate_submit and cached on the subject, because snapshot is synchronous. Being information, their read is best-effort and never refuses a submit, a vote or a reject (D-416).
+Checks, submit and apply read each item's SKU through sku_for_write (D-399). A deprecated SKU may stay in a new revision of the SAME plan that carries it over from the published revision; it cannot be added, and a clone (a new plan) that carries it is red (ITEM_SKU_DEPRECATED). A draft, retiring or retired SKU is red (ITEM_SKU_UNAVAILABLE). P-D-248 amends the retiring case: there is no `retiring` lifecycle; a SKU with `retire_pending` is red the same way (`ITEM_SKU_UNAVAILABLE` on the checks, `SKU_RETIRING` on an entry or item create). A lost reference of that SKU is not re-reserved. A bundle SKU cannot be an item (ITEM_BUNDLE_SKU). An entry that a plan item names cannot be deleted (ENTRY_IN_USE). The approval snapshots of revisions and of prices carry each SKU's current descriptors for the reviewer, OUTSIDE the fingerprinted after: a GL change must not refresh every pending unit. They are gathered in collect or validate_submit and cached on the subject, because snapshot is synchronous. Being information, their read is best-effort and never refuses a submit, a vote or a reject (D-416).
 
 D-453 amends this entry: the published revision is the one in effect today (D-447). Once a scheduled revision is due, it is its plan's published revision and its predecessor is not, before the job persists the switch and after it. So the checks of both revisions answer the same on the two sides of the persist.
 
-**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453.
+D-465 amends this entry: "newly added" does not cover a re-add. The item create admits a deprecated SKU that the plan's published revision in effect carries, as the checks do, so an item removed from a draft can be added back; any other deprecated SKU stays ITEM_SKU_DEPRECATED.
+
+D-466 extends this entry: each check row names the items that turn it red and the pending prices behind its blocked_by.
+
+**Source:** Phase 3 plan rev 2; plan review MEDIUM 6; phase 2 "owed to phase 3" (fresh SKU reads, current descriptors in snapshots). Amended by D-453, D-465; extended by D-466.
 
 #### D-409 [H] Promotions are deferred (owner, 2026-09-25)
 
@@ -310,7 +338,9 @@ The chain has never been deployed. This phase edits m20260926_000006 (reference 
 
 POST /plans/{id}/revisions (copy) and POST /plans/{id}/clone write the revision and every copied item in ONE transaction with reference_state = unreserved and reservation_id NULL, plus one attach op per item. The attach op has the rereserve shape: reserve, then confirm; a losing refusal (a SKU fenced, retiring or retired at the reserve, or a lifecycle or type the SKU re-read refuses) marks the item's reference lost, and any other refusal, such as one of the caller's own grant for the reserve or the re-read, is retried and the ticker finishes the op as the system actor. Products authorizes the system actor to the tenant, so a refusal given to the system actor itself (a SKU Products no longer knows, say) is about the SKU and would never change: it marks the item lost, never an attach retried forever (phase 3 second review B-1). This deviates from "reserve before write" on purpose: the copied SKU is already protected by the SOURCE revision's live reference, which scheduled, published and superseded revisions never release, so no retire or type fence can slip in between. Products admits a deprecated SKU for a reservation, so a carried-over deprecated SKU attaches. The door drives the attach ops best-effort, stopping at the first that fails, and answers 201; the ticker finishes the rest. Submit and apply require every item reference to be confirmed, or confirmation_pending with a receipt; otherwise the checks show ITEM_REFERENCE_PENDING or ITEM_REFERENCE_LOST. POST …/items alone keeps D-401's create op. The source is the revision in effect: both doors switch a due scheduled revision first (D-451), and a copy is refused while a revision waits for its date.
 
-**Source:** Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write. Amended by D-451.
+D-467 amends this entry: a copied item is a new row, written paid with no quantity; a legacy item stored without an entry is copied without one (the column's CHECK then keeps it included), so the draft's checks show it ITEM_ENTRY_MISSING.
+
+**Source:** Phase 3 plan rev 2; plan review HIGH 1; deviation from D-401's reserve before write. Amended by D-451, D-467.
 
 #### D-414 [H] A revision's references outlive it
 
@@ -358,7 +388,7 @@ POST /plan-revisions/{id}/submit checks the plan label's own submit action, plan
 
 GET /bss-pricing/v1/resolve?plan_revision_id=&date=&item_id=&pins= (label plan, action read); it is spec §7.1's /pricing/v1/resolve below the gear's base. Only a published or superseded revision resolves, and a scheduled one from its sale date (D-454); a draft or pending one is 409 REVISION_NOT_PUBLISHED, and a scheduled one before its date 409 REVISION_NOT_YET_AVAILABLE. The state is the one the revision reads today (D-447). date is required, YYYY-MM-DD (400 DATE_INVALID). item_id is optional: resolve that one item only (404 if the revision has no such item); a consumer with many pins splits its request by item. pins is optional and comma-separated, each pin either price_id or price_id:dim_value: the first pins the price's own chain; the second pins a DEFAULT-chain price that the value dim_value was bound to. A pin must name an approved price of the tenant, of an entry an item of this revision names; with :dim_value it must be a default-chain price of that entry, and the value is NOT checked against today's registry (a value may have been removed since). Otherwise the whole request is 400 PIN_FOREIGN. Two pins for one (item, value) are 400 PIN_DUPLICATE; more than 1 000 pins are 400 PINS_TOO_MANY. Resolve is a read: it writes nothing (no audit row, no idempotency key, no binding) and returns no totals and no promotion (D-409, D-415).
 
-**Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b (a removed value is not checked against the registry), L4 (the pin bound and the split by item) and L7. Amended by D-454.
+**Source:** Phase 4 plan rev 3 (Run 4.2); spec §7.1; plan review M4 b (a removed value is not checked against the registry), L4 (the pin bound and the split by item) and L7. Amended by D-454, D-467: a resolved item carries no treatment, included_qty or qty_min.
 
 #### D-420 [H] The matrix and the walk: a binding is always in force
 
@@ -373,7 +403,7 @@ Per item, the chains are the default chain and one per value registered today fo
 
 Read precisely: a price reached by the walk is no longer in force on date when it starts after date, or when its own end has passed. Its own end is read from the stored fields normalisation does not rewrite: temporary_until for a temporary price, else the stored end of an explicitly closed price (closed_explicitly), else none (amended by D-425, phase 4 review C-1). It is never a temporary price's stored effective_to: normalisation cuts that at the start of a pair nested inside the temporary price, and that start is a successor the walk did not take. An explicit close that a later pair cuts is stored as min(end, next) and binds until that stored end; no new column keeps the original end. The start of a successor the walk did not take does not end a price for the pin: a price stopped before a new successor stays the binding, and keep_for_bound marks exactly such a price. keep_for_bound predecessors stay readable and bindable; the resolve context carries the set of keep_for_bound price ids (the domain Price has no such field; plan review L1) and the binding reports it. Each binding reports its own end as ends_on (D-425).
 
-**Source:** Phase 4 plan rev 3 (Run 4.2); the owner, 2026-09-26 (Q1: no promotion-specific renewal rule; Q2: rule 4 as recommended); spec §2.4 addendum, §5, §7.1, §12; plan review H2, M4, L1. Amended by D-425 (phase 4 review, fix run 8): the own end, and ends_on.
+**Source:** Phase 4 plan rev 3 (Run 4.2); the owner, 2026-09-26 (Q1: no promotion-specific renewal rule; Q2: rule 4 as recommended); spec §2.4 addendum, §5, §7.1, §12; plan review H2, M4, L1. Amended by D-425 (phase 4 review, fix run 8): the own end, and ends_on. Amended by D-467: only a legacy item stored without an entry has no chains.
 
 #### D-421 [H] The binding carries resolved invoice inputs with their source
 
@@ -383,7 +413,7 @@ Each item's SKU version is read as of date through sku_version_as_of (the detach
 
 Read precisely: settings.invoice_line_templates is keyed by SKU type (recurring, usage, one_time, bundle; PUT /settings refuses any other key). A charge kind's name is its SKU type's, so the entry's charge kind is the key; an item without an entry takes its SKU version's type, as the prototype does. A source that is absent or blank falls through to the next one; when none is left the field is { value: null, source: null } (the prototype's built-in "{sku}" line is not adopted). billing_timing always has a value: the tenant default_timing is advance until the settings are written.
 
-**Source:** Phase 4 plan rev 3 (Run 4.2); PRD AC #13 (fr-settings); spec §7.1 (what a pin carries), decision 14; plan review H3 and L7. Amended by D-424 (phase 4 review, fix run 8): the SKU version read is made as pricing's system actor.
+**Source:** Phase 4 plan rev 3 (Run 4.2); PRD AC #13 (fr-settings); spec §7.1 (what a pin carries), decision 14; plan review H3 and L7. Amended by D-424 (phase 4 review, fix run 8): the SKU version read is made as pricing's system actor. Amended by D-467: the item returns no stored treatment or quantity.
 
 #### D-422 [H] The pinned price read serves approved money forever
 
@@ -511,7 +541,7 @@ pricing_audit refuses every DELETE by trigger and admits one UPDATE: unsealed to
 
 The SKUs screen shows, for one SKU, where it is priced and where it is sold (ask 8). The gear had the counts only (D-428).
 
-- GET /bss-pricing/v1/price-book-entries?sku_id= (price_book_entry read) lists the tenant's entries of the SKU in every book and every reference state, read under the caller's entry scope, ordered by book code, charge kind, period, model and id. Each item is PricingSkuEntryDto: the entry's own fields, book_code, book_name and currency, usage (D-428) and current_price. current_price is the default chain's approved price in force today: no dimension value, effective_from on or before today and effective_to after it, chosen as resolve chooses a price in force (the latest start, then the latest version). It is null when no such price exists. A value chain's price is not the entry's current price. The money is shown only to a caller who also holds price_book read, the export's grant, judged a second time in the same request. Without that grant the entries are still listed, each with current_price null. A denial of that second judgement refuses nothing, and an unavailable policy fails the read with 503. When the grant's scope admits some books only, only their entries show money. sku_id is required: without exactly one well-formed sku_id, or with any other key, the answer is 400 QUERY_INVALID. An unknown SKU, or another tenant's, is an empty list, because pricing does not know which SKUs exist. The read makes seven statements whatever the number of entries: the entries, their books, the three usage reads, the books the grant admits and those books' default-chain approved prices. The QueryRecorder shows the same statements for 10 and for 100 entries.
+- GET /bss-pricing/v1/price-book-entries?sku_id= (price_book_entry read) lists the tenant's entries of the SKU in every book and every reference state, read under the caller's entry scope, narrowed, ordered and paged as D-486 states. Each item is PricingSkuEntryDto: the entry's own fields, book_code, book_name and currency, usage (D-428) and current_price. current_price is the default chain's approved price in force today: no dimension value, effective_from on or before today and effective_to after it, chosen as resolve chooses a price in force (the latest start, then the latest version). It is null when no such price exists. A value chain's price is not the entry's current price. The money is shown only to a caller who also holds price_book read, the export's grant, judged a second time in the same request. Without that grant the entries are still listed, each with current_price null. A denial of that second judgement refuses nothing, and an unavailable policy fails the read with 503. When the grant's scope admits some books only, only their entries show money. sku_id is required. The query, its in-memory narrowing and its paging are D-486; a query D-486 does not take is still 400 QUERY_INVALID. An unknown SKU, or another tenant's, is an empty list, because pricing does not know which SKUs exist. The read makes seven statements whatever the number of entries: the entries, their books, the three usage reads, the books the grant admits and those books' default-chain approved prices. The QueryRecorder shows the same statements for 10 and for 100 entries.
 - GET /bss-pricing/v1/plans?sku_id= (plan read) lists the plans that have a draft, pending, scheduled or published revision whose items name an entry of the SKU. This is the usage's plans definition (D-428; products P-D-212's in_plan): a plan that names the SKU only through superseded revisions does not count, and an included item without an entry does not count. The answer has the same schema as GET /plans (PricingPlanList, each plan with all its revision headers). The revisions, items and entries are read tenant-scoped. GET /plans itself becomes set-based: two statements whatever the number of plans (the plans, then all their revisions), where it made one revision read per plan. A malformed sku_id, or any other key, is 400 QUERY_INVALID. Before, the route took no query and ignored any key.
 - GET /bss-pricing/v1/plan-items/{id} (plan read) answers PricingPlanItemReadDto: the item's fields (PricingPlanItemDto), plan_id, rev_no and state, which is its revision's state as it reads today (D-453). The ETag is the item's version, the value its PATCH takes as If-Match. An item the tenant does not hold is 404.
 
@@ -519,7 +549,15 @@ D-440 amends this entry: the two entry reads carry the same current_price, chose
 
 D-453 amends this entry: the plan list, by SKU or not, and the item read render each revision's state as it reads today, derived in memory, so GET /plans keeps its two statements; which plans the SKU filter keeps is still read from the stored state.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453.
+D-460 amends this entry: each plan of GET /plans, by SKU or not, names its current revision with its item SKUs, read in one grouped statement over the listed plans' current revisions, so the list makes three statements whatever the number of plans. A current revision's sku_ids name every item, while the SKU filter keeps a plan only for an item with an entry, on the stored state: the two may differ.
+
+D-461 amends this entry: each revision header says when it was submitted and approved, from the units the listed revisions name, read in one grouped statement more, so GET /plans makes four statements whatever the number of plans (one when there is none): the plans, their revisions, the current revisions' items and the units.
+
+D-472 amends this entry: each entry of the SKU's list also carries next_price, chosen and shown with current_price by one function from one read, which is widened to the default chain's pending and draft prices, so the list still makes seven statements.
+
+D-486 amends this entry: the list narrows, orders and pages in memory, and each entry carries status and changing. The read still makes seven statements.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 8; plan review L11). Amended by D-440, D-453, D-460, D-461, D-472, D-486.
 
 #### D-435 [M] An approval-policy override can be reset; the default cannot be deleted (twin of products P-D-216)
 
@@ -572,7 +610,11 @@ Breaking: the PUT's body (currencies required), and a GET answer is a PUT body o
 - **Response fields that stay string.** default_rounding and resolve's rounding_policy: no CHECK guards the column (D-437), and a legacy value reads back as stored. A normalizing migration with a CHECK is not made here: the phase takes only ADD COLUMN migrations, a CHECK on an existing SQLite column needs a table rebuild, and the deployment pre-flight (D-437) is the gate. A unit's kind and ref_type: the shared approval tables (bss_approval::ddl) have no CHECK on them, for the same reason. A check's code is a code vocabulary that the check builders write as literals, and a proposal's chain is a dimension value or default; neither is a closed set of stored values.
 - **Proof.** tests/response_enums.rs reads the served spec: every listed field has its enum with the exact values in order and its nullability, no request body reaches an enum, and the fields above stay plain strings. An entry row poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) reads 500, and the gear goes on serving. Unit tests pin each set's schema, wire and stored tokens as one list.
 
-**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).
+D-467 amends this entry: a plan item's treatment is no longer on any response or request, so its enum and TREATMENT_INVALID are gone; the column's CHECK stays and still holds the stored rows.
+
+The phase 9 review's theme C amends this entry (fix run 9.5d-1): an approval unit's kind is an enum on every response, PricingApprovalKind (prices, plan_revision). No CHECK holds the column still; the repository reads it through the set, so a unit of another kind is a corrupt row (500), never served (D-470). A unit's ref_type stays a string.
+
+**Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5). Amended by D-467 and by the phase 9 review, theme C (fix run 9.5d-1).
 
 #### D-440 [M] An entry's prices, its price in force and its approved prices by date
 
@@ -590,7 +632,11 @@ Breaking for a consumer that compares usage as a closed object: it gains three f
 
 D-456 extends this entry: plan create, clone and a book-naming revision PATCH judge the same second price_book read on the book the plan names.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456.
+D-472 amends this entry: the entry reads also carry next_price. in_force became price_book_entries::headline, which chooses current_price and next_price from one read of the default chain's approved, pending and draft prices, so no read gains a statement; the golden leaves next_price out as it leaves current_price out.
+
+D-473 amends this entry: GET /price-books/{id}/entries takes as_of, and its one day is that date instead of today. Every price the list answers takes that day: current_price, next_price, each price's status and the usage split. Its refusal order gains the query: 403 for entry read, 503 for the money's policy, 400 QUERY_INVALID then DATE_INVALID, then 404 for the book, then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today without price_book read on the book (the phase 9 review's R1).
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 18; plan review H1, M1, L4). Amends D-428 and D-434. Extended by D-456. Amended by D-472, D-473.
 
 #### D-441 [M] Every book read carries its stats
 
@@ -662,7 +708,9 @@ The approval library's unit now carries `submit_note`, the submitter's own words
 - **No note from pricing's doors.** POST /prices/{id}/submit, POST /price-books/{id}/publish-changes and POST /plan-revisions/{id}/submit take no note, and their bodies are unchanged. So submit_note is null on every pricing unit. A door that takes a note later passes it through the library's SubmitRequest.note.
 - **Not content.** The note is not part of the snapshot or of snapshot_hash, and a stale refresh keeps it.
 
-**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3).
+D-464 amends this entry: POST /plan-revisions/{id}/submit and POST /price-books/{id}/publish-changes take an optional note, which they pass through SubmitRequest.note to the unit's submit_note; POST /prices/{id}/submit still takes none. So submit_note is null on a pricing unit only when its submitter sent no note.
+
+**Source:** Owner, 2026-09-28; phase 7 plan rev 2 (ask 4b; plan review H3). Amended by D-464.
 
 #### D-446 [M] A plan revision can be stored scheduled: the state, its index and its migration
 
@@ -752,7 +800,9 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **Nowhere else (plan rev 2 M1).** The draft's PATCH and DELETE, the item writes, the submit and the apply never meet a scheduled sibling. The open index admits one draft or pending revision per plan, the copy refuses a new draft while a revision waits, and unschedule turns the waiting revision itself into the draft. A catch-up in those writes would be dead code.
 - **The invariant.** No draft or pending revision stands beside a scheduled one. A test drives every door that opens or moves a revision (the copy, the draft's PATCH and DELETE, the submit, the item writes, the votes on the applied unit, the clone and the plan create) and then finds the plan with exactly its published and its scheduled revision.
 
-**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 4, 6; plan review M1).
+D-463 amends this entry: the clone copies the source's sale date unless its body names another date, which overrides it, or null, which clears it.
+
+**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 4, 6; plan review M1). Amended by D-463.
 
 #### D-452 [M] A scheduled revision can be withdrawn to a draft
 
@@ -776,7 +826,11 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **The counts.** The counts read the stored state and filter state <> 'superseded': stats.plans and BOOK_IN_PLAN (D-441, D-444), the entry usage and the SKU usage's plans (D-428), the in-plan SKUs (products P-D-212) and the plans GET /plans?sku_id= keeps (D-434). They count a scheduled revision as they count a published one. They also count a due revision's stored-published predecessor until the switch is persisted. The job ends that over-count: it persists at most the ticker's limit (100) due revisions a cycle (a minute), oldest available_from first, so a backlog of more than 100 drains 100 a cycle, and a plan whose switch keeps failing over-counts until it is repaired (D-446, D-450). A test reads a due revision before the persist: its predecessor's book still counts the plan, and after the job's tick only history names that book. plans_superseded_only stays "only superseded".
 - **Where the texts changed.** products-sdk SkuUsage.plans and SkuUsageSets.in_plan, products P-D-212, D-408, D-413, D-419, D-428, D-434, D-441, D-444, the published_rev field of PricingPlanDto, and the served texts of the entry usage, the book stats, the two entry reads, the book list and the book delete.
 
-**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 3, 10; plan review M2, L5); phase 8 review (behaviour B2, B3, B4; docs M1, L2).
+D-460 amends this entry: the plan list derives each plan's current revision and the one in effect in memory as well, and reads the current revisions' items in one statement more, so it makes three statements; the QueryRecorder pins them with due revisions among the plans.
+
+D-461 amends this entry: the plan list also reads the units its revisions name, one statement more: four. A write answers what it wrote with the unit it holds: the submit receipt's revision carries its unit's instants.
+
+**Source:** Owner, 2026-09-28; phase 8 plan rev 2 (decisions 3, 10; plan review M2, L5); phase 8 review (behaviour B2, B3, B4; docs M1, L2). Amended by D-460, D-461.
 
 #### D-454 [M] Resolve serves a scheduled revision from its sale date
 
@@ -817,7 +871,11 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **The tests.** tests/book_reads.rs judges the three doors under a grant narrowed to another book (403) and under a policy that cannot judge (503), with nothing written, and then under a grant that admits the book. A caller holding plan author alone is now refused POST /plans and the clone (tests/plan_doors.rs, tests/plan_clone.rs).
 - **Breaking for a caller** that holds plan author without price_book read on the book: POST /plans, the clone and a book-naming PATCH now answer 403. The vhp-core e2e plan authors hold every pricing action (CATALOG_AUTHOR), and its narrower actors are refused plan author first, so its grants suffice; a new scenario would give one actor every grant but price_book read and expect the three 403s.
 
-**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440.
+D-463 extends this entry: a malformed available_from on POST /plans or the clone is 400 DATE_INVALID, among the body's refusals: after the money's policy (503) and before the 404 of the book or of the source plan.
+
+D-468 extends this entry: a new plan's code off the rule is 400 PLAN_CODE_INVALID, among the body's refusals, after PLAN_CODE_REQUIRED and before DATE_INVALID.
+
+**Source:** Whole-branch review of 2026-09-29, PS-08 (fix run W1a; the orchestrator's scope decision). Extends D-440. Extended by D-463, D-468.
 
 #### D-457 [M] Every text a request writes has an explicit length cap
 
@@ -830,7 +888,9 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **The tests.** tests/book_writes.rs sends one text over each cap, door by door, and each is 400 with its code and field, with nothing written; the caps themselves pass in two-byte characters. tests/approval_doors.rs does the same for the vote note.
 - **Products** applies the same caps in its own decision, P-D-225 (fix run W1b). The vhp-core e2e would add one refusal: a book created with a 65-character code is 400 FIELD_TOO_LONG on code.
 
-**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2).
+D-468 extends this entry: a new plan's code also follows a rule of at most 32 characters; the 64-character cap is judged first.
+
+**Source:** Whole-branch review of 2026-09-29, PS-09, PS-10 and X-01 (fix run W1a; the dispositions' "Length caps"); the second reviews of W1a (L1) and W1b (L2). Extended by D-468.
 
 #### D-458 [M] The approval-unit list pages and reads its page set-based
 
@@ -842,4 +902,309 @@ Every read shows a due switch at once (D-453). The job makes it exact in storage
 - **Breaking for a caller** that reads the list whole: a tenant with more than 200 units matching its filters gets them over several pages, and must follow next_cursor. The Studio (the pricing-mfe) has to follow it. The gears-rust tests that read the list whole follow it (entry_support::Fixture::all_units); the gears-rust e2e reads no list. The vhp-core e2e reads it whole in tests/bss-pricing/test_pricing_isolation.py (two reads) and test_pricing_prices.py (the pending queue), each with far fewer than 200 units, so they pass unchanged; a vhp-core change would only make them follow next_cursor.
 - **Products** gets the same list in its own decision, P-D-224 (fix run W1b).
 
-**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "2"); whole-branch review PS-13 (fix run W1a, a scope addition).
+D-470 amends this entry: the list also takes $orderby=submitted_at desc, newest first, while submission order stays the default, and impact=false, which answers every unit's impact as null and skips the plans' reading (infra::prices::PlansReading, four statements).
+
+**Source:** Owner, 2026-09-29 (the dispositions' O2, answered "2"); whole-branch review PS-13 (fix run W1a, a scope addition). Amended by D-470.
+
+#### D-459 [M] One approve-eligibility predicate for the engine and its readers
+
+**Status:** DECIDED 2026-09-30.
+
+- **The risk.** A read that shows whether its caller may approve a unit, or how many votes the unit has, would copy the rules of the approval library's private rules module: the terminal state, the separation of duties, the duplicate vote and which votes count. A copy drifts: the read says the caller may approve, and the vote door answers 403 SOD_VIOLATION.
+- **The rule.** bss_approval exports one function, approve_eligibility(unit, items, decisions, actor), and its result ApproveEligibility { approvals, refusal }. approvals counts the approve votes of the unit's current generation that are not stale; a reject, a stale vote and a vote of an earlier generation do not count. refusal is none when the actor may approve, else the engine's refusal, in the engine's order: UNIT_ALREADY_DECIDED for a terminal unit, SOD_VIOLATION for its submitter or an item author, DUPLICATE_VOTE for an actor who voted in the current generation. The items are the unit's stored items, which are the current generation's: a stale refresh rewrites them. The rules module stays private.
+- **The engine uses it.** evaluate_approve, which Engine::approve calls once it has loaded the unit at the reviewer's generation, judges through it: its refusal is the vote's error, and an eligible vote pends at approvals + 1 or applies. So the engine answers as before: the library's rule tests keep their expectations, and both gears' door tests pass unchanged.
+- **The readers.** A pending plan revision's progress reads approvals through it (D-462). Products and pricing compute caller_can_approve through it in run 9.3.
+- **The tests.** A table over quorum 0, 1 and 2, a stale vote, a vote of an earlier generation and a decided unit, for the submitter, an item author, a voter of each generation and a fresh reviewer: the predicate's refusal is evaluate_approve's error, and a counted vote's have is approvals + 1. An engine test drives Engine::approve through a quorum-2 unit: a refused submitter, a first vote, a duplicate, a content drift and its refresh, the first reviewer's vote on the new generation, the apply and a vote after it. Before each vote the predicate over the stored rows answers what the vote meets. A probe that counted stale votes turned three tests red.
+
+D-393's engine keeps its rules; this entry makes them one function that the readers call.
+
+The phase 9 review's theme E amends this entry (fix run 9.5d-1; R3, R4, R39): approve_eligibility(unit, authors, decisions, actor) takes the authors of the unit's stored items (any iterator of their ids), not the items: it judges only who authored an item, so a reader may read the authors alone. The count is its own function, counted_approvals(unit, decisions), over the decisions alone, and ApproveEligibility's approvals is that count. Its refusal is ApproveRefusal (AlreadyDecided, SodViolation, DuplicateVote), which converts into the ApprovalError the engine answers. evaluate_approve passes its items' authors and answers that error, so the engine's refusals are byte-identical: the library's rule tests keep their expectations, a test pins each refusal's code and text, and both gears' door tests pass unchanged. Pricing's progress counts the decisions alone (D-462); the flag reads the item authors alone where it does not need the items (D-471, products P-D-228). A probe that counted stale votes turned four library tests red.
+
+**Source:** Phase 9 plan rev 2 (W2, binding: the review's alternative W2; L5 for #40's counts). Amended by the phase 9 review, theme E (fix run 9.5d-1): the authors, the count apart, a three-variant refusal.
+
+#### D-460 [M] The plans list names each plan's current revision and the one in effect
+
+**Status:** DECIDED 2026-09-30.
+
+The plans screen shows, per plan, the revision being changed or waiting and the one it sells today (ask 27). The list carried only the revision headers, so the screen read every revision to count its items.
+
+- **The rule.** GET /plans and GET /plans/{id}, and every answer of PricingPlanDto (the create, the clone and the rename), carry two objects:
+  - current, PricingPlanCurrent { revision_id, rev_no, state, item_count, sku_ids, created_by }: the draft or pending revision (a plan holds at most one, D-451), else the scheduled one still waiting for its date, else the published one in effect. It is chosen over the states the revisions read today (D-447; domain::plan::current), so a due scheduled revision whose switch is not persisted is current, and reads published. item_count counts every item, an included item without an entry too; sku_ids names each item's SKU, in ascending order; created_by is the revision's author, who edits it while it is a draft (D-404), not the plan's.
+  - in_effect, PricingPlanInEffect { revision_id, rev_no }: the published revision in effect today (domain::plan::in_effect), the one the plan sells.
+  - current is null for a plan without revisions; in_effect is null before the first publication.
+- **Not the SKU filter.** sku_ids names every item of the current revision; GET /plans?sku_id= keeps a plan for an item with an entry, judged on the stored state of its draft, pending, scheduled or published revisions (D-434). The two may differ, and the served text says so.
+- **The reads.** The items come from one grouped read over the listed plans' current revisions (plan_item_repo::skus_of_revisions: revision and SKU only). GET /plans makes three statements whatever the number of plans: the plans, their revisions and the current revisions' items; one when the tenant has no plan. The grouped read runs for an empty list too, so the count does not depend on the rows. The QueryRecorder shows the same statements for 10 and for 100 plans.
+- **The write answers.** A write answers what it wrote (D-453): the create answers its empty draft (item_count 0), the clone its new draft with the items it copied, and the rename the plan as its read shows it.
+- **No ready flag.** The list carries no ready flag and no count of red checks: the checks read every item SKU from Products (D-408), so the list would make a Products read per SKU of every draft. The screen reads GET /plan-revisions/{id}/checks per draft.
+- **The tests.** tests/plan_overview.rs: the current revision and the one in effect for a draft only, a pending only, a published only, a draft, a pending and a waiting scheduled revision beside the published one, a due scheduled revision whose switch is not persisted (both name it, and its stored state stays scheduled), and a plan without revisions; the plan read agrees with its list row; sku_ids against the SKU filter; the create, clone and rename answers; the statements for 10 and 100 plans. domain::plan's tests pin the choice over the effective states. Probes that chose the published revision before the scheduled one, and that read the items per plan, were caught.
+
+D-461 amends this entry: the plan list also reads the units its revisions name, in one grouped statement more, so GET /plans makes four statements whatever the number of plans (one when there is none): the plans, their revisions, the current revisions' items and the units.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 1); phase 9 plan rev 2 (decision 1; plan review M6, M7, W3, L4). Amends D-434 and D-453. Amended by D-461.
+
+#### D-461 [M] A revision says who made it and when it was submitted and approved
+
+**Status:** DECIDED 2026-09-30.
+
+The plans screen shows who made each revision and when it was submitted and approved (ask 33). A header carried its state and published_at only, and a scheduled revision has a null published_at until its date.
+
+- **The fields.** PricingPlanRevisionHeader gains created_by and created_at, the row's; the revision read already carries them. Both the header and PricingPlanRevisionDto gain submitted_at and approved_at:
+  - submitted_at is the submission instant of the unit the revision names: its pending unit (pending_unit_id), or the unit that approved it (approved_by_unit_id).
+  - approved_at is the approving unit's decided_at. A scheduled revision needs it, because its published_at is null until its date.
+  - A draft names no unit, so both are null: also a draft back from a reject or a withdraw (its lock is cleared) or from an unschedule (approved_by_unit_id is cleared, D-452). A superseded revision keeps its own unit's instants. A unit that does not read leaves both null.
+- **The reads.** The plan read and list read the units that their revisions name in ONE grouped statement (approval_repo::unit_instants: id, submitted_at and decided_at only), so GET /plans makes four statements whatever the number of plans (D-434, D-453, D-460). The revision read reads the one unit its revision names. The instants are read under plan read: two instants, no actor and no content (the owner's O-9a covers them with D-462).
+- **The write answers.** A write answers what it wrote (D-453). The submit receipt's revision carries its new unit's submitted_at, and approved_at when quorum 0 applied it at once; the copy, the revision PATCH and the unschedule answer a draft, with neither.
+- **The tests.** tests/plan_overview.rs: the header of a pending, a scheduled, a published and a superseded revision against its unit's own read, and of a draft back from a reject, a withdraw and an unschedule; the revision read agrees; created_by and created_at are the row's; the write answers; the list's four statements for 10 and 100 plans. Probes that took submitted_at from the approving unit only, and that dropped the instants from the receipt, were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 2; plan review M6, M7, L1, L9). Amends D-434,
+D-453 and D-460 (GET /plans makes four statements, not three).
+
+#### D-462 [M] A pending revision shows its vote progress under plan read
+
+**Status:** DECIDED 2026-09-30.
+
+The plan's screen shows how far a pending revision is from its quorum (ask 40).
+
+- **The grant (O-9a).** The owner ruled on 2026-09-30 that a plan reader may see the vote progress of a pending revision, counts only, without the approval-unit read grant. *Counter-argument:* it tells a reader that a change is in review and how close it is, which before needed the unit grant.
+- **The field.** PricingPlanRevisionDto gains approval, PricingPlanApprovalProgress { unit_id, approvals, quorum_required }, while the revision reads pending, and null in every other state: on GET /plan-revisions/{id} and on every answer of the DTO. A submit receipt of a pending unit carries approvals 0; one applied at once carries null.
+- **The count.** approvals is D-459's count through bss_approval::approve_eligibility over the unit, its stored items and its decisions: the approve votes of the current generation that are not stale, the votes the vote door counts. A duplicate vote adds nothing, and a stale refresh turns earlier votes stale, so they stop counting. quorum_required is the unit's own. No actor id, note or snapshot is shown; the unit's reads keep their grant.
+- **The reads.** The revision read reads its unit, and for a pending one its items and its decisions: at most three statements more, only for a revision that names a unit.
+- **The tests.** tests/plan_overview.rs: quorum 2 through its votes (approvals moves as the receipt's have does, a duplicate vote adds nothing, a refresh makes the first vote stale and it stops counting, the apply clears the field), quorum 1 and quorum 0 at the submit, a draft; a caller holding plan read only reads it. Probes that counted stale votes, that dropped the progress from the read and from the receipt, were caught.
+
+The phase 9 review's theme E amends this entry (fix run 9.5d-1; R13, R45, R52): the count is bss_approval::counted_approvals over the unit's decisions alone (D-459), so the revision read reads its unit and, for a pending one, its decisions: at most two statements more (it read the unit's items too, only to discard them). The progress takes no reader: GET /plan-revisions/{id} answers the same counts to every plan reader. The submit receipt reads its new unit's item authors and its decisions once each and builds both the progress and the unit from them (it read each twice). tests/plan_overview.rs pins both: the receipt reads one items statement and one decisions statement, and the read of a pending revision none and one.
+
+**Source:** Owner, 2026-09-30 (O-9a, "yes"); phase 9 plan rev 2 (decision 4; plan review M7, L5). Amended by the phase 9 review, theme E (fix run 9.5d-1): the count from the decisions alone, each row read once.
+
+#### D-463 [M] A plan's sale date on create and clone
+
+**Status:** DECIDED 2026-09-30.
+
+A new plan's first revision took its sale date only through a second call, the revision PATCH (ask 34). The date decides at approval whether a revision is scheduled or published (D-449).
+
+- **The create.** POST /plans takes an optional available_from, YYYY-MM-DD: rev 1's sale date. Omitted or null means "at publish", as before.
+- **The clone.** POST /plans/{id}/clone takes an optional available_from. Omitted, rev 1 keeps the source's sale date, as before (D-451). A date overrides it. Null clears it: "at publish". The clone request tells the three apart, as the revision PATCH does.
+- **The refusal.** The date is judged as the revision PATCH judges it: a date that does not read is 400 DATE_INVALID on available_from, and nothing is written. It is one of D-456's body refusals: after the money's policy (503), with PLAN_CODE_REQUIRED, before the 404 of the book (the create) or of the source plan (the clone). Like the PATCH, the door refuses only a date that does not read; the checks judge the sale date (D-408).
+- **The texts.** The served texts of the create and the clone name the field and DATE_INVALID.
+- **The tests.** tests/plan_doors.rs: a create with a date, without one, with null, and with a malformed date on a known and on an unknown book (400 both times, nothing written). tests/plan_clone.rs: a clone that keeps, overrides and clears the source's date, and a malformed date on a known and an unknown source plan; the source is unchanged. Probes that dropped the create's date and ignored the clone's override were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7); phase 9 plan rev 2 (decision 3; plan review L10). Amends D-451; extends D-456.
+
+#### D-464 [L] A plan submit and a publish-changes carry the submitter's note
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen shows why a unit was submitted (ask 44). Products' submit doors take a note (P-D-219); pricing's took none (D-445), so a plan change or a batch of prices reached its approver without one.
+
+- **The plan submit.** POST /plan-revisions/{id}/submit takes an optional body { note } (PricingPlanRevisionSubmitRequest; the served body is optional), products P-D-219's body rule: no body, {} and note: null carry no note, and any other key is 400 BODY_UNEXPECTED, the rule of the empty body it replaces. A note that is neither text nor null is 400, as a body that does not read. The Idempotency-Key's digest covers the body as sent ({} for none).
+- **Publish-changes.** POST /price-books/{id}/publish-changes takes an optional note beside price_ids and common_effective_date; omitted or null carries none. Its body rules are otherwise unchanged: it still needs a JSON object, and a key it does not know is 400 as before.
+- **The cap.** Both doors judge the note right after they parse the body, before they read anything: at most 2000 characters, counted as Unicode scalar values (bss_approval::NOTE_MAX_CHARS, D-457), else 400 NOTE_TOO_LONG on note, and nothing is written. So a revision or a book the tenant does not hold answers the 400 too. The engine's submit caps no note, so the door is its only judge.
+- **Where it goes.** The note passes through the library's SubmitRequest.note onto the unit's submit_note: the submit receipt and every unit read carry it. It is not content (D-445): neither the snapshot nor the fingerprint carries it.
+- **The single price.** POST /prices/{id}/submit takes no note: its body stays empty, and any key is 400 BODY_UNEXPECTED. A note for prices travels with publish-changes. Its served text says so.
+- **The tests.** tests/plan_revision_approvals.rs: a note stored and read back; no body, {} and a null note; 2000 two-byte characters pass; 2001 are 400 NOTE_TOO_LONG on a revision and on an unknown one, with nothing written; a stray key alone and beside a note is 400 BODY_UNEXPECTED. The pin that the plan submit takes no body now pins that it takes nothing but a note. tests/approval_doors.rs: publish-changes stores a note and a null one, refuses one over the cap before the 404 of an unknown book, and the price submit refuses a note. Probes that dropped either door's cap were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 6); phase 9 plan rev 2 (decision 5; plan review L3). Amends D-445 and products P-D-219's Pricing bullet.
+
+#### D-465 [M] A revision may carry again a deprecated SKU its plan sells
+
+**Status:** DECIDED 2026-09-30.
+
+The checks accept a deprecated SKU that the plan's published revision in effect carries (D-408), but the item door refused every deprecated SKU. So an item removed from a copied draft could not be added back, although the copy had carried it (ask 36).
+
+- **The ruling (O-9b).** The owner ruled on 2026-09-30 that D-408's "newly added" does not cover a re-add. *Counter-argument:* make the check strict instead, so a deprecated SKU never re-enters a draft; not chosen.
+- **The rule.** POST /plan-revisions/{id}/items admits a deprecated SKU when the plan's published revision in effect today (D-447) carries it. Any other deprecated SKU stays 400 ITEM_SKU_DEPRECATED on sku_id. A clone is a new plan with no revision in effect, so its drafts add no deprecated SKU; the SKUs it carried stay red in its checks (D-408).
+- **One source.** infra::plan_revisions::published_skus (plans::published_skus before the phase 9 review's theme F moved it below the doors) gives the item SKUs of the published revision in effect, from the same function the checks read them with (stored_context). The door judges it in its admissibility read, before any claim or reservation. The create op's SKU re-read (reference_work::observe_sku) judges it on its reserving step, reading the op's revision and its plan on the clock's day, so the create answers what the door answers. A revision that stops carrying the SKU between the two is judged again by the checks at submit and at apply.
+- **Unchanged.** An attach and a rereserve admit a deprecated SKU as before (D-413). A draft, retiring or retired SKU and a bundle SKU stay refused.
+- **The texts.** The served text of the item create names ITEM_SKU_DEPRECATED and the rule.
+- **The tests.** tests/plan_item_doors.rs: a SKU deprecated after its plan's publication, removed from the copy and added back (201, confirmed, its check green); another deprecated SKU refused; the carried SKU refused in a clone. tests/plan_item_references.rs: the create op, below the door, writes a carried deprecated SKU and refuses another with the door's answer, its op keeping SKU_DEPRECATED. A probe of the door alone turned the door test red and left the op's green; a probe of the op turned both red.
+
+**Source:** Owner, 2026-09-30 (O-9b, "yes"); phase 9 plan rev 2 (decision 6; plan review L2). Amends D-408.
+
+#### D-466 [M] Each check row names its items and its blocking prices
+
+**Status:** DECIDED 2026-09-30.
+
+The plan's items table marks the items that a failing check is about (ask 29). A check row named its items only in the prose of detail, and blocked_by named approval units only, so the screen kept a copy of the rules.
+
+- **The fields.** Each row of GET /plan-revisions/{id}/checks, and each row of the REVISION_CHECKS_RED body (whose detail is the red rows as the checks door renders them), gains two fields. code, ok, label, detail, info and blocked_by keep their names and their meaning.
+  - subjects, [PricingPlanCheckSubject { item_id, sku_id, price_book_entry_id }]: the items that turn the row red, in the revision's item order. price_book_entry_id is null for an item that names no entry. A green row names no item. A plan-wide row names none either: PLAN_NAME, PLAN_BOOK, PLAN_BOOK_VALIDITY, PLAN_ITEMS and the information rows DESCRIPTORS and APPROVAL.
+  - blocked_by_prices, [PricingPlanCheckBlockingPrice { unit_id, price_id, price_book_entry_id }]: the pending prices behind blocked_by, one per price, ordered by unit and then by price. blocked_by is built as before: the units that hold a pending price of an entry that an uncovered item names, on any chain, because the default chain can cover a value. The units of blocked_by_prices are exactly blocked_by.
+- **Which items.** An item-level row names the items that its detail lists. ITEM_ENTRY_MISSING, ITEM_ENTRY_SKU_MISMATCH, ITEM_ENTRY_LOST, ITEM_BUNDLE_SKU, CHARGE_KIND_SKU_TYPE, ITEM_BOOK_FOREIGN, ITEM_UNCOVERED, ITEM_SKU_DEPRECATED, ITEM_SKU_UNAVAILABLE, ITEM_REFERENCE_PENDING and ITEM_REFERENCE_LOST name each item they refuse. METER_DUPLICATE names both items of each pair that meters one usage type. FREQUENCY_MIXED names every recurring item priced in the plan's book, because each bills in one of the mixed periods. Only ITEM_UNCOVERED has a blocked_by, so only it has blocked_by_prices.
+- **The reads.** No read is added: the checks' context already holds each item, the entry it names and that entry's pending prices with their units.
+- **The tests.** src/domain/plan_tests.rs: a table over every code that the checks emit, enumerated from what the checks answer over the table's contexts, each context turning its code red (the information rows stay green) and naming its items; in every context a green row names no item and no price, and each row's blocked_by is exactly the units of its blocked_by_prices; an uncovered entry's pending prices, one row per price. tests/plan_item_doors.rs: ITEM_UNCOVERED names its item and the pending price of a submitted prices unit, and names neither once the unit is approved. tests/plan_revision_approvals.rs: the REVISION_CHECKS_RED body carries both fields and equals the checks door's red rows. Probes that dropped the blocking prices, the mixed periods' items and the DTO's subjects were caught.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 5); phase 9 plan rev 2 (decision 7). Extends D-408.
+
+#### D-467 [H] A plan item is a SKU and its entry: no treatment, no included quantity, no minimum quantity
+
+**Status:** DECIDED 2026-09-30.
+
+The owner asked for how long an included quantity is included, and learned that it had no defined period, no proration and no rollover rule. The owner then removed the field for now, and with it the treatment and the minimum quantity. A plan item is now a SKU and its entry in the plan's book.
+
+- **The API.** POST /plan-revisions/{id}/items takes sku_id and price_book_entry_id, and both are required: a missing or null entry is 400 ITEM_ENTRY_MISSING on price_book_entry_id. PATCH /plan-items/{id} takes only price_book_entry_id; a null one is 400 ITEM_ENTRY_MISSING, and so is a PATCH that leaves an item without an entry. At both doors a body that carries treatment, included_qty or qty_min is 400 BODY_UNEXPECTED on that key, the rule for a stray key, judged with the body, before any read; any other key the body does not know is refused by its parse, as before. TREATMENT_INVALID, INCLUDED_QTY_INVALID and QTY_MIN_INVALID are gone.
+- **The reads.** No read shows the three fields: the item read and every item answer (PricingPlanItemDto), the revision read, GET /resolve (PricingResolveItemDto) and the snapshots of the units submitted from now on. The treatment's closed set (PricingTreatment) is gone from the served spec.
+- **Storage.** There is no migration: the columns and their CHECKs stay. Every row written from now on stores treatment = 'paid', included_qty = NULL and qty_min = NULL (plan::stored_treatment): the item create op, the copy and the clone, the item PATCH and the revision PATCH's book remap, which rewrite the row they change in that shape. The repository's two writers derive that shape themselves (plan_item_repo::insert and update_draft, the phase 9 review's theme G, fix run 9.5d-1), whatever the model they are given carries: no caller sets the three columns, so a writer added later cannot keep a legacy row. insert_as_given and update_draft_as_given write a row as given; no door calls them, and they seed the suites' legacy rows and the column CHECKs' tests. tests/plan_repositories.rs: a legacy treatment and quantities passed to the insert and to the draft update are stored paid, NULL and NULL, and an entry-less item included with no quantity. A probe that wrote the given shape turned 21 tests red. The one exception is the copy of a legacy item stored without an entry: its entry stays null, so the column's CHECK keeps its treatment 'included', with no quantity. A create op stored before D-467 carries the old fields in its input; they are ignored.
+- **Legacy rows.** Rows stored before D-467 keep reading, with the fields hidden. A legacy included item answers price_book_entry_id: null, and resolves with no chains. Published history is not rewritten: a published or superseded revision keeps its rows as stored.
+- **The checks.** INCLUDED_QTY and every branch keyed on a treatment or a quantity go. FREQUENCY_MIXED, METER_DUPLICATE and ITEM_UNCOVERED stay. An item without an entry is ITEM_ENTRY_MISSING, whatever it was stored as, and meters nothing; so a legacy included item in a draft is ITEM_ENTRY_MISSING, and its author removes it or gives it an entry. The row's label is "Every item points at a price".
+- **The units pending at the deploy.** The fingerprinted content of a plan revision is its book, its sale date and its items by SKU, each item its SKU and its entry; before D-467 it also held each item's treatment and quantities. Pricing re-derives a unit's content on every vote, so every plan_revision unit pending at the deploy finds its content changed once. Measured in tests/plan_items_legacy.rs:
+  - the first approve or reject refreshes the unit at the next generation, records no vote, and answers 400 UNIT_STALE with the new generation; the votes of the older generation stop counting;
+  - a unit whose revision holds only priced items (the stand's qty_min item) then applies on the approve of the new generation;
+  - a unit whose revision holds a legacy included item is refused at the apply of the new generation, 409 APPLY_REFUSED with REVISION_CHECKS_RED: ITEM_ENTRY_MISSING, and nothing is published; the reject of the new generation returns the revision to a draft, whose author fixes it. No unit is left that can be neither approved nor rejected.
+- **The frozen read contract (D-419 to D-422).** treatment, included_qty and qty_min leave each resolved item; the consumer goldens under tests/contract/ were recorded again, and they differ only by these keys. The pinned price read (D-422) is unchanged. No code outside pricing reads the three fields; the ledger's treatment is another concept, and pricing-sdk has none.
+- **Cross-gear effects.**
+  - No optional (add-on) and no included items remain in pricing plans.
+  - Main's orders PRDs assumed optional items: the orders-lifecycle PRD's add-on selection on the order line (gears/bss/orders-lifecycle/docs/PRD.md, the submit gate's add-on bounds and the resolved open question on add-on selection) and the orders-changes PRD's "Add-On Selection on the Order Line". They are named here and not edited.
+  - Rating's T-D-38 floor is applied "after included quantities", and that step has no operand now; Rating's register records the amendment (gears/bss/rating/docs/DECISIONS.md).
+  - The vhp-core e2e sends and asserts treatment; it follows in run 9.5.
+- **The tests.** src/domain/plan_tests.rs: the checks without a treatment, an entry-less item ITEM_ENTRY_MISSING and metering nothing, the check list without INCLUDED_QTY. tests/plan_item_doors.rs: each key refused at both doors with nothing reserved or written, the entry required, a null entry refused, a new row stored paid with no quantity. tests/plan_item_references.rs: the create op writes paid with no quantity. tests/plan_items_legacy.rs seeds the stand's shapes (an included item in a draft, in a pending revision and in a published one; a qty_min item pending and published; two pending units whose content carries the old fields) and reads, resolves, copies, checks, approves and rejects them as above. tests/response_enums.rs: no plan item schema carries the keys, and the create requires its entry. Probes that let a key through, copied the source's treatment and quantities, fingerprinted the treatment again, spared an entry-less item from ITEM_ENTRY_MISSING, kept the PATCHed row's shape and wrote a quantity from the create op were caught.
+
+**Source:** Owner, 2026-09-30 (the phase 9 plan's section "plan items lose treatment, included_qty and qty_min"); phase 9 plan rev 2 (run 9.2). Amends D-388, D-394, D-407, D-413, D-419, D-420, D-421 and D-439. Amended by the phase 9 review, theme G (fix run 9.5d-1): the repository writes the row shape.
+
+#### D-468 [M] A new plan's code follows a declared rule
+
+**Status:** DECIDED 2026-09-30.
+
+A plan's code had a blank check and a length cap only (D-457), stored as sent, so `PRO`, `pro` and `PRO ` could coexist under the exact unique index (ask 39). The owner asked for a rule (the scope addition to run 9.2).
+
+- **The rule.** On POST /plans and POST /plans/{id}/clone the new plan's code matches `^[A-Z0-9][A-Z0-9_-]{0,31}$`: 1 to 32 characters (domain::plan::CODE_MAX) of upper-case ASCII letters, digits, `-` and `_`, starting with a letter or a digit (domain::plan::code_follows_the_rule). Otherwise the answer is 400 PLAN_CODE_INVALID on field code, and nothing is written.
+- **As sent.** The code is judged as sent, with no trim and no case folding: `pro`, `PRO ` and ` PRO` are all invalid, and a valid code is stored as sent.
+- **The order.** The length cap comes first, with the body, before any read: a code of 65 characters or more is still 400 FIELD_TOO_LONG (D-457). Then a blank code is 400 PLAN_CODE_REQUIRED, as before. Then the rule: a code of 33 to 64 characters, or any other code off the rule, is 400 PLAN_CODE_INVALID. Then the rest, in D-456's order: DATE_INVALID, the book's or the source plan's 404, PRICE_BOOK_READ_REQUIRED, and 409 PLAN_CODE_TAKEN.
+- **Stored codes are grandfathered.** There is no migration. A code stored before the rule keeps reading and is never judged again: the plan reads, lists, is renamed (the plan PATCH takes a name only and judges no code) and is cloned, and only the clone's new code is judged. The Benidorm stand holds 113 lower-case codes such as `plan-6dfd4733` from the e2e. Uniqueness stays exact, as before; because every new code is upper-case, no two plans created from now on can differ in case alone.
+- **Out of scope.** The codes of books, SKUs and categories.
+- **The texts.** The served texts of both doors name the rule and PLAN_CODE_INVALID in their refusal lists.
+- **The e2e.** The gears-rust e2e creates upper-case plan and clone codes. The vhp-core e2e (tests/e2e/tests/lib/pricing.py create_plan, and its clone codes) creates lower-case codes; it is fixed in run 9.5 and must land with this image.
+- **The tests.** tests/plan_codes.rs: valid codes (one character, a digit, `-` and `_`, 32 characters) stored as sent; each invalid shape refused with its code and nothing written (lower and mixed case, a trailing, a leading and an inner space, a leading `-` or `_`, a dot, a non-ASCII letter, 33 and 64 characters: PLAN_CODE_INVALID; empty and blank: PLAN_CODE_REQUIRED; 65 characters: FIELD_TOO_LONG); the order against the book's 404, a malformed date and an over-long name; the clone under the same rule, before the source's 404; a grandfathered lower-case plan that reads, is renamed and clones to a valid code, and a new upper-case code beside a stored lower-case one. The suites' plan fixtures now create upper-case codes. Probes that dropped the rule, judged a blank code by the rule, skipped the clone's code and admitted lower case were caught.
+
+**Source:** Owner, 2026-09-30 (ask 39; backend asks validation 3, "confirm there is no charset rule"; phase 9 plan rev 2 L8 had moved it to Out as an open question). Extends D-456 (the order of the body's refusals) and D-457 (the code's cap).
+
+#### D-469 [M] The served contract declares every door's 503, every ETag it sets and the refusals of the plan doors
+
+**Status:** DECIDED 2026-09-30.
+
+The generated client of the pricing-mfe did not type a 503 (ask 30): no pricing op declared one, while products declares it on all of its ops. Validation 3 also found served texts that did not say what their doors do (its contracts notes). This entry changes the served contract only: every door already answered as below.
+
+- **The census.** The ops are the 51 that register_rest mounts: tests/rest_support/mod.rs lists them, and its harness asserts that the registered set equals the list; tests/rest_authz.rs, tests/module_test.rs, tests/skeleton_contract.rs and tests/authoring_doors.rs count the same 51.
+- **503 on every op.** Every door judges its caller at the policy decision point first, and a decision point that cannot answer is 503 (support::authz_failure), so every op declares a 503 problem response, as products does. D-434, D-440 and D-456 name the 503 of a second judgement, on the money or the book.
+- **REGISTRY_UNAVAILABLE on the ops that read Products hard.** The served texts name the Products dependency on exactly eight ops, measured at the base of run 9.2 (9.1 changed the item create, which still reads the SKU): GET /plan-revisions/{id}/checks, POST /plan-revisions/{id}/items, POST /plan-revisions/{id}/submit, POST /approval-units/{id}/approve (a plan revision's checks at apply, a usage chain's dated metering), POST /price-books/{id}/entries, GET /resolve, and POST /prices/{id}/submit and POST /price-books/{id}/publish-changes (a usage chain's dated metering, D-402). A reject never answers a Products 503: the stale refresh's descriptor read is best-effort (D-416), and tests/plan_revision_approvals.rs rejects under an outage. An item PATCH reads nothing from Products, and tests/plan_item_doors.rs PATCHes under one. The copy, the clone and the deletes drive their reference ops best-effort and never answer it.
+- **ETag.** Every answer that sets an ETag declares the header on its success response: the eight reads that declared it before, and the nineteen write answers that set one, found by a census of the doors: POST /price-books, PATCH /price-books/{id}, PUT /settings, PUT and PATCH /dimension-keys, POST /price-books/{id}/entries, PATCH /price-book-entries/{id}, PUT /approval-policy, DELETE /approval-policy/{kind}, POST /price-book-entries/{id}/prices, PATCH /prices/{id}, POST /plans, PATCH /plans/{id}, POST /plans/{id}/revisions, POST /plans/{id}/clone, PATCH /plan-revisions/{id}, POST /plan-revisions/{id}/unschedule, POST /plan-revisions/{id}/items and PATCH /plan-items/{id}. The deletes that answer 204, the submits, publish-changes and the votes set none.
+- **The texts (the contracts notes).**
+  - The revision PATCH: a new book remaps each item to the new book's entry of the same SKU, charge kind, period and model (D-427); an item with no such entry keeps its own and its checks show ITEM_BOOK_FOREIGN; book_id omitted or null leaves the book unchanged.
+  - The item create lists every refusal its door answers, from a census of the door: 400 BODY_UNEXPECTED (D-467), ITEM_ENTRY_MISSING, ITEM_BOOK_FOREIGN, ITEM_ENTRY_SKU_MISMATCH, ITEM_SKU_DEPRECATED, ITEM_BUNDLE_SKU and REVISION_ITEMS_TOO_MANY; 403 NOT_DRAFT_AUTHOR; 404 for the revision and ENTRY_NOT_FOUND for the entry; 409 REVISION_NOT_DRAFT, ITEM_SKU_TAKEN, IDEMPOTENCY_CONFLICT, IDEMPOTENCY_KEY_IN_FLIGHT, and SKU_FENCED, SKU_RETIRING or SKU_DRAFT from its create op; Products' own refusal of the SKU read; 503 REGISTRY_UNAVAILABLE.
+  - The revision delete names STALE_REVISION, the answer of a concurrent write that changed the revision or one of its items first.
+- **The tests.** tests/served_contract.rs reads the served spec: a 503 problem on each of the 51 ops; REGISTRY_UNAVAILABLE in the text of exactly the eight; the item create's, the revision PATCH's and the revision delete's texts, and the plan code rule's (D-468). tests/module_test.rs pins the ETag on the success answers of the eight reads and the nineteen writes, and nowhere else. Probes that dropped one op's 503, named the registry on the reject, dropped the unschedule's ETag and dropped STALE_REVISION from the delete's text were caught.
+
+D-470 extends this entry: the approval-unit counts are one op more, so the census, the 503 on every op and the tests count 52 ops, not 51.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 2, approved); phase 9 plan rev 2 (M1 and W1, binding: 503 on every op; decisions 8 and 9; L8: the contracts notes correct served texts to match the code). Extended by D-470.
+
+#### D-470 [M] The approval units are counted by state and kind, list newest first on request, and skip the live impact on request
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen of the pricing-mfe merges pricing's and products' units (the owner's option 1: two per-gear methods that the UI merges). It shows a badge per state and per kind, the newest units first, and does not need the live impact on the queue (ask 42).
+
+- **The counts.** GET /bss-pricing/v1/approval-units/counts answers PricingApprovalUnitCounts { by_state { pending, approved, rejected, withdrawn }, by_kind { prices, plan_revision }, total }: every state and every kind is named, 0 when none, and total is the number of units the list pages through under the same narrowing.
+  - It takes the list's whole narrowing (plan review L11): state, kind, and the referenced aggregate, ref_id or its alias book_id. The list and the counts read one condition (approval_repo::UnitListFilter), so the badge and the list count the same set.
+  - A narrowing the list refuses is refused the same way: 400 UNIT_STATE_INVALID on state, 400 QUERY_INVALID on kind for a kind pricing does not record (below), 400 QUERY_INVALID on book_id for a ref_id and a book_id that differ, 400 QUERY_INVALID on query for a malformed id. It takes nothing but the narrowing: limit, cursor, $orderby, impact and any other key are 400 QUERY_INVALID, whose violation names the rejected key, on the counts as on the list (the phase 9 review's R43, fix run 9.5d-1).
+  - It counts in ONE grouped statement (approval_repo::count_units: state, kind, count, grouped by state and kind), whatever the number of units. A stored kind pricing does not record is a corrupt row (500), as on every unit door.
+  - It reads that statement on the plain connection, outside any transaction (the phase 9 review's R32, fix run 9.5d-1): one statement is its own snapshot, and the doors' serializable transaction would take read locks over the scanned units that can push concurrent submits and votes into serialization failures. tests/book_reads.rs pins the statement outside any transaction.
+- **The kind is a closed set (the phase 9 review's theme C, fix run 9.5d-1).** The list and the counts take a kind pricing records, prices or plan_revision: any other kind, an empty one or another case included, is 400 QUERY_INVALID on kind, judged with the narrowing, before the filter or the cursor's hash is built. Before, any text was taken, of any length, and counted zero. The repository reads a stored unit's kind through the same set (every unit read, and count_units' rows: approval_repo::UnitCount), and PricingApprovalUnitDto.kind is the enum PricingApprovalKind (D-439). So the list, the card, the receipts, the votes and the counts refuse a unit of another kind alike, with a 500 that does not name it. The cursor's hash is unchanged: it hashes the kind's stored name, as before (a1a21e85af067d2d for kind=prices). tests/book_reads.rs: kind=promotion, an empty kind, PRICES and a kind of 5000 characters are refused alike by the list and the counts, on kind. tests/approval_kinds.rs: a unit of an unknown kind is 500 on the list (bare, by state, with impact=false), on the counts (bare and by state) and on the card, while a narrowing that does not keep it serves; a state written around its CHECK is 500 on the list, the counts and the card. tests/response_enums.rs: the kind is an enum.
+  - It is authorized as the list is: approval_unit read. The route census holds 52 ops (D-469's 51 and the counts), and the counts declare 503 as every op does.
+- **The descending order.** The list takes $orderby=submitted_at desc, newest first, and submitted_at asc (or submitted_at alone), the submission order of D-458 and still the default. The unit id breaks a tie in the same direction. Any other $orderby is the toolkit's 400 INVALID_ORDERBY_FIELD (an order on another field, a second key, a direction other than asc or desc). Its violation names the key it refuses: the other field, or "only one key, submitted_at, is accepted" for a second submitted_at key; it named the whole order before, which called submitted_at unsupported (the phase 9 review's R67 and its twin here, fix run 9.5d-1).
+  - The order is not part of the narrowing's hash (plan review M4). The cursor carries its order (CursorV1.s: `+submitted_at,+id` or `-submitted_at,-id`), and a continuation follows the cursor's order, so every cursor minted before this decision still continues ascending, never 400 FILTER_MISMATCH.
+  - $orderby beside a cursor is the toolkit's 400 ORDER_WITH_CURSOR, judged first, as its OData extractor judges it: a continuation sends only its cursor.
+- **The merge contract** (shared with products P-D-227). A client merging the two gears' pages compares submitted_at as an instant, never as text: the RFC 3339 rendering trims trailing zeros of the fraction and writes UTC as Z, so as strings `…:00Z` sorts after `…:00.5Z` (the P-D-213 trap). It then compares the unit id as lower-case hex, in the same direction.
+- **impact=false** (plan review M3). The list takes impact=false to skip the live impact read: every unit answers impact: null, and no plan is read. The page still reads its units, their items and their decisions; only the plans' reading (infra::prices::PlansReading, four statements) is skipped. impact=true is the default; a value that is not a boolean is 400 QUERY_INVALID. Pricing has no impact_live: the field is impact.
+- **The texts.** The served texts of the list and the counts name the order, the merge contract, impact=false and their refusals.
+- **The tests.** tests/book_reads.rs: the counts against the list's own pages under nine narrowings, and the list's refusals refused alike by the counts; the counts in one grouped statement for 10 and 100 units; the newest-first order and every page size over a three-way tie; a cursor minted before this decision (its narrowing hash `a1a21e85af067d2d` for kind=prices, pinned as a literal), each order's cursor with the same hash and its own order, ORDER_WITH_CURSOR and INVALID_ORDERBY_FIELD; impact=false reading the units, their items and their decisions and no plan, the items otherwise equal to the full read's. tests/served_contract.rs: the counts op's 503, parameters, schema and text, and the list's. The route censuses (tests/rest_support/mod.rs, rest_authz.rs, module_test.rs, skeleton_contract.rs, authoring_doors.rs, served_contract.rs, read_contract.rs) count 52 ops.
+
+**Source:** Owner, 2026-09-30 (the approvals option 1, "ok": two per-gear methods, per-gear counts and a descending order); phase 9 plan rev 2 (decision 10; plan review M3, M4, L11). Amends D-458 (the order and the impact); extends D-469 (52 ops, the counts' 503). Amended by the phase 9 review, theme C and R32 (fix run 9.5d-1): the kind is a closed set, and the counts read outside any transaction.
+
+#### D-471 [M] A unit says whether its reader may approve it
+
+**Status:** DECIDED 2026-09-30.
+
+The approvals screen shows the Approve action only to a reviewer the vote door would take (ask 28). The rule is not a grant alone: separation of duties excludes the submitter and every author of the unit's items, and a reviewer votes once per generation. No unit DTO carried the item authors, so the screen could not judge it.
+
+- **The field.** Every PricingApprovalUnitDto carries caller_can_approve, a boolean: on GET /approval-units, GET /approval-units/{id} and every answer that carries a unit (the submit receipts of a price, a plan revision and publish-changes, and the vote receipts). It is true when the caller may approve the unit now.
+- **One rule (W2, D-459).** It is bss_approval::approve_eligibility(unit, items, decisions, caller).refusal.is_none(): the predicate Engine::approve judges through, over the unit's STORED items (the current generation's: a stale refresh rewrites them, as Engine::approve reads them) and its decisions. So it is false for a decided unit (UNIT_ALREADY_DECIDED), for the submitter and every item author (SOD_VIOLATION; an item's author is its price's creator, or the plan revision's), and for a caller who voted in the current generation (DUPLICATE_VOTE); a vote that a refresh made stale does not stop its voter. The flag and the door cannot drift: they are one function.
+- **Approve only (plan review M2).** Engine::reject judges no separation of duties, only a duplicate vote, so the submitter and an item's author may reject a unit whose flag is false. The field's text says so.
+- **Not the grant.** The flag does not judge approval_unit approve: without it the vote door still answers 403. The field's text says so. The caller's own identity, for the screen's other rights, comes from account-management's GET /account-management/v1/me.
+- **What it does not see.** A vote may still meet a refresh (400 UNIT_STALE) when the content drifted since the last read, and an apply may be refused by its rules (409 APPLY_REFUSED); the flag judges the eligibility of the vote, not its outcome.
+- **The reads.** No statement is added to the list: its page already reads its units' items in one statement (D-458) and their decisions in one more, and with impact=false it still reads the items, for the flag (D-470). The card reads the unit's items and decisions once each, as before. A receipt reads the unit's items and decisions (two statements).
+- **The tests.** tests/approval_doors.rs: a prices unit at quorum 3, authored by one user and submitted by another, a vote in generation 1, a refresh to generation 2, a vote in generation 2; for an item's author, the submitter, the voter of this generation, a fresh reviewer and the voter of the earlier generation, the flag on the card and in the list (which agree) is exactly whether the vote door answers 200 (403 SOD_VIOLATION twice, 409 DUPLICATE_VOTE, then pending and applied); on the decided unit it is false for everyone and the door answers 409 UNIT_ALREADY_DECIDED; the submit and vote receipts answer false for their caller. The submitter's reject answers 200 while the submitter's flag, and the author's, is false. tests/served_contract.rs: the field is a required boolean whose text says Approve only and 403, and the list's and the card's texts name it.
+
+The phase 9 review's theme E amends the reads (fix run 9.5d-1; R44, R46): where only the flag needs a unit's items, their authors alone are read (approval_repo::item_authors_of_units: each item's unit and author, one statement): the list with impact=false and the vote receipt. The list with its impact and the card read the items whole, which the impact needs, and take the authors from them. Every receipt reads its unit's items, or their authors, and its decisions once each: the receipt of publish-changes and of a price submit builds its prices and its unit from one read of the items (it read them twice), and the plan submit's receipt its progress and its unit (D-462). tests/book_reads.rs pins the light list's projection and the publish-changes receipt's reads: the items and the decisions once each under quorum 1, twice under quorum 0, where the apply's event and the decided event read them once more.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 4, "ok"); phase 9 plan rev 2 (decision 11; W2, binding; plan review M2). Uses D-459. Amended by the phase 9 review, theme E (fix run 9.5d-1): the flag reads the item authors alone, and each receipt reads each row once.
+
+#### D-472 [M] An entry names its next price
+
+**Status:** DECIDED 2026-10-01.
+
+The Price Books screen shows, beside each entry's price in force, the price that comes next (ask 26). It read that price one entry at a time, from each entry's prices list.
+
+- **The value.** The two entry reads, GET /price-book-entries/{id} and GET /price-books/{id}/entries, and the SKU's entry list, GET /price-book-entries?sku_id= (D-434), carry next_price beside current_price, a PricingPriceDto or null. It is the default chain's earliest scheduled price: an approved price that starts after the day the answer is judged on, today. Else it is the default chain's newest draft or pending price, else null.
+  - "Earliest" is the lowest effective_from. Two approved prices of one chain never share a start (the pricing_price_approved_start index); if they did, the highest version_no would win, as it wins in force.
+  - "Newest" is the highest version_no, then the latest created_at, then the highest id (plan review L7). version_no is unique per entry (UNIQUE (price_book_entry_id, version_no)), so the later keys only make the order total.
+  - A draft or pending price is named whatever its effective_from, even a start that has passed.
+  - A rejected price is never the next price, and neither is a dimension value's price: next_price is the default chain's, as current_price is (D-434).
+  - Its status is its display status on the same day: scheduled for an approved price, draft or pending otherwise.
+- **The money.** next_price follows D-434's rule, as current_price does. It is shown only when the caller's price_book read, judged a second time, admits the entry's book, and it is null otherwise. An unavailable policy fails the read with 503.
+- **One read (plan review L7).** The read that current_price is chosen from is widened, not doubled. price_repo::default_chain (approved_default_chain before) reads the default chain's approved, pending and draft prices of the entries in the same ONE statement, where it read the approved ones. So no entry read gains a statement; only the rows read grow, by the chains' drafts and pending prices.
+  - The book's entry list makes seven statements whatever the number of entries: the book, its entries, the book under the money's grant, the three usage reads (the price counts, the plan items that name the entries, and their revisions, a read skipped when no item names an entry) and the default chain.
+  - The SKU's entry list keeps D-434's seven statements.
+  - price_book_entries::headline (in_force before, D-440) chooses both prices. It decodes only the approved rows, which alone can be in force; domain::price::next_of, beside own_version_at, chooses the next price over a typed view of the chain (moved out of the door by the phase 9 review's theme F).
+- **The frozen contract.** The contract goldens leave next_price out, as they leave current_price out (D-440): a frozen document holds no value of today. tests/book_reads.rs pins it.
+- **The tests.** tests/book_reads.rs:
+  - Twelve chain shapes: a scheduled price after the current one, stored before an earlier scheduled one; only drafts, where the higher version wins though it was written earlier and starts earlier; only pending prices; drafts and pending prices beside a rejected one; nothing after the current price; no price; only a rejected price; a scheduled price with nothing in force; value chains beside the default; a value chain's scheduled price beside the default's draft; a temporary pair in force, whose return is next; and a temporary pair to come, whose temporary price is next. For each, the book's list, the single read and the SKU's entries agree, and each headline price is the very price the entry's prices list answers.
+  - The money: next_price is null, never absent, with entry read alone and with a price_book grant on another book, on each of the three reads.
+  - The book's entry list in seven statements for 10 and for 100 entries.
+
+  tests/served_contract.rs: the three texts name next_price, and its schema is current_price's. tests/entry_doors.rs: a new entry reads next_price null. tests/postgres_plans.rs: default_chain reads the default chain's approved and draft prices, and no value chain's or rejected price.
+
+Breaking for a consumer that compares an entry read as a closed object: it gains next_price.
+
+D-473 amends this entry: on GET /price-books/{id}/entries the day next_price is judged on is the list's as_of, today by default, so "scheduled" means an approved price that starts after as_of (plan review M5).
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 26); phase 9 plan rev 2 (decision 12; plan review M5, L7). Amends D-434 and D-440. Amended by D-473.
+
+#### D-473 [M] The book's entries list reads its prices on a date
+
+**Status:** DECIDED 2026-10-01.
+
+The Price Books screen shows a book's prices on a date the user picks: what was in force last month, or what will be in force after a scheduled change (ask 37). GET /price-books/{id}/entries took no query and judged every price on today.
+
+- **The parameter.** GET /bss-pricing/v1/price-books/{id}/entries takes as_of, a YYYY-MM-DD date. Without it the day is today (UTC), as before.
+- **One day per answer (D-440, plan review M5).** Every price the list answers is judged on as_of, never partly on today:
+  - current_price is the default chain's approved price in force on as_of;
+  - next_price is the default chain's earliest approved price that starts after as_of, else its newest draft or pending price (D-472). With an as_of after a scheduled start, that price is current_price and next_price is the one after it, or a draft or pending price;
+  - each price's status is its display status on as_of (window_display): the current price is active on it and an approved next price is scheduled;
+  - usage.prices splits the approved prices into scheduled, active and superseded on as_of, from the same grouped count bound to as_of. The plans counts read the stored state and are not dated (D-453).
+- **Outside the book's validity.** An as_of before the book's valid_from, or on or after its valid_until, is not refused: the list answers with the prices in force on that day. domain::book::valid_on says whether the book allows a sale on a date, and the list does not judge it. So a price the list answers on such a day is not sellable, and the served text says so.
+- **Refusals (plan review L6).** list_entries parsed no query and ignored every key. It now reads only as_of: any other key, and as_of twice, is 400 QUERY_INVALID, the house rule of pricing's reads (D-440, D-442). An as_of that is not a YYYY-MM-DD calendar date, an empty one included, is 400 DATE_INVALID on as_of, as resolve's date is. The order is D-440's, with the query in its place: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID, then 400 DATE_INVALID; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for another day without the money's grant (below).
+- **Another day is money (phase 9 review R1, fix run 9.5d-1).** The usage split moves with the start and the end of every approved price, so a caller who could step as_of could bisect for the dates of every approved price of the book, which the prices list refuses it (D-440). An as_of other than today (UTC) therefore takes price_book read on the book, judged as D-434 judges the money: without the grant, or under a grant whose scope does not admit the book, the list is 403 PRICE_BOOK_READ_REQUIRED. It is judged after the 404 of the book, as D-440 and D-456 judge the money after the book, and before any price or usage is read. No as_of, and an as_of of today, answer as before: the usage on today, and both prices null without the grant. A caller with the grant reads any day. tests/book_reads.rs: an entry reader and a grant narrowed to another book read without as_of and on today (200, no money) and are refused three other days (403); a grant that admits the book reads all five; an unknown book is 404 on another day. tests/served_contract.rs: the list's text names the refusal.
+- **Only the list.** The plan names the book's list only (decision 13). GET /price-book-entries/{id} takes no as_of: it still reads no query and stays dated on today. GET /price-book-entries?sku_id= stays dated on today and answers as_of with 400 QUERY_INVALID, as any other key (D-434).
+- **The statements.** as_of changes only the bound date: the list makes the same seven statements with it as without it, for 10 and for 100 entries.
+- **The tests.** tests/book_reads.rs: one entry with four approved default-chain prices, a pending and a draft price, and a value chain's price, read on six days — before every price, in the past, today, the day a price ends, a day after a scheduled start, and after the last scheduled start. On each day current_price, next_price, their statuses and the usage split are the ones of that day, the answer without as_of equals the answer with today's as_of, and the single read with an as_of still answers today. A book valid from today+10 to today+40, read before its valid_from, inside, on its valid_until and after it, answers the prices in force on each day. The refusals: seven malformed dates (DATE_INVALID on as_of) and five other queries (QUERY_INVALID), then the order 403, 503, 400 and 404. The seven statements with and without as_of for 10 and for 100 entries. tests/served_contract.rs: the as_of query parameter, not required, and the list's text naming as_of, DATE_INVALID, QUERY_INVALID, valid_from, valid_until and "not sellable".
+
+Breaking for a caller that sends GET /price-books/{id}/entries a query key: the key was ignored and is now 400 QUERY_INVALID. The deploy notes name it.
+
+**Source:** Owner, 2026-09-30 (validation 3 item 7, "ok"; ask 37); phase 9 plan rev 2 (decision 13; plan review M5, L6). Amends D-440 and D-472. Amended by the phase 9 review, R1 (fix run 9.5d-1): an as_of other than today takes price_book read on the book (D-440, "every price is money").
+
+#### D-486 [M] A SKU's entries narrow, order and page in memory
+
+**Status:** DECIDED 2026-10-01.
+
+One SKU's entries are bounded by the tenant's books and its charge kinds, not by traffic. The book's name and currency live on the book, and today's status is computed from prices, so neither is stored on the entry. GET /bss-pricing/v1/price-book-entries?sku_id= therefore still reads what it read, and narrows, orders and pages in memory (owner 2026-10-01, #25 form A). No schema change.
+
+- **The plain keys.** sku_id is required. book_id is 1 to 50 distinct price book ids, comma-separated; fifty-one copies of one id are that one id, and more than 50 distinct ids is 400 QUERY_INVALID. currency is three uppercase letters, the shape of a book currency (D-438). q is a case-insensitive literal substring of the book's code or name; an empty q does not narrow, and `%` is not a wildcard. status is priced, scheduled or unpriced, one or several, comma-separated. changing is true or false. A repeated key, a malformed value, as_of, and any other key are 400 QUERY_INVALID. $filter, $select and $count are 400 QUERY_INVALID, judged before any read: there is no in-memory evaluator for them.
+- **The order.** $orderby names book_name (the default) or status, asc or desc, parsed with parse_orderby and applied in memory. The entry id breaks a tie in that same direction. Any other field, id included, and more than one key, is 400 INVALID_ORDERBY_FIELD. The status order is priced, then scheduled, then unpriced.
+- **The page.** limit defaults to 500 and is clamped at 500; a limit of 0 reads one row, as the house pager does. cursor is the house CursorV1 codec. It carries the order and the last row's sort key and id. Its hash is the first 8 bytes of the SHA-256 of the plain keys (sku_id, book_id, currency, q, status, changing), not an extractor hash of $filter, so a changed narrowing is 400 FILTER_MISMATCH. The book list's spelling does not change the hash: book_id=a,b and book_id=b,a are one narrowing. $orderby beside a cursor is 400 ORDER_WITH_CURSOR, judged before the cursor is decoded. A cursor that does not read is 400.
+- **The status.** It comes from the entry's PricingEntryPriceCounts on today. priced when an approved price is in force today on any chain, default or value (active > 0); else scheduled when an approved price starts later (scheduled > 0); else unpriced. changing is true when draft + pending > 0. An entry can be priced and changing together. A value-only priced entry stays priced while current_price stays null. Both fields are served. They are not money: today's usage split is served without price_book read (D-473).
+- **Money.** current_price keeps D-434's per-book rule. The route stays dated on today and still answers as_of with 400 QUERY_INVALID. The book's entries list keeps 9.5d-1's as_of 403.
+- **The statements.** Unchanged: seven, for a SKU in 5 books and in 50, and for a narrowing that keeps every entry and one that keeps none. The narrowing does not add a statement.
+- **The tests.** tests/sku_reads.rs: every key and every refusal, both orders and the id tie-break, a page boundary, cursor misuse, the 500 default and the clamp, the status table (a value-only priced entry, a scheduled-only entry, a draft on a priced entry), the money rule, and the pin. tests/response_enums.rs: status is in CLOSED. tests/served_contract.rs: the route's text names the keys and the refusals.
+
+Breaking for a SKU in more than 500 entries: a caller that does not follow next_cursor sees the first 500. The default order is book_name, then id, which replaces D-434's order by book code, charge kind, period, model and id. The deploy notes name both.
+
+**Source:** Owner, 2026-10-01 (#25, form A); phase 9 plan rev 4 (run 9.8c; review N5). Amends D-434.

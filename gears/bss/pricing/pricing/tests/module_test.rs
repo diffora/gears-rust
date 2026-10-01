@@ -31,6 +31,7 @@ fn declared_paths() -> Routes {
         ("GET", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("POST", "/bss-pricing/v1/price-books/{id}/publish-changes"),
         ("GET", "/bss-pricing/v1/approval-units"),
+        ("GET", "/bss-pricing/v1/approval-units/counts"),
         ("GET", "/bss-pricing/v1/approval-units/{id}"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/approve"),
         ("POST", "/bss-pricing/v1/approval-units/{id}/reject"),
@@ -120,7 +121,7 @@ async fn the_registered_route_set_is_exactly_the_declared_paths() {
         .collect();
     assert_eq!(registered, declared_paths());
     assert_eq!(census::source_routes(), registered);
-    assert_eq!(registered.len(), 51);
+    assert_eq!(registered.len(), 52);
     assert!(router.has_routes());
 }
 
@@ -197,8 +198,9 @@ fn every_precondition_reading_route_is_in_the_precondition_census() {
         // registration and its 200 answer; - 1: the vote's `GENERATION_MISMATCH` renders through
         // the problem's own response, which carries its status (whole-branch review PS-07); - 1:
         // a claimed key's stored status is read back by one function (`support::stored_status`,
-        // PS-43), where the claim and the book create each read it.
-        ("StatusCode::", 2, 102),
+        // PS-43), where the claim and the book create each read it; + 2: run 9.3's counts door
+        // (D-470), its registration and its 200 answer.
+        ("StatusCode::", 2, 104),
     ] {
         assert_eq!(census::count_in_functions(census::CONTROL, needle), control);
         assert_eq!(census::production_count(needle), production, "{needle}");
@@ -243,6 +245,26 @@ fn etag_routes() -> Routes {
         ("GET", "/bss-pricing/v1/plans/{id}"),
         ("GET", "/bss-pricing/v1/plan-revisions/{id}"),
         ("GET", "/bss-pricing/v1/plan-items/{id}"),
+        // D-469: the write answers that set one (run 9.2's census).
+        ("POST", "/bss-pricing/v1/price-books"),
+        ("PATCH", "/bss-pricing/v1/price-books/{id}"),
+        ("PUT", "/bss-pricing/v1/settings"),
+        ("PUT", "/bss-pricing/v1/dimension-keys"),
+        ("PATCH", "/bss-pricing/v1/dimension-keys"),
+        ("POST", "/bss-pricing/v1/price-books/{id}/entries"),
+        ("PATCH", "/bss-pricing/v1/price-book-entries/{id}"),
+        ("PUT", "/bss-pricing/v1/approval-policy"),
+        ("DELETE", "/bss-pricing/v1/approval-policy/{kind}"),
+        ("POST", "/bss-pricing/v1/price-book-entries/{id}/prices"),
+        ("PATCH", "/bss-pricing/v1/prices/{id}"),
+        ("POST", "/bss-pricing/v1/plans"),
+        ("PATCH", "/bss-pricing/v1/plans/{id}"),
+        ("POST", "/bss-pricing/v1/plans/{id}/revisions"),
+        ("POST", "/bss-pricing/v1/plans/{id}/clone"),
+        ("PATCH", "/bss-pricing/v1/plan-revisions/{id}"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/unschedule"),
+        ("POST", "/bss-pricing/v1/plan-revisions/{id}/items"),
+        ("PATCH", "/bss-pricing/v1/plan-items/{id}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_owned(), p.to_owned()))
@@ -279,13 +301,14 @@ async fn every_operation_has_a_human_summary_and_a_description() {
         assert_ne!(description, summary, "{id}");
         described += 1;
     }
-    assert_eq!(described, 51);
+    assert_eq!(described, 52);
 }
 
-/// Every read that answers an `ETag` declares the header on its 200 response, and nothing else
-/// declares one.
+/// Every answer that sets an `ETag` declares the header on its success response, and nothing else
+/// declares one: the eight reads, and the nineteen write answers that the census of run 9.2 found
+/// (D-469), each the version a following If-Match takes.
 #[tokio::test]
-async fn every_read_that_sets_an_etag_declares_it() {
+async fn every_answer_that_sets_an_etag_declares_it() {
     let harness = rest_support::Harness::new().await.unwrap();
     let (_, openapi) = harness.router(axum::Router::new()).unwrap();
     let declared: Routes = openapi
@@ -296,7 +319,7 @@ async fn every_read_that_sets_an_etag_declares_it() {
                 r.headers
                     .iter()
                     .any(|h| h.name.eq_ignore_ascii_case("etag"))
-                    && r.status == 200
+                    && (200..300).contains(&r.status)
             })
         })
         .map(|e| {
@@ -315,7 +338,10 @@ async fn every_read_that_sets_an_etag_declares_it() {
                 .any(|h| h.name.eq_ignore_ascii_case("etag"))
         })
         .count();
-    assert_eq!(anywhere, 8, "only the 200 of those reads declares it");
+    assert_eq!(
+        anywhere, 27,
+        "only the success answer of those ops declares it"
+    );
 }
 
 #[test]
@@ -367,6 +393,7 @@ async fn no_operation_declares_a_422() {
 // GET /price-books/{id}/publish-changes price_book:read false false
 // POST /price-books/{id}/publish-changes price_book:submit false true
 // GET /approval-units approval_unit:read false false
+// GET /approval-units/counts approval_unit:read false false (D-470)
 // GET /approval-units/{id} approval_unit:read false false
 // POST /approval-units/{id}/approve approval_unit:approve false true
 // POST /approval-units/{id}/reject approval_unit:approve false true

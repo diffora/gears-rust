@@ -449,6 +449,7 @@ async fn admits(
         Ok(sku) => {
             matches!(sku.lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
                 && !sku.type_change_pending
+                && !sku.retire_pending
                 && match held {
                     Held::Entry(entry) => charge_kind_for(sku.r#type)
                         .is_ok_and(|kind| kind.as_str() == entry.charge_kind),

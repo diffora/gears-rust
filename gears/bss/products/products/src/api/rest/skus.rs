@@ -415,7 +415,7 @@ async fn create_sku(
         return Err(DomainError::Validation(report).into());
     }
     resolve_draft_ref(&state, &ctx, new_tx.usage_type_ref.as_deref()).await?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let created = state
         .db
         .db()
@@ -539,7 +539,7 @@ async fn update_sku_draft(
     if proposed.usage_type_ref != current.usage_type_ref {
         resolve_draft_ref(&state, &ctx, proposed.usage_type_ref.as_deref()).await?;
     }
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let updated = state
         .db
         .db()
@@ -631,7 +631,7 @@ async fn delete_sku_draft(
     // Authorization first, then the precondition (as the draft PATCH).
     let scope_tx = scope(&enforcer, &ctx, actions::AUTHOR).await?;
     let expected = if_match(&headers)?.get();
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     state
         .db
         .db()

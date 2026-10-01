@@ -12,12 +12,10 @@
 //! @cpt-dod:cpt-cf-bss-pricing-dod-renewal-all-new:p1
 use super::{
     RuleError,
-    plan::Treatment,
     price::{self, Eligibility, Price, PriceState},
     price_book_entry::{ChargeKind, Model},
 };
 use bss_products_sdk::models::{BillingTiming, SkuVersion};
-use rust_decimal::Decimal;
 use std::collections::{BTreeMap, BTreeSet};
 use time::Date;
 use uuid::Uuid;
@@ -56,16 +54,13 @@ pub struct Entry {
     /// a pin on any other is refused.
     pub prices: Vec<Price>,
 }
-/// One item of the revision as stored, with the entry it names.
+/// One item of the revision as stored, with the entry it names: a SKU and its entry (D-467).
 #[toolkit_macros::domain_model]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     pub id: Uuid,
     pub sku_id: Uuid,
-    pub treatment: Treatment,
-    pub included_qty: Option<Decimal>,
-    pub qty_min: Option<i32>,
-    /// `None` for an included item with no charge: it has no chains.
+    /// `None` for a legacy item stored without an entry (D-467): it has no chains.
     pub entry: Option<Entry>,
 }
 /// Everything the matrix reads, as plain data.
@@ -118,9 +113,6 @@ impl Chain {
 pub struct ItemResolution {
     pub item_id: Uuid,
     pub sku_id: Uuid,
-    pub treatment: Treatment,
-    pub included_qty: Option<Decimal>,
-    pub qty_min: Option<i32>,
     pub price_book_entry_id: Option<Uuid>,
     pub charge_kind: Option<ChargeKind>,
     pub period: Option<String>,
@@ -255,9 +247,6 @@ fn resolve_item(ctx: &ResolveContext, item: &Item, date: Date, pinned: &Pinned) 
     ItemResolution {
         item_id: item.id,
         sku_id: item.sku_id,
-        treatment: item.treatment,
-        included_qty: item.included_qty,
-        qty_min: item.qty_min,
         price_book_entry_id: item.entry.as_ref().map(|e| e.id),
         charge_kind: item.entry.as_ref().map(|e| e.charge_kind),
         period: item.entry.as_ref().and_then(|e| e.period.clone()),

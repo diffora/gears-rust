@@ -11,7 +11,7 @@ use crate::hash::snapshot_hash;
 use crate::model::{
     ApprovalError, Decision, ItemRef, NOTE_MAX_CHARS, Policy, Unit, UnitState, Verdict,
 };
-use crate::rules::{ApproveStep, already_voted, authors_of, evaluate_approve};
+use crate::rules::{ApproveStep, already_voted, evaluate_approve};
 use crate::store::Store;
 use crate::subject::ApprovalSubject;
 use time::{Date, OffsetDateTime};
@@ -156,7 +156,7 @@ impl Engine {
         check_generation(&unit, seen_generation)?;
         let items = store.items(runner, unit_id).await?;
         let decisions = store.decisions(runner, unit_id).await?;
-        let step = evaluate_approve(&unit, &decisions, actor, &authors_of(&items))?;
+        let step = evaluate_approve(&unit, &decisions, actor, &items)?;
         if let Some(generation) =
             Self::refresh_if_stale(store, subject, runner, &unit, &items).await?
         {

@@ -73,6 +73,19 @@ pub async fn state_on(
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
     registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
 ) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
+    state_with_clock(
+        db,
+        registry,
+        Arc::new(bss_pricing::infra::reference_work::WallClock),
+    )
+    .await
+}
+/// [`state_on`] whose approval doors read `clock`.
+pub async fn state_with_clock(
+    db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
+    clock: Arc<dyn bss_pricing::infra::reference_work::Clock>,
+) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(registry),
@@ -80,7 +93,8 @@ pub async fn state_on(
     Arc::new(
         bss_pricing::api::rest::authoring::AuthoringState::new(db, hub)
             .await
-            .unwrap(),
+            .unwrap()
+            .with_clock(clock),
     )
 }
 /// The production router over a state, allowing every user of `tenant`.
@@ -364,6 +378,38 @@ pub async fn request(
         tag,
     )
 }
+/// [`request`] with a body sent as these bytes, the empty body included, which a JSON value
+/// cannot spell: `(status, body)`.
+pub async fn request_raw(
+    app: &Router,
+    ctx: &SecurityContext,
+    method: &str,
+    path: &str,
+    body: &str,
+    key: Option<&str>,
+) -> (u16, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(format!("/bss-pricing/v1{path}"))
+        .extension(ctx.clone())
+        .header("content-type", "application/json");
+    if let Some(key) = key {
+        req = req.header("idempotency-key", key);
+    }
+    let response = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(json!(null)),
+    )
+}
 use bss_products_sdk::{
     ReferenceRegistryV1,
     models::{
@@ -618,6 +664,8 @@ impl ReferenceRegistryV1 for Script {
             unit: None,
             // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
             type_change_pending: mode == 4,
+            retire_pending: mode == 22,
+            lifecycle_next: None,
             pending_unit_id: None,
             approved_by_unit_id: None,
             created_by: Uuid::new_v4(),
@@ -747,7 +795,16 @@ pub struct Target {
     /// The plan and its draft revision; nil for entries.
     pub plan: Uuid,
     pub revision: Uuid,
+    /// For items: fresh SKUs, each with an entry of the book written directly (no reservation),
+    /// taken one per [`Target::input`]. A plan item is a SKU and its entry (D-467). The entries
+    /// stay `confirmation_pending`, which reconciliation (confirmed and lost references) never
+    /// scans: they are not the references a suite drives.
+    pub priced: Arc<std::sync::Mutex<Vec<Priced>>>,
 }
+/// A SKU and its entry of the target's book: `(sku, entry)`.
+pub type Priced = (Uuid, Uuid);
+/// How many priced SKUs an item target holds: more than any suite asks one target for.
+const PRICED_SKUS: usize = 8;
 /// Read a door's answer as `(status, body, etag)`, the shape [`request`] returns.
 pub async fn answer(
     result: Result<axum::response::Response, CanonicalError>,
@@ -840,11 +897,45 @@ impl Target {
         } else {
             (Uuid::nil(), Uuid::nil())
         };
+        let mut priced = Vec::new();
+        if kind == Kind::Item {
+            let tenant = c.ctx.subject_tenant_id();
+            let conn = c.state.db.conn().unwrap();
+            let now = time::OffsetDateTime::now_utc();
+            for _ in 0..PRICED_SKUS {
+                let sku = Uuid::new_v4();
+                let entry = price_book_entry_repo::insert(
+                    &conn,
+                    &AccessScope::for_tenant(tenant),
+                    price_book_entry::Model {
+                        id: Uuid::now_v7(),
+                        tenant_id: tenant,
+                        book_id: book,
+                        sku_id: sku,
+                        charge_kind: "usage".into(),
+                        period: None,
+                        model: "per_unit".into(),
+                        dimension_key: None,
+                        invoice_line_override: None,
+                        reservation_id: Uuid::new_v4(),
+                        reference_state: "confirmation_pending".into(),
+                        version: 1,
+                        created_at: now,
+                        updated_at: now,
+                    },
+                )
+                .await
+                .unwrap();
+                priced.push((sku, entry.id));
+            }
+            priced.reverse();
+        }
         Self {
             kind,
             book,
             plan,
             revision,
+            priced: Arc::new(std::sync::Mutex::new(priced)),
         }
     }
     /// The endpoint a create's Idempotency-Key belongs to, below `/bss-pricing/v1`.
@@ -877,20 +968,25 @@ impl Target {
             ),
         }
     }
-    /// A create body for `sku`: an entry, or an included item, which names no entry and so
-    /// makes no second reservation.
-    #[must_use]
-    pub fn input_for(&self, sku: Uuid) -> Value {
-        match self.kind {
-            // `per_unit` is a model every charge kind allows (D-386, D-427).
-            Kind::Entry => json!({"sku_id":sku,"model":"per_unit"}),
-            Kind::Item => json!({"sku_id":sku,"treatment":"included"}),
-        }
-    }
-    /// A create body for a fresh SKU.
+    /// A create body for a fresh SKU: an entry, or an item naming that SKU's entry of the book,
+    /// written directly when the target was made, so it makes no second reservation.
+    /// # Panics
+    /// When an item target has handed out all its priced SKUs.
     #[must_use]
     pub fn input(&self) -> Value {
-        self.input_for(Uuid::new_v4())
+        match self.kind {
+            // `per_unit` is a model every charge kind allows (D-386, D-427).
+            Kind::Entry => json!({"sku_id":Uuid::new_v4(),"model":"per_unit"}),
+            Kind::Item => {
+                let (sku, entry) = self
+                    .priced
+                    .lock()
+                    .unwrap()
+                    .pop()
+                    .expect("an item target holds PRICED_SKUS priced SKUs");
+                json!({"sku_id":sku,"price_book_entry_id":entry})
+            }
+        }
     }
     /// Create through the kind's front door and read its answer.
     pub async fn create(&self, c: &Caller<'_>, input: Value, key: &str) -> (u16, Value, String) {

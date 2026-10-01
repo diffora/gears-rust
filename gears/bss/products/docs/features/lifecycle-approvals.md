@@ -55,7 +55,7 @@ is the architecture and schema authority. Unchecked items describe implementatio
 
 ### 1.2 Purpose
 
-Govern publish/change/retire with the shared approval shape, copied policy quorum, author SoD, reviewed generations and recoverable local fences. GL changes reach period bindings through dated versions; all terminal paths preserve audit and approval provenance.
+Govern publish/change/retire with the shared approval shape, copied policy quorum, author SoD, reviewed generations and recoverable local fences. GL changes reach period bindings through dated versions; all terminal paths preserve audit and approval provenance. The queue counts its units by state and kind and pages newest first on request (P-D-227), and every unit says whether its reader may approve it, by the engine's own rule (P-D-228).
 
 Requirements: `cpt-cf-bss-products-fr-sku-descriptors`, `cpt-cf-bss-products-fr-sku-lifecycle`, `cpt-cf-bss-products-fr-sku-retire-fenced`, `cpt-cf-bss-products-fr-approval-units`, `cpt-cf-bss-products-fr-sku-type-frozen`, `cpt-cf-bss-products-fr-concurrency-idempotency`, `cpt-cf-bss-products-nfr-authz`, `cpt-cf-bss-products-nfr-audit`, `cpt-cf-bss-products-fr-sku-metering`, `cpt-cf-bss-products-fr-sku-versions`, `cpt-cf-bss-products-fr-reference-registry`, `cpt-cf-bss-products-fr-events`.
 
@@ -207,7 +207,7 @@ Design constraints: `cpt-cf-bss-products-constraint-approval-shape`, `cpt-cf-bss
 
 Verified at `4c5577f1cb08d072e79880599a3ae1db8ed8d1e0`; implementation marker in `products/src/domain/sku.rs`.
 
-The lifecycle is draft, published, deprecated, retiring or retired: sku_publish installs published, sku_change governs published/deprecated content and the reversible published/deprecated edge, and sku_retire installs retired behind a published or deprecated SKU's fence; a never-published draft is deleted by its author, never retired (P-D-206). Retired has no reopening transition; rejected/withdrawn publication or change preserves prior business content, and a retirement abort restores the saved lifecycle. Pending ownership prevents direct editing or a second unit, and the exposed lifecycle supports Pricing's SKU_RETIRING and ITEM_SKU_DEPRECATED adoption guards (spec §3 item 35, §4, §6, §7.2; DESIGN §3.1).
+The lifecycle is draft, published, deprecated or retired (P-D-248): sku_publish installs published, sku_change governs published/deprecated content and the reversible published/deprecated edge, and a dated change waits for its date (P-D-249). sku_retire installs retired behind `retire_pending`, which keeps the SKU's lifecycle until apply; a never-published draft is deleted by its author, never retired (P-D-206). Retired has no reopening transition; rejected/withdrawn publication or change preserves prior business content, and a retirement abort restores the saved lifecycle. Pending ownership prevents direct editing or a second unit, and the exposed lifecycle supports Pricing's SKU_RETIRING and ITEM_SKU_DEPRECATED adoption guards (spec §3 item 35, §4, §6, §7.2; DESIGN §3.1).
 
 ### Publication creates and applies a unit
 
