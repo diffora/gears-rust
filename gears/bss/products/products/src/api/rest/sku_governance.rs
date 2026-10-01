@@ -487,7 +487,10 @@ async fn execute(
                     submitted.unit.id,
                     None,
                     now,
-                    repo::LifecycleMove::between(fenced, g::recorded_lifecycle(&after)),
+                    repo::LifecycleMove::between(
+                        fenced,
+                        g::recorded_lifecycle(current.lifecycle_next, &after),
+                    ),
                 )
                 .await?;
                 g::decided(&outbox, tx, &store, &submitted.unit, ctx.subject_id()).await?;

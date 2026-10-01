@@ -10,7 +10,9 @@
 //! `usage_sets`, and a filter it cannot answer fails the read (403 or 503), never widening it.
 //!
 //! The counts take the list's narrowing — `q`, the usage filters and `$filter` with its top-level
-//! `lifecycle` terms dropped — and nothing that pages or orders.
+//! `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) dropped — and nothing
+//! that pages or orders. A lifecycle term under `or` or `not`, or a text function on `lifecycle`,
+//! is 400 on the list and on the counts.
 //! @cpt-dod:cpt-cf-bss-products-dod-list-search:p1
 use super::{
     ApiState, TxError, authz_error_to_canonical, category_tx_config, contention_db_err,
@@ -44,7 +46,7 @@ use toolkit_odata::{
     Error as ODataError, ODataQuery, Page,
     ast::Expr,
     errors::OdataError,
-    filter::{FieldKind, FilterField, convert_expr_to_filter_node},
+    filter::{FieldKind, FilterField, FilterOp, convert_expr_to_filter_node},
 };
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -103,6 +105,15 @@ impl FilterField for SkuFilterField {
     fn kind(&self) -> FieldKind {
         self.field().kind()
     }
+    /// `lifecycle` is a string to the parser, so a text function still parses. The list and the
+    /// counts refuse it (P-D-249). The contract names only the shapes the `CASE` serves.
+    fn published_ops(&self) -> Option<&'static [FilterOp]> {
+        const LIFECYCLE_OPS: &[FilterOp] = &[FilterOp::Eq, FilterOp::Ne, FilterOp::In];
+        match self {
+            Self::Lifecycle => Some(LIFECYCLE_OPS),
+            _ => None,
+        }
+    }
     /// `category_id` and `pending_unit_id` (P-D-210).
     fn nullable(&self) -> bool {
         self.field().nullable()
@@ -151,7 +162,10 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .description(
             "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, \
              lifecycle, retire_pending, type, category_id (`eq null`: no category) and \
-             pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default \
+             pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or \
+             `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term \
+             under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. \
+             `$orderby` over code, name, updated_at (tie-break id; default \
              code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias \
              `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, \
              name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). \
@@ -214,9 +228,10 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .description(
             "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review \
              (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and \
-             `$filter`, whose top-level `lifecycle` terms are dropped (a `lifecycle` term under \
-             `or` or `not` is 400). `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and \
-             `$select` are 400.",
+             `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by \
+             `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, \
+             `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, \
+             `cursor`/`$skiptoken` and `$select` are 400.",
         )
         .tag(TAG)
         .authenticated()
@@ -538,39 +553,6 @@ async fn expire(
     super::governance::expiry_audits(tx, tenant, &expired, ttl, now).await
 }
 
-/// Whether `expr` names `lifecycle` anywhere.
-fn names_lifecycle(expr: &Expr) -> bool {
-    match expr {
-        Expr::Identifier(name) => name == SkuListField::Lifecycle.name(),
-        Expr::Value(_) => false,
-        Expr::And(a, b) | Expr::Or(a, b) | Expr::Compare(a, _, b) => {
-            names_lifecycle(a) || names_lifecycle(b)
-        }
-        Expr::Not(inner) => names_lifecycle(inner),
-        Expr::In(inner, list) => names_lifecycle(inner) || list.iter().any(names_lifecycle),
-        Expr::Function(_, args) => args.iter().any(names_lifecycle),
-    }
-}
-
-/// `expr` without its top-level `and` conjuncts that name `lifecycle`: the counts count every
-/// lifecycle. A `lifecycle` term anywhere else (under `or` or `not`) cannot be dropped without
-/// changing what the rest means, so it is refused.
-fn without_lifecycle(expr: &Expr) -> Result<Option<Expr>, ODataError> {
-    match expr {
-        Expr::And(a, b) => Ok(match (without_lifecycle(a)?, without_lifecycle(b)?) {
-            (Some(a), Some(b)) => Some(Expr::And(Box::new(a), Box::new(b))),
-            (one, None) | (None, one) => one,
-        }),
-        term if !names_lifecycle(term) => Ok(Some(term.clone())),
-        Expr::Or(..) | Expr::Not(..) => Err(ODataError::InvalidFilter(
-            "the counts drop `lifecycle` only from top-level `and` terms; a `lifecycle` term \
-             under `or` or `not` is not counted"
-                .to_owned(),
-        )),
-        _ => Ok(None),
-    }
-}
-
 /// @cpt-cf-bss-products-fr-read-model
 async fn count_skus(
     Extension(state): Extension<Arc<ApiState>>,
@@ -585,11 +567,17 @@ async fn count_skus(
     let OData(odata) = odata?;
     // The whole filter is checked as the list would read it, then its lifecycle terms go.
     checked_filter(odata.filter.as_deref())?;
+    // Pulled-out lifecycle terms are dropped (the counts count every lifecycle). A term the
+    // CASE does not serve is the same 400 the list answers (P-D-249).
     let condition = match odata.filter.as_deref() {
-        Some(expr) => match without_lifecycle(expr)? {
-            Some(rest) => checked_filter(Some(&rest))?,
-            None => None,
-        },
+        Some(expr) => {
+            let (rest, _) =
+                repo::take_lifecycle(expr.clone()).map_err(ODataError::InvalidFilter)?;
+            match rest.as_ref() {
+                Some(rest) => checked_filter(Some(rest))?,
+                None => None,
+            }
+        }
         None => None,
     };
     let filter = list_filter(&state, &ctx, &params).await?;
