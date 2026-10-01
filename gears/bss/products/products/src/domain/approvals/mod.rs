@@ -7,6 +7,33 @@ pub const KIND_SKU_PUBLISH: &str = "sku_publish";
 pub const KIND_SKU_CHANGE: &str = "sku_change";
 /// Retire a fenced SKU.
 pub const KIND_SKU_RETIRE: &str = "sku_retire";
+/// A kind of approval unit products records (P-D-227). No CHECK holds the stored column: the
+/// repository reads it through this set, so a unit of another kind is a corrupt row, never
+/// judged or served as one of these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalKind {
+    SkuPublish,
+    SkuChange,
+    SkuRetire,
+}
+impl ApprovalKind {
+    /// Every kind, in the order the counts name them.
+    pub const ALL: [Self; 3] = [Self::SkuPublish, Self::SkuChange, Self::SkuRetire];
+    /// The stored kind name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SkuPublish => KIND_SKU_PUBLISH,
+            Self::SkuChange => KIND_SKU_CHANGE,
+            Self::SkuRetire => KIND_SKU_RETIRE,
+        }
+    }
+    /// A kind by its stored name; `None` for a kind products does not record.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.as_str() == name)
+    }
+}
 /// Missing policy rows still require review (P-D-190).
 pub const DEFAULT_QUORUM: u32 = 1;
 /// The longest submitter's note the submit, change and retire doors take, in characters (Unicode

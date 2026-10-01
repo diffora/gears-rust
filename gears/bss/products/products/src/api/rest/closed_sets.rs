@@ -5,6 +5,7 @@
 //! A set with an SDK or approval enum maps from it one to one (a variant added on either side is a
 //! compile error); a stored token is read back with `stored`, where a token outside the set — its
 //! column's CHECK forbids one — is `CorruptRow` naming the row, a 500, never a panic.
+use crate::domain::approvals::ApprovalKind;
 use crate::infra::storage::RepoError;
 use bss_approval::{UnitState, Verdict};
 use bss_products_sdk::models::{BillingTiming, Lifecycle, ReferenceKind, ReferenceState, SkuType};
@@ -94,6 +95,15 @@ closed_set!(
         Approved => "approved",
         Rejected => "rejected",
         Withdrawn => "withdrawn",
+    }
+);
+closed_set!(
+    /// A kind of approval unit products records (P-D-227). No CHECK holds the stored column: the
+    /// repository reads it through this set, so a unit of another kind is a corrupt row (500).
+    ProductsApprovalKind from ApprovalKind {
+        SkuPublish => "sku_publish",
+        SkuChange => "sku_change",
+        SkuRetire => "sku_retire",
     }
 );
 closed_set!(

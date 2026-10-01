@@ -17,7 +17,7 @@ use crate::{
     authz::{actions, resource_types},
     domain::{
         approvals::{
-            KIND_SKU_CHANGE, KIND_SKU_PUBLISH, KIND_SKU_RETIRE, SkuProposal, Subject,
+            ApprovalKind, KIND_SKU_CHANGE, KIND_SKU_RETIRE, SkuProposal, Subject,
             change::SkuChange, publish::SkuPublish, retire::SkuRetire,
         },
         error::DomainError,
@@ -95,8 +95,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              same direction (P-D-227). A client merging pages of several gears compares \
              submitted_at as an instant, never as text, then the id as lower-case hex. `limit` \
              (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
-             its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state \
-             or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with \
+             its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state, \
+             a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that \
+             does not parse; 400 FILTER_MISMATCH for a cursor replayed with \
              another state, kind or SKU; 400 for a cursor that does not read; 400 \
              ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any \
              other order.",
@@ -149,8 +150,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              by_kind (sku_publish, sku_change, sku_retire), each named with 0 when none, and \
              total, the length of the list under the same narrowing (P-D-227). It reads one \
              grouped statement, whatever the number of units. It takes nothing but the narrowing. \
-             Refusals: the list's: 400 for an unknown state or a query that does not parse, and \
-             400 for any other key (limit, cursor, $orderby).",
+             Refusals: the list's: 400 for an unknown state, a kind other than sku_publish, \
+             sku_change or sku_retire (on kind), or a query that does not parse, and 400 for any \
+             other key (limit, cursor, $orderby).",
         )
         .tag("Approval units")
         .authenticated()
@@ -338,7 +340,7 @@ async fn list(
     .await?;
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
-    let filter = narrowing(q.state.as_deref(), q.kind, q.ref_id)?;
+    let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
     let (page, direction) = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
     let list = state
@@ -373,8 +375,9 @@ async fn list(
                             decisions.remove(&id).unwrap_or_default(),
                             reader,
                         )
+                        .map_err(TxError::Repo)
                     })
-                    .collect();
+                    .collect::<Result<_, _>>()?;
                 Ok(UnitList {
                     items,
                     page_info: page.page_info,
@@ -386,16 +389,26 @@ async fn list(
     Ok(Json(list).into_response())
 }
 /// The unit list's narrowing, which the counts take too (P-D-224, P-D-227): a known state (else
-/// 400 on `state`), a kind as sent and the SKU.
+/// 400 on `state`), a kind products records (else 400 on `kind`) and the SKU.
 fn narrowing(
     state: Option<&str>,
-    kind: Option<String>,
+    kind: Option<&str>,
     ref_id: Option<Uuid>,
 ) -> Result<repo::UnitListFilter, CanonicalError> {
     let state = state
         .map(|s| {
             UnitState::parse(s)
                 .ok_or_else(|| CanonicalError::from(g::validation("state", "unknown unit state")))
+        })
+        .transpose()?;
+    let kind = kind
+        .map(|k| {
+            ApprovalKind::parse(k).ok_or_else(|| {
+                CanonicalError::from(g::validation(
+                    "kind",
+                    "unknown approval kind: sku_publish, sku_change or sku_retire",
+                ))
+            })
         })
         .transpose()?;
     Ok(repo::UnitListFilter {
@@ -436,7 +449,7 @@ fn unit_page(
     let direction = unit_order(orderby)?;
     let narrowing = serde_json::json!({
         "state": filter.state.map(UnitState::as_str),
-        "kind": filter.kind,
+        "kind": filter.kind.map(ApprovalKind::as_str),
         "ref_id": filter.ref_id,
     });
     let hash = super::sku_list::cursor_hash(&narrowing);
@@ -454,7 +467,7 @@ fn unit_page(
     Ok((query, direction))
 }
 /// `GET /approval-units/counts` (P-D-227): under the list's grant, the list's narrowing, counted
-/// by state and kind in ONE grouped statement.
+/// by state and kind in ONE grouped statement, read outside any transaction.
 async fn counts(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -471,44 +484,31 @@ async fn counts(
     .await?;
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
-    let filter = narrowing(q.state.as_deref(), q.kind, q.ref_id)?;
-    let tenant = ctx.subject_tenant_id();
-    let rows = state
-        .db
-        .db()
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
-            let (scope, filter) = (scope.clone(), filter.clone());
-            Box::pin(async move {
-                repo::count_units(tx, &scope, tenant, &filter)
-                    .await
-                    .map_err(TxError::Repo)
-            })
-        })
+    let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
+    // One grouped statement is its own snapshot: it runs on the plain connection, never in the
+    // serializable transaction category writes take, whose read locks over the scanned units
+    // would push concurrent submits and votes into serialization failures (the phase 9 review's
+    // R32).
+    let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
+    let rows = repo::count_units(&conn, &scope, ctx.subject_tenant_id(), &filter)
         .await
-        .map_err(tx_to_canonical)?;
+        .map_err(|e| tx_to_canonical(TxError::Repo(e)))?;
     let mut by_state = ProductsApprovalUnitStateCounts::default();
     let mut by_kind = ProductsApprovalUnitKindCounts::default();
     let mut total = 0_u64;
-    for (state, kind, n) in rows {
-        *match state {
+    for row in rows {
+        *match row.state {
             UnitState::Pending => &mut by_state.pending,
             UnitState::Approved => &mut by_state.approved,
             UnitState::Rejected => &mut by_state.rejected,
             UnitState::Withdrawn => &mut by_state.withdrawn,
-        } += n;
-        *match kind.as_str() {
-            KIND_SKU_PUBLISH => &mut by_kind.sku_publish,
-            KIND_SKU_CHANGE => &mut by_kind.sku_change,
-            KIND_SKU_RETIRE => &mut by_kind.sku_retire,
-            _ => {
-                return Err(tx_to_canonical(TxError::Repo(
-                    crate::infra::storage::RepoError::CorruptRow(format!(
-                        "approval units of unknown kind {kind}"
-                    )),
-                )));
-            }
-        } += n;
-        total += n;
+        } += row.units;
+        *match row.kind {
+            ApprovalKind::SkuPublish => &mut by_kind.sku_publish,
+            ApprovalKind::SkuChange => &mut by_kind.sku_change,
+            ApprovalKind::SkuRetire => &mut by_kind.sku_retire,
+        } += row.units;
+        total += row.units;
     }
     Ok(Json(ProductsApprovalUnitCounts {
         by_state,
@@ -527,7 +527,7 @@ pub(super) async fn as_read_by(
 ) -> Result<UnitDto, TxError> {
     let items = store.items(tx, unit.id).await?;
     let decisions = store.decisions(tx, unit.id).await?;
-    Ok(UnitDto::of(unit, &items, decisions, reader))
+    UnitDto::of(unit, &items, decisions, reader).map_err(TxError::Repo)
 }
 
 async fn get(
@@ -574,7 +574,8 @@ async fn get(
                     .map_err(TxError::Repo)?;
                 let items = store.items(tx, id).await?;
                 let decisions = store.decisions(tx, id).await?;
-                let mut dto = UnitDto::of(unit, &items, decisions, ctx.subject_id());
+                let mut dto = UnitDto::of(unit, &items, decisions, ctx.subject_id())
+                    .map_err(TxError::Repo)?;
                 dto.impact_live = live
                     .map(|live| {
                         serde_json::to_value(super::dto::SkuDto::from(live))
@@ -667,15 +668,19 @@ async fn subject(
             what: "sku",
             id: unit.ref_id,
         }))?;
-    match unit.kind.as_str() {
-        KIND_SKU_PUBLISH => Ok(Subject::Publish(base)),
-        KIND_SKU_RETIRE => Ok(Subject::Retire(SkuRetire {
+    // The repository read the kind through its closed set; a kind outside it stays a store
+    // failure here, never judged as another kind.
+    let kind = ApprovalKind::parse(&unit.kind)
+        .ok_or_else(|| TxError::from(ApprovalError::Store("unknown approval kind".into())))?;
+    match kind {
+        ApprovalKind::SkuPublish => Ok(Subject::Publish(base)),
+        ApprovalKind::SkuRetire => Ok(Subject::Retire(SkuRetire {
             base,
             fence_op_id: fence
                 .fence_op_id
                 .ok_or_else(|| g::conflict("SKU_FENCED", "retire fence missing"))?,
         })),
-        KIND_SKU_CHANGE => {
+        ApprovalKind::SkuChange => {
             let items = store.items(tx, unit.id).await?;
             let item = items
                 .first()
@@ -701,9 +706,6 @@ async fn subject(
                 },
             }))
         }
-        _ => Err(TxError::from(ApprovalError::Store(
-            "unknown approval kind".into(),
-        ))),
     }
 }
 async fn proposed(subject: &Subject, tx: &DbTx<'_>, unit: &Unit) -> Result<SkuContent, TxError> {

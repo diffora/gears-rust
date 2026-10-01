@@ -1,10 +1,11 @@
 //! Pricing authoring wire contracts, with unique `OpenAPI` names and `snake_case` fields. A closed
 //! set on a response is its `enum` (D-439); a request keeps `string`, so its door's code refuses.
 use crate::api::rest::closed_sets::{
-    PricingBillingTiming, PricingChargeKind, PricingDecisionKind, PricingEligibility,
-    PricingEntryReferenceState, PricingItemReferenceState, PricingModel, PricingPeriod,
-    PricingPriceState, PricingPriceStatus, PricingReferenceOpKind, PricingReferenceOpRefKind,
-    PricingReferenceOpState, PricingRevisionState, PricingUnitState, PricingVoteOutcome,
+    PricingApprovalKind, PricingBillingTiming, PricingChargeKind, PricingDecisionKind,
+    PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState, PricingModel,
+    PricingPeriod, PricingPriceState, PricingPriceStatus, PricingReferenceOpKind,
+    PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState, PricingUnitState,
+    PricingVoteOutcome,
 };
 use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
 use crate::infra::storage::{RepoError, entity, repo::approval_repo::UnitInstants};
@@ -1227,7 +1228,9 @@ impl From<bss_approval::Decision> for PricingDecisionDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingApprovalUnitDto {
     pub id: Uuid,
-    pub kind: String,
+    /// The unit's kind, one pricing records: a stored unit of another kind is a corrupt row (500),
+    /// never served.
+    pub kind: PricingApprovalKind,
     pub ref_type: String,
     pub ref_id: Uuid,
     pub state: PricingUnitState,
@@ -1260,19 +1263,20 @@ impl PricingApprovalUnitDto {
     /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
     /// approve it, judged by the engine's own predicate over the unit's stored (current
     /// generation) `items` and its `decisions` (D-459, D-471). `impact` is the caller's to fill.
-    #[must_use]
+    /// # Errors
+    /// `CorruptRow` for a kind pricing does not record.
     pub fn of(
         u: bss_approval::Unit,
         items: &[bss_approval::ItemRef],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
-    ) -> Self {
+    ) -> Result<Self, RepoError> {
         let caller_can_approve = bss_approval::approve_eligibility(&u, items, &decisions, reader)
             .refusal
             .is_none();
-        Self {
+        Ok(Self {
             id: u.id,
-            kind: u.kind,
+            kind: PricingApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
             ref_type: u.ref_type,
             ref_id: u.ref_id,
             state: u.state.into(),
@@ -1288,7 +1292,7 @@ impl PricingApprovalUnitDto {
             decisions: decisions.into_iter().map(Into::into).collect(),
             impact: None,
             caller_can_approve,
-        }
+        })
     }
 }
 /// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by

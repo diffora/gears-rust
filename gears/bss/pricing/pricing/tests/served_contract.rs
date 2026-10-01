@@ -187,6 +187,8 @@ async fn the_unit_reads_say_how_they_count_and_order() {
         "one grouped statement",
         "UNIT_STATE_INVALID",
         "QUERY_INVALID",
+        // The phase 9 review's theme C: a kind pricing does not record is refused.
+        "QUERY_INVALID on kind",
     ] {
         assert!(text.contains(said), "the counts say {said}: {text}");
     }
@@ -210,6 +212,7 @@ async fn the_unit_reads_say_how_they_count_and_order() {
         "ORDER_WITH_CURSOR",
         "INVALID_ORDERBY_FIELD",
         "impact=false",
+        "QUERY_INVALID on kind",
     ] {
         assert!(text.contains(said), "the list says {said}: {text}");
     }

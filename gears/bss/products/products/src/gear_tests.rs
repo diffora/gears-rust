@@ -321,6 +321,7 @@ const LIFECYCLE: &[&str] = &["draft", "published", "deprecated", "retiring", "re
 const TIMING: &[&str] = &["advance", "arrears"];
 const CATEGORY_STATUS: &[&str] = &["active", "retired"];
 const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];
+const UNIT_KIND: &[&str] = &["sku_publish", "sku_change", "sku_retire"];
 const DECISION: &[&str] = &["approve", "reject"];
 const VOTE_OUTCOME: &[&str] = &["pending", "applied", "rejected", "withdrawn"];
 const REFERENCE_KIND: &[&str] = &["price_book_entry", "plan_item", "sold_as"];
@@ -338,6 +339,9 @@ const CLOSED: &[Closed] = &[
     ("ProductsSkuHistoryEntry", "from_lifecycle", LIFECYCLE, true),
     ("ProductsSkuHistoryEntry", "to_lifecycle", LIFECYCLE, true),
     ("UnitDto", "state", UNIT_STATE, false),
+    // The phase 9 review's theme C: no CHECK holds the kind, but the repository reads it through
+    // its closed set, so a row outside it is a corrupt row (500), never served.
+    ("UnitDto", "kind", UNIT_KIND, false),
     ("DecisionDto", "decision", DECISION, false),
     ("VoteReceipt", "outcome", VOTE_OUTCOME, false),
     ("ReferenceDto", "kind", REFERENCE_KIND, false),
@@ -347,14 +351,13 @@ const CLOSED: &[Closed] = &[
 ];
 
 /// P-D-217: response fields that stay `string`. No CHECK guards the stored set (the audit
-/// `action`, the approval unit's `kind` and `ref_type`, a reference's `owner`), the value is not
+/// `action` and `unit_kind`, the approval unit's `ref_type`, a reference's `owner`), the value is not
 /// this gear's (a usage type's `kind`, the collector's), it names the wired catalog (`source`), or
 /// the kept `/browse` envelope carries the catalog port's vocabulary verbatim (`CatalogSku`: "not
 /// an enum").
 const KEPT_STRING: &[(&str, &str)] = &[
     ("ProductsSkuHistoryEntry", "action"),
     ("ProductsSkuHistoryEntry", "unit_kind"),
-    ("UnitDto", "kind"),
     ("UnitDto", "ref_type"),
     ("ReferenceDto", "owner"),
     ("ReferenceReceipt", "owner"),
@@ -642,7 +645,14 @@ async fn the_unit_reads_say_how_they_count_and_order() -> anyhow::Result<()> {
     };
     assert_eq!(names(counts), ["state", "kind", "ref_id"]);
     let text = counts["description"].as_str().unwrap_or_default();
-    for said in ["by_state", "by_kind", "total", "one grouped statement"] {
+    for said in [
+        "by_state",
+        "by_kind",
+        "total",
+        "one grouped statement",
+        // The phase 9 review's theme C: a kind products does not record is refused.
+        "a kind other than sku_publish, sku_change or sku_retire (on kind)",
+    ] {
         assert!(text.contains(said), "the counts say {said}: {text}");
     }
     assert_eq!(

@@ -89,6 +89,7 @@ fn each_set_carries_its_stored_tokens_on_the_wire() {
         tokens!(PricingUnitState),
         ["pending", "approved", "rejected", "withdrawn"]
     );
+    assert_eq!(tokens!(PricingApprovalKind), ["prices", "plan_revision"]);
     assert_eq!(tokens!(PricingDecisionKind), ["approve", "reject"]);
     assert_eq!(
         tokens!(PricingVoteOutcome),
@@ -196,6 +197,12 @@ fn a_mapped_set_carries_the_domain_token() {
         PricingUnitState::ALL,
         UnitState::as_str,
         PricingUnitState::as_str,
+    );
+    same(
+        &crate::infra::approval_kinds::Kind::ALL,
+        PricingApprovalKind::ALL,
+        crate::infra::approval_kinds::Kind::as_str,
+        PricingApprovalKind::as_str,
     );
     same(
         &[Verdict::Approve, Verdict::Reject],

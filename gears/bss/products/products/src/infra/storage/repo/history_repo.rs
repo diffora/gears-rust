@@ -217,8 +217,19 @@ pub async fn page_sku_history(
         .await
         .map_err(|e| SkuListError::Repo(driver_failure("read history units".into(), e)))?
         .into_iter()
-        .map(|u| (u.id, u.kind))
-        .collect();
+        // A unit's kind is read through its closed set here too: a kind products does not
+        // record is a corrupt row, as on every unit read (the phase 9 review's theme C).
+        .map(|u| {
+            crate::domain::approvals::ApprovalKind::parse(&u.kind)
+                .map(|k| (u.id, k.as_str().to_owned()))
+                .ok_or_else(|| {
+                    SkuListError::Repo(RepoError::CorruptRow(format!(
+                        "approval unit {} has unknown kind {}",
+                        u.id, u.kind
+                    )))
+                })
+        })
+        .collect::<Result<_, _>>()?;
     for entry in &mut page.items {
         entry.unit_kind = entry.unit_id.and_then(|id| kinds.get(&id).cloned());
     }

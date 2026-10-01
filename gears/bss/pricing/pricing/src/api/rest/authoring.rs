@@ -717,7 +717,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              `impact=false` skips the live impact read: every unit answers impact null. `limit` \
              (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
              its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID \
-             or QUERY_INVALID; 400 FILTER_MISMATCH for a cursor replayed with another state, kind \
+             for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or \
+             plan_revision, and for a query that does not parse; 400 FILTER_MISMATCH for a cursor \
+             replayed with another state, kind \
              or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR \
              for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         )
@@ -725,7 +727,7 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .authenticated()
         .no_license_required()
         .query_param("state", false, "Unit state")
-        .query_param("kind", false, "Approval kind")
+        .query_param("kind", false, "Approval kind: prices or plan_revision")
         .query_param("ref_id", false, "Referenced aggregate id")
         .query_param("book_id", false, "Price book id")
         .query_param_typed(
@@ -766,14 +768,15 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
              with 0 when none, and total, the length of the list under the same narrowing \
              (D-470). It reads one grouped statement, whatever the number of units. It takes \
              nothing but the narrowing. Refusals: the list's: 400 UNIT_STATE_INVALID for an \
-             unknown state; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed \
+             unknown state; 400 QUERY_INVALID on kind for a kind other than prices or \
+             plan_revision; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed \
              id, or any other key (limit, cursor, $orderby, impact).",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .query_param("state", false, "Unit state")
-        .query_param("kind", false, "Approval kind")
+        .query_param("kind", false, "Approval kind: prices or plan_revision")
         .query_param("ref_id", false, "Referenced aggregate id")
         .query_param("book_id", false, "Price book id")
         .handler(count_approval_units)
@@ -1125,7 +1128,7 @@ async fn list_approval_units(
             .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
     let filter = unit_narrowing(
         query.state.as_deref(),
-        query.kind,
+        query.kind.as_deref(),
         query.ref_id,
         query.book_id,
     )?;
@@ -1157,15 +1160,22 @@ async fn list_approval_units(
     .await
 }
 /// The unit list's narrowing, which the counts take too (D-458, D-470): a known state (else 400
-/// `UNIT_STATE_INVALID`), a kind as sent, and the referenced aggregate, `ref_id` or its alias
-/// `book_id` (400 `QUERY_INVALID` on `book_id` when the two differ).
+/// `UNIT_STATE_INVALID`), a kind pricing records (else 400 `QUERY_INVALID` on `kind`), and the
+/// referenced aggregate, `ref_id` or its alias `book_id` (400 `QUERY_INVALID` on `book_id` when
+/// the two differ).
 fn unit_narrowing(
     state: Option<&str>,
-    kind: Option<String>,
+    kind: Option<&str>,
     ref_id: Option<Uuid>,
     book_id: Option<Uuid>,
 ) -> Result<crate::infra::storage::repo::approval_repo::UnitListFilter, CanonicalError> {
     let state = approvals::state_filter(state)?;
+    let kind = kind
+        .map(|k| {
+            crate::infra::approval_kinds::Kind::parse(k)
+                .ok_or_else(|| support::invalid("kind", "QUERY_INVALID"))
+        })
+        .transpose()?;
     let reference = match (ref_id, book_id) {
         (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
         (a, b) => a.or(b),
@@ -1208,7 +1218,7 @@ fn unit_page(
     let direction = unit_order(orderby)?;
     let digest = preconditions::request_digest(&serde_json::json!({
         "state": filter.state.map(bss_approval::UnitState::as_str),
-        "kind": filter.kind,
+        "kind": filter.kind.map(crate::infra::approval_kinds::Kind::as_str),
         "ref_id": filter.ref_id,
     }))
     .map_err(CanonicalError::from)?;
@@ -1234,7 +1244,8 @@ fn unit_page(
     }
     Ok((query, direction))
 }
-/// `GET /approval-units/counts` (D-470): under the list's grant, the list's narrowing, counted.
+/// `GET /approval-units/counts` (D-470): under the list's grant, the list's narrowing, counted
+/// outside any transaction.
 async fn count_approval_units(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
@@ -1257,17 +1268,15 @@ async fn count_approval_units(
             .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
     let filter = unit_narrowing(
         query.state.as_deref(),
-        query.kind,
+        query.kind.as_deref(),
         query.ref_id,
         query.book_id,
     )?;
-    transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, filter) = (scope.clone(), ctx.clone(), filter.clone());
-        Box::pin(async move {
-            approvals::count_units(tx, &scope, ctx.subject_tenant_id(), &filter).await
-        })
-    })
-    .await
+    // One grouped statement is its own snapshot: it runs on the plain connection, never in the
+    // doors' serializable transaction, whose read locks over the scanned units would push
+    // concurrent submits and votes into serialization failures (the phase 9 review's R32).
+    let conn = state.db.conn().map_err(support::DoorError::from)?;
+    Ok(approvals::count_units(&conn, &scope, ctx.subject_tenant_id(), &filter).await?)
 }
 async fn get_approval_unit(
     Extension(state): Extension<Arc<AuthoringState>>,

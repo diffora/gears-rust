@@ -1,9 +1,9 @@
 //! Gear-local `snake_case` wire types; SDK enums are represented by their stable tokens. A closed
 //! set on a response is its `enum` (P-D-217); a request keeps `string`, so its door refuses.
 use super::closed_sets::{
-    ProductsBillingTiming, ProductsCategoryStatus, ProductsDecisionKind, ProductsLifecycle,
-    ProductsReferenceKind, ProductsReferenceState, ProductsSkuType, ProductsUnitState,
-    ProductsVoteOutcome,
+    ProductsApprovalKind, ProductsBillingTiming, ProductsCategoryStatus, ProductsDecisionKind,
+    ProductsLifecycle, ProductsReferenceKind, ProductsReferenceState, ProductsSkuType,
+    ProductsUnitState, ProductsVoteOutcome,
 };
 use crate::domain::sku::{NewSku, SkuPatch};
 use crate::domain::validation::ValidationReport;
@@ -477,7 +477,9 @@ pub struct ProductsSkuSubmitRequest {
 #[toolkit_macros::api_dto(response)]
 pub struct UnitDto {
     pub id: Uuid,
-    pub kind: String,
+    /// The unit's kind, one products records: a stored unit of another kind is a corrupt row
+    /// (500), never served.
+    pub kind: ProductsApprovalKind,
     pub ref_type: String,
     pub ref_id: Uuid,
     pub state: ProductsUnitState,
@@ -590,19 +592,20 @@ impl UnitDto {
     /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
     /// approve it, judged by the engine's own predicate over the unit's stored (current
     /// generation) `items` and its `decisions` (P-D-228). `impact_live` is the caller's to fill.
-    #[must_use]
+    /// # Errors
+    /// `CorruptRow` for a kind products does not record.
     pub fn of(
         u: bss_approval::Unit,
         items: &[bss_approval::ItemRef],
         decisions: Vec<bss_approval::Decision>,
         reader: Uuid,
-    ) -> Self {
+    ) -> Result<Self, RepoError> {
         let caller_can_approve = bss_approval::approve_eligibility(&u, items, &decisions, reader)
             .refusal
             .is_none();
-        Self {
+        Ok(Self {
             id: u.id,
-            kind: u.kind,
+            kind: ProductsApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
             ref_type: u.ref_type,
             ref_id: u.ref_id,
             state: u.state.into(),
@@ -618,7 +621,7 @@ impl UnitDto {
             decisions: decisions.into_iter().map(Into::into).collect(),
             impact_live: None,
             caller_can_approve,
-        }
+        })
     }
 }
 impl From<bss_approval::Decision> for DecisionDto {

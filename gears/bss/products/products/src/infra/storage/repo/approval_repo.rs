@@ -1,6 +1,6 @@
 //! Approval persistence over the gear's real transaction runner.
 use super::driver_failure;
-use crate::domain::approvals::DEFAULT_QUORUM;
+use crate::domain::approvals::{ApprovalKind, DEFAULT_QUORUM};
 use crate::infra::storage::{
     RepoError,
     entity::{approval_decision, approval_policy, approval_unit, approval_unit_item},
@@ -50,7 +50,16 @@ fn decision_key(tenant: Uuid, id: Uuid) -> Condition {
         .add(approval_decision::Column::TenantId.eq(tenant))
         .add(approval_decision::Column::UnitId.eq(id))
 }
+/// A stored unit read back. Its kind is one products records and its state one of the unit's:
+/// a row outside either set is a corrupt row, refused by every reader alike (the list, the card,
+/// the receipts, the votes; the counts judge the same sets).
 fn unit_from_model(m: approval_unit::Model) -> Result<Unit, ApprovalError> {
+    if ApprovalKind::parse(&m.kind).is_none() {
+        return Err(ApprovalError::Store(format!(
+            "approval unit {} has unknown kind {}",
+            m.id, m.kind
+        )));
+    }
     Ok(Unit {
         id: m.id,
         tenant_id: m.tenant_id,
@@ -474,7 +483,8 @@ pub const UNIT_PAGE: LimitCfg = LimitCfg {
 #[derive(Debug, Clone, Default)]
 pub struct UnitListFilter {
     pub state: Option<UnitState>,
-    pub kind: Option<String>,
+    /// A kind products records: the door refuses any other before it builds the filter.
+    pub kind: Option<ApprovalKind>,
     pub ref_id: Option<Uuid>,
 }
 impl UnitListFilter {
@@ -485,7 +495,7 @@ impl UnitListFilter {
         if let Some(s) = self.state {
             c = c.add(approval_unit::Column::State.eq(s.as_str()));
         }
-        if let Some(k) = &self.kind {
+        if let Some(k) = self.kind {
             c = c.add(approval_unit::Column::Kind.eq(k.as_str()));
         }
         if let Some(id) = self.ref_id {
@@ -563,25 +573,32 @@ pub async fn page_units(
         PaginateOdataTryError::MapError(e) => UnitListError::Repo(e),
     })
 }
-/// One row of [`count_units`]: the units of one state and one kind.
+/// One stored row of [`count_units`]: the units of one state and one kind.
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct StateKindCount {
     state: String,
     kind: String,
     n: i64,
 }
+/// The units of one state and one kind, as [`count_units`] answers them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitCount {
+    pub state: UnitState,
+    pub kind: ApprovalKind,
+    pub units: u64,
+}
 /// The tenant's units under `scope` that `filter` keeps, counted by state and kind in ONE grouped
-/// statement whatever their number (P-D-227): `(state, kind, count)`, one row per pair that has a
-/// unit. The kind is as stored; the caller judges it against the kinds it records.
+/// statement whatever their number (P-D-227): one row per pair that has a unit, its state and its
+/// kind read through their closed sets, as every unit read reads them.
 /// # Errors
-/// Returns typed database failures; a stored state outside its closed set, or a negative count,
-/// is a corrupt row.
+/// Returns typed database failures; a stored state or kind outside its closed set, or a negative
+/// count, is a corrupt row.
 pub async fn count_units(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     filter: &UnitListFilter,
-) -> Result<Vec<(UnitState, String, u64)>, RepoError> {
+) -> Result<Vec<UnitCount>, RepoError> {
     use sea_orm::QuerySelect;
     approval_unit::Entity::find()
         .secure()
@@ -603,9 +620,12 @@ pub async fn count_units(
             let state = UnitState::parse(&row.state).ok_or_else(|| {
                 RepoError::CorruptRow(format!("approval unit state {}", row.state))
             })?;
-            let n = u64::try_from(row.n)
+            let kind = ApprovalKind::parse(&row.kind).ok_or_else(|| {
+                RepoError::CorruptRow(format!("approval units of unknown kind {}", row.kind))
+            })?;
+            let units = u64::try_from(row.n)
                 .map_err(|_| RepoError::CorruptRow(format!("approval unit count {}", row.n)))?;
-            Ok((state, row.kind, n))
+            Ok(UnitCount { state, kind, units })
         })
         .collect()
 }

@@ -49,7 +49,7 @@
 | P-D-214 | L | SKU versions answer one shape each: the history an array, the version in force at `versions/as-of?date=` | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-215 | M | Category reads: `GET /categories/{id}`, a `sku_count` on every read from one grouped count, and the list on the toolkit's OData | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
 | P-D-216 | M | An approval-policy override can be reset; the default cannot be deleted (twin of pricing D-435) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
-| P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2 |
+| P-D-217 | M | Closed sets are enums on the responses; requests keep strings and their codes (twin of pricing D-439) | DECIDED 2026-09-27 · Owner, 2026-09-27; phase 6 plan rev 2; amended by the phase 9 review (C, fix run 9.5d-1) |
 | P-D-218 | M | Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN` | DECIDED 2026-09-28 · Owner, 2026-09-28; amended by P-D-220 |
 | P-D-219 | M | The submitter's note travels with the approval unit (twin of pricing D-445) | DECIDED 2026-09-28 · Owner, 2026-09-28; phase 7 plan rev 2; amends P-D-213; its Pricing bullet amended by pricing D-464 |
 | P-D-220 | M | A retired category is never the default; retiring the default clears it | DECIDED 2026-09-28 · Owner, 2026-09-28; amends P-D-218 |
@@ -59,7 +59,7 @@
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
-| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224 |
+| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224 |
 
 ## Entries
@@ -823,6 +823,12 @@ poisoned on SQLite (the CHECK refuses the write; the test then bypasses it) read
 
 **Source:** Owner, 2026-09-27; phase 6 plan rev 2 (ask 12; plan review M5).
 
+**Amended by the phase 9 review, theme C (fix run 9.5d-1, 2026-10-01).** A unit's `kind` is an enum on every
+response, `ProductsApprovalKind` (`sku_publish`, `sku_change`, `sku_retire`). No CHECK holds the column still; the
+repository reads it through the set (`domain::approvals::ApprovalKind`), so a unit of another kind is a corrupt row
+(500), never served (P-D-227). A unit's `ref_type` and the history's `unit_kind` stay strings; the history reads the
+unit's kind through the same set, so a SKU's history refuses a unit of another kind too.
+
 #### P-D-218 [M] Making a category the default moves the default in one write; a lost race is 409 `CATEGORY_DEFAULT_TAKEN`
 
 A tenant has at most one default category: the partial unique index `uq_products_category_default` on
@@ -1139,8 +1145,8 @@ the UI merges). It shows a badge per state and per kind and the newest units fir
   - It takes the list's whole narrowing (pricing plan review L11): `state`, `kind` and `ref_id`. The list and the counts read
     one condition (`approval_repo::UnitListFilter`), so the badge and the list count the same set.
   - A narrowing the list refuses is refused the same way: 400 `VALIDATION` on `state` for an unknown state, 400 `VALIDATION`
-    on `query` for a query that does not parse. It takes nothing but the narrowing: `limit`, `cursor`, `$orderby` and any
-    other key are 400 on `query`.
+    on `kind` for a kind products does not record (below), 400 `VALIDATION` on `query` for a query that does not parse.
+    It takes nothing but the narrowing: `limit`, `cursor`, `$orderby` and any other key are 400 on `query`.
   - It counts in ONE grouped statement (`approval_repo::count_units`), whatever the number of units. A stored kind products
     does not record is a corrupt row (500).
   - It is authorized as the list is (products read on approval units) and declares 503 as every products op does.
@@ -1164,6 +1170,25 @@ the UI merges). It shows a badge per state and per kind and the newest units fir
 
 **Source:** Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11).
 Amends P-D-224 (the order).
+
+**Amended by the phase 9 review, theme C and R32 (fix run 9.5d-1, 2026-10-01).**
+- **The kind is a closed set.** The list and the counts take a kind products records, `sku_publish`, `sku_change` or
+  `sku_retire`: any other kind, an empty one or another case included, is 400 `VALIDATION` on `kind`, judged with the
+  narrowing, before the filter or the cursor's hash is built. Before, any text was taken, of any length, and counted
+  zero. The repository reads a stored unit's kind through the same set (`domain::approvals::ApprovalKind`: every unit
+  read, `count_units`' rows, and the SKU history's unit kind), and `UnitDto.kind` is the enum `ProductsApprovalKind`
+  (P-D-217). So the list, the card, the receipts, the votes and the counts refuse a unit of another kind alike, with
+  a 500 that does not name it; before, the counts answered 500 while the list and the card served it. The cursor's
+  hash is unchanged: it hashes the kind's stored name, as before (`f71fffbdfa52de1f` stays pinned).
+- **The counts read outside any transaction.** The one grouped statement runs on the plain connection, never under
+  `category_tx_config`'s serializable transaction: one statement is its own snapshot, and SSI read locks over the
+  scanned units could push concurrent submits and votes into serialization failures. The list's statement test pins
+  the counts' statement outside any transaction.
+- **The tests.** `api/rest/sku_governance_tests.rs`: `kind=promotion`, an empty kind, `SKU_PUBLISH` and a kind of 5000
+  characters are refused alike by the list and the counts, on `kind`; a unit of an unknown kind is 500 on the list
+  (bare, by state, by SKU), the counts (bare, by state) and the card, while a narrowing that does not keep it serves;
+  a state written around its CHECK is 500 on the list, the counts and the card. `gear_tests.rs`: the kind is an enum,
+  and the counts' text names the refusal.
 
 #### P-D-228 [M] A unit says whether its reader may approve it (twin of pricing D-471)
 

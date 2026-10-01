@@ -30,6 +30,7 @@ const OP_KIND: &[&str] = &["create", "delete", "rereserve", "attach"];
 const OP_STATE: &[&str] = &["reserving", "written", "cancelling", "releasing", "done"];
 const OP_REF_KIND: &[&str] = &["price_book_entry", "plan_item"];
 const UNIT_STATE: &[&str] = &["pending", "approved", "rejected", "withdrawn"];
+const UNIT_KIND: &[&str] = &["prices", "plan_revision"];
 const DECISION: &[&str] = &["approve", "reject"];
 const VOTE_OUTCOME: &[&str] = &["pending", "applied", "rejected", "withdrawn"];
 const TIMING: &[&str] = &["advance", "arrears"];
@@ -69,6 +70,9 @@ const CLOSED: &[Closed] = &[
     ("PricingReferenceOpDto", "state", OP_STATE, false),
     ("PricingReferenceOpDto", "ref_kind", OP_REF_KIND, false),
     ("PricingApprovalUnitDto", "state", UNIT_STATE, false),
+    // The phase 9 review's theme C: no CHECK holds the kind, but the repository reads it through
+    // its closed set, so a row outside it is a corrupt row (500), never served.
+    ("PricingApprovalUnitDto", "kind", UNIT_KIND, false),
     ("PricingDecisionDto", "decision", DECISION, false),
     ("PricingVoteReceipt", "outcome", VOTE_OUTCOME, false),
     ("PricingSettingsDto", "default_timing", TIMING, false),
@@ -90,12 +94,11 @@ const CLOSED: &[Closed] = &[
 ];
 
 /// Response fields that stay `string` (D-439): no CHECK guards the stored set (`default_rounding`
-/// and the resolve's copy of it, D-437; the approval unit's `kind` and `ref_type`), or the value is
-/// a code vocabulary or an open value rather than a state (`code`, `chain`).
+/// and the resolve's copy of it, D-437; the approval unit's `ref_type`), or the value is a code
+/// vocabulary or an open value rather than a state (`code`, `chain`).
 const KEPT_STRING: &[(&str, &str)] = &[
     ("PricingSettingsDto", "default_rounding"),
     ("PricingResolveDto", "rounding_policy"),
-    ("PricingApprovalUnitDto", "kind"),
     ("PricingApprovalUnitDto", "ref_type"),
     ("PricingPlanCheckDto", "code"),
     ("PricingProposedPrice", "chain"),

@@ -116,7 +116,7 @@ async fn unit_dto(
         .decisions(tx, unit.id)
         .await
         .map_err(approval_failure)?;
-    Ok(PricingApprovalUnitDto::of(unit, &items, decisions, reader))
+    Ok(PricingApprovalUnitDto::of(unit, &items, decisions, reader)?)
 }
 async fn load_unit(
     tx: &DbTx<'_>,
@@ -778,7 +778,7 @@ pub async fn list_units(
         let id = unit.id;
         let touched = touched.remove(&id).unwrap_or_default();
         let decisions = decisions.remove(&id).unwrap_or_default();
-        let mut dto = PricingApprovalUnitDto::of(unit, &touched, decisions, reader);
+        let mut dto = PricingApprovalUnitDto::of(unit, &touched, decisions, reader)?;
         dto.impact = reading
             .as_ref()
             .map(|reading| kind.impact_from(reading, &touched));
@@ -794,10 +794,11 @@ pub async fn list_units(
     )?)
 }
 /// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by
-/// kind, in ONE grouped statement.
+/// kind, in ONE grouped statement, which the door reads outside any transaction: one statement is
+/// its own snapshot.
 /// # Errors
-/// Storage failures; a stored kind pricing does not record is a corrupt row (500), as on every unit
-/// door.
+/// Storage failures; a stored kind pricing does not record, or a state outside the unit's set, is
+/// a corrupt row (500), as on every unit door.
 pub async fn count_units(
     tx: &impl DBRunner,
     scope: &AccessScope,
@@ -807,24 +808,18 @@ pub async fn count_units(
     let mut by_state = PricingApprovalUnitStateCounts::default();
     let mut by_kind = PricingApprovalUnitKindCounts::default();
     let mut total = 0_u64;
-    for (state, kind, n) in approval_repo::count_units(tx, scope, tenant, filter).await? {
-        *match state {
+    for row in approval_repo::count_units(tx, scope, tenant, filter).await? {
+        *match row.state {
             UnitState::Pending => &mut by_state.pending,
             UnitState::Approved => &mut by_state.approved,
             UnitState::Rejected => &mut by_state.rejected,
             UnitState::Withdrawn => &mut by_state.withdrawn,
-        } += n;
-        *match Kind::parse(&kind) {
-            Some(Kind::Prices) => &mut by_kind.prices,
-            Some(Kind::PlanRevision) => &mut by_kind.plan_revision,
-            None => {
-                return Err(RepoError::CorruptRow(format!(
-                    "approval units of unknown kind {kind}"
-                ))
-                .into());
-            }
-        } += n;
-        total += n;
+        } += row.units;
+        *match row.kind {
+            Kind::Prices => &mut by_kind.prices,
+            Kind::PlanRevision => &mut by_kind.plan_revision,
+        } += row.units;
+        total += row.units;
     }
     Ok(support::response(
         StatusCode::OK,
@@ -855,7 +850,7 @@ pub async fn get_unit(
     let kind = Kind::of(&unit)?;
     let items = store.items(tx, id).await.map_err(approval_failure)?;
     let decisions = store.decisions(tx, id).await.map_err(approval_failure)?;
-    let mut dto = PricingApprovalUnitDto::of(unit, &items, decisions, reader);
+    let mut dto = PricingApprovalUnitDto::of(unit, &items, decisions, reader)?;
     dto.impact = Some(kind.impact(tx, tenant, &items).await?);
     Ok(support::response(StatusCode::OK, &dto, None)?)
 }

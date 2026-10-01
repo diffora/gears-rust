@@ -12,7 +12,7 @@ use crate::domain::{
     reference_op::OpKind,
     resolve::Source,
 };
-use crate::infra::storage::RepoError;
+use crate::infra::{approval_kinds::Kind as ApprovalKind, storage::RepoError};
 use bss_approval::{UnitState, Verdict};
 
 macro_rules! closed_set {
@@ -178,6 +178,11 @@ closed_set!(
         Rejected => "rejected",
         Withdrawn => "withdrawn",
     }
+);
+closed_set!(
+    /// A kind of approval unit pricing records (spec §6). No CHECK holds the stored column: the
+    /// repository reads it through this set, so a unit of another kind is a corrupt row (500).
+    PricingApprovalKind from ApprovalKind { Prices => "prices", PlanRevision => "plan_revision" }
 );
 closed_set!(
     /// One reviewer's decision.

@@ -1707,7 +1707,6 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         "state=pending".into(),
         "state=approved&kind=plan_revision".into(),
         "kind=prices".into(),
-        "kind=promotion".into(),
         format!("ref_id={a}"),
         format!("book_id={b}"),
         format!("ref_id={a}&book_id={a}"),
@@ -1717,12 +1716,17 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         let counts = ok(&f, &format!("/approval-units/counts?{narrowing}")).await;
         assert_eq!(counts, counted(&listed), "{narrowing}");
     }
-    // The list's refusals, the same code on the same field.
+    // The list's refusals, the same code on the same field. A kind is one pricing records
+    // (phase 9 review R6, R24): any other, an empty one included, is 400 QUERY_INVALID on kind.
     for narrowing in [
         "state=bogus".to_owned(),
         format!("ref_id={a}&book_id={b}"),
         "ref_id=not-a-uuid".into(),
         "book_id=7".into(),
+        "kind=promotion".into(),
+        "kind=".into(),
+        "kind=PRICES".into(),
+        format!("kind={}", "p".repeat(5000)),
     ] {
         let (ls, lb, _) = get(&f, &format!("/approval-units?{narrowing}")).await;
         let (cs, cb, _) = get(&f, &format!("/approval-units/counts?{narrowing}")).await;
@@ -1730,6 +1734,14 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         assert_eq!(cs, 400, "{narrowing}: {cb}");
         assert!(!lb["context"].is_null(), "{narrowing}: {lb}");
         assert_eq!(cb["context"], lb["context"], "{narrowing}");
+        if narrowing.starts_with("kind=") {
+            let violation = &lb["context"]["field_violations"][0];
+            assert_eq!(
+                (&violation["field"], &violation["reason"]),
+                (&json!("kind"), &json!("QUERY_INVALID")),
+                "{narrowing}: {lb}"
+            );
+        }
     }
     // Only the narrowing: no page, no order, no impact.
     for extra in [
@@ -1745,7 +1757,8 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
     }
 }
 
-/// D-470: the counts are ONE grouped statement whatever the number of units.
+/// D-470: the counts are ONE grouped statement whatever the number of units, read outside any
+/// transaction.
 #[tokio::test]
 async fn the_unit_counts_read_one_grouped_statement_for_10_and_100_units() {
     let (f, _catalog, recorder) = recorded().await;
@@ -1778,6 +1791,19 @@ async fn the_unit_counts_read_one_grouped_statement_for_10_and_100_units() {
             statements[0].0.to_ascii_uppercase().contains("GROUP BY"),
             "{statements:#?}"
         );
+        // The phase 9 review's R32: one statement is its own snapshot, so the counts read it on
+        // the plain connection, never in the doors' serializable transaction.
+        let in_tx: Vec<bool> = recorder
+            .events()
+            .into_iter()
+            .filter(|q| {
+                q.table
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("pricing_"))
+            })
+            .map(|q| q.in_tx)
+            .collect();
+        assert_eq!(in_tx, [false], "the counts run outside any transaction");
         runs.push(statements);
     }
     same("unit counts", &runs[0], &runs[1]);

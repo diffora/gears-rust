@@ -1515,7 +1515,8 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
             "{statements:#?}"
         );
         runs.push(statements);
-        // P-D-227: the counts are ONE grouped statement.
+        // P-D-227: the counts are ONE grouped statement, read on the plain connection, never in
+        // the serializable transaction category writes take (the phase 9 review's R32).
         recorder.clear();
         let (status, counts) = f.units("/counts").await;
         assert_eq!(status, 200, "{counts}");
@@ -1526,6 +1527,17 @@ async fn the_unit_list_reads_a_page_in_the_same_statements_for_10_and_100_units(
             statements[0].to_ascii_uppercase().contains("GROUP BY"),
             "{statements:#?}"
         );
+        let in_tx: Vec<bool> = recorder
+            .events()
+            .into_iter()
+            .filter(|q| {
+                q.table
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with("products_"))
+            })
+            .map(|q| q.in_tx)
+            .collect();
+        assert_eq!(in_tx, [false], "the counts run outside any transaction");
         count_runs.push(statements);
     }
     assert_eq!(runs[0], runs[1]);
@@ -3478,7 +3490,6 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         "state=pending".into(),
         "state=approved&kind=sku_retire".into(),
         "kind=sku_publish".into(),
-        "kind=promotion".into(),
         format!("ref_id={a}"),
         format!("state=pending&kind=sku_change&ref_id={b}"),
     ] {
@@ -3487,8 +3498,17 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         assert_eq!(status, 200, "{narrowing}: {counts}");
         assert_eq!(counts, counted(&listed), "{narrowing}");
     }
-    // The list's refusals, the same code on the same field.
-    for narrowing in ["state=bogus", "ref_id=not-a-uuid"] {
+    // The list's refusals, the same code on the same field. A kind is one products records
+    // (phase 9 review R30): any other, an empty one included, is 400 VALIDATION on kind.
+    let long = format!("kind={}", "s".repeat(5000));
+    for narrowing in [
+        "state=bogus",
+        "ref_id=not-a-uuid",
+        "kind=promotion",
+        "kind=",
+        "kind=SKU_PUBLISH",
+        long.as_str(),
+    ] {
         let (ls, lb) = f.units(&format!("?{narrowing}")).await;
         let (cs, cb) = f.units(&format!("/counts?{narrowing}")).await;
         assert_eq!(ls, 400, "{narrowing}: {lb}");
@@ -3496,6 +3516,14 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
         assert_eq!(problem_code(&cb), problem_code(&lb), "{narrowing}: {cb}");
         assert!(!lb["context"].is_null(), "{narrowing}: {lb}");
         assert_eq!(cb["context"], lb["context"], "{narrowing}");
+        if narrowing.starts_with("kind=") {
+            let violation = &lb["context"]["violations"][0];
+            assert_eq!(
+                (&violation["subject"], &violation["type"]),
+                (&json!("kind"), &json!("VALIDATION")),
+                "{narrowing}: {lb}"
+            );
+        }
     }
     // Only the narrowing: no page and no order.
     for extra in [
@@ -3506,6 +3534,68 @@ async fn the_unit_counts_count_what_the_list_pages_under_each_narrowing() {
     ] {
         let (status, b) = f.units(&format!("/counts?{extra}")).await;
         assert_eq!(status, 400, "{extra}: {b}");
+    }
+}
+
+/// The phase 9 review's theme C (R34, R38, R68): the repository reads a unit's kind and state
+/// through their closed sets, so a stored kind products does not record and a state written around
+/// its CHECK are corrupt rows: the list, the counts and the card refuse the same row with a 500
+/// that does not echo it, under every narrowing that keeps it, and a narrowing that does not
+/// keep it still serves.
+#[tokio::test]
+async fn a_unit_of_an_unknown_kind_or_state_is_a_corrupt_row_on_every_read() {
+    use crate::test_support::id_matches;
+    use bss_approval::UnitState;
+    use sea_orm::{ConnectionTrait, Database};
+    let f = Fixture::new(1).await;
+    let at = whole_second(time::OffsetDateTime::now_utc());
+    stored_unit(&f, "sku_publish", f.id, UnitState::Pending, at).await;
+    let foreign = stored_unit(&f, "promotion", f.id, UnitState::Pending, at).await;
+    for path in [
+        "".to_owned(),
+        "?state=pending".to_owned(),
+        format!("?ref_id={}", f.id),
+        "/counts".to_owned(),
+        "/counts?state=pending".to_owned(),
+        format!("/{foreign}"),
+    ] {
+        let (status, b) = f.units(&path).await;
+        assert_eq!(status, 500, "{path}: {b}");
+        assert!(!b.to_string().contains("promotion"), "{path}: {b}");
+    }
+    let (status, b) = f.units("/counts?kind=sku_publish").await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!(b["total"], 1, "{b}");
+    // A stored state outside its set: the CHECK refuses the write, so it is written around it.
+    let other = Fixture::new(1).await;
+    let poisoned = stored_unit(&other, "sku_publish", other.id, UnitState::Pending, at).await;
+    let raw = Database::connect(&other.dsn).await.unwrap();
+    let update = format!(
+        "UPDATE products_approval_unit SET state = 'archived' WHERE {}",
+        id_matches("id", poisoned)
+    );
+    let refused = raw.execute_unprepared(&update).await.unwrap_err();
+    assert!(refused.to_string().contains("CHECK"), "{refused}");
+    raw.execute_unprepared("PRAGMA ignore_check_constraints = ON")
+        .await
+        .unwrap();
+    assert_eq!(
+        raw.execute_unprepared(&update)
+            .await
+            .unwrap()
+            .rows_affected(),
+        1
+    );
+    raw.close().await.unwrap();
+    for path in [
+        "".to_owned(),
+        "/counts".to_owned(),
+        "/counts?kind=sku_publish".to_owned(),
+        format!("/{poisoned}"),
+    ] {
+        let (status, b) = other.units(&path).await;
+        assert_eq!(status, 500, "{path}: {b}");
+        assert!(!b.to_string().contains("archived"), "{path}: {b}");
     }
 }
 
