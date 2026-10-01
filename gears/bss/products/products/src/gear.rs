@@ -52,6 +52,30 @@ fn register_products_client(
     ));
 }
 
+/// Register the two ports pricing reads this gear through, over the same runtime the REST doors use:
+/// - the reference registry, bound to the `pricing` owner (P-D-222);
+/// - the meter semantics (E1b, P-D-233): ONE dispatcher, registered as the registry is (decision 6), not through
+///   `#[toolkit::provides]`. It answers the derived meters from this gear's store and every other meter as an absent
+///   provider would, since the raw-meter provider (E1a) is not built.
+fn register_pricing_ports(
+    hub: &toolkit::ClientHub,
+    api_state: &Arc<crate::api::rest::ApiState>,
+    enforcer: &Arc<authz_resolver_sdk::PolicyEnforcer>,
+) {
+    hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
+        bss_products_sdk::PricingReferenceRegistry(Arc::new(
+            crate::infra::reference_registry::LocalReferenceRegistry::for_owner("pricing")
+                .with_runtime(Arc::clone(api_state), Arc::clone(enforcer)),
+        )),
+    ));
+    hub.register::<dyn bss_pricing_sdk::meter_semantics::UsageMeterSemanticsV1>(Arc::new(
+        crate::infra::meter_semantics::ProductsMeterSemantics::new(
+            Arc::clone(api_state),
+            Arc::clone(enforcer),
+        ),
+    ));
+}
+
 /// The products gear.
 #[toolkit::gear(name = "bss-products", deps = [authz_resolver, types_registry, usage_collector], capabilities = [db, rest, stateful], lifecycle(entry = "serve", stop_timeout = "30s"))]
 #[toolkit::provides(
@@ -389,13 +413,7 @@ impl Gear for BssProductsGear {
             hub: ctx.client_hub(),
         });
         register_products_client(&ctx.client_hub(), api_state.db.db(), Arc::clone(&enforcer));
-        ctx.client_hub()
-            .register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
-                bss_products_sdk::PricingReferenceRegistry(Arc::new(
-                    crate::infra::reference_registry::LocalReferenceRegistry::for_owner("pricing")
-                        .with_runtime(api_state.clone(), enforcer.clone()),
-                )),
-            ));
+        register_pricing_ports(&ctx.client_hub(), &api_state, &enforcer);
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             api_state,

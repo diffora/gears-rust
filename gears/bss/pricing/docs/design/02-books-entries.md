@@ -73,9 +73,15 @@ otherwise `METER_POLICY_MISMATCH` refuses the write. There is no substitution of
 **Owner amendment of D-503, 2026-10-01.** A `MeterRef` names a raw or a derived meter, and one provider
 behind the port answers both kinds. E1a, raw meters: Types Registry declarations through the Usage
 Collector. E1b, derived meters: Products' derived usage type at its exact version (its canonical output
-unit, its inputs and their versions, and its formula version; products P-D-229 and rating T-D-39 on
-branch `bss/pricebook-meters`). The port, `validate_meter_policy` and the publication and acceptance
-gates do not change. A derived meter is not sellable until Products' derived-type store exists.
+unit and the digest of its stored declaration, which names the inputs at their exact versions and the
+formula; products P-D-229 and rating T-D-39). The port, `validate_meter_policy` and the publication and
+acceptance gates do not change.
+
+**Amended 2026-10-01 by products P-D-233: E1b is provided; E1a is still external.** Products registers the
+one provider. It answers a derived meter from its own store, in the caller's tenant: the version's output
+unit, SUM, `derived-v1:<stored digest hex>`, source integrated, and the stored digest. It answers every raw
+meter exactly as an absent provider does (`UNCONFIGURED_DEPENDENCY`). A derived meter is sellable; a raw
+one stays blocked at its semantic gates until E1a is delivered.
 
 New entry-create work uses schema version 2 and persists the captured declaration before reservation.
 Recovery validates that captured evidence against the reservation's SKU without another meter lookup.

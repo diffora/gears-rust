@@ -257,8 +257,9 @@ async fn author_scope(
     })
 }
 
-/// `sku:read` (O-3): the compiled scope is the read's SQL filter.
-async fn read_scope(
+/// `sku:read` (O-3): the compiled scope is the read's SQL filter. The meter-semantics provider reads under it too
+/// (P-D-233).
+pub(crate) async fn read_scope(
     enforcer: &PolicyEnforcer,
     ctx: &SecurityContext,
 ) -> Result<AccessScope, CanonicalError> {
@@ -711,6 +712,28 @@ async fn get_derived_usage_type_version(
     Ok(Json(body).into_response())
 }
 
+/// The tenant's stored version that `meter` names, read under `scope`, with the declaration as the doors serve it: what
+/// the SKU binding ([`pin`], P-D-232) and the meter-semantics provider (P-D-233) read. `None` when the tenant holds no
+/// such code or version. The usage-type catalog is never asked: a derived usage type is this gear's own data.
+///
+/// # Errors
+/// A storage failure, or a stored row that does not read (a corrupt row).
+pub(crate) async fn stored_version(
+    conn: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    meter: &MeterId,
+) -> Result<Option<(DerivedUsageTypeVersion, ProductsDerivedDeclaration)>, RepoError> {
+    let Some(t) = store::find_type(conn, scope, tenant, meter.code()).await? else {
+        return Ok(None);
+    };
+    let Some(v) = store::find_version(conn, scope, tenant, t.id, meter.version()).await? else {
+        return Ok(None);
+    };
+    let declaration = version_dto(&t, &v)?.declaration;
+    Ok(Some((v, declaration)))
+}
+
 /// A usage SKU's derived `reference` as the tenant's store holds it (P-D-232): the version its meter
 /// id names and that version's output unit, or `None` when the ref is not canonical or the tenant
 /// holds no such code or version. The read is tenant-scoped, and the usage-type catalog is never
@@ -728,22 +751,10 @@ pub(super) async fn pin(
     };
     let scope = AccessScope::for_tenant(tenant);
     let conn = state.db.conn().map_err(|e| tx_to_canonical(e.into()))?;
-    let Some(t) = store::find_type(&conn, &scope, tenant, meter.code())
+    let stored = stored_version(&conn, &scope, tenant, &meter)
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?
-    else {
-        return Ok(None);
-    };
-    let Some(v) = store::find_version(&conn, &scope, tenant, t.id, meter.version())
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?
-    else {
-        return Ok(None);
-    };
-    let declaration = version_dto(&t, &v)
-        .map_err(|e| repo_error_to_canonical(&e))?
-        .declaration;
-    Ok(Some(DerivedPin {
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    Ok(stored.map(|(_, declaration)| DerivedPin {
         meter: meter.format(),
         output_unit: declaration.output_unit,
     }))

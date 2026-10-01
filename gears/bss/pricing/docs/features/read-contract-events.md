@@ -257,9 +257,9 @@ Mutation probes must fail when expected money changes or a fixture policy pin es
 
 F02/F23/F24 money checks are catalog representation checks using domain::money, with no Rating
 scheduler, invoice calculation, VM provisioning or hourly event claim. Those atlas consumer obligations
-remain specified/unexecuted here. E1 remains a test declaration until the authoritative external meter
-provider is delivered. That one provider behind `UsageMeterSemanticsV1` answers raw meters from Types
-Registry declarations through the Usage Collector (E1a) and derived meters from Products' derived usage
-type at its exact version (E1b; products P-D-229 and rating T-D-39 on branch `bss/pricebook-meters`).
+remain specified/unexecuted here. The one provider behind `UsageMeterSemanticsV1` is Products'
+(products P-D-233): it answers derived meters from Products' derived usage type at its exact version
+(E1b), and raw meters stay unconfigured until Types Registry declarations answer through the Usage
+Collector (E1a); E1a remains a test declaration in these tests until that provider is delivered.
 Commands stay SDK-only; later remote transport binds these exact ports. Task 8
 and the shared G4 controller gate complete the implementation handoff after this provider fixture slice.

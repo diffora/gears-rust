@@ -63,6 +63,7 @@
 | P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment |
 | P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
 | P-D-232 | H | A usage SKU pins a derived usage type at its first publish | DECIDED 2026-10-01 · Owner, 2026-10-01 (M1, O-2); derived usage types plan rev 3 (design decision 7, run 3); implements P-D-229's pin; amends P-D-184, P-D-207, P-D-231 |
+| P-D-233 | H | Products answers pricing's meter semantics for its derived usage types (E1b) | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 5 and 6, run 4); implements P-D-229's pricing reference; amends P-D-229, P-D-230, P-D-231, P-D-232; pricing D-503 and D-510 amended |
 
 ## Entries
 
@@ -1177,6 +1178,16 @@ evaluates, the usage collector stays raw").
 - **The pin.** A usage SKU's derived ref is fixed at its first publish. A new formula version is sold through a new SKU, as a
   usage chain's metering is fixed (pricing D-402).
 
+**Amended by P-D-233 (2026-10-01).**
+- **The derived half of the provider is built.** Products answers pricing's meter semantics for its derived usage types
+  (E1b), and a derived meter can be sold; the "Not built yet" line above is done for it. The raw half (E1a), the collector's
+  and the types registry's, is still to come.
+- **What the answer carries.** It does not carry "the canonical unit, the inputs and their versions, the formula version":
+  pricing's `MeterSemantics` has no field for inputs or a formula. It carries the canonical unit (the version's output
+  unit), the fold (`Sum`), the accrual `derived-v1:<digest>` and the digest of the STORED declaration. That declaration,
+  which names the inputs at their exact versions and the formula, is what the digest identifies, and
+  `GET /derived-usage-types/{code}/versions/{n}` serves it.
+
 #### P-D-230 [H] A derived usage type is versioned data with one evaluator, in the SDK
 
 **Status:** DECIDED 2026-10-01.
@@ -1240,6 +1251,9 @@ the declaration Rating computes.
 
 **Source:** The derived usage types implementation plan, rev 3: design decisions 1–4 and run 1, on the owner's answers of
 2026-10-01 (O-2, the meter id). Implements P-D-229 and its amendment.
+
+**Amended by P-D-233 (2026-10-01).** The "Not built yet" line above is done: versions are stored and served (P-D-231), a
+usage SKU pins one (P-D-232), and Products answers pricing's meter semantics for them (P-D-233).
 
 #### P-D-231 [H] Derived usage types are stored append-only and served by five doors
 
@@ -1338,6 +1352,9 @@ answers of 2026-10-01 (O-1: versions are append-only, with no approval of their 
 - Only the derived doors' own `DERIVED_` codes name the `derived_usage_type` resource. The binding's codes
   (`DERIVED_USAGE_TYPE_UNKNOWN`, `DERIVED_UNIT_MISMATCH`, `DERIVED_PIN_IMMUTABLE`) refuse a SKU's write and name the SKU.
 
+**Amended by P-D-233 (2026-10-01).** The meter-semantics half of the "Not built yet" line above is done: Products answers
+pricing's meter semantics from this store (P-D-233), so a derived meter can be sold.
+
 #### P-D-232 [H] A usage SKU pins a derived usage type at its first publish
 
 **Status:** DECIDED 2026-10-01.
@@ -1402,3 +1419,75 @@ on the owner's M1 and O-2. `domain/derived.rs`, `domain/sku.rs`, `domain/approva
 **Source:** The derived usage types implementation plan, rev 3: design decision 7 and run 3, on the owner's answers of
 2026-10-01 (M1: a usage SKU's derived pin is fixed at its first publish, a new formula version is sold through a new usage
 SKU, a never-published draft may change its pin; O-2: the ref). Implements P-D-229's pin (its amendment).
+
+**Amended by P-D-233 (2026-10-01).** The "Not built yet" line above is done: Products answers pricing's meter semantics
+(P-D-233), so a pricing usage entry can name a derived usage SKU's meter.
+
+#### P-D-233 [H] Products answers pricing's meter semantics for its derived usage types (E1b)
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-229 has pricing name a derived usage type exactly as a raw one, and leaves the answer to the meter-semantics provider of
+the pricing seam plan (its external dependency E1). This entry builds its derived half, E1b: design decisions 5 and 6 of the
+plan. `infra/meter_semantics.rs` and `gear.rs` carry it; pricing's checks do not change.
+- **One dispatcher (decision 6).** Products registers ONE `Arc<dyn UsageMeterSemanticsV1>` with
+  `ctx.client_hub().register::<dyn UsageMeterSemanticsV1>(..)`, beside `PricingReferenceRegistry`, over the same runtime
+  the REST doors use (`register_pricing_ports`). It is not wired through `#[toolkit::provides]`. A meter whose
+  `usage_type_id` starts with the reserved `products.derived/` prefix (P-D-230) is answered from this gear's store. Any
+  other meter is a raw meter (E1a), and it answers exactly what pricing answers when no provider is registered,
+  `UnconfiguredMeterSemantics` (400 `UNCONFIGURED_DEPENDENCY`), without asking the PDP or the store.
+- **The E1a extension point** is documented, not built. When a raw-meter provider exists (the usage collector's semantic
+  adapter over the types registry's declarations), it registers under a trait of `bss-products-sdk`, and this dispatcher
+  calls it for every non-derived id. Pricing's port stays one registration: two providers registered as
+  `dyn UsageMeterSemanticsV1` would replace each other.
+- **The answer (decision 5).** For `MeterRef { usage_type_id: "products.derived/<code>@<n>", version: "<n>" }`:
+  - `meter` as asked;
+  - `canonical_unit` = the version's `output_unit`;
+  - `fold` = `Sum`: the granule outputs add up over a window (P-D-230);
+  - `accrual_policy_version` = `derived-v1:<stored digest hex>`, what the version read serves (P-D-231);
+  - `source_integrated` = true;
+  - `digest` = the STORED digest, its 64 hex digits as pricing's 32 bytes. Nothing recomputes it from the declaration
+    (decision 3).
+
+  It answers what the declaration's digest identifies, not the declaration itself: the inputs at their exact versions and
+  the formula are in the stored declaration, which `GET /derived-usage-types/{code}/versions/{n}` serves (P-D-229 amended).
+- **The order** (P-D-202): the caller's tenant, then the PDP, then the meter's shape, then the store.
+- **The refusals:**
+  - a nil tenant or subject: 403;
+  - a denied `sku:read` (O-3): 403; an unreachable PDP: 503;
+  - a `version` that is not canonical, or that disagrees with the id's `@<n>`: 400 `METER_POLICY_MISMATCH` on
+    `meter.version`. Measured, probe D4-4: pricing's `validate_meter_policy` compares the policy's meter with the answer's
+    `meter`, which is the meter as asked, so `@1` with version `2` would pass pricing if Products answered it;
+  - an unknown code, an unknown version, another tenant's type, and a prefixed id that names no meter (`@01`, an upper-case
+    code, no code): ONE answer, 400 `METER_VERSION_UNKNOWN` on `meter`, with the same detail, as pricing's contract-test
+    provider answers every unknown pair;
+  - a store failure: 503 (pricing answers any 5xx of the provider as 503); a stored row that does not read: 500, a corrupt
+    row.
+- **The tenant pin.** The port carries no tenant. The provider reads in the caller's tenant, `ctx.subject_tenant_id()`, as
+  the store's key, beside the PDP's compiled scope, so a grant whose scope spans tenants (a parent reading its children)
+  never answers another tenant's meter. Measured, probe D4-3: with the key dropped, such a grant read the other tenant's
+  type; under a one-tenant grant the scope alone hid it.
+- **No trusted subject.** Pricing resolves the semantics as its door's caller, never as its system actor (D-503), so every
+  caller goes through the PDP; unlike the reference registry (P-D-222), no subject type is trusted here.
+- **One read.** `derived_usage_types::stored_version` is the tenant's version and its served declaration, read by the meter
+  id: the SKU binding (P-D-232, under `AccessScope::for_tenant`) and the provider (under the `sku:read` scope) share it.
+  The SKU doors still answer a store failure 500 (P-D-232); the provider answers 503.
+- **Pricing's docs.** D-503 and D-510 carry the amendment: E1b is provided, E1a is still external, and the answer carries
+  the digest of a declaration that names the inputs and the formula. The lines that said a derived meter is not sellable
+  until Products' store exists now say it is.
+- **The tests.**
+  - `infra/meter_semantics_tests.rs`: decision 5's answer for versions 1 and 2, under stored digests no declaration hashes
+    to; a raw ref (six spellings) answering the absent provider's error, byte for byte, with no PDP evaluation and a dropped
+    table; eight versions off the id; six unknown meters, one body; the store's 503 and a corrupt row's 500; a nil tenant's
+    and a nil subject's 403 before the PDP; the PDP's 403 and 503; the tenant pin under a grant over two tenants; and the hub after the gear's own init: nothing before it, Products'
+    dispatcher after it, over the gear's database.
+  - `tests/derived_meter_e2e.rs`, in this crate, with no test meter provider anywhere: Products boots through its own
+    `Gear::init` and pricing's authoring state and router run on its hub, as `sku_governance_tests`' cross-gear test does.
+    The cloudlet type is created through its door; a usage SKU on `products.derived/cloudlets@1` with its invoice fields is
+    published; a pricing usage entry names the meter, `cloudlet·hour` and `derived-v1:<digest>`; a price is authored,
+    submitted and applied; a plan revision is published; a `NewSaleQuery` built through `PricingReadProvider::resolve` and
+    `selected_bindings_digest` is accepted by `SellabilityV1::check`. The probes: a wrong unit and a wrong accrual are
+    `METER_POLICY_MISMATCH`, and the version table dropped is 503 at pricing's entry create (not the registry's 503).
+
+**Source:** The derived usage types implementation plan, rev 3: design decisions 5 and 6 and run 4. Implements P-D-229's
+pricing reference (its amendment) and the E1b half of pricing's E1 (D-503).

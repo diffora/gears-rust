@@ -256,10 +256,14 @@ CPU, for example), as versioned data with one evaluator that Rating calls (P-D-2
   hold, and a unit other than its output unit, are refused. A draft may move to another version; the first publish pins
   it, and no change moves it after that (to another version, to or from a GTS ref, or by dropping it). A new formula is
   sold through a new usage SKU (P-D-232).
-- The meter-semantics answer to pricing is not built yet. Until it is, no pricing usage entry can name a derived meter.
+- The registry answers pricing's meter semantics for a derived meter (E1b): the version's output unit, a sum over the
+  granules, the accrual `derived-v1:<digest>` and the stored digest, read in the caller's tenant under the SKU read grant;
+  a version off the meter id, or a meter the tenant does not hold, is refused. Any other meter is a raw one, answered as
+  if no provider were registered until the raw-meter provider exists (P-D-233).
 
 **Rationale**: owner decision of 2026-10-01 (P-D-229; rating T-D-39); the declaration, grammar and evaluator (P-D-230);
-the storage, doors, grants and audit (P-D-231); the SKU's binding and pin (P-D-232).
+the storage, doors, grants and audit (P-D-231); the SKU's binding and pin (P-D-232); the meter semantics answered to
+pricing (P-D-233).
 
 #### `fr-sku-bundle`
 
@@ -845,11 +849,20 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
   refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to a
   GTS ref, from a GTS ref, or one that drops the ref, is refused at submit and again at apply (P-D-232).
 
+**AC #32. A derived meter sells through pricing — `fr-derived-usage-type`**
+
+- **Given** the cloudlet derived usage type, a published usage SKU on its version 1 with its output unit and its invoice
+  fields, and pricing running beside the registry with no other meter provider.
+- **When** a pricing author creates a usage entry whose policy names the meter, the output unit and the version's accrual,
+  prices it, publishes a plan revision, and a sale is checked.
+- **Then** the sale is accepted; a policy with another unit or another accrual is refused `METER_POLICY_MISMATCH`, a raw
+  meter is answered as unconfigured, another tenant's type is unknown, and a store outage is 503 (P-D-233).
+
 ## 10. Dependencies
 
 | Dependency | Description | Criticality |
 | --- | --- | --- |
-| Pricing | Reads SKU versions and consumes `SkuChanged`; owns the reserve/write/confirm and release protocol. Products serves reference reads locally. | `p1` |
+| Pricing | Reads SKU versions and consumes `SkuChanged`; owns the reserve/write/confirm and release protocol. Products serves reference reads locally, and answers pricing's meter semantics for derived meters (P-D-233). | `p1` |
 | `bss-approval` | Shared policy, unit, item and decision model plus subject contract; each gear owns its stored copies. | `p1` |
 | Usage-type catalog port | Resolves usage meter references; retained as the pluggable integration in spec §4 and §15. | `p1` |
 | Toolkit REST, authz and SecureORM | Existing API infrastructure, deny-by-default permissions, scoped storage and transactional writes. | `p1` |
@@ -897,7 +910,7 @@ in their actor, requirement or use-case blocks above.
 | `fr-sku-define`, `fr-sku-type-frozen`, `fr-category-flat` | Spec §2 decisions 3, 12 and 17; §3 D; §4. |
 | `fr-sku-descriptors`, `fr-sku-versions` | Spec §2 decision 14; §2.2; §4; §7.1; §8; §12. |
 | `fr-sku-metering`, `fr-sku-bundle` | Spec §3 D; §4; §5; §15. |
-| `fr-derived-usage-type` | Owner decision of 2026-10-01 (P-D-229; rating T-D-39); P-D-230; P-D-231; P-D-232. |
+| `fr-derived-usage-type` | Owner decision of 2026-10-01 (P-D-229; rating T-D-39); P-D-230; P-D-231; P-D-232; P-D-233. |
 | `fr-sku-lifecycle`, `fr-sku-retire-fenced`, `fr-reference-registry` | Spec §2 decision 17; §2.2; §4; §6; §7.2; §13. |
 | `fr-approval-units`, `fr-concurrency-idempotency` | Spec §2 decision 8; §2.2; §3 items 23 and 27; §6; §7.2; §14. |
 | `fr-events`, `fr-read-model` | Spec §3 item 43; §4; §6; §7.3; §12–§13. |

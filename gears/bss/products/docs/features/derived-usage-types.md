@@ -19,12 +19,14 @@
   - [Author declares a derived usage type](#author-declares-a-derived-usage-type)
   - [Pricing author reads a version](#pricing-author-reads-a-version)
   - [Author sells a derived version through a usage SKU](#author-sells-a-derived-version-through-a-usage-sku)
+  - [Pricing resolves a derived meter's semantics](#pricing-resolves-a-derived-meters-semantics)
 - [3. Processes / Business Logic (CDSL)](#3-processes--business-logic-cdsl)
   - [declaration-judged](#declaration-judged)
   - [inputs-resolve](#inputs-resolve)
   - [version-append](#version-append)
   - [sku-binding](#sku-binding)
   - [pin-holds](#pin-holds)
+  - [meter-semantics](#meter-semantics)
 - [4. States (CDSL)](#4-states-cdsl)
   - [Derived usage type states](#derived-usage-type-states)
 - [5. Definitions of Done](#5-definitions-of-done)
@@ -32,6 +34,7 @@
   - [Declarations judged by the SDK's rules](#declarations-judged-by-the-sdks-rules)
   - [Five doors with their grants and audit](#five-doors-with-their-grants-and-audit)
   - [A usage SKU pins its derived version](#a-usage-sku-pins-its-derived-version)
+  - [Products answers pricing's derived meter semantics](#products-answers-pricings-derived-meter-semantics)
 - [6. Acceptance Criteria](#6-acceptance-criteria)
 
 <!-- /toc -->
@@ -43,15 +46,15 @@
 This feature stores and serves derived usage types: composite meters, such as a cloudlet-hour computed from RAM and CPU usage,
 declared as versioned catalog data (P-D-229). The declaration, its grammar, its evaluator and its canonical bytes are the
 SDK's (`bss_products_sdk::derived`, P-D-230); this feature adds the storage, the doors, the grants and the audit (P-D-231),
-and a usage SKU's binding to a version, pinned at its first publish (P-D-232). It has no design slice of its own:
-[DESIGN](../DESIGN.md) §3.1, §3.3, §3.5 and §3.7 are its design, and [DECOMPOSITION](../DECOMPOSITION.md) entry 2.5 places
-it. The meter-semantics answer to pricing is a later run of the same plan.
+a usage SKU's binding to a version, pinned at its first publish (P-D-232), and the meter semantics Products answers to
+pricing for a derived meter, E1b of pricing's E1 (P-D-233). It has no design slice of its own: [DESIGN](../DESIGN.md)
+§3.1, §3.3, §3.5 and §3.7 are its design, and [DECOMPOSITION](../DECOMPOSITION.md) entry 2.5 places it.
 
 ### 1.2 Purpose
 
 Let a catalog author declare a derived usage type once per formula, keep every version immutable, sell a version through a
-usage SKU that keeps it from its first publish, and give a pricing author the exact meter reference, unit and accrual policy
-version a usage policy names.
+usage SKU that keeps it from its first publish, give a pricing author the exact meter reference, unit and accrual policy
+version a usage policy names, and answer pricing's gates for that meter.
 
 Requirements: `cpt-cf-bss-products-fr-derived-usage-type`.
 
@@ -62,11 +65,11 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 ### 1.4 References
 
-- [PRD](../PRD.md): `fr-derived-usage-type`, AC #30 and AC #31.
+- [PRD](../PRD.md): `fr-derived-usage-type`, AC #30, AC #31 and AC #32.
 - [DESIGN](../DESIGN.md): §3.1 (the derived usage declaration, type and pin), §3.3 (the doors and the SKU doors' derived
-  codes), §3.5 (the catalog port's derived sibling), §3.7 (the tables).
-- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232.
-- The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 2 and 3.
+  codes), §3.5 (the catalog port's derived sibling and pricing's meter semantics), §3.7 (the tables).
+- [DECISIONS](../DECISIONS.md): P-D-229, P-D-230, P-D-231, P-D-232, P-D-233; pricing D-503 (amended).
+- The plan: `docs/superpowers/plans/2026-10-01-products-derived-usage-types.md` in the main checkout, rev 3, runs 2 to 4.
 
 ## 2. Actor Flows (CDSL)
 
@@ -95,6 +98,14 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 2. [ ] - `p1` - A draft that was never published may move to another version by PATCH, judged again - `inst-derived-sku-repin`
 3. [ ] - `p1` - Submit and approve resolve the ref from the store, never the catalog; the publish rule judges the binding at submit and at apply, and the first publish pins the version - `inst-derived-sku-publish`
 4. [ ] - `p1` - A change of the published SKU is judged by algorithm pin-holds, at submit and again at apply - `inst-derived-sku-change`
+
+### Pricing resolves a derived meter's semantics
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-derived-usage-types-meter-semantics`
+
+1. [ ] - `p1` - A pricing author names `MeterRef { usage_type_id: "products.derived/<code>@<n>", version: "<n>" }`, the version's output unit and its `derived-v1:<digest>` accrual in a usage entry's policy; pricing asks the ClientHub's one `UsageMeterSemanticsV1` as its door's caller - `inst-derived-meter-ask`
+2. [ ] - `p1` - Products' dispatcher answers by algorithm meter-semantics; pricing compares the answer with the policy and the SKU's ref and unit, at entry create, price and plan-revision submit and apply, and at a sale's check - `inst-derived-meter-gates`
+3. [ ] - `p1` - A refusal stays the dispatcher's: 400 METER_POLICY_MISMATCH or METER_VERSION_UNKNOWN, 403, and 503 for an outage, which pricing answers 503 - `inst-derived-meter-refusals`
 
 ## 3. Processes / Business Logic (CDSL)
 
@@ -135,6 +146,16 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 1. [ ] - `p1` - Compare the head's ref with the proposed ref; when either is derived and they differ, refuse DERIVED_PIN_IMMUTABLE on `usage_type_ref`: another version, GTS to derived, derived to GTS, a dropped ref (a type change included) - `inst-derived-pin-compare`
 2. [ ] - `p1` - At submit the change door refuses it before resolving the proposal (400), and the subject again in the transaction; at apply the subject judges the head it finds (409) - `inst-derived-pin-when`
 
+### meter-semantics
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-derived-usage-types-meter-semantics`
+
+1. [ ] - `p1` - A meter whose id does not start with `products.derived/` is raw (E1a): answer exactly `UnconfiguredMeterSemantics`, asking neither the PDP nor the store - `inst-derived-meter-dispatch`
+2. [ ] - `p1` - Refuse a nil tenant or subject 403; ask `sku:read` (403 denied, 503 unreachable) - `inst-derived-meter-caller`
+3. [ ] - `p1` - Parse the meter id; a `version` that is not canonical or disagrees with `@<n>` is 400 METER_POLICY_MISMATCH on `meter.version` - `inst-derived-meter-version`
+4. [ ] - `p1` - Read the type and the version in the caller's tenant, the store's key, beside the `sku:read` scope; an unknown code or version, another tenant's type and an id that names no meter are one 400 METER_VERSION_UNKNOWN on `meter`; a store failure is 503, a row that does not read 500 - `inst-derived-meter-read`
+5. [ ] - `p1` - Answer the meter as asked, the version's output unit, `Sum`, `derived-v1:<stored digest>`, source integrated, and the stored digest, never one recomputed - `inst-derived-meter-answer`
+
 ## 4. States (CDSL)
 
 ### Derived usage type states
@@ -147,7 +168,7 @@ writes ask `author` on the resource `derived_usage_type`; the reads ask `sku:rea
 
 ## 5. Definitions of Done
 
-These definitions own this feature's 4 DoDs. Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
+These definitions own this feature's 5 DoDs. Design constraints: `cpt-cf-bss-products-constraint-two-backends`.
 
 ### Append-only store on both backends
 
@@ -196,10 +217,22 @@ and the catalog is never asked for it: 400 DERIVED_USAGE_TYPE_UNKNOWN or DERIVED
 published SKU keeps it, and a change that moves it is DERIVED_PIN_IMMUTABLE at submit (400) and at apply (409). The three
 codes name the SKU (DESIGN §3.1, §3.3, §3.5; P-D-232).
 
+### Products answers pricing's derived meter semantics
+
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-derived-meter-semantics`
+
+Verified by the plan's run 4 (the tests P-D-233 lists); implementation marker in `products/src/infra/meter_semantics.rs`.
+
+The gear's init registers one `dyn UsageMeterSemanticsV1` in the ClientHub, as it registers `PricingReferenceRegistry`. It
+answers a derived meter from the store, in the caller's tenant under `sku:read`: the output unit, `Sum`,
+`derived-v1:<stored digest>`, source integrated and the stored digest; 400 METER_POLICY_MISMATCH for a version off the id,
+one 400 METER_VERSION_UNKNOWN for an unknown code, version or tenant, 503 for a store failure, 403 for a denial. Every other
+meter is answered as an absent provider would; the raw-meter provider (E1a) is an extension point, not built (DESIGN §3.5;
+P-D-233).
+
 ## 6. Acceptance Criteria
 
-Each criterion below corresponds to exactly one DoD above and cites [PRD §9](../PRD.md#9-acceptance-criteria). The
-meter-semantics answer is not part of this feature yet.
+Each criterion below corresponds to exactly one DoD above and cites [PRD §9](../PRD.md#9-acceptance-criteria).
 
 | DoD | PRD trace | Given / When / Then |
 | --- | --- | --- |
@@ -207,3 +240,4 @@ meter-semantics answer is not part of this feature yet.
 | `cpt-cf-bss-products-dod-derived-usage-type-rules` | AC #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given a declaration that breaks a rule, when it is created or added as a version, then it is 400 DERIVED_DECLARATION_INVALID naming the rule and nothing is written; given the cloudlet, its stored digest is the SHA-256 of its canonical bytes. |
 | `cpt-cf-bss-products-dod-derived-usage-type-doors` | AC #28, #30; `cpt-cf-bss-products-fr-derived-usage-type` | Given an author with `author` on `derived_usage_type`, when the cloudlet is created and a second version added, then both read back with their meter ids and version 1 is unchanged, each write has its audit row, a replayed key answers the first receipt, another tenant reads nothing, and a caller with only `sku:read` reads and cannot write. |
 | `cpt-cf-bss-products-dod-derived-usage-type-pin` | AC #31; `cpt-cf-bss-products-fr-derived-usage-type` | Given the tenant's derived type with versions 1 and 2 and a catalog configured or not, when a usage SKU is created on version 1 with its output unit, published and then changed, then the catalog is never asked; an unknown version or another unit is refused at draft save; the draft may move to version 2 before its first publish; after it, a change to version 2, to or from a GTS ref, or one that drops the ref is refused at submit (400) and at apply (409). |
+| `cpt-cf-bss-products-dod-derived-meter-semantics` | AC #32; `cpt-cf-bss-products-fr-derived-usage-type` | Given the cloudlet type, a published usage SKU on its version 1 and pricing beside the registry with no other meter provider, when a usage entry names the meter, its output unit and its accrual, and a price, a plan revision and a sale follow, then the sale is accepted through pricing's gates; another unit or accrual is METER_POLICY_MISMATCH, a raw meter is unconfigured, another tenant's type is unknown, and a store outage is 503 at the entry create. |
