@@ -248,10 +248,14 @@ CPU, for example), as versioned data with one evaluator that Rating calls (P-D-2
   a GTS id never starts with it.
 - A declaration has one canonical encoding (decimals normalized, a fixed field order), and its digest identifies the
   version.
-- Storing versions, their doors, a usage SKU's pin and the meter-semantics answer to pricing are not built yet. Until they
-  are, no derived meter can be sold.
+- A type has a code unique in the tenant and a name; its versions are stored append-only, with no approval of their own,
+  each with the digest of its canonical encoding. Each input resolves through the usage-type catalog as the caller. Writes
+  need the derived usage type's author grant, reads the SKU read grant, and every create and version is audited (P-D-231).
+- A usage SKU's pin and the meter-semantics answer to pricing are not built yet. Until they are, no derived meter can be
+  sold.
 
-**Rationale**: owner decision of 2026-10-01 (P-D-229; rating T-D-39); the declaration, grammar and evaluator (P-D-230).
+**Rationale**: owner decision of 2026-10-01 (P-D-229; rating T-D-39); the declaration, grammar and evaluator (P-D-230);
+the storage, doors, grants and audit (P-D-231).
 
 #### `fr-sku-bundle`
 
@@ -821,6 +825,14 @@ transport (`GET /bss-products/v1/browse`) remain until phase 2, as required by t
 - **When** the storage verification suites run, including concurrent reservation/fence and unit-update cases.
 - **Then** both enforce the same uniqueness, timeline, audit, replay and reference invariants without row locks.
 
+**AC #30. Derived usage type versions — `fr-derived-usage-type`**
+
+- **Given** a tenant whose usage-type catalog resolves a RAM and a CPU usage type, and the cloudlet declaration over them.
+- **When** an author creates the derived usage type and later adds a version with another formula.
+- **Then** versions 1 and 2 both read back, version 1 unchanged, each with its stored digest and its meter id
+  `products.derived/<code>@<n>`; a declaration that breaks a rule is refused with the rule named, an input the catalog does
+  not know is refused, each create and version is audited, and another tenant reads neither (P-D-231).
+
 ## 10. Dependencies
 
 | Dependency | Description | Criticality |
@@ -873,7 +885,7 @@ in their actor, requirement or use-case blocks above.
 | `fr-sku-define`, `fr-sku-type-frozen`, `fr-category-flat` | Spec §2 decisions 3, 12 and 17; §3 D; §4. |
 | `fr-sku-descriptors`, `fr-sku-versions` | Spec §2 decision 14; §2.2; §4; §7.1; §8; §12. |
 | `fr-sku-metering`, `fr-sku-bundle` | Spec §3 D; §4; §5; §15. |
-| `fr-derived-usage-type` | Owner decision of 2026-10-01 (P-D-229; rating T-D-39); P-D-230. |
+| `fr-derived-usage-type` | Owner decision of 2026-10-01 (P-D-229; rating T-D-39); P-D-230; P-D-231. |
 | `fr-sku-lifecycle`, `fr-sku-retire-fenced`, `fr-reference-registry` | Spec §2 decision 17; §2.2; §4; §6; §7.2; §13. |
 | `fr-approval-units`, `fr-concurrency-idempotency` | Spec §2 decision 8; §2.2; §3 items 23 and 27; §6; §7.2; §14. |
 | `fr-events`, `fr-read-model` | Spec §3 item 43; §4; §6; §7.3; §12–§13. |

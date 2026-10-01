@@ -632,3 +632,449 @@ impl TryFrom<crate::infra::storage::repo::SkuReference> for ReferenceReceipt {
         })
     }
 }
+
+// ------------------------------------------------------- P-D-231: derived usage types
+
+/// One node of a derived usage type's formula, in the shape the SDK's canonical bytes encode it.
+/// `op` names the node, and each operator carries its own fields and no other:
+/// - `input`: `name`, an input's name;
+/// - `const`: `value`, a decimal string;
+/// - `add`, `sub`, `mul`: `left` and `right`;
+/// - `div_const`: `arg`, and `divisor`, a non-zero decimal string;
+/// - `max`, `min`: `args`, at least two;
+/// - `ceil`, `floor`: `arg`;
+/// - `round`: `arg`, `scale` (0 to 12) and `mode` (`half_even`, `half_up`, `up`, `down`).
+///
+/// Every token is a plain string (P-D-217), so the door refuses an unknown one with its own code.
+#[derive(Debug, Clone, Default)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct ProductsDerivedExpr {
+    pub op: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(no_recursion)]
+    pub left: Option<Box<ProductsDerivedExpr>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(no_recursion)]
+    pub right: Option<Box<ProductsDerivedExpr>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(no_recursion)]
+    pub arg: Option<Box<ProductsDerivedExpr>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(no_recursion)]
+    pub args: Option<Vec<ProductsDerivedExpr>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub divisor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+/// One input of a derived usage type: a raw GTS usage type, folded over one granule.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct ProductsDerivedInput {
+    /// `^[a-z][a-z0-9_]{0,31}$`, what the formula's `input` nodes name.
+    pub name: String,
+    /// A GTS usage type id; never a `products.derived/` id.
+    pub usage_type_ref: String,
+    /// `sum`, `peak` or `time_weighted`.
+    pub granule_fold: String,
+    /// Required for `time_weighted` (1 to 86 400 seconds) and refused otherwise; absent when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_hold_seconds: Option<u32>,
+    pub unit: String,
+}
+/// A derived usage type's declaration (P-D-229, P-D-230): its inputs, the formula applied to one
+/// granule's folded inputs, and the output's unit, scale and rounding.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct ProductsDerivedDeclaration {
+    /// The selling SKU's unit, e.g. `cloudlet·hour`.
+    pub output_unit: String,
+    /// `hour`, the one granularity of v1.
+    pub granularity: String,
+    pub inputs: Vec<ProductsDerivedInput>,
+    pub formula: ProductsDerivedExpr,
+    /// 0 to 12.
+    pub output_scale: u32,
+    /// `half_even`, `half_up`, `up` or `down`.
+    pub output_round: String,
+}
+/// `POST /derived-usage-types`: a new type and its version 1.
+#[toolkit_macros::api_dto(request)]
+pub struct ProductsDerivedUsageTypeRequest {
+    /// `^[a-z0-9][a-z0-9._-]{0,63}$`, unique in the tenant.
+    pub code: String,
+    pub name: String,
+    pub declaration: ProductsDerivedDeclaration,
+}
+/// `POST /derived-usage-types/{code}/versions`: the next version.
+#[toolkit_macros::api_dto(request)]
+pub struct ProductsDerivedUsageTypeVersionRequest {
+    pub declaration: ProductsDerivedDeclaration,
+}
+/// What a pricing usage policy names as its meter (O-2, H1).
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsDerivedMeterRef {
+    /// `products.derived/<code>@<n>`.
+    pub usage_type_id: String,
+    /// `<n>`, a canonical decimal.
+    pub version: String,
+}
+/// One version of a derived usage type, with what a pricing author copies into a usage policy.
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsDerivedUsageTypeVersion {
+    /// The type's id.
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub version: u32,
+    pub declaration: ProductsDerivedDeclaration,
+    /// The stored SHA-256 of the declaration's canonical bytes, 64 lowercase hex digits.
+    pub digest: String,
+    pub meter_ref: ProductsDerivedMeterRef,
+    /// The declaration's `output_unit`.
+    pub canonical_unit: String,
+    /// `derived-v1:<digest>`.
+    pub accrual_policy_version: String,
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+/// A version as the type read lists it.
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsDerivedVersionHeader {
+    pub version: u32,
+    pub digest: String,
+    pub meter_ref: ProductsDerivedMeterRef,
+    pub accrual_policy_version: String,
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+/// A derived usage type with its versions' headers, oldest first.
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsDerivedUsageType {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    pub versions: Vec<ProductsDerivedVersionHeader>,
+}
+/// A derived usage type as the list pages it.
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsDerivedUsageTypeItem {
+    pub id: Uuid,
+    pub code: String,
+    pub name: String,
+    /// The highest version.
+    pub latest_version: u32,
+    pub created_by: Uuid,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+/// The declaration's tokens, one table each way.
+mod derived_tokens {
+    use bss_products_sdk::derived::{Granularity, GranuleFold, RoundMode};
+    pub const fn granularity(g: Granularity) -> &'static str {
+        match g {
+            Granularity::Hour => "hour",
+        }
+    }
+    pub fn parse_granularity(token: &str) -> Option<Granularity> {
+        [Granularity::Hour]
+            .into_iter()
+            .find(|g| granularity(*g) == token)
+    }
+    pub const fn fold(f: GranuleFold) -> &'static str {
+        match f {
+            GranuleFold::Sum => "sum",
+            GranuleFold::Peak => "peak",
+            GranuleFold::TimeWeighted => "time_weighted",
+        }
+    }
+    pub fn parse_fold(token: &str) -> Option<GranuleFold> {
+        [
+            GranuleFold::Sum,
+            GranuleFold::Peak,
+            GranuleFold::TimeWeighted,
+        ]
+        .into_iter()
+        .find(|f| fold(*f) == token)
+    }
+    pub const fn round(m: RoundMode) -> &'static str {
+        match m {
+            RoundMode::HalfEven => "half_even",
+            RoundMode::HalfUp => "half_up",
+            RoundMode::Up => "up",
+            RoundMode::Down => "down",
+        }
+    }
+    pub fn parse_round(token: &str) -> Option<RoundMode> {
+        [
+            RoundMode::HalfEven,
+            RoundMode::HalfUp,
+            RoundMode::Up,
+            RoundMode::Down,
+        ]
+        .into_iter()
+        .find(|m| round(*m) == token)
+    }
+}
+
+/// The shape rules of the wire declaration, before the SDK's: an unknown token, a decimal that does
+/// not parse, or a node whose fields are not its operator's is 400 `DERIVED_DECLARATION_INVALID`,
+/// naming the rule (`unknown_granularity`, `unknown_fold`, `unknown_round_mode`,
+/// `unknown_operator`, `invalid_decimal`, `malformed_expression`).
+impl TryFrom<&ProductsDerivedDeclaration> for bss_products_sdk::derived::DerivedUsageDeclaration {
+    type Error = crate::domain::error::DomainError;
+    fn try_from(d: &ProductsDerivedDeclaration) -> Result<Self, Self::Error> {
+        use crate::domain::derived::declaration_invalid;
+        let granularity = derived_tokens::parse_granularity(&d.granularity).ok_or_else(|| {
+            declaration_invalid(
+                "unknown_granularity",
+                format!("granularity `{}` is not `hour`", d.granularity),
+            )
+        })?;
+        let output_round = derived_tokens::parse_round(&d.output_round).ok_or_else(|| {
+            declaration_invalid(
+                "unknown_round_mode",
+                format!(
+                    "output_round `{}` is not half_even, half_up, up or down",
+                    d.output_round
+                ),
+            )
+        })?;
+        let inputs = d
+            .inputs
+            .iter()
+            .map(|i| {
+                Ok(bss_products_sdk::derived::DerivedInput {
+                    name: i.name.clone(),
+                    usage_type_ref: i.usage_type_ref.clone(),
+                    granule_fold: derived_tokens::parse_fold(&i.granule_fold).ok_or_else(|| {
+                        declaration_invalid(
+                            "unknown_fold",
+                            format!(
+                                "input `{}` granule_fold `{}` is not sum, peak or time_weighted",
+                                i.name, i.granule_fold
+                            ),
+                        )
+                    })?,
+                    max_hold_seconds: i.max_hold_seconds,
+                    unit: i.unit.clone(),
+                })
+            })
+            .collect::<Result<_, Self::Error>>()?;
+        Ok(Self {
+            output_unit: d.output_unit.clone(),
+            granularity,
+            inputs,
+            formula: d.formula.parse("formula")?,
+            output_scale: d.output_scale,
+            output_round,
+        })
+    }
+}
+
+impl ProductsDerivedExpr {
+    /// The fields this node carries, by name.
+    fn present(&self) -> Vec<&'static str> {
+        [
+            ("name", self.name.is_some()),
+            ("value", self.value.is_some()),
+            ("left", self.left.is_some()),
+            ("right", self.right.is_some()),
+            ("arg", self.arg.is_some()),
+            ("args", self.args.is_some()),
+            ("divisor", self.divisor.is_some()),
+            ("scale", self.scale.is_some()),
+            ("mode", self.mode.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(field, here)| here.then_some(field))
+        .collect()
+    }
+
+    /// The SDK node at `path`: its fields exactly its operator's, its operands parsed in turn.
+    fn parse(
+        &self,
+        path: &str,
+    ) -> Result<bss_products_sdk::derived::Expr, crate::domain::error::DomainError> {
+        use crate::domain::derived::declaration_invalid;
+        use bss_products_sdk::derived::Expr;
+        let fields: &[&str] = match self.op.as_str() {
+            "input" => &["name"],
+            "const" => &["value"],
+            "add" | "sub" | "mul" => &["left", "right"],
+            "div_const" => &["arg", "divisor"],
+            "max" | "min" => &["args"],
+            "ceil" | "floor" => &["arg"],
+            "round" => &["arg", "scale", "mode"],
+            other => {
+                return Err(declaration_invalid(
+                    "unknown_operator",
+                    format!("{path}: `{other}` is not an operator"),
+                ));
+            }
+        };
+        if self.present() != fields {
+            return Err(declaration_invalid(
+                "malformed_expression",
+                format!(
+                    "{path}: `{}` carries {}, and no other field",
+                    self.op,
+                    fields.join(", ")
+                ),
+            ));
+        }
+        let decimal = |text: &Option<String>, field: &str| {
+            let text = text.as_deref().unwrap_or_default();
+            text.parse::<rust_decimal::Decimal>().map_err(|_| {
+                declaration_invalid(
+                    "invalid_decimal",
+                    format!("{path}.{field}: `{text}` is not a decimal"),
+                )
+            })
+        };
+        let operand = |slot: &Option<Box<Self>>, field: &str| {
+            let node = slot.as_deref().ok_or_else(|| {
+                declaration_invalid(
+                    "malformed_expression",
+                    format!("{path}: `{}` needs `{field}`", self.op),
+                )
+            })?;
+            node.parse(&format!("{path}.{field}")).map(Box::new)
+        };
+        Ok(match self.op.as_str() {
+            "input" => Expr::Input(self.name.clone().unwrap_or_default()),
+            "const" => Expr::Const(decimal(&self.value, "value")?),
+            "add" => Expr::Add(operand(&self.left, "left")?, operand(&self.right, "right")?),
+            "sub" => Expr::Sub(operand(&self.left, "left")?, operand(&self.right, "right")?),
+            "mul" => Expr::Mul(operand(&self.left, "left")?, operand(&self.right, "right")?),
+            "div_const" => Expr::DivConst(
+                operand(&self.arg, "arg")?,
+                decimal(&self.divisor, "divisor")?,
+            ),
+            "ceil" => Expr::Ceil(operand(&self.arg, "arg")?),
+            "floor" => Expr::Floor(operand(&self.arg, "arg")?),
+            "round" => {
+                let mode = self.mode.as_deref().unwrap_or_default();
+                Expr::Round(
+                    operand(&self.arg, "arg")?,
+                    self.scale.unwrap_or_default(),
+                    derived_tokens::parse_round(mode).ok_or_else(|| {
+                        declaration_invalid(
+                            "unknown_round_mode",
+                            format!("{path}.mode: `{mode}` is not half_even, half_up, up or down"),
+                        )
+                    })?,
+                )
+            }
+            many => {
+                let args = self
+                    .args
+                    .iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(i, e)| e.parse(&format!("{path}.args.{i}")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if many == "max" {
+                    Expr::Max(args)
+                } else {
+                    Expr::Min(args)
+                }
+            }
+        })
+    }
+}
+
+impl From<&bss_products_sdk::derived::DerivedUsageDeclaration> for ProductsDerivedDeclaration {
+    /// The declaration as the doors store and serve it: decimals normalized, every token the
+    /// table's.
+    fn from(d: &bss_products_sdk::derived::DerivedUsageDeclaration) -> Self {
+        Self {
+            output_unit: d.output_unit.clone(),
+            granularity: derived_tokens::granularity(d.granularity).to_owned(),
+            inputs: d
+                .inputs
+                .iter()
+                .map(|i| ProductsDerivedInput {
+                    name: i.name.clone(),
+                    usage_type_ref: i.usage_type_ref.clone(),
+                    granule_fold: derived_tokens::fold(i.granule_fold).to_owned(),
+                    max_hold_seconds: i.max_hold_seconds,
+                    unit: i.unit.clone(),
+                })
+                .collect(),
+            formula: (&d.formula).into(),
+            output_scale: d.output_scale,
+            output_round: derived_tokens::round(d.output_round).to_owned(),
+        }
+    }
+}
+
+impl From<&bss_products_sdk::derived::Expr> for ProductsDerivedExpr {
+    fn from(e: &bss_products_sdk::derived::Expr) -> Self {
+        use bss_products_sdk::derived::Expr;
+        let node = |op: &str| Self {
+            op: op.to_owned(),
+            ..Self::default()
+        };
+        let boxed = |e: &Expr| Some(Box::new(Self::from(e)));
+        let decimal = |d: &rust_decimal::Decimal| Some(d.normalize().to_string());
+        match e {
+            Expr::Input(name) => Self {
+                name: Some(name.clone()),
+                ..node("input")
+            },
+            Expr::Const(value) => Self {
+                value: decimal(value),
+                ..node("const")
+            },
+            Expr::Add(l, r) | Expr::Sub(l, r) | Expr::Mul(l, r) => Self {
+                left: boxed(l),
+                right: boxed(r),
+                ..node(match e {
+                    Expr::Add(..) => "add",
+                    Expr::Sub(..) => "sub",
+                    _ => "mul",
+                })
+            },
+            Expr::DivConst(arg, divisor) => Self {
+                arg: boxed(arg),
+                divisor: decimal(divisor),
+                ..node("div_const")
+            },
+            Expr::Max(args) | Expr::Min(args) => Self {
+                args: Some(args.iter().map(Self::from).collect()),
+                ..node(if matches!(e, Expr::Max(_)) {
+                    "max"
+                } else {
+                    "min"
+                })
+            },
+            Expr::Ceil(arg) => Self {
+                arg: boxed(arg),
+                ..node("ceil")
+            },
+            Expr::Floor(arg) => Self {
+                arg: boxed(arg),
+                ..node("floor")
+            },
+            Expr::Round(arg, scale, mode) => Self {
+                arg: boxed(arg),
+                scale: Some(*scale),
+                mode: Some(derived_tokens::round(*mode).to_owned()),
+                ..node("round")
+            },
+        }
+    }
+}

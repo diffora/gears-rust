@@ -3,6 +3,7 @@
 pub mod canonical;
 pub mod caps;
 pub mod concurrency;
+pub mod derived;
 pub mod error;
 pub mod idempotency;
 pub mod recognized;

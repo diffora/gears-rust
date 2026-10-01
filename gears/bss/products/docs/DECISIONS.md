@@ -61,6 +61,7 @@
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 | P-D-230 | H | A derived usage type is versioned data with one evaluator, in the SDK | DECIDED 2026-10-01 · Derived usage types plan rev 3 (design decisions 1–4, run 1); implements P-D-229 and its amendment |
+| P-D-231 | H | Derived usage types are stored append-only and served by five doors | DECIDED 2026-10-01 · Owner, 2026-10-01 (O-1, O-2, O-3); derived usage types plan rev 3 (design decisions 4, 8, 9, run 2); implements P-D-229 and P-D-230 |
 
 ## Entries
 
@@ -1227,3 +1228,94 @@ the declaration Rating computes.
 
 **Source:** The derived usage types implementation plan, rev 3: design decisions 1–4 and run 1, on the owner's answers of
 2026-10-01 (O-2, the meter id). Implements P-D-229 and its amendment.
+
+#### P-D-231 [H] Derived usage types are stored append-only and served by five doors
+
+**Status:** DECIDED 2026-10-01.
+
+P-D-230 fixes what a derived usage declaration is. This entry fixes how Products stores one, who may write and read it,
+and what the doors answer. Migration `m20261001_000011_derived_usage_type`, the repository `derived_usage_type_repo`,
+`domain/derived.rs` and `api/rest/derived_usage_types.rs` carry it.
+- **The identity (O-2).** A derived usage type has:
+  - a stable `id` (a UUID v7), one per `(tenant, code)`;
+  - a `code`, `^[a-z0-9][a-z0-9._-]{0,63}$`, unique in the tenant: a code off the pattern is 400 `VALIDATION`, one over 64
+    characters 400 `FIELD_TOO_LONG` (P-D-225), and a second type with the tenant's code 409 `DERIVED_CODE_TAKEN`;
+  - a `name`, set at the create, not blank and at most 200 characters;
+  - versions 1, 2, … . The meter id of version `n` is `products.derived/<code>@<n>`, and pricing names it
+    `{usage_type_id: "products.derived/<code>@<n>", version: "<n>"}`.
+- **The lifecycle (O-1).** A version is append-only and needs no approval of its own. A type has no lifecycle: no door
+  renames, retires or deletes it. A usage SKU adopts a version only at its own approved first publish, and the pin never
+  moves after that (M1, the next run). A version is never written again: a new formula is a new version, and every earlier
+  version is served and stored byte for byte as it was.
+- **The storage.** Two tables, on both backends:
+  - `products_derived_usage_type`: `(tenant_id, id, code, name, created_by, created_at)`, key `(tenant_id, id)`, the unique
+    index `uq_products_derived_usage_type_code` on `(tenant_id, code)` and a CHECK on the code's pattern;
+  - `products_derived_usage_type_version`: `(tenant_id, type_id, version, declaration_json, digest, created_by,
+    created_at)`, key `(tenant_id, type_id, version)`, a tenant-qualified foreign key `(tenant_id, type_id)` to the type,
+    and CHECKs on `version >= 1` and on the digest (64 lowercase hex digits).
+
+  Postgres refuses every `UPDATE` and `DELETE` of a version through one `PL/pgSQL` function, as pricing's usage rating
+  policy table does; `SQLite` has two triggers with the same refusal. The type row has no trigger: no door writes it after the
+  create, and its versions' key holds it. The migration is reversible. The schema guard (P-D-195) needs no change: neither
+  table is in the legacy chain.
+- **The declaration and its digest.** The wire declaration is string-typed (P-D-217): the granularity, a fold, a round mode
+  and an operator are plain strings, so the door refuses an unknown one with its own code, and the request census keeps
+  them strings. Its formula nodes have the canonical bytes' shape: `op` and that operator's own fields (`name`; `value`;
+  `left` and `right`; `arg` and `divisor`; `args`; `arg`, `scale` and `mode`). A version stores the declaration as the doors
+  serve it (decimals normalized, an absent hold omitted) and the SHA-256 of `derived::canonical_bytes`, taken through
+  `aws-lc-rs` (lint DE0708) once, at the write. Every read answers the STORED digest; nothing recomputes it.
+- **The refusals.** A declaration the shape or the SDK refuses is 400 `DERIVED_DECLARATION_INVALID` on `declaration`, its
+  detail led by the rule: the SDK's 18 (`empty_unit`, `unit_too_long`, `scale_too_large`, `too_few_inputs`,
+  `invalid_input_name`, `duplicate_input`, `empty_input_ref`, `input_ref_too_long`, `derived_input`, `hold_missing`,
+  `hold_not_allowed`, `hold_out_of_range`, `unknown_input`, `unused_input`, `division_by_zero`, `too_few_operands`,
+  `too_deep`, `too_many_nodes`) and the shape's 6 (`unknown_granularity`, `unknown_fold`, `unknown_round_mode`,
+  `unknown_operator`, `invalid_decimal`, `malformed_expression`). A `DERIVED_` refusal names the `derived_usage_type`
+  resource (P-D-223). A JSON body nested past the parser's limit is a 400 on the body, before any rule.
+- **The inputs (P-D-184, P-D-207).** After the rules, each input resolves through the `UsageTypeCatalog` port as the caller,
+  once, in input order. A catalog that refuses the caller is 403 `USAGE_TYPE_FORBIDDEN` and one that does not answer 503
+  `USAGE_TYPE_UNAVAILABLE`, whichever input met it; otherwise every unresolved input is one 400 `USAGE_TYPE_UNRESOLVED` on
+  `declaration.inputs.<name>.usage_type_ref`. An unconfigured catalog answers nothing, so a write is 503: a version is
+  immutable, so it fails closed, as a usage SKU's publish does. A derived input is refused by the rules before the catalog is
+  asked (P-D-230).
+- **The doors**, under `/bss-products/v1`:
+  - `POST /derived-usage-types` `{code, name, declaration}` → 201, version 1;
+  - `POST /derived-usage-types/{code}/versions` `{declaration}` → 201, version n + 1; 404 when the tenant has no type with
+    the code, asked before the catalog; 409 `CONTENDED` when a concurrent write took the number;
+  - `GET /derived-usage-types`: the tenant's types by code (tie-break id), each with its `latest_version`; `$top`/`limit`
+    50, clamped at 200, and a `cursor`, as the SKU list pages (P-D-210). `$filter`, `$orderby`, `$select` and any other key
+    are 400; a cursor another list cut is 400;
+  - `GET /derived-usage-types/{code}`: the type with its versions' headers, oldest first;
+  - `GET /derived-usage-types/{code}/versions/{n}`: the declaration, the stored `digest`, and what a pricing author copies
+    into a usage policy: `meter_ref`, `canonical_unit` (the output unit) and `accrual_policy_version`
+    (`derived-v1:<digest>`). An `n` that is not a canonical decimal names no version: 404.
+
+  Each write takes an optional `Idempotency-Key` (P-D-198), looked up before the body is judged or the catalog asked, and
+  claimed and answered in the write's transaction. 503 is declared on every door; the served text names every code.
+- **The grants (O-3).** The writes ask `author` on the new PDP resource `derived_usage_type`
+  (`cf.bss.products.derived_usage_type.v1~` under the platform's GTS prefix, as the other labels), anchored to the
+  caller's tenant. It is the resource's one permission (`derived_usage_type_author`), so the catalog grows from 16 to 17
+  permissions, and its label schema is registered at boot with the others (P-D-204). The reads ask `sku:read`, and its
+  compiled scope is the read's SQL filter beside the tenant. A `sku:read` scope narrowed to rows names SKUs, so it shows no
+  derived usage type: the read fails closed.
+- **The audit (P-D-193).** A create writes one `products_audit_log` row, `derived_usage_type.create`, and a new version one,
+  `derived_usage_type.version`, each in the write's transaction: `subject_kind = derived_usage_type`, `subject_id` the type's
+  id, `subject_revision` the version. The table has no CHECK on `subject_kind`, so no audit migration is needed.
+- **The caps.** The SDK's caps are tied to `domain/caps.rs` by const asserts: the unit cap is `LABEL_MAX_CHARS`, the input
+  ref cap `USAGE_TYPE_REF_MAX_CHARS`, and the code cap `CODE_MAX_CHARS`.
+- **Beyond the plan's text.** The repository has two reads the plan does not list: `list_versions` (the type read's
+  headers) and `latest_versions` (the list's `latest_version` and the next version number, in one grouped read). A lost
+  version-number race is 409 `CONTENDED`, the gear's answer to contention it cannot retry away.
+- **Not built yet.** A usage SKU cannot name a derived type yet (the plan's run 3), and Products does not yet answer
+  pricing's meter semantics (run 4). Until then no derived meter can be sold (P-D-229).
+- **The tests.** `domain/derived_tests.rs` (the digest against a SHA-256 taken outside the code, a rule per SDK variant, the
+  identity, the catalog's answers), the migration's `_tests.rs` and `tests/postgres_derived_usage_type.rs` (the triggers, the
+  tenant-qualified key, the CHECKs and the keys), `derived_usage_type_repo_tests.rs` (tenant scoping, the code per tenant,
+  the versions), and `derived_usage_types_tests.rs`: version 1 kept byte for byte after version 2, every rule at the door,
+  the catalog's three answers, a foreign tenant, a replay, the paging, the version read, the stored digest, the audit rows
+  and their transaction, and the two grants. The censuses: the gear's operations and migration count, the door census, the
+  permission census, the request-string and kept-string censuses, the refusal-resource census and the schema guard's table
+  count.
+
+**Source:** The derived usage types implementation plan, rev 3: design decisions 4, 8 and 9 and run 2, on the owner's
+answers of 2026-10-01 (O-1: versions are append-only, with no approval of their own; O-2: the meter id; O-3: reads under
+`sku:read`, writes under `author` on `derived_usage_type`). Implements P-D-229 and P-D-230.

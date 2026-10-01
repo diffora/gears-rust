@@ -56,7 +56,7 @@ Every PRD FR and NFR appears once in this allocation. Section references identif
 | `cpt-cf-bss-products-fr-sku-type-frozen` | Live references exclude type changes | §2.1 Fence before count; §3.1 type fence; §3.7 registry predicates |
 | `cpt-cf-bss-products-fr-sku-descriptors` | Governed, dated billing descriptors | §3.1 SkuVersion; §3.6 GL change |
 | `cpt-cf-bss-products-fr-sku-metering` | Usage metering resolves at submit and apply | §3.1 type rules; §3.5 usage-type catalog |
-| `cpt-cf-bss-products-fr-derived-usage-type` | A derived meter is data with one evaluator | §3.1 derived usage declaration; §3.4 products-sdk |
+| `cpt-cf-bss-products-fr-derived-usage-type` | A derived meter is data with one evaluator, stored append-only | §3.1 derived usage declaration and type; §3.3 derived usage type doors; §3.4 products-sdk; §3.7 derived usage tables |
 | `cpt-cf-bss-products-fr-sku-bundle` | Bundle identity supports sold-as only | §3.1 bundle rules; §3.5 Pricing; §3.6 reserve/write/confirm |
 | `cpt-cf-bss-products-fr-sku-lifecycle` | One approval shape governs lifecycle | §3.1 lifecycle; §3.2 Approvals; §3.6 fenced retirement |
 | `cpt-cf-bss-products-fr-sku-versions` | Durable history determines dated truth | §3.3 dated read; §3.7 version table and ordering |
@@ -171,7 +171,8 @@ A pending lock is business ownership, not a database row lock (P-D-192; spec §2
 | `ApprovalUnit` | Shared crate type: kind, subject reference, state, quorum, generation, snapshot/hash, date, submitter, decision metadata and concurrency version. |
 | `Decision` | Shared crate type: unit, actor, generation, approve/reject, note, timestamp and stale flag. One vote per actor per generation. |
 | `SkuReference` | Tenant, id, sku_id, owner_gear, price_book_entry/plan_item/sold_as kind, ref_id, reserved/confirmed/released state, timestamps, released_by and release_reason. Released attempts remain recorded. |
-| `DerivedUsageDeclaration` | One version of a derived usage type (P-D-229, P-D-230), in `products-sdk`'s `derived` module: output unit, granularity (an hour), at least two raw inputs (name, GTS ref at its exact version, granule fold, a hold bound for a time-weighted input, unit), a formula over them, output scale and rounding. Not stored yet. |
+| `DerivedUsageDeclaration` | One version of a derived usage type (P-D-229, P-D-230), in `products-sdk`'s `derived` module: output unit, granularity (an hour), at least two raw inputs (name, GTS ref at its exact version, granule fold, a hold bound for a time-weighted input, unit), a formula over them, output scale and rounding. Stored per version with its digest (P-D-231). |
+| `DerivedUsageType` | Tenant, id (UUID v7), code (`^[a-z0-9][a-z0-9._-]{0,63}$`, unique per tenant), name, creator and creation time, and versions 1, 2, … each holding one immutable declaration and the SHA-256 of its canonical bytes. No lifecycle and no approval of its own (O-1); the meter id of version `n` is `products.derived/<code>@<n>` (P-D-231). |
 
 A usage SKU needs both `usage_type_ref` and `unit` at publication; submit and apply resolve the reference.
 Metering fields are usage-only. Bundles reject metering, have no composition, and can only be sold as a
@@ -191,8 +192,12 @@ validates with:
   inputs in name order). The runtime hashes it and stores the digest.
 - `MeterId` parses and formats `products.derived/<code>@<n>` and gives pricing's `(usage_type_id, version)` pair.
 
-Storing versions, their doors, a usage SKU's pin and the meter-semantics provider are later runs; until they land, no
-derived meter can be sold.
+**The derived usage type** (P-D-231). The gear stores each type and its append-only versions (§3.7) and serves them
+(§3.3). A version stores the declaration as the doors serve it and its digest, taken once at the write through `aws-lc-rs`;
+every read answers the stored digest. A write judges the declaration (the SDK's rules and the wire shape's, each refusal 400
+`DERIVED_DECLARATION_INVALID` naming its rule), then resolves each input through the `UsageTypeCatalog` port as the
+caller, as a usage SKU's publish does (P-D-184, P-D-207). A usage SKU's pin and the meter-semantics provider are later runs;
+until they land, no derived meter can be sold.
 
 The `sku` row holds the latest applied content, possibly future-effective. `revision` is the SKU concurrency
 version for ETag, If-Match and compare-and-swap; `published_version` identifies each published
@@ -322,7 +327,8 @@ Every closed set on a response schema is an enum of exactly its stored tokens (P
 unit's `state`, a decision, a vote's `outcome`, and a reference's `kind` and `state`. A stored token outside its
 set is a 500 (`CorruptRow`). Request fields keep `string`, so each door keeps its `VALIDATION` refusal; the
 history's `action` and `unit_kind`, a unit's `kind` and `ref_type`, a reference's `owner`, a usage type's
-`kind`, the picker's `source` and the `/browse` envelope stay `string`.
+`kind`, the picker's `source`, the `/browse` envelope and a derived usage declaration's tokens (stored as JSON, served as
+written, P-D-231) stay `string`.
 Responses use toolkit RFC-9457 `Problem` with domain `code`, `field` and `message`; stale-generation
 responses additionally expose the current generation. All doors use authenticated OperationBuilder
 registration and standardized errors.
@@ -345,6 +351,7 @@ registration and standardized errors.
 | Approval reads | `GET /approval-units?state&kind&ref_id`; `GET /approval-units/{id}` | Queue and detail; detail includes stored snapshot and live recomputation, `impact_live: null` once a rejected or withdrawn draft was deleted (P-D-206). Every unit carries `submit_note`: the note its submit, change or retire sent, or null (P-D-219). |
 | Decisions | `POST /approval-units/{id}/approve`; `POST /approval-units/{id}/reject`; `POST /approval-units/{id}/withdraw` | Approve/reject carry generation; reject requires note; withdraw is submitter-only. |
 | Approval policy | `GET /approval-policy`; `PUT /approval-policy`; `DELETE /approval-policy/{kind}` | Tenant default quorum and optional per-kind overrides; missing default is quorum 1. The GET answers a strong content `ETag`; the PUT requires it as `If-Match` (missing or malformed 400, stale 409 `STALE_REVISION`), authorization first (P-D-205). The DELETE removes one kind's override under the same `If-Match`, so the kind follows the default again; the default itself is 400 `POLICY_DEFAULT_REQUIRED`, and a kind without an override is 404 (P-D-216). The fence TTL is the deployment setting `fence_ttl_minutes`; no tenant settings door exists (P-D-209). |
+| Derived usage types | `POST /derived-usage-types`; `POST /derived-usage-types/{code}/versions`; `GET /derived-usage-types?$top&cursor`; `GET /derived-usage-types/{code}`; `GET /derived-usage-types/{code}/versions/{n}` | Writes ask `author` on `derived_usage_type`, reads `sku:read` (O-3). Create `{code, name, declaration}` answers version 1, and a new version `{declaration}` version n + 1 (404 for an unknown code, asked before the catalog; 409 `CONTENDED` on a lost number race); earlier versions never change (O-1). Refusals: 400 `VALIDATION` or `FIELD_TOO_LONG` on the code or name, `DERIVED_DECLARATION_INVALID` naming the rule, `USAGE_TYPE_UNRESOLVED` per input; 403 `USAGE_TYPE_FORBIDDEN`; 409 `DERIVED_CODE_TAKEN`; 503 `USAGE_TYPE_UNAVAILABLE`, an unconfigured catalog included. The list pages by code, 50 to a page and at most 200, with a cursor, each item with its `latest_version`; other keys are 400. The type read lists its versions' headers; the version read answers the declaration, the stored `digest`, `meter_ref` `{usage_type_id: "products.derived/<code>@<n>", version: "<n>"}`, `canonical_unit` and `accrual_policy_version` `derived-v1:<digest>`; a non-canonical `n` is 404 (P-D-231). |
 | Retained browse | `GET /bss-products/v1/browse` (absolute) | Preserve `ProductCatalogClientV1` transport until phase 2; serve Published and Deprecated with lifecycle status and deprecated flag; drafts, retiring and retired are absent. |
 
 SKU reads/writes expose `ETag` from `revision`, its concurrency version; categories use `version`; the approval
@@ -360,7 +367,8 @@ idempotency column; reserve also deduplicates live logical references independen
 
 Permissions deny by default: `products:read` covers scoped reads, `products:author` draft/category and
 reference mutations, the draft delete, the usage-type picker and orphan recovery, `products:submit` lifecycle proposals and withdrawal,
-`products:approve` decisions, and `products:settings` approval-policy writes and reads. Reference operations also
+`products:approve` decisions, and `products:settings` approval-policy writes and reads. A derived usage type is the
+resource `derived_usage_type` with one permission, `author`, for its two writes; its reads take `sku:read` (P-D-231, O-3). Reference operations also
 check the authenticated owner gear; operator force-release requires explicit operator authorization and
 reason. SoD and submitter checks apply in the domain regardless of grants (spec §6, §7.3).
 
@@ -368,6 +376,8 @@ reason. SoD and submitter checks apply in the domain regardless of grants (spec 
 | --- | --- |
 | `SKU_CODE_TAKEN`, `SKU_NAME_TAKEN` | 409; tenant identity conflict |
 | `CATEGORY_DEFAULT_TAKEN` | 409; a concurrent write made another category the default between this move's clear and its set (P-D-218) |
+| `DERIVED_CODE_TAKEN` | 409; the tenant has a derived usage type with this code (P-D-231) |
+| `DERIVED_DECLARATION_INVALID` | 400 on `declaration`, the detail led by the rule the SDK or the wire shape refused (P-D-231) |
 | `NOTE_TOO_LONG` | 400; a submitter's note over 2000 characters on submit, changes or retire, or a vote's note on approve or reject; nothing is written (P-D-219, P-D-225) |
 | `FIELD_TOO_LONG` | 400 on the field; a text over its cap on a SKU create, draft PATCH or change, a category create or rename, or a forced release's reason; nothing is written (P-D-225) |
 | `SKU_TYPE_FROZEN`, `SKU_REFERENCED`, `SKU_FENCED`, `REFERENCE_RELEASED` | 409; live reference, fence or terminal reservation conflict |
@@ -893,6 +903,44 @@ resumable fence operations retain `fence_op_id` so a resumed orphan does not per
 operation. Audit records are append-only; retention/erasure remains outside this programme. Events use
 the existing toolkit outbox table rather than a second Products-specific outbox.
 
+The forward migration `m20261001_000011_derived_usage_type` creates the derived usage type store (P-D-231). A version is
+append-only: one `PL/pgSQL` function refuses every `UPDATE` and `DELETE` (on SQLite, two triggers). Its foreign key is
+tenant-qualified, so a version never names another tenant's type. A create and a new version each write one
+`products_audit_log` row in their transaction (`subject_kind = derived_usage_type`, the type's id as the subject, the
+version as its revision). The migration is reversible.
+
+```sql
+CREATE TABLE bss.products_derived_usage_type (
+            tenant_id   uuid        NOT NULL,
+            id          uuid        NOT NULL,
+            code        text        NOT NULL,
+            name        text        NOT NULL,
+            created_by  uuid        NOT NULL,
+            created_at  timestamptz NOT NULL,
+            CONSTRAINT products_derived_usage_type_pkey PRIMARY KEY (tenant_id, id),
+            CONSTRAINT chk_products_derived_usage_type_code CHECK (code ~ '^[a-z0-9][a-z0-9._-]{0,63}$')
+        );
+
+CREATE UNIQUE INDEX uq_products_derived_usage_type_code ON bss.products_derived_usage_type USING btree (tenant_id, code);
+
+CREATE TABLE bss.products_derived_usage_type_version (
+            tenant_id         uuid        NOT NULL,
+            type_id           uuid        NOT NULL,
+            version           bigint      NOT NULL,
+            declaration_json  jsonb       NOT NULL,
+            digest            text        NOT NULL,
+            created_by        uuid        NOT NULL,
+            created_at        timestamptz NOT NULL,
+            CONSTRAINT products_derived_usage_type_version_pkey PRIMARY KEY (tenant_id, type_id, version),
+            CONSTRAINT fk_products_derived_usage_type_version_type FOREIGN KEY (tenant_id, type_id)
+                REFERENCES bss.products_derived_usage_type (tenant_id, id),
+            CONSTRAINT chk_products_derived_usage_type_version_version CHECK (version >= 1),
+            CONSTRAINT chk_products_derived_usage_type_version_digest CHECK (digest ~ '^[0-9a-f]{64}$')
+        );
+
+CREATE TRIGGER products_derived_usage_type_version_append_only BEFORE UPDATE OR DELETE ON bss.products_derived_usage_type_version FOR EACH ROW EXECUTE FUNCTION bss.products_derived_usage_type_version_append_only();
+```
+
 ## 4. Additional context
 
 The replaced design set lives only on `bss/products-backup` at `3a38f0b28` and in git history, under
@@ -937,7 +985,7 @@ defined here.
 | `cpt-cf-bss-products-fr-sku-type-frozen` | 02 | `sku-categories` |
 | `cpt-cf-bss-products-fr-sku-descriptors` | 03 | `lifecycle-approvals` |
 | `cpt-cf-bss-products-fr-sku-metering` | 02 | `sku-categories` |
-| `cpt-cf-bss-products-fr-derived-usage-type` | none yet | none yet (P-D-230: the SDK module only) |
+| `cpt-cf-bss-products-fr-derived-usage-type` | none (P-D-230, P-D-231) | `derived-usage-types` |
 | `cpt-cf-bss-products-fr-sku-bundle` | 02 | `sku-categories` |
 | `cpt-cf-bss-products-fr-sku-lifecycle` | 03 | `lifecycle-approvals` |
 | `cpt-cf-bss-products-fr-sku-versions` | 02 | `sku-categories` |
@@ -956,4 +1004,4 @@ registry and Pricing protocol; P-D-196 → the optional category; P-D-197 → th
 P-D-198–P-D-204 → the rules carried from the backup register (replay mechanics, event delivery, the audit
 shape, the request digest, the validation answer, the usage-type resolve bound, the authz label registration);
 P-D-205 → the policy's `If-Match`; P-D-206 → the draft delete; P-D-207 → usage types as the caller and the
-picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.
+picker; P-D-208 → category retirement; P-D-209 → the fence TTL as a deployment setting; P-D-216 → the override reset; P-D-218 → moving the default category; P-D-219 → the submitter's note on the unit; P-D-220 → a retired category is never the default; P-D-229 → derived usage meters (Products declares, Rating evaluates); P-D-230 → the declaration, grammar, evaluator and canonical bytes; P-D-231 → the derived usage type's storage, doors, grants and audit. Spec §2.2, §4, §6, §7.2–§7.3 and §13 govern the corresponding sections.

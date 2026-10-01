@@ -302,6 +302,17 @@ fn a_refusal_names_the_resource_it_refuses() {
             },
             labels::SKU,
         ),
+        (
+            DomainError::Conflict {
+                code: "DERIVED_CODE_TAKEN",
+                detail: "taken".into(),
+            },
+            labels::DERIVED_USAGE_TYPE,
+        ),
+        (
+            crate::domain::derived::declaration_invalid("too_few_inputs", "one input"),
+            labels::DERIVED_USAGE_TYPE,
+        ),
     ] {
         let name = format!("{err:?}");
         let canonical = CanonicalError::from(err);

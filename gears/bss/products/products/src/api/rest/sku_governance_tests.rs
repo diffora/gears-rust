@@ -1127,6 +1127,11 @@ const DOOR_ACTIONS: &[(&str, &str)] = &[
     ("bss_products.release_reference", "submit"),
     ("bss_products.browse", "read"),
     ("bss_products.list_usage_types", "author"),
+    ("bss_products.create_derived_usage_type", "author"),
+    ("bss_products.create_derived_usage_type_version", "author"),
+    ("bss_products.list_derived_usage_types", "read"),
+    ("bss_products.get_derived_usage_type", "read"),
+    ("bss_products.get_derived_usage_type_version", "read"),
 ];
 
 /// The router the gear's own `register_rest` serves over the fixture's state, under `enforcer`
@@ -1174,7 +1179,9 @@ fn served_doors(f: &Fixture) -> Vec<(Method, String, &'static str)> {
                 .unwrap()
                 .replace("/skus/{id}", &format!("/skus/{}", f.id))
                 .replace("{id}", &Uuid::new_v4().to_string())
-                .replace("{kind}", "sku_publish");
+                .replace("{kind}", "sku_publish")
+                .replace("{code}", "cloudlets")
+                .replace("{n}", "1");
             let path = match id {
                 "bss_products.sku_version_as_of" => format!("{path}?date=2026-09-27"),
                 "bss_products.browse" => format!("{path}?kind=sku"),

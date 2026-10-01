@@ -5,6 +5,8 @@ pub mod approval_unit;
 pub mod approval_unit_item;
 pub mod audit_log;
 pub mod category;
+pub mod derived_usage_type;
+pub mod derived_usage_type_version;
 pub mod idempotency;
 pub mod sku;
 pub mod sku_reference;

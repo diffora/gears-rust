@@ -68,7 +68,9 @@ pub(crate) fn store_err(error: RepoError) -> ApprovalError {
         RepoError::Refused(
             RepoRefusal::CategoryCodeTaken
             | RepoRefusal::CategoryDefaultTaken
-            | RepoRefusal::ReferenceExists,
+            | RepoRefusal::ReferenceExists
+            | RepoRefusal::DerivedCodeTaken
+            | RepoRefusal::DerivedVersionTaken,
         )
         | RepoError::Db(_)
         | RepoError::CorruptRow(_) => ApprovalError::Store(error.to_string()),

@@ -446,6 +446,10 @@ impl RestApiCapability for BssProductsGear {
                     Arc::clone(&rt.api_state),
                     openapi,
                 ))
+                .merge(crate::api::rest::derived_usage_types::router(
+                    Arc::clone(&rt.api_state),
+                    openapi,
+                ))
                 .layer(axum::Extension((*rt.enforcer).clone())));
         }
         Ok(router)

@@ -110,6 +110,12 @@ pub enum RepoRefusal {
     CategoryNotFound,
     /// A version's `effective_from` is before the latest version's.
     VersionOrder,
+    /// `uq_products_derived_usage_type_code`: the tenant has a derived usage type with this code
+    /// (P-D-231).
+    DerivedCodeTaken,
+    /// The derived usage type version's key: a concurrent writer took this version number
+    /// (P-D-231).
+    DerivedVersionTaken,
 }
 
 impl RepoRefusal {
@@ -125,6 +131,8 @@ impl RepoRefusal {
             Self::CategoryRetired => "CATEGORY_RETIRED",
             Self::CategoryNotFound => "CATEGORY_NOT_FOUND",
             Self::VersionOrder => "VERSION_ORDER",
+            Self::DerivedCodeTaken => "DERIVED_CODE_TAKEN",
+            Self::DerivedVersionTaken => "CONTENDED",
         }
     }
 }
