@@ -171,6 +171,8 @@ fn the_predicate_and_the_engine_answer_the_written_table() {
     };
     use ApproveStep::{Apply, NeedMore};
     type Outcome = Result<ApproveStep, ApproveRefusal>;
+    /// A fixture, its unit and decisions, its counted approves, and each actor's outcome.
+    type Row<'a> = (&'a str, &'a Unit, Vec<Decision>, u32, [Outcome; 5]);
     let (submitter, author, reviewer, earlier_reviewer, fresh) = (
         Uuid::new_v4(),
         Uuid::new_v4(),
@@ -198,7 +200,7 @@ fn the_predicate_and_the_engine_answer_the_written_table() {
     let need: Outcome = Ok(NeedMore { have: 1, need: 2 });
     // (fixture, unit, decisions, counted approves, the outcome for the submitter, the author, the
     // reviewer, the voter of an earlier generation and a fresh reviewer)
-    let table: Vec<(&str, &Unit, Vec<Decision>, u32, [Outcome; 5])> = vec![
+    let table: Vec<Row<'_>> = vec![
         (
             "quorum 0, no vote",
             &q0,

@@ -1480,9 +1480,9 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         .await;
     let tag = etag_of(f, "/dimension-keys").await;
     let added = json!({"key":"region","add":["apac"]});
-    let patch = ("PATCH", "/dimension-keys");
+    let edit = ("PATCH", "/dimension-keys");
     writes
-        .call(f, &me, patch, "/dimension-keys", added, Some(&tag))
+        .call(f, &me, edit, "/dimension-keys", added, Some(&tag))
         .await;
     // The policy: prices at the default quorum 1, plan revisions at 0, and an override to reset.
     let put = ("PUT", "/approval-policy");
@@ -1517,12 +1517,12 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         .1);
     let book_path = format!("/price-books/{book}");
     let tag = etag_of(f, &book_path).await;
-    let patch = ("PATCH", "/price-books/{id}");
+    let edit = ("PATCH", "/price-books/{id}");
     writes
         .call(
             f,
             &me,
-            patch,
+            edit,
             &book_path,
             json!({"name":"Census 2"}),
             Some(&tag),
@@ -1546,10 +1546,10 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     let entry = id(&writes.call(f, &me, create, &entries, body, None).await.1);
     let entry_path = format!("/price-book-entries/{entry}");
     let tag = etag_of(f, &entry_path).await;
-    let patch = ("PATCH", "/price-book-entries/{id}");
+    let edit = ("PATCH", "/price-book-entries/{id}");
     let body = json!({"invoice_line_override":null});
     writes
-        .call(f, &me, patch, &entry_path, body, Some(&tag))
+        .call(f, &me, edit, &entry_path, body, Some(&tag))
         .await;
     let unpriced = plan_support::entry(f, book, catalog.sku(SkuType::Usage), "usage", None).await;
     let delete = ("DELETE", "/price-book-entries/{id}");
@@ -1572,11 +1572,11 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
             json!({"price":{"rate":"0.10"},"eligibility":"all","effective_from":"2031-03-01"});
         drafts.push(writes.call(f, &me, create, &path, body, None).await.1["items"][0].clone());
     }
-    let patch = ("PATCH", "/prices/{id}");
+    let edit = ("PATCH", "/prices/{id}");
     let first = format!("/prices/{}", id(&drafts[0]));
     let tag = version(&drafts[0]);
     writes
-        .call(f, &me, patch, &first, json!({"note":"census"}), Some(&tag))
+        .call(f, &me, edit, &first, json!({"note":"census"}), Some(&tag))
         .await;
     let delete = ("DELETE", "/prices/{id}");
     let last = format!("/prices/{}", id(&drafts[3]));
@@ -1618,12 +1618,12 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     let plan = id(&writes.call(f, &me, create, "/plans", body, None).await.1);
     let plan_path = format!("/plans/{plan}");
     let tag = etag_of(f, &plan_path).await;
-    let patch = ("PATCH", "/plans/{id}");
+    let edit = ("PATCH", "/plans/{id}");
     writes
         .call(
             f,
             &me,
-            patch,
+            edit,
             &plan_path,
             json!({"name":"Census 2"}),
             Some(&tag),
@@ -1641,10 +1641,10 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     let revision_path = format!("/plan-revisions/{revision}");
     let later = (time::OffsetDateTime::now_utc().date() + time::Duration::days(5)).to_string();
     let tag = etag_of(f, &revision_path).await;
-    let patch = ("PATCH", "/plan-revisions/{id}");
+    let edit = ("PATCH", "/plan-revisions/{id}");
     let body = json!({"available_from":later});
     writes
-        .call(f, &me, patch, &revision_path, body, Some(&tag))
+        .call(f, &me, edit, &revision_path, body, Some(&tag))
         .await;
     let sku = catalog.sku(SkuType::Usage);
     let fresh = plan_support::entry(f, w.book, sku, "usage", None).await;
@@ -1654,10 +1654,10 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     let item = id(&writes.call(f, &me, add, &path, body, None).await.1);
     let item_path = format!("/plan-items/{item}");
     let tag = etag_of(f, &item_path).await;
-    let patch = ("PATCH", "/plan-items/{id}");
+    let edit = ("PATCH", "/plan-items/{id}");
     let body = json!({"price_book_entry_id":fresh});
     writes
-        .call(f, &me, patch, &item_path, body, Some(&tag))
+        .call(f, &me, edit, &item_path, body, Some(&tag))
         .await;
     let delete = ("DELETE", "/plan-items/{id}");
     writes
@@ -1682,7 +1682,7 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     let _mounted = bss_pricing::api::rest::authoring::router(w.f.state.clone(), &registry).merge(
         bss_pricing::api::rest::read_contract::router(w.f.state.clone(), &registry),
     );
-    let mut declared = std::collections::BTreeMap::new();
+    let mut declarations = std::collections::BTreeMap::new();
     for spec in &registry.operation_specs {
         let (method, template) = spec.key().split_once(':').unwrap();
         if method != "GET" {
@@ -1692,12 +1692,12 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
                         .iter()
                         .any(|h| h.name.eq_ignore_ascii_case("etag"))
             });
-            declared.insert((method.to_owned(), template.to_owned()), declares);
+            declarations.insert((method.to_owned(), template.to_owned()), declares);
         }
     }
     let mut measured = std::collections::BTreeSet::new();
     for (method, template, set) in &writes.0 {
-        let declares = declared
+        let declares = declarations
             .get(&(method.clone(), template.clone()))
             .unwrap_or_else(|| panic!("{method} {template} is not a served write"));
         assert_eq!(
@@ -1706,7 +1706,7 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         );
         measured.insert((method.clone(), template.clone()));
     }
-    let unmeasured: Vec<_> = declared
+    let unmeasured: Vec<_> = declarations
         .keys()
         .filter(|op| !measured.contains(*op))
         .collect();
