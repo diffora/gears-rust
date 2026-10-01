@@ -1239,3 +1239,13 @@ The owner decided who does what:
 **Source:** Owner, 2026-10-01 (asked who should compute a cloudlet from RAM and CPU usage; chose "Products declares, Rating
 evaluates, the usage collector stays raw").
 
+**Amendment (2026-10-01, the implementation plan review; owner "ок ок").**
+- **Exact inputs.** An input is a GTS usage type id, and its version segment is the exact version.
+- **The input folds.** The declaration states each input's granule fold (`Sum`, `Peak`, `TimeWeighted`), because no raw meter
+  declaration exists to read it from.
+- **Granules.** The formula applies per granule (an hour), and a window's output is the sum of its granule outputs.
+- **The pricing reference.** In pricing, the meter is named by the SKU's own ref word for word:
+  `products.derived/<code>@<n>`, version `<n>`.
+- **The pin.** A usage SKU's derived ref is fixed at its first publish. A new formula version is sold through a new SKU, as a
+  usage chain's metering is fixed (pricing D-402).
+
