@@ -42,8 +42,11 @@ pub struct ApiState {
     pub usage_type_catalog: std::sync::Arc<dyn bss_products_sdk::usage_types::UsageTypeCatalog>,
     pub usage_type_catalog_source: &'static str,
     pub idempotency_retention_hours: u32,
-    pub(crate) fence_ttl_minutes: u32,
-    pub(crate) reference_principals: std::collections::BTreeMap<uuid::Uuid, String>,
+    /// Public with the rest of the state so a test outside the crate (the approvals inbox's
+    /// Postgres walk, P-D-250) can build one; `gear.rs` is the only production writer.
+    pub fence_ttl_minutes: u32,
+    /// As [`Self::fence_ttl_minutes`].
+    pub reference_principals: std::collections::BTreeMap<uuid::Uuid, String>,
     /// Where pricing registers its `SkuUsageV1` port (P-D-197), resolved at each SKU read: the
     /// two gears boot in either order.
     pub hub: std::sync::Arc<toolkit::ClientHub>,

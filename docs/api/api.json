@@ -6260,6 +6260,304 @@
         ],
         "type": "object"
       },
+      "InboxCountsDto": {
+        "properties": {
+          "by_kind": {
+            "$ref": "#/components/schemas/InboxKindCountsDto"
+          },
+          "by_state": {
+            "$ref": "#/components/schemas/InboxStateCountsDto"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/InboxSourceDto"
+            },
+            "type": "array"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_state",
+          "by_kind",
+          "total",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "InboxDecisionDto": {
+        "properties": {
+          "actor": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/InboxDecisionKindDto"
+          },
+          "generation": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stale": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "actor",
+          "generation",
+          "decision",
+          "at",
+          "stale"
+        ],
+        "type": "object"
+      },
+      "InboxDecisionKindDto": {
+        "enum": [
+          "approve",
+          "reject"
+        ],
+        "type": "string"
+      },
+      "InboxKindCountsDto": {
+        "properties": {
+          "plan_revision": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prices": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sku_change": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sku_publish": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sku_retire": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prices",
+          "plan_revision",
+          "sku_publish",
+          "sku_change",
+          "sku_retire"
+        ],
+        "type": "object"
+      },
+      "InboxKindDto": {
+        "enum": [
+          "prices",
+          "plan_revision",
+          "sku_publish",
+          "sku_change",
+          "sku_retire"
+        ],
+        "type": "string"
+      },
+      "InboxSourceDto": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/InboxSourceStatusDto"
+          }
+        },
+        "required": [
+          "name",
+          "status"
+        ],
+        "type": "object"
+      },
+      "InboxSourceStatusDto": {
+        "enum": [
+          "ok",
+          "forbidden"
+        ],
+        "type": "string"
+      },
+      "InboxStateCountsDto": {
+        "properties": {
+          "approved": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rejected": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "withdrawn": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "approved",
+          "rejected",
+          "withdrawn"
+        ],
+        "type": "object"
+      },
+      "InboxStateDto": {
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "withdrawn"
+        ],
+        "type": "string"
+      },
+      "InboxUnitDto": {
+        "properties": {
+          "caller_can_approve": {
+            "type": "boolean"
+          },
+          "common_effective_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/InboxDecisionDto"
+            },
+            "type": "array"
+          },
+          "generation": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "impact": {},
+          "kind": {
+            "$ref": "#/components/schemas/InboxKindDto"
+          },
+          "quorum_required": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ref_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "ref_type": {
+            "type": "string"
+          },
+          "snapshot": {},
+          "source": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InboxStateDto"
+          },
+          "subject_live": {},
+          "submit_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": "string"
+          },
+          "submitted_by": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "kind",
+          "ref_type",
+          "ref_id",
+          "state",
+          "generation",
+          "quorum_required",
+          "submitted_by",
+          "submitted_at",
+          "snapshot",
+          "decisions",
+          "caller_can_approve"
+        ],
+        "type": "object"
+      },
+      "InboxUnitListDto": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InboxUnitDto"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/InboxSourceDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "sources"
+        ],
+        "type": "object"
+      },
       "InitiateMultipartReq": {
         "description": "Request to initiate a multipart upload (`POST /files/{id}/multipart`).\n\nThe server returns a server-authoritative parts plan with one signed sidecar\nURL per part (FEATURE §3, §4; DESIGN §4.6).\n\n@cpt-cf-file-storage-fr-multipart-upload\n@cpt-cf-file-storage-fr-size-limits-policy\n@cpt-cf-file-storage-fr-storage-quota",
         "properties": {
@@ -27015,6 +27313,730 @@
         }
       }
     },
+    "/bss-approvals/v1/approval-units": {
+      "get": {
+        "description": "One page of approval units from every configured BSS gear, merged by submitted_at and then the unit id, in the same direction. The default order is newest first. `limit` defaults to 50 and is clamped at 200. A cursor carries its order and its narrowing, so a continuation sends no `$orderby`. `impact=false` skips the live impact. `sources` names each configured gear as ok or forbidden; a forbidden gear's units are omitted. `total` on the counts counts the readable gears only. Refusals: 400 ORDER_WITH_CURSOR when `$orderby` is sent with a cursor; 400 FILTER_MISMATCH when the narrowing changed; 400 for a cursor or an order that does not read; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE naming a gear that did not answer.",
+        "operationId": "bss_approvals.list_approval_units",
+        "parameters": [
+          {
+            "description": "pending, approved, rejected or withdrawn",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "prices, plan_revision, sku_publish, sku_change or sku_retire",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Referenced aggregate id",
+            "in": "query",
+            "name": "ref_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Price book id; products treats it as empty",
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 50, at most 200)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from next_cursor",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "submitted_at asc or submitted_at desc (the default when omitted)",
+            "in": "query",
+            "name": "$orderby",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "false skips the live impact",
+            "in": "query",
+            "name": "impact",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxUnitListDto"
+                }
+              }
+            },
+            "description": "One merged page"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "list_approval_units",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
+    "/bss-approvals/v1/approval-units/counts": {
+      "get": {
+        "description": "The list's narrowing, summed over the gears the caller can read: by_state, by_kind and total. Every state and every kind is named, 0 when none. total counts the readable gears only. `sources` names each gear as ok or forbidden. A forbidden gear is omitted from the sum. Refusals: 400 for a query that does not parse or a key the narrowing does not take; 403 when every gear forbids the caller; 503 SOURCE_UNAVAILABLE naming a gear that did not answer.",
+        "operationId": "bss_approvals.count_approval_units",
+        "parameters": [
+          {
+            "description": "pending, approved, rejected or withdrawn",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "prices, plan_revision, sku_publish, sku_change or sku_retire",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Referenced aggregate id",
+            "in": "query",
+            "name": "ref_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Price book id; products treats it as empty",
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxCountsDto"
+                }
+              }
+            },
+            "description": "Summed counts"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "count_approval_units",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
+    "/bss-approvals/v1/approval-units/{id}": {
+      "get": {
+        "description": "The unit, from the one configured gear that holds it. Every gear is asked. Two gears holding it is 500 naming both. A gear that does not answer is 503 SOURCE_UNAVAILABLE unless another gear returned the unit. When no gear holds it, a forbidden gear is 403 and the body names no gear; otherwise 404. `impact=false` skips the live impact.",
+        "operationId": "bss_approvals.get_approval_unit",
+        "parameters": [
+          {
+            "description": "Unit id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "false skips the live impact",
+            "in": "query",
+            "name": "impact",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxUnitDto"
+                }
+              }
+            },
+            "description": "The unit"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "get_approval_unit",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
+    "/bss-approvals/v1/approval-units/{id}/approve": {
+      "post": {
+        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The owner is resolved as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
+        "operationId": "bss_approvals.approve_unit",
+        "parameters": [
+          {
+            "description": "Unit id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Passed through to the owning gear's vote door",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The owning gear's vote answer, forwarded unchanged"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "approve_unit",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
+    "/bss-approvals/v1/approval-units/{id}/reject": {
+      "post": {
+        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The owner is resolved as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
+        "operationId": "bss_approvals.reject_unit",
+        "parameters": [
+          {
+            "description": "Unit id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Passed through to the owning gear's vote door",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The owning gear's vote answer, forwarded unchanged"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "reject_unit",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
+    "/bss-approvals/v1/approval-units/{id}/withdraw": {
+      "post": {
+        "description": "Forwards the body and the Idempotency-Key to the gear that holds the unit, and returns that gear's answer unchanged: status, headers and body. The owner is resolved as the card resolves it. Declared door codes: 400 GENERATION_REQUIRED, GENERATION_MISMATCH, UNIT_STALE, NOTE_REQUIRED, NOTE_TOO_LONG, BODY_UNEXPECTED; 403 for the grant and SOD_VIOLATION; 404; 409 DUPLICATE_VOTE, UNIT_ALREADY_DECIDED, IDEMPOTENCY_CONFLICT; 503. These doors do not answer 412.",
+        "operationId": "bss_approvals.withdraw_unit",
+        "parameters": [
+          {
+            "description": "Unit id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Passed through to the owning gear's vote door",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The owning gear's vote answer, forwarded unchanged"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "withdraw_unit",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
     "/bss-ledger/v1/accounts": {
       "get": {
         "description": "Cursor-paginated list of the target tenant's chart-of-accounts entries — each account's persistent id + coordinate — so a caller can resolve the ids it posts to / reads balances for. The target is `$filter=tenant_id eq <uuid>` (the caller's own tenant when omitted). Supports OData `$filter` over `tenant_id`, `account_class`, `currency`, `revenue_stream`, and `lifecycle_state`. Tenant-scoped: the `$filter` ANDs the caller's authorized subtree, so a tenant outside it yields an empty page (no leak, not a 403).",
@@ -34625,7 +35647,7 @@
             }
           },
           {
-            "description": "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "description": "OData v4 orderby expression\n- submitted_at asc\n- submitted_at desc",
             "in": "query",
             "name": "$orderby",
             "required": false,
@@ -34743,7 +35765,13 @@
         "summary": "List the approval units",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "submitted_at asc",
+            "submitted_at desc"
+          ]
+        }
       }
     },
     "/bss-pricing/v1/approval-units/counts": {
@@ -41532,7 +42560,7 @@
             }
           },
           {
-            "description": "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "description": "OData v4 orderby expression\n- submitted_at asc\n- submitted_at desc",
             "in": "query",
             "name": "$orderby",
             "required": false,
@@ -41631,7 +42659,13 @@
         "summary": "list_approval_units",
         "tags": [
           "Approval units"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "submitted_at asc",
+            "submitted_at desc"
+          ]
+        }
       }
     },
     "/bss-products/v1/approval-units/counts": {

@@ -59,11 +59,12 @@
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
-| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
+| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1; I, fix run 9.5d-2); amended by P-D-250 |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
 | P-D-249 | H | A lifecycle change honours its date | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-191 |
+| P-D-250 | M | The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490) | DECIDED 2026-10-01 · Owner, 2026-10-01 (option A, "yes, A, agreed", then "write the plan"; Run 2 started before 9.5d-2); approvals inbox plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1); amends P-D-227 |
 
 ## Entries
 
@@ -1204,6 +1205,28 @@ Amends P-D-224 (the order).
   a state written around its CHECK is 500 on the list, the counts and the card. `gear_tests.rs`: the kind is an enum,
   and the counts' text names the refusal.
 
+**Amended by the phase 9 review, theme I (fix run 9.5d-2, 2026-10-01; R66, R36; the twin of pricing D-470's).**
+- **The order is declared through the toolkit.** The list declares it with `.with_odata_orderby::<UnitOrderField>()`, a
+  one-field enum (`submitted_at`), so the served contract lists `submitted_at asc` and `submitted_at desc` under
+  `x-odata-orderby`, as the SKU and category lists publish theirs, and `$orderby` is that one parameter (its text is the
+  toolkit's; the op's text keeps the default, the tie-break and the refusals). The door accepts exactly the declared field.
+- **The parse stays the list's own.** The toolkit's `OData` extractor keeps the rules above but answers other requests
+  differently: it refuses `limit=0`, of which the list reads one unit as the house pager does, with 400 `INVALID_LIMIT`;
+  its refusal of a cursor that does not read drops the cause; and, since the list's query ignores a key it does not
+  know, it would bind `$top` and `$skiptoken` and parse `$filter` and `$select` that the list ignores today, and refuse
+  `$count` and `$skip`. The served behaviour is unchanged.
+- **One source for the order.** Without a cursor the door puts the order on the page's query
+  (`approval_repo::submission_order`: `submitted_at`, then the id, in one direction), and `approval_repo::page_units`
+  reads it from there alone, ascending when the query names none; a continuation follows its cursor's order. The page
+  takes no separate direction, which a cursor silently overrode.
+- **The tests.** `gear_tests.rs`: the declared fields and the one `$orderby`, and no order on the counts.
+  `api/rest/sku_governance_tests.rs`: `limit=0` reads one unit in both orders.
+
+**Amended by P-D-250 (2026-10-01).** The shared order is also the merge key of the approvals inbox (`bss-approvals`,
+AP-D-2): the inbox merges the two gears' pages by `(submitted_at, id)` itself, so the merge contract above is now the
+inbox's as well as a client's. This gear's source reads its page through this list's own read and pager, with a cursor
+it builds from the inbox's key.
+
 #### P-D-228 [M] A unit says whether its reader may approve it (twin of pricing D-471)
 
 **Status:** DECIDED 2026-09-30.
@@ -1312,3 +1335,83 @@ Pricing reads `retire_pending` instead of a `retiring` lifecycle. An entry or it
 A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and `lifecycle_next_from` and leaves `lifecycle` as it is. A change dated today or earlier sets `lifecycle` now. The lifecycle in force on a day is `lifecycle_next` when `lifecycle_next_from` has arrived, otherwise `lifecycle`. One Rust function, `effective_lifecycle`, serves the SDK `Sku.lifecycle` and `SkuDto.lifecycle`. One SQL `CASE`, bound to the gear clock's today, serves the list filter, the counts and the other lifecycle predicates. `SkuDto.lifecycle_next` is `{ lifecycle, from }`, null when none is pending. A later change replaces a pending next, or clears it when the target is the lifecycle in force. A retire apply clears it. The first statement of a head write folds a due next into `lifecycle`, so `set_lifecycle` sees the lifecycle in force. A read does not depend on that fold. The same migration as P-D-248 adds the two columns. They are both null or both set, and a next lifecycle is never `retired`.
 
 **Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.
+
+#### P-D-250 [M] The approval units answer the approvals inbox through this gear's own doors (twin of pricing D-490)
+
+**Status:** DECIDED 2026-10-01.
+
+The approvals inbox (`bss-approvals`, AP-D-1 to AP-D-4) serves ONE paged list, ONE count, ONE card and ONE vote door
+over the approval units of every BSS gear. The units stay in their gears. Each gear implements the inbox's source port,
+`bss_approvals_sdk::ApprovalSourceV1`, over its own door functions, and the inbox asks it AS THE CALLER. This entry is
+this gear's side; pricing D-490 is its twin.
+
+- **The source.** `api::rest::approval_units::inbox_source::ProductsApprovalSource`. `gear.rs` registers it at init in
+  the ClientHub as `dyn ApprovalSourceV1`, scoped `ClientScope::new("products")`, over the gear's own `ApiState` and
+  `PolicyEnforcer`. It copies no rule of a door: it calls the doors.
+- **The page.** It is the list door's own read, `approval_units::page_of` (the list handler's transaction, taken out of
+  the handler so both call it), under the list's grant (products read on approval units) and its narrowing
+  (`approval_units::narrowing`). So the page has the list's refusals, decisions, item authors and statements.
+  - **The keyset (pricing plan review H1, L1).** The inbox asks for up to `limit` units strictly after its key
+    `(submitted_at, id)` for this source, or from the start. The source builds the pager's own `CursorV1` for that key in
+    the list's one order, `approval_repo::submission_order`: `s` is that order's signed tokens, `+submitted_at,+id` or
+    `-submitted_at,-id`, each of its keys takes its value from the inbox's key, encoded by the pager's codec
+    (`encode_cursor_value`) under the list mapping's cursor kind, `f` is empty and `d` is `fwd`. `page_units` then reads
+    the order from the cursor and compares the columns as it does for its own cursors. A first page has no cursor: the
+    source puts `submission_order` on the query, as the list door does, and `page_units` reads the order from the query
+    alone. There is no second SQL predicate and no compare of text. `has_more` is whether the pager minted a next
+    cursor.
+  - The order is P-D-227's, which this entry makes the inbox's merge key. Postgres orders it exactly; `SQLite` keeps
+    `submitted_at` as text, so the exact order of a walk is proved on Postgres. The source never parses `$orderby`
+    and never reads the gear's cursor token. Since the phase 9 review's theme I (9.5d-2) the order has one source,
+    `submission_order` (R36): `page_of` takes no direction, and the source puts the order on the query as the door
+    does.
+- **The counts (pricing plan review M5).** The counts door's handler: one grouped statement on the plain connection,
+  never in the list's serializable transaction (R32).
+- **The card.** The card door's handler. Its 404 is the source's `None`, a unit this tenant does not hold. The facade's
+  owner resolution asks every source (AP-D-3).
+- **`subject_live` is the card's `impact_live` (pricing plan review M1)**: the live SKU head, null once a rejected or
+  withdrawn draft was deleted (P-D-206). The list door serves no `impact_live`, so a list item's `subject_live` is null.
+- **The impact (pricing plan review M2).** A `sku_change` or `sku_retire` unit's `impact` is pricing's usage of its SKU
+  (`SkuUsage { entries, currencies, prices, plans }`). The source asks `SkuUsageV1::usage` ONCE per page, through the
+  SKU read's own helper (`api::rest::usage::of`): on a task of its own, bounded, outside any transaction. A refusal (a
+  caller without pricing's `price_book_entry` read), an outage, a late answer or a missing port is `impact: null` on
+  those units, never a failed read (P-D-197). A `sku_publish` unit's impact is null. `usage_sets` is never called. The
+  inbox's `impact=false` skips the call in the source; the list door takes no such parameter, so nothing is forwarded.
+- **A vote (pricing plan review H3).** The source sends the vote to the vote door itself, through this gear's
+  approval-unit router under its enforcer and the platform's error layer, as the gateway serves the door. The door
+  therefore judges its own grant (products approve, or submit for a withdraw), separation of duties, quorum, generation
+  and staleness, and keys the replay row under its own endpoint, `/bss-products/v1/approval-units/{id}/<action>`
+  (P-D-198). The request body is the caller's exact bytes, with the caller's `Idempotency-Key`. The answer is the door's
+  status, headers and body, unchanged: the receipt `{ have, need, outcome, unit }`, or the refusal with its `instance`
+  (the door's path) and, on `GENERATION_MISMATCH` and `UNIT_STALE`, its `generation`. So a vote through the inbox and
+  one through the door with the same key and body are ONE vote; the same key with another body is 409
+  `IDEMPOTENCY_CONFLICT`.
+- **What products holds nothing under (pricing plan review H4).** A kind products does not record, and any `book_id`
+  (products holds no book), are an empty page and zero counts, decided in the source before the grant and before any
+  door. The door itself refuses the kind, ignores the list's `book_id` (its query does not deny unknown keys) and refuses
+  the counts' one. A state the door refuses is that 400 for the inbox's whole read.
+- **`ApiState`'s fields are public.** `fence_ttl_minutes` and `reference_principals` were crate-visible; the inbox's
+  Postgres walk builds an `ApiState` from outside the crate. `gear.rs` stays the only production writer.
+- **The tests.** `api/rest/approval_units/inbox_source_tests.rs` holds the census: the same request through the door
+  (the gear's router under the platform's error layer) and through the source answers equal status, code and body
+  bytes. It covers the list in both orders after any key under six narrowings; the list's and the counts' refusals (an
+  unknown state, the grant), rendered at the door's path through the same layer; the counts under five narrowings; the
+  card, its miss and its grant; every vote refusal (an unreadable body, a missing `generation`, `GENERATION_MISMATCH`,
+  `NOTE_REQUIRED`, `NOTE_TOO_LONG`, `SOD_VIOLATION`, a withdraw by another, the grant, 404, `DUPLICATE_VOTE`,
+  `IDEMPOTENCY_CONFLICT`, `UNIT_ALREADY_DECIDED`); and `UNIT_STALE` with its `generation`. A source vote and a door vote
+  with one key replay once. The QueryRecorder pins the page at three statements on products' tables for 10 and for 100
+  units, every one in the list's transaction, and the counts at one statement outside any transaction.
+  `api/rest/approval_units/inbox_e2e_tests.rs` runs the facade gear over BOTH real gears in one process (the
+  cross-gear precedent is `sku_governance_tests`' real pricing entry): a walk over prices, plan revisions and the three
+  SKU kinds in both orders at every page size, each unit once; a pricing-only approver sees products forbidden; a facade
+  vote and a direct vote with one key replay once in both gears, and another body is the door's
+  `IDEMPOTENCY_CONFLICT`; separation of duties is the door's refusal, byte for byte; `impact: null` for a caller
+  without pricing's entry read; a foreign kind and products' `book_id` are empty, not 400; and the facade adds no
+  statement beyond its sources' (the list, the counts off any transaction, the card). `tests/postgres_approvals_inbox.rs`
+  walks both gears on Postgres in the exact `(submitted_at, id)` order both ways, with sub-second instants and ties
+  within one gear and across the two.
+
+**Source:** Owner, 2026-10-01 (asked how to merge the two approval-unit methods into one, then "yes, A, agreed" for
+the read-and-route facade, then "write the plan"; Run 2 started before 9.5d-2 on the owner's word). Approvals inbox
+plan rev 2 (Run 2; design 1 and 3; plan review H1, H3, H4, M1, M2, M5, L1). Amends P-D-227: its order is the inbox's
+merge key.

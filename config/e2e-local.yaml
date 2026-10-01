@@ -492,6 +492,14 @@ gears:
       server: "sqlite_users"
       file: "bss_pricing.db"
 
+  bss-approvals:
+    # The approvals inbox: one list, count, card and vote over the approval units
+    # of the gears named in `sources`, each read and voted on through that gear's
+    # own door as the caller. No database: the units stay in their gears. Without
+    # a `config` object the gear does not serve.
+    config:
+      sources: ["pricing", "products"]
+
   simple-user-settings:
     # Gear-specific database configuration
     database:

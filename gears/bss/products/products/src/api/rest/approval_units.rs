@@ -8,7 +8,8 @@ use super::{
     contention_db_err,
     dto::{
         ProductsApprovalUnitCounts, ProductsApprovalUnitKindCounts,
-        ProductsApprovalUnitStateCounts, UnitDto, UnitList, VoteReceipt, VoteRequest,
+        ProductsApprovalUnitStateCounts, UnitCountsQuery, UnitDto, UnitList, UnitListQuery,
+        VoteReceipt, VoteRequest,
     },
     governance as g, json_body, replay, require_authenticated, tx_to_canonical,
     unit_tx_to_canonical,
@@ -46,34 +47,16 @@ use bss_products_sdk::models::SkuContent;
 use std::sync::Arc;
 use time::OffsetDateTime;
 use toolkit::api::{
-    OpenApiRegistry, canonical_prelude::CanonicalError, operation_builder::OperationBuilder,
+    OpenApiRegistry,
+    canonical_prelude::CanonicalError,
+    operation_builder::{OperationBuilder, OperationBuilderODataExt},
 };
 use toolkit_db::{DbTx, secure::AccessScope};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-#[toolkit_macros::api_dto(request)]
-struct ListQuery {
-    state: Option<String>,
-    kind: Option<String>,
-    ref_id: Option<Uuid>,
-    /// Page size (P-D-224): 200 by default, clamped at 500.
-    limit: Option<u64>,
-    /// The opaque continuation of a page's `page_info.next_cursor`.
-    cursor: Option<String>,
-    /// `submitted_at asc` (the default, P-D-224) or `submitted_at desc` (P-D-227); the id breaks a
-    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
-    #[serde(rename = "$orderby")]
-    orderby: Option<String>,
-}
-/// `GET /approval-units/counts` (P-D-227): the list's narrowing, and nothing else.
-#[toolkit_macros::api_dto(request)]
-#[serde(deny_unknown_fields)]
-struct CountsQuery {
-    state: Option<String>,
-    kind: Option<String>,
-    ref_id: Option<Uuid>,
-}
+pub mod inbox_source;
+
 #[derive(Clone, Copy)]
 enum Vote {
     Approve,
@@ -125,12 +108,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
-        .query_param_typed(
-            "$orderby",
-            false,
-            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
-            "string",
-        )
+        .with_odata_orderby::<UnitOrderField>()
         .handler(list)
         .json_response_with_schema::<UnitList>(openapi, StatusCode::OK, "Result")
         .error_400(openapi)
@@ -328,7 +306,7 @@ async fn list(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
-    query: Result<Query<ListQuery>, QueryRejection>,
+    query: Result<Query<UnitListQuery>, QueryRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(
@@ -341,17 +319,30 @@ async fn list(
     let Query(q) =
         query.map_err(|e| CanonicalError::from(g::validation("query", e.to_string())))?;
     let filter = narrowing(q.state.as_deref(), q.kind.as_deref(), q.ref_id)?;
-    let (page, direction) = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
+    let page = unit_page(&filter, q.limit, q.cursor.as_deref(), q.orderby.as_deref())?;
+    let list = page_of(&state, scope, &ctx, filter, page).await?;
+    Ok(Json(list).into_response())
+}
+/// The list door's read (P-D-224, P-D-228): one page under `scope` and `filter`, in the order
+/// `page` carries (`unit_page` puts it on the query, a cursor carries its own), as `ctx` reads it.
+/// The approvals inbox's source reads its page here too (P-D-250).
+async fn page_of(
+    state: &ApiState,
+    scope: AccessScope,
+    ctx: &SecurityContext,
+    filter: repo::UnitListFilter,
+    page: toolkit_odata::ODataQuery,
+) -> Result<UnitList, CanonicalError> {
     let (tenant, reader) = (ctx.subject_tenant_id(), ctx.subject_id());
-    let list = state
+    state
         .db
         .db()
-        .transaction_with_retry(category_tx_config(&state), contention_db_err, move |tx| {
+        .transaction_with_retry(category_tx_config(state), contention_db_err, move |tx| {
             let (scope, filter, page) = (scope.clone(), filter.clone(), page.clone());
             Box::pin(async move {
                 // One page, all its units' decisions and all their items, one read each
                 // (P-D-224, P-D-228): the same statements whatever the page's size.
-                let page = repo::page_units(tx, &scope, tenant, &filter, &page, direction)
+                let page = repo::page_units(tx, &scope, tenant, &filter, &page)
                     .await
                     .map_err(|e| match e {
                         repo::UnitListError::Query(e) => TxError::OData(e),
@@ -387,8 +378,7 @@ async fn list(
             })
         })
         .await
-        .map_err(tx_to_canonical)?;
-    Ok(Json(list).into_response())
+        .map_err(tx_to_canonical)
 }
 /// The unit list's narrowing, which the counts take too (P-D-224, P-D-227): a known state (else
 /// 400 on `state`), a kind products records (else 400 on `kind`) and the SKU.
@@ -419,26 +409,60 @@ fn narrowing(
         ref_id,
     })
 }
+/// The one field the unit list's `$orderby` takes (P-D-227): `submitted_at`, ascending or
+/// descending. The unit id breaks a tie in the same direction; it is the pager's tie-break, not a
+/// client key, so it is not declared. `.with_odata_orderby` publishes it in the served contract
+/// (`x-odata-orderby`), and [`unit_order`] accepts exactly it (the phase 9 review's theme I).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum UnitOrderField {
+    SubmittedAt,
+}
+impl UnitOrderField {
+    const fn field(self) -> repo::UnitListField {
+        match self {
+            Self::SubmittedAt => repo::UnitListField::SubmittedAt,
+        }
+    }
+}
+impl toolkit_odata::filter::FilterField for UnitOrderField {
+    const FIELDS: &'static [Self] = &[Self::SubmittedAt];
+    fn name(&self) -> &'static str {
+        toolkit_odata::filter::FilterField::name(&self.field())
+    }
+    fn kind(&self) -> toolkit_odata::filter::FieldKind {
+        toolkit_odata::filter::FilterField::kind(&self.field())
+    }
+    fn from_name(name: &str) -> Option<Self> {
+        Self::FIELDS
+            .iter()
+            .copied()
+            .find(|f| toolkit_odata::filter::FilterField::name(f) == name)
+    }
+}
 /// The unit list's order (P-D-227): `submitted_at` ascending (also when omitted, P-D-224) or
 /// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
-/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take. The list parses
+/// its own query rather than take the toolkit's `OData` extractor, which would refuse `limit=0`
+/// (the house pager reads one unit), drop a cursor's cause from its refusal, and bind the `$`
+/// options this list does not read (theme I).
 fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
     let Some(raw) = orderby else {
         return Ok(toolkit_odata::SortDir::Asc);
     };
     let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    let declared = |key: &toolkit_odata::OrderKey| {
+        <UnitOrderField as toolkit_odata::filter::FilterField>::from_name(&key.field).is_some()
+    };
     match order.0.as_slice() {
         [] => Ok(toolkit_odata::SortDir::Asc),
-        [key] if key.field == "submitted_at" => Ok(key.dir),
+        [key] if declared(key) => Ok(key.dir),
         // The refusal names the key it refuses, never the whole order, so a supported field is
         // never called unsupported (the phase 9 review's R67).
         keys => Err(toolkit_odata::Error::InvalidOrderByField(
-            keys.iter()
-                .find(|key| key.field != "submitted_at")
-                .map_or_else(
-                    || "only one key, submitted_at, is accepted".to_owned(),
-                    |key| key.field.clone(),
-                ),
+            keys.iter().find(|key| !declared(key)).map_or_else(
+                || "only one key, submitted_at, is accepted".to_owned(),
+                |key| key.field.clone(),
+            ),
         )
         .into()),
     }
@@ -448,13 +472,15 @@ fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, Canonical
 /// `FILTER_MISMATCH`, as pricing's list's is (D-458). The order is not part of the hash
 /// (P-D-227): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so every
 /// cursor minted before the descending order still reads. `$orderby` beside a cursor is the toolkit's 400
-/// `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
+/// `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does. Without a cursor, the query
+/// carries the order (`repo::submission_order`), the one source the repository reads (the phase 9
+/// review's R36).
 fn unit_page(
     filter: &repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
     orderby: Option<&str>,
-) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
     if cursor.is_some() && orderby.is_some() {
         return Err(toolkit_odata::Error::OrderWithCursor.into());
     }
@@ -475,8 +501,10 @@ fn unit_page(
             return Err(toolkit_odata::Error::FilterMismatch.into());
         }
         query = query.with_cursor(cursor);
+    } else {
+        query = query.with_order(repo::submission_order(direction));
     }
-    Ok((query, direction))
+    Ok(query)
 }
 /// `GET /approval-units/counts` (P-D-227): under the list's grant, the list's narrowing, counted
 /// by state and kind in ONE grouped statement, read outside any transaction.
@@ -484,7 +512,7 @@ async fn counts(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
-    query: Result<Query<CountsQuery>, QueryRejection>,
+    query: Result<Query<UnitCountsQuery>, QueryRejection>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = g::scope(
