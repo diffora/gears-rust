@@ -73,7 +73,7 @@ async fn an_op_that_is_not_served_has_no_text_to_read() {
 async fn every_op_declares_its_503() {
     let api = served().await;
     let all = ops(&api);
-    assert_eq!(all.len(), 52, "the route census holds 52 ops");
+    assert_eq!(all.len(), 54, "the route census holds 54 ops");
     let missing: Vec<_> = all
         .iter()
         .filter(|(_, _, op)| {
@@ -417,6 +417,50 @@ async fn the_sku_entries_read_says_how_it_narrows_orders_and_pages() {
 
 fn json_strings(values: &[&str]) -> Value {
     Value::Array(values.iter().copied().map(Value::from).collect())
+}
+
+/// D-480 and D-481: the served texts name the new fields and the refusals.
+#[tokio::test]
+async fn the_revision_read_and_the_effective_policy_name_their_fields() {
+    let api = served().await;
+    let revision = description(&api, "get", "/bss-pricing/v1/plan-revisions/{id}");
+    for word in [
+        "sale_date",
+        "price_on_sale_date",
+        "carried_sku_ids",
+        "reservations_settled",
+        "lost",
+        "503",
+        "404",
+    ] {
+        assert!(revision.contains(word), "{word}: {revision}");
+    }
+    let reservations = description(
+        &api,
+        "get",
+        "/bss-pricing/v1/plan-revisions/{id}/reservations",
+    );
+    for word in ["reference_state", "reservation_id", "settled", "404", "503"] {
+        assert!(reservations.contains(word), "{word}: {reservations}");
+    }
+    let checks = description(&api, "get", "/bss-pricing/v1/plan-revisions/{id}/checks");
+    assert!(checks.contains("quorum_required"), "{checks}");
+    let policy = description(
+        &api,
+        "get",
+        "/bss-pricing/v1/approval-policy/{kind}/effective",
+    );
+    for word in [
+        "quorum_required",
+        "price_book_entry",
+        "plan read",
+        "QUERY_INVALID",
+        "503",
+    ] {
+        assert!(policy.contains(word), "{word}: {policy}");
+    }
+    let books = description(&api, "get", "/bss-pricing/v1/price-books");
+    assert!(books.contains("id,"), "{books}");
 }
 
 fn required_of(schema: &Value) -> Vec<String> {

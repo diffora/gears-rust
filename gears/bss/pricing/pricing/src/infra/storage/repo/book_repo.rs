@@ -181,8 +181,9 @@ pub const BOOK_PAGE: LimitCfg = LimitCfg {
     max: 500,
 };
 
-/// Every field of the book list's pager: the filter fields the door publishes (all but `id`) and
-/// the order fields (`code`, `name` and the tie-break `id`).
+/// Every field of the book list's pager: the filter fields the door publishes (`id`, `code`,
+/// `name`, `currency`, `valid_from`, `valid_until`) and the order fields (`code`, `name` and the
+/// tie-break `id`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BookListField {
     Id,

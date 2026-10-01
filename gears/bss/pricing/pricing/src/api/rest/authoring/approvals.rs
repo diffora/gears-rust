@@ -9,9 +9,9 @@ use super::{
     dto::{
         PriceBookDto, PricingApprovalPolicyDto, PricingApprovalPolicyPut,
         PricingApprovalUnitCounts, PricingApprovalUnitDto, PricingApprovalUnitKindCounts,
-        PricingApprovalUnitList, PricingApprovalUnitStateCounts, PricingPlanRevisionDto,
-        PricingPlanRevisionSubmitReceipt, PricingPriceBookEntryDto, PricingPriceDto,
-        PricingProposedPrice, PricingPublishChanges, PricingPublishChangesRequest,
+        PricingApprovalUnitList, PricingApprovalUnitStateCounts, PricingEffectivePolicyDto,
+        PricingPlanRevisionDto, PricingPlanRevisionSubmitReceipt, PricingPriceBookEntryDto,
+        PricingPriceDto, PricingProposedPrice, PricingPublishChanges, PricingPublishChangesRequest,
         PricingSubmitReceipt, PricingVoteReceipt, PricingVoteRequest,
     },
     plans,
@@ -1123,6 +1123,26 @@ pub async fn get_policy(
         StatusCode::OK,
         &PricingApprovalPolicyDto::from(policy),
         Some(tag),
+    )?)
+}
+/// `GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs, the
+/// kind's override or the tenant default. One statement, under the caller's scope.
+/// # Errors
+/// Storage failures.
+pub async fn effective_quorum(
+    tx: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    kind: Kind,
+) -> Result<Response, DoorError> {
+    let policy = approval_repo::read_policy(tx, scope, tenant).await?;
+    Ok(support::response(
+        StatusCode::OK,
+        &PricingEffectivePolicyDto {
+            kind: kind.into(),
+            quorum_required: policy.quorum_for(kind.as_str()),
+        },
+        None,
     )?)
 }
 /// `DELETE /approval-policy/{kind}` (D-435): remove one kind's override at the policy the caller

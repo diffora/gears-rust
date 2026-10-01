@@ -960,6 +960,30 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .standard_errors(openapi)
         .error_503(openapi)
         .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/approval-policy/{kind}/effective")
+        .operation_id("bss_pricing.get_effective_approval_policy")
+        .summary("Read the quorum a submit needs")
+        .description(
+            "Returns kind and quorum_required, the quorum a submit of that kind needs now \
+             (D-481): the kind's override, or the tenant default. kind is prices or \
+             plan_revision. prices is read under price_book_entry read; plan_revision under plan \
+             read. The quorum is not money, and pricing serves no price read of its own, so \
+             price read is not the grant. One statement. Refusals: 400 QUERY_INVALID for a kind \
+             outside that set; 403 without the kind's grant; 503 when the policy cannot judge.",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .path_param("kind", "Approval kind: prices or plan_revision")
+        .handler(get_effective_policy)
+        .json_response_with_schema::<dto::PricingEffectivePolicyDto>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
     OperationBuilder::put("/bss-pricing/v1/approval-policy")
         .operation_id("bss_pricing.put_approval_policy")
         .summary("Set an approval quorum")
@@ -1506,6 +1530,29 @@ async fn withdraw_unit(
         digest,
     };
     approvals::vote(&state.db.db(), cmd, id, approvals::Vote::Withdraw, None).await
+}
+async fn get_effective_policy(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    Path(kind): Path<String>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let kind = crate::infra::approval_kinds::Kind::parse(&kind)
+        .ok_or_else(|| support::invalid("kind", "QUERY_INVALID"))?;
+    let resource = match kind {
+        crate::infra::approval_kinds::Kind::Prices => &resource_types::PRICE_BOOK_ENTRY,
+        crate::infra::approval_kinds::Kind::PlanRevision => &resource_types::PLAN,
+    };
+    let scope = authz::access_scope(&enforcer, &ctx, resource, actions::READ, None, None)
+        .await
+        .map_err(authz_failure)?;
+    let tenant = ctx.subject_tenant_id();
+    transaction(&state.db.db(), move |tx| {
+        let scope = scope.clone();
+        Box::pin(async move { approvals::effective_quorum(tx, &scope, tenant, kind).await })
+    })
+    .await
 }
 async fn get_approval_policy(
     Extension(state): Extension<Arc<AuthoringState>>,

@@ -10789,6 +10789,24 @@
         ],
         "type": "object"
       },
+      "PricingEffectivePolicyDto": {
+        "description": "`GET /approval-policy/{kind}/effective` (D-481): the quorum a submit of `kind` needs now.",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/PricingApprovalKind"
+          },
+          "quorum_required": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "quorum_required"
+        ],
+        "type": "object"
+      },
       "PricingEligibility": {
         "description": "Who may take a price: every subscription, or new ones only.",
         "enum": [
@@ -11210,6 +11228,12 @@
             },
             "type": "array"
           },
+          "quorum_required": {
+            "description": "The `plan_revision` quorum a submit of this revision needs (D-481): the tenant's effective\npolicy, the number the APPROVAL info row already shows. The revision itself has no quorum.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "ready": {
             "description": "Every check is ok: the revision may be submitted.",
             "type": "boolean"
@@ -11222,7 +11246,8 @@
         "required": [
           "checks",
           "ready",
-          "sale_date"
+          "sale_date",
+          "quorum_required"
         ],
         "type": "object"
       },
@@ -11409,6 +11434,59 @@
         ],
         "type": "object"
       },
+      "PricingPlanEntrySummary": {
+        "description": "One distinct entry a revision's items name, with the default chain's price in force on the\nrevision's sale date (D-480).",
+        "properties": {
+          "book_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "charge_kind": {
+            "$ref": "#/components/schemas/PricingChargeKind"
+          },
+          "dimension_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "$ref": "#/components/schemas/PricingModel"
+          },
+          "period": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPeriod"
+              }
+            ]
+          },
+          "price_book_entry_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "price_on_sale_date": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PricingPriceDto",
+                "description": "The default chain's approved price in force on the revision's sale date, chosen by\n`price_book_entries::headline` (D-440, D-472). Null when only value chains price the\nentry, when none is in force, or when the caller's `price_book` read does not admit the\nentry's book (D-434)."
+              }
+            ]
+          }
+        },
+        "required": [
+          "price_book_entry_id",
+          "book_id",
+          "charge_kind",
+          "model"
+        ],
+        "type": "object"
+      },
       "PricingPlanInEffect": {
         "description": "The revision a plan sells today (D-460): its published revision in effect (D-447).",
         "properties": {
@@ -11419,11 +11497,20 @@
           "revision_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "sku_ids": {
+            "description": "The SKUs of that revision's items, one per item, in ascending order (D-480). The same set\na draft or pending revision reports as `carried_sku_ids`.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
           "revision_id",
-          "rev_no"
+          "rev_no",
+          "sku_ids"
         ],
         "type": "object"
       },
@@ -11585,6 +11672,50 @@
         ],
         "type": "object"
       },
+      "PricingPlanReservationItemDto": {
+        "description": "One item on the reservations read (D-480).",
+        "properties": {
+          "item_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reference_state": {
+            "$ref": "#/components/schemas/PricingItemReferenceState"
+          },
+          "reservation_id": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "item_id",
+          "reference_state"
+        ],
+        "type": "object"
+      },
+      "PricingPlanReservationsDto": {
+        "description": "`GET /plan-revisions/{id}/reservations` (D-480): each item's reference, and whether they have\nall settled.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PricingPlanReservationItemDto"
+            },
+            "type": "array"
+          },
+          "settled": {
+            "description": "The same rule as the revision's `reservations_settled`: `lost` counts as settled.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "settled"
+        ],
+        "type": "object"
+      },
       "PricingPlanRevisionDto": {
         "description": "A revision with its items (D-407: items are a sub-resource, read with their revision).",
         "properties": {
@@ -11663,6 +11794,10 @@
               "null"
             ]
           },
+          "reservations_settled": {
+            "description": "True when no item is `unreserved` or `confirmation_pending` (D-480). `lost` counts as\nsettled, so settled is not a green check. Computed from the items in hand, on every answer.",
+            "type": "boolean"
+          },
           "rev_no": {
             "format": "int32",
             "type": "integer"
@@ -11703,6 +11838,7 @@
           "created_by",
           "created_at",
           "updated_at",
+          "reservations_settled",
           "items"
         ],
         "type": "object"
@@ -11795,6 +11931,45 @@
           }
         },
         "type": "object"
+      },
+      "PricingPlanRevisionReadDto": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PricingPlanRevisionDto"
+          },
+          {
+            "properties": {
+              "carried_sku_ids": {
+                "description": "Draft or pending only (null otherwise): the SKU ids of the plan's published revision in\neffect today (D-447), `[]` when none is in effect. The set a re-add of a deprecated SKU\njudges (D-465).",
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "entries": {
+                "description": "One per distinct entry the items name, in entry id order.",
+                "items": {
+                  "$ref": "#/components/schemas/PricingPlanEntrySummary"
+                },
+                "type": "array"
+              },
+              "sale_date": {
+                "description": "The checks' sale date (`domain::plan::sale_date`): `available_from`, or today for \"at\npublish\". A past `available_from` answers that past date, as the checks do.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sale_date",
+              "entries"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "`GET /plan-revisions/{id}` (D-480): the revision, its sale date, one summary per distinct\nentry its items name, and, while it is draft or pending, the SKUs the plan sells today.\nWrite answers keep [`PricingPlanRevisionDto`]."
       },
       "PricingPlanRevisionSubmitReceipt": {
         "description": "The `plan_revision` unit a submission recorded and the revision after the transaction:\npending under the unit, or published when quorum zero applied it at once.",
@@ -34565,6 +34740,124 @@
         ]
       }
     },
+    "/bss-pricing/v1/approval-policy/{kind}/effective": {
+      "get": {
+        "description": "Returns kind and quorum_required, the quorum a submit of that kind needs now (D-481): the kind's override, or the tenant default. kind is prices or plan_revision. prices is read under price_book_entry read; plan_revision under plan read. The quorum is not money, and pricing serves no price read of its own, so price read is not the grant. One statement. Refusals: 400 QUERY_INVALID for a kind outside that set; 403 without the kind's grant; 503 when the policy cannot judge.",
+        "operationId": "bss_pricing.get_effective_approval_policy",
+        "parameters": [
+          {
+            "description": "Approval kind: prices or plan_revision",
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingEffectivePolicyDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read the quorum a submit needs",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/approval-units": {
       "get": {
         "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions, its live impact and caller_can_approve, whether the caller may approve it now (the approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (D-470). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `impact=false` skips the live impact read: every unit answers impact null. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or plan_revision, and for a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
@@ -36293,7 +36586,7 @@
         ]
       },
       "get": {
-        "description": "Returns one plan revision with its items and its state as it reads today (D-447), when it was submitted and approved (D-461) and, while it is pending, its vote progress: the approve votes counted toward the quorum and the quorum, counts only, under plan read (D-462). Its version is the ETag a following PATCH sends back as If-Match. Refusals: 404 for a revision the tenant does not hold.",
+        "description": "Returns one plan revision with its items and its state as it reads today (D-447), when it was submitted and approved (D-461), its vote progress while pending (D-462) and, beside those, its sale_date, one entry summary per distinct entry its items name and, while it is draft or pending, carried_sku_ids (D-480). Each summary's price_on_sale_date is the default chain's approved price in force on sale_date, or null when the caller's price_book read does not admit that entry's book, when only a value chain prices it, or when none is in force. reservations_settled is true when no item is unreserved or confirmation_pending; lost counts as settled. Its version is the ETag a following PATCH sends back as If-Match. Refusals: 403 without plan read; 503 when the policy cannot judge the money; 404 for a revision the tenant does not hold.",
         "operationId": "bss_pricing.get_plan_revision",
         "parameters": [
           {
@@ -36311,7 +36604,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PricingPlanRevisionDto"
+                  "$ref": "#/components/schemas/PricingPlanRevisionReadDto"
                 }
               }
             },
@@ -36563,7 +36856,7 @@
     },
     "/bss-pricing/v1/plan-revisions/{id}/checks": {
       "get": {
-        "description": "Returns every check of the revision on its sale date (coverage, SKUs, references, book) and whether it may be submitted, from fresh SKU reads. Refusals: 404 for a revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
+        "description": "Returns every check of the revision on its sale date (coverage, SKUs, references, book), whether it may be submitted, and quorum_required, the plan_revision quorum a submit will need (D-481), from fresh SKU reads. Refusals: 404 for a revision the tenant does not hold; Products' own refusal; 503 REGISTRY_UNAVAILABLE.",
         "operationId": "bss_pricing.get_plan_revision_checks",
         "parameters": [
           {
@@ -36820,6 +37113,124 @@
           }
         ],
         "summary": "Add an item to a draft revision",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
+    "/bss-pricing/v1/plan-revisions/{id}/reservations": {
+      "get": {
+        "description": "Returns each item of the revision with its item_id, reference_state and reservation_id, and settled: true when no item is unreserved or confirmation_pending. lost counts as settled, so settled is not a green check (D-480). Two statements under plan read. Refusals: 404 for a revision the tenant does not hold; 503 when the policy cannot judge.",
+        "operationId": "bss_pricing.get_plan_revision_reservations",
+        "parameters": [
+          {
+            "description": "Plan revision id",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPlanReservationsDto"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read a revision's item reservations",
         "tags": [
           "Pricing"
         ]
@@ -38751,7 +39162,7 @@
     },
     "/bss-pricing/v1/price-books": {
       "get": {
-        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
+        "description": "One page of the tenant's price books (D-442), each with its stats (D-441): its entries and their distinct SKUs, the distinct plans with a draft, pending, scheduled or published revision on it and those that name it only through superseded revisions, its prices by state (the approved ones also as scheduled, active and superseded today), its prices units in review and its last change. OData `$filter` over id, code, name, currency, valid_from and valid_until (`eq null`: open on that side); `$orderby` over code and name (tie-break id; default code); `$top` (alias `limit`; default 200, clamped at 500) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code or the name, matched literally; `sku_id` keeps the books with an entry of that SKU. Refusals: 400 QUERY_INVALID for any other key, a repeated key or a malformed sku_id; 400 FILTER_MISMATCH for a cursor replayed with another `$filter`, `q` or `sku_id`; 400 for `$select`, `$count` and the other OData options it does not take.",
         "operationId": "bss_pricing.list_books",
         "parameters": [
           {
@@ -38791,7 +39202,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- currency: eq|ne|contains|startswith|endswith|in\n- valid_from: eq|ne|gt|ge|lt|le|in\n- valid_until: eq|ne|gt|ge|lt|le|in",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -38926,6 +39337,11 @@
               "contains",
               "startswith",
               "endswith",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
               "in"
             ],
             "name": [

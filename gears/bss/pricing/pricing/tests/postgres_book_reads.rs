@@ -241,3 +241,70 @@ async fn the_stats_the_dated_counts_and_the_prices_hold_on_postgres() {
         ["pg"]
     );
 }
+
+/// D-480 on Postgres: `$filter` on `id` (`eq`, `in`), a malformed uuid (400) and the cursor hash.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_book_list_filters_by_id_on_postgres() {
+    let pg = pg_support::Pg::applied_in_c_locale().await;
+    let (f, _) = fixture(&pg).await;
+    let euro = door_book(&f, "a-eur", "Euro", "EUR", None, None).await;
+    let other = door_book(&f, "b-eur", "Other", "EUR", None, None).await;
+    let dollars = door_book(&f, "c-usd", "Dollars", "USD", None, None).await;
+    assert_eq!(
+        codes(
+            &ok(
+                &f,
+                &format!("/price-books?{}", encode(&format!("$filter=id eq {euro}")))
+            )
+            .await
+        ),
+        ["a-eur"]
+    );
+    assert_eq!(
+        codes(
+            &ok(
+                &f,
+                &format!(
+                    "/price-books?{}",
+                    encode(&format!("$filter=id in ({other}, {dollars})"))
+                ),
+            )
+            .await
+        ),
+        ["b-eur", "c-usd"]
+    );
+    let (s, body, _) = f
+        .call(
+            "GET",
+            &format!("/price-books?{}", encode("$filter=id eq not-a-uuid")),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{body}");
+    let first = ok(
+        &f,
+        &format!(
+            "/price-books?{}",
+            encode(&format!("$filter=id in ({euro}, {other})&$top=1"))
+        ),
+    )
+    .await;
+    let cursor = first["page_info"]["next_cursor"].as_str().unwrap();
+    let (s, body, _) = f
+        .call(
+            "GET",
+            &format!(
+                "/price-books?{}",
+                encode(&format!("$filter=id eq {dollars}&cursor={cursor}"))
+            ),
+            json!({}),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(s, 400, "{body}");
+    assert!(body.to_string().contains("FILTER_MISMATCH"), "{body}");
+}
