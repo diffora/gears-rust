@@ -378,12 +378,12 @@ async fn a_book_remap_writes_each_moved_legacy_item_as_a_sku_and_its_entry() {
     assert_eq!(s, 200, "{b}");
     let rows = items(&f, rev).await;
     let shape = |id: Uuid| {
-        let r = rows.iter().find(|i| i.id == id).unwrap();
+        let item = rows.iter().find(|i| i.id == id).unwrap();
         (
-            r.price_book_entry_id,
-            r.treatment.clone(),
-            r.included_qty.clone(),
-            r.qty_min,
+            item.price_book_entry_id,
+            item.treatment.clone(),
+            item.included_qty.clone(),
+            item.qty_min,
         )
     };
     assert_eq!(
