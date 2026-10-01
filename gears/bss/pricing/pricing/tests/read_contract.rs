@@ -1319,9 +1319,12 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
     writes
         .call(f, &me, delete, &empty_path, json!({}), Some(&tag))
         .await;
-    // An entry through its door, its PATCH, and an unpriced entry deleted.
+    // An entry through its door, its PATCH, and an unpriced entry deleted. A recurring SKU: since
+    // D-502 a usage entry needs an immutable rating policy whose meter E1 answers, which this census
+    // of the ETag does not need to set up.
     let create = ("POST", "/price-books/{id}/entries");
-    let body = json!({"sku_id":catalog.sku(SkuType::Usage),"model":"per_unit"});
+    let body =
+        json!({"sku_id":catalog.sku(SkuType::Recurring),"period":"month","model":"per_unit"});
     let entries = format!("{book_path}/entries");
     let entry = id(&writes.call(f, &me, create, &entries, body, None).await.1);
     let entry_path = format!("/price-book-entries/{entry}");
@@ -1344,7 +1347,16 @@ async fn exactly_the_writes_that_declare_an_etag_answer_one() {
         let on = if n == 0 {
             entry
         } else {
-            plan_support::entry(f, book, catalog.sku(SkuType::Usage), "usage", None).await
+            // Recurring, as the door's entry above: a usage price's submit needs its entry's
+            // rating policy (D-502), which this census does not set up.
+            plan_support::entry(
+                f,
+                book,
+                catalog.sku(SkuType::Recurring),
+                "recurring",
+                Some("month"),
+            )
+            .await
         };
         let create = ("POST", "/price-book-entries/{id}/prices");
         let path = format!("/price-book-entries/{on}/prices");
