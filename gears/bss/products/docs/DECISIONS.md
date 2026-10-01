@@ -59,7 +59,7 @@
 | P-D-224 | M | The approval-unit list pages and reads its page set-based (twin of pricing D-458) | DECIDED 2026-09-29 · Owner, 2026-09-29 (dispositions O2, "ok"); whole-branch review RS-03 (fix run W1b); amended by P-D-227, P-D-228 |
 | P-D-225 | M | Every text a request writes has an explicit length cap (twin of pricing D-457) | DECIDED 2026-09-29 · Whole-branch review RS-10, RS-11, RS-37, RS-38 (fix run W1b); the dispositions' "Length caps" |
 | P-D-226 | M | The SDK's SKU types serialize as the wire carries them | DECIDED 2026-09-30 · Whole-branch review RS-22, RS-23, RS-24 (fix run W1b) |
-| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1) |
+| P-D-227 | M | The approval units are counted by state and kind and list newest first on request (twin of pricing D-470) | DECIDED 2026-09-30 · Owner, 2026-09-30 (the approvals option 1, "ok"); pricing phase 9 plan rev 2 (decision 10; plan review M4, L11); amends P-D-224; amended by the phase 9 review (C, R32; fix run 9.5d-1; I, fix run 9.5d-2) |
 | P-D-228 | M | A unit says whether its reader may approve it (twin of pricing D-471) | DECIDED 2026-09-30 · Owner, 2026-09-30 (validation 3 item 4, "ok"); pricing phase 9 plan rev 2 (decision 11; W2; plan review H1, M2); amends P-D-224; amended by the phase 9 review (E, fix run 9.5d-1) |
 | P-D-229 | H | A derived usage meter is a catalog declaration that Rating evaluates | DECIDED 2026-10-01 · Owner, 2026-10-01 (who computes a cloudlet from RAM and CPU); supersedes the PriceBook spec §3 item 11 disposition for derived meters; rating T-D-39 |
 | P-D-248 | H | A retire under review keeps the SKU's lifecycle; `retire_pending` is the fence | DECIDED 2026-10-01 · Owner, 2026-10-01; phase 9 plan rev 4 run 9.8d; amends P-D-189, P-D-208, P-D-211, P-D-213 |
@@ -1203,6 +1203,23 @@ Amends P-D-224 (the order).
   (bare, by state, by SKU), the counts (bare, by state) and the card, while a narrowing that does not keep it serves;
   a state written around its CHECK is 500 on the list, the counts and the card. `gear_tests.rs`: the kind is an enum,
   and the counts' text names the refusal.
+
+**Amended by the phase 9 review, theme I (fix run 9.5d-2, 2026-10-01; R66, R36; the twin of pricing D-470's).**
+- **The order is declared through the toolkit.** The list declares it with `.with_odata_orderby::<UnitOrderField>()`, a
+  one-field enum (`submitted_at`), so the served contract lists `submitted_at asc` and `submitted_at desc` under
+  `x-odata-orderby`, as the SKU and category lists publish theirs, and `$orderby` is that one parameter (its text is the
+  toolkit's; the op's text keeps the default, the tie-break and the refusals). The door accepts exactly the declared field.
+- **The parse stays the list's own.** The toolkit's `OData` extractor keeps the rules above but answers other requests
+  differently: it refuses `limit=0`, of which the list reads one unit as the house pager does, with 400 `INVALID_LIMIT`;
+  its refusal of a cursor that does not read drops the cause; and, since the list's query ignores a key it does not
+  know, it would bind `$top` and `$skiptoken` and parse `$filter` and `$select` that the list ignores today, and refuse
+  `$count` and `$skip`. The served behaviour is unchanged.
+- **One source for the order.** Without a cursor the door puts the order on the page's query
+  (`approval_repo::submission_order`: `submitted_at`, then the id, in one direction), and `approval_repo::page_units`
+  reads it from there alone, ascending when the query names none; a continuation follows its cursor's order. The page
+  takes no separate direction, which a cursor silently overrode.
+- **The tests.** `gear_tests.rs`: the declared fields and the one `$orderby`, and no order on the counts.
+  `api/rest/sku_governance_tests.rs`: `limit=0` reads one unit in both orders.
 
 #### P-D-228 [M] A unit says whether its reader may approve it (twin of pricing D-471)
 
