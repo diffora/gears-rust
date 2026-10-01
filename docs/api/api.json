@@ -45831,7 +45831,8 @@
     },
     "/bss-products/v1/skus": {
       "get": {
-        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter.",        "operationId": "bss_products.list_skus",
+        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review). `lifecycle` compares with `eq`, `ne` or `in`, and with those joined by `and` (the effective lifecycle); a `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on it, is 400. `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197). The pickers (P-D-246): `priced_in` or `not_priced_in`, a price book id (at most one of the two), keeps the SKUs with an entry in that book, in any reference state, or the others; `not_in_revision`, a plan revision id, keeps the SKUs its items do not name. Each key is one call to pricing, under pricing price_book_entry read, and the revision's also under plan read: 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. A book or a revision the tenant does not hold is an empty set. The cursor carries the picker keys too. The multi-id read is `$filter=id in (...)`, one page of at most `$top` 200, within the 8 KiB filter.",
+        "operationId": "bss_products.list_skus",
         "parameters": [
           {
             "description": "Page size, alias of $top (default 50, clamped at 200)",
@@ -45906,7 +45907,8 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",            "in": "query",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "in": "query",
             "name": "$filter",
             "required": false,
             "schema": {
@@ -46179,7 +46181,8 @@
     },
     "/bss-products/v1/skus/counts": {
       "get": {
-        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",        "operationId": "bss_products.count_skus",
+        "description": "The list's tab counts (P-D-211): every SKU, each lifecycle, and those in review (`pending_unit_id` set), narrowed like the list by `q`, `priced`, `in_plan` and `$filter`. Top-level `lifecycle` comparisons (`eq`, `ne`, `in`, and those joined by `and`) are dropped. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are 400. The picker keys `priced_in`, `not_priced_in` (at most one of the two) and `not_in_revision` narrow the counts as they narrow the list (P-D-246): 403 USAGE_FORBIDDEN when pricing refuses the caller (a revision takes plan read beside price_book_entry read), 503 USAGE_UNAVAILABLE when it cannot answer.",
+        "operationId": "bss_products.count_skus",
         "parameters": [
           {
             "description": "Case-insensitive substring of the code, name, unit, usage type or GL code",
@@ -46236,7 +46239,8 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",            "in": "query",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
+            "in": "query",
             "name": "$filter",
             "required": false,
             "schema": {
