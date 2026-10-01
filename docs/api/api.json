@@ -11468,6 +11468,68 @@
         ],
         "type": "object"
       },
+      "PricingPlanBook": {
+        "description": "The book a plan's current revision prices on (D-485).",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "currency"
+        ],
+        "type": "object"
+      },
+      "PricingPlanChange": {
+        "description": "How a plan's list row is changing (D-485): a draft or pending revision, a scheduled one\nstill waiting for its date, or none.",
+        "enum": [
+          "none",
+          "draft",
+          "pending",
+          "scheduled"
+        ],
+        "type": "string"
+      },
+      "PricingPlanChangeCounts": {
+        "description": "Every change the list can name, 0 when none.",
+        "properties": {
+          "draft": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "none": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scheduled": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "none",
+          "draft",
+          "pending",
+          "scheduled"
+        ],
+        "type": "object"
+      },
       "PricingPlanCheckBlockingPrice": {
         "description": "A pending price that blocks a check row (D-466): its approval unit, the price and its entry.",
         "properties": {
@@ -11627,6 +11689,28 @@
         ],
         "type": "object"
       },
+      "PricingPlanCounts": {
+        "description": "`GET /plans/counts` (D-485): every plan the list's narrowing keeps, by the derived axes.",
+        "properties": {
+          "by_change": {
+            "$ref": "#/components/schemas/PricingPlanChangeCounts"
+          },
+          "by_selling": {
+            "$ref": "#/components/schemas/PricingPlanSellingCounts"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_selling",
+          "by_change",
+          "total"
+        ],
+        "type": "object"
+      },
       "PricingPlanCreate": {
         "additionalProperties": false,
         "description": "`POST /plans`: a plan and its draft rev 1 on `book_id`.",
@@ -11660,6 +11744,10 @@
       "PricingPlanCurrent": {
         "description": "A plan's current revision as its list row names it (D-460): the draft or pending one, else\nthe scheduled one, else the published one in effect, chosen over the states the revisions read\ntoday (D-447).",
         "properties": {
+          "book": {
+            "$ref": "#/components/schemas/PricingPlanBook",
+            "description": "The book it prices on (D-485): that book's code, name and currency."
+          },
           "created_by": {
             "description": "Its author, who edits it while it is a draft (D-404); not the plan's.",
             "format": "uuid",
@@ -11698,13 +11786,18 @@
           "state",
           "item_count",
           "sku_ids",
-          "created_by"
+          "created_by",
+          "book"
         ],
         "type": "object"
       },
       "PricingPlanDto": {
         "description": "A plan with the headers of its revisions in revision order.",
         "properties": {
+          "change": {
+            "$ref": "#/components/schemas/PricingPlanChange",
+            "description": "The change on that day: `draft`, `pending`, `scheduled` or `none` (D-484)."
+          },
           "code": {
             "type": "string"
           },
@@ -11742,6 +11835,11 @@
               }
             ]
           },
+          "last_activity_at": {
+            "description": "The latest `updated_at` of the plan and its revisions (D-484). A page ordered by it carries\nthe same instant. Not the If-Match clock (`updated_at`).",
+            "format": "date-time",
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -11758,6 +11856,10 @@
               "$ref": "#/components/schemas/PricingPlanRevisionHeader"
             },
             "type": "array"
+          },
+          "selling": {
+            "description": "Whether the plan sells on the request's day (D-484). Never null.",
+            "type": "boolean"
           },
           "tenant_id": {
             "format": "uuid",
@@ -11781,6 +11883,9 @@
           "created_by",
           "created_at",
           "updated_at",
+          "last_activity_at",
+          "selling",
+          "change",
           "revisions"
         ],
         "type": "object"
@@ -12003,10 +12108,15 @@
               "$ref": "#/components/schemas/PricingPlanDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "The toolkit pager's page (D-485). `limit` is the page size, 500 by default and at most 500."
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
       },
@@ -12354,6 +12464,26 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "PricingPlanSellingCounts": {
+        "description": "`selling` is never null, so the two buckets add up to `total`.",
+        "properties": {
+          "false": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "true": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "true",
+          "false"
+        ],
         "type": "object"
       },
       "PricingPriceBookEntryCreate": {
@@ -39135,13 +39265,76 @@
     },
     "/bss-pricing/v1/plans": {
       "get": {
-        "description": "Lists the tenant's plans by code, each with the headers of its revisions as they read today (a scheduled revision whose date has come reads published, D-447), each header with its author and when it was submitted and approved (D-461). Each plan names its current revision (the draft or pending one, else the scheduled one, else the published one in effect) with its item count, item SKUs and author, and the published revision in effect (D-460). With sku_id, only the plans that have a draft, pending, scheduled or published revision whose items name the SKU through a price book entry (D-434; an included item without an entry does not count), in the same shape: so a plan's current sku_ids, which name every item, may differ from what the filter keeps. Four statements whatever the number of plans. Refusals: 400 QUERY_INVALID for a malformed sku_id or any other key.",
+        "description": "One page of the tenant's plans (D-485). Each plan carries selling and change for the request's day, derived from its stored summary (D-484), last_activity_at (the instant a page ordered by it is ordered by), the headers of its revisions as they read today (D-447), its current revision with that revision's book (code, name, currency) and the published revision in effect (D-460). OData `$filter` over code, name, book_id, currency and last_activity_at; `$orderby` over code (the default), name and last_activity_at, with id breaking the tie in that direction; `$top` (alias limit; default 500, clamped at 500) and cursor (alias $skiptoken). q is a case-insensitive literal substring of the code or the name. selling is true or false. change is none, draft, pending or scheduled, one or several, comma-separated. sku_id keeps the plans whose draft, pending, scheduled or published revisions name the SKU through an entry (D-434), inside the page query. Five statements for a non-empty page, whatever its size. Refusals: 400 QUERY_INVALID for any other plain key, a repeated key, or a malformed value; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for $select, $count and an order field it does not take.",
         "operationId": "bss_pricing.list_plans",
         "parameters": [
           {
-            "description": "Only the plans selling this SKU through an entry",
+            "description": "Page size, alias of $top (default 500, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info (alias $skiptoken)",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Case-insensitive substring of the code or the name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true or false",
+            "in": "query",
+            "name": "selling",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "none, draft, pending, scheduled: one or several, comma-separated",
+            "in": "query",
+            "name": "change",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the plans naming this SKU through an entry",
             "in": "query",
             "name": "sku_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
+            "in": "query",
+            "name": "$filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 orderby expression\n- id asc\n- id desc\n- code asc\n- code desc\n- name asc\n- name desc\n- last_activity_at asc\n- last_activity_at desc",
+            "in": "query",
+            "name": "$orderby",
             "required": false,
             "schema": {
               "type": "string"
@@ -39248,7 +39441,66 @@
         "summary": "List the plans",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "book_id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "code": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "currency": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "last_activity_at": [
+              "eq",
+              "ne",
+              "gt",
+              "ge",
+              "lt",
+              "le",
+              "in"
+            ],
+            "name": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ]
+          }
+        },
+        "x-odata-orderby": {
+          "allowedFields": [
+            "id asc",
+            "id desc",
+            "code asc",
+            "code desc",
+            "name asc",
+            "name desc",
+            "last_activity_at asc",
+            "last_activity_at desc"
+          ]
+        }
       },
       "post": {
         "description": "Creates a plan with a code and a name and its draft revision 1 on a book of the tenant, with an optional sale date, available_from (YYYY-MM-DD; omitted or null is \"at publish\", D-463); the Idempotency-Key replays the answer. The caller also needs price_book read on that book (D-456). The name is at most 200 characters and the code 64 (D-457), and the code follows a rule: 1 to 32 characters of A-Z, 0-9, - and _, starting with a letter or a digit, judged as sent with no trim or case folding (D-468); a code stored before the rule keeps reading. Refusals: 400 FIELD_TOO_LONG on a code or a name over its cap, PLAN_CODE_REQUIRED for a blank code, PLAN_CODE_INVALID for a code off the rule, or DATE_INVALID; 404 for a book the tenant does not hold; 403 PRICE_BOOK_READ_REQUIRED for one the caller may not read; 503 when that grant cannot be judged; 409 PLAN_CODE_TAKEN.",
@@ -39384,6 +39636,207 @@
         "tags": [
           "Pricing"
         ]
+      }
+    },
+    "/bss-pricing/v1/plans/counts": {
+      "get": {
+        "description": "Counts the tenant's plans that the list's narrowing keeps (D-485): by_selling (true and false; they add up to total), by_change (none, draft, pending, scheduled; each 0 when none) and total. The same plain keys and $filter as the list, and not limit, cursor or $orderby. One grouped statement. Refusals: the list's.",
+        "operationId": "bss_pricing.count_plans",
+        "parameters": [
+          {
+            "description": "Case-insensitive substring of the code or the name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true or false",
+            "in": "query",
+            "name": "selling",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "none, draft, pending, scheduled: one or several, comma-separated",
+            "in": "query",
+            "name": "change",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the plans naming this SKU through an entry",
+            "in": "query",
+            "name": "sku_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- book_id: eq|ne|in\n- currency: eq|ne|contains|startswith|endswith|in\n- last_activity_at: eq|ne|gt|ge|lt|le|in",
+            "in": "query",
+            "name": "$filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingPlanCounts"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Count the plans",
+        "tags": [
+          "Pricing"
+        ],
+        "x-odata-filter": {
+          "allowedFields": {
+            "book_id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "code": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "currency": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ],
+            "id": [
+              "eq",
+              "ne",
+              "in"
+            ],
+            "last_activity_at": [
+              "eq",
+              "ne",
+              "gt",
+              "ge",
+              "lt",
+              "le",
+              "in"
+            ],
+            "name": [
+              "eq",
+              "ne",
+              "contains",
+              "startswith",
+              "endswith",
+              "in"
+            ]
+          }
+        }
       }
     },
     "/bss-pricing/v1/plans/{id}": {
