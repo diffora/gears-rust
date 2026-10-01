@@ -10265,6 +10265,14 @@
         },
         "type": "object"
       },
+      "PricingApprovalKind": {
+        "description": "A kind of approval unit pricing records (spec §6). No CHECK holds the stored column: the\nrepository reads it through this set, so a unit of another kind is a corrupt row (500).",
+        "enum": [
+          "prices",
+          "plan_revision"
+        ],
+        "type": "string"
+      },
       "PricingApprovalPolicyDto": {
         "properties": {
           "default_quorum": {
@@ -10374,7 +10382,8 @@
           },
           "impact": {},
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/PricingApprovalKind",
+            "description": "The unit's kind, one pricing records: a stored unit of another kind is a corrupt row (500),\nnever served."
           },
           "quorum_required": {
             "format": "int32",
@@ -11018,7 +11027,7 @@
         "type": "object"
       },
       "PricingPlanApprovalProgress": {
-        "description": "A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum\ncounts (the current generation's, not stale: the approval library's `approve_eligibility`, the\nrule the vote door judges by) and the quorum.",
+        "description": "A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum\ncounts (the current generation's, not stale: the approval library's `counted_approvals`, the\ncount the vote door judges by) and the quorum.",
         "properties": {
           "approvals": {
             "format": "int32",
@@ -13152,6 +13161,15 @@
           "context"
         ],
         "type": "object"
+      },
+      "ProductsApprovalKind": {
+        "description": "A kind of approval unit products records (P-D-227). No CHECK holds the stored column: the\nrepository reads it through this set, so a unit of another kind is a corrupt row (500).",
+        "enum": [
+          "sku_publish",
+          "sku_change",
+          "sku_retire"
+        ],
+        "type": "string"
       },
       "ProductsApprovalUnitCounts": {
         "description": "`GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by\nkind, every state and kind named (0 when none), and their total.",
@@ -18952,7 +18970,8 @@
           },
           "impact_live": {},
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/ProductsApprovalKind",
+            "description": "The unit's kind, one products records: a stored unit of another kind is a corrupt row\n(500), never served."
           },
           "quorum_required": {
             "format": "int32",
@@ -34455,7 +34474,7 @@
     },
     "/bss-pricing/v1/approval-units": {
       "get": {
-        "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions, its live impact and caller_can_approve, whether the caller may approve it now (the approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (D-470). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `impact=false` skips the live impact read: every unit answers impact null. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
+        "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions, its live impact and caller_can_approve, whether the caller may approve it now (the approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (D-470). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `impact=false` skips the live impact read: every unit answers impact null. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or plan_revision, and for a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         "operationId": "bss_pricing.list_approval_units",
         "parameters": [
           {
@@ -34468,7 +34487,7 @@
             }
           },
           {
-            "description": "Approval kind",
+            "description": "Approval kind: prices or plan_revision",
             "in": "query",
             "name": "kind",
             "required": false,
@@ -34636,7 +34655,7 @@
     },
     "/bss-pricing/v1/approval-units/counts": {
       "get": {
-        "description": "Counts the tenant's approval units that the list's narrowing keeps (state, kind and the referenced aggregate, ref_id or book_id), under the list's own grant: by_state (pending, approved, rejected, withdrawn), by_kind (prices, plan_revision), each named with 0 when none, and total, the length of the list under the same narrowing (D-470). It reads one grouped statement, whatever the number of units. It takes nothing but the narrowing. Refusals: the list's: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed id, or any other key (limit, cursor, $orderby, impact).",
+        "description": "Counts the tenant's approval units that the list's narrowing keeps (state, kind and the referenced aggregate, ref_id or book_id), under the list's own grant: by_state (pending, approved, rejected, withdrawn), by_kind (prices, plan_revision), each named with 0 when none, and total, the length of the list under the same narrowing (D-470). It reads one grouped statement, whatever the number of units. It takes nothing but the narrowing. Refusals: the list's: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or plan_revision; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed id, or any other key (limit, cursor, $orderby, impact).",
         "operationId": "bss_pricing.count_approval_units",
         "parameters": [
           {
@@ -34649,7 +34668,7 @@
             }
           },
           {
-            "description": "Approval kind",
+            "description": "Approval kind: prices or plan_revision",
             "in": "query",
             "name": "kind",
             "required": false,
@@ -39295,7 +39314,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 404 for a book the tenant does not hold.",
+        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {
@@ -41291,7 +41310,7 @@
     },
     "/bss-products/v1/approval-units": {
       "get": {
-        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot, the decisions of every generation and caller_can_approve, whether the caller may approve it now (the approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (P-D-227). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
+        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot, the decisions of every generation and caller_can_approve, whether the caller may approve it now (the approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (P-D-227). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state, a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         "operationId": "bss_products.list_approval_units",
         "parameters": [
           {
@@ -41444,7 +41463,7 @@
     },
     "/bss-products/v1/approval-units/counts": {
       "get": {
-        "description": "Counts the tenant's approval units that the list's narrowing keeps (state, kind and SKU), under the list's own grant: by_state (pending, approved, rejected, withdrawn), by_kind (sku_publish, sku_change, sku_retire), each named with 0 when none, and total, the length of the list under the same narrowing (P-D-227). It reads one grouped statement, whatever the number of units. It takes nothing but the narrowing. Refusals: the list's: 400 for an unknown state or a query that does not parse, and 400 for any other key (limit, cursor, $orderby).",
+        "description": "Counts the tenant's approval units that the list's narrowing keeps (state, kind and SKU), under the list's own grant: by_state (pending, approved, rejected, withdrawn), by_kind (sku_publish, sku_change, sku_retire), each named with 0 when none, and total, the length of the list under the same narrowing (P-D-227). It reads one grouped statement, whatever the number of units. It takes nothing but the narrowing. Refusals: the list's: 400 for an unknown state, a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that does not parse, and 400 for any other key (limit, cursor, $orderby).",
         "operationId": "bss_products.count_approval_units",
         "parameters": [
           {
