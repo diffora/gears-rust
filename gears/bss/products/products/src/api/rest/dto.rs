@@ -1,9 +1,9 @@
 //! Gear-local `snake_case` wire types; SDK enums are represented by their stable tokens. A closed
 //! set on a response is its `enum` (P-D-217); a request keeps `string`, so its door refuses.
 use super::closed_sets::{
-    ProductsBillingTiming, ProductsCategoryStatus, ProductsDecisionKind, ProductsLifecycle,
-    ProductsReferenceKind, ProductsReferenceState, ProductsSkuType, ProductsUnitState,
-    ProductsVoteOutcome,
+    ProductsApprovalKind, ProductsBillingTiming, ProductsCategoryStatus, ProductsDecisionKind,
+    ProductsLifecycle, ProductsReferenceKind, ProductsReferenceState, ProductsSkuType,
+    ProductsUnitState, ProductsVoteOutcome,
 };
 use crate::domain::sku::{NewSku, SkuPatch};
 use crate::domain::validation::ValidationReport;
@@ -47,8 +47,19 @@ impl TryFrom<Category> for ProductsCategoryDto {
         })
     }
 }
+/// A lifecycle change that takes effect on `from` (P-D-249).
+#[toolkit_macros::api_dto(response)]
+pub struct LifecycleNextDto {
+    pub lifecycle: ProductsLifecycle,
+    #[serde(with = "crate::infra::serde_date")]
+    pub from: Date,
+}
 /// Wire representation of the registry Sku.
 #[toolkit_macros::api_dto(response)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "sellable, type_change_pending and retire_pending are three independent flags (P-D-248)"
+)]
 pub struct SkuDto {
     pub id: Uuid,
     pub tenant_id: Uuid,
@@ -61,6 +72,10 @@ pub struct SkuDto {
     pub description: String,
     pub sellable: bool,
     pub lifecycle: ProductsLifecycle,
+    /// Set while a retire is in review (P-D-248). The lifecycle stays.
+    pub retire_pending: bool,
+    /// A dated lifecycle change that has not arrived (P-D-249). Null when none is pending.
+    pub lifecycle_next: Option<LifecycleNextDto>,
     pub revision: i64,
     pub published_version: i64,
     pub gl_code: Option<String>,
@@ -90,6 +105,11 @@ impl From<Sku> for SkuDto {
             description: value.description,
             sellable: value.sellable,
             lifecycle: value.lifecycle.into(),
+            retire_pending: value.retire_pending,
+            lifecycle_next: value.lifecycle_next.map(|next| LifecycleNextDto {
+                lifecycle: next.lifecycle.into(),
+                from: next.from,
+            }),
             revision: value.revision,
             published_version: value.published_version,
             gl_code: value.gl_code,
@@ -281,7 +301,6 @@ pub struct ProductsSkuCounts {
     pub draft: u64,
     pub published: u64,
     pub deprecated: u64,
-    pub retiring: u64,
     pub retired: u64,
     pub in_review: u64,
 }
@@ -292,7 +311,6 @@ impl From<crate::infra::storage::repo::SkuCounts> for ProductsSkuCounts {
             draft: c.draft,
             published: c.published,
             deprecated: c.deprecated,
-            retiring: c.retiring,
             retired: c.retired,
             in_review: c.in_review,
         }
@@ -477,7 +495,9 @@ pub struct ProductsSkuSubmitRequest {
 #[toolkit_macros::api_dto(response)]
 pub struct UnitDto {
     pub id: Uuid,
-    pub kind: String,
+    /// The unit's kind, one products records: a stored unit of another kind is a corrupt row
+    /// (500), never served.
+    pub kind: ProductsApprovalKind,
     pub ref_type: String,
     pub ref_id: Uuid,
     pub state: ProductsUnitState,
@@ -498,6 +518,44 @@ pub struct UnitDto {
     pub snapshot: serde_json::Value,
     pub decisions: Vec<DecisionDto>,
     pub impact_live: Option<serde_json::Value>,
+    /// Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule
+    /// (`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its
+    /// decisions, with the caller as the voter. It is false for a decided unit, for its submitter
+    /// and every author of its items (the SKU's creator: separation of duties) and for a caller who
+    /// already voted in its current generation. It means Approve only: a reject judges no
+    /// separation of duties, so the submitter and the SKU's creator may reject a unit whose flag
+    /// is false. The grant is not judged here: without products approve the vote door still
+    /// answers 403.
+    pub caller_can_approve: bool,
+}
+/// `GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by
+/// kind, every state and kind named (0 when none), and their total.
+#[toolkit_macros::api_dto(response)]
+pub struct ProductsApprovalUnitCounts {
+    pub by_state: ProductsApprovalUnitStateCounts,
+    pub by_kind: ProductsApprovalUnitKindCounts,
+    pub total: u64,
+}
+/// The units in each state (P-D-227).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct ProductsApprovalUnitStateCounts {
+    pub pending: u64,
+    pub approved: u64,
+    pub rejected: u64,
+    pub withdrawn: u64,
+}
+/// The units of each kind products records (P-D-227).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields are the stored kind names, sku_publish, sku_change and sku_retire"
+)]
+pub struct ProductsApprovalUnitKindCounts {
+    pub sku_publish: u64,
+    pub sku_change: u64,
+    pub sku_retire: u64,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct DecisionDto {
@@ -548,11 +606,26 @@ pub struct ApprovalPolicyDto {
 #[path = "dto_tests.rs"]
 mod dto_tests;
 
-impl From<bss_approval::Unit> for UnitDto {
-    fn from(u: bss_approval::Unit) -> Self {
-        Self {
+impl UnitDto {
+    /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
+    /// approve it, judged by the engine's own predicate over the `authors` of the unit's stored
+    /// (current generation) items and its `decisions` (P-D-228). `impact_live` is the caller's to
+    /// fill.
+    /// # Errors
+    /// `CorruptRow` for a kind products does not record.
+    pub fn of(
+        u: bss_approval::Unit,
+        authors: &[Uuid],
+        decisions: Vec<bss_approval::Decision>,
+        reader: Uuid,
+    ) -> Result<Self, RepoError> {
+        let caller_can_approve =
+            bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
+                .refusal
+                .is_none();
+        Ok(Self {
             id: u.id,
-            kind: u.kind,
+            kind: ProductsApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
             ref_type: u.ref_type,
             ref_id: u.ref_id,
             state: u.state.into(),
@@ -565,9 +638,10 @@ impl From<bss_approval::Unit> for UnitDto {
             decided_at: u.decided_at,
             decided_note: u.decided_note,
             snapshot: u.snapshot,
-            decisions: Vec::new(),
+            decisions: decisions.into_iter().map(Into::into).collect(),
             impact_live: None,
-        }
+            caller_can_approve,
+        })
     }
 }
 impl From<bss_approval::Decision> for DecisionDto {

@@ -468,9 +468,7 @@ async fn get_revision(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move {
-            plans::get_revision(tx, &scope, (ctx.subject_tenant_id(), ctx.subject_id()), id).await
-        })
+        Box::pin(async move { plans::get_revision(tx, &scope, ctx.subject_tenant_id(), id).await })
     })
     .await
 }
@@ -605,7 +603,9 @@ pub(super) fn item_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
             "Changes a draft item's entry, never its SKU, at the version the caller read \
              (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 \
              BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a \
-             null entry or an item left without one; 403 NOT_DRAFT_AUTHOR; 409 \
+             null entry or an item left without one, ITEM_BOOK_FOREIGN for an entry of another \
+             book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU; 403 NOT_DRAFT_AUTHOR; \
+             404 for an unknown item, or an unknown entry (ENTRY_NOT_FOUND); 409 \
              REVISION_NOT_DRAFT or STALE_REVISION.",
         )
         .tag("Pricing")

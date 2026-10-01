@@ -131,7 +131,7 @@ Requirement: `cpt-cf-bss-pricing-fr-price-book`; PRD AC #2.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-entry-key-unique`
 
-The database enforces SKU × charge kind × normalized period × model uniqueness inside a book (D-427). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386).
+The database enforces SKU × charge kind × normalized period × model uniqueness inside a book (D-427). Charge kind follows the re-read SKU; a bundle, an invalid period or a model the charge kind does not allow is rejected (spec §5, D-386). GET /price-book-entries?sku_id= narrows, orders and pages one SKU's entries in memory (D-486): book_id (1 to 50), currency, q, status (priced, scheduled, unpriced) and changing; book_name or status, the id breaking a tie the same way; 500 per page by default and at most 500. The read makes seven statements for a SKU in 5 books and in 50. A SKU in more than 500 entries returns the first page.
 
 Requirement: `cpt-cf-bss-pricing-fr-entry-key`; PRD AC #3.
 
@@ -163,7 +163,7 @@ Requirement: `cpt-cf-bss-pricing-fr-settings`; PRD AC #13.
 
 - [x] `p1` - **ID**: `cpt-cf-bss-pricing-dod-book-export`
 
-Export returns the book and all its scoped entries/prices as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16). One entry's prices read alone, each with its status today, in the export's chain order, under price_book read on the entry's book as well as entry read; the entry reads carry the price in force and the approved prices by date (D-440).
+Export returns the book and all its scoped entries/prices as JSON with ids, windows, dimensions and model inputs. It creates no approval or mutation (spec §2 decision 16). One entry's prices read alone, each with its status today, in the export's chain order, under price_book read on the entry's book as well as entry read; the entry reads carry the price in force and the approved prices by date (D-440), and the next price: the default chain's earliest scheduled price, else its newest draft or pending price (D-472). The book's entries list judges them all on its as_of, today by default, and an as_of other than today takes price_book read on the book (D-473).
 
 Requirement: `cpt-cf-bss-pricing-fr-book-export`; PRD AC #12.
 

@@ -505,15 +505,21 @@ struct Tally {
 fn tally_sku_and_reference(ctx: &PlanContext, item: &Item, name: &str, t: &mut Tally) {
     // @cpt-begin:cpt-cf-bss-pricing-algo-plans-revision-checks:p1:inst-plans-revision-checks-1
     let it = [item.id];
-    match sku_of(ctx, item.sku_id).map(|s| s.lifecycle) {
+    match sku_of(ctx, item.sku_id) {
         None => t.unavailable.add(format!("{name} - not found"), &it),
-        Some(Lifecycle::Draft | Lifecycle::Retiring | Lifecycle::Retired) => {
+        Some(sku)
+            if sku.retire_pending
+                || matches!(sku.lifecycle, Lifecycle::Draft | Lifecycle::Retired) =>
+        {
             t.unavailable.add(name, &it);
         }
-        Some(Lifecycle::Deprecated) if !ctx.published_sku_ids.contains(&item.sku_id) => {
+        Some(sku)
+            if sku.lifecycle == Lifecycle::Deprecated
+                && !ctx.published_sku_ids.contains(&item.sku_id) =>
+        {
             t.deprecated.add(name, &it);
         }
-        Some(Lifecycle::Published | Lifecycle::Deprecated) => {}
+        Some(_) => {}
     }
     match item.reference.state {
         ReferenceState::Confirmed => {}

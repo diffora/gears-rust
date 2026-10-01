@@ -19,7 +19,7 @@ use super::{
 use crate::api::rest::closed_sets::PricingRevisionState;
 use crate::{
     domain::{
-        plan::{self, MAX_ITEMS, ReferenceState, RevisionState},
+        plan::{MAX_ITEMS, ReferenceState, RevisionState},
         reference_op::{OpKind, RefKind},
     },
     infra::{
@@ -163,9 +163,11 @@ async fn admissible(
     if items.len() >= MAX_ITEMS {
         return Err(support::invalid("items", "REVISION_ITEMS_TOO_MANY").into());
     }
-    Ok(plans::published_skus(tx, tenant, r.plan_id, plans::today())
-        .await?
-        .contains(&input.sku_id))
+    Ok(
+        crate::infra::plan_revisions::published_skus(tx, tenant, r.plan_id, plans::today())
+            .await?
+            .contains(&input.sku_id),
+    )
 }
 /// The SKU read fresh (D-408): a deprecated SKU is added only when the plan's published revision
 /// in effect carries it (`carried`: a re-add is not "newly added", D-465), and a bundle SKU is
@@ -227,12 +229,8 @@ pub(super) async fn patch(
         m.price_book_entry_id = entry;
     }
     entry_needed(m.price_book_entry_id)?;
-    m.treatment = plan::stored_treatment(m.price_book_entry_id)
-        .as_str()
-        .into();
-    m.included_qty = None;
-    m.qty_min = None;
-    m.updated_at = time::OffsetDateTime::now_utc();
+    m.updated_at = crate::infra::storage::stored_now();
+    // The repository rewrites the row in D-467's shape (`plan_item_repo::update_draft`).
     plan_item_repo::update_draft(tx, &children, m.clone()).await?;
     m.version += 1;
     support::audit(tx, ctx, correlation, "plan_item.patch", id, m.version).await?;
@@ -259,7 +257,7 @@ pub(super) async fn get(
     let children = AccessScope::for_tenant(tenant);
     let r = plans::find_revision(tx, &children, tenant, m.revision_id).await?;
     let siblings = plan_revision_repo::for_plan(tx, &children, tenant, r.plan_id).await?;
-    let state = super::dto::effective_revisions(&siblings, plans::today())?
+    let state = crate::infra::plan_revisions::effective_revisions(&siblings, plans::today())?
         .into_iter()
         .find(|e| e.id == r.id)
         .map_or_else(
@@ -323,7 +321,7 @@ pub async fn create(
         );
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
-            let now = time::OffsetDateTime::now_utc();
+            let now = crate::infra::storage::stored_now();
             let receipt_scope = AccessScope::for_tenant(tenant);
             let claim = idem::claim_idempotency_key(
                 tx,
@@ -411,7 +409,7 @@ pub(crate) async fn remove(
     if item.reference_state == ReferenceState::ConfirmationPending.as_str() {
         return Err(support::conflict("ITEM_CONFIRMATION_PENDING").into());
     }
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let op = reference_work::plan_item::delete_op(ctx, &item, correlation, now)?;
     let op_id = op.op_id;
     plan_item_repo::delete_draft(tx, scope, tenant, id, item.version).await?;

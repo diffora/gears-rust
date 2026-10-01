@@ -29,7 +29,10 @@ use dto::{
 };
 use std::sync::Arc;
 use support::{authz_failure, etag, header, require_authenticated, response, transaction};
-use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
+use toolkit::api::{
+    OpenApiRegistry,
+    operation_builder::{OperationBuilder, OperationBuilderODataExt},
+};
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -39,6 +42,8 @@ pub struct AuthoringState {
     pub hub: Arc<toolkit::ClientHub>,
     /// Where every pricing event is enqueued, inside the transaction of its act.
     pub outbox: crate::infra::events::EventSink,
+    /// The clock the approval doors read their instant from: the wall clock, or a test's.
+    clock: Arc<dyn crate::infra::reference_work::Clock>,
     pipeline: tokio::sync::Mutex<Option<Pipeline>>,
 }
 /// The running outbox processor: the broker SDK's producer, or the holding one.
@@ -93,8 +98,15 @@ impl AuthoringState {
             db,
             hub,
             outbox,
+            clock: Arc::new(crate::infra::reference_work::WallClock),
             pipeline: tokio::sync::Mutex::new(Some(pipeline)),
         })
+    }
+    /// The same state with the approval doors reading `clock`; tests inject one whose instants
+    /// carry digits finer than a microsecond, which the wall clock of some hosts never has.
+    #[must_use]
+    pub fn with_clock(self, clock: Arc<dyn crate::infra::reference_work::Clock>) -> Self {
+        Self { clock, ..self }
     }
     pub(crate) async fn stop(&self) {
         match self.pipeline.lock().await.take() {
@@ -208,17 +220,34 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .description(
             "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind \
              and period, each with its usage (D-428): its prices by state (a rejected price is not \
-             counted; the approved ones also as scheduled, active and superseded today, D-440), \
-             the distinct plans whose draft, pending, scheduled or published revisions name it, \
-             and the distinct plans that name it only through superseded revisions; and its \
-             current_price, the default chain's approved price in force today, shown to a caller \
-             who also holds price_book read on the book and null otherwise (D-434, D-440). \
-             Refusals: 404 for a book the tenant does not hold.",
+             counted; the approved ones also as scheduled, active and superseded on the day, \
+             D-440), the distinct plans whose draft, pending, scheduled or published revisions \
+             name it, and the distinct plans that name it only through superseded revisions; its \
+             current_price, the default chain's approved price in force on the day; and its \
+             next_price, the default chain's earliest price scheduled after the day, else its \
+             newest draft or pending price (the highest version_no), else null (D-472). Both \
+             prices are shown to a caller who also holds price_book read on the book and are null \
+             otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): \
+             every price's status, the usage split and both prices are judged on that one day \
+             (D-473). A day before the book's valid_from, or on or after its valid_until, still \
+             answers with the prices in force on it, but a price outside the book's validity is \
+             not sellable: the book allows no sale on that day. Refusals, in order: 403 without \
+             price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID \
+             for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is \
+             not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 \
+             PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's \
+             price_book read does not admit the book: the usage split on another day dates \
+             every approved price, so it is money, and a caller without it reads today only.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .path_param("id", "Price book id")
+        .query_param(
+            "as_of",
+            false,
+            "The day the prices are judged on, YYYY-MM-DD; today (UTC) by default",
+        )
         .handler(list_entries)
         .json_response_with_schema::<PricingPriceBookEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
@@ -380,16 +409,62 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.list_sku_entries")
         .summary("Where a SKU is priced")
         .description(
-            "Lists the tenant's price book entries of one SKU across its books (D-434), each with \
-             its book's code, name and currency, its usage (D-428) and current_price: the default \
-             chain's approved price in force today, shown to a caller who also holds price_book \
-             read (the export's grant) and null otherwise. Refusals: 400 QUERY_INVALID without \
-             exactly one well-formed sku_id, or with any other key.",
+            "Lists one page of the tenant's price book entries of one SKU across its books \
+             (D-434, D-486), each with its book's code, name and currency, its usage (D-428), \
+             its status and changing on today, its current_price, the default chain's approved \
+             price in force today, and its next_price, the default chain's earliest price \
+             scheduled after today, else its newest draft or pending price (the highest \
+             version_no), else null (D-472). status is priced when an approved price is in force \
+             today, else scheduled when an approved price starts later, else unpriced; changing \
+             is true when a draft or pending price exists. Both prices are shown to a caller who \
+             also holds price_book read (the export's grant) and are null otherwise; status and \
+             changing are not money. The list narrows in memory by book_id (1 to 50 distinct \
+             ids), currency, q (a case-insensitive literal substring of the book's code or \
+             name), status (priced, scheduled, unpriced) and changing (true or false). $orderby \
+             is book_name (the default) or status, asc or desc; the id breaks a tie in that \
+             direction. limit (default 500, clamped at 500) and cursor from page_info page it; a \
+             cursor carries the order and a hash of the plain keys, so a continuation sends no \
+             $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a \
+             repeated key, for any other key, for $filter, $select or $count, for a malformed \
+             book_id, currency, status, changing or limit, or for more than 50 book ids; 400 \
+             INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby \
+             beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; \
+             400 for a cursor that does not read.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .query_param("sku_id", true, "The SKU whose entries are listed")
+        .query_param(
+            "book_id",
+            false,
+            "1 to 50 distinct price book ids, comma-separated",
+        )
+        .query_param("currency", false, "Three-letter currency code")
+        .query_param(
+            "q",
+            false,
+            "Case-insensitive literal substring of the book's code or name",
+        )
+        .query_param(
+            "status",
+            false,
+            "priced, scheduled or unpriced, comma-separated",
+        )
+        .query_param_typed(
+            "changing",
+            false,
+            "true when a draft or pending price exists",
+            "boolean",
+        )
+        .query_param_typed(
+            "limit",
+            false,
+            "Page size (default 500, clamped at 500)",
+            "integer",
+        )
+        .query_param_typed("cursor", false, "Continuation from page_info", "string")
+        .with_odata_orderby::<price_book_entries::SkuEntryOrderField>()
         .handler(list_sku_entries)
         .json_response_with_schema::<dto::PricingSkuEntryList>(openapi, StatusCode::OK, "Response")
         .standard_errors(openapi)
@@ -403,10 +478,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              sends back as If-Match, its usage (D-428): its prices by state (a rejected price is \
              not counted; the approved ones also as scheduled, active and superseded today, \
              D-440), the distinct plans whose draft, pending, scheduled or published revisions \
-             name it, and the distinct plans that name it only through superseded revisions; and \
-             its current_price, the default chain's approved price in force today, shown to a \
-             caller who also holds price_book read on its book and null otherwise (D-434, D-440). \
-             Refusals: 404 ENTRY_NOT_FOUND.",
+             name it, and the distinct plans that name it only through superseded revisions; its \
+             current_price, the default chain's approved price in force today; and its \
+             next_price, the default chain's earliest price scheduled after today, else its \
+             newest draft or pending price (the highest version_no), else null (D-472). Both \
+             prices are shown to a caller who also holds price_book read on its book and are null \
+             otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
         )
         .tag("Pricing")
         .authenticated()
@@ -678,17 +755,26 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .summary("List the approval units")
         .description(
             "One page of the tenant's approval units in submission order (D-458), filtered by \
-             state, kind and referenced aggregate, each with its stored snapshot, its decisions \
-             and its live impact. `limit` (default 200, clamped at 500) and `cursor` from \
-             `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 \
-             FILTER_MISMATCH for a cursor replayed with another state, kind or referenced \
-             aggregate; 400 for a cursor that does not read.",
+             state, kind and referenced aggregate, each with its stored snapshot, its decisions, \
+             its live impact and caller_can_approve, whether the caller may approve it now (the \
+             approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, \
+             and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the \
+             same direction (D-470). A client merging pages of several gears compares \
+             submitted_at as an instant, never as text, then the id as lower-case hex. \
+             `impact=false` skips the live impact read: every unit answers impact null. `limit` \
+             (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries \
+             its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID \
+             for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or \
+             plan_revision, and for a query that does not parse; 400 FILTER_MISMATCH for a cursor \
+             replayed with another state, kind \
+             or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR \
+             for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         )
         .tag("Pricing")
         .authenticated()
         .no_license_required()
         .query_param("state", false, "Unit state")
-        .query_param("kind", false, "Approval kind")
+        .query_param("kind", false, "Approval kind: prices or plan_revision")
         .query_param("ref_id", false, "Referenced aggregate id")
         .query_param("book_id", false, "Price book id")
         .query_param_typed(
@@ -698,8 +784,50 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
             "integer",
         )
         .query_param_typed("cursor", false, "Continuation from page_info", "string")
+        .query_param_typed(
+            "$orderby",
+            false,
+            "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "string",
+        )
+        .query_param_typed(
+            "impact",
+            false,
+            "false skips the live impact read (impact null); true by default",
+            "boolean",
+        )
         .handler(list_approval_units)
         .json_response_with_schema::<dto::PricingApprovalUnitList>(
+            openapi,
+            StatusCode::OK,
+            "Response",
+        )
+        .standard_errors(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::get("/bss-pricing/v1/approval-units/counts")
+        .operation_id("bss_pricing.count_approval_units")
+        .summary("Count the approval units")
+        .description(
+            "Counts the tenant's approval units that the list's narrowing keeps (state, kind and \
+             the referenced aggregate, ref_id or book_id), under the list's own grant: by_state \
+             (pending, approved, rejected, withdrawn), by_kind (prices, plan_revision), each named \
+             with 0 when none, and total, the length of the list under the same narrowing \
+             (D-470). It reads one grouped statement, whatever the number of units. It takes \
+             nothing but the narrowing. Refusals: the list's: 400 UNIT_STATE_INVALID for an \
+             unknown state; 400 QUERY_INVALID on kind for a kind other than prices or \
+             plan_revision; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed \
+             id, or any other key (limit, cursor, $orderby, impact).",
+        )
+        .tag("Pricing")
+        .authenticated()
+        .no_license_required()
+        .query_param("state", false, "Unit state")
+        .query_param("kind", false, "Approval kind: prices or plan_revision")
+        .query_param("ref_id", false, "Referenced aggregate id")
+        .query_param("book_id", false, "Price book id")
+        .handler(count_approval_units)
+        .json_response_with_schema::<dto::PricingApprovalUnitCounts>(
             openapi,
             StatusCode::OK,
             "Response",
@@ -711,8 +839,9 @@ fn approval_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
         .operation_id("bss_pricing.get_approval_unit")
         .summary("Read an approval unit")
         .description(
-            "Returns one approval unit with its stored snapshot, its decisions and the live \
-             impact. Refusals: 404 for a unit the tenant does not hold.",
+            "Returns one approval unit with its stored snapshot, its decisions, the live impact \
+             and caller_can_approve, whether the caller may approve it now (D-471). Refusals: 404 \
+             for a unit the tenant does not hold.",
         )
         .tag("Pricing")
         .authenticated()
@@ -888,6 +1017,7 @@ async fn submit_price(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -926,6 +1056,7 @@ async fn submit_plan_revision(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1015,6 +1146,7 @@ async fn publish_changes(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1040,37 +1172,110 @@ async fn list_approval_units(
     .map_err(authz_failure)?;
     let axum::extract::Query(query) =
         axum::extract::Query::<dto::PricingApprovalUnitQuery>::try_from_uri(&uri)
-            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
-    let state_filter = approvals::state_filter(query.state.as_deref())?;
-    let reference = match (query.ref_id, query.book_id) {
-        (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
-        (a, b) => a.or(b),
+            .map_err(|e| support::invalid_because("query", "QUERY_INVALID", &e.body_text()))?;
+    let filter = unit_narrowing(
+        query.state.as_deref(),
+        query.kind.as_deref(),
+        query.ref_id,
+        query.book_id,
+    )?;
+    let (page, direction) = unit_page(
+        &filter,
+        query.limit,
+        query.cursor.as_deref(),
+        query.orderby.as_deref(),
+    )?;
+    let request = approvals::UnitListRequest {
+        filter,
+        page,
+        direction,
+        impact: query.impact.unwrap_or(true),
     };
-    let filter = crate::infra::storage::repo::approval_repo::UnitListFilter {
-        state: state_filter,
-        kind: query.kind,
-        ref_id: reference,
-    };
-    let page = unit_page(&filter, query.limit, query.cursor.as_deref())?;
     transaction(&state.db.db(), move |tx| {
-        let (scope, ctx, filter, page) = (scope.clone(), ctx.clone(), filter.clone(), page.clone());
+        let (scope, ctx, request) = (scope.clone(), ctx.clone(), request.clone());
         Box::pin(async move {
-            approvals::list_units(tx, &scope, ctx.subject_tenant_id(), &filter, &page).await
+            approvals::list_units(
+                tx,
+                &scope,
+                ctx.subject_tenant_id(),
+                ctx.subject_id(),
+                &request,
+            )
+            .await
         })
     })
     .await
 }
+/// The unit list's narrowing, which the counts take too (D-458, D-470): a known state (else 400
+/// `UNIT_STATE_INVALID`), a kind pricing records (else 400 `QUERY_INVALID` on `kind`), and the
+/// referenced aggregate, `ref_id` or its alias `book_id` (400 `QUERY_INVALID` on `book_id` when
+/// the two differ).
+fn unit_narrowing(
+    state: Option<&str>,
+    kind: Option<&str>,
+    ref_id: Option<Uuid>,
+    book_id: Option<Uuid>,
+) -> Result<crate::infra::storage::repo::approval_repo::UnitListFilter, CanonicalError> {
+    let state = approvals::state_filter(state)?;
+    let kind = kind
+        .map(|k| {
+            crate::infra::approval_kinds::Kind::parse(k)
+                .ok_or_else(|| support::invalid("kind", "QUERY_INVALID"))
+        })
+        .transpose()?;
+    let reference = match (ref_id, book_id) {
+        (Some(a), Some(b)) if a != b => return Err(support::invalid("book_id", "QUERY_INVALID")),
+        (a, b) => a.or(b),
+    };
+    Ok(crate::infra::storage::repo::approval_repo::UnitListFilter {
+        state,
+        kind,
+        ref_id: reference,
+    })
+}
+/// The unit list's order (D-470): `submitted_at` ascending (also when omitted, D-458) or
+/// descending, the id breaking a tie in the same direction. Any other `$orderby` is 400
+/// `INVALID_ORDERBY_FIELD`, the toolkit's refusal of an order a list does not take.
+fn unit_order(orderby: Option<&str>) -> Result<toolkit_odata::SortDir, CanonicalError> {
+    let Some(raw) = orderby else {
+        return Ok(toolkit_odata::SortDir::Asc);
+    };
+    let order = toolkit::api::odata::parse_orderby(raw).map_err(CanonicalError::from)?;
+    match order.0.as_slice() {
+        [] => Ok(toolkit_odata::SortDir::Asc),
+        [key] if key.field == "submitted_at" => Ok(key.dir),
+        // The refusal names the key it refuses, never the whole order, so a supported field is
+        // never called unsupported (the phase 9 review's R67).
+        keys => Err(toolkit_odata::Error::InvalidOrderByField(
+            keys.iter()
+                .find(|key| key.field != "submitted_at")
+                .map_or_else(
+                    || "only one key, submitted_at, is accepted".to_owned(),
+                    |key| key.field.clone(),
+                ),
+        )
+        .into()),
+    }
+}
 /// The unit list's page (D-458): `limit`, and `cursor` from a page's `page_info`, which carries a
 /// hash of the narrowing (`state`, `kind` and the referenced aggregate), so a cursor replayed
-/// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442).
+/// under another is 400 `FILTER_MISMATCH`, as the book list's is (D-442). The order is not part of
+/// the hash (D-470): a cursor carries its own (`CursorV1.s`) and a continuation follows it, so
+/// every cursor minted before the descending order still reads. `$orderby` beside a cursor is the
+/// toolkit's 400 `ORDER_WITH_CURSOR`, judged first, as its `OData` extractor does.
 fn unit_page(
     filter: &crate::infra::storage::repo::approval_repo::UnitListFilter,
     limit: Option<u64>,
     cursor: Option<&str>,
-) -> Result<toolkit_odata::ODataQuery, CanonicalError> {
+    orderby: Option<&str>,
+) -> Result<(toolkit_odata::ODataQuery, toolkit_odata::SortDir), CanonicalError> {
+    if cursor.is_some() && orderby.is_some() {
+        return Err(toolkit_odata::Error::OrderWithCursor.into());
+    }
+    let direction = unit_order(orderby)?;
     let digest = preconditions::request_digest(&serde_json::json!({
         "state": filter.state.map(bss_approval::UnitState::as_str),
-        "kind": filter.kind,
+        "kind": filter.kind.map(crate::infra::approval_kinds::Kind::as_str),
         "ref_id": filter.ref_id,
     }))
     .map_err(CanonicalError::from)?;
@@ -1094,7 +1299,42 @@ fn unit_page(
         }
         query = query.with_cursor(cursor);
     }
-    Ok(query)
+    Ok((query, direction))
+}
+/// `GET /approval-units/counts` (D-470): under the list's grant, the list's narrowing, counted
+/// outside any transaction.
+async fn count_approval_units(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<PolicyEnforcer>,
+    ctx: Option<Extension<SecurityContext>>,
+    uri: axum::http::Uri,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(ctx)?;
+    let scope = authz::access_scope(
+        &enforcer,
+        &ctx,
+        &resource_types::APPROVAL_UNIT,
+        actions::READ,
+        None,
+        None,
+    )
+    .await
+    .map_err(authz_failure)?;
+    let axum::extract::Query(query) =
+        // The refusal names the key it rejects (the phase 9 review's R43), as the list's does.
+        axum::extract::Query::<dto::PricingApprovalUnitCountsQuery>::try_from_uri(&uri)
+            .map_err(|e| support::invalid_because("query", "QUERY_INVALID", &e.body_text()))?;
+    let filter = unit_narrowing(
+        query.state.as_deref(),
+        query.kind.as_deref(),
+        query.ref_id,
+        query.book_id,
+    )?;
+    // One grouped statement is its own snapshot: it runs on the plain connection, never in the
+    // doors' serializable transaction, whose read locks over the scanned units would push
+    // concurrent submits and votes into serialization failures (the phase 9 review's R32).
+    let conn = state.db.conn().map_err(support::DoorError::from)?;
+    Ok(approvals::count_units(&conn, &scope, ctx.subject_tenant_id(), &filter).await?)
 }
 async fn get_approval_unit(
     Extension(state): Extension<Arc<AuthoringState>>,
@@ -1115,7 +1355,9 @@ async fn get_approval_unit(
     .map_err(authz_failure)?;
     transaction(&state.db.db(), move |tx| {
         let (scope, ctx) = (scope.clone(), ctx.clone());
-        Box::pin(async move { approvals::get_unit(tx, &scope, ctx.subject_tenant_id(), id).await })
+        Box::pin(async move {
+            approvals::get_unit(tx, &scope, ctx.subject_tenant_id(), ctx.subject_id(), id).await
+        })
     })
     .await
 }
@@ -1149,6 +1391,7 @@ async fn approve_unit(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1192,6 +1435,7 @@ async fn reject_unit(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1233,6 +1477,7 @@ async fn withdraw_unit(
         ctx,
         hub: state.hub.clone(),
         outbox: state.outbox.clone(),
+        clock: state.clock.clone(),
         correlation,
         key,
         digest,
@@ -1627,6 +1872,7 @@ async fn list_entries(
     Extension(enforcer): Extension<PolicyEnforcer>,
     ctx: Option<Extension<SecurityContext>>,
     Path(id): Path<Uuid>,
+    uri: axum::http::Uri,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(ctx)?;
     let scope = authz::access_scope(
@@ -1641,16 +1887,31 @@ async fn list_entries(
     .map_err(authz_failure)?;
     // D-440: the money is shown as D-434 shows it — price_book read, judged a second time.
     let books = money_scope(&enforcer, &ctx).await?;
-    let today = time::OffsetDateTime::now_utc().date();
+    // D-473: the one day the whole answer is judged on, refused after the money's policy and
+    // before the book (D-440's order).
+    let day = entries_day(&uri)?;
+    let dated = day != time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
         let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
         Box::pin(async move {
             let tenant = ctx.subject_tenant_id();
             let entries = books::entries(tx, &scope, tenant, id).await?;
-            // D-428, D-440: every entry's usage and price in force in a fixed number of reads.
+            // D-428, D-440, D-472: every entry's usage, price in force and next price in a fixed
+            // number of reads.
             let shown = price_book_entries::shows_money(tx, books.as_ref(), tenant, id).await?;
+            // D-473 (amended): the usage split on another day moves with the start and the end of
+            // every approved price, so it is money: without the grant on the book, a day other
+            // than today is refused before any price or usage is read.
+            if dated && !shown {
+                return Err(support::forbidden_because(
+                    "PRICE_BOOK_READ_REQUIRED",
+                    "a book's entries on a day other than today are money: reading them takes \
+                     price_book read on the book",
+                )
+                .into());
+            }
             let body = PricingPriceBookEntryList {
-                items: price_book_entries::read(tx, tenant, entries, shown, today).await?,
+                items: price_book_entries::read(tx, tenant, entries, shown, day).await?,
             };
             Ok(response(StatusCode::OK, &body, None)?)
         })
@@ -1852,25 +2113,21 @@ async fn list_sku_entries(
     )
     .await
     .map_err(authz_failure)?;
-    let axum::extract::Query(query) =
-        axum::extract::Query::<dto::PricingSkuEntryQuery>::try_from_uri(&uri)
-            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
-    let sku = query
-        .sku_id
-        .ok_or_else(|| support::invalid("sku_id", "QUERY_INVALID"))?;
+    // D-486: the query, including $filter, $select and $count, is judged before any read.
+    let query = price_book_entries::sku_entries_query(&uri)?;
     // D-434: the money is the export's — price_book read. Without it the entries still list, each
-    // with a null current_price; only an unavailable policy fails the read.
+    // with a null current_price; only an unavailable policy fails the read. Status is not money.
     let books = money_scope(&enforcer, &ctx).await?;
     let today = time::OffsetDateTime::now_utc().date();
     transaction(&state.db.db(), move |tx| {
-        let (scope, books, ctx) = (scope.clone(), books.clone(), ctx.clone());
+        let (scope, books, ctx, query) = (scope.clone(), books.clone(), ctx.clone(), query.clone());
         Box::pin(async move {
             let body = price_book_entries::for_sku(
                 tx,
                 &scope,
                 books.as_ref(),
                 ctx.subject_tenant_id(),
-                sku,
+                &query,
                 today,
             )
             .await?;
@@ -1969,6 +2226,17 @@ async fn money_scope(
         Err(authz::AuthzError::Denied(_)) => Ok(None),
         Err(unavailable) => Err(authz_failure(unavailable)),
     }
+}
+
+/// The day of `GET /price-books/{id}/entries` (D-473): `as_of`, a `YYYY-MM-DD` date, else today
+/// (UTC). Any other key, or `as_of` twice, is 400 `QUERY_INVALID`; an `as_of` that is not such a
+/// date, an empty one included, is 400 `DATE_INVALID`.
+fn entries_day(uri: &axum::http::Uri) -> Result<time::Date, CanonicalError> {
+    let axum::extract::Query(query) =
+        axum::extract::Query::<dto::PricingEntryListQuery>::try_from_uri(uri)
+            .map_err(|_| support::invalid("query", "QUERY_INVALID"))?;
+    Ok(support::date(query.as_of, "as_of")?
+        .unwrap_or_else(|| time::OffsetDateTime::now_utc().date()))
 }
 
 /// The `status` of `GET /price-book-entries/{id}/prices` (D-440): absent, or one display status

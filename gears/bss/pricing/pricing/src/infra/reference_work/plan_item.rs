@@ -14,7 +14,7 @@ use super::{
 use crate::{
     api::rest::authoring::support::{self, DoorError},
     domain::{
-        plan::{self, MAX_ITEMS, ReferenceState},
+        plan::{MAX_ITEMS, ReferenceState},
         reference_op::{Effect, Event, OpKind, RefKind},
     },
     infra::storage::{
@@ -71,9 +71,9 @@ pub(super) fn written(op: &entity::Model) -> Result<Observation, CanonicalError>
         revision_id,
         sku_id: op.sku_id,
         price_book_entry_id: input.price_book_entry_id,
-        treatment: plan::stored_treatment(input.price_book_entry_id)
-            .as_str()
-            .into(),
+        // `plan_item_repo::insert` writes D-467's shape (`plan::stored_treatment`, no quantity)
+        // whatever these carry, and answers the row as stored.
+        treatment: String::new(),
         included_qty: None,
         qty_min: None,
         reservation_id: Some(receipt),

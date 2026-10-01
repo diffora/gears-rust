@@ -12,6 +12,7 @@ use bss_pricing_sdk::product_catalog::{
     CatalogSku, CatalogSkuPage, CatalogTaxCategory, ProductCatalogClientV1, catalog_unreachable,
 };
 use bss_products_sdk::models::{Lifecycle, Sku};
+use sea_orm::sea_query::ExprTrait;
 use sea_orm::{ColumnTrait, Condition};
 use std::{collections::BTreeSet, sync::Arc};
 use toolkit_canonical_errors::{CanonicalError, resource_error};
@@ -64,12 +65,16 @@ impl BrowseCatalogProvider {
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
-        let limit = limit.min(200);
+        let limit = std::cmp::min(limit, 200);
         if limit == 0 {
             return Err(invalid("limit", "limit must be at least one"));
         }
-        let mut condition =
-            Condition::all().add(sku::Column::Lifecycle.is_in(["published", "deprecated"]));
+        let mut condition = Condition::all().add(
+            crate::infra::storage::repo::sku_repo::effective_lifecycle_expr(
+                crate::infra::storage::stored_now().date(),
+            )
+            .is_in(["published", "deprecated"]),
+        );
         if let Some(filter) = filter.filter(|s| !s.is_empty()) {
             if filter.len() > 32_768 {
                 return Err(invalid("$filter", "filter is too long"));
@@ -149,7 +154,12 @@ impl BrowseCatalogProvider {
                 catalog_filter: Some(
                     Condition::all()
                         .add(sku::Column::Id.is_in(chunk.iter().copied()))
-                        .add(sku::Column::Lifecycle.is_in(["published", "deprecated"])),
+                        .add(
+                            crate::infra::storage::repo::sku_repo::effective_lifecycle_expr(
+                                crate::infra::storage::stored_now().date(),
+                            )
+                            .is_in(["published", "deprecated"]),
+                        ),
                 ),
                 lifecycle: None,
                 limit: u64::try_from(chunk.len()).unwrap_or(u64::MAX),
@@ -269,7 +279,7 @@ impl ProductCatalogClientV1 for BrowseCatalogProvider {
         cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
         // The page is 1 to 200 whatever the caller asks (PS-49: the contract's `limit` is `u64`).
-        let limit = u32::try_from(limit.min(200)).unwrap_or(200);
+        let limit = u32::try_from(std::cmp::min(limit, 200)).unwrap_or(200);
         let filter = q
             .filter(|s| !s.is_empty())
             .map(|q| format!("startswith(name,'{}')", q.replace('\'', "''")));

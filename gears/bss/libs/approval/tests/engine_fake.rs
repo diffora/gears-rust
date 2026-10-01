@@ -914,7 +914,12 @@ async fn the_approve_eligibility_is_the_engines_own_answer() {
                 let u = store.unit(tx, unit).await?.unwrap();
                 let items = store.items(tx, unit).await?;
                 let decisions = store.decisions(tx, unit).await?;
-                Ok(approve_eligibility(&u, &items, &decisions, actor))
+                Ok(approve_eligibility(
+                    &u,
+                    items.iter().map(|i| i.created_by),
+                    &decisions,
+                    actor,
+                ))
             })
         })
         .await
@@ -944,7 +949,9 @@ async fn the_approve_eligibility_is_the_engines_own_answer() {
         let before = judged(&db, &store, s.unit.id, actor).await;
         let outcome = approve(&db, &store, &subject, s.unit.id, actor).await;
         match (&before.refusal, &outcome) {
-            (Some(refusal), Err(error)) => assert_eq!(refusal.code(), error.code(), "{step}"),
+            (Some(refusal), Err(error)) => {
+                assert_eq!(ApprovalError::from(*refusal).code(), error.code(), "{step}");
+            }
             (None, Ok(ApproveOutcome::Pending { have, need })) => {
                 assert_eq!(*have, before.approvals + 1, "{step}");
                 assert_eq!(*need, 2, "{step}");
@@ -968,7 +975,7 @@ async fn the_approve_eligibility_is_the_engines_own_answer() {
     assert!(at_once.applied);
     let judged = judged(&db, &store, at_once.unit.id, late).await;
     assert_eq!(
-        judged.refusal.as_ref().map(ApprovalError::code),
+        judged.refusal.map(|r| ApprovalError::from(r).code()),
         Some("UNIT_ALREADY_DECIDED")
     );
     assert!(matches!(

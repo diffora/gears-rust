@@ -41,7 +41,7 @@ env:
   CARGO_INCREMENTAL: "0"
   # Pinned nightly toolchain used by the coverage job. Independent of the pin in
   # shear-nightly.yml — they happen to match today but need not.
-  RUSTUP_TOOLCHAIN_NIGHTLY: nightly-2026-04-16
+  RUSTUP_TOOLCHAIN_NIGHTLY: nightly-2026-08-21
 
 jobs:
   # ── Change detection ──────────────────────────────────────────────────

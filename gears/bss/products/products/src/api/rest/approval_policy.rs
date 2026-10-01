@@ -207,7 +207,7 @@ async fn put(
                     "approval_policy",
                     ctx.subject_tenant_id(),
                     None,
-                    time::OffsetDateTime::now_utc(),
+                    crate::infra::storage::stored_now(),
                     repo::LifecycleMove::NONE,
                 )
                 .await?;
@@ -291,7 +291,7 @@ async fn delete(
                     "approval_policy",
                     tenant,
                     None,
-                    time::OffsetDateTime::now_utc(),
+                    crate::infra::storage::stored_now(),
                     repo::LifecycleMove::NONE,
                 )
                 .await?;

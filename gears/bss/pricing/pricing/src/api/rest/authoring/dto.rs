@@ -1,51 +1,18 @@
 //! Pricing authoring wire contracts, with unique `OpenAPI` names and `snake_case` fields. A closed
 //! set on a response is its `enum` (D-439); a request keeps `string`, so its door's code refuses.
 use crate::api::rest::closed_sets::{
-    PricingBillingTiming, PricingChargeKind, PricingDecisionKind, PricingEligibility,
-    PricingEntryReferenceState, PricingItemReferenceState, PricingModel, PricingPeriod,
-    PricingPriceState, PricingPriceStatus, PricingReferenceOpKind, PricingReferenceOpRefKind,
-    PricingReferenceOpState, PricingRevisionState, PricingUnitState, PricingVoteOutcome,
+    PricingApprovalKind, PricingBillingTiming, PricingChargeKind, PricingDecisionKind,
+    PricingEligibility, PricingEntryReferenceState, PricingItemReferenceState, PricingModel,
+    PricingPeriod, PricingPriceState, PricingPriceStatus, PricingReferenceOpKind,
+    PricingReferenceOpRefKind, PricingReferenceOpState, PricingRevisionState,
+    PricingSkuEntryStatus, PricingUnitState, PricingVoteOutcome,
 };
-use crate::domain::plan::{self, EffectiveRevision, StoredRevision};
+use crate::domain::plan::{self, EffectiveRevision};
+use crate::infra::plan_revisions::{effective_revisions, stored_revisions};
 use crate::infra::storage::{RepoError, entity, repo::approval_repo::UnitInstants};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// The stored revisions as the effective-state rule reads them (D-447), in their order; a state
-/// outside the closed set is a corrupt row naming the revision (D-439).
-/// # Errors
-/// `CorruptRow`.
-pub fn stored_revisions(
-    rows: &[entity::plan_revision::Model],
-) -> Result<Vec<StoredRevision>, RepoError> {
-    rows.iter()
-        .map(|m| {
-            Ok(StoredRevision {
-                id: m.id,
-                plan_id: m.plan_id,
-                rev_no: m.rev_no,
-                state: PricingRevisionState::stored(
-                    &m.state,
-                    &format_args!("revision {} state", m.id),
-                )?
-                .into(),
-                available_from: m.available_from,
-                published_at: m.published_at,
-            })
-        })
-        .collect()
-}
-/// The revisions as they read on `today` (D-447), in the order of `rows`: a due scheduled
-/// revision reads published, its plan's stored-published one superseded. A read derives; it never
-/// writes.
-/// # Errors
-/// `CorruptRow` for a state outside the closed set.
-pub fn effective_revisions(
-    rows: &[entity::plan_revision::Model],
-    today: time::Date,
-) -> Result<Vec<EffectiveRevision>, RepoError> {
-    Ok(plan::effective(&stored_revisions(rows)?, today))
-}
 #[toolkit_macros::api_dto(response)]
 pub struct PriceBookDto {
     pub id: Uuid,
@@ -133,18 +100,18 @@ impl TryFrom<entity::price_book_entry::Model> for PricingPriceBookEntryDto {
     }
 }
 /// An entry's prices by state; a rejected price is not counted (D-428). The approved ones are
-/// also counted by where their window stands today (D-440): `approved` = `scheduled + active +
-/// superseded`.
+/// also counted by where their window stands on the day of the read (D-440): today, or the
+/// `as_of` of the book's entries list (D-473). `approved` = `scheduled + active + superseded`.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceCounts {
     pub approved: u64,
     pub pending: u64,
     pub draft: u64,
-    /// Approved prices that start after today.
+    /// Approved prices that start after the day.
     pub scheduled: u64,
-    /// Approved prices in force today.
+    /// Approved prices in force on the day.
     pub active: u64,
-    /// Approved prices whose window ended on or before today.
+    /// Approved prices whose window ended on or before the day.
     pub superseded: u64,
 }
 /// An entry's usage (D-428): its prices by state; `plans`, the distinct plans with a draft,
@@ -173,17 +140,21 @@ impl From<crate::infra::usage::EntryUsage> for PricingEntryUsage {
         }
     }
 }
-/// What the two entry reads answer (D-428): the entry's fields, its `usage` and its
-/// `current_price` (D-440): the default chain's approved price in force today, as D-434 chooses
-/// and shows it — `null` when none is, or when the caller does not hold `price_book` read on the
-/// entry's book. Every other answer that carries an entry (POST, PATCH, the stored receipt, the
-/// export, publish-changes) keeps [`PricingPriceBookEntryDto`].
+/// What the two entry reads answer (D-428): the entry's fields, its `usage`, its `current_price`
+/// (D-440): the default chain's approved price in force on the day, as D-434 chooses and shows it
+/// — and its `next_price` (D-472): the default chain's earliest scheduled price, else its newest
+/// draft or pending price (the highest `version_no`, then the latest `created_at`). Each is `null`
+/// when there is none, or when the caller does not hold `price_book` read on the entry's book.
+/// The day is today, or the `as_of` of the book's entries list (D-473).
+/// Every other answer that carries an entry (POST, PATCH, the stored receipt, the export,
+/// publish-changes) keeps [`PricingPriceBookEntryDto`].
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceBookEntryReadDto {
     #[serde(flatten)]
     pub entry: PricingPriceBookEntryDto,
     pub usage: PricingEntryUsage,
     pub current_price: Option<PricingPriceDto>,
+    pub next_price: Option<PricingPriceDto>,
 }
 impl PricingPriceBookEntryReadDto {
     /// # Errors
@@ -192,11 +163,13 @@ impl PricingPriceBookEntryReadDto {
         m: entity::price_book_entry::Model,
         usage: crate::infra::usage::EntryUsage,
         current_price: Option<PricingPriceDto>,
+        next_price: Option<PricingPriceDto>,
     ) -> Result<Self, RepoError> {
         Ok(Self {
             entry: m.try_into()?,
             usage: usage.into(),
             current_price,
+            next_price,
         })
     }
 }
@@ -206,6 +179,13 @@ impl PricingPriceBookEntryReadDto {
 #[toolkit_macros::api_dto(response)]
 pub struct PricingEntryPriceList {
     pub items: Vec<PricingPriceDto>,
+}
+/// The query of `GET /price-books/{id}/entries` (D-473): an optional `as_of`, the day its prices
+/// are judged on.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingEntryListQuery {
+    pub as_of: Option<String>,
 }
 /// The query of `GET /price-book-entries/{id}/prices`: an optional `status`, one display status
 /// or several comma-separated.
@@ -273,10 +253,12 @@ pub struct PricingPriceBookReadDto {
     pub book: PriceBookDto,
     pub stats: PricingPriceBookStats,
 }
-/// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its
-/// book's code, name and currency, its usage (D-428), and the default chain's price in force
-/// today — `null` when none is, or when the caller does not hold `price_book` read (the export's
-/// grant).
+/// One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434, D-486): the entry,
+/// its book's code, name and currency, its usage (D-428), its `status` and `changing` on today,
+/// the default chain's price in force today (`current_price`) and its `next_price` (D-472),
+/// chosen as the entry reads choose it (the highest `version_no` orders the drafts and pending
+/// prices). Each price is `null` when there is none, or when the caller does not hold
+/// `price_book` read (the export's grant). `status` and `changing` are not money.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSkuEntryDto {
     #[serde(flatten)]
@@ -285,18 +267,20 @@ pub struct PricingSkuEntryDto {
     pub book_name: String,
     pub currency: String,
     pub usage: PricingEntryUsage,
+    /// `priced` when an approved price is in force today, else `scheduled` when one starts
+    /// later, else `unpriced` (D-486).
+    pub status: PricingSkuEntryStatus,
+    /// A draft or a pending price exists (D-486).
+    pub changing: bool,
     pub current_price: Option<PricingPriceDto>,
+    pub next_price: Option<PricingPriceDto>,
 }
-/// `GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.
+/// `GET /price-book-entries?sku_id=` (D-486): one page of the SKU's entries.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingSkuEntryList {
     pub items: Vec<PricingSkuEntryDto>,
-}
-/// The query of `GET /price-book-entries`: exactly one `sku_id`.
-#[derive(Default, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PricingSkuEntryQuery {
-    pub sku_id: Option<Uuid>,
+    /// `limit` is the page size. `next_cursor` continues the page.
+    pub page_info: toolkit_odata::PageInfo,
 }
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPriceDto {
@@ -856,8 +840,8 @@ pub struct PricingPlanList {
     pub items: Vec<PricingPlanDto>,
 }
 /// A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum
-/// counts (the current generation's, not stale: the approval library's `approve_eligibility`, the
-/// rule the vote door judges by) and the quorum.
+/// counts (the current generation's, not stale: the approval library's `counted_approvals`, the
+/// count the vote door judges by) and the quorum.
 #[toolkit_macros::api_dto(response)]
 pub struct PricingPlanApprovalProgress {
     pub unit_id: Uuid,
@@ -1207,11 +1191,14 @@ impl From<bss_approval::Decision> for PricingDecisionDto {
         }
     }
 }
-/// An approval unit with its snapshot, decisions and, on the card, the live impact.
+/// An approval unit with its snapshot, decisions and, on the card, the live impact; and whether
+/// its reader may approve it (D-471).
 #[toolkit_macros::api_dto(response)]
 pub struct PricingApprovalUnitDto {
     pub id: Uuid,
-    pub kind: String,
+    /// The unit's kind, one pricing records: a stored unit of another kind is a corrupt row (500),
+    /// never served.
+    pub kind: PricingApprovalKind,
     pub ref_type: String,
     pub ref_id: Uuid,
     pub state: PricingUnitState,
@@ -1231,12 +1218,35 @@ pub struct PricingApprovalUnitDto {
     pub snapshot: serde_json::Value,
     pub decisions: Vec<PricingDecisionDto>,
     pub impact: Option<serde_json::Value>,
+    /// Whether the caller may Approve this unit now (D-471): the approval engine's own rule
+    /// (`bss_approval::approve_eligibility`, D-459) over the unit's stored items and its decisions,
+    /// with the caller as the voter. It is false for a decided unit, for its submitter and every
+    /// author of its items (separation of duties) and for a caller who already voted in its current
+    /// generation. It means Approve only: a reject judges no separation of duties, so the submitter
+    /// and an item's author may reject a unit whose flag is false. The grant is not judged here:
+    /// without `approval_unit` approve the vote door still answers 403.
+    pub caller_can_approve: bool,
 }
-impl From<bss_approval::Unit> for PricingApprovalUnitDto {
-    fn from(u: bss_approval::Unit) -> Self {
-        Self {
+impl PricingApprovalUnitDto {
+    /// The unit as `reader` reads it: its decisions of every generation, and whether `reader` may
+    /// approve it, judged by the engine's own predicate over the `authors` of the unit's stored
+    /// (current generation) items and its `decisions` (D-459, D-471). `impact` is the caller's to
+    /// fill.
+    /// # Errors
+    /// `CorruptRow` for a kind pricing does not record.
+    pub fn of(
+        u: bss_approval::Unit,
+        authors: &[Uuid],
+        decisions: Vec<bss_approval::Decision>,
+        reader: Uuid,
+    ) -> Result<Self, RepoError> {
+        let caller_can_approve =
+            bss_approval::approve_eligibility(&u, authors.iter().copied(), &decisions, reader)
+                .refusal
+                .is_none();
+        Ok(Self {
             id: u.id,
-            kind: u.kind,
+            kind: PricingApprovalKind::stored(&u.kind, &format_args!("approval unit {}", u.id))?,
             ref_type: u.ref_type,
             ref_id: u.ref_id,
             state: u.state.into(),
@@ -1249,10 +1259,35 @@ impl From<bss_approval::Unit> for PricingApprovalUnitDto {
             decided_at: u.decided_at,
             decided_note: u.decided_note,
             snapshot: u.snapshot,
-            decisions: Vec::new(),
+            decisions: decisions.into_iter().map(Into::into).collect(),
             impact: None,
-        }
+            caller_can_approve,
+        })
     }
+}
+/// `GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by
+/// kind, every state and kind named (0 when none), and their total.
+#[toolkit_macros::api_dto(response)]
+pub struct PricingApprovalUnitCounts {
+    pub by_state: PricingApprovalUnitStateCounts,
+    pub by_kind: PricingApprovalUnitKindCounts,
+    pub total: u64,
+}
+/// The units in each state (D-470).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingApprovalUnitStateCounts {
+    pub pending: u64,
+    pub approved: u64,
+    pub rejected: u64,
+    pub withdrawn: u64,
+}
+/// The units of each kind pricing records (D-470).
+#[toolkit_macros::api_dto(response)]
+#[derive(Default)]
+pub struct PricingApprovalUnitKindCounts {
+    pub prices: u64,
+    pub plan_revision: u64,
 }
 /// One page of the unit list (D-458): its units, and the toolkit pager's `page_info`, whose
 /// `next_cursor` continues it.
@@ -1363,4 +1398,19 @@ pub(super) struct PricingApprovalUnitQuery {
     pub limit: Option<u64>,
     /// The opaque continuation of a page's `page_info.next_cursor`.
     pub cursor: Option<String>,
+    /// `submitted_at asc` (the default, D-458) or `submitted_at desc` (D-470); the id breaks a
+    /// tie in the same direction. A cursor carries its order, so a continuation sends none.
+    #[serde(rename = "$orderby")]
+    pub orderby: Option<String>,
+    /// `false` skips the live impact read: every unit answers `impact: null` (D-470).
+    pub impact: Option<bool>,
+}
+/// `GET /approval-units/counts` (D-470): the list's narrowing, and nothing else.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PricingApprovalUnitCountsQuery {
+    pub state: Option<String>,
+    pub kind: Option<String>,
+    pub ref_id: Option<Uuid>,
+    pub book_id: Option<Uuid>,
 }

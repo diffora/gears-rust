@@ -217,7 +217,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.retire_category")
         .summary("Retire an unused category")
         .description(
-            "Retires a category no SKU in draft, published, deprecated or retiring names; retired \
+            "Retires a category no SKU in draft, published or deprecated names; a retire under \
+             review keeps one of those, so it still holds the category (P-D-248). Retired \
              SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the \
              same transaction, with its own version and audit row, and leaves the tenant without \
              a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it \
@@ -311,7 +312,7 @@ async fn create_category(
     if !report.is_empty() {
         return Err(DomainError::Validation(report).into());
     }
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let created = state
         .db
         .db()
@@ -489,7 +490,7 @@ async fn update_category(
     if !r.is_empty() {
         return Err(DomainError::Validation(r).into());
     }
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let updated = state
         .db
         .db()
@@ -566,7 +567,7 @@ async fn retire_category(
         format!("/bss-products/v1/categories/{id}/retire"),
         &serde_json::json!({}),
     )?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let retired = state
         .db
         .db()

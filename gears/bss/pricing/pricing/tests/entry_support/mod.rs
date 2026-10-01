@@ -73,6 +73,19 @@ pub async fn state_on(
     db: toolkit_db::DBProvider<toolkit_db::DbError>,
     registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
 ) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
+    state_with_clock(
+        db,
+        registry,
+        Arc::new(bss_pricing::infra::reference_work::WallClock),
+    )
+    .await
+}
+/// [`state_on`] whose approval doors read `clock`.
+pub async fn state_with_clock(
+    db: toolkit_db::DBProvider<toolkit_db::DbError>,
+    registry: Arc<dyn bss_products_sdk::ReferenceRegistryV1>,
+    clock: Arc<dyn bss_pricing::infra::reference_work::Clock>,
+) -> Arc<bss_pricing::api::rest::authoring::AuthoringState> {
     let hub = Arc::new(toolkit::ClientHub::default());
     hub.register::<bss_products_sdk::PricingReferenceRegistry>(Arc::new(
         bss_products_sdk::PricingReferenceRegistry(registry),
@@ -80,7 +93,8 @@ pub async fn state_on(
     Arc::new(
         bss_pricing::api::rest::authoring::AuthoringState::new(db, hub)
             .await
-            .unwrap(),
+            .unwrap()
+            .with_clock(clock),
     )
 }
 /// The production router over a state, allowing every user of `tenant`.
@@ -650,6 +664,8 @@ impl ReferenceRegistryV1 for Script {
             unit: None,
             // Mode 4 is a fenced SKU: a pending type change refuses every new reference.
             type_change_pending: mode == 4,
+            retire_pending: mode == 22,
+            lifecycle_next: None,
             pending_unit_id: None,
             approved_by_unit_id: None,
             created_by: Uuid::new_v4(),

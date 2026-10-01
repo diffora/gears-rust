@@ -1,6 +1,6 @@
 //! Approval persistence over the gear's real transaction runner.
 use super::driver_failure;
-use crate::domain::approvals::DEFAULT_QUORUM;
+use crate::domain::approvals::{ApprovalKind, DEFAULT_QUORUM};
 use crate::infra::storage::{
     RepoError,
     entity::{approval_decision, approval_policy, approval_unit, approval_unit_item},
@@ -50,7 +50,16 @@ fn decision_key(tenant: Uuid, id: Uuid) -> Condition {
         .add(approval_decision::Column::TenantId.eq(tenant))
         .add(approval_decision::Column::UnitId.eq(id))
 }
+/// A stored unit read back. Its kind is one products records and its state one of the unit's:
+/// a row outside either set is a corrupt row, refused by every reader alike (the list, the card,
+/// the receipts, the votes; the counts judge the same sets).
 fn unit_from_model(m: approval_unit::Model) -> Result<Unit, ApprovalError> {
+    if ApprovalKind::parse(&m.kind).is_none() {
+        return Err(ApprovalError::Store(format!(
+            "approval unit {} has unknown kind {}",
+            m.id, m.kind
+        )));
+    }
     Ok(Unit {
         id: m.id,
         tenant_id: m.tenant_id,
@@ -470,12 +479,30 @@ pub const UNIT_PAGE: LimitCfg = LimitCfg {
     default: 200,
     max: 500,
 };
-/// What the unit list narrows the tenant's units by.
+/// What the unit list narrows the tenant's units by; the counts take the same (P-D-227).
 #[derive(Debug, Clone, Default)]
 pub struct UnitListFilter {
     pub state: Option<UnitState>,
-    pub kind: Option<String>,
+    /// A kind products records: the door refuses any other before it builds the filter.
+    pub kind: Option<ApprovalKind>,
     pub ref_id: Option<Uuid>,
+}
+impl UnitListFilter {
+    /// The tenant's units this narrowing keeps: the one condition the list's page and the counts
+    /// read by, so the two cannot count different sets (P-D-227).
+    fn condition(&self, tenant_id: Uuid) -> Condition {
+        let mut c = Condition::all().add(approval_unit::Column::TenantId.eq(tenant_id));
+        if let Some(s) = self.state {
+            c = c.add(approval_unit::Column::State.eq(s.as_str()));
+        }
+        if let Some(k) = self.kind {
+            c = c.add(approval_unit::Column::Kind.eq(k.as_str()));
+        }
+        if let Some(id) = self.ref_id {
+            c = c.add(approval_unit::Column::RefId.eq(id));
+        }
+        c
+    }
 }
 /// A unit list read refused or failed.
 #[derive(Debug)]
@@ -485,9 +512,10 @@ pub enum UnitListError {
     /// Storage; a driver failure keeps its message for the retry classifier.
     Repo(RepoError),
 }
-/// One page of the tenant's units under `scope`, narrowed by `filter`, in submission order with
-/// the id breaking a tie (P-D-224): `limit` defaults to 200 and is clamped at 500, and the query's
-/// cursor continues it. ONE statement.
+/// One page of the tenant's units under `scope`, narrowed by `filter`, in submission order
+/// (`direction`: ascending by default, P-D-224, or descending, P-D-227) with the id breaking a tie
+/// in the same direction: `limit` defaults to 200 and is clamped at 500, and the query's cursor
+/// continues it in the order it carries (`direction` is then not read). ONE statement.
 /// # Errors
 /// [`UnitListError::Query`] for a cursor the pager refuses; [`UnitListError::Repo`] for storage
 /// and a stored row outside its closed sets.
@@ -497,28 +525,24 @@ pub async fn page_units(
     tenant_id: Uuid,
     filter: &UnitListFilter,
     query: &ODataQuery,
+    direction: SortDir,
 ) -> Result<Page<Unit>, UnitListError> {
     let mut query = query.clone();
     if query.cursor.is_none() {
-        query.order = ODataOrderBy(vec![OrderKey {
-            field: UnitListField::SubmittedAt.name().to_owned(),
-            dir: SortDir::Asc,
-        }]);
-    }
-    let mut c = Condition::all().add(approval_unit::Column::TenantId.eq(tenant_id));
-    if let Some(s) = filter.state {
-        c = c.add(approval_unit::Column::State.eq(s.as_str()));
-    }
-    if let Some(k) = &filter.kind {
-        c = c.add(approval_unit::Column::Kind.eq(k.as_str()));
-    }
-    if let Some(id) = filter.ref_id {
-        c = c.add(approval_unit::Column::RefId.eq(id));
+        query.order = ODataOrderBy(
+            [UnitListField::SubmittedAt, UnitListField::Id]
+                .into_iter()
+                .map(|field| OrderKey {
+                    field: field.name().to_owned(),
+                    dir: direction,
+                })
+                .collect(),
+        );
     }
     let select = approval_unit::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(c);
+        .filter(filter.condition(tenant_id));
     paginate_odata_try::<
         UnitListField,
         UnitListMapping,
@@ -531,7 +555,7 @@ pub async fn page_units(
         select,
         runner,
         &query,
-        (UnitListField::Id.name(), SortDir::Asc),
+        (UnitListField::Id.name(), direction),
         UNIT_PAGE,
         |m| unit_from_model(m).map_err(|e| RepoError::CorruptRow(e.to_string())),
     )
@@ -548,6 +572,110 @@ pub async fn page_units(
         PaginateOdataTryError::OData(other) => UnitListError::Query(other),
         PaginateOdataTryError::MapError(e) => UnitListError::Repo(e),
     })
+}
+/// One stored row of [`count_units`]: the units of one state and one kind.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct StateKindCount {
+    state: String,
+    kind: String,
+    n: i64,
+}
+/// The units of one state and one kind, as [`count_units`] answers them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitCount {
+    pub state: UnitState,
+    pub kind: ApprovalKind,
+    pub units: u64,
+}
+/// The tenant's units under `scope` that `filter` keeps, counted by state and kind in ONE grouped
+/// statement whatever their number (P-D-227): one row per pair that has a unit, its state and its
+/// kind read through their closed sets, as every unit read reads them.
+/// # Errors
+/// Returns typed database failures; a stored state or kind outside its closed set, or a negative
+/// count, is a corrupt row.
+pub async fn count_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    filter: &UnitListFilter,
+) -> Result<Vec<UnitCount>, RepoError> {
+    use sea_orm::QuerySelect;
+    approval_unit::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter.condition(tenant_id))
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(approval_unit::Column::State)
+                .column(approval_unit::Column::Kind)
+                .column_as(Expr::col(approval_unit::Column::Id).count(), "n")
+                .group_by(approval_unit::Column::State)
+                .group_by(approval_unit::Column::Kind)
+                .into_model::<StateKindCount>()
+        })
+        .await
+        .map_err(|e| driver_failure("count units".into(), e))?
+        .into_iter()
+        .map(|row| {
+            let state = UnitState::parse(&row.state).ok_or_else(|| {
+                RepoError::CorruptRow(format!("approval unit state {}", row.state))
+            })?;
+            let kind = ApprovalKind::parse(&row.kind).ok_or_else(|| {
+                RepoError::CorruptRow(format!("approval units of unknown kind {}", row.kind))
+            })?;
+            let units = u64::try_from(row.n)
+                .map_err(|_| RepoError::CorruptRow(format!("approval unit count {}", row.n)))?;
+            Ok(UnitCount { state, kind, units })
+        })
+        .collect()
+}
+/// One row of [`item_authors_of_units`]: an item's unit and its author.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct ItemAuthor {
+    unit_id: Uuid,
+    created_by: Uuid,
+}
+/// The authors of the items of every unit among `units`, each unit's in [`Store::items`]' order,
+/// in ONE statement whatever their number (P-D-228, the twin of pricing's), reading only each
+/// item's unit and author: what whether a reader may approve a unit judges, never the items'
+/// content (the phase 9 review's R73, R74). An empty list reads nothing, as
+/// [`decisions_of_units`].
+/// # Errors
+/// Returns typed database failures.
+pub async fn item_authors_of_units(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    units: &[Uuid],
+) -> Result<BTreeMap<Uuid, Vec<Uuid>>, RepoError> {
+    use sea_orm::QuerySelect;
+    let mut grouped: BTreeMap<Uuid, Vec<Uuid>> = BTreeMap::new();
+    if units.is_empty() {
+        return Ok(grouped);
+    }
+    for row in approval_unit_item::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_unit_item::Column::TenantId.eq(tenant_id))
+                .add(approval_unit_item::Column::UnitId.is_in(units.iter().copied())),
+        )
+        .order_by(approval_unit_item::Column::UnitId, Order::Asc)
+        .order_by(approval_unit_item::Column::ItemType, Order::Asc)
+        .order_by(approval_unit_item::Column::ItemId, Order::Asc)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(approval_unit_item::Column::UnitId)
+                .column(approval_unit_item::Column::CreatedBy)
+                .into_model::<ItemAuthor>()
+        })
+        .await
+        .map_err(|e| driver_failure("read the item authors of units".into(), e))?
+    {
+        grouped.entry(row.unit_id).or_default().push(row.created_by);
+    }
+    Ok(grouped)
 }
 /// The decisions of every unit among `units`, each unit's by generation, instant and actor as
 /// [`Store::decisions`] reads them, in ONE statement whatever their number (P-D-224).

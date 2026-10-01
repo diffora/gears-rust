@@ -176,7 +176,7 @@ pub async fn claim(
     key: &str,
     digest: &[u8],
 ) -> Result<Option<Response>, DoorError> {
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let scope = AccessScope::for_tenant(tenant);
     let claim = repo::idempotency_repo::claim_idempotency_key(
         tx,
@@ -659,7 +659,7 @@ pub async fn audit(
             subject_kind: "pricing".into(),
             reason: None,
             correlation_id: Some(correlation.to_string()),
-            written_at: time::OffsetDateTime::now_utc(),
+            written_at: crate::infra::storage::stored_now(),
         },
         id,
         Some(version),

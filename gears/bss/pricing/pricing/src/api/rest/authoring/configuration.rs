@@ -113,7 +113,7 @@ pub async fn put_settings(
         validate_template(template).map_err(|e| invalid("invoice_line_templates", e.code))?;
     }
     validate_currencies(&body.currencies)?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let m = settings::Model {
         tenant_id: tenant,
         default_timing: body.default_timing,

@@ -23,6 +23,12 @@ force has its own path (P-D-214), and a category reads alone with its SKU count 
 says where a SKU is priced and sold (D-434), a kind's quorum override is reset in both gears
 (D-435, P-D-216), dimension values are edited one at a time with their use (D-436), and the
 settings offer currencies and say who wrote them, with five rounding modes (D-437, D-438).
+
+Phase 9: a plan item is a SKU and its entry (D-467) and a new plan's code is upper case (D-468); the
+plans list names each plan's current revision and the one in effect (D-460); a plan submit and a
+publish-changes carry a note (D-464); both gears count their approval units and page them newest
+first (D-470, P-D-227), and a unit says whether its reader may approve it (D-471, P-D-228); an
+entry names its next price (D-472), and a book's entries list reads its prices on a date (D-473).
 """
 
 import datetime
@@ -303,6 +309,34 @@ def _binding(resolved: dict) -> dict:
     return chain["binding"]
 
 
+def _unit(client, gear: str, unit: str) -> dict:
+    """One approval unit's card, as ``client`` reads it."""
+    r = client.get(f"{gear}/approval-units/{unit}")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _plan_row(api, sku: str) -> dict:
+    """The one plan selling ``sku``, as ``GET /plans`` lists it."""
+    r = api.get(f"{PRICING}/plans", params={"sku_id": sku})
+    assert r.status_code == 200, r.text
+    [row] = r.json()["items"]
+    return row
+
+
+def _current(revision: str, rev_no: int, state: str, skus: list[str], author: str) -> dict:
+    """A plan's ``current`` revision (D-460): the draft or pending one, else the scheduled one,
+    else the published one in effect; its items' SKUs in ascending order."""
+    return {
+        "revision_id": revision,
+        "rev_no": rev_no,
+        "state": state,
+        "item_count": len(skus),
+        "sku_ids": sorted(skus),
+        "created_by": author,
+    }
+
+
 @pytest.mark.timeout(120)
 def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, reviewer):
     """Spec §8's worked example across the two gears, then the revision's life.
@@ -321,6 +355,11 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
     and approved, and counts the plan once while its draft, published and copied revisions name
     the entry (the superseded rev 1 is history); the clone is a second plan. The SKU card and
     the SKU list carry the same counts through the port pricing fills (P-D-197).
+
+    Phase 9: the price unit says that its submitter may not approve it and a fresh reviewer may,
+    and no one once it is decided (D-471); the plan read, ``GET /plans`` and the create and clone
+    answers name the current revision and the one in effect (D-460); rev 1's submit carries a
+    note onto its unit, and rev 2's, sent without a body, none (D-464).
     """
     run = uuid.uuid4().hex[:8]
     before, _ = _policy(api)
@@ -395,6 +434,11 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.json()["applied"] is False, r.text
         unit = r.json()["unit"]["id"]
         assert _usage(api, entry) == _entry_usage(pending=1)
+        # D-471: the submitter may not approve its own unit, on the receipt and on the card; a
+        # fresh reviewer may.
+        assert r.json()["unit"]["caller_can_approve"] is False, r.text
+        assert _unit(api, PRICING, unit)["caller_can_approve"] is False
+        assert _unit(reviewer, PRICING, unit)["caller_can_approve"] is True
 
         # A plan on the book, sold from the price's start, with the entry as a paid item: red.
         r = api.post(
@@ -405,6 +449,11 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.status_code == 201, r.text
         plan = r.json()["id"]
         rev1 = r.json()["revisions"][0]["id"]
+        # D-460: the create answers its empty draft as the plan's current revision, and no
+        # revision is in effect yet.
+        author = r.json()["created_by"]
+        assert r.json()["current"] == _current(rev1, 1, "draft", [], author), r.text
+        assert r.json()["in_effect"] is None, r.text
         r = api.get(f"{PRICING}/plan-revisions/{rev1}")
         assert r.status_code == 200, r.text
         r = api.patch(
@@ -422,6 +471,11 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert r.json()["reference_state"] == "confirmed", r.text
         # D-467: a plan item is a SKU and its entry; the item answer carries no treatment.
         assert "treatment" not in r.json(), r.text
+        # D-460: GET /plans names the draft as current, with its item's SKU.
+        row = _plan_row(api, sku)
+        assert row["id"] == plan, row
+        assert row["current"] == _current(rev1, 1, "draft", [sku], author), row
+        assert row["in_effect"] is None, row
         # A draft revision naming the entry counts its plan.
         assert _usage(api, entry) == _entry_usage(pending=1, plans=1)
         checks = _checks(api, rev1)
@@ -439,19 +493,39 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         )
         assert r.status_code == 200, r.text
         assert r.json()["outcome"] == "applied", r.text
+        # A decided unit is no one's to approve (D-471).
+        assert r.json()["unit"]["caller_can_approve"] is False, r.text
+        assert _unit(reviewer, PRICING, unit)["caller_can_approve"] is False
         checks = _checks(api, rev1)
         assert checks["ready"] is True, checks
         assert _check(checks, "ITEM_UNCOVERED")["blocked_by"] == [], checks
         assert _usage(api, entry) == _entry_usage(active=1, plans=1)
 
-        # Quorum 0 for plan_revision: the submit publishes rev 1 at once.
-        r = api.post(f"{PRICING}/plan-revisions/{rev1}/submit", json={}, headers=_key())
+        # Quorum 0 for plan_revision: the submit publishes rev 1 at once. It carries the
+        # submitter's note onto its unit (D-464).
+        note = f"First sale of plan {run}: one monthly SKU"
+        r = api.post(
+            f"{PRICING}/plan-revisions/{rev1}/submit", json={"note": note}, headers=_key()
+        )
         assert r.status_code == 201, r.text
         assert r.json()["applied"] is True, r.text
         assert r.json()["revision"]["state"] == "published", r.text
+        assert r.json()["unit"]["submit_note"] == note, r.text
+        assert _unit(api, PRICING, r.json()["unit"]["id"])["submit_note"] == note
         r = api.get(f"{PRICING}/plans/{plan}")
         assert r.status_code == 200, r.text
         assert r.json()["published_rev"] == 1, r.text
+        # D-460: the published rev 1 is current and in effect, on the read and on the list.
+        published = _current(rev1, 1, "published", [sku], author)
+        assert (r.json()["current"], r.json()["in_effect"]) == (
+            published,
+            {"revision_id": rev1, "rev_no": 1},
+        ), r.text
+        row = _plan_row(api, sku)
+        assert (row["current"], row["in_effect"]) == (
+            r.json()["current"],
+            r.json()["in_effect"],
+        ), row
 
         # The read contract: a signup on the sale date binds the approved price.
         resolved = _resolve(api, rev1, start)
@@ -504,12 +578,22 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         ], copied
         # The published rev 1 and its draft copy name the entry: one plan.
         assert _usage(api, entry) == _entry_usage(active=1, plans=1)
-        r = api.post(f"{PRICING}/plan-revisions/{rev2}/submit", json={}, headers=_key())
+        # D-460: the draft copy is current; rev 1 is still the one in effect.
+        row = _plan_row(api, sku)
+        assert row["current"] == _current(rev2, 2, "draft", [sku], author), row
+        assert row["in_effect"] == {"revision_id": rev1, "rev_no": 1}, row
+        # A submit without a body carries no note (D-464).
+        r = api.post(f"{PRICING}/plan-revisions/{rev2}/submit", headers=_key())
         assert r.status_code == 201, r.text
         assert r.json()["revision"]["state"] == "published", r.text
+        assert r.json()["unit"]["submit_note"] is None, r.text
         assert _revision(api, rev1)["state"] == "superseded"
         r = api.get(f"{PRICING}/plans/{plan}")
         assert r.json()["published_rev"] == 2, r.text
+        assert (r.json()["current"], r.json()["in_effect"]) == (
+            _current(rev2, 2, "published", [sku], author),
+            {"revision_id": rev2, "rev_no": 2},
+        ), r.text
         # Rev 1 superseded is history; rev 2 published still names the entry: still one plan.
         assert _usage(api, entry) == _entry_usage(active=1, plans=1)
 
@@ -531,6 +615,11 @@ def test_a_plan_blocked_by_a_pending_price_publishes_copies_and_clones(api, revi
         assert clone["id"] != plan, clone
         assert clone["published_rev"] is None, clone
         assert [x["state"] for x in clone["revisions"]] == ["draft"], clone
+        # D-460: the clone answers its new draft, with the items it copied, and nothing in effect.
+        assert clone["current"] == _current(
+            clone["revisions"][0]["id"], 1, "draft", [sku], author
+        ), clone
+        assert clone["in_effect"] is None, clone
         draft = _revision(api, clone["revisions"][0]["id"])
         assert draft["book_id"] == book, draft
         assert [i["sku_id"] for i in draft["items"]] == [sku], draft
@@ -667,7 +756,6 @@ def test_a_sku_without_a_category_is_priced_in_two_models_and_its_reads_carry_it
             "draft": 0,
             "published": 1,
             "deprecated": 0,
-            "retiring": 0,
             "retired": 0,
             "in_review": 0,
         }, r.text
@@ -1209,3 +1297,319 @@ def test_where_a_sku_is_priced_and_sold_and_the_settings_offer_currencies(api):
         restored = {**_settings_body(settings_before), "currencies": settings_before["currencies"]}
         r = api.put(f"{PRICING}/settings", json=restored, headers={"If-Match": tag})
         assert r.status_code == 200, r.text
+
+
+def _counts(api, gear: str, **narrowing: str) -> dict:
+    r = api.get(f"{gear}/approval-units/counts", params=narrowing)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _unit_ids(client, gear: str, **params) -> list[str]:
+    r = client.get(f"{gear}/approval-units", params=params)
+    assert r.status_code == 200, r.text
+    return [u["id"] for u in r.json()["items"]]
+
+
+def _newest_first_by_pages(client, gear: str, **narrowing: str) -> list[str]:
+    """The narrowed list, newest first, one unit per page: the cursor carries its order."""
+    r = client.get(
+        f"{gear}/approval-units",
+        params={**narrowing, "$orderby": "submitted_at desc", "limit": 1},
+    )
+    assert r.status_code == 200, r.text
+    walked = [u["id"] for u in r.json()["items"]]
+    cursor = r.json()["page_info"]["next_cursor"]
+    while cursor is not None:
+        r = client.get(f"{gear}/approval-units", params={**narrowing, "cursor": cursor})
+        assert r.status_code == 200, r.text
+        walked.extend(u["id"] for u in r.json()["items"])
+        cursor = r.json()["page_info"]["next_cursor"]
+    return walked
+
+
+def _headline(entry: dict) -> tuple:
+    """An entry read's price in force and next price (D-472): (id, status) or None each."""
+    return tuple(
+        None if p is None else (p["id"], p["status"])
+        for p in (entry["current_price"], entry["next_price"])
+    )
+
+
+def _entry_reads(api, book: str, sku: str, entry: str, as_of: str | None = None) -> dict:
+    """The entry as the book's list reads it on ``as_of`` (D-473). Without a date the single
+    read and the SKU's entry list, both dated today, answer the same prices (D-472)."""
+    params = {} if as_of is None else {"as_of": as_of}
+    r = api.get(f"{PRICING}/price-books/{book}/entries", params=params)
+    assert r.status_code == 200, r.text
+    [listed] = r.json()["items"]
+    assert listed["id"] == entry, r.text
+    if as_of is None:
+        r = api.get(f"{PRICING}/price-book-entries/{entry}")
+        assert r.status_code == 200, r.text
+        assert _headline(r.json()) == _headline(listed), r.text
+        r = api.get(f"{PRICING}/price-book-entries", params={"sku_id": sku})
+        assert r.status_code == 200, r.text
+        [row] = r.json()["items"]
+        assert _headline(row) == _headline(listed), r.text
+    return listed
+
+
+@pytest.mark.timeout(120)
+def test_an_entry_names_its_next_price_and_its_book_reads_its_prices_on_a_date(api, reviewer):
+    """D-470, D-472, D-473 and D-464 on the real binary, on one entry of one EUR book.
+
+    A price from today waits in a ``prices`` unit (quorum 1): the entry has no price in force,
+    and its next price is the pending one. The reviewer approves it, and a second price, from
+    today + 30, is first the next draft, then the next pending price once publish-changes puts it
+    into a second unit with the submitter's note. The book's units are counted by state and kind
+    and page newest first, also one per page through the cursor; the counts take nothing but the
+    narrowing. Once the reviewer approves the second unit, the entry names the scheduled successor
+    as its next price on all three entry reads. The book's entries list read on a date answers the
+    prices of that day: before both prices, and on the successor's start. A query key it does not
+    know and a date that does not read are refused. The pricing policy is restored at the end.
+    """
+    run = uuid.uuid4().hex[:8]
+    before, _ = _policy(api)
+    found = {
+        kind: before["overrides"].get(kind, before["default_quorum"])
+        for kind in ("prices", "plan_revision")
+    }
+    try:
+        # Products: a published recurring SKU. Pricing: a EUR book with its monthly entry.
+        _products_quorum_zero(api)
+        r = api.post(
+            f"{PRODUCTS}/skus",
+            json={"code": f"E2E-NEXT-{run}", "name": f"E2E next price {run}", "type": "recurring"},
+        )
+        assert r.status_code == 201, r.text
+        sku = r.json()["id"]
+        r = api.post(f"{PRODUCTS}/skus/{sku}/submit", json={})
+        assert r.status_code == 200, r.text
+        assert r.json()["applied"] is True, r.text
+        book = _book(api, "EUR", run)
+        r = _monthly_entry(api, book, sku, "flat")
+        assert r.status_code == 201, r.text
+        entry = r.json()
+        assert _headline(_entry_reads(api, book, sku, entry["id"])) == (None, None)
+
+        # A price from today, submitted into a unit that waits for one reviewer: it is next.
+        _set_quorum(api, "prices", 1)
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        r = api.post(
+            f"{PRICING}/price-book-entries/{entry['id']}/prices",
+            json={
+                "price": {"amount": "30.00"},
+                "eligibility": "all",
+                "effective_from": today.isoformat(),
+            },
+            headers=_key(),
+        )
+        assert r.status_code == 201, r.text
+        first = r.json()["items"][0]["id"]
+        r = api.post(f"{PRICING}/prices/{first}/submit", json={}, headers=_key())
+        assert r.status_code == 201, r.text
+        assert r.json()["applied"] is False, r.text
+        unit1 = r.json()["unit"]["id"]
+        assert _headline(_entry_reads(api, book, sku, entry["id"])) == (
+            None,
+            (first, "pending"),
+        )
+        r = reviewer.post(
+            f"{PRICING}/approval-units/{unit1}/approve", json={"generation": 1}, headers=_key()
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["outcome"] == "applied", r.text
+        assert _headline(_entry_reads(api, book, sku, entry["id"])) == ((first, "active"), None)
+
+        # Its successor from today + 30: the next draft, then the next pending price, submitted
+        # by publish-changes with a note for the approver (D-464).
+        later = (today + datetime.timedelta(days=30)).isoformat()
+        r = api.post(
+            f"{PRICING}/price-book-entries/{entry['id']}/prices",
+            json={"price": {"amount": "35.00"}, "eligibility": "all", "effective_from": later},
+            headers=_key(),
+        )
+        assert r.status_code == 201, r.text
+        second = r.json()["items"][0]["id"]
+        assert _headline(_entry_reads(api, book, sku, entry["id"])) == (
+            (first, "active"),
+            (second, "draft"),
+        )
+        note = f"Next year's price for {run}"
+        r = api.post(
+            f"{PRICING}/price-books/{book}/publish-changes", json={"note": note}, headers=_key()
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["applied"] is False, r.text
+        unit2 = r.json()["unit"]["id"]
+        assert r.json()["unit"]["submit_note"] == note, r.text
+        assert _unit(reviewer, PRICING, unit2)["submit_note"] == note
+        assert _headline(_entry_reads(api, book, sku, entry["id"])) == (
+            (first, "active"),
+            (second, "pending"),
+        )
+
+        # D-470: the book's units counted by state and kind, and paged newest first.
+        assert _counts(api, PRICING, book_id=book) == {
+            "by_state": {"pending": 1, "approved": 1, "rejected": 0, "withdrawn": 0},
+            "by_kind": {"prices": 2, "plan_revision": 0},
+            "total": 2,
+        }
+        assert _counts(api, PRICING, book_id=book, state="pending")["total"] == 1
+        assert _counts(api, PRICING, ref_id=book, kind="plan_revision")["total"] == 0
+        r = api.get(f"{PRICING}/approval-units/counts", params={"book_id": book, "limit": 1})
+        assert r.status_code == 400, r.text
+        assert "QUERY_INVALID" in r.text, r.text
+        assert _unit_ids(api, PRICING, book_id=book) == [unit1, unit2]
+        assert _unit_ids(api, PRICING, book_id=book, **{"$orderby": "submitted_at desc"}) == [
+            unit2,
+            unit1,
+        ]
+        assert _newest_first_by_pages(api, PRICING, book_id=book) == [unit2, unit1]
+        r = api.get(
+            f"{PRICING}/approval-units",
+            params={"book_id": book, "$orderby": "submitted_at desc", "impact": "false"},
+        )
+        assert r.status_code == 200, r.text
+        assert [(u["id"], u["impact"]) for u in r.json()["items"]] == [
+            (unit2, None),
+            (unit1, None),
+        ], r.text
+        r = api.get(
+            f"{PRICING}/approval-units", params={"book_id": book, "$orderby": "state desc"}
+        )
+        assert r.status_code == 400, r.text
+
+        # The reviewer approves it: the successor is scheduled, and it is the next price.
+        r = reviewer.post(
+            f"{PRICING}/approval-units/{unit2}/approve", json={"generation": 1}, headers=_key()
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["outcome"] == "applied", r.text
+        assert _counts(api, PRICING, book_id=book)["by_state"]["approved"] == 2
+        listed = _entry_reads(api, book, sku, entry["id"])
+        assert _headline(listed) == ((first, "active"), (second, "scheduled")), listed
+        assert listed["next_price"]["effective_from"] == later, listed
+        assert listed["usage"] == _entry_usage(scheduled=1, active=1), listed
+
+        # D-473: the list on a date. Today's date is the default; before both prices nothing is
+        # in force and the first is next; on the successor's start it is in force.
+        assert _entry_reads(api, book, sku, entry["id"], today.isoformat()) == listed
+        yesterday = (today - datetime.timedelta(days=1)).isoformat()
+        dated = _entry_reads(api, book, sku, entry["id"], yesterday)
+        assert _headline(dated) == (None, (first, "scheduled")), dated
+        assert dated["usage"] == _entry_usage(scheduled=2), dated
+        dated = _entry_reads(api, book, sku, entry["id"], later)
+        assert _headline(dated) == ((second, "active"), None), dated
+        assert dated["usage"] == _entry_usage(active=1, superseded=1), dated
+        for params, refusal in (
+            ({"asof": later}, "QUERY_INVALID"),
+            ({"as_of": "2026-02-30"}, "DATE_INVALID"),
+        ):
+            r = api.get(f"{PRICING}/price-books/{book}/entries", params=params)
+            assert r.status_code == 400, r.text
+            assert refusal in r.text, r.text
+    finally:
+        for kind, quorum in found.items():
+            _set_quorum(api, kind, quorum)
+
+
+@pytest.mark.timeout(60)
+def test_the_products_units_count_page_newest_first_and_say_who_may_approve(api, reviewer):
+    """P-D-227 and P-D-228 on the real binary, on one SKU's two units.
+
+    A SKU publishes at quorum 0; its retire waits for one reviewer (a ``sku_retire`` override of
+    1) and carries the submitter's note. The SKU's units are counted by state and kind and page
+    newest first, also one per page through the cursor; the counts take nothing but the
+    narrowing. The submitter, who also created the SKU, may not approve the retire, on the receipt
+    and on the card; a fresh reviewer may, on the card and in the list, and the decided publish is
+    no one's to approve. The reviewer's approve applies the retire. The override is reset.
+    """
+    run = uuid.uuid4().hex[:8]
+    _products_quorum_zero(api)
+    try:
+        r = api.post(
+            f"{PRODUCTS}/skus",
+            json={"code": f"E2E-UNITS-{run}", "name": f"E2E units {run}", "type": "recurring"},
+        )
+        assert r.status_code == 201, r.text
+        sku = r.json()["id"]
+        r = api.post(f"{PRODUCTS}/skus/{sku}/submit", json={})
+        assert r.status_code == 200, r.text
+        assert r.json()["applied"] is True, r.text
+        published = r.json()["unit"]["id"]
+        assert r.json()["unit"]["caller_can_approve"] is False, r.text
+
+        # The retire waits for one reviewer.
+        r = api.get(f"{PRODUCTS}/approval-policy")
+        assert r.status_code == 200, r.text
+        r = api.put(
+            f"{PRODUCTS}/approval-policy",
+            json={"kind": "sku_retire", "quorum": 1},
+            headers={"If-Match": r.headers["etag"]},
+        )
+        assert r.status_code == 200, r.text
+        note = f"Retire {run}: replaced"
+        r = api.post(f"{PRODUCTS}/skus/{sku}/retire", json={"note": note})
+        assert r.status_code == 200, r.text
+        assert r.json()["applied"] is False, r.text
+        retire = r.json()["unit"]
+        assert (retire["kind"], retire["state"], retire["submit_note"]) == (
+            "sku_retire",
+            "pending",
+            note,
+        ), retire
+        # P-D-228: the submitter may not approve it; a fresh reviewer may.
+        assert retire["caller_can_approve"] is False, retire
+        assert _unit(api, PRODUCTS, retire["id"])["caller_can_approve"] is False
+        assert _unit(reviewer, PRODUCTS, retire["id"])["caller_can_approve"] is True
+        r = reviewer.get(f"{PRODUCTS}/approval-units", params={"ref_id": sku})
+        assert r.status_code == 200, r.text
+        assert [(u["id"], u["caller_can_approve"]) for u in r.json()["items"]] == [
+            (published, False),
+            (retire["id"], True),
+        ], r.text
+
+        # P-D-227: the SKU's units counted by state and kind, and paged newest first.
+        assert _counts(api, PRODUCTS, ref_id=sku) == {
+            "by_state": {"pending": 1, "approved": 1, "rejected": 0, "withdrawn": 0},
+            "by_kind": {"sku_publish": 1, "sku_change": 0, "sku_retire": 1},
+            "total": 2,
+        }
+        assert _counts(api, PRODUCTS, ref_id=sku, state="pending")["total"] == 1
+        assert _counts(api, PRODUCTS, ref_id=sku, kind="sku_change")["total"] == 0
+        r = api.get(
+            f"{PRODUCTS}/approval-units/counts",
+            params={"ref_id": sku, "$orderby": "submitted_at desc"},
+        )
+        assert r.status_code == 400, r.text
+        assert _unit_ids(api, PRODUCTS, ref_id=sku) == [published, retire["id"]]
+        assert _unit_ids(api, PRODUCTS, ref_id=sku, **{"$orderby": "submitted_at desc"}) == [
+            retire["id"],
+            published,
+        ]
+        assert _newest_first_by_pages(api, PRODUCTS, ref_id=sku) == [retire["id"], published]
+        r = api.get(
+            f"{PRODUCTS}/approval-units", params={"ref_id": sku, "$orderby": "kind desc"}
+        )
+        assert r.status_code == 400, r.text
+
+        # The reviewer's approve applies the retire; the decided unit is no one's to approve.
+        r = reviewer.post(
+            f"{PRODUCTS}/approval-units/{retire['id']}/approve", json={"generation": 1}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["outcome"] == "applied", r.text
+        assert r.json()["unit"]["caller_can_approve"] is False, r.text
+        assert _unit(reviewer, PRODUCTS, retire["id"])["caller_can_approve"] is False
+        r = api.get(f"{PRODUCTS}/skus/{sku}")
+        assert r.status_code == 200, r.text
+        assert r.json()["sku"]["lifecycle"] == "retired", r.text
+    finally:
+        r = api.get(f"{PRODUCTS}/approval-policy")
+        assert r.status_code == 200, r.text
+        r = api.delete(
+            f"{PRODUCTS}/approval-policy/sku_retire", headers={"If-Match": r.headers["etag"]}
+        )
+        assert r.status_code in (200, 404), r.text

@@ -100,6 +100,8 @@ fn sku(n: u128, name: &str, code: &str, kind: SkuType, usage_type: Option<&str>)
         usage_type_ref: usage_type.map(str::to_owned),
         unit: usage_type.map(|_| "GB-month".to_owned()),
         type_change_pending: false,
+        retire_pending: false,
+        lifecycle_next: None,
         pending_unit_id: None,
         approved_by_unit_id: None,
         created_by: id(0),
@@ -1002,7 +1004,7 @@ fn item_sku_deprecated_may_only_be_carried_over_within_the_same_plan() {
 
 #[test]
 fn item_sku_unavailable_is_a_draft_retiring_retired_or_unknown_sku() {
-    for lifecycle in [Lifecycle::Draft, Lifecycle::Retiring, Lifecycle::Retired] {
+    for lifecycle in [Lifecycle::Draft, Lifecycle::Retired] {
         let mut c = pro();
         c.skus
             .iter_mut()
@@ -1015,6 +1017,15 @@ fn item_sku_unavailable_is_a_draft_retiring_retired_or_unknown_sku() {
     unknown.skus.retain(|s| s.id != id(STORAGE));
     assert!(red(&unknown, "ITEM_SKU_UNAVAILABLE"));
     assert!(green(&pro(), "ITEM_SKU_UNAVAILABLE"));
+}
+
+#[test]
+fn a_retire_pending_sku_is_unavailable() {
+    let mut c = pro();
+    let sku = c.skus.iter_mut().find(|s| s.id == id(STORAGE)).unwrap();
+    sku.lifecycle = Lifecycle::Published;
+    sku.retire_pending = true;
+    assert!(red(&c, "ITEM_SKU_UNAVAILABLE"));
 }
 
 #[test]

@@ -574,7 +574,8 @@ async fn references_block_both_fences_and_release_is_a_tombstone() {
     else {
         unreachable!()
     };
-    assert_eq!(fenced.lifecycle, Lifecycle::Retiring);
+    assert_eq!(fenced.lifecycle, Lifecycle::Published);
+    assert!(fenced.retire_pending);
     assert!(matches!(
         unfence_sku(&conn, &scope, tenant, s.id, Some(uuid::Uuid::new_v4()))
             .await
@@ -717,7 +718,7 @@ async fn type_fence_and_retire_completion_clear_only_the_matching_ownership() {
     };
     assert_eq!(f.lifecycle, Lifecycle::Retired);
     assert_eq!(f.approved_by_unit_id, Some(unit));
-    assert_eq!(crate::test_support::raw_i64(&dsn,"SELECT COUNT(*) AS v FROM products_sku WHERE fenced_at IS NOT NULL OR fence_op_id IS NOT NULL OR fence_prior_lifecycle IS NOT NULL").await,0);
+    assert_eq!(crate::test_support::raw_i64(&dsn,"SELECT COUNT(*) AS v FROM products_sku WHERE fenced_at IS NOT NULL OR fence_op_id IS NOT NULL OR retire_pending != 0").await,0);
 }
 
 #[tokio::test]
@@ -916,4 +917,123 @@ async fn stored_content_fixtures_keep_reading() {
     assert_eq!(read[1].unit, None);
     assert_eq!(read[1].billing_timing, None);
     assert_eq!(read[2], read[1]);
+}
+
+/// A deprecation dated ahead stays published and serves `lifecycle_next`. Once the date has
+/// passed, a read serves `deprecated` and leaves the stored lifecycle alone; the next head write
+/// folds it first, so `set_lifecycle` sees the lifecycle in force (P-D-249).
+#[tokio::test]
+async fn a_dated_lifecycle_change_waits_for_its_date() {
+    let (db, scope, tenant, dsn) = test_db().await;
+    let conn = db.conn().unwrap();
+    let cat = insert_category(
+        &conn,
+        &scope,
+        tenant,
+        NewCategory {
+            code: "hosting".into(),
+            name: "Hosting".into(),
+            is_default: true,
+            sort_order: 0,
+        },
+        now(),
+    )
+    .await
+    .unwrap();
+    let s = insert_sku(
+        &conn,
+        &scope,
+        tenant,
+        new_sku("DATED", "Dated", cat.id),
+        tenant,
+        now(),
+    )
+    .await
+    .unwrap();
+    set_lifecycle(
+        &conn,
+        &scope,
+        tenant,
+        s.id,
+        &[Lifecycle::Draft],
+        Lifecycle::Published,
+        now(),
+    )
+    .await
+    .unwrap();
+    let ahead = now().date().checked_add(time::Duration::days(30)).unwrap();
+    let HeadWrite::Written(waiting) = set_lifecycle_next(
+        &conn,
+        &scope,
+        tenant,
+        s.id,
+        &[Lifecycle::Published],
+        Lifecycle::Deprecated,
+        ahead,
+        now(),
+    )
+    .await
+    .unwrap() else {
+        panic!("the dated change matched the published head");
+    };
+    assert_eq!(waiting.lifecycle, Lifecycle::Published);
+    assert_eq!(
+        waiting.lifecycle_next.map(|n| n.lifecycle),
+        Some(Lifecycle::Deprecated)
+    );
+    let yesterday = now().date().checked_sub(time::Duration::days(1)).unwrap();
+    let HeadWrite::Written(due) = set_lifecycle_next(
+        &conn,
+        &scope,
+        tenant,
+        s.id,
+        &[Lifecycle::Published],
+        Lifecycle::Deprecated,
+        yesterday,
+        now(),
+    )
+    .await
+    .unwrap() else {
+        panic!("replacing the pending change matched");
+    };
+    assert_eq!(due.lifecycle, Lifecycle::Deprecated);
+    assert!(due.lifecycle_next.is_none());
+    let stored = crate::test_support::raw_string_opt(
+        &dsn,
+        &format!(
+            "SELECT lifecycle AS v FROM products_sku WHERE {}",
+            crate::test_support::id_matches("id", s.id)
+        ),
+    )
+    .await;
+    assert_eq!(stored.as_deref(), Some("published"));
+    assert!(matches!(
+        set_lifecycle(
+            &conn,
+            &scope,
+            tenant,
+            s.id,
+            &[Lifecycle::Published],
+            Lifecycle::Retired,
+            now()
+        )
+        .await
+        .unwrap(),
+        HeadWrite::Unmatched
+    ));
+    let HeadWrite::Written(retired) = set_lifecycle(
+        &conn,
+        &scope,
+        tenant,
+        s.id,
+        &[Lifecycle::Deprecated],
+        Lifecycle::Retired,
+        now(),
+    )
+    .await
+    .unwrap() else {
+        panic!("the fold lets set_lifecycle see the lifecycle in force");
+    };
+    assert_eq!(retired.lifecycle, Lifecycle::Retired);
+    assert!(retired.lifecycle_next.is_none());
 }

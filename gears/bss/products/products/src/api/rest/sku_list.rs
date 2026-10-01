@@ -32,7 +32,6 @@ use axum::{
 };
 use bss_products_sdk::sku_usage::SkuUsageSets;
 use std::sync::Arc;
-use time::OffsetDateTime;
 use toolkit::api::{
     OpenApiRegistry,
     canonical_prelude::{CanonicalError, resource_error},
@@ -71,6 +70,7 @@ pub enum SkuFilterField {
     Type,
     CategoryId,
     PendingUnitId,
+    RetirePending,
 }
 impl SkuFilterField {
     const fn field(self) -> SkuListField {
@@ -82,6 +82,7 @@ impl SkuFilterField {
             Self::Type => SkuListField::Type,
             Self::CategoryId => SkuListField::CategoryId,
             Self::PendingUnitId => SkuListField::PendingUnitId,
+            Self::RetirePending => SkuListField::RetirePending,
         }
     }
 }
@@ -94,6 +95,7 @@ impl FilterField for SkuFilterField {
         Self::Type,
         Self::CategoryId,
         Self::PendingUnitId,
+        Self::RetirePending,
     ];
     fn name(&self) -> &'static str {
         self.field().name()
@@ -148,8 +150,8 @@ pub(crate) fn register(router: Router, openapi: &dyn OpenApiRegistry) -> Router 
         .summary("List, filter and search SKUs")
         .description(
             "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, \
-             lifecycle, type, category_id (`eq null`: no category) and pending_unit_id (`ne \
-             null`: in review); `$orderby` over code, name, updated_at (tie-break id; default \
+             lifecycle, retire_pending, type, category_id (`eq null`: no category) and \
+             pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default \
              code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias \
              `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, \
              name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). \
@@ -515,7 +517,7 @@ async fn list_skus(
 }
 
 /// Recover the tenant's orphan fences before a read, in the read's transaction, so the list
-/// and the counts agree on `retiring` (P-D-189); each fence lifted is the system's act, with its
+/// and the counts agree on a pending retire (P-D-248: `in_review`, the lifecycle unchanged); each fence lifted is the system's act, with its
 /// audit row (P-D-213). Set-based (P-D-211): the fences, one lift, one insert of their rows —
 /// the same statements for one expired fence as for fifty; one read when there is none.
 async fn expire(
@@ -524,7 +526,7 @@ async fn expire(
     tenant: Uuid,
     ttl: u32,
 ) -> Result<(), TxError> {
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let expired = repo::expire_orphan_fences(
         tx,
         scope,

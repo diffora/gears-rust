@@ -52,7 +52,8 @@ fn the_chain_is_the_guard_coord_then_the_ten_pricebook_migrations() {
             "m20260925_000007_sku_category_optional",
             "m20260927_000008_audit_lifecycle_move",
             "m20260928_000009_unit_submit_note",
-            "m20260928_000010_clear_retired_defaults"
+            "m20260928_000010_clear_retired_defaults",
+            "m20261001_000011_sku_lifecycle_honesty"
         ]
     );
 }
@@ -93,14 +94,14 @@ async fn the_guard_creates_nothing() {
     guard.down(&manager).await.unwrap();
 }
 
-/// The migrations that do not revert (P-D-196, plan review L9; P-D-213): every other migration of
-/// the chain reverses, newest first, and `m20260927_000008_audit_lifecycle_move` and
-/// `m20260925_000007_sku_category_optional` refuse by name.
+/// The migrations that do not revert (P-D-196, P-D-213, P-D-248): every other migration of
+/// the chain reverses, newest first, and the named ones refuse.
 #[tokio::test]
-async fn every_migration_reverses_except_the_named_irreversible_000007_and_000008() {
+async fn every_migration_reverses_except_the_named_irreversible_ones() {
     use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
     use sea_orm_migration::SchemaManager;
-    const IRREVERSIBLE: [&str; 2] = [
+    const IRREVERSIBLE: [&str; 3] = [
+        "m20261001_000011_sku_lifecycle_honesty",
         "m20260927_000008_audit_lifecycle_move",
         "m20260925_000007_sku_category_optional",
     ];

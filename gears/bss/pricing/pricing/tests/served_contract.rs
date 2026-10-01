@@ -1,9 +1,9 @@
 //! D-469 (asks 30 and the contracts notes, phase 9 plan rev 2 M1 and W1): the served spec says
 //! what the doors do. Every op declares 503, as products declares it on all of its ops: every door
 //! answers 503 when the policy decision point cannot answer. The texts name
-//! `REGISTRY_UNAVAILABLE` on exactly the ops that read Products hard. The item create, the revision
-//! PATCH and the revision delete name what they refuse. The `ETag` of every answer that sets one is
-//! pinned with the route census, `tests/module_test.rs`.
+//! `REGISTRY_UNAVAILABLE` on exactly the ops that read Products hard. The item create, the item
+//! PATCH, the revision PATCH and the revision delete name what they refuse. The `ETag` of every
+//! answer that sets one is pinned with the route census, `tests/module_test.rs`.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use serde_json::Value;
@@ -62,7 +62,7 @@ fn description(api: &Value, method: &str, path: &str) -> String {
 async fn every_op_declares_its_503() {
     let api = served().await;
     let all = ops(&api);
-    assert_eq!(all.len(), 51, "the route census holds 51 ops");
+    assert_eq!(all.len(), 52, "the route census holds 52 ops");
     let missing: Vec<_> = all
         .iter()
         .filter(|(_, _, op)| {
@@ -130,6 +130,23 @@ async fn the_texts_name_what_the_doors_refuse() {
         "{patch}"
     );
     assert!(patch.contains("book_id omitted or null leaves"), "{patch}");
+    let item_patch = description(&api, "patch", "/bss-pricing/v1/plan-items/{id}");
+    for code in [
+        "BODY_UNEXPECTED",
+        "ITEM_ENTRY_MISSING",
+        "ITEM_BOOK_FOREIGN",
+        "ITEM_ENTRY_SKU_MISMATCH",
+        "NOT_DRAFT_AUTHOR",
+        "404 for an unknown item",
+        "ENTRY_NOT_FOUND",
+        "REVISION_NOT_DRAFT",
+        "STALE_REVISION",
+    ] {
+        assert!(
+            item_patch.contains(code),
+            "the item PATCH names {code}: {item_patch}"
+        );
+    }
     let delete = description(&api, "delete", "/bss-pricing/v1/plan-revisions/{id}");
     assert!(delete.contains("STALE_REVISION"), "{delete}");
     for path in ["/bss-pricing/v1/plans", "/bss-pricing/v1/plans/{id}/clone"] {
@@ -139,4 +156,256 @@ async fn the_texts_name_what_the_doors_refuse() {
             "{path}: {text}"
         );
     }
+}
+
+/// D-470 (ask 42): the counts op declares its 503, its narrowing, its answer and its refusals;
+/// the list names its order, its light read and their refusals.
+#[tokio::test]
+async fn the_unit_reads_say_how_they_count_and_order() {
+    let api = served().await;
+    let path = "/bss-pricing/v1/approval-units/counts";
+    let counts = &api["paths"][path]["get"];
+    assert!(
+        !counts["responses"]["503"]["content"]["application/problem+json"].is_null(),
+        "{counts}"
+    );
+    let names = |op: &Value| -> Vec<String> {
+        op["parameters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|p| p["in"] == "query")
+            .map(|p| p["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(counts), ["state", "kind", "ref_id", "book_id"]);
+    let text = description(&api, "get", path);
+    for said in [
+        "by_state",
+        "by_kind",
+        "total",
+        "one grouped statement",
+        "UNIT_STATE_INVALID",
+        "QUERY_INVALID",
+        // The phase 9 review's theme C: a kind pricing does not record is refused.
+        "QUERY_INVALID on kind",
+    ] {
+        assert!(text.contains(said), "the counts say {said}: {text}");
+    }
+    let schema = &counts["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+    assert_eq!(
+        schema, "#/components/schemas/PricingApprovalUnitCounts",
+        "{counts}"
+    );
+    let shape = &api["components"]["schemas"]["PricingApprovalUnitCounts"]["properties"];
+    for field in ["by_state", "by_kind", "total"] {
+        assert!(!shape[field].is_null(), "{field}: {shape}");
+    }
+    let list = &api["paths"]["/bss-pricing/v1/approval-units"]["get"];
+    let listed = names(list);
+    for name in ["$orderby", "impact"] {
+        assert!(listed.iter().any(|n| n == name), "{name}: {listed:?}");
+    }
+    let text = description(&api, "get", "/bss-pricing/v1/approval-units");
+    for said in [
+        "submitted_at desc",
+        "ORDER_WITH_CURSOR",
+        "INVALID_ORDERBY_FIELD",
+        "impact=false",
+        "QUERY_INVALID on kind",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
+    }
+}
+
+/// D-471 (ask 28): every unit carries `caller_can_approve`, a required boolean whose text says it
+/// judges Approve only and not the grant; the list's and the card's texts name it.
+#[tokio::test]
+async fn every_unit_says_whether_its_reader_may_approve_it() {
+    let api = served().await;
+    for path in [
+        "/bss-pricing/v1/approval-units",
+        "/bss-pricing/v1/approval-units/{id}",
+    ] {
+        let text = description(&api, "get", path);
+        assert!(text.contains("caller_can_approve"), "{path}: {text}");
+    }
+    let unit = &api["components"]["schemas"]["PricingApprovalUnitDto"];
+    let flag = &unit["properties"]["caller_can_approve"];
+    assert_eq!(flag["type"], "boolean", "{flag}");
+    assert!(
+        unit["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "caller_can_approve"),
+        "{unit}"
+    );
+    let said = flag["description"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("Approve only") && said.contains("403"),
+        "the flag says what it judges: {said}"
+    );
+}
+
+/// A property of a component schema, found on the schema or on one part of its `allOf` (a
+/// flattened DTO).
+fn property(api: &Value, schema: &str, name: &str) -> Value {
+    let schema = &api["components"]["schemas"][schema];
+    std::iter::once(schema)
+        .chain(schema["allOf"].as_array().into_iter().flatten())
+        .find_map(|part| part["properties"].get(name).cloned())
+        .unwrap_or(Value::Null)
+}
+
+/// D-472 and D-473 (asks 26 and 37): the three entry reads name `next_price`, which has
+/// `current_price`'s schema; the book's entries list declares `as_of` and says what the date
+/// judges, what it refuses — another day than today without the money's grant included — and that
+/// a price outside the book's validity is not sellable.
+#[tokio::test]
+async fn the_entry_reads_say_what_they_headline_and_on_which_day() {
+    let api = served().await;
+    for path in [
+        "/bss-pricing/v1/price-book-entries/{id}",
+        "/bss-pricing/v1/price-books/{id}/entries",
+        "/bss-pricing/v1/price-book-entries",
+    ] {
+        let text = description(&api, "get", path);
+        assert!(
+            text.contains("next_price") && text.contains("version_no"),
+            "{path}: {text}"
+        );
+    }
+    for schema in ["PricingPriceBookEntryReadDto", "PricingSkuEntryDto"] {
+        let (mut next, mut current) = (
+            property(&api, schema, "next_price"),
+            property(&api, schema, "current_price"),
+        );
+        for field in [&mut next, &mut current] {
+            if let Some(fields) = field.as_object_mut() {
+                fields.remove("description");
+            }
+        }
+        assert!(!next.is_null(), "{schema} carries next_price");
+        assert_eq!(
+            next, current,
+            "{schema}: next_price has current_price's schema"
+        );
+        let said = api["components"]["schemas"][schema]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(said.contains("next_price"), "{schema}: {said}");
+    }
+    let list = "/bss-pricing/v1/price-books/{id}/entries";
+    let as_of = api["paths"][list]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "as_of")
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        (as_of["in"].as_str(), as_of["required"].as_bool()),
+        (Some("query"), Some(false)),
+        "{as_of}"
+    );
+    let text = description(&api, "get", list);
+    for said in [
+        "as_of",
+        "DATE_INVALID",
+        "QUERY_INVALID",
+        "not sellable",
+        "valid_from",
+        "valid_until",
+        // D-473 amended (phase 9 review R1): another day than today takes the money's grant.
+        "PRICE_BOOK_READ_REQUIRED",
+        "an as_of other than today",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
+    }
+}
+
+/// D-486: `GET /price-book-entries` names its plain keys, its in-memory order and page, and the
+/// refusals of a query it does not evaluate. `status` is the entry's closed set.
+#[tokio::test]
+async fn the_sku_entries_read_says_how_it_narrows_orders_and_pages() {
+    let api = served().await;
+    let path = "/bss-pricing/v1/price-book-entries";
+    let op = &api["paths"][path]["get"];
+    let mut names: Vec<String> = op["parameters"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["in"] == "query")
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "$orderby", "book_id", "changing", "currency", "cursor", "limit", "q", "sku_id",
+            "status",
+        ]
+    );
+    let text = description(&api, "get", path);
+    for said in [
+        "book_id",
+        "currency",
+        "changing",
+        "book_name",
+        "priced",
+        "scheduled",
+        "unpriced",
+        "500",
+        "QUERY_INVALID",
+        "$filter",
+        "$select",
+        "$count",
+        "INVALID_ORDERBY_FIELD",
+        "ORDER_WITH_CURSOR",
+        "FILTER_MISMATCH",
+        "next_price",
+        "version_no",
+    ] {
+        assert!(text.contains(said), "the list says {said}: {text}");
+    }
+    let status = property(&api, "PricingSkuEntryDto", "status");
+    let status_schema = status["$ref"].as_str().map_or(status.clone(), |r| {
+        api["components"]["schemas"][r.rsplit('/').next().unwrap_or("")].clone()
+    });
+    assert_eq!(
+        status_schema["enum"],
+        json_strings(&["priced", "scheduled", "unpriced"]),
+        "status is the entry's closed set: {status}"
+    );
+    let changing = property(&api, "PricingSkuEntryDto", "changing");
+    assert_eq!(changing["type"], "boolean", "{changing}");
+    let required = required_of(&api["components"]["schemas"]["PricingSkuEntryDto"]);
+    for field in ["status", "changing"] {
+        assert!(required.iter().any(|r| r == field), "{field}: {required:?}");
+    }
+    assert!(
+        !property(&api, "PricingSkuEntryList", "page_info").is_null(),
+        "the list pages"
+    );
+}
+
+fn json_strings(values: &[&str]) -> Value {
+    Value::Array(values.iter().copied().map(Value::from).collect())
+}
+
+fn required_of(schema: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut take = |node: &Value| {
+        for name in node["required"].as_array().into_iter().flatten() {
+            if let Some(name) = name.as_str() {
+                out.push(name.to_owned());
+            }
+        }
+    };
+    take(schema);
+    for part in schema["allOf"].as_array().into_iter().flatten() {
+        take(part);
+    }
+    out
 }

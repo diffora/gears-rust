@@ -257,7 +257,7 @@ async fn fence(
     let lifecycle = repo::fence_lifecycle(&s).map_err(TxError::Repo)?;
     if let Some(op) = s.fence_op_id
         && match kind {
-            repo::Fence::Retire => lifecycle == Lifecycle::Retiring,
+            repo::Fence::Retire => s.retire_pending,
             repo::Fence::TypeChange => {
                 s.type_change_pending
                     && matches!(lifecycle, Lifecycle::Published | Lifecycle::Deprecated)
@@ -282,7 +282,7 @@ async fn run(
     kind: SubmitKind,
 ) -> Result<Response, CanonicalError> {
     let payload = json_body(body)?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let tenant = ctx.subject_tenant_id();
     // The submitter's `note`, on each of the three doors: stored on the unit (`submit_note`,
     // P-D-219) and on the submit's audit row, which the history shows (P-D-213). The body's other
@@ -408,15 +408,10 @@ async fn execute(
                     "resume the type change or unfence it first",
                 ));
             }
-            // P-D-213: the lifecycle the submit found, and the one it leaves before any apply:
-            // only a retire moves it, by its fence (a fence taken now, or the orphan resumed,
-            // is `retiring` either way); a type-change fence moves none.
+            // P-D-213, amended by P-D-248: a retire submit moves no lifecycle. The flag
+            // `retire_pending` is the fence. A type-change fence moves none either.
             let found = current.lifecycle;
-            let fenced = if matches!(kind, SubmitKind::Retire) {
-                Lifecycle::Retiring
-            } else {
-                found
-            };
+            let fenced = found;
             let base = SkuPublish {
                 scope: scope.clone(),
                 tenant_id: tenant,
@@ -492,14 +487,21 @@ async fn execute(
                     submitted.unit.id,
                     None,
                     now,
-                    repo::LifecycleMove::between(fenced, after.lifecycle),
+                    repo::LifecycleMove::between(fenced, g::recorded_lifecycle(&after)),
                 )
                 .await?;
                 g::decided(&outbox, tx, &store, &submitted.unit, ctx.subject_id()).await?;
             }
             let receipt = SubmitReceipt {
                 applied: submitted.applied,
-                unit: submitted.unit.into(),
+                // A write answers what it wrote, as its submitter reads it (P-D-228).
+                unit: super::approval_units::as_read_by(
+                    tx,
+                    &store,
+                    submitted.unit,
+                    ctx.subject_id(),
+                )
+                .await?,
                 sku: after.into(),
             };
             replay::finish(tx, tenant, claim.as_ref(), StatusCode::OK, &receipt).await
@@ -568,7 +570,7 @@ async fn unfence(
                     "sku",
                     id,
                     None,
-                    OffsetDateTime::now_utc(),
+                    crate::infra::storage::stored_now(),
                     repo::LifecycleMove::between(found, sku.lifecycle),
                 )
                 .await?;

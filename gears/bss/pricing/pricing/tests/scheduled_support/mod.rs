@@ -193,7 +193,7 @@ impl Seeder {
                 .await
                 .unwrap();
         for (e, treatment) in items {
-            plan_item_repo::insert(&conn, &self.scope, item(&r, *e, treatment))
+            plan_item_repo::insert_as_given(&conn, &self.scope, item(&r, *e, treatment))
                 .await
                 .unwrap();
             self.items += 1;

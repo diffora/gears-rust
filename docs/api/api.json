@@ -6877,6 +6877,23 @@
         ],
         "type": "object"
       },
+      "LifecycleNextDto": {
+        "description": "A lifecycle change that takes effect on `from` (P-D-249).",
+        "properties": {
+          "from": {
+            "format": "date",
+            "type": "string"
+          },
+          "lifecycle": {
+            "$ref": "#/components/schemas/ProductsLifecycle"
+          }
+        },
+        "required": [
+          "lifecycle",
+          "from"
+        ],
+        "type": "object"
+      },
       "LifecycleStatusDto": {
         "description": "`active` or `deleted`.",
         "enum": [
@@ -7966,6 +7983,37 @@
           "expires_at",
           "received",
           "missing"
+        ],
+        "type": "object"
+      },
+      "NamedSettingDto": {
+        "description": "One named setting on the wire.",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "description": "Any JSON value."
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "type": "object"
+      },
+      "NamedSettingsListDto": {
+        "description": "Every named setting the caller has, ordered by key.",
+        "properties": {
+          "settings": {
+            "items": {
+              "$ref": "#/components/schemas/NamedSettingDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "settings"
         ],
         "type": "object"
       },
@@ -10265,6 +10313,14 @@
         },
         "type": "object"
       },
+      "PricingApprovalKind": {
+        "description": "A kind of approval unit pricing records (spec §6). No CHECK holds the stored column: the\nrepository reads it through this set, so a unit of another kind is a corrupt row (500).",
+        "enum": [
+          "prices",
+          "plan_revision"
+        ],
+        "type": "string"
+      },
       "PricingApprovalPolicyDto": {
         "properties": {
           "default_quorum": {
@@ -10310,9 +10366,35 @@
         ],
         "type": "object"
       },
-      "PricingApprovalUnitDto": {
-        "description": "An approval unit with its snapshot, decisions and, on the card, the live impact.",
+      "PricingApprovalUnitCounts": {
+        "description": "`GET /approval-units/counts` (D-470): the units the list's narrowing keeps, by state and by\nkind, every state and kind named (0 when none), and their total.",
         "properties": {
+          "by_kind": {
+            "$ref": "#/components/schemas/PricingApprovalUnitKindCounts"
+          },
+          "by_state": {
+            "$ref": "#/components/schemas/PricingApprovalUnitStateCounts"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_state",
+          "by_kind",
+          "total"
+        ],
+        "type": "object"
+      },
+      "PricingApprovalUnitDto": {
+        "description": "An approval unit with its snapshot, decisions and, on the card, the live impact; and whether\nits reader may approve it (D-471).",
+        "properties": {
+          "caller_can_approve": {
+            "description": "Whether the caller may Approve this unit now (D-471): the approval engine's own rule\n(`bss_approval::approve_eligibility`, D-459) over the unit's stored items and its decisions,\nwith the caller as the voter. It is false for a decided unit, for its submitter and every\nauthor of its items (separation of duties) and for a caller who already voted in its current\ngeneration. It means Approve only: a reject judges no separation of duties, so the submitter\nand an item's author may reject a unit whose flag is false. The grant is not judged here:\nwithout `approval_unit` approve the vote door still answers 403.",
+            "type": "boolean"
+          },
           "common_effective_date": {
             "type": [
               "string",
@@ -10348,7 +10430,8 @@
           },
           "impact": {},
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/PricingApprovalKind",
+            "description": "The unit's kind, one pricing records: a stored unit of another kind is a corrupt row (500),\nnever served."
           },
           "quorum_required": {
             "format": "int32",
@@ -10393,7 +10476,28 @@
           "submitted_by",
           "submitted_at",
           "snapshot",
-          "decisions"
+          "decisions",
+          "caller_can_approve"
+        ],
+        "type": "object"
+      },
+      "PricingApprovalUnitKindCounts": {
+        "description": "The units of each kind pricing records (D-470).",
+        "properties": {
+          "plan_revision": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prices": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prices",
+          "plan_revision"
         ],
         "type": "object"
       },
@@ -10413,6 +10517,38 @@
         "required": [
           "items",
           "page_info"
+        ],
+        "type": "object"
+      },
+      "PricingApprovalUnitStateCounts": {
+        "description": "The units in each state (D-470).",
+        "properties": {
+          "approved": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rejected": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "withdrawn": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "approved",
+          "rejected",
+          "withdrawn"
         ],
         "type": "object"
       },
@@ -10662,10 +10798,10 @@
         "type": "string"
       },
       "PricingEntryPriceCounts": {
-        "description": "An entry's prices by state; a rejected price is not counted (D-428). The approved ones are\nalso counted by where their window stands today (D-440): `approved` = `scheduled + active +\nsuperseded`.",
+        "description": "An entry's prices by state; a rejected price is not counted (D-428). The approved ones are\nalso counted by where their window stands on the day of the read (D-440): today, or the\n`as_of` of the book's entries list (D-473). `approved` = `scheduled + active + superseded`.",
         "properties": {
           "active": {
-            "description": "Approved prices in force today.",
+            "description": "Approved prices in force on the day.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -10686,13 +10822,13 @@
             "type": "integer"
           },
           "scheduled": {
-            "description": "Approved prices that start after today.",
+            "description": "Approved prices that start after the day.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
           },
           "superseded": {
-            "description": "Approved prices whose window ended on or before today.",
+            "description": "Approved prices whose window ended on or before the day.",
             "format": "int64",
             "minimum": 0,
             "type": "integer"
@@ -10939,7 +11075,7 @@
         "type": "object"
       },
       "PricingPlanApprovalProgress": {
-        "description": "A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum\ncounts (the current generation's, not stale: the approval library's `approve_eligibility`, the\nrule the vote door judges by) and the quorum.",
+        "description": "A pending revision's vote progress (D-462), counts only: its unit, the approve votes the quorum\ncounts (the current generation's, not stale: the approval library's `counted_approvals`, the\ncount the vote door judges by) and the quorum.",
         "properties": {
           "approvals": {
             "format": "int32",
@@ -11861,6 +11997,16 @@
                   }
                 ]
               },
+              "next_price": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PricingPriceDto"
+                  }
+                ]
+              },
               "usage": {
                 "$ref": "#/components/schemas/PricingEntryUsage"
               }
@@ -11871,7 +12017,7 @@
             "type": "object"
           }
         ],
-        "description": "What the two entry reads answer (D-428): the entry's fields, its `usage` and its\n`current_price` (D-440): the default chain's approved price in force today, as D-434 chooses\nand shows it — `null` when none is, or when the caller does not hold `price_book` read on the\nentry's book. Every other answer that carries an entry (POST, PATCH, the stored receipt, the\nexport, publish-changes) keeps [`PricingPriceBookEntryDto`]."
+        "description": "What the two entry reads answer (D-428): the entry's fields, its `usage`, its `current_price`\n(D-440): the default chain's approved price in force on the day, as D-434 chooses and shows it\n— and its `next_price` (D-472): the default chain's earliest scheduled price, else its newest\ndraft or pending price (the highest `version_no`, then the latest `created_at`). Each is `null`\nwhen there is none, or when the caller does not hold `price_book` read on the entry's book.\nThe day is today, or the `as_of` of the book's entries list (D-473).\nEvery other answer that carries an entry (POST, PATCH, the stored receipt, the export,\npublish-changes) keeps [`PricingPriceBookEntryDto`]."
       },
       "PricingPriceBookReadDto": {
         "allOf": [
@@ -12882,6 +13028,10 @@
               "book_name": {
                 "type": "string"
               },
+              "changing": {
+                "description": "A draft or a pending price exists (D-486).",
+                "type": "boolean"
+              },
               "currency": {
                 "type": "string"
               },
@@ -12895,6 +13045,20 @@
                   }
                 ]
               },
+              "next_price": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PricingPriceDto"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/PricingSkuEntryStatus",
+                "description": "`priced` when an approved price is in force today, else `scheduled` when one starts\nlater, else `unpriced` (D-486)."
+              },
               "usage": {
                 "$ref": "#/components/schemas/PricingEntryUsage"
               }
@@ -12903,27 +13067,43 @@
               "book_code",
               "book_name",
               "currency",
-              "usage"
+              "usage",
+              "status",
+              "changing"
             ],
             "type": "object"
           }
         ],
-        "description": "One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434): the entry, its\nbook's code, name and currency, its usage (D-428), and the default chain's price in force\ntoday — `null` when none is, or when the caller does not hold `price_book` read (the export's\ngrant)."
+        "description": "One entry of a SKU as `GET /price-book-entries?sku_id=` answers it (D-434, D-486): the entry,\nits book's code, name and currency, its usage (D-428), its `status` and `changing` on today,\nthe default chain's price in force today (`current_price`) and its `next_price` (D-472),\nchosen as the entry reads choose it (the highest `version_no` orders the drafts and pending\nprices). Each price is `null` when there is none, or when the caller does not hold\n`price_book` read (the export's grant). `status` and `changing` are not money."
       },
       "PricingSkuEntryList": {
-        "description": "`GET /price-book-entries?sku_id=`: the SKU's entries in every book of the tenant.",
+        "description": "`GET /price-book-entries?sku_id=` (D-486): one page of the SKU's entries.",
         "properties": {
           "items": {
             "items": {
               "$ref": "#/components/schemas/PricingSkuEntryDto"
             },
             "type": "array"
+          },
+          "page_info": {
+            "$ref": "#/components/schemas/PageInfo",
+            "description": "`limit` is the page size. `next_cursor` continues the page."
           }
         },
         "required": [
-          "items"
+          "items",
+          "page_info"
         ],
         "type": "object"
+      },
+      "PricingSkuEntryStatus": {
+        "description": "Where a SKU's entry stands today (D-486): an approved price in force, else one that\nstarts later, else neither. Not a price's display status.",
+        "enum": [
+          "priced",
+          "scheduled",
+          "unpriced"
+        ],
+        "type": "string"
       },
       "PricingSubmitReceipt": {
         "description": "The unit a submission recorded and its prices after the transaction.",
@@ -13054,6 +13234,95 @@
         ],
         "type": "object"
       },
+      "ProductsApprovalKind": {
+        "description": "A kind of approval unit products records (P-D-227). No CHECK holds the stored column: the\nrepository reads it through this set, so a unit of another kind is a corrupt row (500).",
+        "enum": [
+          "sku_publish",
+          "sku_change",
+          "sku_retire"
+        ],
+        "type": "string"
+      },
+      "ProductsApprovalUnitCounts": {
+        "description": "`GET /approval-units/counts` (P-D-227): the units the list's narrowing keeps, by state and by\nkind, every state and kind named (0 when none), and their total.",
+        "properties": {
+          "by_kind": {
+            "$ref": "#/components/schemas/ProductsApprovalUnitKindCounts"
+          },
+          "by_state": {
+            "$ref": "#/components/schemas/ProductsApprovalUnitStateCounts"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by_state",
+          "by_kind",
+          "total"
+        ],
+        "type": "object"
+      },
+      "ProductsApprovalUnitKindCounts": {
+        "description": "The units of each kind products records (P-D-227).",
+        "properties": {
+          "sku_change": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sku_publish": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sku_retire": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sku_publish",
+          "sku_change",
+          "sku_retire"
+        ],
+        "type": "object"
+      },
+      "ProductsApprovalUnitStateCounts": {
+        "description": "The units in each state (P-D-227).",
+        "properties": {
+          "approved": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "rejected": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "withdrawn": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "approved",
+          "rejected",
+          "withdrawn"
+        ],
+        "type": "object"
+      },
       "ProductsBillingTiming": {
         "description": "When a SKU's charge is billed: in advance of its period or in arrears.",
         "enum": [
@@ -13144,12 +13413,11 @@
         "type": "string"
       },
       "ProductsLifecycle": {
-        "description": "A SKU's lifecycle; `retiring` is the committed fence.",
+        "description": "A SKU's lifecycle. A retire under review is `retire_pending`, not a lifecycle (P-D-248).",
         "enum": [
           "draft",
           "published",
           "deprecated",
-          "retiring",
           "retired"
         ],
         "type": "string"
@@ -13204,11 +13472,6 @@
             "format": "int64",
             "minimum": 0,
             "type": "integer"
-          },
-          "retiring": {
-            "format": "int64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
@@ -13216,7 +13479,6 @@
           "draft",
           "published",
           "deprecated",
-          "retiring",
           "retired",
           "in_review"
         ],
@@ -13763,6 +14025,18 @@
           "city_id",
           "street",
           "postal_code"
+        ],
+        "type": "object"
+      },
+      "PutNamedSettingRequest": {
+        "description": "Body of `PUT /named-settings/{key}`: the value to store under the key.",
+        "properties": {
+          "value": {
+            "description": "Any JSON value."
+          }
+        },
+        "required": [
+          "value"
         ],
         "type": "object"
       },
@@ -17153,6 +17427,17 @@
           "lifecycle": {
             "$ref": "#/components/schemas/ProductsLifecycle"
           },
+          "lifecycle_next": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LifecycleNextDto",
+                "description": "A dated lifecycle change that has not arrived (P-D-249). Null when none is pending."
+              }
+            ]
+          },
           "name": {
             "type": "string"
           },
@@ -17166,6 +17451,10 @@
           "published_version": {
             "format": "int64",
             "type": "integer"
+          },
+          "retire_pending": {
+            "description": "Set while a retire is in review (P-D-248). The lifecycle stays.",
+            "type": "boolean"
           },
           "revision": {
             "format": "int64",
@@ -17216,6 +17505,7 @@
           "description",
           "sellable",
           "lifecycle",
+          "retire_pending",
           "revision",
           "published_version",
           "type_change_pending",
@@ -18733,6 +19023,10 @@
       },
       "UnitDto": {
         "properties": {
+          "caller_can_approve": {
+            "description": "Whether the caller may Approve this unit now (P-D-228): the approval engine's own rule\n(`bss_approval::approve_eligibility`, pricing D-459) over the unit's stored items and its\ndecisions, with the caller as the voter. It is false for a decided unit, for its submitter\nand every author of its items (the SKU's creator: separation of duties) and for a caller who\nalready voted in its current generation. It means Approve only: a reject judges no\nseparation of duties, so the submitter and the SKU's creator may reject a unit whose flag\nis false. The grant is not judged here: without products approve the vote door still\nanswers 403.",
+            "type": "boolean"
+          },
           "common_effective_date": {
             "format": "date",
             "type": [
@@ -18769,7 +19063,8 @@
           },
           "impact_live": {},
           "kind": {
-            "type": "string"
+            "$ref": "#/components/schemas/ProductsApprovalKind",
+            "description": "The unit's kind, one products records: a stored unit of another kind is a corrupt row\n(500), never served."
           },
           "quorum_required": {
             "format": "int32",
@@ -18814,7 +19109,8 @@
           "submitted_by",
           "submitted_at",
           "snapshot",
-          "decisions"
+          "decisions",
+          "caller_can_approve"
         ],
         "type": "object"
       },
@@ -34271,7 +34567,7 @@
     },
     "/bss-pricing/v1/approval-units": {
       "get": {
-        "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions and its live impact. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it. Refusals: 400 UNIT_STATE_INVALID or QUERY_INVALID; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read.",
+        "description": "One page of the tenant's approval units in submission order (D-458), filtered by state, kind and referenced aggregate, each with its stored snapshot, its decisions, its live impact and caller_can_approve, whether the caller may approve it now (the approval engine's rule, D-471). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (D-470). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `impact=false` skips the live impact read: every unit answers impact null. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or plan_revision, and for a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or referenced aggregate; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         "operationId": "bss_pricing.list_approval_units",
         "parameters": [
           {
@@ -34284,7 +34580,7 @@
             }
           },
           {
-            "description": "Approval kind",
+            "description": "Approval kind: prices or plan_revision",
             "in": "query",
             "name": "kind",
             "required": false,
@@ -34326,6 +34622,24 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "in": "query",
+            "name": "$orderby",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "false skips the live impact read (impact null); true by default",
+            "in": "query",
+            "name": "impact",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -34432,9 +34746,154 @@
         ]
       }
     },
+    "/bss-pricing/v1/approval-units/counts": {
+      "get": {
+        "description": "Counts the tenant's approval units that the list's narrowing keeps (state, kind and the referenced aggregate, ref_id or book_id), under the list's own grant: by_state (pending, approved, rejected, withdrawn), by_kind (prices, plan_revision), each named with 0 when none, and total, the length of the list under the same narrowing (D-470). It reads one grouped statement, whatever the number of units. It takes nothing but the narrowing. Refusals: the list's: 400 UNIT_STATE_INVALID for an unknown state; 400 QUERY_INVALID on kind for a kind other than prices or plan_revision; 400 QUERY_INVALID for a ref_id and a book_id that differ, a malformed id, or any other key (limit, cursor, $orderby, impact).",
+        "operationId": "bss_pricing.count_approval_units",
+        "parameters": [
+          {
+            "description": "Unit state",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Approval kind: prices or plan_revision",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Referenced aggregate id",
+            "in": "query",
+            "name": "ref_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Price book id",
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricingApprovalUnitCounts"
+                }
+              }
+            },
+            "description": "Response"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Count the approval units",
+        "tags": [
+          "Pricing"
+        ]
+      }
+    },
     "/bss-pricing/v1/approval-units/{id}": {
       "get": {
-        "description": "Returns one approval unit with its stored snapshot, its decisions and the live impact. Refusals: 404 for a unit the tenant does not hold.",
+        "description": "Returns one approval unit with its stored snapshot, its decisions, the live impact and caller_can_approve, whether the caller may approve it now (D-471). Refusals: 404 for a unit the tenant does not hold.",
         "operationId": "bss_pricing.get_approval_unit",
         "parameters": [
           {
@@ -35573,7 +36032,7 @@
         ]
       },
       "patch": {
-        "description": "Changes a draft item's entry, never its SKU, at the version the caller read (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a null entry or an item left without one; 403 NOT_DRAFT_AUTHOR; 409 REVISION_NOT_DRAFT or STALE_REVISION.",
+        "description": "Changes a draft item's entry, never its SKU, at the version the caller read (If-Match): a plan item is a SKU and its entry (D-467). Refusals: 400 BODY_UNEXPECTED for treatment, included_qty or qty_min, ITEM_ENTRY_MISSING for a null entry or an item left without one, ITEM_BOOK_FOREIGN for an entry of another book, ITEM_ENTRY_SKU_MISMATCH for an entry of another SKU; 403 NOT_DRAFT_AUTHOR; 404 for an unknown item, or an unknown entry (ENTRY_NOT_FOUND); 409 REVISION_NOT_DRAFT or STALE_REVISION.",
         "operationId": "bss_pricing.patch_plan_item",
         "parameters": [
           {
@@ -37438,7 +37897,7 @@
     },
     "/bss-pricing/v1/price-book-entries": {
       "get": {
-        "description": "Lists the tenant's price book entries of one SKU across its books (D-434), each with its book's code, name and currency, its usage (D-428) and current_price: the default chain's approved price in force today, shown to a caller who also holds price_book read (the export's grant) and null otherwise. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, or with any other key.",
+        "description": "Lists one page of the tenant's price book entries of one SKU across its books (D-434, D-486), each with its book's code, name and currency, its usage (D-428), its status and changing on today, its current_price, the default chain's approved price in force today, and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). status is priced when an approved price is in force today, else scheduled when an approved price starts later, else unpriced; changing is true when a draft or pending price exists. Both prices are shown to a caller who also holds price_book read (the export's grant) and are null otherwise; status and changing are not money. The list narrows in memory by book_id (1 to 50 distinct ids), currency, q (a case-insensitive literal substring of the book's code or name), status (priced, scheduled, unpriced) and changing (true or false). $orderby is book_name (the default) or status, asc or desc; the id breaks a tie in that direction. limit (default 500, clamped at 500) and cursor from page_info page it; a cursor carries the order and a hash of the plain keys, so a continuation sends no $orderby. Refusals: 400 QUERY_INVALID without exactly one well-formed sku_id, for a repeated key, for any other key, for $filter, $select or $count, for a malformed book_id, currency, status, changing or limit, or for more than 50 book ids; 400 INVALID_ORDERBY_FIELD for any other order; 400 ORDER_WITH_CURSOR for $orderby beside a cursor; 400 FILTER_MISMATCH for a cursor replayed under another narrowing; 400 for a cursor that does not read.",
         "operationId": "bss_pricing.list_sku_entries",
         "parameters": [
           {
@@ -37446,6 +37905,78 @@
             "in": "query",
             "name": "sku_id",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1 to 50 distinct price book ids, comma-separated",
+            "in": "query",
+            "name": "book_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Three-letter currency code",
+            "in": "query",
+            "name": "currency",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Case-insensitive literal substring of the book's code or name",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "priced, scheduled or unpriced, comma-separated",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "true when a draft or pending price exists",
+            "in": "query",
+            "name": "changing",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Page size (default 500, clamped at 500)",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Continuation from page_info",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OData v4 orderby expression\n- book_name asc\n- book_name desc\n- status asc\n- status desc",
+            "in": "query",
+            "name": "$orderby",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -37551,7 +38082,15 @@
         "summary": "Where a SKU is priced",
         "tags": [
           "Pricing"
-        ]
+        ],
+        "x-odata-orderby": {
+          "allowedFields": [
+            "book_name asc",
+            "book_name desc",
+            "status asc",
+            "status desc"
+          ]
+        }
       }
     },
     "/bss-pricing/v1/price-book-entries/{id}": {
@@ -37665,7 +38204,7 @@
         ]
       },
       "get": {
-        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on its book and null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
+        "description": "Returns one price book entry of the tenant, its version as the ETag a following PATCH sends back as If-Match, its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force today; and its next_price, the default chain's earliest price scheduled after today, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on its book and are null otherwise (D-434, D-440). Refusals: 404 ENTRY_NOT_FOUND.",
         "operationId": "bss_pricing.get_entry",
         "parameters": [
           {
@@ -38948,7 +39487,7 @@
     },
     "/bss-pricing/v1/price-books/{id}/entries": {
       "get": {
-        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded today, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; and its current_price, the default chain's approved price in force today, shown to a caller who also holds price_book read on the book and null otherwise (D-434, D-440). Refusals: 404 for a book the tenant does not hold.",
+        "description": "Lists the price book entries of one book of the tenant, ordered by SKU, charge kind and period, each with its usage (D-428): its prices by state (a rejected price is not counted; the approved ones also as scheduled, active and superseded on the day, D-440), the distinct plans whose draft, pending, scheduled or published revisions name it, and the distinct plans that name it only through superseded revisions; its current_price, the default chain's approved price in force on the day; and its next_price, the default chain's earliest price scheduled after the day, else its newest draft or pending price (the highest version_no), else null (D-472). Both prices are shown to a caller who also holds price_book read on the book and are null otherwise (D-434, D-440). The day is as_of, a YYYY-MM-DD date, else today (UTC): every price's status, the usage split and both prices are judged on that one day (D-473). A day before the book's valid_from, or on or after its valid_until, still answers with the prices in force on it, but a price outside the book's validity is not sellable: the book allows no sale on that day. Refusals, in order: 403 without price_book_entry read; 503 when the policy cannot judge the money; 400 QUERY_INVALID for any key but as_of, or as_of twice, then 400 DATE_INVALID for an as_of that is not a YYYY-MM-DD date; 404 for a book the tenant does not hold; then 403 PRICE_BOOK_READ_REQUIRED for an as_of other than today when the caller's price_book read does not admit the book: the usage split on another day dates every approved price, so it is money, and a caller without it reads today only.",
         "operationId": "bss_pricing.list_entries",
         "parameters": [
           {
@@ -38956,6 +39495,15 @@
             "in": "path",
             "name": "id",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The day the prices are judged on, YYYY-MM-DD; today (UTC) by default",
+            "in": "query",
+            "name": "as_of",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -40935,7 +41483,7 @@
     },
     "/bss-products/v1/approval-units": {
       "get": {
-        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot and the decisions of every generation. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it. Refusals: 400 for an unknown state or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read.",
+        "description": "One page of the tenant's approval units in submission order (P-D-224), filtered by state, kind and SKU, each with its stored snapshot, the decisions of every generation and caller_can_approve, whether the caller may approve it now (the approval engine's rule, P-D-228). `$orderby=submitted_at desc` pages it newest first, and `submitted_at asc`, the default, oldest first; the unit id breaks a tie in the same direction (P-D-227). A client merging pages of several gears compares submitted_at as an instant, never as text, then the id as lower-case hex. `limit` (default 200, clamped at 500) and `cursor` from `page_info` page it; a cursor carries its order, so a continuation sends no `$orderby`. Refusals: 400 for an unknown state, a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that does not parse; 400 FILTER_MISMATCH for a cursor replayed with another state, kind or SKU; 400 for a cursor that does not read; 400 ORDER_WITH_CURSOR for `$orderby` beside a cursor; 400 INVALID_ORDERBY_FIELD for any other order.",
         "operationId": "bss_products.list_approval_units",
         "parameters": [
           {
@@ -40978,6 +41526,15 @@
             "description": "Continuation from page_info",
             "in": "query",
             "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "submitted_at asc (the default) or submitted_at desc; the id breaks a tie the same way",
+            "in": "query",
+            "name": "$orderby",
             "required": false,
             "schema": {
               "type": "string"
@@ -41072,6 +41629,132 @@
           }
         ],
         "summary": "list_approval_units",
+        "tags": [
+          "Approval units"
+        ]
+      }
+    },
+    "/bss-products/v1/approval-units/counts": {
+      "get": {
+        "description": "Counts the tenant's approval units that the list's narrowing keeps (state, kind and SKU), under the list's own grant: by_state (pending, approved, rejected, withdrawn), by_kind (sku_publish, sku_change, sku_retire), each named with 0 when none, and total, the length of the list under the same narrowing (P-D-227). It reads one grouped statement, whatever the number of units. It takes nothing but the narrowing. Refusals: the list's: 400 for an unknown state, a kind other than sku_publish, sku_change or sku_retire (on kind), or a query that does not parse, and 400 for any other key (limit, cursor, $orderby).",
+        "operationId": "bss_products.count_approval_units",
+        "parameters": [
+          {
+            "description": "Unit state: pending, approved, rejected or withdrawn",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Approval kind: sku_publish, sku_change or sku_retire",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "SKU id (a UUID)",
+            "in": "query",
+            "name": "ref_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductsApprovalUnitCounts"
+                }
+              }
+            },
+            "description": "Result"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "count_approval_units",
         "tags": [
           "Approval units"
         ]
@@ -41314,7 +41997,7 @@
     },
     "/bss-products/v1/approval-units/{id}/reject": {
       "post": {
-        "description": "Rejects the unit at the generation its reviewer saw; a reject needs a note. The note is at most 2000 characters (the approval engine's cap). Refusals include 400 NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, 403 SOD_VIOLATION and 409 DUPLICATE_VOTE.",
+        "description": "Rejects the unit at the generation its reviewer saw; a reject needs a note. The note is at most 2000 characters (the approval engine's cap). A reject judges no separation of duties: the submitter and the SKU's creator may reject (P-D-228). Refusals include 400 NOTE_TOO_LONG on a longer note and 400 NOTE_REQUIRED without one, 400 GENERATION_MISMATCH, 400 UNIT_STALE after a refresh, and 409 DUPLICATE_VOTE or UNIT_ALREADY_DECIDED.",
         "operationId": "bss_products.reject_unit",
         "parameters": [
           {
@@ -42176,7 +42859,7 @@
     },
     "/bss-products/v1/categories/{id}/retire": {
       "post": {
-        "description": "Retires a category no SKU in draft, published, deprecated or retiring names; retired SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the same transaction, with its own version and audit row, and leaves the tenant without a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it is already retired.",
+        "description": "Retires a category no SKU in draft, published or deprecated names; a retire under review keeps one of those, so it still holds the category (P-D-248). Retired SKUs do not keep it in use (P-D-208). Retiring the tenant's default clears it in the same transaction, with its own version and audit row, and leaves the tenant without a default (P-D-220). Refusals: 404; 409 CATEGORY_IN_USE, or CATEGORY_RETIRED when it is already retired.",
         "operationId": "bss_products.retire_category",
         "parameters": [
           {
@@ -42518,7 +43201,7 @@
     },
     "/bss-products/v1/skus": {
       "get": {
-        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
+        "description": "One page of the tenant's SKUs (P-D-210). OData `$filter` over id, code, name, lifecycle, retire_pending, type, category_id (`eq null`: no category) and pending_unit_id (`ne null`: in review); `$orderby` over code, name, updated_at (tie-break id; default code); `$top` (alias `limit`; default 50, clamped at 200) and `cursor` (alias `$skiptoken`) from `page_info`. `q` is a case-insensitive substring of the code, name, unit, usage type or GL code, matched literally (ASCII case folding on SQLite). `priced` and `in_plan` (true or false) keep the SKUs pricing prices or a plan names, or the others (P-D-212): 403 USAGE_FORBIDDEN when pricing refuses the caller, 503 USAGE_UNAVAILABLE when it cannot answer. Any other key, `$select` and `$count` are 400; a cursor replayed with another `$filter`, `q`, `priced` or `in_plan` is 400. Each item carries pricing's `usage`, or null (P-D-197).",
         "operationId": "bss_products.list_skus",
         "parameters": [
           {
@@ -42567,7 +43250,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -42696,6 +43379,10 @@
               "eq",
               "ne",
               "in"
+            ],
+            "retire_pending": [
+              "eq",
+              "ne"
             ],
             "type": [
               "eq",
@@ -42871,7 +43558,7 @@
             }
           },
           {
-            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in",
+            "description": "OData v4 filter expression\n- id: eq|ne|in\n- code: eq|ne|contains|startswith|endswith|in\n- name: eq|ne|contains|startswith|endswith|in\n- lifecycle: eq|ne|contains|startswith|endswith|in\n- type: eq|ne|contains|startswith|endswith|in\n- category_id: eq|ne|in\n- pending_unit_id: eq|ne|in\n- retire_pending: eq|ne",
             "in": "query",
             "name": "$filter",
             "required": false,
@@ -42991,6 +43678,10 @@
               "eq",
               "ne",
               "in"
+            ],
+            "retire_pending": [
+              "eq",
+              "ne"
             ],
             "type": [
               "eq",
@@ -57674,6 +58365,385 @@
         "summary": "Revert a setting's value at a scope",
         "tags": [
           "settings-values"
+        ]
+      }
+    },
+    "/simple-user-settings/v1/named-settings": {
+      "delete": {
+        "description": "Forget every named setting of the authenticated user in one call, e.g. on offboarding or an erasure request. Answers 204 whether or not any were set; the fixed theme/language fields are not touched.",
+        "operationId": "simple_user_settings.delete_all_named_settings",
+        "responses": {
+          "204": {
+            "description": "Named settings deleted (no body)"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Delete all named settings",
+        "tags": [
+          "Settings"
+        ]
+      },
+      "get": {
+        "description": "Every named setting of the authenticated user, ordered by key",
+        "operationId": "simple_user_settings.list_named_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedSettingsListDto"
+                }
+              }
+            },
+            "description": "Named settings"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List named settings",
+        "tags": [
+          "Settings"
+        ]
+      }
+    },
+    "/simple-user-settings/v1/named-settings/{key}": {
+      "delete": {
+        "description": "Forget one named setting. Deleting a key that is not set also answers 204.",
+        "operationId": "simple_user_settings.delete_named_setting",
+        "parameters": [
+          {
+            "description": "Setting key: 1-128 characters from A-Z a-z 0-9 . _ - :",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Named setting deleted (no body)"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Delete a named setting",
+        "tags": [
+          "Settings"
+        ]
+      },
+      "get": {
+        "description": "One named setting of the authenticated user; 404 if it is not set",
+        "operationId": "simple_user_settings.get_named_setting",
+        "parameters": [
+          {
+            "description": "Setting key: 1-128 characters from A-Z a-z 0-9 . _ - :",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedSettingDto"
+                }
+              }
+            },
+            "description": "Named setting"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get a named setting",
+        "tags": [
+          "Settings"
+        ]
+      },
+      "put": {
+        "description": "Create or replace one named setting. The value is any JSON value within the configured size bound; a new key past the per-user count bound is refused with 429.",
+        "operationId": "simple_user_settings.put_named_setting",
+        "parameters": [
+          {
+            "description": "Setting key: 1-128 characters from A-Z a-z 0-9 . _ - :",
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutNamedSettingRequest"
+              }
+            }
+          },
+          "description": "The value to store",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NamedSettingDto"
+                }
+              }
+            },
+            "description": "Named setting stored"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Payload Too Large"
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unprocessable Entity"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Set a named setting",
+        "tags": [
+          "Settings"
         ]
       }
     },

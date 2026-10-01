@@ -220,7 +220,7 @@ async fn create_in(
         &live_entry(tx, scope, tenant, price_book_entry_id).await?,
     )
     .await?;
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     // D-427: the money is judged against the entry's model; a price carries none of its own.
     let model = pc.model;
     let promo = Price {
@@ -398,7 +398,7 @@ async fn patch_in(
     if let Some(eligibility) = input.eligibility.as_deref() {
         r.eligibility = parse_eligibility(eligibility)?;
     }
-    let now = OffsetDateTime::now_utc();
+    let now = crate::infra::storage::stored_now();
     let siblings = pc.domain_prices()?;
     let mut next = m.clone();
     if let Some(note) = input.note {

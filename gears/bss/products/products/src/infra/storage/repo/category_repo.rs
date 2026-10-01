@@ -220,11 +220,11 @@ async fn category_written(
         .ok_or_else(|| RepoError::CorruptRow("written category disappeared".into()))
 }
 /// The SKU lifecycles that keep a category in use (P-D-208): every one but `retired`.
-pub const CATEGORY_HOLDING_LIFECYCLES: [&str; 4] = ["draft", "published", "deprecated", "retiring"];
+pub const CATEGORY_HOLDING_LIFECYCLES: [&str; 3] = ["draft", "published", "deprecated"];
 /// Retire only an active, unused category; callers use a serializable transaction. A category is
-/// in use while a SKU in `draft`, `published`, `deprecated` or `retiring` names it; a `retired` SKU
-/// no longer keeps it (P-D-208, amending P-D-186): nothing moves a retired SKU, and a `retiring`
-/// one may still return to its prior lifecycle. A SKU without a category (P-D-196) never matches
+/// in use while a SKU in `draft`, `published` or `deprecated` names it, including one whose retire
+/// is in review (P-D-248: it keeps that lifecycle). A `retired` SKU no longer keeps it (P-D-208,
+/// amending P-D-186). A SKU without a category (P-D-196) never matches
 /// `category_id = <id>`, so it never keeps one in use.
 /// # Errors
 /// Returns scoped storage failures. Missing categories return `None`; an already retired or
@@ -241,7 +241,10 @@ pub async fn retire_category_if_unused(
         .from(sku::Entity)
         .and_where(sku::Column::TenantId.eq(tenant_id))
         .and_where(sku::Column::CategoryId.eq(id))
-        .and_where(sku::Column::Lifecycle.is_in(CATEGORY_HOLDING_LIFECYCLES))
+        .and_where(
+            super::sku_repo::effective_lifecycle_expr(crate::infra::storage::stored_now().date())
+                .is_in(CATEGORY_HOLDING_LIFECYCLES),
+        )
         .to_owned();
     let r = category::Entity::update_many()
         .secure()
@@ -447,7 +450,10 @@ pub async fn count_live_skus_by_category(
     let mut c = Condition::all()
         .add(sku::Column::TenantId.eq(tenant))
         .add(sku::Column::CategoryId.is_not_null())
-        .add(sku::Column::Lifecycle.is_in(CATEGORY_HOLDING_LIFECYCLES));
+        .add(
+            super::sku_repo::effective_lifecycle_expr(crate::infra::storage::stored_now().date())
+                .is_in(CATEGORY_HOLDING_LIFECYCLES),
+        );
     if let Some(id) = category {
         c = c.add(sku::Column::CategoryId.eq(id));
     }

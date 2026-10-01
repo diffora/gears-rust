@@ -235,6 +235,11 @@ fn illegal(op: &entity::Model, error: &reference_op::IllegalTransition) -> Canon
 fn stored_failure(error: crate::infra::storage::RepoError) -> CanonicalError {
     crate::api::rest::authoring::support::DoorError::from(error).into()
 }
+/// A connection the pool refused (asked for inside a transaction): a storage failure logged with
+/// its cause, never a corrupt op record (the phase 9 review's R21).
+fn conn_failure(error: toolkit_db::DbError) -> CanonicalError {
+    stored_failure(error.into())
+}
 impl Work {
     /// Decode persisted recovery input.
     /// # Errors
@@ -312,10 +317,11 @@ pub trait Clock: Send + Sync {
         0
     }
 }
+/// The process clock, cut to the whole microseconds storage keeps.
 pub struct WallClock;
 impl Clock for WallClock {
     fn now(&self) -> OffsetDateTime {
-        OffsetDateTime::now_utc()
+        crate::infra::storage::stored_now()
     }
     fn jitter_millis(&self) -> i64 {
         i64::from(Uuid::new_v4().as_bytes()[0])
@@ -499,7 +505,7 @@ async fn answer_key(
         support::value(receipt)?,
         // A durable op may answer long after its claim: the answer is kept a full retention from
         // now, or the next same-key retry would find it expired and take the key over (D-429).
-        Some(OffsetDateTime::now_utc() + time::Duration::hours(24)),
+        Some(crate::infra::storage::stored_now() + time::Duration::hours(24)),
     )
     .await?
         != idem::IdempotencyAnswer::Recorded
@@ -610,7 +616,7 @@ pub async fn drive(
     let tenant = ctx.subject_tenant_id();
     let scope = AccessScope::for_tenant(tenant);
     for _ in 0..32 {
-        let op = ops::find(&state.db.conn().map_err(|_| corrupt())?, &scope, tenant, id)
+        let op = ops::find(&state.db.conn().map_err(conn_failure)?, &scope, tenant, id)
             .await
             .map_err(|e| CanonicalError::from(DoorError::Repo(e)))?
             .ok_or_else(corrupt)?;
@@ -1095,7 +1101,7 @@ async fn carried(
         return Err(corrupt());
     };
     let tenant = op.tenant_id;
-    let conn = state.db.conn().map_err(|_| corrupt())?;
+    let conn = state.db.conn().map_err(conn_failure)?;
     let Some(revision) =
         plan_revision_repo::find(&conn, &AccessScope::for_tenant(tenant), tenant, revision_id)
             .await
@@ -1103,15 +1109,12 @@ async fn carried(
     else {
         return Ok(false);
     };
-    Ok(crate::api::rest::authoring::plans::published_skus(
-        &conn,
-        tenant,
-        revision.plan_id,
-        clock.now().date(),
+    Ok(
+        super::plan_revisions::published_skus(&conn, tenant, revision.plan_id, clock.now().date())
+            .await
+            .map_err(stored_failure)?
+            .contains(&op.sku_id),
     )
-    .await
-    .map_err(CanonicalError::from)?
-    .contains(&op.sku_id))
 }
 async fn observe(
     registry: Result<Arc<dyn ReferenceRegistryV1>, CanonicalError>,
@@ -1305,16 +1308,20 @@ async fn observe_sku(
     // and a create takes no deprecated SKU, except a plan item's whose plan's published revision
     // in effect carries it (`carried`, D-465). An attach and a rereserve do: the reference they
     // replace already protected that SKU (D-413). The kind adds its own rule on the SKU's type.
-    let refusal = match sku.lifecycle {
-        Lifecycle::Draft => Some("SKU_DRAFT"),
-        Lifecycle::Deprecated if op.kind == OpKind::Create.as_str() && !carried => {
-            Some("SKU_DEPRECATED")
+    let refusal = if sku.retire_pending {
+        Some("SKU_RETIRING")
+    } else {
+        match sku.lifecycle {
+            Lifecycle::Draft => Some("SKU_DRAFT"),
+            Lifecycle::Deprecated if op.kind == OpKind::Create.as_str() && !carried => {
+                Some("SKU_DEPRECATED")
+            }
+            Lifecycle::Retired => Some("SKU_RETIRING"),
+            Lifecycle::Published | Lifecycle::Deprecated => match kind {
+                RefKind::Entry => charge_kind_for(sku.r#type).err().map(|e| e.code),
+                RefKind::PlanItem => plan_item::type_refusal(sku.r#type),
+            },
         }
-        Lifecycle::Retiring | Lifecycle::Retired => Some("SKU_RETIRING"),
-        Lifecycle::Published | Lifecycle::Deprecated => match kind {
-            RefKind::Entry => charge_kind_for(sku.r#type).err().map(|e| e.code),
-            RefKind::PlanItem => plan_item::type_refusal(sku.r#type),
-        },
     };
     if let Some(code) = refusal {
         return Ok((

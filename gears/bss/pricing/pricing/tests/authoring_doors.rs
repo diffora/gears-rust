@@ -398,6 +398,7 @@ async fn every_route_denies_authorization_before_preconditions_or_disclosure() {
         ("GET", format!("/price-books/{id}/publish-changes")),
         ("POST", format!("/price-books/{id}/publish-changes")),
         ("GET", "/approval-units".into()),
+        ("GET", "/approval-units/counts".into()),
         ("GET", format!("/approval-units/{id}")),
         ("POST", format!("/approval-units/{id}/approve")),
         ("POST", format!("/approval-units/{id}/reject")),
@@ -702,6 +703,13 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             "submit",
         ),
         ("GET", "/approval-units".into(), "approval_unit", "read"),
+        // D-470: the counts under the list's own grant.
+        (
+            "GET",
+            "/approval-units/counts".into(),
+            "approval_unit",
+            "read",
+        ),
         (
             "GET",
             format!("/approval-units/{id}"),
@@ -803,7 +811,7 @@ async fn authorization_labels_actions_and_cross_tenant_reads_are_pinned() {
             )
         })
         .collect();
-    assert_eq!(table.len(), 51);
+    assert_eq!(table.len(), 52);
     assert_eq!(rows.len(), table.len(), "one row per route");
     assert_eq!(
         rows, f.registered,
