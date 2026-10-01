@@ -531,8 +531,7 @@ a derived version.
 Amends P-D-186 (#9). Category retirement is refused (409 `CATEGORY_IN_USE`) only while a SKU in `draft`,
 `published` or `deprecated` names the category. P-D-248: a retire under review keeps one of those, so it still holds the category. The old `retiring` lifecycle no longer exists. A `retired` SKU no longer counts: nothing moves a
 retired SKU (`sku_change` takes only published or deprecated), so under P-D-186 a category that ever held one
-could never retire. `retiring` still counts, because a rejected or withdrawn retirement returns the SKU to its
-prior lifecycle. The check stays one conditional write with a `NOT EXISTS` over those four lifecycles, in the
+could never retire. The holding set is `draft`, `published` and `deprecated`, through the effective lifecycle. The check stays one conditional write with a `NOT EXISTS` over those three lifecycles, in the
 serializable transaction category assignment also runs in. A SKU without a category never counts (P-D-196).
 
 Retiring a category that is already retired is 409 `CATEGORY_RETIRED` (validation D6), the code an assignment
@@ -612,7 +611,7 @@ lifecycle. Only a term that is a top-level `and` conjunct is dropped; a `lifecyc
 cannot go without changing what the rest means, so it is 400 `INVALID_FILTER`. The whole filter is checked as
 the list reads it before the terms go. `$orderby`, `$top`/`limit`, `cursor`/`$skiptoken` and `$select` are
 400 `UNSUPPORTED_QUERY_PARAM`. It recovers the tenant's orphan fences in its own transaction, as the list
-does, so its `retiring` agrees with the list, and it counts in one grouped statement whatever the number of
+does, and it counts in one grouped statement whatever the number of
 SKUs. Authorization is `sku × read`.
 
 The fence recovery the list and the counts run first is set-based too: one read of the tenant's expired
@@ -769,8 +768,8 @@ gear served the whole list only, with no count and no single read.
 - **`GET /categories/{id}`** answers one category as `ProductsCategoryItem`: the category's fields and
   `sku_count`. The `ETag` is its version, the value the category PATCH takes as `If-Match`. A category the
   tenant does not hold is 404.
-- **`sku_count`** counts the SKUs that are not retired and name the category: `draft`, `published`,
-  `deprecated` and `retiring`. These are the SKUs that keep a category in use (P-D-208), so an active category
+- **`sku_count`** counts the SKUs that are not retired and name the category: `draft`, `published` and
+  `deprecated`, through the effective lifecycle. These are the SKUs that keep a category in use (P-D-208), so an active category
   with `sku_count` 0 may be retired. Both reads take it from ONE grouped read (`COUNT` grouped by
   `category_id`, over the tenant's SKUs), never one count per category. Tests pin the list and the single
   read at two statements each for 10 and for 100 categories. A category that no counted SKU names reads 0. The
@@ -817,7 +816,7 @@ quorum it copied (P-D-190). Pricing has the same door for its kinds (D-435).
 Every closed set a response schema carries is an enum in the served OpenAPI (ask 12). It holds exactly the
 tokens that the column stores and that the wire always carried, so the wire does not change. The sets: a SKU's
 `type` (`recurring`, `usage`, `one_time`, `bundle`), `lifecycle` (`draft`, `published`, `deprecated`,
-`retiring`, `retired`) and `billing_timing` (`advance`, `arrears`), on the SKU and on a version's content; a
+`retired`) and `billing_timing` (`advance`, `arrears`), on the SKU and on a version's content; a
 category's `status` (`active`, `retired`); the history's `from_lifecycle` and `to_lifecycle` (P-D-213); a unit's
 `state`, a decision (`approve`, `reject`) and a vote's `outcome` (`pending`, `applied`, `rejected`,
 `withdrawn`); a reference's `kind` (`price_book_entry`, `plan_item`, `sold_as`) and `state` (`reserved`,
@@ -1637,6 +1636,8 @@ pricing reference (its amendment) and the E1b half of pricing's E1 (D-503).
 
 Pricing reads `retire_pending` instead of a `retiring` lifecycle. An entry or item create answers `SKU_RETIRING`. The revision checks answer `ITEM_SKU_UNAVAILABLE`. A lost reference is not re-reserved.
 
+**Amendment (2026-10-01, run 9.8d-fix).** A page of `GET /skus/{id}/history` that still holds a raw `retiring` token loads every audit row of that SKU whose `from_lifecycle` or `to_lifecycle` is `retiring`, in one statement, and then maps. The page's units are not enough: the row that entered `retiring` may belong to an earlier unit.
+
 **Source:** Owner, 2026-10-01 ("давай уберем этот статус и сделаем что он еще не retired пока не согласовали а сохраняется старый статус"). Phase 9 plan rev 4, run 9.8d. Amends P-D-189, P-D-208, P-D-211 and P-D-213.
 
 #### P-D-249 [H] A lifecycle change honours its date
@@ -1644,5 +1645,7 @@ Pricing reads `retire_pending` instead of a `retiring` lifecycle. An entry or it
 **Status:** DECIDED 2026-10-01.
 
 A `sku_change` whose `effective_from` is after today stores `lifecycle_next` and `lifecycle_next_from` and leaves `lifecycle` as it is. A change dated today or earlier sets `lifecycle` now. The lifecycle in force on a day is `lifecycle_next` when `lifecycle_next_from` has arrived, otherwise `lifecycle`. One Rust function, `effective_lifecycle`, serves the SDK `Sku.lifecycle` and `SkuDto.lifecycle`. One SQL `CASE`, bound to the gear clock's today, serves the list filter, the counts and the other lifecycle predicates. `SkuDto.lifecycle_next` is `{ lifecycle, from }`, null when none is pending. A later change replaces a pending next, or clears it when the target is the lifecycle in force. A retire apply clears it. The first statement of a head write folds a due next into `lifecycle`, so `set_lifecycle` sees the lifecycle in force. A read does not depend on that fold. The same migration as P-D-248 adds the two columns. They are both null or both set, and a next lifecycle is never `retired`.
+
+**Amendment (2026-10-01, run 9.8d-fix).** An act's history records a next lifecycle only when that act changed `lifecycle_next`: the next it stored, or the lifecycle in force when it cleared the next. An act that leaves a pending next untouched records the lifecycle in force. The list `$filter` on `lifecycle` is `eq`, `ne` or `in`, and those joined by `and`, compared through the `CASE`. A `lifecycle` term under `or` or `not`, or `contains`, `startswith` or `endswith` on `lifecycle`, is 400 `INVALID_FILTER` on the list and on the counts. The stored column is not compared.
 
 **Source:** Owner, 2026-10-01. Phase 9 plan rev 4, run 9.8d. Amends P-D-191.

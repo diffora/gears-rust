@@ -156,6 +156,31 @@ async fn served_query_parameters_are_typed_and_the_list_publishes_its_odata_voca
         ],
         "{list}"
     );
+    // P-D-249: the CASE serves `eq`, `ne` and `in`. The served text names those, not the text functions.
+    let filter_text = list["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "$filter")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        filter_text.contains("- lifecycle: eq|ne|in\n"),
+        "{filter_text}"
+    );
+    assert!(
+        !filter_text.contains("lifecycle: eq|ne|contains"),
+        "{filter_text}"
+    );
+    assert!(
+        list["description"]
+            .as_str()
+            .unwrap()
+            .contains("joined by `and`"),
+        "{}",
+        list["description"]
+    );
     let mut order: Vec<&str> = list["x-odata-orderby"]["allowedFields"]
         .as_array()
         .unwrap()
