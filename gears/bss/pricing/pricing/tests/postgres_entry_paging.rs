@@ -35,7 +35,10 @@ async fn postgres_entries_page_across_usage_and_recurring_boundaries() {
     let pg = pg_support::Pg::applied().await;
     let f = fixture(&pg).await;
     entry_paging_support::the_pages_cross_every_boundary(&f).await;
-    entry_paging_support::the_filter_narrows_every_page(&f).await;
+    // A fixture of its own (a fresh tenant): both scenarios seed the same book code, which one
+    // tenant holds once (`BOOK_CODE_TAKEN`), as each runs alone on SQLite.
+    let g = fixture(&pg).await;
+    entry_paging_support::the_filter_narrows_every_page(&g).await;
 }
 
 /// P-D-246 on Postgres: a book's SKUs in any reference state, a revision's SKUs, the empty set
